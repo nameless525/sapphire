@@ -196,10 +196,17 @@ pub fn reset_peak() {
     COUNTERS.peak_live_bytes.store(COUNTERS.live_bytes.load(Relaxed), Relaxed);
 }
 
-/// Whether a [`CountingAllocator`] is the global allocator. Any Rust program allocates before
-/// `main`, so a zero count means no counting allocator is installed.
+/// Whether a [`CountingAllocator`] is the global allocator.
+///
+/// The count is nonzero once anything has allocated through one. Not every runtime allocates
+/// before `main` (Windows doesn't), so while the count is still zero this allocates one byte to
+/// find out.
 #[must_use]
 pub fn is_installed() -> bool {
+    if COUNTERS.allocations.load(Relaxed) == 0 {
+        // `black_box` stops the optimizer from removing the allocation.
+        drop(std::hint::black_box(Box::new(0u8)));
+    }
     COUNTERS.allocations.load(Relaxed) > 0
 }
 
@@ -327,4 +334,16 @@ pub type EngineAllocator = CountingAllocator<mimalloc::MiMalloc>;
 #[cfg(feature = "mimalloc")]
 pub const fn engine_allocator() -> EngineAllocator {
     CountingAllocator::new(mimalloc::MiMalloc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_installed_is_false_without_a_counting_allocator() {
+        // This unit-test binary keeps the default allocator, so even the probe goes uncounted.
+        assert!(!is_installed());
+        assert!(!is_installed(), "probing must not change the answer");
+    }
 }

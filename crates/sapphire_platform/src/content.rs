@@ -339,6 +339,8 @@ mod tests {
 
         assert!(matches!(fs.read("sub/missing.bin"), Err(ContentError::Open { .. })));
         assert!(matches!(fs.read("../data.bin"), Err(ContentError::InvalidPath { .. })));
+        // Windows can't delete a directory holding an open file.
+        drop(file);
         std::fs::remove_dir_all(&dir).expect("remove temp content dir");
     }
 }

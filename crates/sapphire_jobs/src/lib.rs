@@ -22,10 +22,22 @@
 //! While a thread waits for a scope or a `join`, it runs other pool tasks, including ones
 //! unrelated to its own work; their allocations count against that thread in
 //! `sapphire_core::alloc::AllocScope`.
+//!
+//! # Nesting
+//!
+//! Those tasks run on the waiting thread's stack and may wait in turn, so stack depth follows
+//! how much work is queued, not the caller's recursion. Unbounded, a recursive `join` sum over
+//! 100 000 items, 11 levels deep, nested 1 087 waits (3.9 MB of stack, dev build) on one
+//! thread of a one-worker pool; a Windows main thread has 1 MB. So once a thread has
+//! [`MAX_NESTED_WAITS`] waits from this crate on its stack, further calls on it run their work
+//! inline instead of waiting. The pool is saturated by then, so little parallelism is lost.
+//! Waits inside bevy_ecs's executor and parallel queries go straight to bevy_tasks and are not
+//! counted.
 
 pub mod topology;
 
-use std::sync::OnceLock;
+use std::cell::Cell;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use bevy_tasks::{AsyncComputeTaskPool, ComputeTaskPool, TaskPool, TaskPoolBuilder};
 
@@ -154,19 +166,66 @@ pub fn system() -> &'static JobSystem {
     SYSTEM.get_or_init(|| JobSystem::start(JobConfig::default()))
 }
 
+/// How many waits from [`scope`], [`join`] and the parallel loops one thread may nest before
+/// further calls on it run their work inline (see the crate docs). At about 3.5 KB of stack
+/// per wait in a dev build, the limit costs tens of kilobytes, not megabytes.
+pub const MAX_NESTED_WAITS: u32 = 16;
+
+thread_local! {
+    /// The waits from this crate active on this thread's stack.
+    static NESTED_WAITS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// One more wait on this thread's stack, until dropped (unwinding included).
+struct NestedWait {
+    outer: u32,
+}
+
+impl NestedWait {
+    /// `None` when the thread is already [`MAX_NESTED_WAITS`] deep: run the work inline.
+    fn enter() -> Option<Self> {
+        let outer = NESTED_WAITS.get();
+        (outer < MAX_NESTED_WAITS).then(|| {
+            NESTED_WAITS.set(outer + 1);
+            Self { outer }
+        })
+    }
+}
+
+impl Drop for NestedWait {
+    fn drop(&mut self) {
+        NESTED_WAITS.set(self.outer);
+    }
+}
+
 /// Spawns tasks that run on the compute pool, from inside a [`scope`] call.
 ///
 /// Tasks may borrow anything that outlives the `scope` call. Results come back in spawn order
 /// for tasks spawned directly by the closure passed to [`scope`].
 pub struct Scope<'scope, 'env, T> {
-    // `bevy_tasks::Scope` is invariant in both lifetimes, and so is this wrapper.
-    inner: &'scope bevy_tasks::Scope<'scope, 'env, T>,
+    inner: ScopeInner<'scope, 'env, T>,
+}
+
+// `bevy_tasks::Scope` is invariant in both lifetimes, and so is this wrapper.
+enum ScopeInner<'scope, 'env, T> {
+    Pool(&'scope bevy_tasks::Scope<'scope, 'env, T>),
+    /// The calling thread was [`MAX_NESTED_WAITS`] deep: tasks run as they are spawned.
+    Inline(&'scope Mutex<Vec<T>>),
 }
 
 impl<'scope, 'env, T: Send + 'scope> Scope<'scope, 'env, T> {
-    /// Runs `task` on a worker (or on the thread waiting for the scope).
+    /// Runs `task` on a worker or on the thread waiting for the scope. On a thread already
+    /// [`MAX_NESTED_WAITS`] deep, it runs before `spawn` returns, so don't hold a lock across
+    /// `spawn` that `task` takes.
     pub fn spawn(&self, task: impl FnOnce() -> T + Send + 'scope) {
-        self.inner.spawn(async move { task() });
+        match self.inner {
+            ScopeInner::Pool(scope) => scope.spawn(async move { task() }),
+            ScopeInner::Inline(results) => {
+                // Run before locking: `task` may spawn too.
+                let result = task();
+                results.lock().unwrap_or_else(PoisonError::into_inner).push(result);
+            }
+        }
     }
 }
 
@@ -177,6 +236,14 @@ impl<T> Clone for Scope<'_, '_, T> {
 }
 
 impl<T> Copy for Scope<'_, '_, T> {}
+
+impl<T> Clone for ScopeInner<'_, '_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for ScopeInner<'_, '_, T> {}
 
 /// Runs `f`, which spawns tasks through the [`Scope`] it is given, and returns once every
 /// task has finished, with their results. The calling thread runs tasks while it waits.
@@ -200,11 +267,17 @@ where
     F: for<'scope> FnOnce(Scope<'scope, 'env, T>),
     T: Send + 'static,
 {
-    system().compute.scope(|inner| f(Scope { inner }))
+    let Some(_wait) = NestedWait::enter() else {
+        let results = Mutex::new(Vec::new());
+        f(Scope { inner: ScopeInner::Inline(&results) });
+        return results.into_inner().unwrap_or_else(PoisonError::into_inner);
+    };
+    system().compute.scope(|inner| f(Scope { inner: ScopeInner::Pool(inner) }))
 }
 
 /// Runs `a` on the calling thread and `b` on the pool, potentially in parallel, and returns
-/// both results. If `a` panics, the panic propagates only after `b` has finished, so `b` never
+/// both results. On a thread already [`MAX_NESTED_WAITS`] deep, runs `a` then `b` inline. If
+/// `a` panics, `b` has finished or never started by the time the panic propagates, so `b` never
 /// outlives the data it borrows. Allocates per call (see the crate docs).
 ///
 /// # Panics
@@ -216,6 +289,9 @@ where
     B: FnOnce() -> RB + Send,
     RB: Send,
 {
+    let Some(_wait) = NestedWait::enter() else {
+        return (a(), b());
+    };
     let mut result_a = None;
     let mut result_b = None;
     system().compute.scope(|s| {
@@ -227,8 +303,9 @@ where
 
 /// Calls `f(start, chunk)` for consecutive chunks of `slice` in parallel, where `start` is the
 /// index of the chunk's first element. Every element is visited exactly once; chunk order is
-/// unspecified. A slice that fits in one chunk runs inline without allocating; otherwise each
-/// call allocates about 3 times plus once per chunk (see the crate docs).
+/// unspecified. A slice that fits in one chunk runs inline without allocating, as does every
+/// call on a thread already [`MAX_NESTED_WAITS`] deep; otherwise each call allocates about 3
+/// times plus once per chunk (see the crate docs).
 ///
 /// # Panics
 ///
@@ -239,12 +316,13 @@ where
     F: Fn(usize, &[T]) + Sync,
 {
     assert!(chunk_size > 0, "chunk_size must be positive");
-    if slice.len() <= chunk_size {
-        if !slice.is_empty() {
-            f(0, slice);
+    let wait = if slice.len() > chunk_size { NestedWait::enter() } else { None };
+    let Some(_wait) = wait else {
+        for (index, chunk) in slice.chunks(chunk_size).enumerate() {
+            f(index * chunk_size, chunk);
         }
         return;
-    }
+    };
     let f = &f;
     system().compute.scope(|s| {
         for (index, chunk) in slice.chunks(chunk_size).enumerate() {
@@ -264,12 +342,13 @@ where
     F: Fn(usize, &mut [T]) + Sync,
 {
     assert!(chunk_size > 0, "chunk_size must be positive");
-    if slice.len() <= chunk_size {
-        if !slice.is_empty() {
-            f(0, slice);
+    let wait = if slice.len() > chunk_size { NestedWait::enter() } else { None };
+    let Some(_wait) = wait else {
+        for (index, chunk) in slice.chunks_mut(chunk_size).enumerate() {
+            f(index * chunk_size, chunk);
         }
         return;
-    }
+    };
     let f = &f;
     system().compute.scope(|s| {
         for (index, chunk) in slice.chunks_mut(chunk_size).enumerate() {
@@ -344,17 +423,79 @@ mod tests {
     }
 
     #[test]
-    fn nested_join_does_not_deadlock() {
-        fn sum(values: &[u64]) -> u64 {
-            if values.len() <= 64 {
-                return values.iter().sum();
-            }
-            let (left, right) = values.split_at(values.len() / 2);
-            let (a, b) = join(|| sum(left), || sum(right));
-            a + b
+    fn recursive_join_neither_deadlocks_nor_nests_without_bound() {
+        thread_local! {
+            static FRAMES: Cell<usize> = const { Cell::new(0) };
         }
+        static MAX_FRAMES: AtomicUsize = AtomicUsize::new(0);
+
+        // Counts the `sum` frames on each thread's stack, the caller's recursion included.
+        fn sum(values: &[u64]) -> u64 {
+            let frames = FRAMES.get() + 1;
+            FRAMES.set(frames);
+            MAX_FRAMES.fetch_max(frames, Ordering::Relaxed);
+            let total = if values.len() <= 64 {
+                values.iter().sum()
+            } else {
+                let (left, right) = values.split_at(values.len() / 2);
+                let (a, b) = join(|| sum(left), || sum(right));
+                a + b
+            };
+            FRAMES.set(frames - 1);
+            total
+        }
+
         let values: Vec<u64> = (0..100_000).collect();
-        assert_eq!(sum(&values), values.iter().sum());
+        for _ in 0..10 {
+            assert_eq!(sum(&values), values.iter().sum());
+        }
+        // A thread holds at most MAX_NESTED_WAITS waiting frames, then one inline recursion
+        // (12 frames here: 100 000 halves to 64 or fewer in 11 steps). Unbounded, frames from
+        // unrelated waits pile up: hundreds with 9 workers, over a thousand with one.
+        let recursion = (values.len() / 64).ilog2() as usize + 2;
+        let max_frames = MAX_FRAMES.load(Ordering::Relaxed);
+        assert!(max_frames <= MAX_NESTED_WAITS as usize + recursion, "{max_frames} nested frames");
+    }
+
+    #[test]
+    fn calls_past_the_nesting_limit_run_inline() {
+        // Each level waits in `join` while `a` recurses on this thread.
+        fn at_depth(levels: u32, check: &impl Fn()) {
+            if levels == 0 {
+                check();
+            } else {
+                join(|| at_depth(levels - 1, check), || ());
+            }
+        }
+
+        // A fresh thread, so no test's waits are on its stack yet.
+        std::thread::spawn(|| {
+            at_depth(MAX_NESTED_WAITS, &|| {
+                assert_eq!(NESTED_WAITS.get(), MAX_NESTED_WAITS);
+                let caller = std::thread::current().id();
+                let on_caller = || assert_eq!(std::thread::current().id(), caller);
+
+                let (_, b) = join(|| (), || std::thread::current().id());
+                assert_eq!(b, caller);
+                let results = scope(|s| {
+                    s.spawn(move || {
+                        s.spawn(|| 2);
+                        1
+                    });
+                    s.spawn(|| 3);
+                });
+                assert_eq!(results, [2, 1, 3], "inline tasks finish children first");
+                par_for_each_chunk(&[0u8; 8], 1, |_, _| on_caller());
+                par_for_each_chunk_mut(&mut [0u8; 8], 1, |_, _| on_caller());
+
+                let panicked = std::panic::catch_unwind(|| join(|| (), || panic!("inline b")));
+                assert!(panicked.is_err());
+                assert_eq!(NESTED_WAITS.get(), MAX_NESTED_WAITS);
+            });
+            assert_eq!(NESTED_WAITS.get(), 0, "every wait unwound");
+        })
+        .join()
+        .expect("test thread");
     }
 
     #[test]

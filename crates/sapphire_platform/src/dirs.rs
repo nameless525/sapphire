@@ -101,20 +101,26 @@ mod tests {
 
     #[test]
     fn cache_roots_follow_os_conventions() {
-        let home = [("HOME", "/home/ana")];
-        assert_eq!(os_cache_root(Os::MacOs, env(&home)), Some(PathBuf::from("/home/ana/Library/Caches")));
-        assert_eq!(os_cache_root(Os::Ios, env(&home)), Some(PathBuf::from("/home/ana/Library/Caches")));
-        assert_eq!(os_cache_root(Os::Linux, env(&home)), Some(PathBuf::from("/home/ana/.cache")));
+        // Locations must be absolute by the host's rules (a Windows path needs a drive), so
+        // every OS's branch is checked with paths that are absolute on this host.
+        let absolute = |unix, windows| if cfg!(windows) { windows } else { unix };
+        let home = absolute("/home/ana", r"C:\Users\ana");
+        let xdg_cache = absolute("/cache", r"C:\cache");
+        let local_app_data = absolute("/home/ana/AppData/Local", r"C:\Users\ana\AppData\Local");
+
+        let home_only = [("HOME", home)];
+        let caches = Path::new(home).join("Library/Caches");
+        assert_eq!(os_cache_root(Os::MacOs, env(&home_only)), Some(caches.clone()));
+        assert_eq!(os_cache_root(Os::Ios, env(&home_only)), Some(caches));
+        assert_eq!(os_cache_root(Os::Linux, env(&home_only)), Some(Path::new(home).join(".cache")));
         assert_eq!(
-            os_cache_root(Os::Linux, env(&[("HOME", "/home/ana"), ("XDG_CACHE_HOME", "/cache")])),
-            Some(PathBuf::from("/cache"))
+            os_cache_root(Os::Linux, env(&[("HOME", home), ("XDG_CACHE_HOME", xdg_cache)])),
+            Some(PathBuf::from(xdg_cache))
         );
-        if cfg!(windows) {
-            assert_eq!(
-                os_cache_root(Os::Windows, env(&[("LOCALAPPDATA", r"C:\Users\ana\AppData\Local")])),
-                Some(PathBuf::from(r"C:\Users\ana\AppData\Local"))
-            );
-        }
+        assert_eq!(
+            os_cache_root(Os::Windows, env(&[("LOCALAPPDATA", local_app_data)])),
+            Some(PathBuf::from(local_app_data))
+        );
     }
 
     #[test]

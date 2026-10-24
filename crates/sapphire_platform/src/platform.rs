@@ -9,8 +9,9 @@ use sdl3_sys::events::SDL_Event;
 use sdl3_sys::filesystem::SDL_GetBasePath;
 use sdl3_sys::gamepad::{SDL_CloseGamepad, SDL_Gamepad, SDL_OpenGamepad};
 use sdl3_sys::hints::{
-    SDL_HINT_IOS_HIDE_HOME_INDICATOR, SDL_HINT_MOUSE_TOUCH_EVENTS, SDL_HINT_ORIENTATIONS,
-    SDL_HINT_PEN_MOUSE_EVENTS, SDL_HINT_PEN_TOUCH_EVENTS, SDL_HINT_TOUCH_MOUSE_EVENTS,
+    SDL_HINT_IOS_HIDE_HOME_INDICATOR, SDL_HINT_MAC_BACKGROUND_APP, SDL_HINT_MOUSE_TOUCH_EVENTS,
+    SDL_HINT_ORIENTATIONS, SDL_HINT_PEN_MOUSE_EVENTS, SDL_HINT_PEN_TOUCH_EVENTS, SDL_HINT_TOUCH_MOUSE_EVENTS,
+    SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN,
 };
 use sdl3_sys::init::{SDL_INIT_GAMEPAD, SDL_INIT_VIDEO, SDL_Init, SDL_SetAppMetadata};
 use sdl3_sys::joystick::SDL_JoystickID;
@@ -229,6 +230,12 @@ fn apply_hints() {
     sdl::set_hint(SDL_HINT_PEN_MOUSE_EVENTS, c"0");
     sdl::set_hint(SDL_HINT_PEN_TOUCH_EVENTS, c"1");
 
+    if crate::app::background_requested() {
+        // Never take focus: no foreground launch on macOS, and windows don't activate when
+        // shown (see `RunOptions::background`).
+        sdl::set_hint(SDL_HINT_MAC_BACKGROUND_APP, c"1");
+        sdl::set_hint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, c"0");
+    }
     if cfg!(any(target_os = "ios", target_os = "android")) {
         // Landscape only (spec §5.1). The Info.plist / AndroidManifest must allow these
         // orientations too, or the OS overrides the hint.

@@ -34,6 +34,14 @@ impl Os {
             Self::Ios | Self::Android => DeviceClass::Mobile,
         }
     }
+
+    /// Whether a window's native surface survives a trip to the background. False only on
+    /// Android, which destroys the `ANativeWindow` on every pause (see
+    /// [`LifecycleEvent`](crate::LifecycleEvent)); elsewhere the renderer keeps its surface
+    /// and merely stops submitting work.
+    pub const fn keeps_surface_in_background(self) -> bool {
+        !matches!(self, Self::Android)
+    }
 }
 
 /// Broad device class, which selects defaults such as input devices, texture cook and

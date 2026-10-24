@@ -12,7 +12,10 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 #[derive(Default)]
 pub(crate) struct FrameStats {
     window: Duration,
+    /// Loop iterations, presented or not.
     frames: u32,
+    /// Frames actually presented.
+    presented: u32,
     worst: Duration,
     skipped: u32,
     /// The latest skip reason, so a run of identical skips logs once.
@@ -37,6 +40,7 @@ impl FrameStats {
     /// Records one frame; logs and resets once per [`REPORT_INTERVAL`].
     pub fn record(&mut self, frame_time: Duration, dropped: Duration, presented: bool) {
         if presented {
+            self.presented += 1;
             self.last_skip = None;
         }
         self.window += frame_time;
@@ -49,10 +53,12 @@ impl FrameStats {
 
         let allocations = sapphire_core::alloc::stats().total_allocations;
         let frames = self.frames.max(1);
-        let average_ms = self.window.as_secs_f64() * 1e3 / f64::from(frames);
+        let seconds = self.window.as_secs_f64();
+        let average_ms = seconds * 1e3 / f64::from(frames);
         tracing::info!(
             target: LOG_TARGET,
-            fps = format_args!("{:.1}", 1e3 / average_ms),
+            fps = format_args!("{:.1}", f64::from(self.presented) / seconds),
+            loop_hz = format_args!("{:.1}", f64::from(frames) / seconds),
             avg_ms = format_args!("{average_ms:.2}"),
             worst_ms = format_args!("{:.2}", self.worst.as_secs_f64() * 1e3),
             skipped = self.skipped,

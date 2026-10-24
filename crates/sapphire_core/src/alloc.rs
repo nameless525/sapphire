@@ -1,7 +1,14 @@
 //! Allocation tracking for development builds (spec §5.3, rule R6).
 //!
-//! Apps wrap their real allocator (mimalloc in the engine; `System` here) in a
-//! [`CountingAllocator`] in dev builds:
+//! Apps install [`EngineAllocator`] (mimalloc, counted; feature `mimalloc`) as their global
+//! allocator:
+//!
+//! ```ignore
+//! #[global_allocator]
+//! static GLOBAL: sapphire_core::alloc::EngineAllocator = sapphire_core::alloc::engine_allocator();
+//! ```
+//!
+//! or wrap any other allocator in a [`CountingAllocator`]:
 //!
 //! ```
 //! use sapphire_core::alloc::CountingAllocator;
@@ -308,4 +315,16 @@ mod per_thread {
             bytes: COUNTERS.bytes_allocated.load(Relaxed),
         }
     }
+}
+
+/// The engine's global allocator: mimalloc, wrapped in a [`CountingAllocator`] so frame stats
+/// and the R6 checks can see allocations. Android's dlopen-compatible TLS model is selected in
+/// this crate's manifest, so apps need nothing platform-specific.
+#[cfg(feature = "mimalloc")]
+pub type EngineAllocator = CountingAllocator<mimalloc::MiMalloc>;
+
+/// Constructs [`EngineAllocator`] for a `#[global_allocator]` static.
+#[cfg(feature = "mimalloc")]
+pub const fn engine_allocator() -> EngineAllocator {
+    CountingAllocator::new(mimalloc::MiMalloc)
 }

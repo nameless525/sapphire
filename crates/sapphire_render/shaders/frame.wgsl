@@ -1,19 +1,17 @@
 // Declarations shared by every Sapphire M0 pass. `shaders.rs` prepends this file to each
 // pass's source; WESL imports replace the concatenation in M1 (spec §5.12).
 //
-// Bind group 0 holds the frame constants and the persistent scene buffers. Group 1 is
-// reserved for material textures (ramps, ILM masks, face SDF maps) in M1.
+// Bind groups (the budget behind them is in the crate docs):
+//   0  frame   per-frame constants: sun, sky, time
+//   1  view    one camera and its target, bound with a dynamic offset so the main view,
+//              shadow cascades and other views (M1) share one buffer
+//   2  scene   persistent scene buffers: instances, materials
+//   3  —       reserved for material textures (ramps, ILM masks, face SDF maps) in M1
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
 // colors linear, with the sRGB target encoding on write.
 
 struct FrameUniforms {
-    view: mat4x4<f32>,
-    proj: mat4x4<f32>,
-    view_proj: mat4x4<f32>,
-    inv_view_proj: mat4x4<f32>,
-    // xyz: world-space camera position; w: time in seconds.
-    camera_position: vec4<f32>,
     // xyz: unit vector from the surface toward the sun.
     sun_direction: vec4<f32>,
     // rgb: sun color × intensity.
@@ -21,6 +19,18 @@ struct FrameUniforms {
     sky_zenith: vec4<f32>,
     sky_horizon: vec4<f32>,
     sky_ground: vec4<f32>,
+    // x: time in seconds. The app wraps it (to an hour in the sandbox) to keep f32 precision,
+    // so use it only for effects that are periodic or tolerate the jump.
+    time: vec4<f32>,
+}
+
+struct ViewUniforms {
+    view_from_world: mat4x4<f32>,
+    clip_from_view: mat4x4<f32>,
+    clip_from_world: mat4x4<f32>,
+    world_from_clip: mat4x4<f32>,
+    // xyz: world-space camera position.
+    position: vec4<f32>,
     // xy: target size in pixels; zw: reciprocals.
     viewport: vec4<f32>,
 }
@@ -31,15 +41,6 @@ struct InstanceData {
     normal_from_object: mat3x3<f32>,
 }
 
-// One draw record, indexed by draw ID. Vertex shaders get the ID from the instance-step
-// attribute at location 5 rather than `instance_index`, so the same shaders work for
-// CPU-driven draws (ID chosen by vertex-buffer offset, first_instance 0: portable to the iOS
-// Simulator) and GPU-driven multi-draw indirect (ID in first_instance, later).
-struct DrawData {
-    instance: u32,
-    material: u32,
-}
-
 // Mirrors `sapphire_assets::mesh::ToonMaterialParams`.
 struct ToonMaterial {
     base_color: vec4<f32>,
@@ -47,21 +48,17 @@ struct ToonMaterial {
     shade_color: vec4<f32>,
     outline_color: vec4<f32>,
     // x: shadow threshold on N·L in [-1, 1]; y: split softness; z: rim strength;
-    // w: outline width in view-space units at 1 m.
+    // w: outline width in pixels at a 1080-pixel-high target.
     params: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
-@group(0) @binding(1) var<storage, read> instances: array<InstanceData>;
-@group(0) @binding(2) var<storage, read> draws: array<DrawData>;
-@group(0) @binding(3) var<storage, read> materials: array<ToonMaterial>;
+@group(1) @binding(0) var<uniform> view: ViewUniforms;
+@group(2) @binding(0) var<storage, read> instances: array<InstanceData>;
+@group(2) @binding(1) var<storage, read> materials: array<ToonMaterial>;
 
-// Vertex buffer slot 1 (`pipelines::DRAW_ID_ATTRIBUTES`): the draw ID, stepped per instance.
-// Entry points declare it as `@location(5) draw_id: u32`; WGSL has no constants in
-// attributes, so the shader tests check that location against the Rust layout.
-
-// Vertex buffer slot 0 (`pipelines::MESH_VERTEX_ATTRIBUTES`). Mirrors
-// `sapphire_assets::mesh::MeshVertex`.
+// Vertex buffer slot 0 (`pipelines::MESH_VERTEX_ATTRIBUTES`), bound at the mesh's first
+// vertex because indices are mesh-relative. Mirrors `sapphire_assets::mesh::MeshVertex`.
 struct MeshVertex {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -70,6 +67,15 @@ struct MeshVertex {
     @location(3) uv: vec2<f32>,
     // rgb: albedo tint, sRGB-encoded; a: outline width scale.
     @location(4) color: vec4<f32>,
+}
+
+// Vertex buffer slot 1 (`pipelines::DRAW_ATTRIBUTES`), stepped per instance: the draw record.
+// CPU-driven draws bind it at their own record and draw instance 0; GPU-driven multi-draw
+// indirect (later) binds it at 0 and selects the record with `first_instance`. Either way the
+// shaders never read `instance_index`.
+struct DrawRecord {
+    @location(5) instance: u32,
+    @location(6) material: u32,
 }
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -82,6 +88,11 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
     let length_squared = dot(v, v);
     return select(vec3<f32>(0.0), v * inverseSqrt(length_squared), length_squared > 1e-12);
+}
+
+fn safe_normalize2(v: vec2<f32>) -> vec2<f32> {
+    let length_squared = dot(v, v);
+    return select(vec2<f32>(0.0), v * inverseSqrt(length_squared), length_squared > 1e-12);
 }
 
 // The sky gradient in direction `dir`. Also the toon shader's ambient light.

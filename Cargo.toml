@@ -85,6 +85,8 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 # GLES and WebGPU backends are deliberately off: Android requires Vulkan 1.1 (spec §2).
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12"] }
 pollster = "1.0"
+# PNG output for the sandbox's offscreen captures.
+png = "0.18"
 # Dev-only: a detached CAMetalLayer lets sapphire_rhi test surfaces without a window.
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 

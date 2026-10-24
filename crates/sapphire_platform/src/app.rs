@@ -25,6 +25,7 @@ use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::init::{SDL_APP_CONTINUE, SDL_APP_FAILURE, SDL_APP_SUCCESS, SDL_AppResult};
@@ -40,6 +41,9 @@ pub enum AppControl {
     Continue,
     /// Shut down cleanly: SDL calls [`App::quit`] and the process exits successfully.
     Exit,
+    /// Shut down because the app failed (for example, an unattended run that rendered
+    /// nothing): SDL calls [`App::quit`] and the process exits with a failure status.
+    Fail,
 }
 
 /// Identity of the app, set before SDL initializes.
@@ -124,6 +128,23 @@ impl fmt::Debug for AppInitError {
     }
 }
 
+/// How [`run_with`] starts the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunOptions {
+    /// Run as a background process that never takes focus: on macOS the app gets no Dock
+    /// icon, isn't brought to the foreground at launch, and windows it shows don't activate.
+    /// For offscreen and automated runs (captures, tests) on a machine someone is using.
+    /// Ignored on mobile.
+    pub background: bool,
+}
+
+/// Set by [`run_with`] before SDL starts; read when the hints are applied.
+static BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn background_requested() -> bool {
+    BACKGROUND.load(Ordering::Relaxed)
+}
+
 /// Runs `A` on SDL's main callbacks and returns the process exit code.
 ///
 /// Call it once, from `fn main` on the main thread (desktop and iOS). On iOS it hands
@@ -134,6 +155,12 @@ impl fmt::Debug for AppInitError {
 ///
 /// Resumes any panic raised by an [`App`] callback, after SDL has shut down.
 pub fn run<A: App>() -> ExitCode {
+    run_with::<A>(RunOptions::default())
+}
+
+/// [`run`], with [`RunOptions`].
+pub fn run_with<A: App>(options: RunOptions) -> ExitCode {
+    BACKGROUND.store(options.background, Ordering::Relaxed);
     // Pass the real arguments: on Unix, SDL would otherwise substitute a placeholder.
     let args: Vec<CString> =
         std::env::args_os().map(|arg| sdl::c_string_lossy(&arg.to_string_lossy())).collect();
@@ -420,6 +447,7 @@ fn guarded(f: impl FnOnce() -> AppControl) -> SDL_AppResult {
     match panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(AppControl::Continue) => SDL_APP_CONTINUE,
         Ok(AppControl::Exit) => SDL_APP_SUCCESS,
+        Ok(AppControl::Fail) => SDL_APP_FAILURE,
         Err(payload) => {
             stash_panic(payload);
             SDL_APP_FAILURE
@@ -491,5 +519,6 @@ mod tests {
     fn app_control_maps_to_sdl_results() {
         assert_eq!(guarded(|| AppControl::Continue).0, SDL_APP_CONTINUE.0);
         assert_eq!(guarded(|| AppControl::Exit).0, SDL_APP_SUCCESS.0);
+        assert_eq!(guarded(|| AppControl::Fail).0, SDL_APP_FAILURE.0);
     }
 }

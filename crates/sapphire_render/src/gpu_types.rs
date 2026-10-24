@@ -4,18 +4,12 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
-use crate::FrameView;
+use crate::{CameraData, FrameView};
 
-/// Per-frame constants (WGSL `FrameUniforms`, a uniform buffer).
+/// Per-frame constants (WGSL `FrameUniforms`, group 0).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct FrameUniforms {
-    pub view: [[f32; 4]; 4],
-    pub proj: [[f32; 4]; 4],
-    pub view_proj: [[f32; 4]; 4],
-    pub inv_view_proj: [[f32; 4]; 4],
-    /// xyz: camera position; w: time in seconds.
-    pub camera_position: [f32; 4],
     /// xyz: unit vector toward the sun.
     pub sun_direction: [f32; 4],
     /// rgb: sun color × intensity.
@@ -23,27 +17,49 @@ pub(crate) struct FrameUniforms {
     pub sky_zenith: [f32; 4],
     pub sky_horizon: [f32; 4],
     pub sky_ground: [f32; 4],
-    /// xy: target size in pixels; zw: reciprocals.
-    pub viewport: [f32; 4],
+    /// x: time in seconds (wrapped by the app, see `FrameView::time_seconds`).
+    pub time: [f32; 4],
 }
 
 impl FrameUniforms {
-    pub(crate) fn new(frame: &FrameView<'_>, (width, height): (u32, u32)) -> Self {
-        let camera = &frame.camera;
-        let view_proj = camera.proj * camera.view;
+    pub(crate) fn new(frame: &FrameView<'_>) -> Self {
         let toward_sun = (-frame.sun.direction).try_normalize().unwrap_or(Vec3::Y);
-        let (width, height) = (width as f32, height as f32);
         Self {
-            view: camera.view.to_cols_array_2d(),
-            proj: camera.proj.to_cols_array_2d(),
-            view_proj: view_proj.to_cols_array_2d(),
-            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
-            camera_position: camera.position.extend(frame.time_seconds).to_array(),
             sun_direction: toward_sun.extend(0.0).to_array(),
             sun_radiance: (frame.sun.color * frame.sun.intensity).extend(0.0).to_array(),
             sky_zenith: frame.sky.zenith.extend(1.0).to_array(),
             sky_horizon: frame.sky.horizon.extend(1.0).to_array(),
             sky_ground: frame.sky.ground.extend(1.0).to_array(),
+            time: [frame.time_seconds, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// One view: a camera rendering into a target of a given size (WGSL `ViewUniforms`, group 1,
+/// bound with a dynamic offset).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub(crate) struct ViewUniforms {
+    pub view_from_world: [[f32; 4]; 4],
+    pub clip_from_view: [[f32; 4]; 4],
+    pub clip_from_world: [[f32; 4]; 4],
+    pub world_from_clip: [[f32; 4]; 4],
+    /// xyz: camera position.
+    pub position: [f32; 4],
+    /// xy: target size in pixels; zw: reciprocals.
+    pub viewport: [f32; 4],
+}
+
+impl ViewUniforms {
+    pub(crate) fn new(camera: &CameraData, (width, height): (u32, u32)) -> Self {
+        let clip_from_world = camera.proj * camera.view;
+        let (width, height) = (width as f32, height as f32);
+        Self {
+            view_from_world: camera.view.to_cols_array_2d(),
+            clip_from_view: camera.proj.to_cols_array_2d(),
+            clip_from_world: clip_from_world.to_cols_array_2d(),
+            world_from_clip: clip_from_world.inverse().to_cols_array_2d(),
+            position: camera.position.extend(1.0).to_array(),
             viewport: [width, height, width.recip(), height.recip()],
         }
     }
@@ -74,11 +90,9 @@ impl InstanceData {
     }
 }
 
-/// One draw record (WGSL `DrawData`): which instance and which material a draw uses.
-///
-/// Indexed by the draw ID the vertex shader receives as an attribute (see `draw_ids`). This
-/// is also the layout GPU-driven culling will write for multi-draw indirect later, and it
-/// lets one instance use several materials.
+/// One draw record: which instance and which material a draw uses. Read by the vertex
+/// shaders as instance-step vertex attributes (WGSL `DrawRecord`, locations 5 and 6) from a
+/// buffer bound at the draw's record; see the crate docs on submission paths.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 pub(crate) struct DrawData {

@@ -24,6 +24,9 @@ The engine spec (§4.1) put the platform crate at L0, with `core` / `math` / `jo
 
 - `sapphire_core` provides a log-sink hook. The platform layer registers SDL's logger on mobile, so `sapphire_core` never depends on SDL.
 - `xtask/layers.toml` is the source of truth, and `cargo xtask check-layers` enforces it in CI.
+  - Every workspace member and every vendored (path or git) crate must be placed there.
+  - Each entry lists the cargo features the crate may declare (rule R8: features select platform or backend only).
+  - `kind = "dev_only"` marks crates such as M1's `sapphire_debug` that only an app may use, through an optional dependency, so they never ship by accident.
 - **Rule R7 exceptions.** Platform `cfg` is confined to `sapphire_platform`, `sapphire_crash` and the backend selection in `sapphire_rhi`, plus two documented exceptions:
   - `sapphire_jobs::topology` detects CPU topology (sysfs, `sysctl`, `GetLogicalProcessorInformationEx`) before SDL starts.
   - `sapphire_core` classifies the target (`FormFactor`) and the thread-local storage model the counting allocator relies on.

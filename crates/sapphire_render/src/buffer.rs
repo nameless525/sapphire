@@ -10,6 +10,8 @@ pub(crate) struct GrowableBuffer {
     label: &'static str,
     usage: wgpu::BufferUsages,
     max_size: u64,
+    /// Times the buffer was replaced by a larger one (rule R9 stats).
+    growths: u32,
 }
 
 impl GrowableBuffer {
@@ -25,7 +27,7 @@ impl GrowableBuffer {
         // COPY_DST for queue writes, COPY_SRC to carry contents over when growing.
         let usage = usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
         let buffer = create(device, label, usage, capacity.min(max_size));
-        Self { buffer, label, usage, max_size }
+        Self { buffer, label, usage, max_size, growths: 0 }
     }
 
     pub(crate) fn buffer(&self) -> &wgpu::Buffer {
@@ -34,6 +36,10 @@ impl GrowableBuffer {
 
     pub(crate) fn max_size(&self) -> u64 {
         self.max_size
+    }
+
+    pub(crate) fn growths(&self) -> u32 {
+        self.growths
     }
 
     /// Ensures room for `needed` bytes (at most [`Self::max_size`]), copying the first `keep`
@@ -64,6 +70,7 @@ impl GrowableBuffer {
         }
         tracing::debug!(target: crate::LOG_TARGET, label = self.label, capacity, "grew GPU buffer");
         self.buffer = grown;
+        self.growths += 1;
         true
     }
 }

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ cloud backup and device-to-device transfer. Only the files directory goes:
+  sapphire_platform's user_dir, for settings and saves. Pipeline caches and crash dumps
+  live in its cache_dir, the app's cache directory, which Android never backs up or
+  transfers. Cloud backup stays off (allowBackup="false") until saves exist (M3).
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="." />
+    </device-transfer>
+</data-extraction-rules>

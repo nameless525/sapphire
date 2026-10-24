@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 pollster.workspace = true
+profiling.workspace = true
 raw-window-handle.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

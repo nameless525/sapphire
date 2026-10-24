@@ -1188,7 +1188,7 @@ A change can't merge if any of these fail:
 
 1. **Layering and license checks:** R1, R8, and `cargo-deny`.
 2. **Determinism:** all combat replays reproduce their recorded checksum for the runner's architecture, on every desktop OS.
-3. **Golden images:** within `nv-flip` tolerance per backend.
+3. **Golden images:** within `nv-flip` tolerance per backend. Rendered with the sandbox's offscreen `--capture` mode (M0), so no window is needed.
 4. **Allocations:** the zero-allocation assertion (R6, simulation thread inside the fixed step) during the replay suite.
 5. **Budgets:** no budget in §3 regresses by more than 10% on the nightly device run without a recorded waiver.
 

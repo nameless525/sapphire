@@ -1,4 +1,4 @@
-//! Bind group layout and render pipelines for the M0 passes.
+//! Bind group layouts and render pipelines for the M0 passes.
 
 use std::mem::offset_of;
 use std::num::NonZeroU64;
@@ -6,7 +6,7 @@ use std::num::NonZeroU64;
 use sapphire_assets::mesh::{MeshVertex, ToonMaterialParams};
 use sapphire_rhi::wgpu;
 
-use crate::gpu_types::{DrawData, FrameUniforms, InstanceData};
+use crate::gpu_types::{DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::shaders;
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
@@ -22,38 +22,61 @@ pub(crate) const MESH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
     attribute(4, wgpu::VertexFormat::Unorm8x4, offset_of!(MeshVertex, color)),
 ];
 
-/// Vertex buffer slot 1: the per-draw ID, stepped per instance (see `draw_ids`). The shaders
-/// declare it as `@location(5) draw_id: u32`.
-pub(crate) const DRAW_ID_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
-    [attribute(5, wgpu::VertexFormat::Uint32, 0)];
+/// Vertex buffer slot 1: the draw record, stepped per instance (WGSL `DrawRecord`).
+pub(crate) const DRAW_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    attribute(5, wgpu::VertexFormat::Uint32, offset_of!(DrawData, instance)),
+    attribute(6, wgpu::VertexFormat::Uint32, offset_of!(DrawData, material)),
+];
 
 const fn attribute(location: u32, format: wgpu::VertexFormat, offset: usize) -> wgpu::VertexAttribute {
     wgpu::VertexAttribute { format, offset: offset as u64, shader_location: location }
 }
 
-/// Group 0: frame constants plus the persistent scene buffers (see `shaders/frame.wgsl`).
-pub(crate) fn scene_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    use wgpu::ShaderStages as S;
-    let entry = |binding, visibility, ty, min_size: usize| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility,
-        ty: wgpu::BindingType::Buffer {
-            ty,
-            has_dynamic_offset: false,
-            min_binding_size: NonZeroU64::new(min_size as u64),
-        },
-        count: None,
-    };
-    let storage = wgpu::BufferBindingType::Storage { read_only: true };
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("scene"),
-        entries: &[
-            entry(0, S::VERTEX_FRAGMENT, wgpu::BufferBindingType::Uniform, size_of::<FrameUniforms>()),
-            entry(1, S::VERTEX, storage, size_of::<InstanceData>()),
-            entry(2, S::VERTEX, storage, size_of::<DrawData>()),
-            entry(3, S::VERTEX_FRAGMENT, storage, size_of::<ToonMaterialParams>()),
-        ],
-    })
+/// The bind group layouts of `shaders/frame.wgsl`. Group 3 (material textures) arrives in M1.
+#[derive(Debug)]
+pub(crate) struct Layouts {
+    /// Group 0: frame constants.
+    pub frame: wgpu::BindGroupLayout,
+    /// Group 1: one view, bound with a dynamic offset.
+    pub view: wgpu::BindGroupLayout,
+    /// Group 2: instances and materials.
+    pub scene: wgpu::BindGroupLayout,
+}
+
+impl Layouts {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        use wgpu::ShaderStages as S;
+        let buffer =
+            |binding, visibility, ty, has_dynamic_offset, min_size: usize| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility,
+                ty: wgpu::BindingType::Buffer {
+                    ty,
+                    has_dynamic_offset,
+                    min_binding_size: NonZeroU64::new(min_size as u64),
+                },
+                count: None,
+            };
+        let uniform = wgpu::BufferBindingType::Uniform;
+        let storage = wgpu::BufferBindingType::Storage { read_only: true };
+        let layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries })
+        };
+        Self {
+            frame: layout(
+                "frame",
+                &[buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>())],
+            ),
+            view: layout("view", &[buffer(0, S::VERTEX_FRAGMENT, uniform, true, size_of::<ViewUniforms>())]),
+            scene: layout(
+                "scene",
+                &[
+                    buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
+                    buffer(1, S::VERTEX_FRAGMENT, storage, false, size_of::<ToonMaterialParams>()),
+                ],
+            ),
+        }
+    }
 }
 
 /// Fixed-function state that differs between passes. Entry points are `vs_<name>` and
@@ -67,25 +90,25 @@ struct PassDesc<'a> {
     depth_compare: wgpu::CompareFunction,
 }
 
-/// The three M0 pipelines, in pass order.
+/// The three M0 pipelines.
 #[derive(Debug)]
 pub(crate) struct Pipelines {
-    pub sky: wgpu::RenderPipeline,
     pub toon: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
+    pub sky: wgpu::RenderPipeline,
 }
 
 impl Pipelines {
     pub(crate) fn new(
         device: &wgpu::Device,
-        scene_layout: &wgpu::BindGroupLayout,
+        layouts: &Layouts,
         color_format: wgpu::TextureFormat,
         sample_count: u32,
         cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
-            bind_group_layouts: &[Some(scene_layout)],
+            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene)],
             immediate_size: 0,
         });
         let mesh_buffers = [
@@ -95,9 +118,9 @@ impl Pipelines {
                 attributes: &MESH_VERTEX_ATTRIBUTES,
             }),
             Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<u32>() as u64,
+                array_stride: size_of::<DrawData>() as u64,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &DRAW_ID_ATTRIBUTES,
+                attributes: &DRAW_ATTRIBUTES,
             }),
         ];
         let color_targets = [Some(wgpu::ColorTargetState {
@@ -146,17 +169,8 @@ impl Pipelines {
             })
         };
 
-        use wgpu::CompareFunction::{Always, Greater};
+        use wgpu::CompareFunction::{Equal, Greater};
         Self {
-            // A fullscreen triangle at the far plane: no vertex buffers, no depth writes.
-            sky: build(PassDesc {
-                name: "sky",
-                source: shaders::SKY,
-                vertex_buffers: &[],
-                cull: None,
-                depth_write: false,
-                depth_compare: Always,
-            }),
             toon: build(PassDesc {
                 name: "toon",
                 source: shaders::TOON,
@@ -173,6 +187,16 @@ impl Pipelines {
                 cull: Some(wgpu::Face::Front),
                 depth_write: true,
                 depth_compare: Greater,
+            }),
+            // A fullscreen triangle at the far plane, drawn last: `Equal` against the cleared
+            // depth (0) shades only pixels no geometry covered.
+            sky: build(PassDesc {
+                name: "sky",
+                source: shaders::SKY,
+                vertex_buffers: &[],
+                cull: None,
+                depth_write: false,
+                depth_compare: Equal,
             }),
         }
     }

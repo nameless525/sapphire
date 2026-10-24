@@ -1,8 +1,11 @@
 //! Renders the M0 toon test scene offscreen and writes it to a PNG.
 //!
 //! ```text
-//! cargo run -p sapphire_render --example headless -- out.png
+//! cargo run -p sapphire_render --example headless -- out.png [fov_degrees]
 //! ```
+//!
+//! The optional vertical field of view (default 38°) moves the camera so the scene keeps the
+//! same framing, which makes outline widths easy to compare across lenses.
 //!
 //! The scene is a smooth sphere beside a hard-edged cube, built in code. The cube's shading
 //! normals are split per face, while its outline normals are averaged across shared
@@ -30,7 +33,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let output = std::env::args().nth(1).ok_or("usage: headless <output.png>")?;
+    let mut args = std::env::args().skip(1);
+    let output = args.next().ok_or("usage: headless <output.png> [fov_degrees]")?;
+    let fov_degrees: f32 = args.next().map_or(Ok(38.0), |fov| fov.parse())?;
 
     let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
     let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
@@ -48,15 +53,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         view_formats: &[],
     });
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    renderer.resize(WIDTH, HEIGHT);
 
+    // Dolly with the lens so the scene fills the same part of the frame at any FOV.
+    let look_at = Vec3::new(0.0, 0.55, 0.0);
+    let fov = fov_degrees.to_radians();
+    let dolly = (19f32.to_radians().tan() / (fov * 0.5).tan()).max(0.05);
     let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
     let frame = FrameView {
         camera: CameraData::look_at(
-            Vec3::new(0.0, 1.35, 4.3),
-            Vec3::new(0.0, 0.55, 0.0),
+            look_at + Vec3::new(0.0, 0.8, 4.3) * dolly,
+            look_at,
             Vec3::Y,
-            38f32.to_radians(),
+            fov,
             WIDTH as f32 / HEIGHT as f32,
             0.1,
         ),
@@ -69,7 +77,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         sky: SkyGradient::default(),
         time_seconds: 0.0,
     };
-    renderer.render(&gpu, &target_view, &frame);
+    renderer.prepare(&gpu, &frame);
+    let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    renderer.record(&mut encoder, &target_view);
+    gpu.queue().submit([encoder.finish()]);
 
     let pixels = read_back(&gpu, &target)?;
     image::RgbaImage::from_raw(WIDTH, HEIGHT, pixels).ok_or("readback has the wrong size")?.save(&output)?;
@@ -138,16 +149,15 @@ fn test_scene() -> MeshAsset {
             base_color: [0.95, 0.62, 0.50, 1.0],
             shade_color: [0.78, 0.55, 0.70, 1.0],
             outline_color: [0.24, 0.09, 0.10, 1.0],
-            params: [0.05, 0.02, 0.4, 0.005],
+            // Outline width in pixels at 1080p (3.9 px in this 540p image).
+            params: [0.05, 0.02, 0.4, 7.8],
         },
-        // A saturated blue with a violet shadow tint and a navy outline. The width is larger
-        // than the sphere's because a cube corner's averaged normal pushes each face out by
-        // only 1/sqrt(3) of it.
+        // A saturated blue with a violet shadow tint and a navy outline.
         ToonMaterialParams {
             base_color: [0.16, 0.36, 0.85, 1.0],
             shade_color: [0.55, 0.50, 0.85, 1.0],
             outline_color: [0.03, 0.03, 0.12, 1.0],
-            params: [0.0, 0.02, 0.3, 0.008],
+            params: [0.0, 0.02, 0.3, 7.8],
         },
     ];
     average_outline_normals(&mut mesh.vertices);

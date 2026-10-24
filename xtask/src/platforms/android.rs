@@ -1,8 +1,9 @@
 //! Android: build the app as a shared library, package it with the Gradle project in
 //! `platform/android/`, and run it on a device or the emulator.
 //!
-//! Gradle owns the APK. xtask first generates its gitignored inputs in `app/src/main/`
-//! (spec §7.3):
+//! Gradle owns the APK. xtask generates its inputs under `target/android/gen/<variant>/`
+//! and points the project's source sets there, so nothing generated lands in the source
+//! tree (spec §7.3):
 //!
 //! - `java/org/libsdl/app/`: SDL's Java glue, copied from the `sdl3-src` crate that
 //!   Cargo.lock pins, so the Java side always matches the SDL linked into the app.
@@ -10,13 +11,17 @@
 //!   linked in statically, exporting `JNI_OnLoad` and `SDL_main`.
 //! - `assets/content/`: the mobile cook.
 //!
+//! App identity and version reach Gradle as `-Psapphire.*` properties.
+//!
 //! Needs a macOS or Linux host, NDK r28+ (16 KB page alignment, spec §6.7), the Android
 //! SDK, and JDK 17+ for Gradle.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, thread};
 
@@ -30,16 +35,19 @@ use crate::workspace::{self, CargoBuild};
 const TARGET: &str = "aarch64-linux-android";
 const ABI: &str = "arm64-v8a";
 /// `minSdk` in `platform/android/app/build.gradle.kts` (Android 10, spec §2). The NDK's
-/// compiler drivers carry it in their names.
+/// compiler drivers carry it in their names, and SDL's CMake build targets it too.
 const MIN_SDK: u32 = 29;
 /// The first NDK release that links 16 KB-aligned libraries by default (spec §6.7).
 const MIN_NDK: u32 = 28;
 /// The emulator `run` boots when no device is connected.
 const AVD: &str = "sapphire_api36";
 const BOOT_TIMEOUT_SECS: u32 = 300;
-/// The launcher activity, relative to the application id.
-const ACTIVITY: &str = ".SandboxActivity";
-/// The string-array intent extra `SandboxActivity.getArguments()` reads.
+/// How long an emulator that holds the AVD's lock gets to show up in `adb devices`.
+const REGISTER_TIMEOUT_SECS: u32 = 30;
+/// The launcher activity, relative to the Java namespace (`dev.sapphire.sandbox`).
+const ACTIVITY: &str = "dev.sapphire.sandbox.SandboxActivity";
+/// The intent extra `SandboxActivity.getArguments()` reads: a base64-encoded JSON array
+/// of strings, honored only by debuggable builds.
 const ARGS_EXTRA: &str = "sapphire.args";
 
 /// Builds the APK and copies it to `target/android/<Name>.apk`.
@@ -52,35 +60,28 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     let library = build_library(app, &ndk, options.release)?;
     let content = content::cook(Cook::Mobile)?;
 
-    let project = workspace::root().join("platform/android");
-    let main = project.join("app/src/main");
-    sync_sdl_java(&main.join("java/org/libsdl/app"))?;
-    let jni_libs = main.join("jniLibs");
-    workspace::remove_dir_if_exists(&jni_libs)?;
-    let abi_dir = jni_libs.join(ABI);
+    let variant = if options.release { "release" } else { "debug" };
+    let dir = super::bundle_dir(Platform::Android);
+    let gen_dir = dir.join("gen").join(variant);
+    workspace::remove_dir_if_exists(&gen_dir)?;
+    sync_sdl_java(&gen_dir.join("java/org/libsdl/app"))?;
+    let abi_dir = gen_dir.join("jniLibs").join(ABI);
     fs::create_dir_all(&abi_dir).with_context(|| format!("failed to create {}", abi_dir.display()))?;
     fs::copy(&library, abi_dir.join(library_file(app)))
-        .with_context(|| format!("failed to copy {} into the Gradle project", library.display()))?;
-    let assets = main.join("assets/content");
-    workspace::remove_dir_if_exists(&assets)?;
-    workspace::copy_dir(&content, &assets)?;
+        .with_context(|| format!("failed to copy {}", library.display()))?;
+    workspace::copy_dir(&content.dir, &gen_dir.join("assets/content"))?;
+    drop(content);
 
-    let variant = if options.release { "release" } else { "debug" };
-    let mut ndk_path = OsString::from("-Psapphire.ndkPath=");
-    ndk_path.push(&ndk.root);
-    workspace::run(
-        Command::new(project.join("gradlew"))
-            .current_dir(&project)
-            .arg(if options.release { "assembleRelease" } else { "assembleDebug" })
-            .arg(ndk_path)
-            .arg(format!("-Psapphire.ndkVersion={}", ndk.revision))
-            .arg(format!("-Psapphire.version={}", env!("CARGO_PKG_VERSION")))
-            .env("ANDROID_HOME", &sdk),
-    )?;
+    let project = workspace::root().join("platform/android");
+    let mut gradle = Command::new(project.join("gradlew"));
+    gradle
+        .current_dir(&project)
+        .arg(if options.release { "assembleRelease" } else { "assembleDebug" })
+        .args(gradle_properties(app, &ndk, &gen_dir))
+        .env("ANDROID_HOME", &sdk);
+    workspace::run(&mut gradle)?;
 
     let built = project.join(format!("app/build/outputs/apk/{variant}/app-{variant}.apk"));
-    let dir = super::bundle_dir(Platform::Android);
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let apk = dir.join(format!("{}.apk", app.bundle_name));
     fs::copy(&built, &apk).with_context(|| format!("failed to copy {}", built.display()))?;
     eprintln!("bundled {}", super::display(&apk));
@@ -88,20 +89,35 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
 }
 
 /// Bundles, picks the connected device (booting the emulator if there is none), installs
-/// and launches, then streams the app's logcat until Ctrl-C.
+/// and launches, then streams the app's logcat until the app exits or Ctrl-C.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let apk = bundle(app, options)?;
-    let adb = Adb::connect(&sdk_dir()?)?;
-    workspace::run(adb.command().args(["install", "-r"]).arg(&apk))?;
-
+    let sdk = sdk_dir()?;
+    let program = sdk.join("platform-tools/adb");
     // `-S` stops a running instance first: the activity is single-instance, so a running
     // one would get the new intent, and its arguments, only through `onNewIntent`.
     let component = format!("{}/{ACTIVITY}", app.bundle_id);
-    let mut start = adb.command();
-    start.args(["shell", "am", "start", "-S", "-W", "-n", &component]);
-    if !args.is_empty() {
-        start.args(["--esa", ARGS_EXTRA, &shell_quote(&string_array_extra(args))]);
+    let start_args = |command: &mut Command| {
+        command.args(["shell", "am", "start", "-S", "-W", "-n", &component]);
+        if !args.is_empty() {
+            command.args(["--es", ARGS_EXTRA, &encode_args(args)]);
+        }
+    };
+    if options.dry_run {
+        let mut install = Command::new(&program);
+        install.args(["install", "-r"]).arg(&apk);
+        let mut start = Command::new(&program);
+        start_args(&mut start);
+        for command in [&install, &start] {
+            eprintln!("dry run: {}", workspace::shell_line(command));
+        }
+        return Ok(());
     }
+
+    let adb = Adb::connect(&sdk, program)?;
+    workspace::run(adb.command().args(["install", "-r"]).arg(&apk))?;
+    let mut start = adb.command();
+    start_args(&mut start);
     eprintln!("launching {component} on {}", adb.serial);
     // `am` prints its report, errors included, on stdout, and some versions exit 0 on errors.
     let launch = start.stderr(Stdio::inherit()).output().context("failed to run adb")?;
@@ -109,11 +125,73 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     eprint!("{report}");
     ensure!(launch.status.success() && !report.contains("Error"), "failed to launch {component}");
 
-    let pid = workspace::output(adb.command().args(["shell", "pidof", app.bundle_id]))?;
+    let pid = workspace::output(adb.command().args(["shell", "pidof", &app.bundle_id]))?;
     let pid = pid.trim();
     ensure!(!pid.is_empty(), "{} exited during launch; see `adb logcat`", app.bundle_id);
     eprintln!("streaming logcat for pid {pid}; Ctrl-C detaches and leaves the app running");
-    workspace::run(adb.command().arg("logcat").arg(format!("--pid={pid}")))
+    follow_logcat(&adb, &app.bundle_id, pid)
+}
+
+/// Streams process `pid`'s logcat to stdout until the app's main function returns (the
+/// process itself lives on, cached) or the process dies. `logcat --pid` would outlive
+/// both.
+fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
+    /// SDLActivity logs this once `SDL_main` has returned.
+    const MAIN_FINISHED: &str = "Finished main function";
+
+    let mut command = adb.command();
+    command.arg("logcat").arg(format!("--pid={pid}")).stdout(Stdio::piped());
+    eprintln!("$ adb -s {} logcat --pid={pid}", adb.serial);
+    let mut logcat = command.spawn().context("failed to start adb logcat")?;
+    let stdout = logcat.stdout.take().expect("stdout is piped");
+    let (finished, finished_rx) = mpsc::channel();
+    let forward = thread::spawn(move || -> std::io::Result<()> {
+        let mut out = std::io::stdout().lock();
+        for line in BufReader::new(stdout).lines() {
+            let line = line?;
+            writeln!(out, "{line}")?;
+            if line.contains(MAIN_FINISHED) {
+                // The receiver is gone only if the caller already stopped following.
+                let _ = finished.send(());
+            }
+        }
+        Ok(())
+    });
+
+    let outcome = loop {
+        match finished_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => break "the app's main function returned",
+            Err(mpsc::RecvTimeoutError::Disconnected) => break "adb logcat stopped",
+            Err(mpsc::RecvTimeoutError::Timeout) if !adb.is_running(package, pid) => {
+                break "the app's process ended";
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    };
+    thread::sleep(Duration::from_secs(1)); // Let logcat print the last lines.
+    let _ = logcat.kill(); // It may have exited already.
+    logcat.wait()?;
+    forward.join().expect("the logcat forwarder doesn't panic")?;
+    eprintln!("{outcome}");
+    Ok(())
+}
+
+/// Everything the Gradle project takes from xtask (see `app/build.gradle.kts`).
+fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path) -> Vec<OsString> {
+    let path = |name: &str, path: &Path| {
+        let mut property = OsString::from(format!("-Psapphire.{name}="));
+        property.push(path);
+        property
+    };
+    vec![
+        path("genDir", gen_dir),
+        path("ndkPath", &ndk.root),
+        format!("-Psapphire.ndkVersion={}", ndk.revision).into(),
+        format!("-Psapphire.applicationId={}", app.bundle_id).into(),
+        format!("-Psapphire.displayName={}", app.display_name).into(),
+        format!("-Psapphire.versionName={}", app.version).into(),
+        format!("-Psapphire.versionCode={}", app.build).into(),
+    ]
 }
 
 /// The Android SDK: `ANDROID_HOME`, else the deprecated `ANDROID_SDK_ROOT`, else Android
@@ -138,7 +216,7 @@ fn default_sdk_dir() -> Option<PathBuf> {
 
 /// Gradle runs on `JAVA_HOME`, or else on the `java` in `PATH`.
 fn require_java() -> anyhow::Result<()> {
-    if env::var_os("JAVA_HOME").is_some() {
+    if env::var_os("JAVA_HOME").is_some_and(|home| !home.is_empty()) {
         return Ok(());
     }
     let java = Command::new("java").arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -189,8 +267,8 @@ impl Ndk {
         Ok(Self { root, revision })
     }
 
-    /// The environment for cross-compiling to Android: cc-rs and CMake (SDL's build fails
-    /// without the NDK's toolchain file) for C and C++, and the linker for rustc.
+    /// The environment for cross-compiling to Android: cc-rs and CMake for C and C++, and
+    /// the linker for rustc.
     fn cargo_env(&self) -> anyhow::Result<Vec<(&'static str, OsString)>> {
         let bin = self.root.join("toolchains/llvm/prebuilt").join(host_tag()?).join("bin");
         let clang = bin.join(format!("{TARGET}{MIN_SDK}-clang"));
@@ -200,15 +278,35 @@ impl Ndk {
         Ok(vec![
             ("ANDROID_NDK_HOME", self.root.clone().into()),
             ("ANDROID_NDK_ROOT", self.root.clone().into()),
-            (
-                "CMAKE_TOOLCHAIN_FILE_aarch64_linux_android",
-                self.root.join("build/cmake/android.toolchain.cmake").into(),
-            ),
+            // SDL's CMake build fails without the NDK's toolchain file.
+            ("CMAKE_TOOLCHAIN_FILE_aarch64_linux_android", self.cmake_toolchain()?.into()),
             ("CC_aarch64_linux_android", clang.clone().into()),
             ("CXX_aarch64_linux_android", clang_cxx),
             ("AR_aarch64_linux_android", bin.join("llvm-ar").into()),
             ("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", clang.into()),
         ])
+    }
+
+    /// A CMake toolchain file that wraps the NDK's to build for [`MIN_SDK`]; the NDK's
+    /// own defaults to its oldest supported API level (21). Written to
+    /// `target/android/cmake/` only when it changes. It keeps the NDK file's name, which is
+    /// how the `cmake` crate recognizes an NDK build. sdl3-sys doesn't rebuild when this
+    /// changes: after an NDK or minSdk change, `cargo clean -p sdl3-sys --target
+    /// aarch64-linux-android`.
+    fn cmake_toolchain(&self) -> anyhow::Result<PathBuf> {
+        let ndk_file = self.root.join("build/cmake/android.toolchain.cmake");
+        let text = format!(
+            "# Generated by cargo xtask (xtask/src/platforms/android.rs).\n\
+             set(ANDROID_PLATFORM android-{MIN_SDK})\n\
+             include(\"{}\")\n",
+            ndk_file.display().to_string().replace('\\', "/")
+        );
+        let path = super::bundle_dir(Platform::Android).join("cmake/android.toolchain.cmake");
+        if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            fs::create_dir_all(path.parent().expect("the path has a parent"))?;
+            fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
+        }
+        Ok(path)
     }
 }
 
@@ -247,7 +345,7 @@ fn build_library(app: &App, ndk: &Ndk, release: bool) -> anyhow::Result<PathBuf>
     let file = library_file(app);
     // `cargo rustc` adds the cdylib crate type for this build only, so desktop and iOS keep
     // linking the crate as an rlib. The soname names the library for Android's loader.
-    let build = CargoBuild { package: app.package, target: Some(TARGET), release, env: &env };
+    let build = CargoBuild { package: &app.package, target: Some(TARGET), release, env: &env };
     let mut command = build.command("rustc");
     command.args(["--lib", "--crate-type", "cdylib", "--", "-C"]);
     command.arg(format!("link-arg=-Wl,-soname,{file}"));
@@ -256,13 +354,12 @@ fn build_library(app: &App, ndk: &Ndk, release: bool) -> anyhow::Result<PathBuf>
     })
 }
 
-/// Replaces `dest` with SDL's Java glue from the `sdl3-src` crate that Cargo.lock pins.
+/// Copies SDL's Java glue from the `sdl3-src` crate that Cargo.lock pins into `dest`.
 fn sync_sdl_java(dest: &Path) -> anyhow::Result<()> {
     let sdl = locked_package("sdl3-src")?;
     let source = sdl.dir.join("SDL/android-project/app/src/main/java/org/libsdl/app");
-    workspace::remove_dir_if_exists(dest)?;
     workspace::copy_dir(&source, dest)?;
-    eprintln!("synced SDL {} Java sources into {}", sdl.version, super::display(dest));
+    eprintln!("copied SDL {} Java sources into {}", sdl.version, super::display(dest));
     Ok(())
 }
 
@@ -286,8 +383,7 @@ fn locked_package(name: &str) -> anyhow::Result<LockedPackage> {
         manifest_path: PathBuf,
     }
 
-    let json = workspace::output(workspace::cargo().args([
-        "metadata",
+    let json = workspace::output(workspace::cargo("metadata").args([
         "--format-version",
         "1",
         "--filter-platform",
@@ -312,25 +408,44 @@ struct Adb {
 }
 
 impl Adb {
-    /// Uses `ANDROID_SERIAL` if set, else the one connected device, else boots [`AVD`].
-    fn connect(sdk: &Path) -> anyhow::Result<Self> {
-        let program = sdk.join("platform-tools/adb");
+    /// Picks the device: `ANDROID_SERIAL` if set, else the one connected device (an
+    /// emulator that is still booting counts), else [`AVD`], reusing an instance that is
+    /// already starting or booting it. Returns once Android has finished booting.
+    fn connect(sdk: &Path, program: PathBuf) -> anyhow::Result<Self> {
         ensure!(program.is_file(), "adb not found; install the SDK's platform-tools");
+        let mut emulator = None;
         let serial = match env::var("ANDROID_SERIAL") {
             Ok(serial) => serial,
             Err(_) => {
-                let devices = online_devices(&workspace::output(Command::new(&program).arg("devices"))?);
-                match devices.as_slice() {
-                    [] => boot_emulator(sdk, &program)?,
-                    [serial] => serial.clone(),
-                    _ => bail!(
-                        "several devices are connected ({}); pick one with ANDROID_SERIAL",
-                        devices.join(", ")
-                    ),
+                let devices = list_devices(&workspace::output(Command::new(&program).arg("devices"))?);
+                let usable: Vec<&Device> = devices.iter().filter(|d| d.usable()).collect();
+                match usable.as_slice() {
+                    [device] => device.serial.clone(),
+                    [] => {
+                        if let Some(device) = devices.iter().find(|d| !d.usable()) {
+                            bail!(
+                                "{} is {}; accept the USB debugging prompt on the device, or set ANDROID_SERIAL",
+                                device.serial,
+                                device.state
+                            );
+                        }
+                        let (serial, child) = start_avd(sdk, &program)?;
+                        emulator = child;
+                        serial
+                    }
+                    _ => {
+                        let serials: Vec<&str> = usable.iter().map(|d| d.serial.as_str()).collect();
+                        bail!(
+                            "several devices are connected ({}); pick one with ANDROID_SERIAL",
+                            serials.join(", ")
+                        )
+                    }
                 }
             }
         };
-        Ok(Self { program, serial })
+        let adb = Self { program, serial };
+        adb.wait_for_boot(emulator)?;
+        Ok(adb)
     }
 
     fn command(&self) -> Command {
@@ -338,23 +453,89 @@ impl Adb {
         command.args(["-s", &self.serial]);
         command
     }
+
+    /// Waits until `sys.boot_completed` is set. `emulator` is the process this run started,
+    /// if any, so its early exit is reported instead of waited out.
+    fn wait_for_boot(&self, mut emulator: Option<(Child, PathBuf)>) -> anyhow::Result<()> {
+        for second in 0..BOOT_TIMEOUT_SECS {
+            if self.boot_completed() {
+                return Ok(());
+            }
+            if second == 0 {
+                eprintln!("waiting for {} to finish booting...", self.serial);
+            }
+            if let Some((child, log)) = &mut emulator
+                && let Some(status) = child.try_wait()?
+            {
+                bail!("the emulator exited during boot ({status}); see {}", log.display());
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+        bail!("{} did not finish booting in {BOOT_TIMEOUT_SECS} s", self.serial)
+    }
+
+    /// Whether `package` still runs as process `pid`.
+    fn is_running(&self, package: &str, pid: &str) -> bool {
+        match self.command().args(["shell", "pidof", package]).stderr(Stdio::null()).output() {
+            // `pidof` prints nothing once the process is gone.
+            Ok(output) => String::from_utf8_lossy(&output.stdout).split_whitespace().any(|p| p == pid),
+            // adb itself didn't start; keep following, and let Ctrl-C end it.
+            Err(_) => true,
+        }
+    }
+
+    fn boot_completed(&self) -> bool {
+        let output =
+            self.command().args(["shell", "getprop", "sys.boot_completed"]).stderr(Stdio::null()).output();
+        output.is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"1")
+    }
 }
 
-/// Serials of the devices `adb devices` lists as ready.
-fn online_devices(adb_devices: &str) -> Vec<String> {
+/// One line of `adb devices`.
+#[derive(Debug, PartialEq, Eq)]
+struct Device {
+    serial: String,
+    /// `device` when ready; `offline` while an emulator boots; `unauthorized`, ...
+    state: String,
+}
+
+impl Device {
+    fn usable(&self) -> bool {
+        self.state == "device" || (self.state == "offline" && self.serial.starts_with("emulator-"))
+    }
+}
+
+fn list_devices(adb_devices: &str) -> Vec<Device> {
     adb_devices
         .lines()
         .skip(1) // "List of devices attached"
-        .filter_map(|line| match line.split_whitespace().collect::<Vec<_>>()[..] {
-            [serial, "device", ..] => Some(serial.to_owned()),
-            _ => None,
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some(Device { serial: fields.next()?.to_owned(), state: fields.next()?.to_owned() })
         })
         .collect()
 }
 
-/// Boots [`AVD`] headless and waits until Android has finished booting. The emulator keeps
-/// running after xtask exits, for the next run.
-fn boot_emulator(sdk: &Path, adb: &Path) -> anyhow::Result<String> {
+/// Returns the serial of the emulator running [`AVD`], starting one if none is. An
+/// emulator that already holds the AVD's lock but hasn't reached `adb devices` yet is
+/// waited for: a second instance would fail on the lock. Also returns the process this
+/// call started, with its log, if any.
+fn start_avd(sdk: &Path, adb: &Path) -> anyhow::Result<(String, Option<(Child, PathBuf)>)> {
+    if avd_dir()?.join("hardware-qemu.ini.lock").exists() {
+        eprintln!("an emulator for {AVD} is already starting; waiting for it");
+        for _ in 0..REGISTER_TIMEOUT_SECS {
+            if let Some(serial) = find_avd(adb)? {
+                return Ok((serial, None));
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+        bail!(
+            "{AVD} is locked ({}) but no emulator for it reached adb in {REGISTER_TIMEOUT_SECS} s; if \
+             none is running, delete the lock file",
+            avd_dir()?.join("hardware-qemu.ini.lock").display()
+        );
+    }
+
     let emulator = sdk.join("emulator/emulator");
     let avds = workspace::output(Command::new(&emulator).arg("-list-avds"))
         .context("the Android emulator is not installed")?;
@@ -369,8 +550,8 @@ fn boot_emulator(sdk: &Path, adb: &Path) -> anyhow::Result<String> {
     let log_path = dir.join("emulator.log");
     let log = File::create(&log_path).with_context(|| format!("failed to create {}", log_path.display()))?;
     let mut command = Command::new(&emulator);
-    // `host` gives the guest hardware Vulkan, also headless: gfxstream over the host's Vulkan
-    // (MoltenVK on macOS). `auto` would pick the lavapipe software renderer when headless.
+    // Headless, always. `host` gives the guest hardware Vulkan: gfxstream over the host's
+    // Vulkan (MoltenVK on macOS). `auto` would pick the lavapipe software renderer.
     command.args(["-avd", AVD, "-no-window", "-gpu", "host", "-no-audio", "-no-boot-anim"]);
     command.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     // Its own process group, so Ctrl-C on the logcat stream leaves the emulator running.
@@ -379,42 +560,70 @@ fn boot_emulator(sdk: &Path, adb: &Path) -> anyhow::Result<String> {
     eprintln!("no device connected; booting {AVD} headless (log: {})", super::display(&log_path));
     let mut child = command.spawn().context("failed to start the emulator")?;
 
-    for _ in 0..BOOT_TIMEOUT_SECS {
+    for _ in 0..REGISTER_TIMEOUT_SECS {
         if let Some(status) = child.try_wait()? {
-            bail!("the emulator exited during boot ({status}); see {}", log_path.display());
+            bail!("the emulator exited during startup ({status}); see {}", log_path.display());
         }
-        let devices = online_devices(&workspace::output(Command::new(adb).arg("devices"))?);
-        if let Some(serial) = devices.into_iter().find(|serial| boot_completed(adb, serial)) {
-            return Ok(serial);
+        if let Some(serial) = find_avd(adb)? {
+            return Ok((serial, Some((child, log_path))));
         }
         thread::sleep(Duration::from_secs(1));
     }
-    bail!("the emulator did not finish booting in {BOOT_TIMEOUT_SECS} s; see {}", log_path.display())
+    bail!("the emulator did not reach adb in {REGISTER_TIMEOUT_SECS} s; see {}", log_path.display())
 }
 
-fn boot_completed(adb: &Path, serial: &str) -> bool {
-    let output = Command::new(adb)
-        .args(["-s", serial, "shell", "getprop", "sys.boot_completed"])
-        .stderr(Stdio::null())
-        .output();
-    output.is_ok_and(|output| output.status.success() && output.stdout.trim_ascii() == b"1")
+/// The serial of an emulator in `adb devices`, booting or booted, that runs [`AVD`].
+fn find_avd(adb: &Path) -> anyhow::Result<Option<String>> {
+    let devices = list_devices(&workspace::output(Command::new(adb).arg("devices"))?);
+    Ok(devices.into_iter().filter(|d| d.serial.starts_with("emulator-")).map(|d| d.serial).find(|serial| {
+        // The emulator console answers before adbd does, so this works while booting.
+        let name =
+            Command::new(adb).args(["-s", serial, "emu", "avd", "name"]).stderr(Stdio::null()).output();
+        name.is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout).lines().next().map(str::trim) == Some(AVD)
+        })
+    }))
 }
 
-/// `am start --esa` takes one comma-separated argument. Commas inside elements are escaped,
-/// and `SandboxActivity` unescapes them.
-fn string_array_extra(args: &[String]) -> String {
-    args.iter().map(|arg| arg.replace(',', r"\,")).collect::<Vec<_>>().join(",")
+/// Where the emulator keeps [`AVD`]: `$ANDROID_AVD_HOME`, `$ANDROID_USER_HOME/avd` or
+/// `~/.android/avd`.
+fn avd_dir() -> anyhow::Result<PathBuf> {
+    let home = env::var_os("ANDROID_AVD_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("ANDROID_USER_HOME").map(|home| PathBuf::from(home).join("avd")))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".android/avd")))
+        .context("HOME is not set")?;
+    Ok(home.join(format!("{AVD}.avd")))
 }
 
-/// Quotes `arg` for the device's shell, which runs the command line `adb shell` sends.
-fn shell_quote(arg: &str) -> String {
-    format!("'{}'", arg.replace('\'', r"'\''"))
+/// Encodes launch arguments for [`ARGS_EXTRA`]: JSON keeps every argument intact (empty
+/// ones and trailing backslashes included), and base64 keeps it clear of the device
+/// shell's and `am`'s quoting rules.
+fn encode_args(args: &[String]) -> String {
+    base64(serde_json::to_string(args).expect("strings serialize").as_bytes())
+}
+
+/// Standard base64 with padding (RFC 4648 §4), as `android.util.Base64.DEFAULT` decodes it.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let bits = chunk.iter().enumerate().fold(0u32, |bits, (i, &b)| bits | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                char::from(ALPHABET[(bits >> (18 - 6 * i) & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platforms::SANDBOX;
+    use crate::platforms::test_app;
 
     #[test]
     fn picks_the_newest_ndk_numerically() {
@@ -427,37 +636,75 @@ mod tests {
     fn reads_the_ndk_revision() {
         let properties = "Pkg.Desc = Android NDK\nPkg.Revision = 29.0.14206865\nPkg.ReleaseName = r29\n";
         assert_eq!(ndk_revision(properties), Some("29.0.14206865"));
+        assert_eq!(ndk_revision("Pkg.Desc = Android NDK\r\nPkg.Revision = 28.2.1\r\n"), Some("28.2.1"));
         assert_eq!(ndk_revision("Pkg.Desc = Android NDK\n"), None);
     }
 
     #[test]
-    fn lists_only_ready_devices() {
-        let listing = "List of devices attached\nemulator-5554\tdevice\nR5CT\tunauthorized\n\
-                       0A1\tdevice product:x model:Pixel_8\n\n";
-        assert_eq!(online_devices(listing), ["emulator-5554", "0A1"]);
-        assert!(online_devices("List of devices attached\n\n").is_empty());
+    fn treats_booting_emulators_as_devices() {
+        let listing = "List of devices attached\nemulator-5554\toffline\nR5CT\tunauthorized\n\
+                       0A1\tdevice product:x model:Pixel_8\n0B2\toffline\n\n";
+        let devices = list_devices(listing);
+        let usable: Vec<&str> = devices.iter().filter(|d| d.usable()).map(|d| d.serial.as_str()).collect();
+        assert_eq!(usable, ["emulator-5554", "0A1"]);
+        assert_eq!(devices.len(), 4);
+        assert!(list_devices("List of devices attached\n\n").is_empty());
     }
 
     #[test]
-    fn quotes_launch_arguments() {
-        let args = ["--frames", "120", "a,b", "it's"].map(String::from);
-        let extra = string_array_extra(&args);
-        assert_eq!(extra, r"--frames,120,a\,b,it's");
-        assert_eq!(shell_quote(&extra), r"'--frames,120,a\,b,it'\''s'");
+    fn encodes_base64() {
+        let cases = [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")];
+        for (input, encoded) in cases {
+            assert_eq!(base64(input.as_bytes()), encoded);
+        }
+        assert_eq!(base64(&[0xfb, 0xff]), "+/8=");
     }
 
     #[test]
-    fn gradle_project_matches_the_app() {
+    fn launch_arguments_round_trip() {
+        let args = ["--frames", "120", "a,b", "it's", "", r"trailing\", "ünï"].map(String::from);
+        let encoded = encode_args(&args);
+        assert!(encoded.chars().all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)));
+        // What SandboxActivity does: base64 → UTF-8 → JSON array of strings.
+        let json = decode_base64(&encoded);
+        assert_eq!(serde_json::from_slice::<Vec<String>>(&json).unwrap(), args);
+    }
+
+    fn decode_base64(text: &str) -> Vec<u8> {
+        const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let sextets: Vec<u32> =
+            text.trim_end_matches('=').chars().map(|c| ALPHABET.find(c).unwrap() as u32).collect();
+        sextets
+            .chunks(4)
+            .flat_map(|chunk| {
+                let bits = chunk.iter().enumerate().fold(0, |bits, (i, s)| bits | s << (18 - 6 * i));
+                (0..chunk.len() - 1).map(move |i| (bits >> (16 - 8 * i)) as u8)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gradle_project_matches_xtask() {
         let gradle = include_str!("../../../platform/android/app/build.gradle.kts");
         let activity = include_str!(
             "../../../platform/android/app/src/main/java/dev/sapphire/sandbox/SandboxActivity.java"
         );
-        assert!(gradle.contains(&format!("applicationId = \"{}\"", SANDBOX.bundle_id)));
+        let manifest = include_str!("../../../platform/android/app/src/main/AndroidManifest.xml");
         assert!(gradle.contains(&format!("minSdk = {MIN_SDK} ")));
         assert!(gradle.contains(&format!("abiFilters += \"{ABI}\"")));
-        assert!(activity.contains(&format!("new String[] {{\"{}\"}}", SANDBOX.package)));
+        for name in
+            ["genDir", "ndkPath", "ndkVersion", "applicationId", "displayName", "versionName", "versionCode"]
+        {
+            assert!(
+                gradle.contains(&format!("sapphire(\"{name}\")")),
+                "build.gradle.kts doesn't read {name}"
+            );
+        }
+        let app = test_app();
+        assert!(activity.contains(&format!("new String[] {{\"{}\"}}", app.package)));
         assert!(activity.contains(&format!("EXTRA_ARGS = \"{ARGS_EXTRA}\"")));
-        let manifest = include_str!("../../../platform/android/app/src/main/AndroidManifest.xml");
-        assert!(manifest.contains(&format!("android:name=\"{ACTIVITY}\"")));
+        let (namespace, class) = ACTIVITY.rsplit_once('.').unwrap();
+        assert!(gradle.contains(&format!("namespace = \"{namespace}\"")));
+        assert!(manifest.contains(&format!("android:name=\".{class}\"")));
     }
 }

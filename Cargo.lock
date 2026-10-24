@@ -1801,6 +1801,7 @@ dependencies = [
 name = "sapphire_core"
 version = "0.1.0"
 dependencies = [
+ "mimalloc",
  "thiserror",
  "tracing",
  "tracing-log",
@@ -1875,6 +1876,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "image",
+ "pollster",
  "profiling",
  "sapphire_assets",
  "sapphire_rhi",
@@ -1889,6 +1891,7 @@ version = "0.1.0"
 dependencies = [
  "objc2-quartz-core",
  "pollster",
+ "profiling",
  "raw-window-handle",
  "thiserror",
  "tracing",
@@ -1900,7 +1903,7 @@ dependencies = [
 name = "sapphire_sandbox"
 version = "0.1.0"
 dependencies = [
- "mimalloc",
+ "png",
  "profiling",
  "sapphire_assets",
  "sapphire_core",

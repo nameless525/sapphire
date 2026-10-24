@@ -1,9 +1,17 @@
 # Per-PR checks (spec §8, quality gate 1 in §9). Nightly cooks, golden images, replays
 # and device runs join as those systems land.
 #
-# The toolchain, its components and all seven targets come from rust-toolchain.toml via
-# `rustup toolchain install`, so the pinned version lives in one place. Actions are
-# pinned to commit SHAs; the comment names the release.
+# The toolchain, its components and its targets come from rust-toolchain.toml via
+# `rustup toolchain install`, so the pinned version lives in one place. That file can't
+# name a per-job subset of targets, so every job installs all seven standard libraries
+# (a few seconds each). Actions are pinned to commit SHAs, with the release in a comment;
+# Dependabot (.github/dependabot.yml) keeps them current. Runner images are pinned too, so
+# an image migration is a deliberate change here, not a surprise.
+#
+# Minimum OS versions come from .cargo/config.toml [env], which every cargo call reads.
+#
+# `cargo --locked xtask --locked …`: the first flag locks the build of xtask itself, the
+# second makes xtask pass --locked to every cargo command it runs.
 
 name: CI
 
@@ -24,10 +32,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: short
-  # Minimum OS versions (spec §2); SDL's CMake build otherwise targets the SDK version.
-  # Ignored on non-Apple targets. xtask sets the same values for local builds.
-  MACOSX_DEPLOYMENT_TARGET: "14.0"
-  IPHONEOS_DEPLOYMENT_TARGET: "17.0"
   # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
   # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.
   SDL3_LINUX_DEPS: >-
@@ -38,11 +42,16 @@ env:
     libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev
     libthai-dev libusb-1.0-0-dev libpipewire-0.3-dev libwayland-dev libdecor-0-dev
     liburing-dev
+  # The C and C++ dependencies (SDL, mimalloc, Tracy) build differently per runner image
+  # and macOS SDK, so both join rust-cache's key on top of its defaults. The `env` context
+  # doesn't see runner variables such as ImageOS, so they go in by name rather than `key:`.
+  RUST_CACHE_ENV_VARS: CARGO CC CFLAGS CXX CMAKE RUST ImageOS SDKROOT
 
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
@@ -50,12 +59,17 @@ jobs:
       - name: Install Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Optional features (`tracy`, `sentry`, `mimalloc`) only compile when enabled.
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Crate layering (R1, R8)
-        run: cargo xtask check-layers
+        run: cargo --locked xtask --locked check-layers
       - name: Licenses, bans, advisories, sources
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -66,27 +80,42 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux binaries built on ubuntu-24.04 need its glibc (2.39). Spec §2's floor is
+        # Ubuntu 22.04-era glibc, so `xtask package` (M4) must build Linux releases in an
+        # older sysroot, such as the Steam Runtime SDK container.
+        os: [ubuntu-24.04, macos-26, windows-2025]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
+      # SDL's CMake build for macOS needs the SDK named explicitly with some Xcode and
+      # Command Line Tools combinations; cargo xtask does the same locally.
+      - name: Select the macOS SDK
+        if: runner.os == 'macOS'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
       - name: Install Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
       - name: Test
         run: cargo test --workspace --locked
 
   mobile-build-ios:
     name: Mobile build (iOS)
-    runs-on: macos-latest
+    runs-on: macos-26
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (rust-toolchain.toml)
         run: rustup toolchain install
+      # No SDKROOT here: these builds target the iOS SDKs, which cargo and CMake pick.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
       - name: Build for device
         run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --locked
       - name: Build for simulator
@@ -94,26 +123,25 @@ jobs:
 
   mobile-build-android:
     name: Mobile build (Android)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # NDK r28+ is needed for 16 KB page alignment (spec §6.7).
-      - name: Install Android NDK
-        id: setup-ndk
-        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
-        with:
-          ndk-version: r29
-          add-to-path: false
       - name: Install Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # xtask's cargo builds can't take --locked, so check the lockfile up front.
-      - name: Check Cargo.lock
-        run: cargo fetch --locked
-      # The NDK environment, the cdylib build, the mobile cook and the Gradle build all live
-      # in xtask (spec §7.3). The runner image provides the Android SDK in ANDROID_HOME.
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+      # Validates the committed Gradle wrapper and caches Gradle's downloads. The basic
+      # (MIT) cache provider: the default one is proprietary and a preview for private repos.
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-provider: basic
+      # xtask owns the NDK environment, the cdylib build, the mobile cook and the Gradle
+      # build (spec §7.3). The image provides the SDK (ANDROID_HOME), JDK 17 and NDK r29.
+      # Its default ANDROID_NDK_HOME is r27, older than the r28+ that 16 KB page alignment
+      # needs (spec §6.7), so point at the preinstalled r29 that local builds use.
       - name: Bundle the APK
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
-        run: cargo xtask bundle --platform android
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
+          cargo --locked xtask --locked bundle --platform android

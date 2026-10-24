@@ -7,35 +7,64 @@
 //!   world types (rule R4); M1 replaces `FrameView` with the extracted `FramePacket` (§4.6).
 //! - Persistent GPU scene buffers: a mesh pool (shared vertex and index buffers), a material
 //!   buffer indexed by material ID, and per-frame instance and draw-record buffers.
-//! - The toon pipelines: sky gradient, two-tone toon opaque, inverted-hull outline.
+//! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
 //!
 //! # Does not own
 //!
-//! - Devices, surfaces and presentation: `sapphire_rhi`.
+//! - Devices, surfaces, submission and presentation: `sapphire_rhi` and the app. The renderer
+//!   records into the app's command encoder ([`Renderer::prepare`], [`Renderer::record`]).
 //! - Mesh cooking: meshes arrive as [`sapphire_assets::mesh::MeshAsset`] with smoothed
 //!   outline normals already baked.
-//!
-//! # Submission paths
-//!
-//! Every draw reads its draw record (instance and material) through a draw ID delivered as an
-//! instance-step vertex attribute, never through `instance_index`. That allows two
-//! submission strategies over the same shaders:
-//!
-//! - **CPU-driven (M0, portable everywhere):** one `draw_indexed` per draw with
-//!   `base_vertex = 0` (mesh-pool indices are absolute) and instances `0..1`, selecting the
-//!   draw ID by vertex-buffer offset. It needs no base-vertex or first-instance support, so it
-//!   runs on the iOS Simulator.
-//! - **GPU-driven (later, desktop first):** GPU culling writes multi-draw-indirect records whose
-//!   `first_instance` is the draw ID. Gated on `GpuCaps::multi_draw_indirect`.
 //!
 //! # Conventions
 //!
 //! - Right-handed world, Y up. Reverse-Z depth with an infinite far plane: depth 1 at the near
 //!   plane, 0 at infinity, cleared to 0 and tested with `Greater` (better float precision).
 //! - Shading is linear; the sRGB target format encodes on write. No HDR or tonemapping in M0.
+//! - Outline widths (`ToonMaterialParams::params.w`) are pixels at a 1080-pixel-high target.
+//!
+//! # Submission paths
+//!
+//! Mesh indices are mesh-relative, and every draw reads its draw record (instance and
+//! material) as an instance-step vertex attribute, never through `instance_index`. The same
+//! shaders therefore serve two submission strategies:
+//!
+//! - **CPU-driven (M0, portable everywhere):** one `draw_indexed` per draw with
+//!   `base_vertex = 0` and instances `0..1`. The mesh's vertices and the draw record are
+//!   selected by vertex-buffer offsets. It needs no base-vertex or first-instance support, so
+//!   it runs on the iOS Simulator.
+//! - **GPU-driven (later, desktop first):** GPU culling writes multi-draw-indirect records
+//!   whose `base_vertex` is the mesh's first vertex and whose `first_instance` is the draw
+//!   record. Gated on `GpuCaps::multi_draw_indirect`.
+//!
+//! # Binding budget
+//!
+//! | Group | Binding | Stages | Contents | Written |
+//! |---|---|---|---|---|
+//! | 0 frame | uniform | vertex, fragment | sun, sky, time | `prepare` |
+//! | 1 view | uniform, dynamic offset | vertex, fragment | matrices, camera, viewport | `record` |
+//! | 2 scene | 0: storage | vertex | instance transforms | `prepare` |
+//! | 2 scene | 1: storage | vertex, fragment | toon materials | mesh upload |
+//! | 3 | — | — | material textures (M1) | — |
+//!
+//! Vertex buffers: slot 0 is the mesh pool, slot 1 the draw records.
+//!
+//! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
+//! (see `sapphire_rhi`): vertex 2, fragment 1. M1 clustered lighting adds a light buffer and
+//! one cluster buffer (grid and index lists packed together) to the fragment stage, which
+//! leaves one spare per stage. Compute skinning writes vertex buffers and adds nothing to the
+//! vertex stage. Draw records are vertex data rather than a third vertex-stage storage buffer
+//! for this reason.
+//!
+//! # Later milestones
+//!
+//! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; a
+//!   persistent staging ring in place of `Queue::write_buffer`; persistent instances updated
+//!   from extract deltas; pipeline/material/mesh draw sorting; the frame graph.
+//! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
+//!   on a real phone first (spec open question Q14).
 
 mod buffer;
-mod draw_ids;
 mod frame;
 mod gpu_types;
 mod mesh_pool;
@@ -46,7 +75,7 @@ mod shaders;
 
 pub use frame::{CameraData, DirectionalLight, FrameView, MeshInstance, SkyGradient};
 pub use mesh_pool::MeshHandle;
-pub use renderer::{Msaa, RenderError, RenderSettings, Renderer};
+pub use renderer::{Msaa, RenderError, RenderSettings, RenderStats, Renderer};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

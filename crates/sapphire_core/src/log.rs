@@ -162,13 +162,8 @@ where
 pub fn init(config: LogConfig, sink: Option<Box<dyn LogSink>>) -> Result<(), LogInitError> {
     let sapphire_log = non_empty_env(FILTER_ENV);
     let rust_log = non_empty_env(FALLBACK_FILTER_ENV);
-    let (directives, origin) =
-        resolve_filter(&config.default_filter, sapphire_log.as_deref(), rust_log.as_deref());
-    let filter = EnvFilter::try_new(directives).map_err(|error| LogInitError::InvalidFilter {
-        origin,
-        filter: directives.to_owned(),
-        error,
-    })?;
+    let selected = select_filter(&config.default_filter, sapphire_log.as_deref(), rust_log.as_deref())?;
+    let SelectedFilter { filter, directives, origin, rejected } = selected;
 
     let stderr = config
         .stderr
@@ -185,12 +180,61 @@ pub fn init(config: LogConfig, sink: Option<Box<dyn LogSink>>) -> Result<(), Log
             "another `log` logger is installed; records from the `log` crate are not captured"
         );
     }
+    if let Some(rejected) = rejected {
+        tracing::warn!(
+            target: "sapphire::core",
+            origin = %rejected.origin,
+            filter = rejected.directives,
+            error = %rejected.error,
+            "ignoring an invalid log filter; using the default"
+        );
+    }
     tracing::debug!(target: "sapphire::core", filter = directives, %origin, "logging initialized");
     Ok(())
 }
 
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|value| !value.trim().is_empty())
+}
+
+/// The filter [`init`] installs, and the environment filter it had to reject, if any.
+struct SelectedFilter<'a> {
+    filter: EnvFilter,
+    directives: &'a str,
+    origin: FilterSource,
+    rejected: Option<RejectedFilter<'a>>,
+}
+
+struct RejectedFilter<'a> {
+    origin: FilterSource,
+    directives: &'a str,
+    error: ParseError,
+}
+
+/// Parses the filter chosen by [`resolve_filter`]. A malformed environment filter falls back
+/// to the default, so a typo in `SAPPHIRE_LOG` can't leave the process without any logging (or
+/// silence crash-capture warnings); only an invalid default is an error.
+fn select_filter<'a>(
+    default: &'a str,
+    sapphire_log: Option<&'a str>,
+    rust_log: Option<&'a str>,
+) -> Result<SelectedFilter<'a>, LogInitError> {
+    let invalid_default = |error| LogInitError::InvalidFilter {
+        origin: FilterSource::Default,
+        filter: default.to_owned(),
+        error,
+    };
+    let (directives, origin) = resolve_filter(default, sapphire_log, rust_log);
+    match EnvFilter::try_new(directives) {
+        Ok(filter) => Ok(SelectedFilter { filter, directives, origin, rejected: None }),
+        Err(error) if origin == FilterSource::Default => Err(invalid_default(error)),
+        Err(error) => Ok(SelectedFilter {
+            filter: EnvFilter::try_new(default).map_err(invalid_default)?,
+            directives: default,
+            origin: FilterSource::Default,
+            rejected: Some(RejectedFilter { origin, directives, error }),
+        }),
+    }
 }
 
 /// Applies the `SAPPHIRE_LOG` → `RUST_LOG` → default precedence.
@@ -330,6 +374,23 @@ mod tests {
         assert_eq!(resolve_filter("info", None, None), ("info", FilterSource::Default));
         assert_eq!(resolve_filter("info", None, Some("warn")), ("warn", FilterSource::RustLog));
         assert_eq!(resolve_filter("info", Some("trace"), Some("warn")), ("trace", FilterSource::SapphireLog));
+    }
+
+    #[test]
+    fn invalid_environment_filter_falls_back_to_the_default() {
+        let selected = select_filter("info", Some("sapphire=nonsense["), None).unwrap();
+        assert_eq!((selected.directives, selected.origin), ("info", FilterSource::Default));
+        let rejected = selected.rejected.expect("the bad filter is reported");
+        assert_eq!((rejected.origin, rejected.directives), (FilterSource::SapphireLog, "sapphire=nonsense["));
+
+        let valid = select_filter("info", None, Some("warn")).unwrap();
+        assert_eq!((valid.directives, valid.origin), ("warn", FilterSource::RustLog));
+        assert!(valid.rejected.is_none());
+
+        assert!(matches!(
+            select_filter("nonsense[", None, None),
+            Err(LogInitError::InvalidFilter { origin: FilterSource::Default, .. })
+        ));
     }
 
     #[test]

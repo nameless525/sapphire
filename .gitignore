@@ -3,10 +3,8 @@
 *.profraw
 .DS_Store
 
-# Platform build outputs
+# Gradle's own state and outputs. xtask generates the Android project's inputs under
+# target/android/gen/, outside the source tree.
 /platform/android/.gradle
 /platform/android/**/build
 /platform/android/local.properties
-/platform/android/app/src/main/jniLibs
-/platform/android/app/src/main/assets/content
-/platform/android/app/src/main/java/org/libsdl

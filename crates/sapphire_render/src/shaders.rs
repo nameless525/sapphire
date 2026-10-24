@@ -22,8 +22,8 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
-    use crate::gpu_types::{DrawData, FrameUniforms, InstanceData};
-    use crate::pipelines::{DRAW_ID_ATTRIBUTES, MESH_VERTEX_ATTRIBUTES};
+    use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
+    use crate::pipelines::{DRAW_ATTRIBUTES, MESH_VERTEX_ATTRIBUTES};
 
     const PASSES: [(&str, &str, [&str; 2]); 3] = [
         ("sky", SKY, ["vs_sky", "fs_sky"]),
@@ -90,7 +90,7 @@ mod tests {
     fn vertex_inputs_match_rust_vertex_layouts() {
         let expected: BTreeMap<u32, naga::TypeInner> = MESH_VERTEX_ATTRIBUTES
             .iter()
-            .chain(&DRAW_ID_ATTRIBUTES)
+            .chain(&DRAW_ATTRIBUTES)
             .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
             .collect();
         for (name, source, [vertex_entry, _]) in PASSES {
@@ -115,8 +115,8 @@ mod tests {
         layouter.update(module.to_ctx()).expect("layout");
         let expected = [
             ("FrameUniforms", size_of::<FrameUniforms>()),
+            ("ViewUniforms", size_of::<ViewUniforms>()),
             ("InstanceData", size_of::<InstanceData>()),
-            ("DrawData", size_of::<DrawData>()),
             ("ToonMaterial", size_of::<ToonMaterialParams>()),
         ];
         for (name, rust_size) in expected {

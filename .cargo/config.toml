@@ -1,7 +1,18 @@
 [alias]
 xtask = "run --quiet --package xtask --"
 
-# Google Play requires 16 KB page-aligned native libraries (spec §6.7, open question Q2).
+# Minimum OS versions (spec §2), for rustc and for the C/C++ dependencies cc-rs and CMake
+# build (SDL). They must match LSMinimumSystemVersion / MinimumOSVersion in
+# platform/{macos,ios}/Info.plist, which `cargo xtask bundle` verifies. Forced so every
+# cargo invocation agrees: sdl3-sys doesn't rerun when these change, so a mismatch would
+# leave a stale SDL build (`cargo clean -p sdl3-sys` recovers).
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = true }
+IPHONEOS_DEPLOYMENT_TARGET = { value = "17.0", force = true }
+
+# Google Play requires 16 KB page-aligned native libraries (spec §6.7). NDK r28+ already
+# links that way by default (open question Q2, verified with r29); the flag keeps the
+# guarantee explicit.
 [target.aarch64-linux-android]
 rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 

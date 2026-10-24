@@ -1,4 +1,4 @@
-// Pass 2: toon opaque. A two-tone light split with an authored shadow color, an N·V rim and
+// Pass 1: toon opaque. A two-tone light split with an authored shadow color, an N·V rim and
 // a small sky ambient term.
 //
 // The fragment shader is split into the stages M1 extends:
@@ -25,12 +25,11 @@ struct ToonVaryings {
 }
 
 @vertex
-fn vs_toon(vertex: MeshVertex, @location(5) draw_id: u32) -> ToonVaryings {
-    let draw = draws[draw_id];
+fn vs_toon(vertex: MeshVertex, draw: DrawRecord) -> ToonVaryings {
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(vertex.position, 1.0);
     var out: ToonVaryings;
-    out.clip_position = frame.view_proj * world_position;
+    out.clip_position = view.clip_from_world * world_position;
     out.world_position = world_position.xyz;
     out.world_normal = instance.normal_from_object * vertex.normal;
     out.uv = vertex.uv;
@@ -86,7 +85,7 @@ fn fs_toon(in: ToonVaryings) -> @location(0) vec4<f32> {
     var surface: ToonSurface;
     surface.albedo = material.base_color.rgb * in.tint;
     surface.normal = safe_normalize(in.world_normal);
-    surface.view_dir = safe_normalize(frame.camera_position.xyz - in.world_position);
+    surface.view_dir = safe_normalize(view.position.xyz - in.world_position);
     surface.shadow_bias = 0.0;
 
     let lit = toon_light_split(surface, material);

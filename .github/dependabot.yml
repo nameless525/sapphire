@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned actions in .github/workflows current. Cargo dependencies are
+# updated deliberately (spec Appendix A) and checked by cargo-deny, so they are not listed.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

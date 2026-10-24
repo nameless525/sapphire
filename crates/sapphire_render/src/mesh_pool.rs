@@ -1,10 +1,11 @@
 //! The mesh pool (spec §5.12): every mesh lives in one shared vertex buffer and one shared
-//! index buffer, and every material in one storage buffer indexed by material ID. Draws never
-//! rebind geometry, which is also what multi-draw indirect needs later.
+//! index buffer, and every material in one storage buffer indexed by material ID.
 //!
-//! Indices are rebased to absolute pool positions at upload, so every draw uses
-//! `base_vertex = 0`. That keeps the CPU-driven path portable to devices without base-vertex
-//! drawing, notably the iOS Simulator (see the crate docs).
+//! Indices stay mesh-relative, exactly as cooked. A draw locates its mesh's vertices by
+//! binding the vertex buffer at the mesh's first vertex (the CPU-driven path, which needs no
+//! base-vertex support and so runs on the iOS Simulator) or, on the future GPU-driven path,
+//! through `base_vertex`. Relative indices also let M1 skin into per-instance vertex buffers
+//! and compact the pool without rewriting indices.
 
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, ToonMaterialParams};
 use sapphire_rhi::wgpu;
@@ -16,10 +17,9 @@ const VERTEX_BYTES: u64 = size_of::<MeshVertex>() as u64;
 const INDEX_BYTES: u64 = size_of::<u32>() as u64;
 const MATERIAL_BYTES: u64 = size_of::<ToonMaterialParams>() as u64;
 
-/// Rebased indices are absolute, so the pool stays below 2^24 vertices: Vulkan devices without
-/// `fullDrawIndexUint32` (some Vulkan 1.1 phones) only guarantee index values up to 2^24 − 1.
-/// The 256 MiB buffer-size floor already caps the pool at about 5.6 M vertices.
-const MAX_POOL_VERTICES: u32 = 1 << 24;
+/// Vulkan devices without `fullDrawIndexUint32` (some Vulkan 1.1 phones) only guarantee
+/// index values up to 2^24 − 1, which caps a single mesh (not the pool).
+const MAX_MESH_VERTICES: usize = 1 << 24;
 
 /// A mesh uploaded with [`crate::Renderer::upload_mesh`]. Only meaningful to the renderer
 /// that returned it. Meshes are never unloaded in M0; residency arrives with the asset
@@ -46,9 +46,11 @@ pub(crate) struct SubmeshDraw {
     pub material: u32,
 }
 
-/// Where a mesh lives in the pool. Its indices are already absolute, so no base vertex.
+/// Where a mesh lives in the pool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MeshRecord {
+    /// Pool position of the mesh's vertex 0, which its indices are relative to.
+    pub first_vertex: u32,
     pub submeshes: Vec<SubmeshDraw>,
 }
 
@@ -110,10 +112,10 @@ impl MeshPool {
                 .and_then(|added| current.checked_add(added))
                 .ok_or(RenderError::MeshPoolFull(what))
         };
-        let vertex_count = grow(self.vertex_count, mesh.vertices.len(), "vertices")?;
-        if vertex_count > MAX_POOL_VERTICES {
-            return Err(RenderError::MeshPoolFull("vertices"));
+        if mesh.vertices.len() > MAX_MESH_VERTICES {
+            return Err(RenderError::MeshTooLarge { vertices: mesh.vertices.len() });
         }
+        let vertex_count = grow(self.vertex_count, mesh.vertices.len(), "vertices")?;
         let index_count = grow(self.index_count, mesh.indices.len(), "indices")?;
         let material_count = grow(self.material_count, mesh.materials.len(), "materials")?;
         let handle =
@@ -139,14 +141,11 @@ impl MeshPool {
         );
 
         write(queue, self.vertices.buffer(), vertex_offset, bytemuck::cast_slice(&mesh.vertices));
-        // Validation guarantees every index is below the mesh's vertex count, and the pool
-        // total is below MAX_POOL_VERTICES, so the addition can't overflow.
-        let first_vertex = self.vertex_count;
-        let rebased: Vec<u32> = mesh.indices.iter().map(|&index| index + first_vertex).collect();
-        write(queue, self.indices.buffer(), index_offset, bytemuck::cast_slice(&rebased));
+        write(queue, self.indices.buffer(), index_offset, bytemuck::cast_slice(&mesh.indices));
         write(queue, self.materials.buffer(), material_offset, bytemuck::cast_slice(&mesh.materials));
 
         self.records.push(MeshRecord {
+            first_vertex: self.vertex_count,
             submeshes: mesh
                 .submeshes
                 .iter()
@@ -177,6 +176,18 @@ impl MeshPool {
 
     pub(crate) fn material_buffer(&self) -> &wgpu::Buffer {
         self.materials.buffer()
+    }
+
+    /// Bytes in use: vertices, indices and materials.
+    pub(crate) fn bytes_used(&self) -> u64 {
+        u64::from(self.vertex_count) * VERTEX_BYTES
+            + u64::from(self.index_count) * INDEX_BYTES
+            + u64::from(self.material_count) * MATERIAL_BYTES
+    }
+
+    /// Times any pool buffer grew.
+    pub(crate) fn growths(&self) -> u32 {
+        self.vertices.growths() + self.indices.growths() + self.materials.growths()
     }
 }
 

@@ -39,11 +39,11 @@ allow = [
     "Unicode-3.0",
     "Unlicense",
     "Zlib",
-    # File-level copyleft: modified MPL files must stay MPL and be published, but the
-    # rest of the game is unaffected. Expected for ozz-animation-rs, which we vendor
-    # (Appendix A); keep MPL code in its own files.
-    "MPL-2.0",
 ]
+# No MPL-2.0 crate is in the tree today, so MPL is not allowed globally. Vendored MPL crates
+# (ozz-animation-rs, Appendix A) get a per-crate entry in `exceptions` below. MPL-2.0 §3.2
+# then obliges us to offer the source of those files with every binary we ship, modified
+# or not; keep MPL code in its own files.
 confidence-threshold = 0.93
 # The allow-list is policy, not an inventory of what is in the tree today.
 unused-allowed-license = "allow"
@@ -78,6 +78,11 @@ deny = [
     { crate = "physx-rs", reason = "archived; physics is rapier with Jolt as the escape hatch" },
     { crate = "specs", reason = "dead ECS; use bevy_ecs" },
     { crate = "legion", reason = "dead ECS; use bevy_ecs" },
+    # TLS: rustls with the ring provider and bundled roots only (Cargo.toml, `ureq`), so mobile
+    # and Windows builds need no system TLS library and no extra C toolchain.
+    { crate = "openssl-sys", reason = "system OpenSSL: absent on iOS and Android, a C build everywhere; use rustls" },
+    { crate = "native-tls", reason = "platform TLS stacks differ per OS; use rustls" },
+    { crate = "aws-lc-sys", reason = "needs CMake, NASM on Windows and a C toolchain per target; rustls uses ring" },
 ]
 skip = []
 skip-tree = []

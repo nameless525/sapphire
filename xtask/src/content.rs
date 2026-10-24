@@ -2,14 +2,16 @@
 //! the pipeline binary (spec §5.27, §7.4).
 //!
 //! Every run recooks everything into a fresh directory; the content-hash cache and
-//! `--only` arrive in M1.
+//! `--only` arrive in M1. A lock file per cook keeps concurrent xtask runs from deleting
+//! content another run is still copying or running against.
 
 use std::fmt;
+use std::fs::{self, File, TryLockError};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 
-use anyhow::anyhow;
+use anyhow::{Context as _, anyhow};
 
 use crate::workspace::{self, CargoBuild};
 
@@ -59,9 +61,17 @@ pub fn cooked_dir(cook: Cook) -> PathBuf {
     workspace::output_dir().join("content").join(cook.name())
 }
 
-/// Generates missing sample sources, then cooks all of `content/` for `cook`. Returns
-/// the cooked directory.
-pub fn cook(cook: Cook) -> anyhow::Result<PathBuf> {
+/// A cooked content directory, held under a shared lock: no other xtask run recooks it
+/// until this is dropped.
+#[derive(Debug)]
+pub struct Cooked {
+    pub dir: PathBuf,
+    _lock: File,
+}
+
+/// Generates missing sample sources, then cooks all of `content/` for `cook`. Keep the
+/// result alive while copying from or running against its directory.
+pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     // Release: cooking is the slow part, and the pipeline itself rarely changes.
     let pipeline = workspace::build_binary(
         &CargoBuild { package: "sapphire_pipeline", target: None, release: true, env: &[] },
@@ -73,8 +83,13 @@ pub fn cook(cook: Cook) -> anyhow::Result<PathBuf> {
         workspace::run(Command::new(&pipeline).arg("gen-samples").arg("--out").arg(source.join("samples")))?;
     }
 
-    // Start clean so assets deleted from `content/` don't linger in builds.
     let out = cooked_dir(cook);
+    let lock_path = out.with_extension("lock");
+    fs::create_dir_all(workspace::output_dir().join("content"))?;
+    let lock =
+        File::create(&lock_path).with_context(|| format!("failed to create {}", lock_path.display()))?;
+    wait_for(&lock, File::try_lock, File::lock, cook)?;
+    // Start clean so assets deleted from `content/` don't linger in builds.
     workspace::remove_dir_if_exists(&out)?;
     workspace::run(
         Command::new(&pipeline)
@@ -85,7 +100,28 @@ pub fn cook(cook: Cook) -> anyhow::Result<PathBuf> {
             .arg(&out)
             .args(["--cook", cook.name()]),
     )?;
-    Ok(out)
+    // Another run may recook in the gap before the shared lock; its output is the same.
+    lock.unlock()?;
+    wait_for(&lock, File::try_lock_shared, File::lock_shared, cook)?;
+    Ok(Cooked { dir: out, _lock: lock })
+}
+
+/// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
+/// another xtask run holds it.
+fn wait_for(
+    file: &File,
+    try_lock: fn(&File) -> Result<(), TryLockError>,
+    lock: fn(&File) -> std::io::Result<()>,
+    cook: Cook,
+) -> anyhow::Result<()> {
+    match try_lock(file) {
+        Ok(()) => Ok(()),
+        Err(TryLockError::WouldBlock) => {
+            eprintln!("waiting for another xtask run to finish with the {cook} content...");
+            Ok(lock(file)?)
+        }
+        Err(TryLockError::Error(error)) => Err(error).context("failed to lock cooked content"),
+    }
 }
 
 #[cfg(test)]

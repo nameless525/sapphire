@@ -37,7 +37,7 @@ struct Look {
     shade: [u8; 3],
     /// Outlines are a dark tint of the surface, not black.
     outline: [u8; 3],
-    /// `[shadow threshold, softness, rim strength, outline width]`.
+    /// `[shadow threshold, softness, rim strength, outline width in pixels at 1080p]`.
     toon_params: [f32; 4],
 }
 
@@ -46,35 +46,35 @@ const SKIN: Look = Look {
     base: [255, 224, 206],
     shade: [236, 170, 168],
     outline: [110, 52, 48],
-    toon_params: [0.1, 0.03, 0.25, 0.003],
+    toon_params: [0.1, 0.03, 0.25, 4.1],
 };
 const OUTFIT: Look = Look {
     name: "Outfit",
     base: [38, 42, 66],
     shade: [150, 140, 200],
     outline: [12, 12, 22],
-    toon_params: [0.0, 0.02, 0.4, 0.004],
+    toon_params: [0.0, 0.02, 0.4, 5.5],
 };
 const HAIR: Look = Look {
     name: "Hair",
     base: [72, 196, 214],
     shade: [110, 120, 210],
     outline: [18, 56, 84],
-    toon_params: [0.05, 0.015, 0.5, 0.0035],
+    toon_params: [0.05, 0.015, 0.5, 4.8],
 };
 const ACCENT: Look = Look {
     name: "Accent",
     base: [214, 240, 46],
     shade: [200, 160, 120],
     outline: [64, 60, 10],
-    toon_params: [-0.1, 0.01, 0.3, 0.004],
+    toon_params: [-0.1, 0.01, 0.3, 5.5],
 };
 const PEDESTAL: Look = Look {
     name: "Pedestal",
     base: [118, 122, 134],
     shade: [150, 150, 178],
     outline: [26, 26, 32],
-    toon_params: [0.2, 0.05, 0.1, 0.005],
+    toon_params: [0.2, 0.05, 0.1, 6.9],
 };
 
 /// Every material in the mannequin, in file order.

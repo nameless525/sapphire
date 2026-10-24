@@ -32,11 +32,16 @@
     <!-- Gamepad rumble through SDL's haptic subsystem. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- No backup: the user directory holds device-specific pipeline caches and crash dumps. -->
+    <!--
+      No cloud backup yet. Device-to-device transfers ignore allowBackup on Android 12+, so
+      the rules spell out what moves: the user directory only, never caches or crash dumps.
+    -->
     <application
-        android:label="Sapphire Sandbox"
+        android:label="${appLabel}"
         android:appCategory="game"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:enableOnBackInvokedCallback="false"
         android:hardwareAccelerated="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">

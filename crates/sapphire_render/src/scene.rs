@@ -1,9 +1,10 @@
 //! Per-frame draw list: turns `MeshInstance`s into instance data, draw records and draw
 //! commands. The vectors are reused across frames, so steady state allocates nothing (R6).
 //!
-//! The commands are for the CPU-driven submission path, which is portable everywhere. The
-//! GPU-driven path (later) writes equivalent multi-draw-indirect records on the GPU, with the
-//! draw ID in `first_instance` (see the crate docs and `draw_ids`).
+//! The commands are for the CPU-driven submission path, which is portable everywhere: each
+//! draw binds the mesh's vertices and its draw record by buffer offset. The GPU-driven path
+//! (later) writes equivalent multi-draw-indirect records on the GPU, using `base_vertex` and
+//! `first_instance` instead (see the crate docs).
 //!
 //! M1 replaces the full per-frame rebuild with persistent instances updated from extract
 //! deltas, and sorts opaque draws by pipeline, material and mesh (spec §5.12).
@@ -14,12 +15,13 @@ use crate::MeshInstance;
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::mesh_pool::MeshRecord;
 
-/// One `draw_indexed` call on the CPU-driven path: `base_vertex` 0 (indices are absolute) and
-/// instances `0..1`, with the draw-ID vertex buffer bound at `draw_id`. The vertex shader
-/// reads its draw record through that ID; see [`crate::draw_ids`].
+/// One `draw_indexed` call on the CPU-driven path, with `base_vertex` 0 and instances `0..1`:
+/// vertex slot 0 is bound at `first_vertex` (indices are mesh-relative) and slot 1 at draw
+/// record `draw_id`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DrawCommand {
     pub indices: Range<u32>,
+    pub first_vertex: u32,
     pub draw_id: u32,
 }
 
@@ -47,6 +49,7 @@ impl DrawList {
                 self.draws.push(DrawData { instance: instance_index, material: submesh.material });
                 self.commands.push(DrawCommand {
                     indices: submesh.first_index..submesh.first_index + submesh.index_count,
+                    first_vertex: mesh.first_vertex,
                     draw_id,
                 });
             }
@@ -69,8 +72,12 @@ mod tests {
     #[test]
     fn expands_instances_into_one_draw_per_submesh() {
         let meshes = [
-            MeshRecord { submeshes: vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }] },
             MeshRecord {
+                first_vertex: 0,
+                submeshes: vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }],
+            },
+            MeshRecord {
+                first_vertex: 24,
                 submeshes: vec![
                     SubmeshDraw { first_index: 6, index_count: 3, material: 1 },
                     SubmeshDraw { first_index: 9, index_count: 12, material: 2 },
@@ -96,8 +103,8 @@ mod tests {
                 DrawData { instance: 1, material: 0 },
             ]
         );
-        assert_eq!(list.commands[1], DrawCommand { indices: 9..21, draw_id: 1 });
-        assert_eq!(list.commands[2], DrawCommand { indices: 0..6, draw_id: 2 });
+        assert_eq!(list.commands[1], DrawCommand { indices: 9..21, first_vertex: 24, draw_id: 1 });
+        assert_eq!(list.commands[2], DrawCommand { indices: 0..6, first_vertex: 0, draw_id: 2 });
 
         // Rebuilding reuses the vectors instead of appending.
         list.build(&meshes, &instances[..1]);

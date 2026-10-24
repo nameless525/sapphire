@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, bail, ensure};
 use serde::Deserialize;
@@ -19,10 +20,21 @@ pub fn output_dir() -> PathBuf {
     root().join("target")
 }
 
-/// A `cargo` command run from the workspace root, using the same cargo that runs xtask.
-pub fn cargo() -> Command {
+static LOCKED: AtomicBool = AtomicBool::new(false);
+
+/// Makes every cargo command xtask runs pass `--locked` (`cargo xtask --locked …`).
+pub fn set_locked(locked: bool) {
+    LOCKED.store(locked, Ordering::Relaxed);
+}
+
+/// `cargo <subcommand>` run from the workspace root with the cargo that runs xtask, plus
+/// `--locked` when xtask was given it.
+pub fn cargo(subcommand: &str) -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    command.current_dir(root());
+    command.current_dir(root()).arg(subcommand);
+    if LOCKED.load(Ordering::Relaxed) {
+        command.arg("--locked");
+    }
     command
 }
 
@@ -59,8 +71,8 @@ impl CargoBuild<'_> {
     /// `cargo <subcommand>` for this package, reporting artifacts as JSON for
     /// [`build_artifact`]. Append target-selection flags, then any `-- <rustc args>`.
     pub fn command(&self, subcommand: &str) -> Command {
-        let mut command = cargo();
-        command.args([subcommand, "--package", self.package, "--message-format=json-render-diagnostics"]);
+        let mut command = cargo(subcommand);
+        command.args(["--package", self.package, "--message-format=json-render-diagnostics"]);
         command.envs(self.env.iter().map(|(name, value)| (name, value)));
         if let Some(target) = self.target {
             command.args(["--target", target]);
@@ -163,6 +175,22 @@ pub fn remove_dir_if_exists(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// `command` as a shell line, with the environment it sets, for `--dry-run`.
+pub fn shell_line(command: &Command) -> String {
+    let env = command.get_envs().filter_map(|(name, value)| {
+        Some(format!("{}={}", name.to_string_lossy(), shell_word(&value?.to_string_lossy())))
+    });
+    let program = std::iter::once(command.get_program()).chain(command.get_args());
+    env.chain(program.map(|arg| shell_word(&arg.to_string_lossy()))).collect::<Vec<_>>().join(" ")
+}
+
+/// Quotes `word` for a POSIX shell when it needs it.
+fn shell_word(word: &str) -> String {
+    let plain =
+        !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if plain { word.to_owned() } else { format!("'{}'", word.replace('\'', r"'\''")) }
+}
+
 fn describe(command: &Command) -> String {
     let program = Path::new(command.get_program())
         .file_name()
@@ -205,6 +233,16 @@ mod tests {
         assert_eq!(artifact.filenames, [PathBuf::from("/t/libapp.so")]);
         let finished = serde_json::from_str(r#"{"reason":"build-finished","success":true}"#);
         assert!(matches!(finished, Ok(CargoMessage::Other)));
+    }
+
+    #[test]
+    fn prints_dry_run_shell_lines() {
+        let mut command = Command::new("/bin/app");
+        command.args(["--frames", "it's here"]).env("SAPPHIRE_CONTENT_DIR", "/t/content dir");
+        assert_eq!(
+            shell_line(&command),
+            r"SAPPHIRE_CONTENT_DIR='/t/content dir' /bin/app --frames 'it'\''s here'"
+        );
     }
 
     #[test]

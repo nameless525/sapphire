@@ -89,7 +89,7 @@ mod window;
 
 #[doc(hidden)]
 pub use app::__private;
-pub use app::{App, AppControl, AppInitError, AppMetadata, run};
+pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_with};
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
 pub use dirs::{cache_dir, user_dir};
 pub use event::{

@@ -1,26 +1,35 @@
 //! Adapter selection and device creation.
 
-use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use wgpu::{Adapter, Backend, Device, DeviceType, Queue};
+use wgpu::{Adapter, Backend, Device, DeviceType, Queue, TextureFormat};
 
-use crate::caps::{GpuCaps, REQUIRED_DOWNLEVEL};
-use crate::pipeline_cache::PersistentPipelineCache;
+use crate::caps::{FormatSupport, GpuCaps, REQUIRED_DOWNLEVEL};
+use crate::pipeline_cache::{PersistentPipelineCache, PipelineCacheDesc};
 use crate::{GpuInstance, LOG_TARGET, RenderSurface, RhiError};
 
 /// Device-level GPU options.
 #[derive(Clone, Debug, Default)]
 pub struct GpuContextDesc {
-    /// Directory for the persistent pipeline cache, normally the app's `user://` cache
-    /// directory. `None` disables persistence. Only Vulkan devices use it (wgpu 30).
-    pub pipeline_cache_dir: Option<PathBuf>,
+    /// Where to persist the pipeline cache. `None` disables persistence. Only Vulkan devices
+    /// use it (wgpu 30).
+    pub pipeline_cache: Option<PipelineCacheDesc>,
 }
 
 /// The GPU device the engine renders with: adapter, device, queue and probed capabilities.
 ///
 /// wgpu handles are internally reference-counted, so the accessors hand out references and
 /// subsystems clone what they need to keep.
+///
+/// # Device loss
+///
+/// A device can be lost at any time (driver reset, GPU removed, `Device::destroy`). Once
+/// [`Self::is_lost`] returns `true`, everything created from this context is dead and every
+/// [`RenderSurface`] reports [`crate::SkipReason::DeviceLost`]. To recover, the app drops its
+/// renderer, surfaces and this context, in that order, creates a new [`GpuInstance`] and
+/// context, rebuilds its surfaces from fresh native handles and re-uploads every asset. GPU
+/// work issued meanwhile is ignored rather than reported as an error.
 #[derive(Debug)]
 pub struct GpuContext {
     instance: GpuInstance,
@@ -29,6 +38,7 @@ pub struct GpuContext {
     queue: Queue,
     caps: GpuCaps,
     pipeline_cache: Option<PersistentPipelineCache>,
+    lost: Arc<AtomicBool>,
 }
 
 impl GpuContext {
@@ -51,12 +61,21 @@ impl GpuContext {
                 continue;
             };
             caps.log();
-            install_error_handlers(&device);
-            let pipeline_cache = match (&desc.pipeline_cache_dir, caps.pipeline_cache) {
-                (Some(dir), true) => PersistentPipelineCache::open(&device, &caps.adapter, dir),
+            let lost = Arc::new(AtomicBool::new(false));
+            install_error_handlers(&device, Arc::clone(&lost));
+            let pipeline_cache = match (&desc.pipeline_cache, caps.pipeline_cache) {
+                (Some(cache), true) => PersistentPipelineCache::open(&device, &caps.adapter, cache),
                 _ => None,
             };
-            return Ok(Self { instance: instance.clone(), adapter, device, queue, caps, pipeline_cache });
+            return Ok(Self {
+                instance: instance.clone(),
+                adapter,
+                device,
+                queue,
+                caps,
+                pipeline_cache,
+                lost,
+            });
         }
         Err(RhiError::NoUsableAdapter { tried: instance.backends().to_vec() })
     }
@@ -83,6 +102,28 @@ impl GpuContext {
         &self.caps
     }
 
+    /// What this device may do with `format`: render, blend, filter, and which sample counts.
+    /// Use this, not the adapter's report, before creating attachments.
+    pub fn format_support(&self, format: TextureFormat) -> FormatSupport {
+        self.caps.format_support(format, self.adapter.get_texture_format_features(format))
+    }
+
+    /// `Some(label)` when object labels are on ([`crate::GpuDebug::object_labels`]), else
+    /// `None`. Use it for objects created every frame: wgpu copies each label into a `String`
+    /// even when it later discards it.
+    pub fn label(&self, label: &'static str) -> Option<&'static str> {
+        self.instance.debug().object_labels.then_some(label)
+    }
+
+    /// Whether the device has been lost. See the type docs for how to recover.
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn lost_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.lost)
+    }
+
     /// The cache to pass as `cache` in pipeline descriptors, when persistence is enabled.
     pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
         self.pipeline_cache.as_ref().map(PersistentPipelineCache::cache)
@@ -92,6 +133,15 @@ impl GpuContext {
     /// Does nothing when persistence is off or unsupported.
     pub fn save_pipeline_cache(&self) -> Result<(), RhiError> {
         self.pipeline_cache.as_ref().map_or(Ok(()), PersistentPipelineCache::save)
+    }
+
+    /// Marks the pipeline cache as good. Call after the first frame has been presented: until
+    /// then a crash, possibly inside the driver while it reads the cache, makes the next boot
+    /// discard the cache instead of trying it again. Cheap to call more than once.
+    pub fn confirm_pipeline_cache(&self) {
+        if let Some(cache) = &self.pipeline_cache {
+            cache.confirm();
+        }
     }
 }
 
@@ -159,7 +209,7 @@ fn performance_rank(device_type: DeviceType) -> u8 {
     }
 }
 
-fn install_error_handlers(device: &Device) {
+fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>) {
     device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
         tracing::error!(target: LOG_TARGET, %error, "uncaptured GPU error");
         // Development builds stop at the first error, like wgpu's default handler; shipping
@@ -168,12 +218,15 @@ fn install_error_handlers(device: &Device) {
             panic!("uncaptured GPU error: {error}");
         }
     }));
-    device.set_device_lost_callback(|reason, message| match reason {
-        wgpu::DeviceLostReason::Destroyed => {
-            tracing::debug!(target: LOG_TARGET, message, "GPU device destroyed");
-        }
-        wgpu::DeviceLostReason::Unknown => {
-            tracing::error!(target: LOG_TARGET, message, "GPU device lost");
+    device.set_device_lost_callback(move |reason, message| {
+        lost.store(true, Ordering::Release);
+        match reason {
+            wgpu::DeviceLostReason::Destroyed => {
+                tracing::debug!(target: LOG_TARGET, message, "GPU device destroyed");
+            }
+            wgpu::DeviceLostReason::Unknown => {
+                tracing::error!(target: LOG_TARGET, message, "GPU device lost");
+            }
         }
     });
 }
@@ -201,5 +254,20 @@ mod tests {
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
         assert!(instance.backends().contains(&gpu.caps().backend()));
         assert!(gpu.device().limits().max_storage_buffers_per_shader_stage >= 4);
+        let rgba = gpu.format_support(TextureFormat::Rgba8UnormSrgb);
+        assert!(rgba.renderable && rgba.supports_samples(4));
+    }
+
+    /// Needs a GPU. Run with `cargo test -p sapphire_rhi -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn reports_device_loss() {
+        let instance = GpuInstance::new(&crate::GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        assert!(!gpu.is_lost());
+        gpu.device().destroy();
+        // wgpu reports a destroyed device once its queue drains, during a poll.
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        assert!(gpu.is_lost());
     }
 }

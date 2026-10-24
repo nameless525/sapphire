@@ -13,7 +13,10 @@ pub struct FrameView<'a> {
     pub sun: DirectionalLight,
     pub instances: &'a [MeshInstance],
     pub sky: SkyGradient,
-    /// Presentation time in seconds, read from the owning clock (rule R2), for shader animation.
+    /// Presentation time in seconds, read from the owning clock (rule R2), for shader
+    /// animation. The app wraps it to a fixed period (the sandbox uses an hour) so it keeps
+    /// f32 precision in long sessions; shaders may only use it for effects that are periodic
+    /// or tolerate the jump at the wrap.
     pub time_seconds: f32,
 }
 

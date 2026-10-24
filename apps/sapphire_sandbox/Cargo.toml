@@ -6,6 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# App identity for `cargo xtask bundle` and `run` on every platform; the version is the
+# package version above.
+[package.metadata.sapphire]
+# Apple bundle identifier and Android application id.
+bundle-id = "dev.sapphire.sandbox"
+# Bundle, APK and directory name, and CFBundleName (at most 15 characters).
+bundle-name = "SapphireSandbox"
+display-name = "Sapphire Sandbox"
+# CFBundleVersion and Android versionCode: raise it with every store or TestFlight upload.
+build = 1
+
 # The library holds the app. Desktop and iOS link it into the `sapphire_sandbox` binary;
 # Android builds it as a cdylib (`cargo rustc --crate-type cdylib`, driven by xtask) whose
 # exported `SDL_main` SDLActivity calls.
@@ -18,7 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 sapphire_assets.workspace = true
-sapphire_core.workspace = true
+sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
@@ -26,13 +37,9 @@ sapphire_platform.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_time.workspace = true
-mimalloc.workspace = true
+png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
-
-# Android loads the app with dlopen, which rejects mimalloc's default initial-exec TLS.
-[target.'cfg(target_os = "android")'.dependencies]
-mimalloc = { workspace = true, features = ["local_dynamic_tls"] }
 
 [features]
 # Stream profiling zones to the Tracy profiler (spec §5.3).

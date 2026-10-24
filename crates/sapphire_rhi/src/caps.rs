@@ -1,7 +1,10 @@
 //! Capability probing (spec §5.11): what the device can do, filled from the adapter, never
 //! from the OS. The renderer selects passes by these plus the tier table.
 
-use wgpu::{AdapterInfo, Backend, DownlevelFlags, Features, Limits};
+use wgpu::{
+    AdapterInfo, Backend, DownlevelFlags, Features, Limits, TextureFormat, TextureFormatFeatureFlags,
+    TextureFormatFeatures, TextureUsages,
+};
 
 use crate::LOG_TARGET;
 
@@ -24,7 +27,12 @@ fn binding_array_features() -> Features {
 
 /// Optional features enabled whenever the adapter has them.
 fn optional_features() -> Features {
-    Features::TEXTURE_COMPRESSION_BC
+    // Lets the device use everything the adapter reports per format (2× / 8× MSAA, more
+    // renderable and filterable formats) instead of only the WebGPU-guaranteed subset.
+    Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        // HDR scene color without an alpha channel (M1 post-processing).
+        | Features::RG11B10UFLOAT_RENDERABLE
+        | Features::TEXTURE_COMPRESSION_BC
         | Features::TEXTURE_COMPRESSION_ASTC
         | Features::TIMESTAMP_QUERY
         | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
@@ -42,6 +50,8 @@ pub struct GpuCaps {
     pub adapter: AdapterInfo,
     /// Every feature the device was created with.
     pub features: Features,
+    /// The adapter's downlevel capabilities.
+    pub downlevel: DownlevelFlags,
     /// BC1–7 textures: the `desktop` cook (spec §2).
     pub texture_compression_bc: bool,
     /// ASTC LDR textures: the `mobile` cook.
@@ -116,10 +126,39 @@ impl GpuCaps {
             shader_f16: features.contains(Features::SHADER_F16),
             pipeline_cache: features.contains(Features::PIPELINE_CACHE),
             features,
+            downlevel,
             limits,
             adapter_limits,
             adapter,
         }
+    }
+
+    /// What the device may do with `format`, given the adapter's report for it
+    /// (`Adapter::get_texture_format_features`). [`crate::GpuContext::format_support`] does
+    /// the lookup.
+    ///
+    /// This mirrors device validation rather than repeating the adapter's report: without
+    /// `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, a WebGPU-compliant device only allows the
+    /// guaranteed subset, so for example 2× MSAA would pass the adapter check and then fail
+    /// texture creation.
+    pub fn format_support(&self, format: TextureFormat, adapter: TextureFormatFeatures) -> FormatSupport {
+        if !self.features.contains(format.required_features()) {
+            return FormatSupport::default();
+        }
+        let device_uses_adapter = self.features.contains(Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+            || !self.downlevel.contains(DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
+        let mut support = FormatSupport::new(if device_uses_adapter {
+            adapter
+        } else {
+            format.guaranteed_format_features(self.features)
+        });
+        // wgpu-core can only render to color formats it knows the per-sample size of. Apple
+        // GPUs report Rgb9e5Ufloat as renderable, and wgpu 30 panics in pipeline creation
+        // instead of failing validation, so such formats are never called renderable here.
+        if !format.is_depth_stencil_format() && format.target_pixel_byte_cost().is_none() {
+            support.renderable = false;
+        }
+        support
     }
 
     pub(crate) fn log(&self) {
@@ -148,6 +187,51 @@ impl GpuCaps {
             adapter_max_compute_invocations = self.adapter_limits.max_compute_invocations_per_workgroup,
             "GPU capabilities"
         );
+    }
+}
+
+/// What the device may do with one texture format. See [`GpuCaps::format_support`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FormatSupport {
+    /// Usable as a render attachment.
+    pub renderable: bool,
+    /// Supports blending as a color attachment.
+    pub blendable: bool,
+    /// Supports linear filtering when sampled.
+    pub filterable: bool,
+    /// Multisampled textures of this format can be resolved.
+    pub multisample_resolve: bool,
+    /// Bit `n` set: `2^n` samples are supported.
+    sample_counts: u8,
+}
+
+impl FormatSupport {
+    fn new(features: TextureFormatFeatures) -> Self {
+        let flags = features.flags;
+        let mut sample_counts = 1;
+        for (bit, flag) in [
+            (1, TextureFormatFeatureFlags::MULTISAMPLE_X2),
+            (2, TextureFormatFeatureFlags::MULTISAMPLE_X4),
+            (3, TextureFormatFeatureFlags::MULTISAMPLE_X8),
+            (4, TextureFormatFeatureFlags::MULTISAMPLE_X16),
+        ] {
+            if flags.contains(flag) {
+                sample_counts |= 1 << bit;
+            }
+        }
+        Self {
+            renderable: features.allowed_usages.contains(TextureUsages::RENDER_ATTACHMENT),
+            blendable: flags.contains(TextureFormatFeatureFlags::BLENDABLE),
+            filterable: flags.contains(TextureFormatFeatureFlags::FILTERABLE),
+            multisample_resolve: flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE),
+            sample_counts,
+        }
+    }
+
+    /// Whether render attachments with `count` samples can be created (1 always can, for a
+    /// renderable format).
+    pub fn supports_samples(&self, count: u32) -> bool {
+        count.is_power_of_two() && count <= 16 && self.sample_counts & (1 << count.trailing_zeros()) != 0
     }
 }
 
@@ -216,7 +300,7 @@ mod tests {
             min_uniform_buffer_offset_alignment: 256,
             min_storage_buffer_offset_alignment: 256,
             max_color_attachments: 4,
-            max_color_attachment_bytes_per_sample: 4 * wgpu::TextureFormat::MAX_TARGET_PIXEL_BYTE_COST,
+            max_color_attachment_bytes_per_sample: 4 * TextureFormat::MAX_TARGET_PIXEL_BYTE_COST,
             max_compute_workgroup_storage_size: 16 << 10,
             max_compute_invocations_per_workgroup: 128,
             max_compute_workgroup_size_x: 128,
@@ -330,5 +414,46 @@ mod tests {
         );
         assert!(caps.limits.check_limits(&adapter_limits));
         assert!(!caps.base_vertex_first_instance && !caps.multi_draw_indirect);
+    }
+
+    #[test]
+    fn format_support_follows_device_validation() {
+        let format = TextureFormat::Rgba8UnormSrgb;
+        let adapter = TextureFormatFeatures {
+            allowed_usages: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            flags: TextureFormatFeatureFlags::MULTISAMPLE_X2
+                | TextureFormatFeatureFlags::MULTISAMPLE_X4
+                | TextureFormatFeatureFlags::MULTISAMPLE_X8
+                | TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE
+                | TextureFormatFeatureFlags::BLENDABLE
+                | TextureFormatFeatureFlags::FILTERABLE,
+        };
+        let caps = |features| {
+            GpuCaps::from_parts(
+                AdapterInfo::new(wgpu::DeviceType::IntegratedGpu, Backend::Metal),
+                features,
+                DownlevelFlags::all(),
+                vulkan_1_1_minimum(),
+            )
+        };
+
+        // Without adapter-specific format features, only the WebGPU guarantees apply.
+        let webgpu = caps(Features::empty()).format_support(format, adapter);
+        assert!(webgpu.renderable && webgpu.supports_samples(1) && webgpu.supports_samples(4));
+        assert!(!webgpu.supports_samples(2) && !webgpu.supports_samples(8));
+
+        let native = caps(Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES).format_support(format, adapter);
+        assert!(native.supports_samples(2) && native.supports_samples(8) && native.multisample_resolve);
+        assert!(!native.supports_samples(16) && !native.supports_samples(3));
+
+        // Color formats wgpu can't render to stay non-renderable whatever the adapter says.
+        let rgb9e5 = caps(Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+            .format_support(TextureFormat::Rgb9e5Ufloat, adapter);
+        assert!(!rgb9e5.renderable && rgb9e5.filterable);
+
+        // Formats whose feature isn't enabled aren't usable at all.
+        let bc = caps(Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+            .format_support(TextureFormat::Bc7RgbaUnormSrgb, adapter);
+        assert_eq!(bc, FormatSupport::default());
     }
 }

@@ -65,7 +65,9 @@ pub struct ToonMaterialParams {
     /// Inverted-hull outline color.
     pub outline_color: [f32; 4],
     /// x: shadow threshold on N·L in [-1, 1]; y: split softness;
-    /// z: rim-light strength; w: outline width in view-space units at 1 m.
+    /// z: rim-light strength; w: outline width in pixels at a 1080-pixel-high target (scaled
+    /// with resolution, independent of field of view; vertex alpha and the renderer's
+    /// distance curve still apply).
     pub params: [f32; 4],
 }
 
@@ -75,7 +77,7 @@ impl Default for ToonMaterialParams {
             base_color: [0.8, 0.8, 0.8, 1.0],
             shade_color: [0.55, 0.5, 0.65, 1.0],
             outline_color: [0.08, 0.06, 0.1, 1.0],
-            params: [0.0, 0.02, 0.35, 0.004],
+            params: [0.0, 0.02, 0.35, 5.5],
         }
     }
 }

@@ -1,11 +1,15 @@
 //! Presentable surfaces.
 //!
-//! A [`RenderSurface`] owns only the wgpu surface and its configuration, so it is cheap to
-//! drop and recreate: Android destroys the native window on every background (spec §6.1),
-//! and the app simply drops the surface then and creates a new one on resume.
+//! A [`RenderSurface`] owns only the wgpu surface, its configuration and a guard keeping the
+//! native window alive, so it is cheap to drop and recreate: Android destroys the native
+//! window on every background (spec §6.1), and the app simply drops the surface then and
+//! creates a new one on resume.
 
+use std::any::Any;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use wgpu::{CompositeAlphaMode, CurrentSurfaceTexture, PresentMode, TextureFormat};
@@ -52,9 +56,21 @@ impl PresentPolicy {
     }
 }
 
+/// Swapchain rebuilds triggered by `Suboptimal` are at most this often, in acquired frames.
+/// A rebuild waits for the GPU to go idle, and some drivers report every frame as suboptimal
+/// (Android, when the swapchain's pre-rotation doesn't match the display), so rebuilding on
+/// each one would stall every frame for nothing.
+const SUBOPTIMAL_REBUILD_INTERVAL: u32 = 120;
+
 /// Why [`RenderSurface::acquire`] produced no frame. The app skips rendering this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
+    /// The GPU device is lost ([`GpuContext::is_lost`]). Checked before anything else and
+    /// permanent: the app must drop its renderer, surfaces and context and rebuild them, then
+    /// re-upload its assets (see [`GpuContext`]). After an explicit `Device::destroy`, wgpu
+    /// only notices once the queue is idle, so the frames still in flight report
+    /// [`Self::Validation`] first.
+    DeviceLost,
     /// [`RenderSurface::configure`] has not been called.
     Unconfigured,
     /// The window has zero area (minimized).
@@ -86,12 +102,17 @@ pub enum SurfaceAcquire<'s> {
 }
 
 /// A swapchain image to render into. It borrows the surface mutably, so the surface can't be
-/// resized or reconfigured while a frame is outstanding (wgpu would panic). Dropping it
-/// without [`SurfaceFrame::present`] discards the image.
+/// resized or reconfigured while a frame is outstanding (wgpu would panic).
+///
+/// Always [`present`](Self::present) it. Dropping it unpresented is logged as a warning: on
+/// Vulkan, wgpu cannot hand an acquired image back, so it stays acquired until the swapchain
+/// is rebuilt, and after a few such frames acquiring blocks or times out.
 #[derive(Debug)]
 pub struct SurfaceFrame<'s> {
-    texture: wgpu::SurfaceTexture,
+    /// `None` once presented.
+    texture: Option<wgpu::SurfaceTexture>,
     view: wgpu::TextureView,
+    size: (u32, u32),
     state: &'s Configured,
 }
 
@@ -103,20 +124,41 @@ impl SurfaceFrame<'_> {
 
     /// Size in pixels.
     pub fn size(&self) -> (u32, u32) {
-        (self.texture.texture.width(), self.texture.texture.height())
+        self.size
     }
 
     /// Queues the image for display. Submit the frame's command buffers first.
-    pub fn present(self) {
-        self.state.queue.present(self.texture);
+    pub fn present(mut self) {
+        if let Some(texture) = self.texture.take() {
+            self.state.queue.present(texture);
+        }
+    }
+}
+
+impl Drop for SurfaceFrame<'_> {
+    fn drop(&mut self) {
+        if self.texture.is_some() && !std::thread::panicking() {
+            tracing::warn!(
+                target: LOG_TARGET,
+                "SurfaceFrame dropped without being presented; on Vulkan its image stays acquired"
+            );
+        }
     }
 }
 
 /// A window surface plus its swapchain configuration.
+///
+/// It owns a guard that keeps its native window alive (see [`Self::new`]). Because that guard
+/// is usually tied to the main thread (SDL windows are), `RenderSurface` is `!Send`: create,
+/// use and drop it on one thread. That stays so until the engine has a protocol for tearing
+/// surfaces down from render threads.
 #[derive(Debug)]
 pub struct RenderSurface {
+    // Field order is drop order: the wgpu surface goes before the window it presents to.
     surface: wgpu::Surface<'static>,
     state: Option<Configured>,
+    /// The guard passed to [`Self::new`], held only for its destructor.
+    _keep_alive: Box<dyn Any>,
 }
 
 #[derive(Debug)]
@@ -135,6 +177,10 @@ struct Configured {
     dirty: bool,
     /// See [`SkipReason::Lost`]. Only a new surface or an explicit `configure` clears it.
     lost: bool,
+    /// Shared with the [`GpuContext`]; see [`SkipReason::DeviceLost`].
+    device_lost: Arc<AtomicBool>,
+    labels: bool,
+    frames_since_configure: u32,
 }
 
 impl Configured {
@@ -149,11 +195,23 @@ impl Configured {
         // wgpu-core reports scope errors synchronously, so this never blocks.
         let error = pollster::block_on(scope.pop());
         self.dirty = false;
+        self.frames_since_configure = 0;
         if let Some(error) = error {
             tracing::warn!(target: LOG_TARGET, %error, "can't configure the surface; treating it as lost");
             self.lost = true;
         }
         !self.lost
+    }
+
+    fn device_lost(&self) -> bool {
+        self.device_lost.load(Ordering::Acquire)
+    }
+
+    /// Why acquiring failed with a validation error. A destroyed device shows up this way
+    /// until wgpu has polled it and run the device-lost callback, so poll once and look again.
+    fn validation_or_device_lost(&self) -> SkipReason {
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        if self.device_lost() { SkipReason::DeviceLost } else { SkipReason::Validation }
     }
 }
 
@@ -161,15 +219,24 @@ impl RenderSurface {
     /// Creates an unconfigured surface for `target`. Pass it to [`GpuContext::new`] so the
     /// chosen adapter can present to it, then call [`Self::configure`].
     ///
+    /// `keep_alive` is whatever keeps `target`'s native objects alive, such as the platform
+    /// layer's surface handle. The surface holds it and drops it right after the wgpu surface,
+    /// so the app stores only the surface. Pass `()` if something else guarantees the lifetime.
+    ///
     /// # Safety
     ///
     /// - `target` must name a live native object: for [`SurfaceTarget::CoreAnimationLayer`], a
     ///   valid `CAMetalLayer`; for [`SurfaceTarget::Raw`], a window and the display it belongs
     ///   to, such as an Android `ANativeWindow` the platform layer has not yet released.
-    /// - That object must outlive the returned surface. On Android, drop the surface as soon as
-    ///   the platform reports the native window is being destroyed.
+    /// - That object must stay valid until `keep_alive` is dropped (or longer). On Android,
+    ///   drop the surface as soon as the platform reports the native window is being
+    ///   destroyed.
     /// - On Apple platforms, call this on the main thread.
-    pub unsafe fn new(instance: &GpuInstance, target: SurfaceTarget) -> Result<Self, RhiError> {
+    pub unsafe fn new(
+        instance: &GpuInstance,
+        target: SurfaceTarget,
+        keep_alive: impl Any,
+    ) -> Result<Self, RhiError> {
         let raw_target = match target {
             // CAMetalLayer only exists on Apple targets; mapping it is part of backend selection (R7).
             #[cfg(target_vendor = "apple")]
@@ -186,9 +253,10 @@ impl RenderSurface {
             },
         };
         // SAFETY: this function's contract is wgpu's: the target is valid for surface
-        // creation and outlives the surface, which `Self` owns.
+        // creation and outlives the surface, because `keep_alive` keeps it valid and is dropped
+        // after the surface (field order).
         let surface = unsafe { instance.raw().create_surface_unsafe(raw_target)? };
-        Ok(Self { surface, state: None })
+        Ok(Self { surface, state: None, _keep_alive: Box::new(keep_alive) })
     }
 
     /// Chooses the swapchain format, alpha mode and present mode for `gpu`'s adapter and
@@ -245,6 +313,9 @@ impl RenderSurface {
             size: (width, height),
             dirty: true,
             lost: false,
+            device_lost: gpu.lost_flag(),
+            labels: gpu.label("").is_some(),
+            frames_since_configure: 0,
         });
         if width > 0 && height > 0 {
             // A failure leaves the surface lost, which acquire reports.
@@ -284,17 +355,24 @@ impl RenderSurface {
     /// Gets the next swapchain image, or tells the caller to skip this frame. Nothing here is
     /// fatal; every failure becomes a [`SkipReason`].
     ///
+    /// - Device lost: reported first, every time (see [`SkipReason::DeviceLost`]).
     /// - Out of date (resize, rotation): rebuilt and retried once, so no frame is lost.
-    /// - Suboptimal: the image is still returned; the swapchain is rebuilt on the next call.
+    /// - Suboptimal: the image is still returned. The swapchain is rebuilt on a later call,
+    ///   at most once every 120 frames, because rebuilding waits for the GPU to go idle.
+    ///   Size changes don't wait: they come through [`Self::resize`].
     /// - Timeout: the frame is skipped and the swapchain rebuilt on the next call.
     /// - Lost: the frame is skipped and the surface left alone for the app to recreate. It is
     ///   never reconfigured here, because on Android the native window is already destroyed
     ///   by the time the driver reports it.
     pub fn acquire(&mut self) -> SurfaceAcquire<'_> {
-        let Self { surface, state } = self;
+        profiling::scope!("RenderSurface::acquire");
+        let Self { surface, state, .. } = self;
         let Some(state) = state else {
             return SurfaceAcquire::Skip(SkipReason::Unconfigured);
         };
+        if state.device_lost() {
+            return SurfaceAcquire::Skip(SkipReason::DeviceLost);
+        }
         if state.lost {
             return SurfaceAcquire::Skip(SkipReason::Lost);
         }
@@ -304,11 +382,15 @@ impl RenderSurface {
         if state.dirty && !state.apply(surface) {
             return SurfaceAcquire::Skip(SkipReason::Lost);
         }
+        state.frames_since_configure = state.frames_since_configure.saturating_add(1);
         for _ in 0..2 {
             let texture = match surface.get_current_texture() {
                 CurrentSurfaceTexture::Success(texture) => texture,
                 CurrentSurfaceTexture::Suboptimal(texture) => {
-                    state.dirty = true;
+                    if state.frames_since_configure >= SUBOPTIMAL_REBUILD_INTERVAL {
+                        tracing::debug!(target: LOG_TARGET, "swapchain suboptimal; rebuilding it");
+                        state.dirty = true;
+                    }
                     texture
                 }
                 CurrentSurfaceTexture::Outdated => {
@@ -329,14 +411,17 @@ impl RenderSurface {
                     state.lost = true;
                     return SurfaceAcquire::Skip(SkipReason::Lost);
                 }
-                CurrentSurfaceTexture::Validation => return SurfaceAcquire::Skip(SkipReason::Validation),
+                CurrentSurfaceTexture::Validation => {
+                    return SurfaceAcquire::Skip(state.validation_or_device_lost());
+                }
             };
             let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("surface frame"),
+                label: state.labels.then_some("surface frame"),
                 format: Some(state.view_format),
                 ..Default::default()
             });
-            return SurfaceAcquire::Frame(SurfaceFrame { texture, view, state });
+            let size = (texture.texture.width(), texture.texture.height());
+            return SurfaceAcquire::Frame(SurfaceFrame { texture: Some(texture), view, size, state });
         }
         SurfaceAcquire::Skip(SkipReason::Outdated)
     }
@@ -414,7 +499,7 @@ mod tests {
 
     /// Drives the whole surface lifecycle against a detached `CAMetalLayer`: creation,
     /// adapter compatibility, configure, acquire/present, resize, zero size, drop and
-    /// recreate. Run with `cargo test -p sapphire_rhi -- --ignored`.
+    /// recreate, then device loss. Run with `cargo test -p sapphire_rhi -- --ignored`.
     #[cfg(target_vendor = "apple")]
     #[test]
     #[ignore = "needs a GPU"]
@@ -424,8 +509,8 @@ mod tests {
         let layer = objc2_quartz_core::CAMetalLayer::new();
         let target = SurfaceTarget::CoreAnimationLayer(NonNull::from(&*layer).cast());
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
-        // SAFETY: `layer` is a live CAMetalLayer that outlives every surface made from it.
-        let mut surface = unsafe { RenderSurface::new(&instance, target) }.expect("surface");
+        // SAFETY: `layer` is a live CAMetalLayer, and the surface holds a reference to it.
+        let mut surface = unsafe { RenderSurface::new(&instance, target, layer.clone()) }.expect("surface");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface)).expect("device");
 
         assert!(matches!(surface.acquire(), SurfaceAcquire::Skip(SkipReason::Unconfigured)));
@@ -438,21 +523,7 @@ mod tests {
                 panic!("no frame at {size:?}");
             };
             assert_eq!(frame.size(), size);
-            let mut encoder = gpu.device().create_command_encoder(&Default::default());
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view(),
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            gpu.queue().submit([encoder.finish()]);
-            frame.present();
+            present_cleared(&gpu, frame);
         }
 
         surface.resize(0, 48);
@@ -461,9 +532,38 @@ mod tests {
         // What an Android background/foreground cycle does: drop, recreate, reconfigure.
         drop(surface);
         // SAFETY: as above.
-        let mut surface = unsafe { RenderSurface::new(gpu.instance(), target) }.expect("recreate");
+        let mut surface =
+            unsafe { RenderSurface::new(gpu.instance(), target, layer.clone()) }.expect("recreate");
         surface.configure(&gpu, 16, 16, PresentPolicy::Fifo).expect("reconfigure");
         let SurfaceAcquire::Frame(frame) = surface.acquire() else { panic!("no frame after recreate") };
-        drop(frame);
+        present_cleared(&gpu, frame);
+
+        // Device loss is reported before anything else, and stays reported. wgpu notices a
+        // destroyed device once its queue is idle; with an idle queue, acquire's own poll does it.
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        gpu.device().destroy();
+        for _ in 0..3 {
+            assert!(matches!(surface.acquire(), SurfaceAcquire::Skip(SkipReason::DeviceLost)));
+        }
+        assert!(gpu.is_lost());
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn present_cleared(gpu: &GpuContext, frame: SurfaceFrame<'_>) {
+        let mut encoder = gpu.device().create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: frame.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        gpu.queue().submit([encoder.finish()]);
+        frame.present();
     }
 }

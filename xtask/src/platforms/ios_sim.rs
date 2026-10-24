@@ -1,5 +1,5 @@
-//! iOS Simulator: bundle a flat `.app`, boot a simulator, then install and launch it with
-//! the app's console attached.
+//! iOS Simulator: bundle a flat `.app`, boot a simulator headless, then install and
+//! launch it with the app's console attached. `--show` also opens Simulator.app.
 //!
 //! M0 bundles the cargo-built executable directly. The spec's Xcode project (§7.3), which
 //! device builds need for SDL3.xcframework, entitlements and provisioning, comes later.
@@ -26,18 +26,17 @@ const MINIMUM_IOS: (u32, u32) = (17, 0);
 pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     super::require_macos_host(Platform::IosSim)?;
     let content = content::cook(Cook::Mobile)?;
-    // Without a deployment target, C dependencies such as SDL build for the SDK's iOS
-    // version. SDKROOT stays unset: cargo and CMake pick the iOS SDK for the target.
-    let deployment_target = format!("{}.{}", MINIMUM_IOS.0, MINIMUM_IOS.1);
-    let env = [("IPHONEOS_DEPLOYMENT_TARGET", deployment_target.into())];
-    let executable = super::executable(app, Some(TARGET), &env, options)?;
+    // No extra environment: the deployment target comes from .cargo/config.toml, and
+    // cargo and CMake pick the simulator SDK for the target, so SDKROOT stays unset.
+    let executable = super::executable(app, Some(TARGET), &[], options)?;
     let (template_path, template) = super::info_plist_template("ios")?;
+    apple::verify_minimum_os(&executable, &template, "MinimumOSVersion")?;
     let info_plist = apple::render_info_plist(&template, app)
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout =
         BundleLayout::ios(super::bundle_dir(Platform::IosSim).join(format!("{}.app", app.bundle_name)));
-    apple::assemble(&layout, app, &info_plist, &executable, &content)?;
+    apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
     apple::codesign_ad_hoc(&layout.root)?;
     eprintln!("bundled {}", super::display(&layout.root));
     Ok(layout.root)
@@ -47,24 +46,28 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
 /// stdout and stderr streamed here until it exits.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let bundle = bundle(app, options)?;
-    let simulator = boot_simulator()?;
-    workspace::run(Command::new("xcrun").args(["simctl", "install", &simulator.udid]).arg(&bundle))?;
+    let simulator = choose_simulator_or_fail()?;
+    let mut install = Command::new("xcrun");
+    install.args(["simctl", "install", &simulator.udid]).arg(&bundle);
+    let mut launch = Command::new("xcrun");
+    launch
+        .args(["simctl", "launch", "--console-pty", "--terminate-running-process", &simulator.udid])
+        .arg(&app.bundle_id)
+        .args(args);
+    if options.dry_run {
+        for command in [&install, &launch] {
+            eprintln!("dry run: {}", workspace::shell_line(command));
+        }
+        return Ok(());
+    }
+
+    boot(&simulator, options.show)?;
+    workspace::run(&mut install)?;
     eprintln!(
         "launching {} on {} (iOS {}.{}); Ctrl-C detaches",
         app.bundle_id, simulator.name, simulator.runtime.0, simulator.runtime.1
     );
-    workspace::run(
-        Command::new("xcrun")
-            .args([
-                "simctl",
-                "launch",
-                "--console-pty",
-                "--terminate-running-process",
-                &simulator.udid,
-                app.bundle_id,
-            ])
-            .args(args),
-    )
+    workspace::run(&mut launch)
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,30 +94,37 @@ struct Simulator {
     booted: bool,
 }
 
-fn boot_simulator() -> anyhow::Result<Simulator> {
+fn choose_simulator_or_fail() -> anyhow::Result<Simulator> {
     let json =
         workspace::output(Command::new("xcrun").args(["simctl", "list", "devices", "available", "--json"]))?;
     let list: DeviceList = serde_json::from_str(&json).context("unexpected `simctl list` output")?;
-    let simulator = choose_simulator(&list).with_context(|| {
+    choose_simulator(&list).with_context(|| {
         format!(
             "no iOS {}.{}+ simulator is available; install a runtime with `xcodebuild -downloadPlatform iOS`",
             MINIMUM_IOS.0, MINIMUM_IOS.1
         )
-    })?;
+    })
+}
+
+/// Boots `simulator` headless if needed and waits until it has finished booting. With
+/// `show`, also brings up its window in Simulator.app.
+fn boot(simulator: &Simulator, show: bool) -> anyhow::Result<()> {
     if !simulator.booted {
         eprintln!("booting {} (iOS {}.{})...", simulator.name, simulator.runtime.0, simulator.runtime.1);
     }
     // `-b` boots the device if needed, then waits until it has finished booting. Its
     // once-a-second progress report is captured rather than shown.
     workspace::output(Command::new("xcrun").args(["simctl", "bootstatus", &simulator.udid, "-b"]))?;
-    // Bring up the Simulator window; the app still runs without it.
-    let show = Command::new("open")
-        .args(["-a", "Simulator", "--args", "-CurrentDeviceUDID", &simulator.udid])
-        .status();
-    if !show.is_ok_and(|status| status.success()) {
-        eprintln!("warning: could not open Simulator.app; the simulator is running headless");
+    if show {
+        workspace::run(Command::new("open").args([
+            "-a",
+            "Simulator",
+            "--args",
+            "-CurrentDeviceUDID",
+            &simulator.udid,
+        ]))?;
     }
-    Ok(simulator)
+    Ok(())
 }
 
 /// Picks a simulator: one that is already booted, else a recent iPhone (newest runtime,
@@ -208,6 +218,13 @@ mod tests {
             "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [unavailable],
         }));
         assert_eq!(choose_simulator(&list), None);
+    }
+
+    #[test]
+    fn minimum_matches_the_info_plist() {
+        let template = include_str!("../../../platform/ios/Info.plist");
+        let minimum = apple::plist_string(template, "MinimumOSVersion").unwrap();
+        assert_eq!(minimum, format!("{}.{}", MINIMUM_IOS.0, MINIMUM_IOS.1));
     }
 
     #[test]

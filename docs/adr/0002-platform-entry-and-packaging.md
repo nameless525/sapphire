@@ -23,13 +23,21 @@ M0 has to run the same app crate on macOS, Windows, Linux, iOS and Android. The 
    - NDK r28+ produces 16 KB-aligned libraries by default.
 4. **One portable CPU-driven draw path.**
    - The iOS simulator lacks base-vertex / first-instance drawing, indirect execution, cube arrays and comparison samplers.
-   - So the renderer rebases indices at upload and fetches draw IDs from an instance-step vertex attribute.
-   - The GPU-driven multi-draw-indirect path (later, desktop) uses `first_instance` and is gated on `GpuCaps::base_vertex_first_instance`.
+   - So the CPU-driven path keeps indices mesh-relative and emulates base vertex by binding the shared vertex buffer at each mesh's offset. Per-draw records (instance and material) arrive as an instance-step vertex attribute.
+   - This keeps per-instance skinned vertex buffers and pool compaction possible (M1).
+   - The GPU-driven multi-draw-indirect path (later, desktop) uses real `base_vertex` and `first_instance`, and is gated on `GpuCaps::base_vertex_first_instance`.
 5. **Crash capture per platform.**
    - Desktop: an out-of-process minidump monitor, which is the app re-executed with a guard.
    - Android: an in-process signal record that chains to `debuggerd`; Sentry's Android NDK SDK supplies symbolicated native crashes.
    - iOS: panic reports now; sentry-cocoa arrives with the Xcode project.
-6. **Apple build environment.** xtask sets `MACOSX_DEPLOYMENT_TARGET=14.0` and `IPHONEOS_DEPLOYMENT_TARGET=17.0` (spec §2). For macOS builds only, it sets `SDKROOT` from `xcrun` when the user hasn't. That works around Command Line Tools SDKs that are newer than the active Xcode's linker.
+6. **Apple build environment.**
+   - `.cargo/config.toml` forces `MACOSX_DEPLOYMENT_TARGET=14.0` and `IPHONEOS_DEPLOYMENT_TARGET=17.0` (spec §2) for every cargo invocation, and `xtask bundle` verifies the result against the Info.plist minimums.
+   - For macOS builds only, xtask sets `SDKROOT` from `xcrun` when the user hasn't. That works around Command Line Tools SDKs that are newer than the active Xcode's linker.
+7. **Verification never takes focus.**
+   - `sapphire_platform::run_with` with `RunOptions { background: true }` keeps a process from becoming the foreground app.
+   - The sandbox's `--capture <png>` renders offscreen through it, without a window.
+   - `xtask run --platform ios-sim` is headless unless given `--show`, and the Android emulator boots with `-no-window`.
+   - Desktop visuals are checked with captures, mobile visuals with `simctl` / `adb` screenshots.
 
 ## Consequences
 

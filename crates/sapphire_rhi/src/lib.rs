@@ -26,8 +26,9 @@
 //!
 //! # fn main() -> Result<(), sapphire_rhi::RhiError> {
 //! let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
-//! // SAFETY: the window behind `target()` outlives `surface` (see `RenderSurface::new`).
-//! let mut surface = unsafe { RenderSurface::new(&instance, target())? };
+//! // SAFETY: the window behind `target()` lives as long as the process (see
+//! // `RenderSurface::new`); a real app passes its platform window guard instead of `()`.
+//! let mut surface = unsafe { RenderSurface::new(&instance, target(), ())? };
 //! let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface))?;
 //! surface.configure(&gpu, 1280, 720, PresentPolicy::Fifo)?;
 //! # Ok(()) }
@@ -41,9 +42,10 @@ mod pipeline_cache;
 mod surface;
 
 pub use backend::{BACKEND_OVERRIDE_ENV, DEBUG_OVERRIDE_ENV, GpuDebug, GpuInstance, GpuInstanceDesc};
-pub use caps::GpuCaps;
+pub use caps::{FormatSupport, GpuCaps};
 pub use context::{GpuContext, GpuContextDesc};
 pub use error::RhiError;
+pub use pipeline_cache::PipelineCacheDesc;
 pub use surface::{PresentPolicy, RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget};
 
 /// wgpu, re-exported so `sapphire_render` uses exactly this version (spec §5.11).

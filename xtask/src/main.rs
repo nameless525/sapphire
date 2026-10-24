@@ -16,10 +16,10 @@ use std::process::ExitCode;
 use anyhow::bail;
 
 use crate::content::Cook;
-use crate::platforms::{Options, Platform, SANDBOX};
+use crate::platforms::{App, Options, Platform, SANDBOX};
 
 const USAGE: &str = "\
-Usage: cargo xtask <command> [options]
+Usage: cargo xtask [--locked] <command> [options]
 
 Commands:
   check-layers
@@ -27,20 +27,31 @@ Commands:
   content [--cook desktop|mobile]
       Generate missing sample sources under content/, then cook content/ into
       target/content/<cook>/ (default cook: desktop).
-  bundle --platform macos|ios-sim|android [--release] [--exe <path>]
-      Cook, build and assemble target/<platform>/SapphireSandbox.app (ad-hoc signed),
-      or for android target/android/SapphireSandbox.apk (Gradle, debug-signed).
-  run --platform macos|ios-sim|android [--release] [--exe <path>] [-- <app args>]
-      Cook, build and launch. macOS runs the binary with SAPPHIRE_CONTENT_DIR set;
-      ios-sim bundles, boots a simulator if needed, installs and streams the console;
-      android bundles, uses the connected device or boots the sapphire_api36 emulator
-      headless, installs, launches and streams the app's logcat.
+  bundle --platform <platform> [--release] [--exe <path>]
+      Cook, build and assemble the app for <platform> under target/<platform>/:
+        desktop   SapphireSandbox/ with the executable and content/ (any host)
+        macos     SapphireSandbox.app, ad-hoc signed
+        ios-sim   SapphireSandbox.app for the simulator, ad-hoc signed
+        android   SapphireSandbox.apk, debug-signed (Gradle)
+  run --platform <platform> [--release] [--exe <path>] [--dry-run] [--show]
+      [-- <app args>]
+      Cook, build and launch, with the app's output streamed here:
+        desktop   runs the build in place with SAPPHIRE_CONTENT_DIR set (any host)
+        macos     bundles, then runs the executable inside the .app
+        ios-sim   bundles, boots a simulator headless if none is booted, installs and
+                  launches with the console attached
+        android   bundles, uses the connected device or boots the sapphire_api36
+                  emulator headless, installs, launches and streams the app's logcat
+                  until it exits
   help
       Show this message.
 
 Options:
+  --locked       Pass --locked to every cargo command xtask runs (CI).
   --exe <path>   Use a prebuilt sapphire_sandbox executable instead of building one
-                 (macos and ios-sim).
+                 (desktop, macos and ios-sim).
+  --dry-run      Build and bundle, then print the launch commands instead of running them.
+  --show         ios-sim: also show the simulator in Simulator.app.
 
 Android environment:
   ANDROID_HOME      SDK location (default: ~/Library/Android/sdk, ~/Android/Sdk on Linux).
@@ -59,6 +70,7 @@ fn main() -> ExitCode {
 }
 
 fn run(mut args: cli::Args) -> anyhow::Result<()> {
+    workspace::set_locked(args.flag("--locked"));
     let Some(command) = args.command() else {
         bail!("no command given\n\n{USAGE}");
     };
@@ -70,19 +82,21 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         "content" => {
             let cook = args.value::<Cook>("--cook")?.unwrap_or(Cook::Desktop);
             args.finish(false)?;
-            let out = content::cook(cook)?;
-            eprintln!("cooked content for {cook} into {}", out.display());
+            let cooked = content::cook(cook)?;
+            eprintln!("cooked content for {cook} into {}", cooked.dir.display());
             Ok(())
         }
         "bundle" => {
             let (platform, options) = platform_options(&mut args)?;
             args.finish(false)?;
-            platforms::bundle(platform, &SANDBOX, &options).map(drop)
+            platforms::bundle(platform, &App::load(SANDBOX)?, &options).map(drop)
         }
         "run" => {
-            let (platform, options) = platform_options(&mut args)?;
+            let (platform, mut options) = platform_options(&mut args)?;
+            options.show = args.flag("--show");
+            options.dry_run = args.flag("--dry-run");
             let app_args = args.finish(true)?;
-            platforms::run(platform, &SANDBOX, &options, &app_args)
+            platforms::run(platform, &App::load(SANDBOX)?, &options, &app_args)
         }
         "help" | "--help" | "-h" => {
             eprintln!("{USAGE}");
@@ -94,6 +108,10 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
 
 fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)> {
     let platform = args.required::<Platform>("--platform")?;
-    let options = Options { release: args.flag("--release"), exe: args.value::<PathBuf>("--exe")? };
+    let options = Options {
+        release: args.flag("--release"),
+        exe: args.value::<PathBuf>("--exe")?,
+        ..Options::default()
+    };
     Ok((platform, options))
 }

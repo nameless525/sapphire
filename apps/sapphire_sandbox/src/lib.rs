@@ -16,15 +16,20 @@
 //!
 //! # Arguments
 //!
-//! - `--frames N`: exit after N frames, for unattended runs.
-//! - `--msaa off|4`: override the MSAA setting.
+//! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
+//!   presented in time.
+//! - `--msaa off|2|4|8`: override the MSAA setting.
+//! - `--capture <png> [--capture-ticks N] [--capture-size WxH]` (desktop): render the scene
+//!   offscreen after N fixed ticks, write a PNG and exit, without a window or taking focus.
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 
 mod app;
+mod capture;
 mod input;
 mod options;
 mod orbit;
+mod scene;
 mod stats;
 mod turntable;
 
@@ -32,17 +37,17 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::sync::{Mutex, Once};
 
-use mimalloc::MiMalloc;
-use sapphire_core::alloc::CountingAllocator;
+use sapphire_core::alloc::EngineAllocator;
 use sapphire_core::log::{LogConfig, LogLevel, LogRecord, LogSink};
 use sapphire_crash::{CrashConfig, CrashGuard};
 use sapphire_platform::{App, DeviceClass, Os};
 
 pub use app::SandboxApp;
+pub use capture::CaptureApp;
 
-/// Every allocation is counted so the frame stats can show allocations per frame (rule R6).
+/// mimalloc, counted so the frame stats and the R6 check can see allocations.
 #[global_allocator]
-static GLOBAL: CountingAllocator<MiMalloc> = CountingAllocator::new(MiMalloc);
+static GLOBAL: EngineAllocator = sapphire_core::alloc::engine_allocator();
 
 /// Log target for the sandbox.
 pub(crate) const LOG_TARGET: &str = "sapphire::sandbox";
@@ -74,6 +79,12 @@ pub fn startup() {
         let jobs = sapphire_jobs::init(sapphire_jobs::JobConfig::default());
         tracing::info!(target: LOG_TARGET, topology = ?jobs.topology(), config = ?jobs.config(), "job system ready");
     });
+}
+
+/// Whether the arguments ask for an offscreen capture (`--capture`), which `main` runs as
+/// [`CaptureApp`] in the background instead of opening the windowed app.
+pub fn capture_requested() -> bool {
+    std::env::args().any(|arg| arg == options::CAPTURE_FLAG)
 }
 
 /// Releases process-wide resources once the platform loop has returned (desktop). iOS never
@@ -117,14 +128,22 @@ struct PlatformLogSink;
 impl LogSink for PlatformLogSink {
     fn log(&self, record: &LogRecord<'_>) {
         thread_local! {
-            // Reused per thread so logging doesn't allocate in steady state.
+            // Reused per thread to keep line building cheap.
             static LINE: RefCell<String> = const { RefCell::new(String::new()) };
         }
-        LINE.with_borrow_mut(|line| {
+        let level = tracing_level(record.level);
+        // Never panic in a log call: if the buffer is unavailable (logging from inside this
+        // sink, or during thread-local teardown), build the line on the spot.
+        let written = LINE.try_with(|line| {
+            let Ok(mut line) = line.try_borrow_mut() else { return false };
             line.clear();
             let _ = write!(line, "[{}] {}", record.target, record.message);
-            sapphire_platform::sdl_log(tracing_level(record.level), line);
+            sapphire_platform::sdl_log(level, &line);
+            true
         });
+        if written != Ok(true) {
+            sapphire_platform::sdl_log(level, &format!("[{}] {}", record.target, record.message));
+        }
     }
 }
 

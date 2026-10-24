@@ -1,0 +1,36 @@
+# Text files are stored and checked out with LF on every OS. Tests compare `include_str!`
+# output against `\n`, and gradlew and other shell scripts must keep LF to run.
+* text=auto eol=lf
+
+# Windows batch files need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries: never normalize, diff or merge. Git LFS (spec §7.1) is deferred until real art
+# lands; the M0 samples are small enough for plain Git.
+# Source art and media.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.exr binary
+*.hdr binary
+*.psd binary
+*.blend binary
+*.fbx binary
+*.glb binary
+*.bin binary
+*.wav binary
+*.ogg binary
+*.ttf binary
+*.otf binary
+# Cooked or GPU-ready formats.
+*.ktx2 binary
+*.dds binary
+*.astc binary
+*.smesh binary
+*.bank binary
+# Platform packaging.
+*.jar binary
+*.icns binary
+*.ico binary

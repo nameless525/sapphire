@@ -1,0 +1,89 @@
+# cargo-deny policy (spec §7.1, §9 gate 1). Run with `cargo deny check`; CI runs it on
+# every PR through EmbarkStudios/cargo-deny-action.
+
+[graph]
+# Evaluate every platform we ship on, so platform-specific dependencies are covered.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+]
+# Features select platform or backend (rule R8), so check the union of all of them.
+all-features = true
+
+[advisories]
+# Security advisories always fail. Unmaintained notices fail only for crates we depend
+# on directly; for transitive ones, raise it with the direct dependency.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# A commercial, closed-source game: permissive licenses only, no GPL/LGPL/AGPL family.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # File-level copyleft: modified MPL files must stay MPL and be published, but the
+    # rest of the game is unaffected. Expected for ozz-animation-rs, which we vendor
+    # (Appendix A); keep MPL code in its own files.
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The allow-list is policy, not an inventory of what is in the tree today.
+unused-allowed-license = "allow"
+exceptions = []
+
+[licenses.private]
+# Workspace crates are `publish = false` and carry no license field; skip them.
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "warn"
+# Workspace path dependencies carry no version; wildcards from registries are denied.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+# Spec Appendix A, "keep out of the dependency tree": archived, abandoned or dead ends.
+deny = [
+    { crate = "kajiya", reason = "archived renderer" },
+    { crate = "rend3", reason = "archived renderer" },
+    { crate = "naga_oil", reason = "archived; use wesl for shader composition" },
+    { crate = "generational-arena", reason = "archived; use slotmap" },
+    { crate = "oxidized_navigation", reason = "deprecated; use rerecast and landmass" },
+    { crate = "laminar", reason = "dead networking crate" },
+    { crate = "rrise", reason = "Wwise binding unmaintained since 2022; audio is FMOD (kira fallback)" },
+    { crate = "oddio", reason = "dead end for audio; use FMOD or kira" },
+    { crate = "bincode", reason = "3.0.0 is a compile_error! tombstone; use rkyv or postcard" },
+    { crate = "optick", reason = "abandoned profiler; use tracy-client through profiling" },
+    { crate = "rustybuzz", reason = "archived; text shaping goes through parley" },
+    { crate = "bevy_cobweb_ui", reason = "dead end for UI; en_ui is taffy + parley" },
+    { crate = "distill", reason = "abandoned asset pipeline" },
+    { crate = "physx-rs", reason = "archived; physics is rapier with Jolt as the escape hatch" },
+    { crate = "specs", reason = "dead ECS; use bevy_ecs" },
+    { crate = "legion", reason = "dead ECS; use bevy_ecs" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

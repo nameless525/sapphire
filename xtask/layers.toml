@@ -1,0 +1,36 @@
+# Crate layering for `cargo xtask check-layers` (spec §4.1, ADR 0001).
+#
+# kind = "runtime": may depend only on runtime crates in *lower* layers, plus the
+#                   same-layer edges listed in [allow].
+# kind = "app":     shipping binaries; may depend on any runtime crate, never on tools.
+# kind = "tool":    never shipped; may depend on anything. Nothing may depend on a tool.
+#
+# Every workspace member must appear here, so new crates get a deliberate placement.
+
+[crates]
+# L0 foundation: pure Rust, no OS windowing.
+sapphire_core = { kind = "runtime", layer = 0 }
+sapphire_math = { kind = "runtime", layer = 0 }
+# L1 platform and system.
+sapphire_platform = { kind = "runtime", layer = 1 }
+sapphire_jobs = { kind = "runtime", layer = 1 }
+sapphire_time = { kind = "runtime", layer = 1 }
+sapphire_crash = { kind = "runtime", layer = 1 }
+# L2 services.
+sapphire_assets = { kind = "runtime", layer = 2 }
+sapphire_rhi = { kind = "runtime", layer = 2 }
+# L3 subsystems.
+sapphire_render = { kind = "runtime", layer = 3 }
+# Apps.
+sapphire_sandbox = { kind = "app" }
+# Tools.
+sapphire_pipeline = { kind = "tool" }
+xtask = { kind = "tool" }
+
+# Same-layer dependencies that are allowed, as [from, to] pairs.
+[allow]
+edges = []
+
+# Third-party crates that must never reach a runtime or app crate's dependency tree.
+[tool_only_dependencies]
+crates = ["gltf", "image", "toml", "cargo_metadata", "rayon"]

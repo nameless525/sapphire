@@ -1,0 +1,132 @@
+# Sapphire engine workspace (virtual manifest).
+#
+# Layering is enforced by `cargo xtask check-layers` against `xtask/layers.toml`.
+# See docs/engine-spec.md §4.1 and docs/adr/0001-crate-layering.md.
+
+[workspace]
+resolver = "3"
+members = [
+    # L0 foundation (pure Rust, no OS windowing)
+    "crates/sapphire_core",
+    "crates/sapphire_math",
+    # L1 platform and system
+    "crates/sapphire_platform",
+    "crates/sapphire_jobs",
+    "crates/sapphire_time",
+    "crates/sapphire_crash",
+    # L2 services
+    "crates/sapphire_assets",
+    "crates/sapphire_rhi",
+    # L3 subsystems
+    "crates/sapphire_render",
+    # Apps
+    "apps/sapphire_sandbox",
+    # Tools (never shipped)
+    "tools/sapphire_pipeline",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+# --- Sapphire crates ---
+sapphire_core = { path = "crates/sapphire_core" }
+sapphire_math = { path = "crates/sapphire_math" }
+sapphire_platform = { path = "crates/sapphire_platform" }
+sapphire_jobs = { path = "crates/sapphire_jobs" }
+sapphire_time = { path = "crates/sapphire_time" }
+sapphire_crash = { path = "crates/sapphire_crash" }
+sapphire_assets = { path = "crates/sapphire_assets" }
+sapphire_rhi = { path = "crates/sapphire_rhi" }
+sapphire_render = { path = "crates/sapphire_render" }
+
+# --- Foundation ---
+bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }
+glam = "0.34.1"
+libm = "0.2.16"
+thiserror = "2.0"
+anyhow = "1.0"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+bumpalo = "3.20"
+slotmap = "1.1"
+libc = "0.2"
+mimalloc = { version = "0.1.52", default-features = false }
+
+# --- Logging and profiling ---
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi", "std"] }
+profiling = "1.0.18"
+tracy-client = { version = "0.19.0", default-features = false }
+# Bridges `log` records (wgpu, naga, SDL wrappers) into tracing.
+tracing-log = { version = "0.2.0", default-features = false, features = ["log-tracer", "std"] }
+
+# --- Platform ---
+sdl3-sys = { version = "0.7.2", default-features = false }
+raw-window-handle = "0.6.2"
+
+# --- Jobs ---
+bevy_tasks = { version = "0.20.0", features = ["multi_threaded"] }
+# Windows-only CPU topology queries (P-core / E-core detection) in sapphire_jobs.
+windows-sys = { version = "0.61.2", default-features = false }
+
+# --- Crash reporting ---
+crash-handler = "0.8.1"
+minidumper = "0.11.0"
+sentry = { version = "0.49.3", default-features = false }
+# Crash upload transport: rustls with the ring provider and bundled webpki roots (no OpenSSL,
+# no aws-lc/cmake), so iOS and Android cross-builds need only the target's C compiler.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+# --- GPU ---
+# GLES and WebGPU backends are deliberately off: Android requires Vulkan 1.1 (spec §2).
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12"] }
+pollster = "1.0"
+# Dev-only: a detached CAMetalLayer lets sapphire_rhi test surfaces without a window.
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
+
+# --- Tools only (never in a runtime crate's dependency tree) ---
+gltf = "1.4.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+cargo_metadata = "0.23"
+clap = { version = "4.6", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+
+# Dependencies fast, our code debuggable (spec §7.2).
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Internal profiling builds.
+[profile.release]
+lto = "thin"
+debug = "line-tables-only"
+
+# Store builds: symbols are split out, uploaded, then stripped.
+[profile.shipping]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "full"
+split-debuginfo = "packed"

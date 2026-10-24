@@ -1,0 +1,60 @@
+[package]
+name = "sapphire_platform"
+description = "SDL3-based platform layer: app lifecycle, windows, surfaces, input events, content and user file systems."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `std` makes `HandleError` a `std::error::Error`, so `?` works on surface handles.
+raw-window-handle = { workspace = true, features = ["std"] }
+sapphire_core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# SDL 3 is compiled from the vendored `sdl3-src` sources with CMake and linked
+# statically on every target, so no platform needs an SDL install, a framework or a
+# second shared library (spec §5.1). Building it needs CMake and a C toolchain for the
+# target; Linux additionally needs the X11 / Wayland / udev development headers.
+#
+# Subsystems are opted into explicitly (`no-default-subsystems`) so a new SDL release
+# can't silently grow the binary or the platform permission surface:
+#
+# - kept:    video (windows, events, keyboard / mouse / touch), joystick (which also
+#            backs the gamepad API), hidapi (direct drivers for Xbox, PlayStation,
+#            Switch and Steam controllers), haptic (rumble), sensor (gamepad and
+#            device motion).
+# - dropped: render and gpu (wgpu owns the GPU through sapphire_rhi), audio (FMOD owns
+#            audio from M2; nothing in SDL needs its audio subsystem), camera, dialog
+#            and tray (no use in a game; the dialog and tray backends would also pull
+#            in portal / GTK dependencies on Linux), power (battery state isn't exposed
+#            until the thermal and power work in M4).
+sdl3-sys = { workspace = true, features = [
+    "build-from-source-static",
+    "no-default-subsystems",
+    "sdl-video",
+    "sdl-joystick",
+    "sdl-hidapi",
+    "sdl-haptic",
+    "sdl-sensor",
+] }
+
+[dev-dependencies]
+# The lifecycle test injects raw SDL events to exercise re-entrant dispatch.
+sdl3-sys.workspace = true
+# The smoke example plays the app's role of wiring `tracing` to stderr / `sdl_log`.
+tracing-subscriber.workspace = true
+
+# `platform_smoke` as the library an Android activity loads; empty on other targets.
+[[example]]
+name = "platform_smoke_android"
+crate-type = ["cdylib"]
+
+# Drives SDL's real callback loop, which must own the process's main thread.
+[[test]]
+name = "lifecycle"
+harness = false
+
+[lints]
+workspace = true

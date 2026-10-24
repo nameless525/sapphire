@@ -1,0 +1,18 @@
+[package]
+name = "sapphire_core"
+description = "Foundation types: logging, profiling, names, GUIDs, allocation tracking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tracing-log.workspace = true
+# `tracing-log` lets the stderr formatter show the real target of bridged `log` records.
+tracing-subscriber = { workspace = true, features = ["tracing-log"] }
+xxhash-rust = { workspace = true, features = ["const_xxh3"] }
+
+[lints]
+workspace = true

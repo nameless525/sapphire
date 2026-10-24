@@ -1,0 +1,21 @@
+[package]
+name = "sapphire_rhi"
+description = "GPU device, capability probing, surfaces and resource helpers over wgpu."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pollster.workspace = true
+raw-window-handle.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+wgpu.workspace = true
+xxhash-rust.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+objc2-quartz-core.workspace = true
+
+[lints]
+workspace = true

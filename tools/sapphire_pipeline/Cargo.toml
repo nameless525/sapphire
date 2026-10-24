@@ -1,0 +1,26 @@
+[package]
+name = "sapphire_pipeline"
+description = "Asset pipeline: importers, bakers and cookers. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sapphire_pipeline"
+path = "src/main.rs"
+
+[dependencies]
+sapphire_assets.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+clap.workspace = true
+glam.workspace = true
+# `extras` exposes per-object custom properties, which is how Blender drives toon parameters.
+gltf = { workspace = true, features = ["extras"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

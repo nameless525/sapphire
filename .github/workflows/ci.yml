@@ -1,0 +1,119 @@
+# Per-PR checks (spec §8, quality gate 1 in §9). Nightly cooks, golden images, replays
+# and device runs join as those systems land.
+#
+# The toolchain, its components and all seven targets come from rust-toolchain.toml via
+# `rustup toolchain install`, so the pinned version lives in one place. Actions are
+# pinned to commit SHAs; the comment names the release.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: short
+  # Minimum OS versions (spec §2); SDL's CMake build otherwise targets the SDK version.
+  # Ignored on non-Apple targets. xtask sets the same values for local builds.
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+  IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+  # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
+  # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.
+  SDL3_LINUX_DEPS: >-
+    build-essential pkg-config cmake ninja-build
+    libasound2-dev libpulse-dev libaudio-dev libfribidi-dev libjack-dev libsndio-dev
+    libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev
+    libxss-dev libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev
+    libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev
+    libthai-dev libusb-1.0-0-dev libpipewire-0.3-dev libwayland-dev libdecor-0-dev
+    liburing-dev
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install SDL3 build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Crate layering (R1, R8)
+        run: cargo xtask check-layers
+      - name: Licenses, bans, advisories, sources
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install SDL3 build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Test
+        run: cargo test --workspace --locked
+
+  mobile-build-ios:
+    name: Mobile build (iOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build for device
+        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --locked
+      - name: Build for simulator
+        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios-sim --locked
+
+  mobile-build-android:
+    name: Mobile build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # NDK r28+ is needed for 16 KB page alignment (spec §6.7).
+      - name: Install Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
+        with:
+          ndk-version: r29
+          add-to-path: false
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # xtask's cargo builds can't take --locked, so check the lockfile up front.
+      - name: Check Cargo.lock
+        run: cargo fetch --locked
+      # The NDK environment, the cdylib build, the mobile cook and the Gradle build all live
+      # in xtask (spec §7.3). The runner image provides the Android SDK in ANDROID_HOME.
+      - name: Bundle the APK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
+        run: cargo xtask bundle --platform android

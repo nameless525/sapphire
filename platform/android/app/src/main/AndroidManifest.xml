@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Based on SDL's android-project template (sdl3-src), with Vulkan in place of GLES and the
+  activity locked to landscape to match sapphire_platform's orientation hint.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    android:installLocation="auto">
+
+    <!-- Vulkan 1.1 (0x401000) is required; there is no GLES fallback (spec §2). -->
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:version="0x401000"
+        android:required="true" />
+
+    <!-- Touch, gamepads, and mice on desktop-mode devices, all optional. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.gamepad"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.type.pc"
+        android:required="false" />
+
+    <!-- Gamepad rumble through SDL's haptic subsystem. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- No backup: the user directory holds device-specific pipeline caches and crash dumps. -->
+    <application
+        android:label="Sapphire Sandbox"
+        android:appCategory="game"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
+        android:hardwareAccelerated="true"
+        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+
+        <!--
+          SDL can't survive the activity being recreated (it finishes it instead), so the
+          activity handles configuration changes itself. assetsPaths, on top of SDL's list,
+          covers runtime resource overlays changing, as they do shortly after boot.
+        -->
+        <activity
+            android:name=".SandboxActivity"
+            android:alwaysRetainTaskState="true"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation|assetsPaths"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:preferMinimalPostProcessing="true"
+            android:screenOrientation="sensorLandscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Lets SDL's HIDAPI driver claim USB controllers as they are plugged in. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

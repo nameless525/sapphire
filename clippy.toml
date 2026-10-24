@@ -1,0 +1,7 @@
+# Rule R2 (spec §1.4): gameplay time comes from an owner clock, never the OS.
+# The few crates that legitimately sample the OS clock (sapphire_time, sapphire_platform,
+# profiling helpers) allow this lint at the exact call site with a justification comment.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "read time from a sapphire_time clock (rule R2)" },
+    { path = "std::time::SystemTime::now", reason = "read time from a sapphire_time clock (rule R2)" },
+]

@@ -1,0 +1,36 @@
+[package]
+name = "sapphire_crash"
+description = "Crash capture: panic hook, native crash minidumps and optional upload."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Upload backend: sends pending reports to Sentry (spec §5.2). Off by default.
+sentry = ["dep:sentry", "dep:ureq"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+sentry = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+
+# Desktop: out-of-process minidumps (crash-handler in the app, minidumper in the monitor).
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+crash-handler.workspace = true
+minidumper.workspace = true
+
+# Android: in-process signal record (open question Q12, see the crate docs).
+[target.'cfg(target_os = "android")'.dependencies]
+crash-handler.workspace = true
+
+# Unix: libc for the panic backtrace (frame IPs + module walk) and Android's signal record.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

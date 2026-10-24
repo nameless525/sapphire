@@ -1,0 +1,12 @@
+/target
+/build
+*.profraw
+.DS_Store
+
+# Platform build outputs
+/platform/android/.gradle
+/platform/android/**/build
+/platform/android/local.properties
+/platform/android/app/src/main/jniLibs
+/platform/android/app/src/main/assets/content
+/platform/android/app/src/main/java/org/libsdl

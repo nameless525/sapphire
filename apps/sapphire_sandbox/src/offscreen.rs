@@ -7,6 +7,7 @@
 //! golden-image tests, spec §9) and [`bench`](crate::bench) measures the per-frame CPU path.
 
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
+use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::{Msaa, RenderSettings, Renderer};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -58,6 +59,7 @@ impl App for OffscreenApp {
 pub(crate) struct Stage {
     // Drop order: everything on the device before the context, the context before the instance.
     pub renderer: Renderer,
+    pub graph: GraphExecutor,
     pub scene: Scene,
     pub gpu: GpuContext,
     _instance: GpuInstance,
@@ -70,7 +72,7 @@ impl Stage {
         let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa })?;
         let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
         let scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
-        Ok(Self { renderer, scene, gpu, _instance: instance })
+        Ok(Self { renderer, graph: GraphExecutor::new(), scene, gpu, _instance: instance })
     }
 
     /// A 2D render target in [`FORMAT`] with `usage` on top of `RENDER_ATTACHMENT`.
@@ -87,14 +89,21 @@ impl Stage {
         })
     }
 
-    /// Prepares the scene as it stands and records it into a new encoder targeting `view`,
-    /// which the caller may add to before submitting. `alpha` interpolates between the last
-    /// two fixed steps, as in the windowed app.
-    pub fn encode(&mut self, view: &wgpu::TextureView, aspect: f32, alpha: f32) -> wgpu::CommandEncoder {
-        self.renderer.prepare(&self.gpu, &self.scene.frame_view(alpha, aspect));
-        let label = self.gpu.label("offscreen frame");
-        let mut encoder = self.gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label });
-        self.renderer.record(&mut encoder, view);
-        encoder
+    /// Renders the scene as it stands into `view` and submits it. `after` adds passes that
+    /// run after the renderer's, given the target (a readback, say). `alpha` interpolates
+    /// between the last two fixed steps, as in the windowed app.
+    pub fn render<'f>(
+        &'f mut self,
+        view: &'f wgpu::TextureView,
+        alpha: f32,
+        after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
+    ) -> Result<(), AppInitError> {
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("offscreen target", view);
+        let (width, height) = graph.size(target);
+        self.renderer.prepare(&self.gpu, &self.scene.frame_view(alpha, width as f32 / height as f32));
+        self.renderer.record(&mut graph, target);
+        after(&mut graph, target);
+        self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)
     }
 }

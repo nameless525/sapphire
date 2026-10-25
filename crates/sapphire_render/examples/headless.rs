@@ -19,6 +19,7 @@ use std::io::BufWriter;
 
 use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
+use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     CameraData, DirectionalLight, FrameView, MeshInstance, Msaa, RenderSettings, Renderer, SkyGradient,
 };
@@ -83,9 +84,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         time_seconds: 0.0,
     };
     renderer.prepare(&gpu, &frame);
-    let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    renderer.record(&mut encoder, &target_view);
-    gpu.queue().submit([encoder.finish()]);
+    let mut graph = FrameGraph::new();
+    let target_id = graph.import_texture("target", &target_view);
+    renderer.record(&mut graph, target_id);
+    GraphExecutor::new().execute(&gpu, graph)?;
 
     let pixels = read_back(&gpu, &target)?;
     let mut png = png::Encoder::new(BufWriter::new(File::create(&output)?), WIDTH, HEIGHT);

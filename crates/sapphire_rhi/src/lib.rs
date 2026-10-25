@@ -40,6 +40,7 @@ mod context;
 mod error;
 mod pipeline_cache;
 mod surface;
+mod transient;
 
 pub use backend::{BACKEND_OVERRIDE_ENV, DEBUG_OVERRIDE_ENV, GpuDebug, GpuInstance, GpuInstanceDesc};
 pub use caps::{FormatSupport, GpuCaps};
@@ -47,6 +48,7 @@ pub use context::{GpuContext, GpuContextDesc};
 pub use error::RhiError;
 pub use pipeline_cache::PipelineCacheDesc;
 pub use surface::{PresentPolicy, RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget};
+pub use transient::{EVICT_AFTER_FRAMES, TransientDesc, TransientPool, TransientStats, TransientTexture};
 
 /// wgpu, re-exported so `sapphire_render` uses exactly this version (spec §5.11).
 pub use wgpu;

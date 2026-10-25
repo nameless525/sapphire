@@ -3,10 +3,11 @@
 use std::num::NonZeroU64;
 
 use sapphire_assets::mesh::{MeshAsset, MeshFormatError, MeshVertex};
-use sapphire_rhi::{GpuContext, wgpu};
+use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::buffer::GrowableBuffer;
 use crate::gpu_types::{DrawData, FrameUniforms, InstanceData, ViewUniforms};
+use crate::graph::{FrameGraph, TextureId};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines};
 use crate::scene::DrawList;
@@ -84,9 +85,8 @@ pub struct RenderStats {
 /// Draws [`FrameView`]s.
 ///
 /// Each frame is [`prepare`](Self::prepare)d (draw lists and buffer sizing, CPU only) and then
-/// [`record`](Self::record)ed into a command encoder the app owns and submits, so the app can
-/// add its own passes (UI, debug) before submitting. This is the split the M1 frame graph
-/// builds on.
+/// [`record`](Self::record)ed as passes in the app's [`FrameGraph`], which the app can add its
+/// own passes to (UI, debug, readback) before executing it.
 ///
 /// Per-frame data reaches the GPU through a [`StagingBelt`](wgpu::util::StagingBelt): mapped
 /// staging buffers that are reused across frames, copied from at the start of the frame's
@@ -110,7 +110,6 @@ pub struct Renderer {
     draws: GrowableBuffer,
     meshes: MeshPool,
     scene_bind_group: wgpu::BindGroup,
-    targets: Option<RenderTargets>,
     draw_list: DrawList,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
@@ -213,7 +212,6 @@ impl Renderer {
             draws,
             meshes,
             scene_bind_group,
-            targets: None,
             draw_list: DrawList::default(),
             uploads,
             prepared: None,
@@ -257,95 +255,131 @@ impl Renderer {
         self.update_pool_stats();
     }
 
-    /// The GPU half of a frame: encodes the frame's uploads and the main pass into `encoder`,
-    /// drawing into `target`. The app submits the encoder (and presents) afterwards, before
-    /// the next frame's `record`: submitting is also what returns the upload buffers for reuse.
+    /// The GPU half of a frame: adds the frame's uploads and the main pass to `graph`, drawing
+    /// into `target`. Record once per [`Self::prepare`]. The renderer stays borrowed until the
+    /// graph has been executed, which submits the uploads and so returns their staging buffers
+    /// for reuse.
     ///
-    /// `target` must view mip 0 of a 2D texture in the format given to [`Self::new`]. The
-    /// internal attachments (MSAA color, depth) follow that texture's size, so any target size
-    /// works, including one that changed since the last frame. Record once per
-    /// [`Self::prepare`].
+    /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
+    /// attachments (MSAA color, depth) are transient graph textures sized from it, so any size
+    /// works, including one that changed since the last frame.
     ///
-    /// The three passes share one hardware render pass, so on mobile GPUs the MSAA color and
-    /// depth buffers are cleared, resolved and discarded without ever leaving tile memory.
-    pub fn record(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    /// The toon, outline and sky draws share one render pass, so on mobile GPUs the MSAA color
+    /// and depth are cleared, resolved and discarded without ever leaving tile memory.
+    pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() first");
         let Some(PreparedFrame { camera, constants }) = self.prepared.take() else { return };
-        let texture = target.texture();
-        let size = (texture.width(), texture.height());
+        let size = graph.size(target);
         if size.0 == 0 || size.1 == 0 {
             return;
         }
-        // Attachments must match the target exactly. No clamp is needed: a texture larger than
-        // the device allows can't exist, and surfaces clamp their swapchains to the same limit.
-        if self.targets.as_ref().is_none_or(|targets| targets.size != size) {
-            self.targets =
-                Some(RenderTargets::new(&self.device, size, self.color_format, self.settings.msaa));
-        }
-        let Some(targets) = &self.targets else { return };
-
-        // Uploads first: copies recorded before the pass complete before it reads the buffers.
-        let uploads = &mut self.uploads;
-        upload(uploads, encoder, &self.frame_uniforms, bytemuck::bytes_of(&constants));
-        upload(uploads, encoder, &self.view_uniforms, bytemuck::bytes_of(&ViewUniforms::new(&camera, size)));
-        upload(uploads, encoder, self.instances.buffer(), bytemuck::cast_slice(&self.draw_list.instances));
-        upload(uploads, encoder, self.draws.buffer(), bytemuck::cast_slice(&self.draw_list.draws));
-        uploads.finish_and_recall_on_submit(encoder);
-
-        let (view, resolve_target, store) = match &targets.msaa_color {
-            Some(msaa) => (msaa, Some(target), wgpu::StoreOp::Discard),
-            None => (target, None, wgpu::StoreOp::Store),
+        // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
+        // Adreno) can keep them entirely in tile memory.
+        let samples = self.settings.msaa.sample_count();
+        let attachment = |format| TransientDesc {
+            width: size.0,
+            height: size.1,
+            format,
+            sample_count: samples,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
         };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: self.labels.then_some("main"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                depth_slice: None,
-                resolve_target,
-                // The sky covers every pixel left uncovered; clearing is still the cheapest load
-                // on tilers.
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &targets.depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0.0),
-                    store: wgpu::StoreOp::Discard,
-                }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
-        pass.set_bind_group(0, &self.frame_bind_group, &[]);
-        pass.set_bind_group(1, &self.view_bind_group, &[0]);
-        pass.set_bind_group(2, &self.scene_bind_group, &[]);
+        // Without MSAA the pass renders straight into the target.
+        let msaa_color =
+            (samples > 1).then(|| graph.create_texture("msaa color", attachment(self.color_format)));
+        let depth = graph.create_texture("depth", attachment(DEPTH_FORMAT));
 
-        let commands = &self.draw_list.commands;
-        if !commands.is_empty() {
-            pass.set_index_buffer(self.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-            // Pass 1: toon opaque. Pass 2: outlines, after opaque so depth rejects the hull
-            // wherever the mesh itself covers it.
-            for pipeline in [&self.pipelines.toon, &self.pipelines.outline] {
-                pass.set_pipeline(pipeline);
-                let mut bound_first_vertex = None;
-                // CPU-driven submission (see the crate docs): offsets select the mesh's
-                // vertices and the draw record, so base vertex and first instance stay 0.
-                for command in commands {
-                    if bound_first_vertex != Some(command.first_vertex) {
-                        let offset = u64::from(command.first_vertex) * VERTEX_STRIDE;
-                        pass.set_vertex_buffer(0, self.meshes.vertex_buffer().slice(offset..));
-                        bound_first_vertex = Some(command.first_vertex);
+        // The uploads need the staging belt exclusively; everything else is shared.
+        let Self {
+            labels,
+            ref pipelines,
+            ref frame_uniforms,
+            ref frame_bind_group,
+            ref view_uniforms,
+            ref view_bind_group,
+            ref instances,
+            ref draws,
+            ref meshes,
+            ref scene_bind_group,
+            ref draw_list,
+            ref mut uploads,
+            ..
+        } = *self;
+
+        // Buffers aren't graph resources yet, so the uploads are a side effect added first:
+        // the main pass reads what they copy.
+        graph.add_pass("uploads").side_effect().record(move |ctx| {
+            upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
+            upload(
+                uploads,
+                ctx.encoder,
+                view_uniforms,
+                bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
+            );
+            upload(uploads, ctx.encoder, instances.buffer(), bytemuck::cast_slice(&draw_list.instances));
+            upload(uploads, ctx.encoder, draws.buffer(), bytemuck::cast_slice(&draw_list.draws));
+            uploads.finish_and_recall_on_submit(ctx.encoder);
+        });
+
+        let mut main = graph.add_pass("main").write(target).write(depth);
+        if let Some(msaa_color) = msaa_color {
+            main = main.write(msaa_color);
+        }
+        main.record(move |ctx| {
+            let (view, resolve_target, store) = match msaa_color {
+                Some(msaa_color) => (ctx.view(msaa_color), Some(ctx.view(target)), wgpu::StoreOp::Discard),
+                None => (ctx.view(target), None, wgpu::StoreOp::Store),
+            };
+            let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: labels.then_some("main"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target,
+                    // The sky covers every pixel left uncovered; clearing is still the cheapest
+                    // load on tilers.
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: ctx.view(depth),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_bind_group(0, frame_bind_group, &[]);
+            pass.set_bind_group(1, view_bind_group, &[0]);
+            pass.set_bind_group(2, scene_bind_group, &[]);
+
+            let commands = &draw_list.commands;
+            if !commands.is_empty() {
+                pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+                // Pass 1: toon opaque. Pass 2: outlines, after opaque so depth rejects the hull
+                // wherever the mesh itself covers it.
+                for pipeline in [&pipelines.toon, &pipelines.outline] {
+                    pass.set_pipeline(pipeline);
+                    let mut bound_first_vertex = None;
+                    // CPU-driven submission (see the crate docs): offsets select the mesh's
+                    // vertices and the draw record, so base vertex and first instance stay 0.
+                    for command in commands {
+                        if bound_first_vertex != Some(command.first_vertex) {
+                            let offset = u64::from(command.first_vertex) * VERTEX_STRIDE;
+                            pass.set_vertex_buffer(0, meshes.vertex_buffer().slice(offset..));
+                            bound_first_vertex = Some(command.first_vertex);
+                        }
+                        let record = u64::from(command.draw_id) * DRAW_STRIDE;
+                        pass.set_vertex_buffer(1, draws.buffer().slice(record..record + DRAW_STRIDE));
+                        pass.draw_indexed(command.indices.clone(), 0, 0..1);
                     }
-                    let record = u64::from(command.draw_id) * DRAW_STRIDE;
-                    pass.set_vertex_buffer(1, self.draws.buffer().slice(record..record + DRAW_STRIDE));
-                    pass.draw_indexed(command.indices.clone(), 0, 0..1);
                 }
             }
-        }
-        // Pass 3: sky, only where no geometry wrote depth.
-        pass.set_pipeline(&self.pipelines.sky);
-        pass.draw(0..3, 0..1);
+            // Pass 3: sky, only where no geometry wrote depth.
+            pass.set_pipeline(&pipelines.sky);
+            pass.draw(0..3, 0..1);
+        });
     }
 
     /// Counters from the last [`Self::prepare`] plus pool totals.
@@ -385,39 +419,4 @@ fn create_scene_bind_group(
             wgpu::BindGroupEntry { binding: 1, resource: meshes.material_buffer().as_entire_binding() },
         ],
     })
-}
-
-/// Attachments that live only inside the main pass.
-#[derive(Debug)]
-struct RenderTargets {
-    size: (u32, u32),
-    /// `None` without MSAA: the pass then renders straight into the caller's target.
-    msaa_color: Option<wgpu::TextureView>,
-    depth: wgpu::TextureView,
-}
-
-impl RenderTargets {
-    fn new(device: &wgpu::Device, size: (u32, u32), color_format: wgpu::TextureFormat, msaa: Msaa) -> Self {
-        // Transient: cleared on load and resolved or discarded on store, so tile-based GPUs
-        // (Apple, Mali, Adreno) can keep them entirely in tile memory.
-        let transient = |label, format| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-                    mip_level_count: 1,
-                    sample_count: msaa.sample_count(),
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-                    view_formats: &[],
-                })
-                .create_view(&wgpu::TextureViewDescriptor::default())
-        };
-        Self {
-            size,
-            msaa_color: (msaa != Msaa::Off).then(|| transient("msaa color", color_format)),
-            depth: transient("depth", DEPTH_FORMAT),
-        }
-    }
 }

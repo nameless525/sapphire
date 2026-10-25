@@ -7,10 +7,11 @@ use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, GamepadEvent, LifecycleEvent, Os,
     Platform, Scancode, SurfaceHandle, Window, WindowDesc, WindowEvent,
 };
+use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::{MeshHandle, Msaa, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
-    RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget, wgpu,
+    RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
 use sapphire_time::{FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource};
 
@@ -33,6 +34,7 @@ pub struct SandboxApp {
     // Fields drop in declaration order: GPU objects go before the window they present to.
     // Crash capture is process-wide (see `crate::startup`) and outlives the app.
     renderer: Renderer,
+    graph: GraphExecutor,
     surface: Option<RenderSurface>,
     gpu: GpuContext,
     window: Window,
@@ -86,6 +88,7 @@ impl App for SandboxApp {
         let stack = create_gpu_stack(platform, &window, debug, options.msaa)?;
         Ok(Self {
             renderer: stack.renderer,
+            graph: stack.graph,
             surface: Some(stack.surface),
             gpu: stack.gpu,
             window,
@@ -171,7 +174,14 @@ impl App for SandboxApp {
         let mut camera = self.scene.camera_mut();
         self.input.update(&mut camera, dt);
         camera.update(dt);
-        let presented = self.render(steps.alpha);
+        let presented = match self.render(steps.alpha) {
+            Ok(presented) => presented,
+            Err(error) => {
+                // The graph is built in code, so it would fail the same way every frame.
+                tracing::error!(target: LOG_TARGET, %error, "invalid frame graph");
+                return AppControl::Fail;
+            }
+        };
         if presented {
             self.presented_frames += 1;
             self.recovery.reset();
@@ -222,22 +232,21 @@ impl SandboxApp {
     }
 
     /// Draws and presents one frame. Returns whether a frame was presented.
-    fn render(&mut self, alpha: f32) -> bool {
+    fn render(&mut self, alpha: f32) -> Result<bool, GraphError> {
         profiling::scope!("render");
-        let Some(surface) = self.surface.as_mut() else { return false };
+        let Some(surface) = self.surface.as_mut() else { return Ok(false) };
         let reason = match surface.acquire() {
             SurfaceAcquire::Frame(frame) => {
                 let (width, height) = frame.size();
                 let view = self.scene.frame_view(alpha, width as f32 / height.max(1) as f32);
                 self.renderer.prepare(&self.gpu, &view);
-                let label = self.gpu.label("frame");
-                let mut encoder =
-                    self.gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label });
+                let mut graph = FrameGraph::new();
                 // The renderer sizes its attachments from the frame itself.
-                self.renderer.record(&mut encoder, frame.view());
-                self.gpu.queue().submit([encoder.finish()]);
+                let target = graph.import_texture("swapchain", frame.view());
+                self.renderer.record(&mut graph, target);
+                self.graph.execute(&self.gpu, graph)?;
                 frame.present();
-                return true;
+                return Ok(true);
             }
             SurfaceAcquire::Skip(reason) => reason,
         };
@@ -248,7 +257,7 @@ impl SandboxApp {
             self.surface = None;
         }
         // `DeviceLost` is handled in `iterate`, which rebuilds the whole GPU stack.
-        false
+        Ok(false)
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -336,6 +345,7 @@ impl SandboxApp {
             Ok(stack) => {
                 // Field order matters even here: the renderer goes before the old context.
                 self.renderer = stack.renderer;
+                self.graph = stack.graph;
                 self.gpu = stack.gpu;
                 self.surface = Some(stack.surface);
                 self.scene.set_character_mesh(stack.character);
@@ -413,6 +423,7 @@ impl Default for SurfaceRecovery {
 /// Everything that lives on the GPU device: built at startup and again after device loss.
 struct GpuStack {
     renderer: Renderer,
+    graph: GraphExecutor,
     surface: RenderSurface,
     gpu: GpuContext,
     character: MeshHandle,
@@ -446,7 +457,14 @@ fn create_gpu_stack(
 
     let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
     let character = renderer.upload_mesh(&mesh)?;
-    Ok(GpuStack { renderer, surface, gpu, character, character_bounds: mesh.bounds })
+    Ok(GpuStack {
+        renderer,
+        graph: GraphExecutor::new(),
+        surface,
+        gpu,
+        character,
+        character_bounds: mesh.bounds,
+    })
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

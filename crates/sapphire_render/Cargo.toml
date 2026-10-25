@@ -11,6 +11,7 @@ bytemuck.workspace = true
 glam.workspace = true
 profiling.workspace = true
 sapphire_assets.workspace = true
+sapphire_jobs.workspace = true
 sapphire_rhi.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

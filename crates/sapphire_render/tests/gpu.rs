@@ -4,6 +4,7 @@ use std::f32::consts::{PI, TAU};
 
 use glam::{Mat4, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
+use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     CameraData, DirectionalLight, FrameView, MeshInstance, Msaa, RenderError, RenderSettings, Renderer,
     SkyGradient,
@@ -111,19 +112,35 @@ fn framing_camera(fov_degrees: f32, (width, height): (u32, u32), fraction: f32) 
     )
 }
 
-/// Prepares, records and submits one frame, and returns any validation error it raised.
-fn render(
-    gpu: &GpuContext,
-    renderer: &mut Renderer,
-    view: &wgpu::TextureView,
-    frame: &FrameView<'_>,
-) -> Option<wgpu::Error> {
-    let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
-    renderer.prepare(gpu, frame);
-    let mut encoder = gpu.device().create_command_encoder(&Default::default());
-    renderer.record(&mut encoder, view);
-    gpu.queue().submit([encoder.finish()]);
-    pollster::block_on(scope.pop())
+/// A renderer and the graph executor that runs its frames.
+struct Frames {
+    renderer: Renderer,
+    graph: GraphExecutor,
+}
+
+impl Frames {
+    fn new(gpu: &GpuContext, format: wgpu::TextureFormat, msaa: Msaa) -> Result<Self, RenderError> {
+        Ok(Self {
+            renderer: Renderer::new(gpu, format, RenderSettings { msaa })?,
+            graph: GraphExecutor::new(),
+        })
+    }
+
+    /// Prepares, records and submits one frame, and returns any validation error it raised.
+    fn render(
+        &mut self,
+        gpu: &GpuContext,
+        view: &wgpu::TextureView,
+        frame: &FrameView<'_>,
+    ) -> Option<wgpu::Error> {
+        let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        self.renderer.prepare(gpu, frame);
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", view);
+        self.renderer.record(&mut graph, target);
+        self.graph.execute(gpu, graph).expect("a valid graph");
+        pollster::block_on(scope.pop())
+    }
 }
 
 fn read_back(gpu: &GpuContext, texture: &wgpu::Texture) -> Vec<[u8; 4]> {
@@ -176,8 +193,8 @@ fn left_outline_width(pixels: &[[u8; 4]], (width, height): (u32, u32)) -> f32 {
 #[ignore = "needs a GPU"]
 fn outline_width_is_independent_of_fov_and_resolution() {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X4 }).expect("renderer");
-    let mesh = renderer.upload_mesh(&sphere(flat(GREY, 10.0))).expect("upload");
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+    let mesh = frames.renderer.upload_mesh(&sphere(flat(GREY, 10.0))).expect("upload");
     let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
     for size in [(960, 540), (1920, 1080)] {
         let texture = target(&gpu, FORMAT, size);
@@ -187,8 +204,7 @@ fn outline_width_is_independent_of_fov_and_resolution() {
         for fov in [8.0, 38.0, 90.0] {
             // Filling 60% of the height keeps the camera inside the distance curve's flat range
             // (0.5–25 m) even at 8°.
-            let error =
-                render(&gpu, &mut renderer, &view, &frame(framing_camera(fov, size, 0.6), &instances));
+            let error = frames.render(&gpu, &view, &frame(framing_camera(fov, size, 0.6), &instances));
             assert!(error.is_none(), "{error:?}");
             let width = left_outline_width(&read_back(&gpu, &texture), size);
             assert!(
@@ -220,19 +236,15 @@ fn msaa_support_matches_device_validation() {
                 && color.supports_samples(samples)
                 && (samples == 1 || color.multisample_resolve)
                 && depth.supports_samples(samples);
-            match Renderer::new(&gpu, format, RenderSettings { msaa }) {
-                Ok(mut renderer) => {
+            match Frames::new(&gpu, format, msaa) {
+                Ok(mut frames) => {
                     assert!(supported, "{format:?} x{samples} accepted but unsupported");
-                    let handle = renderer.upload_mesh(&mesh).expect("upload");
+                    let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
                     let texture = target(&gpu, format, (64, 64));
                     let view = texture.create_view(&Default::default());
                     let instances = [MeshInstance { mesh: handle, transform: Mat4::IDENTITY }];
-                    let error = render(
-                        &gpu,
-                        &mut renderer,
-                        &view,
-                        &frame(framing_camera(38.0, (64, 64), 0.5), &instances),
-                    );
+                    let error =
+                        frames.render(&gpu, &view, &frame(framing_camera(38.0, (64, 64), 0.5), &instances));
                     assert!(error.is_none(), "{format:?} x{samples}: {error:?}");
                 }
                 Err(RenderError::NotRenderable(_) | RenderError::UnsupportedMsaa { .. }) => {
@@ -253,22 +265,25 @@ fn msaa_support_matches_device_validation() {
 #[ignore = "needs a GPU"]
 fn internal_targets_follow_the_target_size() {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
-    let mesh = renderer.upload_mesh(&sphere(white(4.0))).expect("upload");
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let mesh = frames.renderer.upload_mesh(&sphere(white(4.0))).expect("upload");
     let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
     for size in [(480, 270), (481, 270), (17, 1000), (480, 270)] {
         let texture = target(&gpu, FORMAT, size);
         let view = texture.create_view(&Default::default());
-        let error = render(&gpu, &mut renderer, &view, &frame(framing_camera(38.0, size, 0.5), &instances));
+        let error = frames.render(&gpu, &view, &frame(framing_camera(38.0, size, 0.5), &instances));
         assert!(error.is_none(), "{size:?}: {error:?}");
     }
+    // MSAA color and depth for each of the three sizes; returning to 480×270 reuses its pair.
+    let stats = frames.graph.stats();
+    assert_eq!((stats.transient_slots, stats.pool.created, stats.pool.evicted), (2, 6, 0));
 }
 
 #[test]
 #[ignore = "needs a GPU"]
 fn mesh_relative_indices_draw_every_mesh() {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
     let colored = |rgb: [f32; 3]| ToonMaterialParams {
         base_color: [rgb[0], rgb[1], rgb[2], 1.0],
         shade_color: [1.0; 4],
@@ -276,20 +291,18 @@ fn mesh_relative_indices_draw_every_mesh() {
     };
     // Several meshes, so the last one starts deep inside the shared vertex buffer.
     for _ in 0..3 {
-        renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
+        frames.renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
     }
-    let green = renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
     let instances = [MeshInstance { mesh: green, transform: Mat4::IDENTITY }];
-    assert!(
-        render(&gpu, &mut renderer, &view, &frame(framing_camera(38.0, size, 0.5), &instances)).is_none()
-    );
+    assert!(frames.render(&gpu, &view, &frame(framing_camera(38.0, size, 0.5), &instances)).is_none());
     let center = read_back(&gpu, &texture)[(32 * 64 + 32) as usize];
     assert!(center[1] > 200 && center[0] < 80, "center pixel {center:?} should be the green sphere");
 
-    let stats = renderer.stats();
+    let stats = frames.renderer.stats();
     assert_eq!((stats.draws, stats.instances), (1, 1));
     let sphere_bytes = {
         let mesh = sphere(white(0.0));

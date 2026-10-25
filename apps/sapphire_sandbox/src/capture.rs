@@ -47,22 +47,26 @@ fn render(stage: &mut Stage, width: u32, height: u32) -> Result<Vec<u8>, AppInit
     });
 
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut encoder = stage.encode(&view, width as f32 / height as f32, 1.0);
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row_bytes),
-                rows_per_image: Some(height),
-            },
-        },
-        target.size(),
-    );
-    let gpu = &stage.gpu;
-    gpu.queue().submit([encoder.finish()]);
-    read_back(gpu, &readback, padded_row_bytes as usize, row_bytes as usize)
+    // Passes borrow what they use until the graph has run.
+    let readback = &readback;
+    stage.render(&view, 1.0, |graph, target| {
+        graph.add_pass("readback").read(target).side_effect().record(move |ctx| {
+            let texture = ctx.texture(target);
+            ctx.encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row_bytes),
+                        rows_per_image: Some(height),
+                    },
+                },
+                texture.size(),
+            );
+        });
+    })?;
+    read_back(&stage.gpu, readback, padded_row_bytes as usize, row_bytes as usize)
 }
 
 /// Maps `readback` after the GPU has written it and strips the row padding.

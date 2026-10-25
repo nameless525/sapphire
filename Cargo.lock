@@ -1657,6 +1657,7 @@ dependencies = [
  "pollster",
  "profiling",
  "sapphire_assets",
+ "sapphire_jobs",
  "sapphire_rhi",
  "thiserror",
  "tracing",

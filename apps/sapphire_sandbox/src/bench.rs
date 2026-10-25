@@ -1,8 +1,9 @@
 //! `--bench <frames>`: measures the sandbox's per-frame CPU path without a window (see
 //! [`crate::offscreen`]).
 //!
-//! Each frame runs one fixed step, `Renderer::prepare`, encoding with `Renderer::record` and
-//! the submit against an offscreen target, then waits for the GPU so frames don't queue up.
+//! Each frame runs one fixed step, `Renderer::prepare`, and a frame graph with the renderer's
+//! passes, executed against an offscreen target (compile, record, submit), then waits for the
+//! GPU so frames don't queue up.
 //! After a warm-up it logs CPU time per frame (that span, without the GPU wait) and
 //! allocations per frame (the whole frame, wait included, like the windowed stats). It leaves
 //! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
@@ -38,7 +39,6 @@ pub(crate) fn run(
 
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let aspect = width as f32 / height as f32;
     let mut cpu = Vec::with_capacity(frames.min(1 << 20) as usize);
     let mut gpu_wait = Duration::ZERO;
     let (mut allocations, mut bytes) = (0, 0);
@@ -46,8 +46,7 @@ pub(crate) fn run(
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         stage.scene.step();
-        let encoder = stage.encode(&view, aspect, 1.0);
-        stage.gpu.queue().submit([encoder.finish()]);
+        stage.render(&view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let frame_cpu = stopwatch.lap();
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
@@ -78,6 +77,7 @@ pub(crate) fn run(
         allocs_per_frame = format_args!("{:.1}", allocations as f64 / f64::from(frames)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
+        graph = ?stage.graph.stats(),
         "bench",
     );
     if !alloc::is_installed() {

@@ -546,6 +546,12 @@ The big one. It owns everything from `FramePacket` to pixels.
   4. Assign textures from the transient pool.
 - Record passes on workers into separate `CommandEncoder`s, then submit them in order in one `queue.submit`. wgpu tracks barriers, so the graph's job is ordering, culling, pooling and parallel recording.
 - Choose passes per tier, from the data table in "Quality tiers" below.
+- **As built (M1 R1, `sapphire_render::graph`):**
+  - Passes run in the order they're added; compile checks every read follows a write.
+  - A write replaces a texture's contents, so a pass that keeps them (`LoadOp::Load`, partial draws) also declares a read. Culling relies on this.
+  - Transients with equal descriptors and disjoint lifetimes share one pooled texture; the pool (`sapphire_rhi::TransientPool`) matches textures across frames and evicts ones unused for 60 frames.
+  - Under 4 running passes, recording stays on the calling thread in one encoder; from 4, it splits into encoders of at least 2 passes on the job pool.
+  - Cost: about 10 heap allocations per frame (node lists, one boxed closure per pass) and under 1 µs of CPU for M0's two passes. Buffers become graph resources with compute skinning (R2); until then, uploads are side-effect passes added first.
 
 **Scene and draws**
 

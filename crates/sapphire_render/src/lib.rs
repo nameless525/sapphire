@@ -8,11 +8,14 @@
 //! - Persistent GPU scene buffers: a mesh pool (shared vertex and index buffers), a material
 //!   buffer indexed by material ID, and per-frame instance and draw-record buffers.
 //! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
+//! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
+//!   parallel recording and the frame's one submit.
 //!
 //! # Does not own
 //!
-//! - Devices, surfaces, submission and presentation: `sapphire_rhi` and the app. The renderer
-//!   records into the app's command encoder ([`Renderer::prepare`], [`Renderer::record`]).
+//! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
+//!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
+//!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
 //! - Mesh cooking: meshes arrive as [`sapphire_assets::mesh::MeshAsset`] with smoothed
 //!   outline normals already baked.
 //!
@@ -60,13 +63,14 @@
 //!
 //! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; a
 //!   persistent staging ring in place of `Queue::write_buffer`; persistent instances updated
-//!   from extract deltas; pipeline/material/mesh draw sorting; the frame graph.
+//!   from extract deltas; pipeline/material/mesh draw sorting.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
 
 mod buffer;
 mod frame;
 mod gpu_types;
+pub mod graph;
 mod mesh_pool;
 mod pipelines;
 mod renderer;

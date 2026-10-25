@@ -113,8 +113,9 @@ On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb
 
 - **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
 - **Gates:** mean and 99th-percentile error, not the maximum, because hard two-tone edges flip whole pixels between backends.
-- **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`). CI uploads both.
-- **New scene or intended change:** `cargo xtask golden --update` writes this machine's family. The other families' images come from the failing CI run's artifacts.
+- **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`).
+- **CI artifacts:** every golden job uploads `target/golden/` (each scene's capture, plus the failures' diffs), kept for 7 days.
+- **New scene or intended change:** `cargo xtask golden --update` writes this machine's family. The other families' images come from the CI run's artifacts, which a passing run has too.
 
 ## Everyday commands
 

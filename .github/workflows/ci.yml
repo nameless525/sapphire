@@ -177,13 +177,16 @@ jobs:
           Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
       - name: Golden images
         run: cargo --locked xtask --locked golden
+      # Every run keeps its captures briefly, not just failing ones, so drift within the gates
+      # (shader codegen rounding on llvmpipe, say) can be re-baselined from a passing run.
       - name: Upload captures and diffs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: golden-${{ matrix.family }}
           path: target/golden/
           if-no-files-found: ignore
+          retention-days: 7
 
   mobile-build-ios:
     name: Mobile build (iOS)

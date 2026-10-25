@@ -10,6 +10,9 @@
 //!   LODs, skins and morph targets, read in place (M1 A5), and [`texture`], KTX2 files whose
 //!   levels the renderer uploads as they are (M1 A2). The mesh element encodings live here
 //!   too, both directions, so cooker and runtime can't drift apart.
+//! - What the anime character maps' texels mean ([`character_maps`], M1 A7): the ILM channel
+//!   assignment and material-ID encoding, the ramp rows, and the SDF face-map angle encoding,
+//!   for the same reason.
 //!
 //! # Does not own
 //!
@@ -34,6 +37,7 @@
 //!   [`texture::Texture`] already exposes each level on its own, smallest last in the list
 //!   and first in the file.
 
+pub mod character_maps;
 mod id;
 pub mod mesh;
 pub mod texture;

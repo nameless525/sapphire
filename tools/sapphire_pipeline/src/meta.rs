@@ -67,6 +67,7 @@ use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
+use crate::character_maps::{MapKind, MapSettings};
 use crate::optimize::LodSettings;
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 
@@ -95,12 +96,19 @@ pub enum ImportSettings {
     Gltf(MeshSettings),
     /// PNG, TGA or EXR, cooked as its texture class says (M1 A2).
     Texture(TextureSettings),
+    /// An anime character map document (`.facesdf.ron`, `.ramp.ron`, `.ilm.ron`): the map it
+    /// describes is generated, then cooked as a texture (M1 A7).
+    CharacterMap(MapSettings),
 }
 
 impl ImportSettings {
     /// The default settings for `source`, picked by its extension, or `None` if no importer
     /// reads it.
     pub fn for_source(source: &Path) -> Option<Self> {
+        // Map documents are known by compound extensions, before the last one is looked at.
+        if let Some(kind) = MapKind::for_path(source) {
+            return Some(Self::CharacterMap(kind.default_settings()));
+        }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
@@ -117,7 +125,7 @@ impl ImportSettings {
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
             Self::Gltf(settings) => Some(settings),
-            Self::Texture(_) => None,
+            Self::Texture(_) | Self::CharacterMap(_) => None,
         }
     }
 }

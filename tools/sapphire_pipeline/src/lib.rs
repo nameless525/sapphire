@@ -18,6 +18,9 @@
 //!   chain each cook keeps.
 //! - [`texture`]: texture classes and their per-cook formats, mip chains, and compression
 //!   through ctt into KTX2 [`Texture`](sapphire_assets::texture::Texture)s.
+//! - [`character_maps`]: the anime character maps, generated from RON documents and cooked
+//!   as textures: SDF face maps from threshold masks, ramps from color stops, and ILM maps
+//!   packed from separate masks.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache.
 //! - [`cache`]: the cache key over everything that determines a cooked output, and the local
@@ -26,8 +29,10 @@
 //!
 //! # Does not own
 //!
-//! - The [`AssetId`] type and the cooked formats (`.smesh`, the KTX2 texture profile):
-//!   `sapphire_assets`, shared with the runtime.
+//! - The [`AssetId`] type and the cooked formats (`.smesh`, the KTX2 texture profile, what
+//!   the character maps' texels mean): `sapphire_assets`, shared with the runtime.
+//! - Baking masks from a character in Blender: a script under `tools/blender/`, described
+//!   in `docs/blender-mask-bake.md`.
 //! - Document and archive formats: `sapphire_serialize` (sidecars are its RON documents).
 //! - Locking and output locations: xtask (`cargo xtask content` cooks into
 //!   `target/content/<cook>/` with the cache in `target/content/cache/`).
@@ -53,6 +58,7 @@
 
 pub mod bake;
 pub mod cache;
+pub mod character_maps;
 mod color;
 pub mod cook;
 mod gltf_writer;

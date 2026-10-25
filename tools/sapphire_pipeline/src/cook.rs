@@ -3,8 +3,8 @@
 //!
 //! [`cook_dir`] cooks a content tree:
 //!
-//! 1. Finds the source assets and resolves their sidecars ([`meta`]), creating missing
-//!    ones.
+//! 1. Finds the source assets, leaving out the images that map documents read (they are
+//!    part of those assets), and resolves their sidecars ([`meta`]), creating missing ones.
 //! 2. Plans each asset's output: its path under the content root, mirrored under the output
 //!    directory with the cooked format's extension (`samples/mannequin.glb` →
 //!    `samples/mannequin.smesh`). The runtime still finds cooked files by these paths; it
@@ -24,11 +24,14 @@
 //!   drops its first levels, for a lower-detail LOD0 and fewer LODs (spec §5.27).
 //! - **Textures** cook PNG, TGA and EXR → `.ktx2` (A2), BCn on desktop and ASTC on mobile
 //!   ([`texture`]).
+//! - **Anime character maps** cook `.facesdf.ron`, `.ramp.ron` and `.ilm.ron` documents →
+//!   `.ktx2` (A7): the map a document describes is generated, then cooked as its texture
+//!   class ([`character_maps`]).
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -41,6 +44,7 @@ use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
 
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
+use crate::character_maps::{self, MapError, MapKind};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
@@ -125,6 +129,13 @@ impl Recipe {
                 format: TEXTURE_VERSION,
                 extension: TEXTURE_EXTENSION,
             },
+            // The importer generates the map as an image, which the texture cooker cooks.
+            ImportSettings::CharacterMap(settings) => Self {
+                importer: settings.kind().importer(),
+                cooker: texture::COOKER,
+                format: TEXTURE_VERSION,
+                extension: TEXTURE_EXTENSION,
+            },
         }
     }
 }
@@ -148,6 +159,13 @@ pub enum CookError {
         /// Boxed: decoder and encoder errors are large, and every cook result carries this type.
         #[source]
         source: Box<TextureError>,
+    },
+    #[error("failed to cook character map {}", path.display())]
+    Map {
+        path: PathBuf,
+        /// Boxed, as texture errors are.
+        #[source]
+        source: Box<MapError>,
     },
     #[error("cooked mesh from {} is invalid", path.display())]
     Invalid {
@@ -231,7 +249,9 @@ pub fn cook_dir(
     out_root: &Path,
     options: &CookOptions<'_>,
 ) -> Result<CookReport, CookError> {
-    let tree = SourceTree::scan(source_root)?;
+    let mut tree = SourceTree::scan(source_root)?;
+    let inputs = map_inputs(source_root, &tree)?;
+    tree.sources.retain(|source| !inputs.contains(source));
     let resolved = meta::resolve(&tree, options.locked)?;
 
     let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -323,7 +343,60 @@ fn cook_source(
         }
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::CharacterMap(settings) => {
+            character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
+        }
     }
+}
+
+/// Wraps a map error as the cook error for the document at `path`.
+fn map_error(path: &Path) -> impl Fn(MapError) -> CookError + '_ {
+    move |source| CookError::Map { path: path.to_owned(), source: Box::new(source) }
+}
+
+/// The images that the map documents in `tree` read: inputs of those assets rather than
+/// assets of their own. Names that aren't images are left for the map's cook to reject.
+///
+/// An input inside the content tree must name a scanned file exactly, case included, so a
+/// cook claims the same files on every file system. It must not have a sidecar either: that
+/// would make it an asset of its own, which claiming it would silently drop.
+fn map_inputs(source_root: &Path, tree: &SourceTree) -> Result<HashSet<PathBuf>, CookError> {
+    let sources: HashSet<&Path> = tree.sources.iter().map(PathBuf::as_path).collect();
+    let sidecars: HashSet<&Path> = tree.sidecars.iter().map(PathBuf::as_path).collect();
+    let mut inputs = HashSet::new();
+    for document in &tree.sources {
+        let Some(kind) = MapKind::for_path(document) else { continue };
+        let fail = map_error(document);
+        let bytes =
+            fs::read(document).map_err(|source| CookError::Read { path: document.clone(), source })?;
+        let mut with_sidecars = Vec::new();
+        for input in character_maps::inputs(kind, &bytes).map_err(&fail)? {
+            let path = character_maps::resolve_input(document, &input).map_err(&fail)?;
+            if image::SourceFormat::from_path(&path).is_none() {
+                continue;
+            }
+            let in_tree = path.strip_prefix(source_root).is_ok_and(|relative| !is_hidden(relative));
+            if in_tree && !sources.contains(path.as_path()) {
+                return Err(fail(MapError::MissingInput(path)));
+            }
+            if sidecars.contains(meta::sidecar_path(&path).as_path()) {
+                with_sidecars.push(path.clone());
+            }
+            inputs.insert(path);
+        }
+        if !with_sidecars.is_empty() {
+            return Err(fail(MapError::InputsWithSidecars(with_sidecars)));
+        }
+    }
+    Ok(inputs)
+}
+
+/// Whether a scan skips `relative`: some component of it is hidden, as [`SourceTree::scan`]
+/// treats names starting with a dot.
+fn is_hidden(relative: &Path) -> bool {
+    relative.components().any(|component| {
+        matches!(component, std::path::Component::Normal(name) if name.to_str().is_some_and(|name| name.starts_with('.')))
+    })
 }
 
 /// Everything besides its own bytes that cooking `path` reads: part of its cache key.
@@ -344,6 +417,17 @@ fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<
         }
         // Images are self-contained.
         ImportSettings::Texture(_) => Ok(Vec::new()),
+        ImportSettings::CharacterMap(settings) => {
+            let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
+            inputs
+                .into_iter()
+                .map(|input| {
+                    let full = character_maps::resolve_input(path, &input).map_err(map_error(path))?;
+                    let bytes = fs::read(&full).map_err(|source| CookError::Read { path: full, source })?;
+                    Ok(Dependency::File { path: input, hash: blake3::hash(&bytes) })
+                })
+                .collect()
+        }
     }
 }
 

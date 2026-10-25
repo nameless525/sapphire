@@ -1,6 +1,6 @@
 //! `sapphire_pipeline`: command-line front end to the asset pipeline.
 //!
-//! The arguments are parsed by hand, as in xtask: three commands and a handful of options don't
+//! The arguments are parsed by hand, as in xtask: four commands and a handful of options don't
 //! justify clap's build time, which xtask's cook pays in a release build too.
 
 use std::path::{Path, PathBuf};
@@ -9,8 +9,9 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail};
 use sapphire_pipeline::bake::OutlineSettings;
+use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
-use sapphire_pipeline::meta::{self, MeshSettings};
+use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::samples;
 
 const USAGE: &str = "\
@@ -22,6 +23,10 @@ Usage:
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
       Cook one .gltf/.glb file into a .smesh file (default cook: desktop), with the settings
       of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
+  sapphire_pipeline bake-map <DOCUMENT> <OUTPUT>
+      Generate the map a .facesdf.ron, .ramp.ron or .ilm.ron document describes, with the
+      settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
+      compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps.
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--cache <DIR>] [--locked]
       Cook every source asset under --source (skipping hidden entries) into mirrored paths
       under --out, creating missing .meta sidecars next to the sources. Outputs are written
@@ -40,6 +45,7 @@ Options:
 enum Command {
     GenSamples { out: PathBuf },
     CookMesh { input: PathBuf, output: PathBuf, cook: Cook, outline: Option<OutlineSettings> },
+    BakeMap { input: PathBuf, output: PathBuf },
     Cook { source: PathBuf, out: PathBuf, cook: Cook, cache: Option<PathBuf>, locked: bool },
     Help,
     Version,
@@ -90,6 +96,10 @@ fn run(command: Command) -> anyhow::Result<()> {
             cook::cook_mesh_file(&input, &output, &settings, cook)?;
             eprintln!("cooked {} -> {} ({cook})", input.display(), output.display());
         }
+        Command::BakeMap { input, output } => {
+            bake_map(&input, &output)?;
+            eprintln!("baked {} -> {}", input.display(), output.display());
+        }
         Command::Cook { source, out, cook, cache, locked } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked };
             let report = cook::cook_dir(&source, &out, &options)?;
@@ -99,6 +109,31 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(())
+}
+
+/// Generates the map the document at `input` describes and writes it to `output` as a PNG.
+fn bake_map(input: &Path, output: &Path) -> anyhow::Result<()> {
+    let sidecar = meta::sidecar_path(input);
+    let settings = if sidecar.exists() {
+        match meta::read(&sidecar)?.importer {
+            ImportSettings::CharacterMap(settings) => settings,
+            _ => bail!("{} isn't a character map's sidecar", sidecar.display()),
+        }
+    } else {
+        MapKind::for_path(input)
+            .with_context(|| {
+                format!("{} isn't a .facesdf.ron, .ramp.ron or .ilm.ron document", input.display())
+            })?
+            .default_settings()
+    };
+    let bytes = std::fs::read(input).with_context(|| format!("failed to read {}", input.display()))?;
+    let map = character_maps::generate(input, &bytes, &settings)
+        .with_context(|| format!("failed to generate the map {} describes", input.display()))?;
+    let png = character_maps::to_png(&map).context("failed to encode the PNG")?;
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(output, png).with_context(|| format!("failed to write {}", output.display()))
 }
 
 /// Lists what changed, then a summary line. Assets are named relative to the source and
@@ -161,6 +196,10 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             };
             let [input, output] = options.positional()?;
             Command::CookMesh { input: input.into(), output: output.into(), cook, outline }
+        }
+        "bake-map" => {
+            let [input, output] = options.positional()?;
+            Command::BakeMap { input: input.into(), output: output.into() }
         }
         "cook" => Command::Cook {
             source: options.required("--source")?,
@@ -249,6 +288,10 @@ mod tests {
             }
         );
         assert_eq!(
+            parse(&["bake-map", "face.facesdf.ron", "face.png"]).unwrap(),
+            Command::BakeMap { input: "face.facesdf.ron".into(), output: "face.png".into() }
+        );
+        assert_eq!(
             parse(&["cook", "--source", "content", "--out", "out", "--cook", "desktop", "--locked"]).unwrap(),
             Command::Cook {
                 source: "content".into(),
@@ -283,6 +326,11 @@ mod tests {
             "per-asset settings live in sidecars"
         );
         assert!(parse(&["cook-mesh", "a.glb"]).is_err(), "one path");
+        assert!(parse(&["bake-map", "a.ramp.ron"]).is_err(), "one path");
+        assert!(
+            parse(&["bake-map", "a.ramp.ron", "a.png", "--cook", "mobile"]).is_err(),
+            "no cook: before compression"
+        );
         assert!(parse(&["cook-mesh", "a.glb", "b", "--weld-tolerance", "-1"]).is_err());
         assert!(parse(&["gen-samples", "--out", "dir", "--extra"]).is_err());
     }

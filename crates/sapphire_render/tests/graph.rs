@@ -1,6 +1,6 @@
 //! Frame graph tests that need a GPU. Run with `cargo test -p sapphire_render -- --ignored`.
 
-use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
+use sapphire_render::graph::{FrameGraph, GpuTimings, GraphExecutor, TextureId};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 
 const SIZE: u32 = 4;
@@ -112,6 +112,25 @@ fn graphs_cull_share_pooled_textures_and_record_in_parallel() {
     assert!(stats.command_buffers > 1, "9 passes record in parallel: {stats:?}");
 }
 
+/// What must hold for any frame's timings from [`reports_and_gpu_timings_describe_the_executed_graph`].
+fn check_timings(timings: &GpuTimings, frames: u64) {
+    assert!(timings.frame > 0 && timings.frame <= frames);
+    assert!(timings.passes.iter().all(|pass| pass.name != "clear unused"), "culled passes aren't timed");
+    // The copy takes no render pass, so only devices that time between passes see it; a device
+    // that does may still drop an invalid pair, so only the converse is checked.
+    if !timings.every_pass {
+        assert!(timings.get("to target").is_none(), "{timings:?}");
+    }
+    let exclusive: std::time::Duration = timings.passes.iter().map(|pass| pass.exclusive).sum();
+    assert!(timings.passes.iter().all(|pass| pass.exclusive <= pass.duration), "{timings:?}");
+    // Up to a nanosecond per pass of rounding from ticks.
+    let rounding = std::time::Duration::from_nanos(timings.passes.len() as u64);
+    assert!(
+        exclusive <= timings.span() + rounding,
+        "exclusive times add up to the span at most: {timings:?}"
+    );
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn reports_and_gpu_timings_describe_the_executed_graph() {
@@ -133,6 +152,10 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
     executor.set_report(true);
     let timing = executor.set_gpu_timing(&gpu, true);
     assert_eq!(timing, gpu.caps().timestamp_query, "timing is on wherever timestamps are");
+    // Whether any frame came back with the clear pass timed. Not every frame does: Apple GPUs
+    // sometimes report a pass that only clears with its end before its start, and the decoder
+    // drops such pairs as invalid.
+    let mut clear_timed = false;
     for _ in 0..8 {
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         let mut graph = FrameGraph::new();
@@ -145,6 +168,10 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
         executor.execute(&gpu, graph).expect("a valid graph");
         assert!(pollster::block_on(scope.pop()).is_none(), "timestamp queries validate");
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        if let Some(timings) = executor.gpu_timings() {
+            check_timings(timings, executor.frames());
+            clear_timed |= timings.get("clear source").is_some();
+        }
     }
 
     let report = executor.report().expect("on");
@@ -157,19 +184,8 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
         return;
     }
     let timings = executor.gpu_timings().expect("frames came back after waiting on the GPU");
-    assert!(timings.frame > 0 && timings.frame <= executor.frames());
-    assert!(timings.passes.iter().any(|pass| pass.name == "clear source"), "{timings:?}");
-    assert!(timings.passes.iter().all(|pass| pass.name != "clear unused"), "culled passes aren't timed");
-    // The copy takes no render pass, so only devices that time between passes see it.
-    assert_eq!(timings.get("to target").is_some(), timings.every_pass, "{timings:?}");
-    let exclusive: std::time::Duration = timings.passes.iter().map(|pass| pass.exclusive).sum();
-    assert!(timings.passes.iter().all(|pass| pass.exclusive <= pass.duration), "{timings:?}");
-    // Up to a nanosecond per pass of rounding from ticks.
-    let rounding = std::time::Duration::from_nanos(timings.passes.len() as u64);
-    assert!(
-        exclusive <= timings.span() + rounding,
-        "exclusive times add up to the span at most: {timings:?}"
-    );
+    check_timings(timings, executor.frames());
+    assert!(clear_timed, "the clear pass was timed in some frame: {timings:?}");
     executor.set_gpu_timing(&gpu, false);
     assert!(executor.gpu_timings().is_none(), "turning timing off drops it");
 }

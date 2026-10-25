@@ -78,8 +78,9 @@ deny = [
     { crate = "physx-rs", reason = "archived; physics is rapier with Jolt as the escape hatch" },
     { crate = "specs", reason = "dead ECS; use bevy_ecs" },
     { crate = "legion", reason = "dead ECS; use bevy_ecs" },
-    # TLS: rustls with the ring provider and bundled roots only (Cargo.toml, `ureq`), so mobile
-    # and Windows builds need no system TLS library and no extra C toolchain.
+    # TLS, for when networking arrives (crash upload, patching): rustls with the ring provider and
+    # bundled roots only, so mobile and Windows builds need no system TLS library and no extra C
+    # toolchain.
     { crate = "openssl-sys", reason = "system OpenSSL: absent on iOS and Android, a C build everywhere; use rustls" },
     { crate = "native-tls", reason = "platform TLS stacks differ per OS; use rustls" },
     { crate = "aws-lc-sys", reason = "needs CMake, NASM on Windows and a C toolchain per target; rustls uses ring" },

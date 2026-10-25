@@ -28,13 +28,17 @@ use crate::report;
 /// The private flag that turns a launch of the app's executable into a crash monitor.
 const MONITOR_FLAG: &str = "--sapphire-crash-monitor";
 
-/// How long the app waits for a freshly launched monitor to accept its connection (5 s).
-const CONNECT_ATTEMPTS: u32 = 250;
-const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(20);
+/// How long the app waits for a freshly launched monitor to accept its connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long [`MonitorCapture`]'s drop waits for the monitor to exit before killing it (2 s).
-const EXIT_POLLS: u32 = 200;
-const EXIT_POLL_DELAY: Duration = Duration::from_millis(10);
+/// How long [`MonitorCapture`]'s drop waits for the monitor to exit before killing it.
+const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Waiting on the monitor polls with exponential backoff from [`FIRST_POLL_DELAY`] up to
+/// [`MAX_POLL_DELAY`]: the monitor is usually ready, or gone, within a few milliseconds, which a
+/// fixed 20 ms delay turned into a 20–40 ms wait at every launch and exit.
+const FIRST_POLL_DELAY: Duration = Duration::from_millis(1);
+const MAX_POLL_DELAY: Duration = Duration::from_millis(20);
 
 /// `sun_path` holds 104 bytes on macOS and 108 on Windows, including the terminating NUL.
 #[cfg(not(target_os = "linux"))]
@@ -129,11 +133,12 @@ impl Drop for MonitorCapture {
         self.handler = None;
         // Closing the lifeline tells the monitor to exit.
         self.lifeline = None;
-        for _ in 0..EXIT_POLLS {
+        let mut backoff = Backoff::new(EXIT_TIMEOUT);
+        loop {
             match self.monitor.try_wait() {
                 Ok(Some(_)) => return,
-                Ok(None) => thread::sleep(EXIT_POLL_DELAY),
-                Err(_) => break,
+                Ok(None) if backoff.sleep() => {}
+                Ok(None) | Err(_) => break,
             }
         }
         tracing::warn!(target: "sapphire::crash", "the crash monitor did not shut down cleanly; killing it");
@@ -174,18 +179,44 @@ pub(crate) fn request_panic_dump() -> bool {
 
 /// Connects to the monitor, retrying while it starts up.
 fn connect(socket: &SocketId, monitor: &mut Child) -> Result<Client, MonitorError> {
-    let mut attempt = 1;
+    let mut backoff = Backoff::new(CONNECT_TIMEOUT);
     loop {
-        match Client::with_name(socket.name()) {
+        let error = match Client::with_name(socket.name()) {
             Ok(client) => return Ok(client),
-            Err(err) if attempt >= CONNECT_ATTEMPTS => return Err(MonitorError::Connect(err)),
-            Err(_) => {}
-        }
+            Err(error) => error,
+        };
         if let Ok(Some(status)) = monitor.try_wait() {
             return Err(MonitorError::MonitorExited(status));
         }
-        attempt += 1;
-        thread::sleep(CONNECT_RETRY_DELAY);
+        if !backoff.sleep() {
+            return Err(MonitorError::Connect(error));
+        }
+    }
+}
+
+/// Sleeps between polls, doubling the delay from [`FIRST_POLL_DELAY`] up to [`MAX_POLL_DELAY`],
+/// until `timeout` worth of sleeping has passed. Counting sleeps rather than reading a clock
+/// keeps the OS clock out of this crate (rule R2); the timeout is a safety net, not a deadline.
+struct Backoff {
+    delay: Duration,
+    slept: Duration,
+    timeout: Duration,
+}
+
+impl Backoff {
+    fn new(timeout: Duration) -> Self {
+        Self { delay: FIRST_POLL_DELAY, slept: Duration::ZERO, timeout }
+    }
+
+    /// Sleeps before the next poll, or returns `false` once the timeout is used up.
+    fn sleep(&mut self) -> bool {
+        if self.slept >= self.timeout {
+            return false;
+        }
+        thread::sleep(self.delay);
+        self.slept += self.delay;
+        self.delay = (self.delay * 2).min(MAX_POLL_DELAY);
+        true
     }
 }
 
@@ -351,6 +382,18 @@ mod tests {
 
     fn args(list: &[&str]) -> impl Iterator<Item = OsString> {
         list.iter().map(OsString::from).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn backoff_doubles_up_to_the_cap_and_gives_up_at_the_timeout() {
+        let mut backoff = Backoff::new(Duration::from_millis(5));
+        assert!(backoff.sleep() && backoff.sleep() && backoff.sleep(), "1, 2 and 4 ms");
+        assert!(!backoff.sleep(), "7 ms slept is past the 5 ms timeout");
+
+        let mut backoff = Backoff { delay: MAX_POLL_DELAY / 2, ..Backoff::new(Duration::from_secs(1)) };
+        assert!(backoff.sleep());
+        assert!(backoff.sleep());
+        assert_eq!(backoff.delay, MAX_POLL_DELAY, "capped");
     }
 
     #[test]

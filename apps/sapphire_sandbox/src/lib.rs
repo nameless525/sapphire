@@ -19,14 +19,20 @@
 //! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
 //!   presented in time.
 //! - `--msaa off|2|4|8`: override the MSAA setting.
-//! - `--capture <png> [--capture-ticks N] [--capture-size WxH]` (desktop): render the scene
-//!   offscreen after N fixed ticks, write a PNG and exit, without a window or taking focus.
+//! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
+//!   (default 1920x1080):
+//!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default
+//!     90), write a PNG and exit.
+//!   - `--bench <frames>`: run the per-frame CPU path that many times and log CPU time and
+//!     allocations per frame.
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 
 mod app;
+mod bench;
 mod capture;
 mod input;
+mod offscreen;
 mod options;
 mod orbit;
 mod scene;
@@ -43,7 +49,7 @@ use sapphire_crash::{CrashConfig, CrashGuard};
 use sapphire_platform::{App, DeviceClass, Os};
 
 pub use app::SandboxApp;
-pub use capture::CaptureApp;
+pub use offscreen::OffscreenApp;
 
 /// mimalloc, counted so the frame stats and the R6 check can see allocations.
 #[global_allocator]
@@ -81,10 +87,10 @@ pub fn startup() {
     });
 }
 
-/// Whether the arguments ask for an offscreen capture (`--capture`), which `main` runs as
-/// [`CaptureApp`] in the background instead of opening the windowed app.
-pub fn capture_requested() -> bool {
-    std::env::args().any(|arg| arg == options::CAPTURE_FLAG)
+/// Whether the arguments ask for an offscreen mode (`--capture` or `--bench`), which `main`
+/// runs as [`OffscreenApp`] in the background instead of opening the windowed app.
+pub fn offscreen_requested() -> bool {
+    std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
 }
 
 /// Releases process-wide resources once the platform loop has returned (desktop). iOS never

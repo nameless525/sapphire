@@ -13,7 +13,7 @@ use sdl3_sys::hints::{
     SDL_HINT_ORIENTATIONS, SDL_HINT_PEN_MOUSE_EVENTS, SDL_HINT_PEN_TOUCH_EVENTS, SDL_HINT_TOUCH_MOUSE_EVENTS,
     SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN,
 };
-use sdl3_sys::init::{SDL_INIT_GAMEPAD, SDL_INIT_VIDEO, SDL_Init, SDL_SetAppMetadata};
+use sdl3_sys::init::{SDL_INIT_EVENTS, SDL_INIT_GAMEPAD, SDL_INIT_VIDEO, SDL_Init, SDL_SetAppMetadata};
 use sdl3_sys::joystick::SDL_JoystickID;
 use sdl3_sys::keyboard::SDL_GetKeyName;
 use sdl3_sys::keycode::SDL_Keycode;
@@ -76,8 +76,12 @@ impl Platform {
 
         // Video brings in events, keyboard, mouse and touch; gamepad brings in joystick.
         // Haptic and sensor are compiled in but not initialized until their APIs exist.
+        // Headless runs (`RunOptions::headless`) need only the event loop.
+        let headless =
+            crate::app::headless_requested() && !cfg!(any(target_os = "ios", target_os = "android"));
+        let subsystems = if headless { SDL_INIT_EVENTS } else { SDL_INIT_VIDEO | SDL_INIT_GAMEPAD };
         // SAFETY: called once, on the main thread, from SDL_AppInit.
-        if !unsafe { SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) } {
+        if !unsafe { SDL_Init(subsystems) } {
             return Err(sdl::error("SDL_Init"));
         }
 
@@ -154,8 +158,9 @@ impl Platform {
     /// A human-readable name for a key under the current layout (for rebinding UI and
     /// prompts), or an empty string if it has none.
     pub fn key_name(&self, key: Keycode) -> String {
-        // SAFETY: SDL's keyboard state is initialized with video; the returned string is
-        // copied before any other SDL call.
+        // SAFETY: SDL_GetKeyName reads static tables and SDL's global keyboard state, which
+        // falls back to the default keymap without video (headless runs); the returned string
+        // is copied before any other SDL call.
         unsafe { sdl::borrowed_string(SDL_GetKeyName(SDL_Keycode(key.0))) }.unwrap_or_default()
     }
 

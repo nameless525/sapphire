@@ -1,5 +1,6 @@
 //! Crash capture for Sapphire (spec §5.2): a panic hook on every platform, native crash
-//! minidumps on desktop, an in-process signal record on Android, and optional upload to Sentry.
+//! minidumps on desktop and an in-process signal record on Android, kept on disk for the next
+//! launch to find. Uploading them to a service such as Sentry is deferred (see below).
 //!
 //! # What this crate owns
 //!
@@ -22,11 +23,9 @@
 //!     fault address, registers, `/proc/self/maps`) with async-signal-safe calls only, then
 //!     passes the signal on to the previous handler so `debuggerd` still writes its tombstone.
 //!     There is no minidump on Android; see [Open question Q12](#open-question-q12-android).
-//!   - *iOS:* none. Native crashes will come from sentry-cocoa, initialized by the Xcode
-//!     project's shim before `SDL_RunApp` (spec §5.2, iOS packaging). Only the panic hook is
-//!     installed.
-//! - **Reading back** what previous runs left ([`pending_reports`]) and, with the `sentry`
-//!   feature, uploading it (`upload_pending_reports`).
+//!   - *iOS:* none yet: only the panic hook is installed. Native crash capture on iOS needs an
+//!     Apple-side reporter (for example sentry-cocoa) linked by the Xcode project (spec §5.2).
+//! - **Reading back** what previous runs left ([`pending_reports`]).
 //!
 //! # What it deliberately does not do
 //!
@@ -34,6 +33,9 @@
 //!   `SDL_GetPrefPath` from `sapphire_platform`).
 //! - Breadcrumbs (current zone, frame number, last 64 log lines). They need the log ring in
 //!   `sapphire_core` and land with it (spec §5.2).
+//! - Uploading reports. A Sentry backend existed in M0 and was removed on 2026-10-24 while
+//!   nothing needs it (it doubled the crate's dependency tree); it returns, from git history,
+//!   once there is a project to send reports to.
 //! - Symbol upload. CI does that for shipping builds (spec §5.2, M4).
 //!
 //! # Wiring it into an app
@@ -107,8 +109,8 @@
 //!
 //! **Answer:** these crates give no minidumps on Android. M0 ships the in-process signal record,
 //! which detects the crash and keeps the faulting PC, LR and module map for `addr2line`, while
-//! `debuggerd` tombstones cover development. Symbolicated native crashes in Sentry should come
-//! from Sentry's Android SDK with NDK support (`sentry-android-ndk`, added in the Gradle
+//! `debuggerd` tombstones cover development. Symbolicated native crashes in a crash service should
+//! come from that service's Android NDK SDK (for Sentry, `sentry-android-ndk` in the Gradle
 //! project). Both can coexist: this crate's handler hands the signal on to whichever handler
 //! was installed before it.
 
@@ -125,9 +127,6 @@ mod android;
 #[cfg(any(target_os = "android", test))]
 mod signal_record;
 
-#[cfg(feature = "sentry")]
-mod upload;
-
 #[cfg(test)]
 mod test_support;
 
@@ -136,8 +135,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use report::{PendingReport, ReportKind, pending_reports};
-#[cfg(feature = "sentry")]
-pub use upload::{UploadSummary, upload_pending_reports};
 
 /// What [`install`] needs to know about the app.
 #[derive(Clone, Debug)]
@@ -145,34 +142,20 @@ pub use upload::{UploadSummary, upload_pending_reports};
 pub struct CrashConfig {
     /// The app's name, recorded in every report.
     pub app_name: String,
-    /// Version or build ID, recorded in every report and sent to Sentry as the release.
+    /// Version or build ID, recorded in every report.
     pub release: String,
     /// A writable per-user directory for minidumps and panic reports. Created if missing.
     pub dump_dir: PathBuf,
-    /// Sentry DSN used by `upload_pending_reports`. Ignored without the `sentry` feature.
-    pub upload_dsn: Option<String>,
 }
 
 impl CrashConfig {
-    /// A configuration with no upload DSN.
+    /// A configuration for `app_name` at `release`, keeping reports in `dump_dir`.
     pub fn new(
         app_name: impl Into<String>,
         release: impl Into<String>,
         dump_dir: impl Into<PathBuf>,
     ) -> Self {
-        Self {
-            app_name: app_name.into(),
-            release: release.into(),
-            dump_dir: dump_dir.into(),
-            upload_dsn: None,
-        }
-    }
-
-    /// Sets the Sentry DSN that pending reports are uploaded to.
-    #[must_use]
-    pub fn with_upload_dsn(mut self, dsn: impl Into<String>) -> Self {
-        self.upload_dsn = Some(dsn.into());
-        self
+        Self { app_name: app_name.into(), release: release.into(), dump_dir: dump_dir.into() }
     }
 }
 
@@ -201,14 +184,6 @@ pub enum CrashError {
         #[source]
         source: io::Error,
     },
-    /// Uploading needs [`CrashConfig::upload_dsn`].
-    #[cfg(feature = "sentry")]
-    #[error("no upload DSN is configured")]
-    NoUploadDsn,
-    /// [`CrashConfig::upload_dsn`] is not a valid Sentry DSN.
-    #[cfg(feature = "sentry")]
-    #[error("invalid upload DSN: {0}")]
-    InvalidDsn(String),
 }
 
 /// Which native (non-panic) crash capture is running.
@@ -218,8 +193,8 @@ pub enum NativeCapture {
     Minidump,
     /// Android: an in-process signal handler writes a signal record (`<run>.native.txt`).
     SignalRecord,
-    /// Panics only: on iOS (sentry-cocoa comes later), or because native capture failed to
-    /// start, in which case [`install`] logged why.
+    /// Panics only: on iOS (native capture comes with the Xcode project), or because native
+    /// capture failed to start, in which case [`install`] logged why.
     None,
 }
 
@@ -416,7 +391,7 @@ fn start_native(config: &CrashConfig, run_id: &str) -> Native {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android")))]
 fn start_native(_config: &CrashConfig, _run_id: &str) -> Native {
-    // iOS: sentry-cocoa captures native crashes once the Xcode project links it (spec §5.2).
+    // iOS: native crashes need an Apple-side reporter linked by the Xcode project (spec §5.2).
     Native::None
 }
 

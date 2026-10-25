@@ -723,7 +723,7 @@ mod tests {
         let config = Config::parse(include_str!("../layers.toml")).unwrap();
         assert_eq!(config.placement("sapphire_core"), Some(Placement::Runtime { layer: 0 }));
         assert_eq!(config.placement("sapphire_pipeline"), Some(Placement::Tool));
-        assert!(config.crates["sapphire_crash"].features.contains("sentry"));
+        assert!(config.crates["sapphire_core"].features.contains("mimalloc"));
     }
 
     #[test]

@@ -1,20 +1,14 @@
 [package]
 name = "sapphire_crash"
-description = "Crash capture: panic hook, native crash minidumps and optional upload."
+description = "Crash capture: panic hook and native crash minidumps, kept for the next launch."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[features]
-# Upload backend: sends pending reports to Sentry (spec §5.2). Off by default.
-sentry = ["dep:sentry", "dep:ureq"]
-
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-sentry = { workspace = true, optional = true }
-ureq = { workspace = true, optional = true }
 
 # Desktop: out-of-process minidumps (crash-handler in the app, minidumper in the monitor).
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]

@@ -1,8 +1,9 @@
 //! Process-wide logging built on `tracing`.
 //!
 //! [`init`] installs one global subscriber with three parts:
-//! - an [`EnvFilter`] chosen from `SAPPHIRE_LOG`, then `RUST_LOG`, then
-//!   [`LogConfig::default_filter`];
+//! - a [`Targets`] filter chosen from `SAPPHIRE_LOG`, then `RUST_LOG`, then
+//!   [`LogConfig::default_filter`], in `target=level` directive syntax (`info,sapphire=debug`).
+//!   Unlike `EnvFilter`, it has no span or field filters, so it needs no regex engine;
 //! - an optional formatter writing to stderr;
 //! - an optional [`LogSink`], which receives every enabled event as a plain [`LogRecord`].
 //!   The platform layer registers one that forwards to `SDL_Log` on mobile, where stderr goes
@@ -20,14 +21,15 @@ use tracing::field::{Field, Visit};
 use tracing::level_filters::LevelFilter;
 use tracing::{Event, Subscriber};
 use tracing_log::{AsLog as _, NormalizeEvent as _};
-use tracing_subscriber::filter::ParseError;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::{ParseError, Targets};
 use tracing_subscriber::layer::{Context, SubscriberExt as _};
-use tracing_subscriber::{EnvFilter, Layer};
 
 /// Filter used when neither environment variable is set.
 pub const DEFAULT_FILTER: &str = "info,sapphire=debug";
 
-/// Environment variable that overrides the filter, in `EnvFilter` directive syntax.
+/// Environment variable that overrides the filter: comma-separated `target=level` directives,
+/// plus an optional bare level for everything else.
 pub const FILTER_ENV: &str = "SAPPHIRE_LOG";
 
 /// Environment variable consulted when [`FILTER_ENV`] is unset, for familiarity.
@@ -36,7 +38,7 @@ pub const FALLBACK_FILTER_ENV: &str = "RUST_LOG";
 /// How [`init`] configures logging.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogConfig {
-    /// `EnvFilter` directives used when neither [`FILTER_ENV`] nor [`FALLBACK_FILTER_ENV`] is set.
+    /// Filter directives used when neither [`FILTER_ENV`] nor [`FALLBACK_FILTER_ENV`] is set.
     pub default_filter: String,
     /// Colour the stderr output with ANSI escapes.
     pub ansi: bool,
@@ -91,8 +93,38 @@ pub enum LogInitError {
         filter: String,
         /// The parser's complaint.
         #[source]
-        error: ParseError,
+        error: FilterError,
     },
+}
+
+/// Why a filter string was rejected.
+#[derive(Debug, thiserror::Error)]
+pub enum FilterError {
+    /// A directive isn't `target=level`, `target` or `level`.
+    #[error(transparent)]
+    Parse(#[from] ParseError),
+    /// `EnvFilter`'s span and field filters (`target[span{field}]=level`) aren't supported;
+    /// rejected rather than read as part of a target name that would never match.
+    #[error("span and field filters are not supported: {0:?}")]
+    Unsupported(String),
+    /// Nothing but commas and whitespace.
+    #[error("no filter directives")]
+    Empty,
+}
+
+/// Parses comma-separated directives into a [`Targets`] filter. Whitespace around a directive
+/// and empty directives are ignored, as `EnvFilter` did: `Targets` alone would read an empty
+/// directive (`info,`) as "everything at ERROR" and keep the space in `info, sapphire=debug`
+/// as part of a target name.
+pub fn parse_filter(directives: &str) -> Result<Targets, FilterError> {
+    let directives: Vec<&str> = directives.split(',').map(str::trim).filter(|d| !d.is_empty()).collect();
+    if directives.is_empty() {
+        return Err(FilterError::Empty);
+    }
+    if let Some(unsupported) = directives.iter().find(|d| d.contains(['[', ']', '{', '}', ' ', '\t'])) {
+        return Err(FilterError::Unsupported((*unsupported).to_owned()));
+    }
+    Ok(directives.join(",").parse()?)
 }
 
 /// Severity of a [`LogRecord`], most severe first.
@@ -199,7 +231,7 @@ fn non_empty_env(key: &str) -> Option<String> {
 
 /// The filter [`init`] installs, and the environment filter it had to reject, if any.
 struct SelectedFilter<'a> {
-    filter: EnvFilter,
+    filter: Targets,
     directives: &'a str,
     origin: FilterSource,
     rejected: Option<RejectedFilter<'a>>,
@@ -208,7 +240,7 @@ struct SelectedFilter<'a> {
 struct RejectedFilter<'a> {
     origin: FilterSource,
     directives: &'a str,
-    error: ParseError,
+    error: FilterError,
 }
 
 /// Parses the filter chosen by [`resolve_filter`]. A malformed environment filter falls back
@@ -225,11 +257,11 @@ fn select_filter<'a>(
         error,
     };
     let (directives, origin) = resolve_filter(default, sapphire_log, rust_log);
-    match EnvFilter::try_new(directives) {
+    match parse_filter(directives) {
         Ok(filter) => Ok(SelectedFilter { filter, directives, origin, rejected: None }),
         Err(error) if origin == FilterSource::Default => Err(invalid_default(error)),
         Err(error) => Ok(SelectedFilter {
-            filter: EnvFilter::try_new(default).map_err(invalid_default)?,
+            filter: parse_filter(default).map_err(invalid_default)?,
             directives: default,
             origin: FilterSource::Default,
             rejected: Some(RejectedFilter { origin, directives, error }),
@@ -362,7 +394,7 @@ mod tests {
             });
         };
         let subscriber = tracing_subscriber::registry()
-            .with(EnvFilter::try_new("debug").expect("valid filter"))
+            .with("debug".parse::<Targets>().expect("valid filter"))
             .with(SinkLayer { sink: Box::new(sink) });
         tracing::subscriber::with_default(subscriber, f);
         let records = records.lock().expect("test mutex");
@@ -378,24 +410,37 @@ mod tests {
 
     #[test]
     fn invalid_environment_filter_falls_back_to_the_default() {
-        let selected = select_filter("info", Some("sapphire=nonsense["), None).unwrap();
+        let selected = select_filter("info", Some("sapphire=nonsense"), None).unwrap();
         assert_eq!((selected.directives, selected.origin), ("info", FilterSource::Default));
         let rejected = selected.rejected.expect("the bad filter is reported");
-        assert_eq!((rejected.origin, rejected.directives), (FilterSource::SapphireLog, "sapphire=nonsense["));
+        assert_eq!((rejected.origin, rejected.directives), (FilterSource::SapphireLog, "sapphire=nonsense"));
 
         let valid = select_filter("info", None, Some("warn")).unwrap();
         assert_eq!((valid.directives, valid.origin), ("warn", FilterSource::RustLog));
         assert!(valid.rejected.is_none());
 
         assert!(matches!(
-            select_filter("nonsense[", None, None),
+            select_filter("sapphire=loud", None, None),
             Err(LogInitError::InvalidFilter { origin: FilterSource::Default, .. })
         ));
     }
 
     #[test]
+    fn filters_tolerate_spacing_and_reject_span_syntax() {
+        let enabled = |filter: &Targets, target: &str, level| filter.would_enable(target, &level);
+        let filter = parse_filter(" info, sapphire=debug ,").expect("spaces and a trailing comma");
+        assert!(enabled(&filter, "sapphire::render", tracing::Level::DEBUG));
+        assert!(enabled(&filter, "naga", tracing::Level::INFO), "a trailing comma isn't `error`");
+        assert!(!enabled(&filter, "naga", tracing::Level::DEBUG));
+        assert!(matches!(parse_filter("sapphire[frame]=debug"), Err(FilterError::Unsupported(_))));
+        assert!(matches!(parse_filter("sapphire = debug"), Err(FilterError::Unsupported(_))));
+        assert!(matches!(parse_filter(" , "), Err(FilterError::Empty)));
+        assert!(matches!(parse_filter("sapphire=loud"), Err(FilterError::Parse(_))));
+    }
+
+    #[test]
     fn default_filter_parses() {
-        assert!(EnvFilter::try_new(DEFAULT_FILTER).is_ok());
+        assert!(parse_filter(DEFAULT_FILTER).is_ok());
         assert_eq!(LogConfig::default().default_filter, DEFAULT_FILTER);
     }
 

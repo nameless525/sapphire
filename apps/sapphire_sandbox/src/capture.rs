@@ -1,92 +1,39 @@
-//! Offscreen capture: `--capture <png>`.
-//!
-//! Renders the sandbox scene after a fixed number of simulation ticks into an offscreen
-//! target, writes it as a PNG and exits, without ever creating a window. Run it through
-//! `sapphire_platform::run_with` with `RunOptions { background: true }` (as `main` does), so
-//! the process never takes focus either. That makes the real app checkable on a desktop
-//! someone is using, and it is the hook for golden-image tests later (spec §9).
+//! `--capture <png>`: renders the sandbox scene after a fixed number of simulation ticks into
+//! an offscreen target and writes it as a PNG (see [`crate::offscreen`]).
 
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::sync::mpsc;
 
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
-use sapphire_render::{RenderSettings, Renderer};
-use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+use sapphire_platform::AppInitError;
+use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
-use crate::app::SandboxApp;
-use crate::options::{CaptureRequest, Options};
-use crate::scene::{self, Scene};
+use crate::offscreen::Stage;
 
-/// Captures are sRGB like the swapchain, so they match what the window shows.
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-/// The capture "app": all work happens in `init`; the first frame exits.
-pub struct CaptureApp;
-
-impl App for CaptureApp {
-    const METADATA: AppMetadata = SandboxApp::METADATA;
-
-    fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let (options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
-        if !unknown.is_empty() {
-            tracing::warn!(target: LOG_TARGET, ?unknown, "ignoring unknown arguments");
-        }
-        let request = options.capture.ok_or_else(|| AppInitError::msg("CaptureApp needs --capture <png>"))?;
-
-        let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
-        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
-        let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa: options.msaa })?;
-        let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
-        let mut scene = Scene::new(renderer.upload_mesh(&mesh)?, mesh.bounds);
-        for _ in 0..request.ticks {
-            scene.step();
-        }
-
-        let pixels = render(&gpu, &mut renderer, &mut scene, &request)?;
-        write_png(&request.path, request.width, request.height, &pixels)?;
-        tracing::info!(
-            target: LOG_TARGET,
-            path = %request.path.display(),
-            width = request.width,
-            height = request.height,
-            ticks = request.ticks,
-            "captured frame"
-        );
-        Ok(Self)
+pub(crate) fn run(
+    stage: &mut Stage,
+    path: &Path,
+    ticks: u32,
+    width: u32,
+    height: u32,
+) -> Result<(), AppInitError> {
+    for _ in 0..ticks {
+        stage.scene.step();
     }
-
-    fn event(&mut self, _platform: &mut Platform, _event: &Event) -> AppControl {
-        AppControl::Continue
-    }
-
-    fn iterate(&mut self, _platform: &mut Platform) -> AppControl {
-        AppControl::Exit
-    }
+    let pixels = render(stage, width, height)?;
+    write_png(path, width, height, &pixels)?;
+    tracing::info!(target: LOG_TARGET, path = %path.display(), width, height, ticks, "captured frame");
+    Ok(())
 }
 
-/// Renders one frame of `scene` and reads it back as tightly packed RGBA8 rows.
-fn render(
-    gpu: &GpuContext,
-    renderer: &mut Renderer,
-    scene: &mut Scene,
-    request: &CaptureRequest,
-) -> Result<Vec<u8>, AppInitError> {
-    let (width, height) = (request.width, request.height);
-    let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
-        label: gpu.label("capture target"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
+/// Renders one frame of the scene and reads it back as tightly packed RGBA8 rows.
+fn render(stage: &mut Stage, width: u32, height: u32) -> Result<Vec<u8>, AppInitError> {
+    let target = stage.target(width, height, wgpu::TextureUsages::COPY_SRC);
     let row_bytes = width * 4;
     let padded_row_bytes = row_bytes.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let gpu = &stage.gpu;
     let readback = gpu.device().create_buffer(&wgpu::BufferDescriptor {
         label: gpu.label("capture readback"),
         size: u64::from(padded_row_bytes) * u64::from(height),
@@ -94,10 +41,8 @@ fn render(
         mapped_at_creation: false,
     });
 
-    renderer.prepare(gpu, &scene.frame_view(1.0, width as f32 / height as f32));
-    let mut encoder =
-        gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: gpu.label("capture") });
-    renderer.record(&mut encoder, &target.create_view(&wgpu::TextureViewDescriptor::default()));
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = stage.encode(&view, width as f32 / height as f32, 1.0);
     encoder.copy_texture_to_buffer(
         target.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
@@ -110,8 +55,18 @@ fn render(
         },
         target.size(),
     );
+    let gpu = &stage.gpu;
     gpu.queue().submit([encoder.finish()]);
+    read_back(gpu, &readback, padded_row_bytes as usize, row_bytes as usize)
+}
 
+/// Maps `readback` after the GPU has written it and strips the row padding.
+fn read_back(
+    gpu: &GpuContext,
+    readback: &wgpu::Buffer,
+    padded_row_bytes: usize,
+    row_bytes: usize,
+) -> Result<Vec<u8>, AppInitError> {
     let (sender, receiver) = mpsc::channel();
     readback.map_async(wgpu::MapMode::Read, .., move |result| {
         // The receiver outlives the poll below, so the send can't fail.
@@ -120,11 +75,7 @@ fn render(
     gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
     receiver.recv().map_err(AppInitError::msg)?.map_err(AppInitError::msg)?;
     let mapped = readback.get_mapped_range(..).map_err(AppInitError::msg)?;
-    Ok(mapped
-        .chunks_exact(padded_row_bytes as usize)
-        .flat_map(|row| &row[..row_bytes as usize])
-        .copied()
-        .collect())
+    Ok(mapped.chunks_exact(padded_row_bytes).flat_map(|row| &row[..row_bytes]).copied().collect())
 }
 
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), AppInitError> {

@@ -57,10 +57,13 @@ libc = "0.2"
 mimalloc = { version = "0.1.52", default-features = false }
 
 # --- Logging and profiling ---
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi", "std"] }
-profiling = "1.0.18"
-tracy-client = { version = "0.19.0", default-features = false }
+# No default features: nothing uses `#[instrument]`, and `attributes` costs a proc-macro build.
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+# `filter::Targets` covers `target=level` filters without `env-filter`'s regex engine.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std"] }
+# No default features: only `scope!` and `finish_frame!` are used, not the proc-macro attributes.
+# Tracy comes in through the sandbox's `tracy` feature (`profiling/profile-with-tracy`).
+profiling = { version = "1.0.18", default-features = false }
 # Bridges `log` records (wgpu, naga, SDL wrappers) into tracing.
 tracing-log = { version = "0.2.0", default-features = false, features = ["log-tracer", "std"] }
 
@@ -76,10 +79,6 @@ windows-sys = { version = "0.61.2", default-features = false }
 # --- Crash reporting ---
 crash-handler = "0.8.1"
 minidumper = "0.11.0"
-sentry = { version = "0.49.3", default-features = false }
-# Crash upload transport: rustls with the ring provider and bundled webpki roots (no OpenSSL,
-# no aws-lc/cmake), so iOS and Android cross-builds need only the target's C compiler.
-ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 # --- GPU ---
 # GLES and WebGPU backends are deliberately off: Android requires Vulkan 1.1 (spec §2).
@@ -91,13 +90,11 @@ png = "0.18"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
-gltf = "1.4.1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+gltf = { version = "1.4.1", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 cargo_metadata = "0.23"
-clap = { version = "4.6", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

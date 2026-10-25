@@ -24,8 +24,7 @@ sapphire_math = { kind = "runtime", layer = 0 }
 sapphire_platform = { kind = "runtime", layer = 1 }
 sapphire_jobs = { kind = "runtime", layer = 1 }
 sapphire_time = { kind = "runtime", layer = 1 }
-# `sentry`: the crash upload backend.
-sapphire_crash = { kind = "runtime", layer = 1, features = ["sentry"] }
+sapphire_crash = { kind = "runtime", layer = 1 }
 # L2 services.
 sapphire_assets = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }

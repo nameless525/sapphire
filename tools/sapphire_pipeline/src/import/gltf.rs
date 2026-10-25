@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use ::gltf::buffer::Data as BufferData;
+use ::gltf::buffer::Source;
 use ::gltf::mesh::{Mode, Semantic};
-use ::gltf::{Gltf, Material, Mesh, Node, Primitive};
+use ::gltf::{Document, Gltf, Material, Mesh, Node, Primitive};
 use glam::{Mat3, Mat4, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use serde::de::Error as _;
@@ -63,8 +63,8 @@ pub enum GltfImportError {
     },
     #[error("not a valid glTF 2.0 file")]
     Parse(#[source] ::gltf::Error),
-    #[error("failed to load buffer data")]
-    Buffers(#[source] ::gltf::Error),
+    #[error("buffer {index} {problem}")]
+    Buffer { index: usize, problem: String },
     #[error("the document has no scene to import")]
     NoScene,
     #[error("node {node} is its own ancestor; glTF node hierarchies must be trees")]
@@ -104,7 +104,7 @@ pub fn import(path: &Path) -> Result<MeshAsset, GltfImportError> {
 /// self-contained files (GLB, or `data:` URIs) load.
 pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<MeshAsset, GltfImportError> {
     let Gltf { document, blob } = Gltf::from_slice(bytes).map_err(GltfImportError::Parse)?;
-    let buffers = ::gltf::import_buffers(&document, base_dir, blob).map_err(GltfImportError::Buffers)?;
+    let buffers = load_buffers(&document, base_dir, blob)?;
     // Blender always writes `scene`; fall back to the first scene for files that don't.
     let scene =
         document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
@@ -118,6 +118,99 @@ pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<MeshAsset, 
         builder.visit(&node, Mat4::IDENTITY, &mut ancestors)?;
     }
     builder.finish()
+}
+
+/// Loads every buffer of `document`: the GLB binary chunk, base64 `data:` URIs, or files
+/// relative to `base_dir`. This is `gltf::import_buffers`, whose `import` feature would also
+/// build an image decoder (`image`) the pipeline doesn't use until textures arrive in M1.
+fn load_buffers(
+    document: &Document,
+    base_dir: Option<&Path>,
+    mut blob: Option<Vec<u8>>,
+) -> Result<Vec<Vec<u8>>, GltfImportError> {
+    let problem = |index, problem: String| GltfImportError::Buffer { index, problem };
+    document
+        .buffers()
+        .map(|buffer| {
+            let index = buffer.index();
+            let mut data = match buffer.source() {
+                Source::Bin => {
+                    blob.take().ok_or_else(|| problem(index, "needs the GLB binary chunk".into()))?
+                }
+                Source::Uri(uri) => match uri.strip_prefix("data:") {
+                    Some(data_uri) => decode_data_uri(data_uri)
+                        .ok_or_else(|| problem(index, "has a malformed base64 data URI".into()))?,
+                    None => {
+                        let base = base_dir.ok_or_else(|| {
+                            problem(
+                                index,
+                                format!("is the external file {uri:?}, but there is no base directory"),
+                            )
+                        })?;
+                        let name = percent_decode(uri)
+                            .ok_or_else(|| problem(index, format!("has a malformed URI {uri:?}")))?;
+                        let path = base.join(name);
+                        std::fs::read(&path).map_err(|source| GltfImportError::Io { path, source })?
+                    }
+                },
+            };
+            if data.len() < buffer.length() {
+                return Err(problem(
+                    index,
+                    format!("holds {} bytes but declares {}", data.len(), buffer.length()),
+                ));
+            }
+            // Pad to whole words, as `gltf::import_buffers` does: accessors may read the last one.
+            data.resize(data.len().next_multiple_of(4), 0);
+            Ok(data)
+        })
+        .collect()
+}
+
+/// The part of a `data:` URI after the scheme: `[<media type>];base64,<payload>`. Exporters only
+/// write base64 payloads.
+fn decode_data_uri(uri: &str) -> Option<Vec<u8>> {
+    let (header, payload) = uri.split_once(',')?;
+    if !header.ends_with(";base64") {
+        return None;
+    }
+    let sextet = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let payload = payload.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(payload.len() * 3 / 4);
+    let (mut bits, mut pending) = (0u32, 0);
+    for &c in payload {
+        bits = (bits << 6) | u32::from(sextet(c)?);
+        pending += 6;
+        if pending >= 8 {
+            pending -= 8;
+            out.push((bits >> pending) as u8);
+            bits &= (1 << pending) - 1;
+        }
+    }
+    // A lone trailing character (length 1 mod 4) can't encode a byte.
+    (pending < 6).then_some(out)
+}
+
+/// Decodes `%XX` escapes: glTF URIs follow RFC 3986, so a space in a file name arrives as `%20`.
+fn percent_decode(uri: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(uri.len());
+    let mut bytes = uri.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hex = [bytes.next()?, bytes.next()?];
+            out.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            out.push(byte);
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Toon parameters authored as glTF material extras. Unknown keys are ignored, because
@@ -141,7 +234,7 @@ fn linear_rgba<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<[f32
 }
 
 struct Builder<'a> {
-    buffers: &'a [BufferData],
+    buffers: &'a [Vec<u8>],
     mesh: MeshAsset,
     /// glTF material index (`None` = the default material) → cooked material slot.
     materials: HashMap<Option<usize>, u32>,
@@ -182,7 +275,7 @@ impl Builder<'_> {
             return Err(GltfImportError::UnsupportedMode { at, mode: primitive.mode() });
         }
         let buffers = self.buffers;
-        let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|data| data.0.as_slice()));
+        let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
         let declared = |semantic: Semantic| primitive.get(&semantic).is_some();
 
         let positions: Vec<Vec3> = match reader.read_positions() {
@@ -584,7 +677,48 @@ mod tests {
         let imported = import(&dir.path().join("triangle.gltf")).unwrap();
         assert_eq!(imported.vertices.len(), 3);
         // Without a base directory the external reference can't resolve.
-        assert!(matches!(import_slice(&json, None), Err(GltfImportError::Buffers(_))));
+        assert!(matches!(import_slice(&json, None), Err(GltfImportError::Buffer { index: 0, .. })));
         assert!(matches!(import(&dir.path().join("missing.gltf")), Err(GltfImportError::Io { .. })));
+    }
+
+    #[test]
+    fn decodes_data_uris_and_escaped_file_names() {
+        assert_eq!(
+            decode_data_uri("application/octet-stream;base64,AAECAw==").as_deref(),
+            Some(&[0, 1, 2, 3][..])
+        );
+        assert_eq!(decode_data_uri(";base64,TWFu").as_deref(), Some(&b"Man"[..]));
+        assert_eq!(decode_data_uri("text/plain,hello"), None, "not base64");
+        assert_eq!(decode_data_uri(";base64,AA!A"), None, "bad character");
+        assert_eq!(decode_data_uri(";base64,TWFuA"), None, "length 1 mod 4");
+        assert_eq!(percent_decode("my%20mesh.bin").as_deref(), Some("my mesh.bin"));
+        assert_eq!(percent_decode("bad%2"), None);
+
+        // A whole document with its buffer inline.
+        let mut writer = GltfWriter::default();
+        let mesh = writer.add_mesh("Mesh", &[(&slanted_triangle(true), None)]);
+        let node = writer.add_node(json!({ "mesh": mesh }));
+        writer.add_root(node);
+        let mut document = writer.document(Some("unused.bin"));
+        document["buffers"][0]["uri"] =
+            json!(format!("data:application/octet-stream;base64,{}", base64(writer.bin())));
+        let imported = import_slice(&serde_json::to_vec(&document).unwrap(), None).unwrap();
+        assert_eq!(imported.vertices.len(), 3);
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let word =
+                chunk.iter().enumerate().fold(0u32, |word, (i, &b)| word | u32::from(b) << (16 - 8 * i));
+            for i in 0..=chunk.len() {
+                out.push(ALPHABET[(word >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        while !out.len().is_multiple_of(4) {
+            out.push('=');
+        }
+        out
     }
 }

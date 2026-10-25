@@ -58,9 +58,40 @@ impl Default for RealClock {
     }
 }
 
+/// Measures how long work takes, for benchmarks and budget checks.
+///
+/// Reads the OS clock like [`RealClock`], but on demand rather than once per frame. Its
+/// readings describe performance only: never feed them into simulation or gameplay (rule R2).
+#[derive(Clone, Copy, Debug)]
+pub struct Stopwatch {
+    start: Instant,
+}
+
+impl Stopwatch {
+    /// Starts timing now.
+    #[must_use]
+    pub fn start() -> Self {
+        Self { start: os_now() }
+    }
+
+    /// Time since [`Self::start`] or the last [`Self::lap`].
+    #[must_use]
+    pub fn elapsed(&self) -> Duration {
+        os_now().saturating_duration_since(self.start)
+    }
+
+    /// Returns [`Self::elapsed`] and restarts the stopwatch.
+    pub fn lap(&mut self) -> Duration {
+        let now = os_now();
+        let lap = now.saturating_duration_since(self.start);
+        self.start = now;
+        lap
+    }
+}
+
 #[allow(
     clippy::disallowed_methods,
-    reason = "RealClock is the engine's single OS clock read; all other time flows from it (rule R2)"
+    reason = "RealClock and Stopwatch are the engine's only OS clock reads; all other time flows from them (rule R2)"
 )]
 fn os_now() -> Instant {
     Instant::now()
@@ -85,5 +116,16 @@ mod tests {
         assert_eq!(clock.frames(), 100);
         // Reading does not advance the clock.
         assert_eq!(clock.elapsed(), previous);
+    }
+
+    #[test]
+    fn stopwatch_laps_restart_it() {
+        let mut stopwatch = Stopwatch::start();
+        let first = stopwatch.lap();
+        let total = stopwatch.elapsed();
+        assert!(stopwatch.elapsed() >= total, "monotonic");
+        // The lap restarted the stopwatch, so the first lap isn't counted again.
+        let both = first + stopwatch.lap();
+        assert!(both >= first);
     }
 }

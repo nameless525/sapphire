@@ -4,7 +4,7 @@ Sapphire is a Rust game engine built for a stylized 3D anime action game in the 
 
 ![The M0 sandbox on macOS: a toon-shaded mannequin with inverted-hull outlines](docs/media/m0-macos.png)
 
-**Status: milestone M0 (bring-up).** It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 simulator (Metal) and on the Android 16 emulator (Vulkan). Windows and Linux build in CI but haven't run on hardware yet. The sandbox app runs the whole engine path:
+**Status: milestone M0 (bring-up).** It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 simulator (Metal) and on the Android 16 emulator (Vulkan). Windows and Linux build and pass their tests in CI but haven't run on hardware yet. The sandbox app runs the whole engine path:
 
 1. SDL3 platform layer.
 2. Fixed 60 Hz simulation on the engine clocks.
@@ -68,21 +68,30 @@ Each command cooks the sample content, builds the sandbox, packages it where the
 | `Space` or gamepad South | World slow motion |
 | `H` or gamepad East | Hitstop |
 
-## Checking visuals without a window
+## Checking visuals and performance without a window
 
-On a desktop, the sandbox can render offscreen and write a PNG, without opening a window or taking focus. That's useful while someone is using the machine, and it's the hook for golden-image tests later:
+On a desktop, the sandbox has two offscreen modes. Neither opens a window, starts the display stack or takes focus, so they're safe to run while someone is using the machine:
+
+- `--capture <png> [--capture-ticks N]` renders the scene after N fixed ticks and writes a PNG. It's the hook for golden-image tests later.
+- `--bench <frames>` runs the per-frame CPU path (fixed step, `Renderer::prepare`, encoding, submit) that many times and logs CPU time and allocations per frame.
+
+Both render at `--size WxH` (default 1920x1080). `xtask run --platform desktop` cooks the content and points the app at it:
 
 ```bash
-cargo xtask content
+cargo xtask run --platform desktop --release -- --bench 600
 ```
 
 ```bash
-SAPPHIRE_CONTENT_DIR=target/content/desktop cargo run -p sapphire_sandbox -- --capture out.png --capture-ticks 120 --capture-size 1600x900
+cargo xtask run --platform desktop -- --capture out.png --capture-ticks 120 --size 1600x900
 ```
 
 On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb exec-out screencap -p > <png>` (Android) while the app runs.
 
 ## Everyday commands
+
+```bash
+cargo test-fast
+```
 
 ```bash
 cargo test --workspace
@@ -108,7 +117,7 @@ cargo xtask content --cook desktop
 cargo xtask bundle --platform android --release
 ```
 
-`cargo xtask check-layers` enforces [xtask/layers.toml](xtask/layers.toml): where each crate sits, and which features it may declare. `cargo xtask content` cooks `content/` into `target/content/`. `cargo xtask bundle` builds the installable package for a platform under `target/<platform>/` without launching it. CI runs xtask as `cargo --locked xtask --locked …`, so neither xtask's build nor the builds it runs may change `Cargo.lock`.
+`cargo test-fast` is the inner loop: unit and integration tests without doctests, which cargo recompiles on every run and which make up most of a full `cargo test --workspace` (CI runs everything). `cargo xtask check-layers` enforces [xtask/layers.toml](xtask/layers.toml): where each crate sits, and which features it may declare. `cargo xtask content` cooks `content/` into `target/content/`, skipping the cook when neither the sources nor the pipeline changed. `cargo xtask bundle` builds the installable package for a platform under `target/<platform>/` without launching it. CI runs xtask as `cargo --locked xtask --locked …`, so neither xtask's build nor the builds it runs may change `Cargo.lock`.
 
 ## Layout
 

@@ -14,10 +14,11 @@ path = "src/main.rs"
 sapphire_assets.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
-clap.workspace = true
 glam.workspace = true
 # `extras` exposes per-object custom properties, which is how Blender drives toon parameters.
-gltf = { workspace = true, features = ["extras"] }
+# `utils` reads accessors; buffers load in `import::gltf` rather than through `import`, which
+# would also build an image decoder.
+gltf = { workspace = true, features = ["extras", "utils", "names"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

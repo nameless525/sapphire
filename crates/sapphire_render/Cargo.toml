@@ -17,7 +17,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 # The headless example writes a PNG. Dev-only, so it never reaches the runtime tree.
-image.workspace = true
+png.workspace = true
 # Waits on error scopes in the GPU tests.
 pollster.workspace = true
 tracing-subscriber.workspace = true

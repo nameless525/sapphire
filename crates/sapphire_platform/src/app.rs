@@ -136,13 +136,23 @@ pub struct RunOptions {
     /// For offscreen and automated runs (captures, tests) on a machine someone is using.
     /// Ignored on mobile.
     pub background: bool,
+    /// Don't start SDL's video and gamepad subsystems: no windows and no display connection,
+    /// which on macOS skips setting up AppKit (tens of milliseconds at launch and at exit).
+    /// For offscreen tools that only render with `sapphire_rhi` and read content. Ignored on
+    /// mobile, where the app always has a window.
+    pub headless: bool,
 }
 
-/// Set by [`run_with`] before SDL starts; read when the hints are applied.
+/// Set by [`run_with`] before SDL starts; read when the hints are applied and SDL initializes.
 static BACKGROUND: AtomicBool = AtomicBool::new(false);
+static HEADLESS: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn background_requested() -> bool {
     BACKGROUND.load(Ordering::Relaxed)
+}
+
+pub(crate) fn headless_requested() -> bool {
+    HEADLESS.load(Ordering::Relaxed)
 }
 
 /// Runs `A` on SDL's main callbacks and returns the process exit code.
@@ -161,6 +171,7 @@ pub fn run<A: App>() -> ExitCode {
 /// [`run`], with [`RunOptions`].
 pub fn run_with<A: App>(options: RunOptions) -> ExitCode {
     BACKGROUND.store(options.background, Ordering::Relaxed);
+    HEADLESS.store(options.headless, Ordering::Relaxed);
     // Pass the real arguments: on Unix, SDL would otherwise substitute a placeholder.
     let args: Vec<CString> =
         std::env::args_os().map(|arg| sdl::c_string_lossy(&arg.to_string_lossy())).collect();

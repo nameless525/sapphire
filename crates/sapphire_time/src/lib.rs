@@ -3,8 +3,9 @@
 //! Owns:
 //! - [`FixedStepDriver`]: turns variable frame times into 0–4 fixed 60 Hz steps plus an
 //!   interpolation `alpha`.
-//! - [`RealClock`]: unscaled wall time for UI, input timestamps and networking. It is the only
-//!   code in the engine that reads the OS monotonic clock (rule R2).
+//! - [`RealClock`]: unscaled wall time for UI, input timestamps and networking. It and
+//!   [`Stopwatch`] (for benchmarks and budgets) are the only code in the engine that reads the
+//!   OS monotonic clock (rule R2).
 //! - [`ScaledClock`]: the world clock, slowed or stopped by a stack of [`TimeScale`]s (pause,
 //!   perfect dodge, cinematics, debug).
 //! - [`LocalClock`]: one entity's clock, with its own scales and hitstop on top of the world's.
@@ -36,7 +37,7 @@ mod timer;
 
 pub use fixed_step::{FixedStepConfig, FixedStepDriver, FixedSteps};
 pub use local::LocalClock;
-pub use real::RealClock;
+pub use real::{RealClock, Stopwatch};
 pub use scale::{ClockId, NORMAL_SPEED, ScaleHandle, ScaleSource, ScaleStackFull, TimeScale};
 pub use scaled::ScaledClock;
 pub use sim_time::{SimDuration, SimTime};

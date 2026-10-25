@@ -18,7 +18,7 @@ use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, Platform, Window, WindowDesc, WindowEvent, sdl_log,
 };
 use tracing::{debug, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -122,7 +122,10 @@ fn parse_frames(args: &[String]) -> Result<Option<u64>, AppInitError> {
 
 /// Logs to stderr on desktop and through `SDL_Log` (logcat / unified log) on mobile.
 pub(crate) fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+    let filter: Targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|filter| filter.parse().ok())
+        .unwrap_or_else(|| "debug".parse().expect("valid"));
     let registry = tracing_subscriber::registry().with(filter);
     if cfg!(any(target_os = "ios", target_os = "android")) {
         registry.with(SdlLogLayer).init();

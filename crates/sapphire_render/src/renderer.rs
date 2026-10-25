@@ -15,6 +15,12 @@ use crate::{CameraData, FrameView, LOG_TARGET, MeshHandle};
 const VERTEX_STRIDE: u64 = size_of::<MeshVertex>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 
+/// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
+/// few (one per frame in flight) and reuses them, so it should hold a frame's uploads:
+/// constants plus instances and draw records, a few hundred bytes in M0. Bigger frames fall
+/// back to a dedicated buffer per upload.
+const UPLOAD_CHUNK_SIZE: u64 = 256 * 1024;
+
 /// Multisampling of the main pass. Hull outlines are only a few pixels wide, so they need it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Msaa {
@@ -77,10 +83,15 @@ pub struct RenderStats {
 
 /// Draws [`FrameView`]s.
 ///
-/// Each frame is [`prepare`](Self::prepare)d (draw lists and uploads) and then
+/// Each frame is [`prepare`](Self::prepare)d (draw lists and buffer sizing, CPU only) and then
 /// [`record`](Self::record)ed into a command encoder the app owns and submits, so the app can
 /// add its own passes (UI, debug) before submitting. This is the split the M1 frame graph
 /// builds on.
+///
+/// Per-frame data reaches the GPU through a [`StagingBelt`](wgpu::util::StagingBelt): mapped
+/// staging buffers that are reused across frames, copied from at the start of the frame's
+/// encoder. `Queue::write_buffer` would instead create a new staging buffer for every call,
+/// which dominated the frame's CPU time on Apple GPUs.
 #[derive(Debug)]
 pub struct Renderer {
     device: wgpu::Device,
@@ -101,9 +112,16 @@ pub struct Renderer {
     scene_bind_group: wgpu::BindGroup,
     targets: Option<RenderTargets>,
     draw_list: DrawList,
-    /// The camera from the last `prepare`, consumed by `record`.
-    prepared_camera: Option<CameraData>,
+    uploads: wgpu::util::StagingBelt,
+    /// What the last `prepare` computed for `record` to upload and draw.
+    prepared: Option<PreparedFrame>,
     stats: RenderStats,
+}
+
+#[derive(Debug)]
+struct PreparedFrame {
+    camera: CameraData,
+    constants: FrameUniforms,
 }
 
 impl Renderer {
@@ -177,6 +195,7 @@ impl Renderer {
         );
         let meshes = MeshPool::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &instances, &meshes);
+        let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         tracing::info!(target: LOG_TARGET, ?color_format, msaa = samples, "renderer created");
         Ok(Self {
             device,
@@ -196,7 +215,8 @@ impl Renderer {
             scene_bind_group,
             targets: None,
             draw_list: DrawList::default(),
-            prepared_camera: None,
+            uploads,
+            prepared: None,
             stats: RenderStats::default(),
         })
     }
@@ -212,8 +232,8 @@ impl Renderer {
         Ok(handle)
     }
 
-    /// The CPU half of a frame: builds the draw list and uploads instances, draw records and
-    /// frame constants. Call once per frame, before [`Self::record`].
+    /// The CPU half of a frame: builds the draw list, computes the frame constants and sizes
+    /// the per-frame buffers. Call once per frame, before [`Self::record`], which uploads.
     pub fn prepare(&mut self, gpu: &GpuContext, frame: &FrameView<'_>) {
         profiling::scope!("Renderer::prepare");
         debug_assert!(
@@ -224,41 +244,34 @@ impl Renderer {
 
         self.draw_list.build(self.meshes.records(), frame.instances);
         let list = &self.draw_list;
-        let instance_bytes: &[u8] = bytemuck::cast_slice(&list.instances);
-        let draw_bytes: &[u8] = bytemuck::cast_slice(&list.draws);
         // Per-frame data is rewritten whole, so nothing needs to survive a reallocation.
-        if self.instances.reserve(device, queue, instance_bytes.len() as u64, 0) {
+        if self.instances.reserve(device, queue, size_of_val(list.instances.as_slice()) as u64, 0) {
             self.scene_bind_group =
                 create_scene_bind_group(device, &self.layouts.scene, &self.instances, &self.meshes);
         }
-        self.draws.reserve(device, queue, draw_bytes.len() as u64, 0);
-        queue.write_buffer(&self.frame_uniforms, 0, bytemuck::bytes_of(&FrameUniforms::new(frame)));
-        if !list.draws.is_empty() {
-            queue.write_buffer(self.instances.buffer(), 0, instance_bytes);
-            queue.write_buffer(self.draws.buffer(), 0, draw_bytes);
-        }
+        self.draws.reserve(device, queue, size_of_val(list.draws.as_slice()) as u64, 0);
 
-        self.prepared_camera = Some(frame.camera);
+        self.prepared = Some(PreparedFrame { camera: frame.camera, constants: FrameUniforms::new(frame) });
         self.stats.draws = list.commands.len() as u32;
         self.stats.instances = list.instances.len() as u32;
         self.update_pool_stats();
     }
 
-    /// The GPU half of a frame: encodes the main pass into `encoder`, drawing into `target`.
-    /// The app submits the encoder (and presents) afterwards.
+    /// The GPU half of a frame: encodes the frame's uploads and the main pass into `encoder`,
+    /// drawing into `target`. The app submits the encoder (and presents) afterwards, before
+    /// the next frame's `record`: submitting is also what returns the upload buffers for reuse.
     ///
     /// `target` must view mip 0 of a 2D texture in the format given to [`Self::new`]. The
     /// internal attachments (MSAA color, depth) follow that texture's size, so any target size
     /// works, including one that changed since the last frame. Record once per
-    /// [`Self::prepare`]: the view constants it writes take effect when the encoder is
-    /// submitted.
+    /// [`Self::prepare`].
     ///
     /// The three passes share one hardware render pass, so on mobile GPUs the MSAA color and
     /// depth buffers are cleared, resolved and discarded without ever leaving tile memory.
     pub fn record(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         profiling::scope!("Renderer::record");
-        debug_assert!(self.prepared_camera.is_some(), "record() needs a prepare() first");
-        let Some(camera) = self.prepared_camera.take() else { return };
+        debug_assert!(self.prepared.is_some(), "record() needs a prepare() first");
+        let Some(PreparedFrame { camera, constants }) = self.prepared.take() else { return };
         let texture = target.texture();
         let size = (texture.width(), texture.height());
         if size.0 == 0 || size.1 == 0 {
@@ -271,11 +284,14 @@ impl Renderer {
                 Some(RenderTargets::new(&self.device, size, self.color_format, self.settings.msaa));
         }
         let Some(targets) = &self.targets else { return };
-        self.queue.write_buffer(
-            &self.view_uniforms,
-            0,
-            bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
-        );
+
+        // Uploads first: copies recorded before the pass complete before it reads the buffers.
+        let uploads = &mut self.uploads;
+        upload(uploads, encoder, &self.frame_uniforms, bytemuck::bytes_of(&constants));
+        upload(uploads, encoder, &self.view_uniforms, bytemuck::bytes_of(&ViewUniforms::new(&camera, size)));
+        upload(uploads, encoder, self.instances.buffer(), bytemuck::cast_slice(&self.draw_list.instances));
+        upload(uploads, encoder, self.draws.buffer(), bytemuck::cast_slice(&self.draw_list.draws));
+        uploads.finish_and_recall_on_submit(encoder);
 
         let (view, resolve_target, store) = match &targets.msaa_color {
             Some(msaa) => (msaa, Some(target), wgpu::StoreOp::Discard),
@@ -340,6 +356,18 @@ impl Renderer {
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
         self.stats.buffer_growths = self.meshes.growths() + self.instances.growths() + self.draws.growths();
+    }
+}
+
+/// Copies `bytes` to the start of `target` through the staging belt. Empty uploads are skipped.
+fn upload(
+    belt: &mut wgpu::util::StagingBelt,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::Buffer,
+    bytes: &[u8],
+) {
+    if let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) {
+        belt.write_buffer(encoder, target, 0, size).copy_from_slice(bytes);
     }
 }
 

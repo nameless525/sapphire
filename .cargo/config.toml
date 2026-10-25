@@ -1,5 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+# The inner test loop: unit and integration tests without doctests, which cargo recompiles on
+# every run (they were 2.3 s of the 2.7 s `cargo test --workspace`). CI runs everything.
+test-fast = "test --workspace --lib --bins --tests"
 
 # Minimum OS versions (spec §2), for rustc and for the C/C++ dependencies cc-rs and CMake
 # build (SDL). They must match LSMinimumSystemVersion / MinimumOSVersion in
@@ -9,6 +12,13 @@ xtask = "run --quiet --package xtask --"
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "14.0", force = true }
 IPHONEOS_DEPLOYMENT_TARGET = { value = "17.0", force = true }
+
+# Profiling builds (the sandbox's `tracy` feature): keep Tracy's own crash handler out, so it
+# can't take crashes ahead of sapphire_crash (on Windows, its vectored exception handler would
+# terminate the process before a minidump is written). `profiling` turns on all of
+# tracy-client's default features, `crash-handler` included, and Cargo can't switch a
+# dependency's feature off, so the define goes in through the flags tracy-client-sys reads.
+TRACY_CLIENT_SYS_CXXFLAGS = "-DTRACY_NO_CRASH_HANDLER"
 
 # Google Play requires 16 KB page-aligned native libraries (spec §6.7). NDK r28+ already
 # links that way by default (open question Q2, verified with r29); the flag keeps the

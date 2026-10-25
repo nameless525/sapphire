@@ -34,8 +34,8 @@ M0 has to run the same app crate on macOS, Windows, Linux, iOS and Android. The 
    - `.cargo/config.toml` forces `MACOSX_DEPLOYMENT_TARGET=14.0` and `IPHONEOS_DEPLOYMENT_TARGET=17.0` (spec §2) for every cargo invocation, and `xtask bundle` verifies the result against the Info.plist minimums.
    - For macOS builds only, xtask sets `SDKROOT` from `xcrun` when the user hasn't. That works around Command Line Tools SDKs that are newer than the active Xcode's linker.
 7. **Verification never takes focus.**
-   - `sapphire_platform::run_with` with `RunOptions { background: true }` keeps a process from becoming the foreground app.
-   - The sandbox's `--capture <png>` renders offscreen through it, without a window.
+   - `sapphire_platform::run_with` with `RunOptions { background: true }` keeps a process from becoming the foreground app. `headless: true` also skips SDL's video subsystem, so no display connection or AppKit setup happens at all (about 60 ms less at launch on macOS).
+   - The sandbox's offscreen modes run that way, without a window: `--capture <png>` writes a frame, `--bench <frames>` measures the frame's CPU path.
    - `xtask run --platform ios-sim` is headless unless given `--show`, and the Android emulator boots with `-no-window`.
    - Desktop visuals are checked with captures, mobile visuals with `simctl` / `adb` screenshots.
 

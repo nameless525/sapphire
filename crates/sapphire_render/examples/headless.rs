@@ -14,6 +14,8 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::f32::consts::{PI, TAU};
+use std::fs::File;
+use std::io::BufWriter;
 
 use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
@@ -21,6 +23,9 @@ use sapphire_render::{
     CameraData, DirectionalLight, FrameView, MeshInstance, Msaa, RenderSettings, Renderer, SkyGradient,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 const WIDTH: u32 = 960;
 const HEIGHT: u32 = 540;
@@ -28,11 +33,11 @@ const HEIGHT: u32 = 540;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let filter: Targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|filter| filter.parse().ok())
+        .unwrap_or_else(|| "info".parse().expect("valid"));
+    tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer()).init();
     let mut args = std::env::args().skip(1);
     let output = args.next().ok_or("usage: headless <output.png> [fov_degrees]")?;
     let fov_degrees: f32 = args.next().map_or(Ok(38.0), |fov| fov.parse())?;
@@ -83,7 +88,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     gpu.queue().submit([encoder.finish()]);
 
     let pixels = read_back(&gpu, &target)?;
-    image::RgbaImage::from_raw(WIDTH, HEIGHT, pixels).ok_or("readback has the wrong size")?.save(&output)?;
+    let mut png = png::Encoder::new(BufWriter::new(File::create(&output)?), WIDTH, HEIGHT);
+    png.set_color(png::ColorType::Rgba);
+    png.set_depth(png::BitDepth::Eight);
+    png.write_header()?.write_image_data(&pixels)?;
     tracing::info!(output, "wrote frame");
     Ok(())
 }

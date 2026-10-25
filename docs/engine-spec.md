@@ -272,7 +272,7 @@ pub struct FramePacket {
 | Crate | Layer | Purpose | Key dependencies | Milestone |
 |---|---|---|---|---|
 | `sapphire_platform` | L0 | App lifecycle, windows, surfaces, events, file IO, threads, system info | `sdl3-sys`, `raw-window-handle` | M0 |
-| `sapphire_crash` | L0 | Crash capture and upload | `crash-handler`, `minidumper`, `sentry` | M0 |
+| `sapphire_crash` | L0 | Crash capture; upload deferred (M0 status) | `crash-handler`, `minidumper`; `sentry` once upload returns | M0 |
 | `sapphire_core` | L1 | Allocators, handles, names, logging, profiling, cvars | `mimalloc`, `bumpalo`, `slotmap`, `tracing`, `profiling` | M0 |
 | `sapphire_math` | L1 | Vectors, transforms, bounds, curves, springs, RNG | `glam`, `libm`, `rand_pcg` | M0 |
 | `sapphire_jobs` | L1 | The single task pool, scopes, parallel loops | `bevy_tasks` | M0 |
@@ -368,7 +368,7 @@ Each module below follows the same template:
 
 **How**
 
-- **Desktop:** initialize first in `main`. `crash-handler` 0.8 catches signals and exceptions, and `minidumper` 0.11 writes minidumps from a separate monitor process. On the next launch, or from the monitor, upload them to Sentry (0.49.3+ supports native minidumps).
+- **Desktop:** initialize first in `main`. `crash-handler` 0.8 catches signals and exceptions, and `minidumper` 0.11 writes minidumps from a separate monitor process. On the next launch, or from the monitor, upload them to Sentry (0.49.3+ supports native minidumps). Upload is deferred: see the M0 status in §10.
 - **Android:** initialize first in `SDL_main`, with `crash-handler`. A separate monitor process is awkward on Android, so either write the minidump in-process or use Sentry's Android NDK SDK from the Gradle project (Q12).
 - **iOS:** use the sentry-cocoa native SDK, linked in the Xcode project and initialized from a tiny Objective-C or Swift shim before `SDL_RunApp`.
 - **Panics:** a panic hook logs the panic, adds breadcrumbs (current zone, frame number, last 64 log lines) and, in shipping builds, aborts so a minidump is produced.
@@ -393,7 +393,7 @@ Each module below follows the same template:
   - `Guid(u128)` for asset and document identity.
   - `Name(u64)`, an xxh3 hash, for string IDs, with a debug-only reverse table.
 - **Logging:** `tracing`, with sinks for stdout and a rotating file in `user://logs`. On mobile, it forwards to `SDL_Log`, which routes to logcat on Android and to NSLog on iOS.
-- **Profiling:** `profiling` crate macros everywhere. The backend is chosen in the binary: Tracy (`tracy-client` 0.19), puffin, or none.
+- **Profiling:** `profiling` crate macros everywhere. The backend is chosen in the binary: Tracy (`tracy-client` 0.18 through `profiling/profile-with-tracy`, built without Tracy's own crash handler so `sapphire_crash` keeps that job), puffin, or none. The sandbox's `--bench` mode measures the frame's CPU path and allocations without a window.
 - **Cvars:** a typed, reflected registry (`cvar!(r_shadow_cascades: u32 = 4, "…")`). It can be set from config files, the dev console, live link or the command line. Shipping builds compile cvars down to constants or read-only values.
 - **Errors:** `thiserror` in libraries; `anyhow` only in tools. Soft assertions (`ensure!`) log once and continue in shipping builds.
 
@@ -514,7 +514,7 @@ Each module below follows the same template:
   - Pipeline-cache support.
   - Limits.
   - The renderer selects passes by `GpuCaps` plus the tier table, never by OS.
-- **Uploads:** a staging ring buffer, plus `queue.write_buffer` for small per-frame data.
+- **Uploads:** per-frame data goes through a `wgpu::util::StagingBelt`: mapped staging buffers reused across frames and copied in the frame's own encoder. `queue.write_buffer` creates a new staging buffer per call (it was most of the M0 frame's CPU time), so it's for one-off uploads such as meshes.
 - **Transient pools:** textures and buffers pooled by descriptor and reused across frames. wgpu can't alias GPU memory, so pooling is the substitute.
 - **Pipeline cache:** on Vulkan, create `wgpu::PipelineCache`, load it from `user://` at boot and save it at shutdown and after load screens.
 - **Surfaces:**
@@ -1209,12 +1209,12 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 **M0 status (2026-10-24):**
 
 - **Done and verified on 3 of the 5 platforms.** The same code renders the toon mannequin at 60 fps on macOS (Metal), the iOS 26.3 simulator (Metal) and the Android 16 emulator (Vulkan through MoltenVK). It survives background → foreground on Android, and a forced crash leaves a valid minidump on macOS.
+- **Since then (2026-10-24):** CI runs on GitHub, and Windows and Linux build and pass their tests there. Tracy is verified: a trace from the sandbox on the headless iOS Simulator records every engine zone and wgpu's. Release builds link on every Apple target (thin LTO used to drop a symbol SDL needs).
+- **Deferred by decision (2026-10-24):** crash upload. Nothing needs it yet, so the Sentry backend was removed from `sapphire_crash`, which halves its dependency tree. Minidumps are still captured and kept for the next launch, and the backend comes back from git history once there is a project to send reports to.
 - **Still open for M0 exit:**
-  - A run on Windows and Linux hardware (CI builds them, but they haven't been run).
+  - A run on Windows and Linux hardware.
   - A physical iPhone, which needs a signing identity.
   - A physical Android phone.
-  - Sentry upload with a real DSN.
-  - Tracy, which is wired through the `tracy` feature but hasn't been run against a Tracy server.
 
 
 ---
@@ -1249,11 +1249,11 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `sdl3-sys` | 0.7 (SDL 3.4.x) | `sapphire_platform` | SDL is zlib-licensed |
 | `raw-window-handle` | 0.6 | `sapphire_platform`, `sapphire_rhi` | **unchecked** |
 | `crash-handler` / `minidumper` | 0.8 / 0.11 | `sapphire_crash` | No iOS support; use sentry-cocoa there |
-| `sentry` | ≥ 0.49.3 | `sapphire_crash` | Native minidump capture |
+| `sentry` | ≥ 0.49.3 | `sapphire_crash` | Native minidump capture. Deferred: out of the tree since 2026-10-24 (M0 status) |
 | `mimalloc` | latest | `sapphire_core` | |
 | `bumpalo` / `bump-scope` | 3.20 / 2.4 | `sapphire_core` | std `Allocator` trait from Rust 1.100 |
 | `slotmap` | 1.1 | `sapphire_core` | |
-| `tracing`, `profiling`, `tracy-client`, `puffin` | –, –, 0.19, 0.20 | `sapphire_core` | |
+| `tracing`, `profiling`, `tracy-client`, `puffin` | –, –, 0.18, 0.20 | `sapphire_core` | No default features for `tracing` and `profiling` (no proc macros); `tracy-client` comes through `profiling` |
 | `glam` | 0.34 | `sapphire_math` and up | |
 | `libm`, `rand_pcg` | latest | `sapphire_math` | `libm` **unchecked** |
 | `bevy_ecs`, `bevy_tasks`, `bevy_reflect` | 0.20 | `sapphire_ecs`, `sapphire_jobs`, `sapphire_reflect` | Pin per milestone |

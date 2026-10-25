@@ -266,7 +266,7 @@ impl PanicReport {
     }
 
     /// Parses [`Self::render`]'s output. Returns `None` for anything else.
-    #[cfg(any(feature = "sentry", test))]
+    #[cfg(test)]
     pub fn parse(text: &str) -> Option<Self> {
         let rest = text.strip_prefix(PANIC_REPORT_TITLE)?.strip_prefix('\n')?;
         // The sections appear in this order, so a first-match split peels them off one at a time.
@@ -296,12 +296,12 @@ impl PanicReport {
     }
 }
 
-#[cfg(any(feature = "sentry", test))]
+#[cfg(test)]
 fn parse_hex_u64(token: &str) -> Option<u64> {
     u64::from_str_radix(token.strip_prefix("0x").or_else(|| token.strip_prefix("0X"))?, 16).ok()
 }
 
-#[cfg(any(feature = "sentry", test))]
+#[cfg(test)]
 fn parse_module_line(line: &str) -> Option<ModuleId> {
     let mut parts = line.splitn(3, ' ');
     let base = parse_hex_u64(parts.next()?)?;

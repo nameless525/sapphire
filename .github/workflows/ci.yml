@@ -10,6 +10,9 @@
 #
 # Minimum OS versions come from .cargo/config.toml [env], which every cargo call reads.
 #
+# rust-cache saves on failure too (`cache-on-failure`): a failed job has still compiled its
+# dependencies, and without it the next run of that job starts cold.
+#
 # `cargo --locked xtask --locked …`: the first flag locks the build of xtask itself, the
 # second makes xtask pass --locked to every cargo command it runs.
 
@@ -31,6 +34,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # No debug info in CI builds: nothing debugs them, and it is a large share of compile and link
+  # time (PDB generation on Windows above all) and of the cache. Panics still name functions.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   RUST_BACKTRACE: short
   # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
   # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.
@@ -61,11 +67,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # Optional features (`tracy`, `sentry`, `mimalloc`) only compile when enabled.
+      # Optional features (`tracy`, `mimalloc`) only compile when enabled.
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Crate layering (R1, R8)
@@ -101,6 +108,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
       # --no-fail-fast: one failing crate shouldn't hide the results of the rest.
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
@@ -117,8 +125,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
-      - name: Build for device
-        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --locked
+          cache-on-failure: true
+      # Release with LTO, the configuration that ships: thin LTO once dropped a symbol SDL needed
+      # (`___isPlatformVersionAtLeast`, see sapphire_platform/build.rs) and only release links failed.
+      - name: Build for device (release)
+        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --release --locked
       - name: Build for simulator
         run: cargo build --package sapphire_sandbox --target aarch64-apple-ios-sim --locked
 
@@ -133,6 +144,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
       # Validates the committed Gradle wrapper and caches Gradle's downloads. The basic
       # (MIT) cache provider: the default one is proprietary and a preview for private repos.
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0

@@ -1,16 +1,20 @@
 //! `cargo xtask content`: makes sure the sample sources exist, then cooks `content/` with
 //! the pipeline binary (spec §5.27, §7.4).
 //!
-//! A cook is skipped while nothing it depends on has changed: a stamp next to the output
-//! records the pipeline binary and every source file's path, size and modification time.
-//! Anything else recooks everything into a fresh directory; per-asset content hashes and
-//! `--only` arrive in M1. A lock file per cook keeps concurrent xtask runs from deleting
-//! content another run is still copying or running against.
+//! Every run runs the pipeline, whose content cache (`target/content/cache/`, shared by both
+//! cooks) makes it incremental: an asset is cooked only when an input its cache key covers
+//! changed (its source bytes, sidecar settings, importer and cooker versions, the cook or
+//! a file it references), an output is written only when its bytes change, and cooked files
+//! whose source is gone are removed. Rebuilding the pipeline recooks nothing, so a change to
+//! an importer or cooker must bump that stage's version (see `sapphire_pipeline::cache`).
+//!
+//! With `--locked` (CI), a source without a committed `.meta` sidecar fails the cook instead
+//! of getting a fresh ID that would be thrown away. A lock file per cook keeps concurrent
+//! xtask runs from changing content another run is still copying or running against.
 
 use std::fmt;
 use std::fs::{self, File, TryLockError};
-use std::hash::{DefaultHasher, Hash as _, Hasher as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
 
@@ -64,6 +68,11 @@ pub fn cooked_dir(cook: Cook) -> PathBuf {
     workspace::output_dir().join("content").join(cook.name())
 }
 
+/// The content cache both cooks share: `target/content/cache/`. Keys include the cook.
+fn cache_dir() -> PathBuf {
+    workspace::output_dir().join("content").join("cache")
+}
+
 /// A cooked content directory, held under a shared lock: no other xtask run recooks it
 /// until this is dropped.
 #[derive(Debug)]
@@ -88,81 +97,28 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
 
     let out = cooked_dir(cook);
     let lock_path = out.with_extension("lock");
-    let stamp_path = out.with_extension("stamp");
     fs::create_dir_all(workspace::output_dir().join("content"))?;
     let lock =
         File::create(&lock_path).with_context(|| format!("failed to create {}", lock_path.display()))?;
     wait_for(&lock, File::try_lock, File::lock, cook)?;
-    let inputs = fingerprint(&pipeline, &source, cook)?;
-    let stamp = |out: &Path| tree_fingerprint(out).map(|outputs| format!("{inputs}{outputs}"));
-    let current = out.is_dir().then(|| stamp(&out).ok()).flatten();
-    if current.is_some() && fs::read_to_string(&stamp_path).ok() == current {
-        eprintln!("{cook} content is up to date");
-    } else {
-        // Remove the stamp first: an interrupted cook must never look up to date.
-        if stamp_path.exists() {
-            fs::remove_file(&stamp_path)?;
-        }
-        // Start clean so assets deleted from `content/` don't linger in builds.
-        workspace::remove_dir_if_exists(&out)?;
-        workspace::run(
-            Command::new(&pipeline)
-                .arg("cook")
-                .arg("--source")
-                .arg(&source)
-                .arg("--out")
-                .arg(&out)
-                .args(["--cook", cook.name()]),
-        )?;
-        fs::write(&stamp_path, stamp(&out)?)
-            .with_context(|| format!("failed to write {}", stamp_path.display()))?;
+    let mut command = Command::new(&pipeline);
+    command
+        .arg("cook")
+        .arg("--source")
+        .arg(&source)
+        .arg("--out")
+        .arg(&out)
+        .args(["--cook", cook.name()])
+        .arg("--cache")
+        .arg(cache_dir());
+    if workspace::locked() {
+        command.arg("--locked");
     }
+    workspace::run(&mut command)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
     lock.unlock()?;
     wait_for(&lock, File::try_lock_shared, File::lock_shared, cook)?;
     Ok(Cooked { dir: out, _lock: lock })
-}
-
-/// Identifies everything a cook depends on: the cook, the pipeline binary and each source file
-/// under `source` (see [`tree_fingerprint`]). Sources a glTF file references from outside
-/// `source` aren't tracked. Only ever compared with the stamp of an earlier run of the same
-/// xtask build; the stamp also holds the output's [`tree_fingerprint`], so cooked files that
-/// were deleted or edited are cooked again.
-fn fingerprint(pipeline: &Path, source: &Path, cook: Cook) -> anyhow::Result<String> {
-    let mut hasher = DefaultHasher::new();
-    cook.name().hash(&mut hasher);
-    hash_file(pipeline, pipeline, &mut hasher)?;
-    Ok(format!("{:016x}\n{}", hasher.finish(), tree_fingerprint(source)?))
-}
-
-/// Every file under `root`, by relative path, size and modification time. Hidden entries are
-/// skipped, as the pipeline skips them.
-fn tree_fingerprint(root: &Path) -> anyhow::Result<String> {
-    let mut hasher = DefaultHasher::new();
-    let mut pending = vec![root.to_owned()];
-    let mut files = Vec::new();
-    while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir).with_context(|| format!("failed to list {}", dir.display()))? {
-            let path = entry?.path();
-            if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) {
-                continue;
-            }
-            if path.is_dir() { pending.push(path) } else { files.push(path) }
-        }
-    }
-    files.sort();
-    for file in &files {
-        hash_file(file.strip_prefix(root).unwrap_or(file), file, &mut hasher)?;
-    }
-    Ok(format!("{:016x}\n", hasher.finish()))
-}
-
-fn hash_file(name: &Path, path: &Path, hasher: &mut DefaultHasher) -> anyhow::Result<()> {
-    let metadata = fs::metadata(path).with_context(|| format!("failed to read {}", path.display()))?;
-    name.hash(hasher);
-    metadata.len().hash(hasher);
-    metadata.modified()?.hash(hasher);
-    Ok(())
 }
 
 /// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
@@ -188,36 +144,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_cooks() {
+    fn parses_cooks_and_places_their_output() {
         assert_eq!("desktop".parse::<Cook>().unwrap(), Cook::Desktop);
         assert_eq!("mobile".parse::<Cook>().unwrap(), Cook::Mobile);
         assert!("console".parse::<Cook>().is_err());
         assert!(cooked_dir(Cook::Mobile).ends_with("target/content/mobile"));
-    }
-
-    #[test]
-    fn fingerprints_change_with_sources() {
-        let dir = std::env::temp_dir().join(format!("xtask_fingerprint_{}", std::process::id()));
-        let source = dir.join("content");
-        fs::create_dir_all(source.join("samples")).unwrap();
-        fs::write(source.join("samples/a.glb"), b"one").unwrap();
-        fs::write(source.join(".hidden"), b"ignored").unwrap();
-        let pipeline = dir.join("pipeline");
-        fs::write(&pipeline, b"binary").unwrap();
-
-        let first = fingerprint(&pipeline, &source, Cook::Desktop).unwrap();
-        assert_eq!(fingerprint(&pipeline, &source, Cook::Desktop).unwrap(), first, "stable");
-        assert_ne!(fingerprint(&pipeline, &source, Cook::Mobile).unwrap(), first, "per cook");
-        fs::write(source.join(".hidden"), b"still ignored").unwrap();
-        assert_eq!(fingerprint(&pipeline, &source, Cook::Desktop).unwrap(), first, "hidden files");
-        fs::write(source.join("samples/b.glb"), b"two").unwrap();
-        assert_ne!(fingerprint(&pipeline, &source, Cook::Desktop).unwrap(), first, "new source");
-
-        let out = dir.join("out");
-        fs::create_dir_all(&out).unwrap();
-        let empty = tree_fingerprint(&out).unwrap();
-        fs::write(out.join("a.smesh"), b"cooked").unwrap();
-        assert_ne!(tree_fingerprint(&out).unwrap(), empty, "outputs are fingerprinted too");
-        fs::remove_dir_all(&dir).unwrap();
+        assert!(cache_dir().ends_with("target/content/cache"));
     }
 }

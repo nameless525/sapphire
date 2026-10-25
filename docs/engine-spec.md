@@ -511,6 +511,11 @@ Each module below follows the same template:
   - Desktop: watch the cooked-output directory with `notify` 8.2 plus a debouncer.
   - Devices: live link pushes the asset to the device.
   - The asset is swapped in place behind the same handle.
+- **As built (M1 A1, `sapphire_assets::AssetId`):**
+  - `AssetId` is 16 bytes, `Copy` and ordered by its bytes. Its text form is the canonical UUID spelling (8-4-4-4-12 lowercase hex), and parsing accepts only that, so an ID has one spelling and a text search finds every use.
+  - serde writes the text in human-readable formats (RON) and the 16 bytes in binary ones (postcard). rkyv archives an `AssetId` as itself (alignment 1), so cooked data hands out `&AssetId` in place.
+  - IDs are random, laid out as version 4 UUIDs. Only the pipeline creates them; the runtime parses and compares them and never needs entropy.
+  - **Decision:** addressing cooked data by ID waits for packs (A4), whose table of contents is the runtime's ID index. A1 adds no ID-to-path manifest: rule R5 keeps path strings out of the runtime, and A4 would replace it. Until then the sandbox loads `samples/mannequin.smesh` by path.
 
 **Tests**
 
@@ -968,6 +973,15 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 - **Cache key:** blake3 of the source bytes, the importer and cooker versions, the settings, the target cook (`desktop` / `mobile`) and the dependency keys. The local cache comes first; a shared cache can be added *later*.
 - **Identity:** every source asset has a `.meta` sidecar holding its GUID and import settings, and references always go by GUID.
 - **Parallelism:** `rayon` is fine here.
+- **As built (M1 A1, `sapphire_pipeline::{meta, cache, cook}`):**
+  - A sidecar is `<source file name>.meta` (`content/samples/mannequin.glb.meta`): a `sapphire::assets::AssetMeta` RON document holding the `id` and the `importer`, an enum whose variant names the importer and holds its typed settings (`Gltf((outline: (weld_tolerance: 0.0001)))`). Left-out settings take their defaults.
+  - A cook creates missing sidecars and never rewrites an existing one. `--locked` (xtask's, so CI) fails instead, because an ID made there would be thrown away. Two sidecars with one ID are an error, and so is a source without a sidecar next to a sidecar without a source: a move that left the sidecar behind would otherwise lose the ID.
+  - The cache key is blake3 (derive-key mode) over postcard-encoded inputs: the source's hash; the recipe (importer and cooker names and versions, and the cooked format's version); the import settings; the cook; and the dependencies as a set, files the importer reads (glTF external buffers) by relative path and hash and assets by ID and key. A new kind of asset adds an importer variant and a recipe without changing the key.
+  - The key leaves out the source's path, its ID and the pipeline binary, so moves, copies and pipeline rebuilds are hits. The price: a stage whose output changes for the same input must bump its version. A cooked format's version is in the key, so a format bump recooks on its own.
+  - The local cache is `target/content/cache/`, one file per key with a header (magic, format, length, blake3 of the output), so damaged entries are misses. Outputs are written only when their bytes change, so a file watcher sees only real changes, and stale cooked files are pruned. This replaces xtask's tree stamp, which recooked everything on any change.
+  - Timings on the M5: `cargo xtask content` takes 0.26–0.27 s cold, warm, or after touching or changing the one sample mesh. Nearly all of that is cargo checking that xtask and the pipeline are built; the pipeline itself takes 11 ms cold and 8 ms warm. On 200 distinct meshes (27 MB of sources) it takes 0.46 s cold, 0.06 s warm or with one source changed (1 cooked, 199 up to date), and 0.10 s to restore every output from the cache.
+  - Cooked outputs keep mirroring their source paths; addressing them by ID waits for packs (A4, see §5.10).
+  - Later: a shared cache behind the same key, pruning old entries (deleting the directory is always safe), a stat cache so unchanged sources aren't rehashed, and parallel cooking.
 
 | Asset | Source | Importer | `desktop` cook | `mobile` cook |
 |---|---|---|---|---|

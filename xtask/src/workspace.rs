@@ -22,9 +22,16 @@ pub fn output_dir() -> PathBuf {
 
 static LOCKED: AtomicBool = AtomicBool::new(false);
 
-/// Makes every cargo command xtask runs pass `--locked` (`cargo xtask --locked …`).
+/// Makes every cargo command xtask runs pass `--locked`, and the content cook refuse to
+/// create sidecars (`cargo xtask --locked …`): nothing a locked run builds may change a
+/// tracked file.
 pub fn set_locked(locked: bool) {
     LOCKED.store(locked, Ordering::Relaxed);
+}
+
+/// Whether xtask was given `--locked`.
+pub fn locked() -> bool {
+    LOCKED.load(Ordering::Relaxed)
 }
 
 /// `cargo <subcommand>` run from the workspace root with the cargo that runs xtask, plus
@@ -32,7 +39,7 @@ pub fn set_locked(locked: bool) {
 pub fn cargo(subcommand: &str) -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     command.current_dir(root()).arg(subcommand);
-    if LOCKED.load(Ordering::Relaxed) {
+    if locked() {
         command.arg("--locked");
     }
     command

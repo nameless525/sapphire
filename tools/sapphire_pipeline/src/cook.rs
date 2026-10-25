@@ -1,19 +1,42 @@
-//! Cooking: import, bake and validate source assets for a target cook, then write the
-//! runtime format.
+//! Cooking: source assets and their sidecars in, the runtime's cooked files out, through the
+//! content cache (spec §5.27).
 //!
-//! M0 cooks meshes only and recooks everything on every run; the content-hash cache and
-//! packing arrive in M1 (spec §5.27).
+//! [`cook_dir`] cooks a content tree:
+//!
+//! 1. Finds the source assets and resolves their sidecars ([`meta`]), creating missing
+//!    ones.
+//! 2. Plans each asset's output: its path under the content root, mirrored under the output
+//!    directory with the cooked format's extension (`samples/mannequin.glb` →
+//!    `samples/mannequin.smesh`). The runtime still finds cooked files by these paths; it
+//!    addresses assets by ID once packs land (M1 A4).
+//! 3. Removes stale files from the output directory: cooked files no source produces any
+//!    more, and temporary files from an interrupted run. Other files are left alone.
+//! 4. Keys each asset ([`CacheKey`]) and takes its output from the [`Cache`], or imports,
+//!    bakes, validates and cooks it and stores the result. An output is written only when its
+//!    bytes change, so a file watcher (hot reload, A8) sees exactly the assets that changed.
+//!
+//! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
+//! format, whose versions are part of the cache key. A1 has one, glTF → `.smesh`. Both cooks
+//! write the same mesh until the mobile cook gets its lower-detail LOD0 (spec §5.27); they
+//! still have separate keys.
+//!
+//! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
+//! worth it.
 
 use std::collections::HashMap;
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use sapphire_assets::mesh::{MESH_EXTENSION, MeshAsset, MeshFormatError};
+use sapphire_assets::AssetId;
+use sapphire_assets::mesh::{MESH_EXTENSION, MESH_VERSION, MeshAsset, MeshFormatError};
 
-use crate::bake::{self, OutlineSettings};
+use crate::bake;
+use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::import::gltf::{self, GltfImportError};
+use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android.
@@ -27,7 +50,7 @@ impl Cook {
     /// Every cook, in a stable order.
     pub const ALL: [Self; 2] = [Self::Desktop, Self::Mobile];
 
-    /// The name used on command lines and in output directories.
+    /// The name used on command lines, in output directories and in cache keys.
     pub fn name(self) -> &'static str {
         match self {
             Self::Desktop => "desktop",
@@ -39,21 +62,6 @@ impl Cook {
 impl fmt::Display for Cook {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
-    }
-}
-
-/// Everything that shapes cooked output. In M1 these join the content-hash cache key and
-/// come from each asset's `.meta` import settings (spec §5.27).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CookSettings {
-    pub cook: Cook,
-    pub outline: OutlineSettings,
-}
-
-impl CookSettings {
-    /// `cook` with default bake settings.
-    pub fn new(cook: Cook) -> Self {
-        Self { cook, outline: OutlineSettings::default() }
     }
 }
 
@@ -70,11 +78,49 @@ impl FromStr for Cook {
     }
 }
 
+/// How one kind of source is cooked: the stages that run, and the file they write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Recipe {
+    pub importer: Stage,
+    pub cooker: Stage,
+    /// The cooked format's own version, so a format change recooks its assets even without a
+    /// stage bump.
+    pub format: u32,
+    /// The cooked file's extension.
+    pub extension: &'static str,
+}
+
+/// Bake, validation and the `.smesh` writer. Bump its version whenever they change output for
+/// the same imported mesh.
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 1 };
+
+/// Every extension a recipe writes: stale files with these are removed from the output.
+const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION];
+
+/// Extension of the temporary files outputs are written through.
+const TEMP_EXTENSION: &str = "tmp";
+
+impl Recipe {
+    /// The recipe for sources read with `settings`.
+    pub fn for_settings(settings: &ImportSettings) -> Self {
+        match settings {
+            ImportSettings::Gltf(_) => Self {
+                importer: gltf::IMPORTER,
+                cooker: MESH_COOKER,
+                format: MESH_VERSION,
+                extension: MESH_EXTENSION,
+            },
+        }
+    }
+}
+
 /// Errors from cooking. Each names the file it concerns.
 #[derive(Debug, thiserror::Error)]
 pub enum CookError {
     #[error("{} is not a supported mesh source (expected .gltf or .glb)", path.display())]
     UnsupportedSource { path: PathBuf },
+    #[error(transparent)]
+    Meta(#[from] MetaError),
     #[error("failed to import {}", path.display())]
     Import {
         path: PathBuf,
@@ -101,92 +147,271 @@ pub enum CookError {
         #[source]
         source: io::Error,
     },
+    #[error(transparent)]
+    Cache(#[from] CacheError),
 }
 
-/// One source file and the cooked file it produced.
+/// Options for [`cook_dir`].
+#[derive(Clone, Copy, Debug)]
+pub struct CookOptions<'a> {
+    pub cook: Cook,
+    /// The content cache's directory. Without one, every asset is cooked.
+    pub cache: Option<&'a Path>,
+    /// Fail on a source without a sidecar instead of creating one (CI; see [`meta`]).
+    pub locked: bool,
+}
+
+/// What a cook did with one asset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CookStatus {
+    /// Cooked from its source: a cache miss, or no cache.
+    Cooked,
+    /// Taken from the cache and written to its output.
+    Cached,
+    /// The output already held the cached bytes, so nothing was written.
+    UpToDate,
+}
+
+/// One asset of a [`CookReport`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CookedFile {
+pub struct CookedAsset {
+    pub id: AssetId,
     pub source: PathBuf,
     pub output: PathBuf,
+    pub key: CacheKey,
+    pub status: CookStatus,
 }
 
-/// Whether `path` is a mesh source this pipeline imports.
-pub fn is_mesh_source(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gltf") || ext.eq_ignore_ascii_case("glb"))
+/// What [`cook_dir`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CookReport {
+    /// Every asset, in source path order.
+    pub assets: Vec<CookedAsset>,
+    /// Sidecars this run created, to commit with their sources.
+    pub created_sidecars: Vec<PathBuf>,
+    /// Sidecars whose source doesn't exist.
+    pub orphaned_sidecars: Vec<PathBuf>,
+    /// Stale files removed from the output directory.
+    pub removed: Vec<PathBuf>,
 }
 
-/// Imports, bakes and validates one source mesh.
-pub fn cook_mesh(source: &Path, settings: &CookSettings) -> Result<MeshAsset, CookError> {
-    if !is_mesh_source(source) {
-        return Err(CookError::UnsupportedSource { path: source.to_owned() });
+impl CookReport {
+    /// How many assets ended with `status`.
+    pub fn count(&self, status: CookStatus) -> usize {
+        self.assets.iter().filter(|asset| asset.status == status).count()
     }
-    let mut mesh =
-        gltf::import(source).map_err(|e| CookError::Import { path: source.to_owned(), source: e })?;
+}
+
+/// Cooks every source asset under `source_root` into `out_root`, as the [module docs](self)
+/// describe.
+pub fn cook_dir(
+    source_root: &Path,
+    out_root: &Path,
+    options: &CookOptions<'_>,
+) -> Result<CookReport, CookError> {
+    let tree = SourceTree::scan(source_root)?;
+    let resolved = meta::resolve(&tree, options.locked)?;
+
+    let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut plan = Vec::with_capacity(resolved.assets.len());
+    for asset in resolved.assets {
+        let recipe = Recipe::for_settings(&asset.meta.importer);
+        let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
+        let output = out_root.join(relative).with_extension(recipe.extension);
+        if let Some(first) = outputs.insert(output.clone(), asset.path.clone()) {
+            return Err(CookError::OutputCollision { first, second: asset.path, output });
+        }
+        plan.push((asset, recipe, output));
+    }
+    // Before writing, so an output whose name only changed case (on a case-insensitive file
+    // system) is replaced rather than removed as stale.
+    let removed = prune(out_root, &outputs)?;
+
+    let cache = options.cache.map(Cache::new);
+    let assets = plan
+        .into_iter()
+        .map(|(asset, recipe, output)| cook_asset(asset, &recipe, output, cache.as_ref(), options.cook))
+        .collect::<Result<_, _>>()?;
+    Ok(CookReport {
+        assets,
+        created_sidecars: resolved.created,
+        orphaned_sidecars: resolved.orphaned,
+        removed,
+    })
+}
+
+/// Brings one asset's output up to date.
+fn cook_asset(
+    asset: SourceAsset,
+    recipe: &Recipe,
+    output: PathBuf,
+    cache: Option<&Cache>,
+    cook: Cook,
+) -> Result<CookedAsset, CookError> {
+    let SourceAsset { path, meta } = asset;
+    let bytes = fs::read(&path).map_err(|source| CookError::Read { path: path.clone(), source })?;
+    let dependencies = dependencies(&path, &bytes, &meta.importer)?;
+    let key = CacheKey::new(&KeyInputs {
+        source: blake3::hash(&bytes),
+        recipe,
+        settings: &meta.importer,
+        cook,
+        dependencies: &dependencies,
+    });
+    let current = file_hash(&output)?;
+    let done =
+        |status| CookedAsset { id: meta.id, source: path.clone(), output: output.clone(), key, status };
+
+    let mut cached = None;
+    if let Some(cache) = cache
+        && let Some(hash) = cache.output_hash(&key)?
+    {
+        if current == Some(hash) {
+            return Ok(done(CookStatus::UpToDate));
+        }
+        cached = cache.get(&key)?;
+    }
+    let (status, cooked) = match cached {
+        Some(cooked) => (CookStatus::Cached, cooked),
+        None => {
+            let cooked = cook_source(&path, &bytes, &meta.importer, cook)?;
+            if let Some(cache) = cache {
+                cache.put(&key, &cooked)?;
+            }
+            (CookStatus::Cooked, cooked)
+        }
+    };
+    if current != Some(blake3::hash(&cooked)) {
+        write_atomically(&output, &cooked)?;
+    }
+    Ok(done(status))
+}
+
+/// Imports, bakes and cooks one source: the bytes of its cooked file.
+fn cook_source(
+    path: &Path,
+    bytes: &[u8],
+    settings: &ImportSettings,
+    cook: Cook,
+) -> Result<Vec<u8>, CookError> {
+    match settings {
+        ImportSettings::Gltf(mesh) => Ok(import_mesh(path, bytes, mesh, cook)?.to_bytes()),
+    }
+}
+
+/// Everything besides its own bytes that cooking `path` reads: part of its cache key.
+fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<Vec<Dependency>, CookError> {
+    match settings {
+        ImportSettings::Gltf(_) => {
+            let files = gltf::external_files(bytes)
+                .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
+            let dir = path.parent().unwrap_or(Path::new(""));
+            files
+                .into_iter()
+                .map(|file| {
+                    let full = dir.join(&file);
+                    let bytes = fs::read(&full).map_err(|source| CookError::Read { path: full, source })?;
+                    Ok(Dependency::File { path: file, hash: blake3::hash(&bytes) })
+                })
+                .collect()
+        }
+    }
+}
+
+/// Imports, bakes and validates one mesh source read from `path`.
+fn import_mesh(
+    path: &Path,
+    bytes: &[u8],
+    settings: &MeshSettings,
+    cook: Cook,
+) -> Result<MeshAsset, CookError> {
+    let mut mesh = gltf::import_slice(bytes, path.parent())
+        .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
     bake::outline_normals(&mut mesh, &settings.outline);
-    match settings.cook {
+    match cook {
         // Identical until the mobile cook gets its lower-detail LOD0 and fewer LODs
         // (spec §5.27, M1).
         Cook::Desktop | Cook::Mobile => {}
     }
-    mesh.validate().map_err(|e| CookError::Invalid { path: source.to_owned(), source: e })?;
+    mesh.validate().map_err(|source| CookError::Invalid { path: path.to_owned(), source })?;
     Ok(mesh)
 }
 
-/// Cooks one source mesh to `output` (a `.smesh` file), creating parent directories.
-pub fn cook_mesh_file(source: &Path, output: &Path, settings: &CookSettings) -> Result<(), CookError> {
-    let mesh = cook_mesh(source, settings)?;
+/// Imports, bakes and validates one mesh source.
+pub fn cook_mesh(source: &Path, settings: &MeshSettings, cook: Cook) -> Result<MeshAsset, CookError> {
+    if !matches!(ImportSettings::for_source(source), Some(ImportSettings::Gltf(_))) {
+        return Err(CookError::UnsupportedSource { path: source.to_owned() });
+    }
+    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
+    import_mesh(source, &bytes, settings, cook)
+}
+
+/// Cooks one mesh source to `output` (a `.smesh` file), creating parent directories. It
+/// reads and writes no sidecar and uses no cache.
+pub fn cook_mesh_file(
+    source: &Path,
+    output: &Path,
+    settings: &MeshSettings,
+    cook: Cook,
+) -> Result<(), CookError> {
+    let mesh = cook_mesh(source, settings, cook)?;
     write_atomically(output, &mesh.to_bytes())
 }
 
-/// Cooks every `.gltf`/`.glb` under `source_root` into `out_root`, mirroring relative
-/// paths with the `.smesh` extension. Hidden files and directories are skipped. Returns
-/// the cooked files in path order.
-pub fn cook_dir(
-    source_root: &Path,
-    out_root: &Path,
-    settings: &CookSettings,
-) -> Result<Vec<CookedFile>, CookError> {
-    let mut sources = Vec::new();
-    collect_sources(source_root, &mut sources)?;
-
-    let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
-    let mut plan = Vec::with_capacity(sources.len());
-    for source in sources {
-        let relative = source.strip_prefix(source_root).expect("collected under the source root");
-        let output = out_root.join(relative).with_extension(MESH_EXTENSION);
-        if let Some(first) = outputs.insert(output.clone(), source.clone()) {
-            return Err(CookError::OutputCollision { first, second: source, output });
-        }
-        plan.push(CookedFile { source, output });
+/// The blake3 hash of the file at `path`, or `None` if there is none.
+fn file_hash(path: &Path) -> Result<Option<blake3::Hash>, CookError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(blake3::hash(&bytes))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(CookError::Read { path: path.to_owned(), source }),
     }
-    for file in &plan {
-        cook_mesh_file(&file.source, &file.output, settings)?;
-    }
-    Ok(plan)
 }
 
-fn collect_sources(dir: &Path, sources: &mut Vec<PathBuf>) -> Result<(), CookError> {
+/// Removes cooked and temporary files under `out_root` that aren't in `outputs`, then any
+/// directories that leaves empty. Returns the removed files.
+fn prune(out_root: &Path, outputs: &HashMap<PathBuf, PathBuf>) -> Result<Vec<PathBuf>, CookError> {
+    let mut removed = Vec::new();
+    if out_root.is_dir() {
+        prune_dir(out_root, outputs, &mut removed)?;
+    }
+    Ok(removed)
+}
+
+/// [`prune`] for one directory; returns whether it is now empty.
+fn prune_dir(
+    dir: &Path,
+    outputs: &HashMap<PathBuf, PathBuf>,
+    removed: &mut Vec<PathBuf>,
+) -> Result<bool, CookError> {
     let read_error = |source| CookError::Read { path: dir.to_owned(), source };
-    let mut entries = std::fs::read_dir(dir)
-        .map_err(read_error)?
-        .map(|entry| entry.map(|e| e.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(read_error)?;
-    entries.sort();
-    for path in entries {
-        let hidden = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
-        if hidden {
-            continue;
-        }
-        if path.is_dir() {
-            collect_sources(&path, sources)?;
-        } else if is_mesh_source(&path) {
-            sources.push(path);
+    let mut entries =
+        fs::read_dir(dir).map_err(read_error)?.collect::<Result<Vec<_>, _>>().map_err(read_error)?;
+    entries.sort_by_key(fs::DirEntry::path);
+    let mut empty = true;
+    for entry in entries {
+        let path = entry.path();
+        let is_dir =
+            entry.file_type().map_err(|source| CookError::Read { path: path.clone(), source })?.is_dir();
+        let remove_error = |source| CookError::Write { path: path.clone(), source };
+        if is_dir {
+            if prune_dir(&path, outputs, removed)? {
+                fs::remove_dir(&path).map_err(remove_error)?;
+            } else {
+                empty = false;
+            }
+        } else if is_cooked_or_temporary(&path) && !outputs.contains_key(&path) {
+            fs::remove_file(&path).map_err(remove_error)?;
+            removed.push(path);
+        } else {
+            empty = false;
         }
     }
-    Ok(())
+    Ok(empty)
+}
+
+fn is_cooked_or_temporary(path: &Path) -> bool {
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    extension.is_some_and(|extension| extension == TEMP_EXTENSION || COOKED_EXTENSIONS.contains(&extension))
 }
 
 /// Writes via a temporary sibling and a rename, so a watcher (hot reload, M1) never sees
@@ -194,22 +419,82 @@ fn collect_sources(dir: &Path, sources: &mut Vec<PathBuf>) -> Result<(), CookErr
 fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookError> {
     let write_error = |source| CookError::Write { path: path.to_owned(), source };
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(write_error)?;
+        fs::create_dir_all(parent).map_err(write_error)?;
     }
     let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
+    temp.push(".");
+    temp.push(TEMP_EXTENSION);
     let temp = PathBuf::from(temp);
-    std::fs::write(&temp, bytes).map_err(write_error)?;
-    std::fs::rename(&temp, path).map_err(write_error)
+    fs::write(&temp, bytes).map_err(write_error)?;
+    fs::rename(&temp, path).map_err(write_error)
 }
 
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
+    use serde_json::json;
 
     use super::*;
+    use crate::bake::OutlineSettings;
+    use crate::gltf_writer::{Geometry, GltfWriter};
+    use crate::meta::{AssetMeta, sidecar_path};
     use crate::samples;
     use crate::test_util::TempDir;
+
+    /// A source tree, an output directory and a cache, all in one scratch directory.
+    struct Scratch {
+        dir: TempDir,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            Self { dir: TempDir::new(name) }
+        }
+
+        fn source(&self) -> PathBuf {
+            self.dir.path().join("content")
+        }
+
+        /// The desktop cook's output.
+        fn out(&self) -> PathBuf {
+            self.out_for(Cook::Desktop)
+        }
+
+        fn out_for(&self, cook: Cook) -> PathBuf {
+            self.dir.path().join("out").join(cook.name())
+        }
+
+        /// Writes the mannequin to `relative` under the source root.
+        fn add_mannequin(&self, relative: &str) -> PathBuf {
+            let path = self.source().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, samples::mannequin_glb()).unwrap();
+            path
+        }
+
+        fn cook_with(&self, cook: Cook, cache: bool) -> CookReport {
+            let cache_dir = self.dir.path().join("cache");
+            let options = CookOptions { cook, cache: cache.then_some(cache_dir.as_path()), locked: false };
+            cook_dir(&self.source(), &self.out_for(cook), &options).unwrap()
+        }
+
+        fn cook(&self) -> CookReport {
+            self.cook_with(Cook::Desktop, true)
+        }
+    }
+
+    fn statuses(report: &CookReport) -> Vec<CookStatus> {
+        report.assets.iter().map(|asset| asset.status).collect()
+    }
+
+    fn set_weld_tolerance(source: &Path, meters: f32) {
+        let sidecar = sidecar_path(source);
+        let mut meta = meta::read(&sidecar).unwrap();
+        meta.importer = ImportSettings::Gltf(MeshSettings {
+            outline: OutlineSettings::with_weld_tolerance(meters).unwrap(),
+        });
+        fs::write(&sidecar, sapphire_serialize::to_ron::<AssetMeta>(&meta).unwrap()).unwrap();
+    }
 
     #[test]
     fn parses_cook_names() {
@@ -222,23 +507,22 @@ mod tests {
 
     #[test]
     fn cooks_a_tree_into_mirrored_paths() {
-        let source = TempDir::new("cook_source");
-        let out = TempDir::new("cook_out");
-        let nested = source.path().join("characters").join("mannequin");
-        samples::write_all(&nested).unwrap();
-        samples::write_all(&source.path().join(".hidden")).unwrap();
-        std::fs::write(source.path().join("notes.txt"), "not an asset").unwrap();
+        let scratch = Scratch::new("cook_tree");
+        let source = scratch.add_mannequin("characters/mannequin/mannequin.glb");
+        scratch.add_mannequin(".hidden/mannequin.glb");
+        fs::write(scratch.source().join("notes.txt"), "not an asset").unwrap();
 
         for cook in Cook::ALL {
-            let out_root = out.path().join(cook.name());
-            let cooked = cook_dir(source.path(), &out_root, &CookSettings::new(cook)).unwrap();
-            let expected = out_root.join("characters/mannequin/mannequin.smesh");
+            let report = scratch.cook_with(cook, false);
+            let expected = scratch.out_for(cook).join("characters/mannequin/mannequin.smesh");
+            let [asset] = &report.assets[..] else { panic!("one asset") };
             assert_eq!(
-                cooked,
-                [CookedFile { source: nested.join(samples::MANNEQUIN_FILE_NAME), output: expected.clone() }]
+                (&asset.source, &asset.output, asset.status),
+                (&source, &expected, CookStatus::Cooked)
             );
+            assert_eq!(asset.id, meta::read(&sidecar_path(&source)).unwrap().id);
 
-            let mesh = MeshAsset::from_bytes(&std::fs::read(&expected).unwrap()).unwrap();
+            let mesh = MeshAsset::from_bytes(&fs::read(&expected).unwrap()).unwrap();
             // Outline normals are baked: at a pedestal corner they differ from the split
             // shading normals.
             let corner = mesh
@@ -251,37 +535,191 @@ mod tests {
                 Vec3::from(corner.outline_normal).abs_diff_eq(Vec3::new(1.0, -1.0, 1.0).normalize(), 1e-5)
             );
         }
-        assert!(!out.path().join("desktop/.hidden").exists());
+        assert!(!scratch.out().join(".hidden").exists());
+        assert!(!scratch.source().join(".hidden/mannequin.glb.meta").exists());
+    }
+
+    #[test]
+    fn the_first_cook_creates_sidecars_and_later_ones_keep_them() {
+        let scratch = Scratch::new("cook_sidecars");
+        let source = scratch.add_mannequin("mannequin.glb");
+        let first = scratch.cook();
+        assert_eq!(first.created_sidecars, [sidecar_path(&source)]);
+        let sidecar = fs::read_to_string(sidecar_path(&source)).unwrap();
+
+        let second = scratch.cook();
+        assert!(second.created_sidecars.is_empty());
+        assert_eq!(fs::read_to_string(sidecar_path(&source)).unwrap(), sidecar);
+        assert_eq!(second.assets[0].id, first.assets[0].id);
+
+        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let unsidecarred = scratch.add_mannequin("new.glb");
+        let error = cook_dir(&scratch.source(), &scratch.out(), &locked).unwrap_err();
+        assert!(matches!(error, CookError::Meta(MetaError::Missing { .. })), "{error:?}");
+        assert!(!sidecar_path(&unsidecarred).exists());
+    }
+
+    #[test]
+    fn unchanged_assets_come_from_the_cache_without_rewriting_outputs() {
+        let scratch = Scratch::new("cook_cache_hits");
+        scratch.add_mannequin("mannequin.glb");
+        let output = scratch.out().join("mannequin.smesh");
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cooked]);
+        let written = fs::metadata(&output).unwrap().modified().unwrap();
+        let cooked = fs::read(&output).unwrap();
+
+        // Touching or rewriting a source with the same bytes changes nothing.
+        let source = scratch.source().join("mannequin.glb");
+        fs::write(&source, samples::mannequin_glb()).unwrap();
+        let report = scratch.cook();
+        assert_eq!(statuses(&report), [CookStatus::UpToDate]);
+        assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), written, "not rewritten");
+
+        // Deleted or edited outputs come back from the cache.
+        fs::remove_file(&output).unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cached]);
+        assert_eq!(fs::read(&output).unwrap(), cooked);
+        fs::write(&output, b"edited by hand").unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cached]);
+        assert_eq!(fs::read(&output).unwrap(), cooked);
+
+        // The other cook has keys of its own.
+        assert_eq!(statuses(&scratch.cook_with(Cook::Mobile, true)), [CookStatus::Cooked]);
+        assert_eq!(statuses(&scratch.cook_with(Cook::Mobile, true)), [CookStatus::UpToDate]);
+
+        // Without a cache every asset cooks, but unchanged outputs still aren't rewritten.
+        let written = fs::metadata(&output).unwrap().modified().unwrap();
+        assert_eq!(statuses(&scratch.cook_with(Cook::Desktop, false)), [CookStatus::Cooked]);
+        assert_eq!(fs::metadata(&output).unwrap().modified().unwrap(), written, "not rewritten");
+    }
+
+    #[test]
+    fn only_assets_whose_inputs_changed_are_cooked() {
+        let scratch = Scratch::new("cook_changes");
+        let a = scratch.add_mannequin("a.glb");
+        scratch.add_mannequin("b/b.glb");
+        // Same bytes and settings: one cook serves both.
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cooked, CookStatus::Cached]);
+
+        set_weld_tolerance(&a, 0.05);
+        let report = scratch.cook();
+        assert_eq!(statuses(&report), [CookStatus::Cooked, CookStatus::UpToDate]);
+        let [a_report, b_report] = &report.assets[..] else { panic!("two assets") };
+        assert_ne!(a_report.key, b_report.key);
+        assert_ne!(fs::read(&a_report.output).unwrap(), fs::read(&b_report.output).unwrap());
+
+        // Files no asset reads don't matter.
+        fs::write(scratch.source().join("notes.txt"), "edited").unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::UpToDate, CookStatus::UpToDate]);
+    }
+
+    #[test]
+    fn moved_sources_keep_their_id_and_cached_output() {
+        let scratch = Scratch::new("cook_moves");
+        let source = scratch.add_mannequin("old/mannequin.glb");
+        let first = scratch.cook();
+        let moved = scratch.source().join("new/renamed.glb");
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::rename(&source, &moved).unwrap();
+        fs::rename(sidecar_path(&source), sidecar_path(&moved)).unwrap();
+        fs::write(scratch.out().join("old/leftover.smesh.tmp"), b"interrupted").unwrap();
+        fs::write(scratch.out().join("readme.txt"), b"not ours").unwrap();
+
+        let report = scratch.cook();
+        let [asset] = &report.assets[..] else { panic!("one asset") };
+        assert_eq!(
+            (asset.id, asset.key, asset.status),
+            (first.assets[0].id, first.assets[0].key, CookStatus::Cached)
+        );
+        assert_eq!(asset.output, scratch.out().join("new/renamed.smesh"));
+        assert_eq!(
+            report.removed,
+            [scratch.out().join("old/leftover.smesh.tmp"), scratch.out().join("old/mannequin.smesh")]
+        );
+        assert!(!scratch.out().join("old").exists(), "emptied directories are removed");
+        assert!(scratch.out().join("readme.txt").exists(), "only cooked and temporary files are pruned");
+    }
+
+    #[test]
+    fn damaged_cache_entries_are_cooked_again() {
+        let scratch = Scratch::new("cook_damaged");
+        scratch.add_mannequin("mannequin.glb");
+        let report = scratch.cook();
+        let entry = Cache::new(scratch.dir.path().join("cache")).entry_path(&report.assets[0].key);
+        let mut bytes = fs::read(&entry).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        fs::write(&entry, bytes).unwrap();
+        fs::remove_file(&report.assets[0].output).unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cooked]);
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::UpToDate]);
+    }
+
+    #[test]
+    fn external_buffers_are_part_of_the_key() {
+        let scratch = Scratch::new("cook_external");
+        let mut writer = GltfWriter::default();
+        let triangle = Geometry {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            ..Geometry::default()
+        };
+        let mesh = writer.add_mesh("Triangle", &[(&triangle, None)]);
+        let node = writer.add_node(json!({ "mesh": mesh }));
+        writer.add_root(node);
+        fs::create_dir_all(scratch.source()).unwrap();
+        let document = serde_json::to_vec(&writer.document(Some("triangle%20data.bin"))).unwrap();
+        fs::write(scratch.source().join("triangle.gltf"), document).unwrap();
+        let buffer = scratch.source().join("triangle data.bin");
+        fs::write(&buffer, writer.bin()).unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cooked]);
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::UpToDate]);
+
+        // Move the triangle's first vertex.
+        let mut bin = writer.bin().to_vec();
+        bin[..4].copy_from_slice(&0.5f32.to_le_bytes());
+        fs::write(&buffer, &bin).unwrap();
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::Cooked]);
+
+        fs::remove_file(&buffer).unwrap();
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::Read { path, .. } if *path == buffer), "{error:?}");
+    }
+
+    fn scratch_error(scratch: &Scratch) -> CookError {
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+        cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err()
     }
 
     #[test]
     fn settings_reach_the_bake() {
         let source = TempDir::new("cook_settings");
         let path = samples::write_all(source.path()).unwrap().remove(0);
-        let default = cook_mesh(&path, &CookSettings::new(Cook::Desktop)).unwrap();
-        let coarse = CookSettings {
-            cook: Cook::Desktop,
-            outline: OutlineSettings::with_weld_tolerance(0.05).unwrap(),
-        };
-        let welded = cook_mesh(&path, &coarse).unwrap();
+        let default = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
+        let coarse = MeshSettings { outline: OutlineSettings::with_weld_tolerance(0.05).unwrap() };
+        let welded = cook_mesh(&path, &coarse, Cook::Desktop).unwrap();
         assert_eq!(default.vertices.len(), welded.vertices.len());
         assert_ne!(default.vertices, welded.vertices, "a 5 cm weld must change some outline normals");
     }
 
     #[test]
     fn reports_bad_inputs_with_their_paths() {
-        let source = TempDir::new("cook_errors");
-        let desktop = CookSettings::new(Cook::Desktop);
-        std::fs::write(source.path().join("model.gltf"), "{}").unwrap();
-        std::fs::write(source.path().join("model.glb"), samples::mannequin_glb()).unwrap();
-        let err = cook_dir(source.path(), &source.path().join("out"), &desktop).unwrap_err();
-        assert!(matches!(err, CookError::OutputCollision { .. }), "{err:?}");
+        let scratch = Scratch::new("cook_errors");
+        fs::create_dir_all(scratch.source()).unwrap();
+        fs::write(scratch.source().join("model.gltf"), "{}").unwrap();
+        scratch.add_mannequin("model.glb");
+        let error = scratch_error(&scratch);
+        assert!(matches!(error, CookError::OutputCollision { .. }), "{error:?}");
 
-        std::fs::remove_file(source.path().join("model.glb")).unwrap();
-        let err = cook_dir(source.path(), &source.path().join("out"), &desktop).unwrap_err();
-        assert!(matches!(&err, CookError::Import { path, .. } if path.ends_with("model.gltf")), "{err:?}");
+        fs::remove_file(scratch.source().join("model.glb")).unwrap();
+        fs::remove_file(sidecar_path(&scratch.source().join("model.glb"))).unwrap();
+        let error = scratch_error(&scratch);
+        assert!(
+            matches!(&error, CookError::Import { path, .. } if path.ends_with("model.gltf")),
+            "{error:?}"
+        );
 
-        let err = cook_mesh(Path::new("model.fbx"), &desktop).unwrap_err();
-        assert!(matches!(err, CookError::UnsupportedSource { .. }));
+        let error = cook_mesh(Path::new("model.fbx"), &MeshSettings::default(), Cook::Desktop).unwrap_err();
+        assert!(matches!(error, CookError::UnsupportedSource { .. }));
     }
 }

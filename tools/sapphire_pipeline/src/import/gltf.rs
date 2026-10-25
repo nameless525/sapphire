@@ -17,6 +17,9 @@
 //! Outline normals are set to the shading normal here; [`bake::outline_normals`](crate::bake::outline_normals)
 //! computes the real ones. Textures, skins, morph targets and animation are ignored
 //! until the M1 pipeline.
+//!
+//! External buffers are part of the source: [`external_files`] lists them for the content
+//! cache key. Images join that list when textures are imported (M1 A2).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -30,7 +33,12 @@ use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
+use crate::cache::Stage;
 use crate::color::{linear_to_srgb, unorm8};
+
+/// This importer, as cache keys know it. Bump the version whenever import output changes
+/// for the same file.
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 1 };
 
 /// Identifies a mesh primitive in error messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,9 +155,7 @@ fn load_buffers(
                                 format!("is the external file {uri:?}, but there is no base directory"),
                             )
                         })?;
-                        let name = percent_decode(uri)
-                            .ok_or_else(|| problem(index, format!("has a malformed URI {uri:?}")))?;
-                        let path = base.join(name);
+                        let path = base.join(external_file(index, uri)?);
                         std::fs::read(&path).map_err(|source| GltfImportError::Io { path, source })?
                     }
                 },
@@ -165,6 +171,28 @@ fn load_buffers(
             Ok(data)
         })
         .collect()
+}
+
+/// The files a glTF or GLB document reads besides itself (its external buffers), as paths
+/// relative to its directory, sorted and without duplicates.
+pub fn external_files(bytes: &[u8]) -> Result<Vec<String>, GltfImportError> {
+    let Gltf { document, .. } = Gltf::from_slice(bytes).map_err(GltfImportError::Parse)?;
+    let mut files = document
+        .buffers()
+        .filter_map(|buffer| match buffer.source() {
+            Source::Uri(uri) if !uri.starts_with("data:") => Some(external_file(buffer.index(), uri)),
+            Source::Uri(_) | Source::Bin => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+/// The file a buffer URI other than `data:` names, relative to the document.
+fn external_file(index: usize, uri: &str) -> Result<String, GltfImportError> {
+    percent_decode(uri)
+        .ok_or_else(|| GltfImportError::Buffer { index, problem: format!("has a malformed URI {uri:?}") })
 }
 
 /// The part of a `data:` URI after the scheme: `[<media type>];base64,<payload>`. Exporters only
@@ -676,6 +704,8 @@ mod tests {
 
         let imported = import(&dir.path().join("triangle.gltf")).unwrap();
         assert_eq!(imported.vertices.len(), 3);
+        assert_eq!(external_files(&json).unwrap(), ["triangle.bin"]);
+        assert!(external_files(&writer.to_glb()).unwrap().is_empty(), "GLB buffers are internal");
         // Without a base directory the external reference can't resolve.
         assert!(matches!(import_slice(&json, None), Err(GltfImportError::Buffer { index: 0, .. })));
         assert!(matches!(import(&dir.path().join("missing.gltf")), Err(GltfImportError::Io { .. })));
@@ -702,8 +732,10 @@ mod tests {
         let mut document = writer.document(Some("unused.bin"));
         document["buffers"][0]["uri"] =
             json!(format!("data:application/octet-stream;base64,{}", base64(writer.bin())));
-        let imported = import_slice(&serde_json::to_vec(&document).unwrap(), None).unwrap();
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let imported = import_slice(&bytes, None).unwrap();
         assert_eq!(imported.vertices.len(), 3);
+        assert!(external_files(&bytes).unwrap().is_empty(), "data URIs are inline");
     }
 
     fn base64(bytes: &[u8]) -> String {

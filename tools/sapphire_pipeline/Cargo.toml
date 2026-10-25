@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_pipeline"
-description = "Asset pipeline: importers, bakers and cookers. Never shipped."
+description = "Asset pipeline: sidecars, importers, bakers, cookers and the content cache. Never shipped."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 sapphire_assets.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
 anyhow.workspace = true
+# `.meta` sidecars derive `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+blake3.workspace = true
 bytemuck.workspace = true
+getrandom.workspace = true
 glam.workspace = true
 # `extras` exposes per-object custom properties, which is how Blender drives toon parameters.
 # `utils` reads accessors; buffers load in `import::gltf` rather than through `import`, which

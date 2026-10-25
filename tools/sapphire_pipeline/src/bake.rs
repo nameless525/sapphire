@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use glam::Vec3;
 use sapphire_assets::mesh::{MeshAsset, MeshVertex};
+use serde::{Deserialize, Serialize};
 
 /// Default [`OutlineSettings::weld_tolerance`]: 0.1 mm. Far below modeling precision on
 /// characters and props, and above `f32` rounding for object-space coordinates up to
@@ -24,10 +25,35 @@ const SLIVER_ASPECT: f32 = 1e-3;
 /// direction left over is rounding noise, so the shading normal is used instead.
 const CANCELLATION_RATIO: f32 = 1e-3;
 
-/// Settings for [`outline_normals`]. Part of the cook settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Settings for [`outline_normals`], part of a mesh's import settings
+/// ([`MeshSettings`](crate::meta::MeshSettings)). Loading checks them as
+/// [`Self::with_weld_tolerance`] does, and a sidecar may leave any of them out.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "OutlineFields")]
 pub struct OutlineSettings {
     weld_tolerance: f32,
+}
+
+/// [`OutlineSettings`] as written, before it is checked.
+#[derive(Deserialize)]
+#[serde(default)]
+struct OutlineFields {
+    weld_tolerance: f32,
+}
+
+impl Default for OutlineFields {
+    fn default() -> Self {
+        Self { weld_tolerance: DEFAULT_WELD_TOLERANCE }
+    }
+}
+
+impl TryFrom<OutlineFields> for OutlineSettings {
+    type Error = &'static str;
+
+    fn try_from(fields: OutlineFields) -> Result<Self, Self::Error> {
+        Self::with_weld_tolerance(fields.weld_tolerance)
+            .ok_or("weld_tolerance must be a positive, finite number of meters")
+    }
 }
 
 impl OutlineSettings {

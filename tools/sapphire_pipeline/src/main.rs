@@ -1,15 +1,16 @@
 //! `sapphire_pipeline`: command-line front end to the asset pipeline.
 //!
-//! The arguments are parsed by hand, as in xtask: three commands and four options don't
+//! The arguments are parsed by hand, as in xtask: three commands and a handful of options don't
 //! justify clap's build time, which xtask's cook pays in a release build too.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail};
-use sapphire_pipeline::bake::{self, OutlineSettings};
-use sapphire_pipeline::cook::{self, Cook, CookSettings};
+use sapphire_pipeline::bake::OutlineSettings;
+use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
+use sapphire_pipeline::meta::{self, MeshSettings};
 use sapphire_pipeline::samples;
 
 const USAGE: &str = "\
@@ -19,12 +20,18 @@ Usage:
   sapphire_pipeline gen-samples --out <DIR>
       Write the procedural sample source assets (mannequin.glb) into DIR, created if missing.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
-      Cook one .gltf/.glb file into a .smesh file (default cook: desktop).
-  sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--weld-tolerance <METERS>]
-      Cook every .gltf/.glb under DIR (skipping hidden entries) into mirrored .smesh paths.
+      Cook one .gltf/.glb file into a .smesh file (default cook: desktop), with the settings
+      of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
+  sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--cache <DIR>] [--locked]
+      Cook every source asset under --source (skipping hidden entries) into mirrored paths
+      under --out, creating missing .meta sidecars next to the sources. Outputs are written
+      only when they change, and stale cooked files under --out are removed.
 
 Options:
   --cook <COOK>              Target cook: desktop or mobile.
+  --cache <DIR>              Content cache: reuse the cooked output of any asset whose
+                             inputs are unchanged, and store new ones.
+  --locked                   Fail on a source without a sidecar instead of creating one (CI).
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
   -h, --help                 Show this message.
   -V, --version              Show the version.";
@@ -32,8 +39,8 @@ Options:
 #[derive(Debug, PartialEq)]
 enum Command {
     GenSamples { out: PathBuf },
-    CookMesh { input: PathBuf, output: PathBuf, settings: CookSettings },
-    Cook { source: PathBuf, out: PathBuf, settings: CookSettings },
+    CookMesh { input: PathBuf, output: PathBuf, cook: Cook, outline: Option<OutlineSettings> },
+    Cook { source: PathBuf, out: PathBuf, cook: Cook, cache: Option<PathBuf>, locked: bool },
     Help,
     Version,
 }
@@ -66,21 +73,67 @@ fn run(command: Command) -> anyhow::Result<()> {
                 eprintln!("generated {}", path.display());
             }
         }
-        Command::CookMesh { input, output, settings } => {
-            cook::cook_mesh_file(&input, &output, &settings)?;
-            eprintln!("cooked {} -> {} ({})", input.display(), output.display(), settings.cook);
-        }
-        Command::Cook { source, out, settings } => {
-            let cooked = cook::cook_dir(&source, &out, &settings)?;
-            for file in &cooked {
-                eprintln!("cooked {} -> {}", file.source.display(), file.output.display());
+        Command::CookMesh { input, output, cook, outline } => {
+            let sidecar = meta::sidecar_path(&input);
+            let mut settings = if sidecar.exists() {
+                let meta = meta::read(&sidecar)?;
+                *meta
+                    .importer
+                    .mesh()
+                    .with_context(|| format!("{} isn't a mesh's sidecar", sidecar.display()))?
+            } else {
+                MeshSettings::default()
+            };
+            if let Some(outline) = outline {
+                settings.outline = outline;
             }
-            eprintln!("{} asset(s) cooked for {} into {}", cooked.len(), settings.cook, out.display());
+            cook::cook_mesh_file(&input, &output, &settings, cook)?;
+            eprintln!("cooked {} -> {} ({cook})", input.display(), output.display());
+        }
+        Command::Cook { source, out, cook, cache, locked } => {
+            let options = CookOptions { cook, cache: cache.as_deref(), locked };
+            let report = cook::cook_dir(&source, &out, &options)?;
+            print_report(&report, cook, &source, &out);
         }
         Command::Help => println!("{USAGE}"),
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(())
+}
+
+/// Lists what changed, then a summary line. Assets are named relative to the source and
+/// output roots.
+fn print_report(report: &CookReport, cook: Cook, source: &Path, out: &Path) {
+    let relative = |path: &Path, root: &Path| path.strip_prefix(root).unwrap_or(path).display().to_string();
+    for sidecar in &report.created_sidecars {
+        eprintln!("created {}: commit it with its source", sidecar.display());
+    }
+    for sidecar in &report.orphaned_sidecars {
+        eprintln!(
+            "warning: {} has no source; delete it, or move it back next to its source",
+            sidecar.display()
+        );
+    }
+    for path in &report.removed {
+        eprintln!("removed stale {}", path.display());
+    }
+    for asset in &report.assets {
+        let how = match asset.status {
+            CookStatus::Cooked => "cooked",
+            CookStatus::Cached => "from cache",
+            CookStatus::UpToDate => continue,
+        };
+        let (from, to) = (relative(&asset.source, source), relative(&asset.output, out));
+        eprintln!("{how} {from} -> {to} ({})", asset.id);
+    }
+    eprintln!(
+        "{cook}: {} asset(s) in {}: {} cooked, {} from cache, {} up to date",
+        report.assets.len(),
+        out.display(),
+        report.count(CookStatus::Cooked),
+        report.count(CookStatus::Cached),
+        report.count(CookStatus::UpToDate),
+    );
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
@@ -100,28 +153,26 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
         "gen-samples" => Command::GenSamples { out: options.required("--out")? },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
-            let settings = settings(cook, &mut options)?;
+            let outline = match options.value("--weld-tolerance")? {
+                Some(meters) => Some(OutlineSettings::with_weld_tolerance(meters).ok_or_else(|| {
+                    anyhow!("invalid --weld-tolerance: must be a positive, finite number of meters")
+                })?),
+                None => None,
+            };
             let [input, output] = options.positional()?;
-            Command::CookMesh { input: input.into(), output: output.into(), settings }
+            Command::CookMesh { input: input.into(), output: output.into(), cook, outline }
         }
-        "cook" => {
-            let source = options.required("--source")?;
-            let out = options.required("--out")?;
-            let cook = options.required("--cook")?;
-            Command::Cook { source, out, settings: settings(cook, &mut options)? }
-        }
+        "cook" => Command::Cook {
+            source: options.required("--source")?,
+            out: options.required("--out")?,
+            cook: options.required("--cook")?,
+            cache: options.value("--cache")?,
+            locked: options.flag("--locked"),
+        },
         other => bail!("unknown command `{other}`"),
     };
     options.finish()?;
     Ok(command)
-}
-
-/// Cook settings from `--weld-tolerance`.
-fn settings(cook: Cook, options: &mut Options) -> anyhow::Result<CookSettings> {
-    let tolerance = options.value("--weld-tolerance")?.unwrap_or(bake::DEFAULT_WELD_TOLERANCE);
-    let outline = OutlineSettings::with_weld_tolerance(tolerance)
-        .ok_or_else(|| anyhow!("invalid --weld-tolerance: must be a positive, finite number of meters"))?;
-    Ok(CookSettings { cook, outline })
 }
 
 /// The arguments after the command, consumed option by option.
@@ -151,6 +202,12 @@ impl Options {
         T: FromStr<Err: std::error::Error + Send + Sync + 'static>,
     {
         self.value(name)?.with_context(|| format!("missing required option {name}"))
+    }
+
+    /// Takes a boolean `--name`.
+    fn flag(&mut self, name: &str) -> bool {
+        let found = self.0.iter().position(|arg| arg == name);
+        found.map(|i| self.0.remove(i)).is_some()
     }
 
     /// Takes exactly `N` positional arguments, in order.
@@ -183,29 +240,30 @@ mod tests {
             Command::GenSamples { out: "dir".into() }
         );
         assert_eq!(
-            parse(&["cook-mesh", "a.glb", "--cook=mobile", "b.smesh"]).unwrap(),
+            parse(&["cook-mesh", "a.glb", "--cook=mobile", "b.smesh", "--weld-tolerance", "0.001"]).unwrap(),
             Command::CookMesh {
                 input: "a.glb".into(),
                 output: "b.smesh".into(),
-                settings: CookSettings::new(Cook::Mobile)
+                cook: Cook::Mobile,
+                outline: OutlineSettings::with_weld_tolerance(0.001),
             }
         );
-        let Command::Cook { source, out, settings } = parse(&[
-            "cook",
-            "--source",
-            "content",
-            "--out",
-            "out",
-            "--cook",
-            "desktop",
-            "--weld-tolerance",
-            "0.001",
-        ])
-        .unwrap() else {
+        assert_eq!(
+            parse(&["cook", "--source", "content", "--out", "out", "--cook", "desktop", "--locked"]).unwrap(),
+            Command::Cook {
+                source: "content".into(),
+                out: "out".into(),
+                cook: Cook::Desktop,
+                cache: None,
+                locked: true,
+            }
+        );
+        let Command::Cook { cache, locked, .. } =
+            parse(&["cook", "--source=a", "--out=b", "--cook=mobile", "--cache", "target/cache"]).unwrap()
+        else {
             panic!("expected cook");
         };
-        assert_eq!((source, out, settings.cook), ("content".into(), "out".into(), Cook::Desktop));
-        assert_eq!(settings.outline, OutlineSettings::with_weld_tolerance(0.001).unwrap());
+        assert_eq!((cache, locked), (Some("target/cache".into()), false));
         assert_eq!(parse(&["cook", "--help"]).unwrap(), Command::Help);
         assert_eq!(parse(&["-V"]).unwrap(), Command::Version);
     }
@@ -218,6 +276,12 @@ mod tests {
         assert!(parse(&["gen-samples", "--out"]).is_err(), "--out without a value");
         assert!(parse(&["cook", "--source", "a", "--out", "b"]).is_err(), "missing --cook");
         assert!(parse(&["cook", "--source", "a", "--out", "b", "--cook", "console"]).is_err());
+        assert!(parse(&["cook", "--source", "a", "--out", "b", "--cook", "mobile", "--cache"]).is_err());
+        assert!(
+            parse(&["cook", "--source", "a", "--out", "b", "--cook", "mobile", "--weld-tolerance", "1"])
+                .is_err(),
+            "per-asset settings live in sidecars"
+        );
         assert!(parse(&["cook-mesh", "a.glb"]).is_err(), "one path");
         assert!(parse(&["cook-mesh", "a.glb", "b", "--weld-tolerance", "-1"]).is_err());
         assert!(parse(&["gen-samples", "--out", "dir", "--extra"]).is_err());

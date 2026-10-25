@@ -28,7 +28,9 @@ Commands:
       Check crate layering against xtask/layers.toml (spec §4.1, rules R1 and R8).
   content [--cook desktop|mobile]
       Generate missing sample sources under content/, then cook content/ into
-      target/content/<cook>/ (default cook: desktop).
+      target/content/<cook>/ (default cook: desktop). Only assets whose inputs changed
+      are cooked (cache: target/content/cache/). Sources without a .meta sidecar get one,
+      to commit with them.
   bundle --platform <platform> [--release] [--exe <path>]
       Cook, build and assemble the app for <platform> under target/<platform>/:
         desktop   SapphireSandbox/ with the executable and content/ (any host)
@@ -55,7 +57,8 @@ Commands:
       Show this message.
 
 Options:
-  --locked       Pass --locked to every cargo command xtask runs (CI).
+  --locked       Pass --locked to every cargo command xtask runs, and fail the content
+                 cook on a source without a committed .meta sidecar (CI).
   --exe <path>   Use a prebuilt sapphire_sandbox executable instead of building one
                  (desktop, macos and ios-sim).
   --dry-run      Build and bundle, then print the launch commands instead of running them.

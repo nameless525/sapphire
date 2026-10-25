@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "8659a15c-d588-4cb6-b757-deb86adf26a1",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+        )),
+    ),
+)

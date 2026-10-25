@@ -31,7 +31,16 @@ use crate::workspace::{self, CargoBuild};
 pub const SOURCE_DIR: &str = "content";
 
 /// Generated sample sources, relative to [`SOURCE_DIR`]. `gen-samples` writes all of them.
-const SAMPLE_SOURCES: &[&str] = &["samples/mannequin.glb"];
+const SAMPLE_SOURCES: &[&str] = &[
+    "samples/mannequin.glb",
+    "samples/swatch.ramp.ron",
+    "samples/swatch.ilm.ron",
+    "samples/swatch_ids.png",
+    "samples/swatch_bias.png",
+    "samples/swatch_ramp.material.ron",
+    "samples/swatch_subsurface.material.ron",
+    "samples/swatch_bands.material.ron",
+];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android. Mirrors `sapphire_pipeline::cook::Cook`; xtask runs the pipeline as a

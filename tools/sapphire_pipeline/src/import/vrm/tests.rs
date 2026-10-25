@@ -462,7 +462,7 @@ fn mtoon_0_x_properties_migrate() {
 }
 
 #[test]
-fn outline_width_textures_bake_into_vertex_alpha() {
+fn outline_width_textures_bake_into_the_vertex_outline_width() {
     let import = import1();
     let skin = slot(&import, "Skin");
     let mut skin_vertices = 0;
@@ -470,14 +470,15 @@ fn outline_width_textures_bake_into_vertex_alpha() {
         let range = submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;
         for &index in &import.mesh.indices[range] {
             let vertex = import.mesh.vertices[index as usize];
-            assert_eq!(&vertex.color[..3], &[255; 3], "MToon ignores COLOR_0");
+            // MToon ignores COLOR_0: AO and the Z-offset scale stay neutral.
+            assert_eq!([vertex.color[0], vertex.color[2]], [255; 2], "MToon ignores COLOR_0");
             if submesh.material == skin {
                 skin_vertices += 1;
                 // The texture rises from 0 at u = 0 to 1 at u = 1 (clamped at the edges).
                 let expected = if vertex.uv[0] == 0.0 { 0 } else { 255 };
-                assert_eq!(vertex.color[3], expected, "{vertex:?}");
+                assert_eq!(vertex.color[1], expected, "{vertex:?}");
             } else {
-                assert_eq!(vertex.color[3], 255, "no width texture: full width");
+                assert_eq!(vertex.color[1], 255, "no width texture: full width");
             }
         }
     }

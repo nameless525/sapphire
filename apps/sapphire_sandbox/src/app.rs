@@ -25,8 +25,9 @@ use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::{self, Scene};
-use crate::skinned;
 use crate::stats::{FrameStats, Stages};
+use crate::swatches::SWATCHES;
+use crate::{skinned, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -118,7 +119,7 @@ impl App for SandboxApp {
             &device.gpu,
             device.format,
             options.render_settings(quality.render_settings()),
-            options.skinned,
+            &options,
         )?;
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
@@ -129,6 +130,9 @@ impl App for SandboxApp {
         }
         if let Some(stalk) = renderer.stalk {
             scene.set_stalk_mesh(stalk);
+        }
+        if let Some(meshes) = renderer.swatches {
+            scene.spawn_swatches(meshes);
         }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
@@ -465,10 +469,9 @@ impl SandboxApp {
         self.steady = false;
         self.recovery.attempted(self.real.elapsed());
         let settings = self.render_settings();
-        let skinned = self.options.skinned;
-        let content = &mut self.content;
+        let (content, options) = (&mut self.content, &self.options);
         let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
-            let renderer = create_renderer(content, &device.gpu, device.format, settings, skinned)?;
+            let renderer = create_renderer(content, &device.gpu, device.format, settings, options)?;
             Ok((device, renderer))
         });
         match stack {
@@ -476,15 +479,12 @@ impl SandboxApp {
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
                 self.dev.recreate_gpu(&device.gpu, device.format);
+                self.scene.set_meshes(&renderer);
                 self.renderer = renderer.renderer;
                 self.graph = GraphExecutor::new();
                 self.gpu = device.gpu;
                 self.format = device.format;
                 self.surface = Some(device.surface);
-                self.scene.set_character_mesh(renderer.character);
-                if let Some(stalk) = renderer.stalk {
-                    self.scene.set_stalk_mesh(stalk);
-                }
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
@@ -506,13 +506,10 @@ impl SandboxApp {
         let Some(previous) = self.quality.update_tier() else { return };
         self.steady = false;
         let settings = self.render_settings();
-        match create_renderer(&mut self.content, &self.gpu, self.format, settings, self.options.skinned) {
+        match create_renderer(&mut self.content, &self.gpu, self.format, settings, &self.options) {
             Ok(renderer) => {
+                self.scene.set_meshes(&renderer);
                 self.renderer = renderer.renderer;
-                self.scene.set_character_mesh(renderer.character);
-                if let Some(stalk) = renderer.stalk {
-                    self.scene.set_stalk_mesh(stalk);
-                }
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");
@@ -603,6 +600,21 @@ struct SceneRenderer {
     character_bounds: [[f32; 3]; 2],
     /// The skinned stalk, with `--skinned`.
     stalk: Option<MeshHandle>,
+    /// The shader swatches, with `--swatches`.
+    swatches: Option<[MeshHandle; SWATCHES]>,
+}
+
+impl Scene {
+    /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
+    fn set_meshes(&mut self, renderer: &SceneRenderer) {
+        self.set_character_mesh(renderer.character);
+        if let Some(stalk) = renderer.stalk {
+            self.set_stalk_mesh(stalk);
+        }
+        if let Some(meshes) = renderer.swatches {
+            self.set_swatch_meshes(meshes);
+        }
+    }
 }
 
 fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Result<GpuDevice, AppInitError> {
@@ -627,25 +639,28 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 }
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
-/// `content` uploads to it from the start, and, if `skinned`, the skinned stalk.
+/// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk
+/// and the shader swatches, whose materials `content` uploads too.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
     format: wgpu::TextureFormat,
     settings: RenderSettings,
-    skinned: bool,
+    options: &Options,
 ) -> Result<SceneRenderer, AppInitError> {
     let mut renderer = Renderer::new(gpu, format, settings)?;
     // A new renderer starts empty, so every asset goes to it again. If it fails, the content goes
     // back to the renderer the app keeps.
     let previous = content.renderer_rebuilt();
     let scene = content.character(&mut renderer, gpu).and_then(|(character, character_bounds)| {
-        let stalk = skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
-        Ok((character, character_bounds, stalk))
+        let stalk = options.skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
+        let swatches =
+            options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
+        Ok((character, character_bounds, stalk, swatches))
     });
     match scene {
-        Ok((character, character_bounds, stalk)) => {
-            Ok(SceneRenderer { renderer, character, character_bounds, stalk })
+        Ok((character, character_bounds, stalk, swatches)) => {
+            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches })
         }
         Err(error) => {
             content.keep_renderer(previous);

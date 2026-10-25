@@ -5,7 +5,9 @@ use std::f32::consts::{PI, TAU};
 
 use glam::{Mat4, Vec3};
 use sapphire_assets::material::{AnimeCharacterMaterial, CharacterRegion, Material, Outline, Rim};
-use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex};
+use sapphire_assets::mesh::{
+    MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, GraphReport};
 use sapphire_render::{
@@ -52,7 +54,8 @@ fn sphere(rgb: [f32; 3], outline_px: f32) -> Mesh {
                 normal: n.to_array(),
                 outline_normal: n.to_array(),
                 uv: [segment as f32 / SEGMENTS as f32, ring as f32 / RINGS as f32],
-                color: [255; 4],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
             });
         }
     }

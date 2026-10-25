@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 7] {
+pub fn scenes() -> [Scene; 8] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -67,6 +67,15 @@ pub fn scenes() -> [Scene; 7] {
         Scene {
             name: "turntable-sunset",
             args: &["--capture-ticks", "90", "--time-of-day", "18.5"],
+            thresholds: Thresholds::default(),
+        },
+        // The anime character shader swatches beside the character (M1 C1): ramp mode over the
+        // cooked swatch ramp and control map (per-ID rows, a striped shadow bias, a painted
+        // shadow), the same with a subsurface mix, and three bands in per-ID colors from vertex
+        // material IDs.
+        Scene {
+            name: "turntable-swatches",
+            args: &["--capture-ticks", "90", "--swatches"],
             thresholds: Thresholds::default(),
         },
     ]

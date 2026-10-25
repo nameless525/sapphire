@@ -21,7 +21,9 @@ use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, Rim,
 };
-use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex};
+use sapphire_assets::mesh::{
+    MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
@@ -226,7 +228,8 @@ fn vertex(position: Vec3, normal: Vec3, uv: [f32; 2]) -> Vertex {
         normal: normal.to_array(),
         outline_normal: normal.to_array(),
         uv,
-        color: [255; 4],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
     }
 }
 

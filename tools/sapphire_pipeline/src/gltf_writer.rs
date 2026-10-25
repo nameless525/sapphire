@@ -29,6 +29,9 @@ pub(crate) struct Geometry {
     pub colors: Vec<[u8; 4]>,
     /// The custom `_OUTLINE_NORMAL` attribute.
     pub outline_normals: Vec<[f32; 3]>,
+    /// The custom `_MATERIAL_ID` attribute, written as floats (vertex attributes keep 4-byte
+    /// elements in glTF).
+    pub material_ids: Vec<f32>,
     /// `JOINTS_n` / `WEIGHTS_n`, one pair per set.
     pub influences: Vec<InfluenceSet>,
     /// Morph targets, in order.
@@ -246,6 +249,15 @@ impl GltfWriter {
         }
         if !geometry.outline_normals.is_empty() {
             attributes["_OUTLINE_NORMAL"] = self.add_vec3(&geometry.outline_normals).into();
+        }
+        if !geometry.material_ids.is_empty() {
+            attributes["_MATERIAL_ID"] = self
+                .add_accessor(
+                    bytemuck::cast_slice(&geometry.material_ids),
+                    Some(ARRAY_BUFFER),
+                    json!({ "componentType": FLOAT, "type": "SCALAR", "count": geometry.material_ids.len() }),
+                )
+                .into();
         }
         for (set, influences) in geometry.influences.iter().enumerate() {
             // Unsigned bytes whenever every joint fits, as exporters write them.

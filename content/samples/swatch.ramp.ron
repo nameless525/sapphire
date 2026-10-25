@@ -1,0 +1,130 @@
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "skin",
+                day: (
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#8a4a4f",
+                        ),
+                        (
+                            at: 0.55,
+                            color: "#c8796c",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#f2b8a0",
+                        ),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#3d3554",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#8a7fa8",
+                        ),
+                    ],
+                )),
+            ),
+            (
+                name: "cloth",
+                day: (
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#272a52",
+                        ),
+                        (
+                            at: 0.6,
+                            color: "#4f5aa0",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#9aa8e0",
+                        ),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#14162e",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#4a5288",
+                        ),
+                    ],
+                )),
+            ),
+            (
+                name: "accent",
+                day: (
+                    interpolation: Some(Step),
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#3a6a5a",
+                        ),
+                        (
+                            at: 0.5,
+                            color: "#6aa88a",
+                        ),
+                        (
+                            at: 0.8,
+                            color: "#b8e0c0",
+                        ),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#1f3a3a",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#5a8a80",
+                        ),
+                    ],
+                )),
+            ),
+            (
+                name: "hair",
+                day: (
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#5a2a6a",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#d080c0",
+                        ),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (
+                            at: 0.0,
+                            color: "#2a1a40",
+                        ),
+                        (
+                            at: 1.0,
+                            color: "#7050a0",
+                        ),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

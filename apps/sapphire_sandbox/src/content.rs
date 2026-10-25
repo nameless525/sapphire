@@ -9,6 +9,10 @@
 //! uploaded. The mannequin's materials are embedded today; a sidecar that binds a slot to a
 //! material document draws with that material and its textures the same way.
 //!
+//! With `--swatches` it loads the shader swatches' three materials too, by the IDs in
+//! [`swatches::MATERIALS`], each with the maps it names ([`Content::swatch_materials`]); the
+//! spheres they draw on are procedural.
+//!
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
 //! reading meshes and textures from the pack again.
@@ -31,6 +35,7 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::scene;
+use crate::swatches::{self, SWATCHES};
 
 /// The pack the sandbox's content ships in.
 const PACK: &str = "shared";
@@ -144,6 +149,8 @@ pub(crate) struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
     gpu: GpuAssets,
     character: Handle<Mesh>,
+    /// The shader swatches' materials, once asked for (`--swatches`).
+    swatches: Vec<Handle<Material>>,
     server: AssetServer,
 }
 
@@ -165,7 +172,7 @@ impl Content {
         server.mount(PACK).map_err(|error| missing(&error))?;
         let character = server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
-        Ok(Self { gpu: GpuAssets::default(), character, server })
+        Ok(Self { gpu: GpuAssets::default(), character, swatches: Vec::new(), server })
     }
 
     /// One frame of loading: applies finished reads and decodes, frees what the server unloaded,
@@ -208,6 +215,35 @@ impl Content {
             "character ready"
         );
         Ok((mesh, bounds))
+    }
+
+    /// Loads the shader swatches' materials, with the textures they name, until they are on
+    /// `renderer`, and returns their handles, top to bottom: the load screen of `--swatches`.
+    /// They stay loaded from then on.
+    pub fn swatch_materials(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<[MaterialHandle; SWATCHES], AppInitError> {
+        // Asking again tries materials that failed before, as the character does.
+        self.swatches = swatches::MATERIALS
+            .iter()
+            .map(|&id| self.server.load_with(id, LoadPriority::Critical))
+            .collect::<Result<_, _>>()
+            .map_err(AppInitError::msg)?;
+        let mut loaded = Ok(());
+        for handle in &self.swatches {
+            let assets = &mut self.gpu;
+            loaded = loaded.and(self.server.finish(handle, |upload| assets.upload(upload, renderer, gpu)));
+        }
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the swatch materials didn't load: {error}")))?;
+        Ok(swatches::MATERIALS.map(|id| {
+            let &(_, handle) = self.gpu.materials.get(&id).expect("a ready material was uploaded here");
+            handle
+        }))
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

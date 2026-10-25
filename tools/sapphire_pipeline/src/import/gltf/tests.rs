@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use glam::{Quat, Vec4};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
-use sapphire_assets::mesh::{Bounds, PositionFormat};
+use sapphire_assets::mesh::{Bounds, PositionFormat, VertexFlags};
 use serde_json::json;
 
 use super::*;
@@ -104,18 +104,75 @@ fn computes_flat_normals_when_missing() {
 }
 
 #[test]
-fn converts_vertex_colors_and_reads_uvs() {
+fn reads_vertex_colors_as_linear_data_and_uvs() {
     let mut geometry = slanted_triangle(true);
     geometry.colors = vec![[128, 0, 255, 100]; 3];
     geometry.uvs = vec![[0.0, 0.0], [1.0, 0.0], [0.25, 0.75]];
     let imported = import_slice(&single_mesh_glb(json!({}), &geometry), None).unwrap();
-    // Linear 128/255 encodes to sRGB 188; alpha is linear and passes through.
-    assert_eq!(imported.vertices[0].color, [188, 0, 255, 100]);
+    // Linear data as stored (AO, outline width, outline Z offset); alpha isn't kept.
+    assert_eq!(imported.vertices[0].color, [128, 0, 255]);
     assert_eq!(imported.vertices[2].uv, [0.25, 0.75]);
 
     let plain = import_slice(&single_mesh_glb(json!({}), &slanted_triangle(true)), None).unwrap();
-    assert_eq!(plain.vertices[0].color, [255; 4], "no COLOR_0 means untinted, full outline");
+    assert_eq!(plain.vertices[0].color, [255; 3], "no COLOR_0 means unoccluded, the material's outline");
+    assert_eq!(plain.vertices[0].flags, VertexFlags::NONE);
     assert_eq!(plain.vertices[0].uv, [0.0, 0.0]);
+}
+
+#[test]
+fn material_ids_become_vertex_flags() {
+    // Two triangles side by side, each its own region.
+    let mut two = slanted_triangle(true);
+    two.positions.extend([[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 1.0]]);
+    two.normals.extend(two.normals.clone());
+    two.indices = vec![0, 1, 2, 3, 4, 5];
+    two.material_ids = vec![3.0, 3.0, 3.0, 7.0, 7.0, 7.0];
+    let imported = import_slice(&single_mesh_glb(json!({}), &two), None).unwrap();
+    assert_cooks(&imported);
+    let ids: Vec<u8> = imported.vertices.iter().map(|v| v.flags.material_id().get()).collect();
+    assert_eq!(ids, [3, 3, 3, 7, 7, 7]);
+    let mut geometry = slanted_triangle(true);
+
+    // Fractions and IDs past the last are refused.
+    for bad in [1.5, 8.0, -1.0] {
+        geometry.material_ids = vec![0.0, bad, 1.0];
+        let err = import_slice(&single_mesh_glb(json!({}), &geometry), None).unwrap_err();
+        assert!(
+            matches!(err, GltfImportError::MaterialIdOutOfRange { vertex: 1, value, .. } if value == bad),
+            "{err}"
+        );
+    }
+
+    // A triangle's corners must share their ID: the renderer reads one of them.
+    geometry.material_ids = vec![2.0, 2.0, 5.0];
+    let err = import_slice(&single_mesh_glb(json!({}), &geometry), None).unwrap_err();
+    assert!(matches!(err, GltfImportError::MixedMaterialIds { triangle: 0, ids: [2, 2, 5], .. }), "{err}");
+
+    // Unsigned bytes and shorts are read too; normalized ones and vectors are refused.
+    geometry.material_ids = vec![5.0, 5.0, 5.0];
+    let mut writer = GltfWriter::default();
+    let mesh = writer.add_mesh("Mesh", &[(&geometry, None)]);
+    let node = writer.add_node(json!({ "mesh": mesh }));
+    writer.add_root(node);
+    let mut doc = writer.document(None);
+    let accessor = doc["meshes"][0]["primitives"][0]["attributes"]["_MATERIAL_ID"].as_u64().unwrap() as usize;
+    // Rewrites the IDs as one unsigned byte each, padded to a 4-byte stride as glTF requires.
+    let view = doc["accessors"][accessor]["bufferView"].as_u64().unwrap() as usize;
+    let offset = doc["bufferViews"][view]["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let mut bin = writer.bin().to_vec();
+    for (vertex, id) in [5u8; 3].into_iter().enumerate() {
+        bin[offset + 4 * vertex..offset + 4 * vertex + 4].copy_from_slice(&[id, 0, 0, 0]);
+    }
+    doc["bufferViews"][view]["byteStride"] = 4.into();
+    doc["accessors"][accessor]["componentType"] = 5121.into(); // UNSIGNED_BYTE
+    let imported = import_slice(&glb(&doc, &bin), None).unwrap();
+    let ids: Vec<u8> = imported.vertices.iter().map(|v| v.flags.material_id().get()).collect();
+    assert_eq!(ids, [5, 5, 5]);
+    doc["accessors"][accessor]["normalized"] = true.into();
+    let err = import_slice(&glb(&doc, &bin), None).unwrap_err();
+    assert!(
+        matches!(&err, GltfImportError::UnsupportedAccessor { semantic, .. } if semantic == "_MATERIAL_ID")
+    );
 }
 
 #[test]

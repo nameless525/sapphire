@@ -4,7 +4,7 @@ use std::f32::consts::{PI, TAU};
 use glam::Vec3;
 use std::collections::BTreeMap;
 
-use sapphire_assets::mesh::{Mesh, PositionFormat, Vertex};
+use sapphire_assets::mesh::{Mesh, PositionFormat, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
 
 use super::*;
 use crate::mesh::{ImportedDelta, ImportedMorphTarget, ImportedSkin, SkinWeights};
@@ -34,7 +34,8 @@ fn two_material_sphere(rings: u32, segments: u32) -> ImportedMesh {
                     normal: n.to_array(),
                     outline_normal: n.to_array(),
                     uv: [segment as f32 / segments as f32, ring as f32 / rings as f32],
-                    color: [255; 4],
+                    color: VERTEX_COLOR_NEUTRAL,
+                    flags: VertexFlags::NONE,
                 });
             }
         }

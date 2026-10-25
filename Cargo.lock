@@ -2477,6 +2477,7 @@ dependencies = [
  "bevy_reflect",
  "bytemuck",
  "glam",
+ "half",
  "png",
  "pollster",
  "profiling",

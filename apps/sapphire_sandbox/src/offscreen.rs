@@ -99,6 +99,9 @@ impl Stage {
         if options.skinned {
             scene.set_stalk_mesh(crate::skinned::upload_stalk(&mut renderer)?);
         }
+        if options.swatches {
+            scene.spawn_swatches(crate::swatches::upload_swatches(&mut content, &gpu, &mut renderer)?);
+        }
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]

@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use half::f16;
 
 use super::{Bounds, UvBounds};
+use crate::character_maps::{MATERIAL_IDS, MaterialId};
 
 /// Largest unorm16 value.
 const UNORM16_MAX: f32 = 65535.0;
@@ -144,22 +145,31 @@ impl VertexShading {
 
 packed!(
     /// Texture coordinates quantized across the mesh's [`UvBounds`] as unorm16 × 2, then the
-    /// RGBA8 vertex color. 8 bytes, read as `Unorm16x2` and `Unorm8x4`.
+    /// vertex color's three character data channels as linear unorm8 (R ambient occlusion,
+    /// G outline-width scale, B outline Z-offset scale; [`VERTEX_COLOR_NEUTRAL`]) and the
+    /// [`VertexFlags`] byte. 8 bytes, read as `Unorm16x2` and `Unorm8x4`; the vertex shaders
+    /// turn the fourth component back into the flags' bits (`n / 255` is exact enough to round
+    /// back to `n`).
     ///
-    /// Color RGB is an sRGB albedo tint and alpha the outline-width scale (255 = 1.0). For UVs
-    /// in [0, 1] the error is 1/131 070, 0.016 texels of a 2K map. Float16 would be the same
-    /// size with 1/2048 steps near 1.0, half a texel, enough to shift the hard edges of ILM
-    /// masks and SDF face maps.
+    /// For UVs in [0, 1] the error is 1/131 070, 0.016 texels of a 2K map. Float16 would be the
+    /// same size with 1/2048 steps near 1.0, half a texel, enough to shift the hard edges of ILM
+    /// masks and SDF face maps. The flags share the color's word rather than taking a stream of
+    /// their own: vertex attributes come in 4-byte steps, so a separate byte would cost four.
     VertexSurface,
     8
 );
 
+/// The vertex color that changes nothing: unoccluded, the material's own outline width and Z
+/// offset. Sources without vertex colors get it.
+pub const VERTEX_COLOR_NEUTRAL: [u8; 3] = [255; 3];
+
 impl VertexSurface {
-    pub fn new(uv: [f32; 2], bounds: &UvBounds, color: [u8; 4]) -> Self {
+    pub fn new(uv: [f32; 2], bounds: &UvBounds, color: [u8; 3], flags: VertexFlags) -> Self {
         let [u, v] = std::array::from_fn(|axis| unorm16(uv[axis], bounds.min[axis], bounds.max[axis]));
+        let [r, g, b] = color;
         let mut bytes = [0; 8];
         bytes[..4].copy_from_slice(&pack_u16::<2, 4>([u, v]));
-        bytes[4..].copy_from_slice(&color);
+        bytes[4..].copy_from_slice(&[r, g, b, flags.bits()]);
         Self(bytes)
     }
 
@@ -168,10 +178,74 @@ impl VertexSurface {
         std::array::from_fn(|axis| from_unorm16(q[axis], bounds.min[axis], bounds.max[axis]))
     }
 
-    pub fn color(self) -> [u8; 4] {
-        *self.0.last_chunk::<4>().expect("8 bytes hold 4")
+    /// The character data channels: R ambient occlusion, G outline-width scale, B outline
+    /// Z-offset scale.
+    pub fn color(self) -> [u8; 3] {
+        let [r, g, b, _] = *self.0.last_chunk::<4>().expect("8 bytes hold 4");
+        [r, g, b]
+    }
+
+    /// The flags byte as stored, reserved bits included (validation rejects those).
+    pub fn flags_bits(self) -> u8 {
+        self.0[7]
+    }
+
+    /// The flags, with any reserved bits cleared.
+    pub fn flags(self) -> VertexFlags {
+        VertexFlags::truncate(self.flags_bits())
     }
 }
+
+/// Per-vertex flags of an anime character mesh: one byte of each [`VertexSurface`], constant
+/// per vertex. The vertex shader decodes them and passes them on flat, so they never blend
+/// between vertices: a field changes along whole triangles, which is how its sources are
+/// authored (one value per part).
+///
+/// | Bits | Field | Read by |
+/// |---|---|---|
+/// | 0–2 | Material ID ([`MaterialId`]): the region of the material's per-ID parameters a vertex shades with when its material has no control map | the anime character shader (M1 C1) |
+/// | 3–7 | Reserved, zero: face side, eye and brow bits for faces (C3) and eyes over the bangs (C5) | — |
+///
+/// A material with a control map takes the region from the map's alpha instead, per pixel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct VertexFlags(u8);
+
+impl VertexFlags {
+    /// Material ID 0 and nothing else.
+    pub const NONE: Self = Self(0);
+    /// Bits of the material ID field.
+    pub const MATERIAL_ID_MASK: u8 = 0b111;
+    /// Bits no field uses yet; cooked meshes keep them zero.
+    pub const RESERVED_MASK: u8 = !Self::MATERIAL_ID_MASK;
+
+    /// The flags with these bits, or `None` if a reserved bit is set.
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & Self::RESERVED_MASK == 0 { Some(Self(bits)) } else { None }
+    }
+
+    /// The flags with these bits, reserved ones cleared.
+    pub const fn truncate(bits: u8) -> Self {
+        Self(bits & !Self::RESERVED_MASK)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The flags of a vertex in material ID `id`.
+    pub const fn with_material_id(id: MaterialId) -> Self {
+        Self(id.get())
+    }
+
+    pub fn material_id(self) -> MaterialId {
+        MaterialId::new(self.0 & Self::MATERIAL_ID_MASK).expect("the field holds exactly the material IDs")
+    }
+}
+
+const _: () = assert!(
+    VertexFlags::MATERIAL_ID_MASK as u32 + 1 == MATERIAL_IDS as u32,
+    "the material ID field holds exactly the character maps' IDs"
+);
 
 /// Octahedral encoding of a direction as snorm16 × 2 (Cigolle et al., "A Survey of Efficient
 /// Representations for Independent Unit Vectors", JCGT 2014): the sphere folded onto a square.
@@ -372,12 +446,30 @@ pub(crate) mod tests {
         assert!(angle_degrees(shading.outline_normal(), [0.6, 0.0, -0.8]) < 0.008);
 
         let bounds = UvBounds { min: [0.0, -1.0], max: [1.0, 3.0] };
-        let surface = VertexSurface::new([0.25, 2.0], &bounds, [10, 20, 30, 140]);
-        assert_eq!(surface.color(), [10, 20, 30, 140]);
+        let flags = VertexFlags::with_material_id(MaterialId::new(5).unwrap());
+        let surface = VertexSurface::new([0.25, 2.0], &bounds, [10, 20, 30], flags);
+        assert_eq!((surface.color(), surface.flags()), ([10, 20, 30], flags));
+        assert_eq!(surface.to_bytes()[4..], [10, 20, 30, 5]);
         let [u, v] = surface.uv(&bounds);
         assert!((u - 0.25).abs() <= 1.0 / 131_070.0 && (v - 2.0).abs() <= 4.0 / 131_070.0, "{u} {v}");
         let flat = UvBounds { min: [0.5, 0.5], max: [0.5, 0.5] };
-        assert_eq!(VertexSurface::new([0.5, 0.5], &flat, [0; 4]).uv(&flat), [0.5, 0.5]);
+        assert_eq!(VertexSurface::new([0.5, 0.5], &flat, [0; 3], VertexFlags::NONE).uv(&flat), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn vertex_flags_hold_a_material_id_and_keep_reserved_bits_clear() {
+        for id in MaterialId::ALL {
+            let flags = VertexFlags::with_material_id(id);
+            assert_eq!((flags.material_id(), flags.bits()), (id, id.get()));
+            assert_eq!(VertexFlags::from_bits(flags.bits()), Some(flags));
+        }
+        assert_eq!(VertexFlags::from_bits(0x08), None, "bit 3 is reserved");
+        assert_eq!(VertexFlags::truncate(0xfd), VertexFlags::from_bits(5).unwrap());
+        assert_eq!(VertexFlags::default(), VertexFlags::NONE);
+        // The vertex shader reads the byte as unorm8 and rounds it back.
+        for bits in 0..=u8::MAX {
+            assert_eq!((f32::from(bits) / 255.0 * 255.0).round() as u8, bits);
+        }
     }
 
     #[test]
@@ -387,7 +479,7 @@ pub(crate) mod tests {
         let mut worst = 0.0f32;
         for _ in 0..100_000 {
             let uv = [random.unit(), random.unit()];
-            let decoded = VertexSurface::new(uv, &bounds, [0; 4]).uv(&bounds);
+            let decoded = VertexSurface::new(uv, &bounds, [0; 3], VertexFlags::NONE).uv(&bounds);
             worst = worst.max((decoded[0] - uv[0]).abs()).max((decoded[1] - uv[1]).abs());
         }
         // 0.016 texels of a 2048-texel map.

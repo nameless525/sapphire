@@ -1,26 +1,27 @@
-//! The renderer: compute skinning, the prepasses, a main pass with three pipelines (surface,
-//! outline, sky) into HDR scene color, lit by the sun and the frame's local lights, then
-//! post-processing into the target.
+//! The renderer: compute skinning, the prepasses, a main pass into HDR scene color (anime
+//! character surfaces and outlines per static permutation, the sky, then transparent
+//! surfaces), lit by the sun and the frame's local lights, then post-processing into the
+//! target.
 
 use std::num::NonZeroU64;
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily};
+use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
-use crate::draw::MeshDraws;
+use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, SubmeshMaterial};
 use crate::pipelines::{
-    DEPTH_FORMAT, Layouts, MeshPass, MeshPipelines, NORMALS_FORMAT, Pipelines, SCENE_COLOR_FORMAT,
+    DEPTH_FORMAT, Layouts, MeshPass, NORMALS_FORMAT, Pipelines, SCENE_COLOR_FORMAT, SurfaceVariant,
     VELOCITY_FORMAT,
 };
 use crate::post::PostProcess;
@@ -128,6 +129,8 @@ pub enum RenderError {
          bound has `{found}`; recook the material with its textures' cook"
     )]
     TextureSwizzle { slot: &'static str, expected: String, found: String },
+    #[error("texture slot `{slot}` holds linear data, but the texture bound is sRGB ({format:?})")]
+    SrgbData { slot: &'static str, format: wgpu::TextureFormat },
     #[error("{0:?} was not uploaded to this renderer")]
     UnknownMaterial(MaterialHandle),
     #[error("a {from} material can't be updated into a {to} one")]
@@ -148,15 +151,25 @@ pub enum RenderError {
 /// Renderer counters for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
-    /// Draw calls per mesh pass in the last prepared frame (the anime character and outline
-    /// passes each issue this many; the sky adds one).
+    /// Anime character surface draws in the last prepared frame, of every static permutation
+    /// (the prepasses draw the opaque and alpha-tested ones again; the sky adds one).
     pub draws: u32,
+    /// Of [`Self::draws`], those of alpha-tested materials.
+    pub alpha_tested_draws: u32,
+    /// Of [`Self::draws`], those of transparent materials, blended after the sky.
+    pub transparent_draws: u32,
+    /// Outline hulls drawn in the last prepared frame.
+    pub outline_draws: u32,
+    /// Anime character pipelines built (surface and outline variants, across position
+    /// formats): each static permutation's are built when the first draw needs them.
+    pub character_pipelines: u32,
     /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
     /// Instances the last prepared packet added or changed; each is uploaded.
     pub changed_instances: u32,
     /// Times the draw list was rebuilt since the renderer was created: only when instances
-    /// are added or removed, change mesh, or meshes are uploaded.
+    /// are added or removed, change mesh, meshes are uploaded, or a material edit changes its
+    /// static permutation.
     pub draw_list_builds: u32,
     /// Mesh pool bytes in use: vertices (with skin and morph data) and indices.
     pub mesh_pool_bytes: u64,
@@ -398,7 +411,22 @@ impl Renderer {
         material: &ArchivedMaterial,
         textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
     ) -> Result<(), RenderError> {
-        self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)
+        let before = self.materials.record(handle).map(|record| record.flags);
+        self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)?;
+        let flags = material.flags();
+        // Only the anime character family draws, so only its permutations pick pipelines.
+        if before != Some(flags) && material.family == MaterialFamily::AnimeCharacter {
+            // A new static permutation: its draws move to other pipelines, built for every
+            // format already drawn (meshes in another format build theirs when uploaded).
+            let variant = SurfaceVariant::of_material(flags);
+            for format in PositionFormat::ALL {
+                if self.pipelines.mesh(format).is_some() {
+                    self.pipelines.prepare_variant(&self.device, format, variant);
+                }
+            }
+            self.scene.meshes_changed();
+        }
+        Ok(())
     }
 
     /// Uploads the materials `mesh` embeds, one handle per material slot, for
@@ -466,7 +494,12 @@ impl Renderer {
             .collect::<Result<Vec<_>, _>>()?;
         let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
         let record = &self.meshes.records()[handle.index()];
-        self.pipelines.prepare_format(&self.device, record.draw_format());
+        let format = record.draw_format();
+        self.pipelines.prepare_format(&self.device, format);
+        for material in &materials {
+            let flags = self.materials.record(material.handle).map_or(MaterialFlags::empty(), |r| r.flags);
+            self.pipelines.prepare_variant(&self.device, format, SurfaceVariant::of_material(flags));
+        }
         if record.deform().is_some() {
             self.pipelines.prepare_characters(&self.device);
             self.skinning.enable(&self.device, self.pipeline_cache.as_ref());
@@ -500,7 +533,17 @@ impl Renderer {
         );
         let (device, queue) = (gpu.device(), gpu.queue());
 
-        if self.scene.prepare(device, queue, packet.frame, &packet.instances, self.meshes.records()) {
+        let materials = &self.materials;
+        let material_flags =
+            |handle: MaterialHandle| materials.record(handle).map_or(MaterialFlags::empty(), |r| r.flags);
+        if self.scene.prepare(
+            device,
+            queue,
+            packet.frame,
+            &packet.instances,
+            self.meshes.records(),
+            material_flags,
+        ) {
             self.scene_bind_group =
                 create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.materials);
         }
@@ -517,7 +560,11 @@ impl Renderer {
             .main_view()
             .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet, lights) });
         self.post.prepare(queue, &packet.post);
-        self.stats.draws = self.scene.draw_count();
+        let [opaque, alpha_tested, transparent] = self.scene.draw_counts();
+        self.stats.draws = opaque + alpha_tested + transparent;
+        self.stats.alpha_tested_draws = alpha_tested;
+        self.stats.transparent_draws = transparent;
+        self.stats.outline_draws = self.scene.outline_count();
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
@@ -680,11 +727,19 @@ impl Renderer {
         graph.add_pass("character prepass").write(targets.character_depth).record(move |ctx| {
             let mut pass = begin_prepass(ctx, "character prepass", targets.character_depth, &[], labels);
             if let Some(pipeline) = pipelines.character_prepass()
-                && mesh_draws.has_deformed()
+                && mesh_draws.has_any_deformed()
             {
                 bind(&mut pass);
                 pass.set_pipeline(pipeline);
-                mesh_draws.draw_deformed(&mut pass, MeshPass::CharacterPrepass);
+                // Transparent surfaces write no depth.
+                for variant in SurfaceVariant::DEPTH_WRITING {
+                    mesh_draws.draw_deformed(
+                        &mut pass,
+                        MeshPass::CharacterPrepass,
+                        variant,
+                        DrawSet::Surfaces,
+                    );
+                }
             }
         });
         graph
@@ -696,20 +751,31 @@ impl Renderer {
                 let colors = [targets.normals, targets.velocity];
                 let mut pass = begin_prepass(ctx, "scene prepass", targets.depth, &colors, labels);
                 bind(&mut pass);
+                // Opaque and alpha-tested surfaces, through one pipeline per format: the
+                // prepass doesn't cut alpha-tested ones out yet (crate docs, "Later
+                // milestones"). Transparent surfaces write no depth.
+                let prepass = MeshPass::ScenePrepass;
                 for format in PositionFormat::ALL {
-                    if !mesh_draws.has_static(format) {
+                    if !SurfaceVariant::DEPTH_WRITING
+                        .iter()
+                        .any(|&variant| mesh_draws.has_static(format, variant))
+                    {
                         continue;
                     }
                     let pipelines =
                         pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
                     pass.set_pipeline(&pipelines.scene_prepass);
-                    mesh_draws.draw_static(&mut pass, MeshPass::ScenePrepass, format);
+                    for variant in SurfaceVariant::DEPTH_WRITING {
+                        mesh_draws.draw_static(&mut pass, prepass, format, variant, DrawSet::Surfaces);
+                    }
                 }
-                if mesh_draws.has_deformed() {
+                if SurfaceVariant::DEPTH_WRITING.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
                     let pipelines =
                         pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
                     pass.set_pipeline(&pipelines.scene_prepass);
-                    mesh_draws.draw_deformed(&mut pass, MeshPass::ScenePrepass);
+                    for variant in SurfaceVariant::DEPTH_WRITING {
+                        mesh_draws.draw_deformed(&mut pass, prepass, variant, DrawSet::Surfaces);
+                    }
                 }
             });
 
@@ -743,29 +809,21 @@ impl Renderer {
                 ..Default::default()
             });
             bind(&mut pass);
-            // Pass 1: the surface shading. Pass 2: outlines, after it so depth rejects the hull
-            // wherever the mesh itself covers it. Skinned and morphed instances draw last in
-            // each, through the f32 pipelines.
-            for outline in [false, true] {
-                for format in PositionFormat::ALL {
-                    if !mesh_draws.has_static(format) {
-                        continue;
-                    }
-                    let mesh_pipelines =
-                        pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-                    pass.set_pipeline(main_pipeline(mesh_pipelines, outline));
-                    mesh_draws.draw_static(&mut pass, MeshPass::Main, format);
-                }
-                if mesh_draws.has_deformed() {
-                    let mesh_pipelines =
-                        pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
-                    pass.set_pipeline(main_pipeline(mesh_pipelines, outline));
-                    mesh_draws.draw_deformed(&mut pass, MeshPass::Main);
-                }
+            // Opaque and alpha-tested surfaces, then their outlines, after them so depth rejects
+            // the hull wherever a surface covers it, then the sky where no geometry wrote depth,
+            // then transparent surfaces over all of it. Each static permutation draws through
+            // its own pipeline; skinned and morphed instances draw last in each group, through
+            // the f32 pipelines.
+            let groups = SurfaceVariant::DEPTH_WRITING
+                .map(|variant| (variant, DrawSet::Surfaces))
+                .into_iter()
+                .chain(SurfaceVariant::DEPTH_WRITING.map(|variant| (variant, DrawSet::Outlines)));
+            for (variant, set) in groups {
+                draw_main(&mut pass, pipelines, &mesh_draws, variant, set);
             }
-            // Pass 3: sky, only where no geometry wrote depth.
             pass.set_pipeline(&pipelines.sky);
             pass.draw(0..3, 0..1);
+            draw_main(&mut pass, pipelines, &mesh_draws, SurfaceVariant::Transparent, DrawSet::Surfaces);
         });
 
         post.record(graph, scene_color, target, labels);
@@ -791,7 +849,7 @@ impl Renderer {
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
     /// size.
     pub fn stats(&self) -> RenderStats {
-        self.stats
+        RenderStats { character_pipelines: self.pipelines.character_pipelines(), ..self.stats }
     }
 
     /// Sets the scene's size as a fraction of the target's width and height, from the next
@@ -842,9 +900,34 @@ impl Renderer {
     }
 }
 
-/// The main pass's pipeline for a mesh format: the surface shading, or the outline hull.
-fn main_pipeline(pipelines: &MeshPipelines, outline: bool) -> &wgpu::RenderPipeline {
-    if outline { &pipelines.outline } else { &pipelines.character }
+/// Draws `set` of the main pass's draws of `variant`, static meshes per format and then the
+/// skinned and morphed ones, each group through its pipeline: the surface's, or the outline
+/// hull's.
+fn draw_main(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipelines: &Pipelines,
+    draws: &MeshDraws<'_>,
+    variant: SurfaceVariant,
+    set: DrawSet,
+) {
+    let pipeline = |format| {
+        let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+        let pipeline = match set {
+            DrawSet::Surfaces => mesh.character(variant),
+            DrawSet::Outlines => mesh.outline(variant),
+        };
+        pipeline.expect("built when a draw of this permutation was added")
+    };
+    for format in PositionFormat::ALL {
+        if draws.has_static(format, variant) {
+            pass.set_pipeline(pipeline(format));
+            draws.draw_static(pass, MeshPass::Main, format, variant, set);
+        }
+    }
+    if draws.has_deformed(variant) {
+        pass.set_pipeline(pipeline(PositionFormat::Float32));
+        draws.draw_deformed(pass, MeshPass::Main, variant, set);
+    }
 }
 
 /// Begins a prepass's render pass: `depth` and the `colors` cleared, all stored.

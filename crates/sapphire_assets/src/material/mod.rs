@@ -73,8 +73,8 @@
 //! - Shaders for the environment (W4), foliage (W6), sky (W2) and fog card (W3) families: their
 //!   blocks are defined and uploaded, and their group 3 layouts exist, but nothing draws them
 //!   yet.
-//! - Ramp arrays and per-region reads of the control map (C1): until then the anime character
-//!   shader shades with region 0 and two bands.
+//! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows
+//!   today, which the anime character shader (C1) reads by region and time of day.
 
 mod character;
 mod common;

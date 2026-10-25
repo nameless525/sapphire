@@ -23,12 +23,27 @@
 //! | positions | 8 | xyz unorm16 across [`VertexStreams::bounds`] ([`QuantizedPosition`]) | `extent / 131 070` per axis: 16 µm on a 2.1 m character |
 //! | positions (alternative) | 12 | f32 xyz ([`FloatPosition`]) | none |
 //! | shading | 8 | normal and outline normal, octahedral snorm16 × 2 each ([`VertexShading`]) | < 0.008° |
-//! | surface | 8 | UV unorm16 × 2 across [`VertexStreams::uv_bounds`], RGBA8 color ([`VertexSurface`]) | `range / 131 070`: 0.016 texels of a 2K map |
+//! | surface | 8 | UV unorm16 × 2 across [`VertexStreams::uv_bounds`], vertex color RGB unorm8, [`VertexFlags`] u8 ([`VertexSurface`]) | `range / 131 070`: 0.016 texels of a 2K map |
 //!
 //! That is 24 bytes a vertex where M0 read 48. The element docs give the reasons for each
 //! encoding. [`PositionFormat::Float32`] is for meshes whose extent makes 16 bits too coarse,
 //! or whose edges must meet a neighbor's exactly (quantizing two meshes across different
 //! bounds can open hairline cracks between them).
+//!
+//! # Vertex color and flags
+//!
+//! The anime character contract (M1 C1) gives the vertex color three data channels, linear
+//! unorm8, each 1 when a source has no vertex color ([`VERTEX_COLOR_NEUTRAL`]):
+//!
+//! | Channel | Holds | Read by |
+//! |---|---|---|
+//! | R | Ambient occlusion: 1 open, 0 occluded. Pushes the light split toward shadow, as a cast shadow does, and darkens ambient light | the anime character shader |
+//! | G | Outline-width scale on the material's width | the outline hull |
+//! | B | Outline Z-offset scale on the material's Z offset | the outline hull |
+//!
+//! A per-vertex byte of [`VertexFlags`] follows: the vertex's material ID (the region it
+//! shades with when its material has no control map), and reserved bits for faces and eyes.
+//! Both share the surface stream's second word.
 //!
 //! # LODs
 //!
@@ -53,7 +68,8 @@
 //!
 //! [`Mesh::read`] checks the envelope (type, schema version), validates the archive with
 //! bytecheck, then checks the invariants a GPU upload relies on ([`MeshError`]): stream
-//! lengths, every index inside its LOD's prefix, ranges, weights, finite values. Cooked bytes
+//! lengths, every index inside its LOD's prefix, ranges, weights, finite values, no reserved
+//! flag bits. Cooked bytes
 //! must start 16-byte aligned, as memory maps and
 //! [`AlignedVec`]s do.
 
@@ -69,7 +85,10 @@ pub use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
-pub use encoding::{FloatPosition, QuantizedPosition, VertexShading, VertexSurface, oct_decode, oct_encode};
+pub use encoding::{
+    FloatPosition, QuantizedPosition, VERTEX_COLOR_NEUTRAL, VertexFlags, VertexShading, VertexSurface,
+    oct_decode, oct_encode,
+};
 pub use morph::{ArchivedMorphTarget, MorphDelta, MorphTarget};
 pub use skin::{
     ArchivedInfluences, ArchivedJoint, ArchivedJointTransform, ArchivedSkin, ArchivedSkinBind, Influence8,
@@ -103,15 +122,18 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 3: material slots (M1 A3). 2 embedded M0's fixed 64-byte material parameters; 1 was
-    /// M0's flat `SPMS` layout of 48-byte float vertices.
-    const VERSION: u32 = 3;
+    /// 4: the anime character vertex contract (M1 C1): vertex color RGB is linear data (AO,
+    /// outline width, outline Z offset) instead of an sRGB tint, and the outline-width scale
+    /// moved from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots
+    /// (M1 A3); 2 embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS`
+    /// layout of 48-byte float vertices.
+    const VERSION: u32 = 4;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 3 && Material::VERSION == 1,
+    Mesh::VERSION == 4 && Material::VERSION == 1,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 
@@ -264,8 +286,8 @@ impl MaterialSlot {
 }
 
 /// One vertex at full precision: what importers and procedural meshes produce, and what the
-/// streams decode to.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// streams decode to. The default is all zero but for a neutral color.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     /// Object-space position (bind space, for a skinned mesh).
     pub position: [f32; 3],
@@ -275,8 +297,23 @@ pub struct Vertex {
     /// extrude along it so hard edges don't open gaps.
     pub outline_normal: [f32; 3],
     pub uv: [f32; 2],
-    /// RGB: albedo tint (sRGB). A: outline width scale, 255 = 1.0.
-    pub color: [u8; 4],
+    /// Character data, linear (255 = 1.0): R ambient occlusion, G outline-width scale, B
+    /// outline Z-offset scale (see the [module docs](self)).
+    pub color: [u8; 3],
+    pub flags: VertexFlags,
+}
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            normal: [0.0; 3],
+            outline_normal: [0.0; 3],
+            uv: [0.0; 2],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        }
+    }
 }
 
 impl VertexStreams {
@@ -297,7 +334,10 @@ impl VertexStreams {
             uv_bounds,
             positions,
             shading: vertices.iter().map(|v| VertexShading::new(v.normal, v.outline_normal)).collect(),
-            surface: vertices.iter().map(|v| VertexSurface::new(v.uv, &uv_bounds, v.color)).collect(),
+            surface: vertices
+                .iter()
+                .map(|v| VertexSurface::new(v.uv, &uv_bounds, v.color, v.flags))
+                .collect(),
         }
     }
 
@@ -333,6 +373,7 @@ impl VertexStreams {
             outline_normal: shading.outline_normal(),
             uv: surface.uv(&self.uv_bounds),
             color: surface.color(),
+            flags: surface.flags(),
         })
     }
 }

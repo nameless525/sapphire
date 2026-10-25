@@ -27,6 +27,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The anime character GPU tests write half-float control maps.
+half.workspace = true
 # The headless example writes a PNG. Dev-only, so it never reaches the runtime tree.
 png.workspace = true
 # Waits on error scopes in the GPU tests.

@@ -9,7 +9,8 @@
 //!   instance is uploaded with both, and once more when it comes to rest.
 //! - [`DrawList`] turns the live slots into draw records and draw commands. Draws name their
 //!   instance by slot, so a transform change leaves them as they are: the list is rebuilt only
-//!   when instances are added or removed, change mesh, or meshes are uploaded.
+//!   when instances are added or removed, change mesh, meshes are uploaded, or a material
+//!   changes permutation.
 //! - [`GpuScene`] owns both, plus the instance and draw-record buffers. `prepare` applies a
 //!   packet and sizes the buffers; the frame's uploads pass then writes the dirty slots, in
 //!   contiguous runs, and the draw records after a rebuild, through the staging belt.
@@ -20,13 +21,15 @@
 //! `first_instance` instead (see the crate docs).
 //!
 //! Draws of static meshes are grouped by position format, whose pipelines and stream slab
-//! differ, and come in slot order within a group. Draws of skinned or morphed meshes form a
-//! group of their own: each instance draws from its own skinning outputs (f32 positions), so
-//! they bind by instance slot rather than by mesh. Each draw record carries its mesh's dequantization,
-//! so the vertex shaders decode any mesh without another binding. Sorting opaque draws by
-//! pipeline, material and mesh (§5.12) comes with a second opaque pipeline; because the list
-//! is rebuilt only when the set changes, the sort will cost nothing on frames that only move
-//! instances.
+//! differ, and within a format by surface variant ([`SurfaceVariant`], the material's static
+//! permutation), each its own pipeline; within a group they come in slot order. Draws of skinned
+//! or morphed meshes form groups of their own, per variant: each instance draws from its own
+//! skinning outputs (f32 positions), so they bind by instance slot rather than by mesh. Each
+//! draw record carries its mesh's dequantization, so the vertex shaders decode any mesh without
+//! another binding. Grouping is all the sorting the draws get. Sorting by material and mesh
+//! within a group (§5.12) will cost nothing on frames that only move instances, since the list
+//! is rebuilt only when the set changes; sorting transparent draws back to front depends on
+//! where things are, so it will run every frame that has them.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -34,13 +37,14 @@ use std::ops::Range;
 
 use bytemuck::Zeroable;
 use glam::Mat4;
+use sapphire_assets::material::MaterialFlags;
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
-use crate::pipelines::format_index;
+use crate::pipelines::{Permutation, SurfaceVariant, format_index};
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -104,6 +108,7 @@ impl GpuScene {
         frame: u64,
         deltas: &InstanceDeltas,
         meshes: &[MeshRecord],
+        material_flags: impl Fn(MaterialHandle) -> MaterialFlags,
     ) -> bool {
         profiling::scope!("GpuScene::prepare");
         debug_assert!(
@@ -122,7 +127,7 @@ impl GpuScene {
         let replaced =
             self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded);
         if self.draws_stale {
-            self.draw_list.build(meshes, &self.slots);
+            self.draw_list.build(meshes, material_flags, &self.slots);
             // The records are uploaded whole after every rebuild, so nothing needs keeping.
             self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
             self.draws_stale = false;
@@ -132,7 +137,8 @@ impl GpuScene {
         replaced
     }
 
-    /// Meshes were uploaded or moved: rebuild the draw list on the next `prepare`.
+    /// Meshes were uploaded or moved, or a material changed permutation: rebuild the draw list
+    /// on the next `prepare`.
     pub(crate) fn meshes_changed(&mut self) {
         self.draws_stale = true;
     }
@@ -164,9 +170,14 @@ impl GpuScene {
         to_u32(self.slots.live_count())
     }
 
-    /// Draw commands per mesh pass.
-    pub(crate) fn draw_count(&self) -> u32 {
-        to_u32(self.draw_list.len())
+    /// Surface draws, per [`SurfaceVariant::ALL`] entry.
+    pub(crate) fn draw_counts(&self) -> [u32; SurfaceVariant::ALL.len()] {
+        SurfaceVariant::ALL.map(|variant| to_u32(self.draw_list.len(variant)))
+    }
+
+    /// Outline hulls drawn.
+    pub(crate) fn outline_count(&self) -> u32 {
+        to_u32(self.draw_list.outlines())
     }
 
     /// Instances the last packet added or changed.
@@ -395,6 +406,8 @@ pub(crate) struct DrawCommand {
     pub first_vertex: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
+    /// It draws an outline hull too ([`Permutation::outlined`]).
+    pub outline: bool,
 }
 
 /// A draw of a skinned or morphed instance on the CPU-driven path: positions and shading
@@ -408,6 +421,8 @@ pub(crate) struct DeformedDraw {
     pub surface: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
+    /// It draws an outline hull too.
+    pub outline: bool,
 }
 
 /// The draws for every live instance: one per submesh of the mesh's LOD0. Its vectors are
@@ -416,24 +431,37 @@ pub(crate) struct DeformedDraw {
 pub(crate) struct DrawList {
     pub draws: Vec<DrawData>,
     /// Static meshes, per [`PositionFormat::ALL`] entry, since each format has its own
-    /// pipelines and slab.
-    pub commands: [Vec<DrawCommand>; 2],
-    /// Skinned and morphed meshes, drawn with the f32 pipelines.
-    pub deformed: Vec<DeformedDraw>,
+    /// pipelines and slab, then per [`SurfaceVariant::ALL`] entry.
+    pub commands: [[Vec<DrawCommand>; SurfaceVariant::ALL.len()]; 2],
+    /// Skinned and morphed meshes, drawn with the f32 pipelines, per [`SurfaceVariant::ALL`]
+    /// entry.
+    pub deformed: [Vec<DeformedDraw>; SurfaceVariant::ALL.len()],
 }
 
 impl DrawList {
-    pub(crate) fn build(&mut self, meshes: &[MeshRecord], slots: &InstanceSlots) {
+    /// Rebuilds the list from the live `slots`, drawing each submesh with the permutation of
+    /// its material's flags (`material_flags`) on its mesh.
+    pub(crate) fn build(
+        &mut self,
+        meshes: &[MeshRecord],
+        material_flags: impl Fn(MaterialHandle) -> MaterialFlags,
+        slots: &InstanceSlots,
+    ) {
         profiling::scope!("DrawList::build");
         self.draws.clear();
-        for commands in &mut self.commands {
+        for commands in self.commands.iter_mut().flatten() {
             commands.clear();
         }
-        self.deformed.clear();
+        for deformed in &mut self.deformed {
+            deformed.clear();
+        }
         for (slot, mesh) in slots.live() {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
             let Some(record) = record else { continue };
+            let (skinned, morphed) = record
+                .deform()
+                .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             for submesh in &record.lods[0] {
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {
@@ -443,28 +471,45 @@ impl DrawList {
                 });
                 let indices = submesh.first_index..submesh.first_index + submesh.index_count;
                 let material = submesh.material.handle;
+                let permutation = Permutation::new(material_flags(material), skinned, morphed);
+                let (variant, outline) = (permutation.surface().index(), permutation.outlined());
                 match &record.streams {
                     MeshStreams::Slab { format, first_vertex } => {
                         let first_vertex = *first_vertex;
-                        self.commands[format_index(*format)].push(DrawCommand {
+                        self.commands[format_index(*format)][variant].push(DrawCommand {
                             indices,
                             first_vertex,
                             draw_id,
                             material,
+                            outline,
                         });
                     }
                     MeshStreams::Deformable(source) => {
                         let surface = source.surface;
-                        self.deformed.push(DeformedDraw { indices, slot, surface, draw_id, material });
+                        self.deformed[variant].push(DeformedDraw {
+                            indices,
+                            slot,
+                            surface,
+                            draw_id,
+                            material,
+                            outline,
+                        });
                     }
                 }
             }
         }
     }
 
-    /// Draw commands per mesh pass.
-    pub(crate) fn len(&self) -> usize {
-        self.commands.iter().map(Vec::len).sum::<usize>() + self.deformed.len()
+    /// Surface draws of `variant`.
+    pub(crate) fn len(&self, variant: SurfaceVariant) -> usize {
+        let index = variant.index();
+        self.commands.iter().map(|commands| commands[index].len()).sum::<usize>() + self.deformed[index].len()
+    }
+
+    /// Outline hulls.
+    pub(crate) fn outlines(&self) -> usize {
+        let commands = self.commands.iter().flatten().flatten().filter(|command| command.outline).count();
+        commands + self.deformed.iter().flatten().filter(|draw| draw.outline).count()
     }
 }
 
@@ -688,8 +733,16 @@ mod tests {
         ];
         slots.apply(&deltas(&instances, &[]));
         slots.apply(&deltas(&[], &[1]));
+        // Handle 12 (slot 2) is alpha-tested, 13 transparent with an outline it won't draw, and
+        // 14 has no outline.
+        let flags = |handle: MaterialHandle| match handle.0 {
+            12 => MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
+            13 => MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE,
+            14 => MaterialFlags::empty(),
+            _ => MaterialFlags::OUTLINE,
+        };
         let mut list = DrawList::default();
-        list.build(&meshes, &slots);
+        list.build(&meshes, flags, &slots);
 
         // Slot 0 is free; draws refer to instances by slot, carry their mesh's dequantization,
         // and draw LOD0.
@@ -704,27 +757,35 @@ mod tests {
                 draw(4, 4, identity)
             ]
         );
-        let [unorm16, float32] = &list.commands;
-        let command = |indices, first_vertex, draw_id, slot: u32| DrawCommand {
+        // Grouped by format, then by surface variant, in slot order within each group.
+        let [[unorm16, unorm16_alpha_test, unorm16_transparent], [float32, _, float32_transparent]] =
+            &list.commands;
+        let command = |indices, first_vertex, draw_id, slot: u32, outline| DrawCommand {
             indices,
             first_vertex,
             draw_id,
             material: MaterialHandle(slot + 10),
+            outline,
         };
-        assert_eq!(unorm16[1], command(12..24, 24, 1, 2));
-        assert_eq!(unorm16[2], command(0..6, 0, 2, 0));
-        assert_eq!(float32[..], [command(24..27, 0, 3, 3)]);
+        assert_eq!(unorm16[..], [command(9..12, 24, 0, 1, true), command(0..6, 0, 2, 0, true)]);
+        assert_eq!(unorm16_alpha_test[..], [command(12..24, 24, 1, 2, true)]);
+        assert!(unorm16_transparent.is_empty());
+        assert!(float32.is_empty());
+        assert_eq!(float32_transparent[..], [command(24..27, 0, 3, 3, false)], "transparent: no outline");
+        let [deformed_opaque, ..] = &list.deformed;
         let material = MaterialHandle(14);
         assert_eq!(
-            list.deformed[..],
-            [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material }]
+            deformed_opaque[..],
+            [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
         );
-        assert_eq!(list.len(), 5);
+        let lens = SurfaceVariant::ALL.map(|variant| list.len(variant));
+        assert_eq!((lens, list.outlines()), ([3, 1, 1], 3));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
-        list.build(&meshes, &slots);
-        assert_eq!((list.draws.len(), list.len()), (3, 3));
+        list.build(&meshes, flags, &slots);
+        assert_eq!(list.draws.len(), 3);
+        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [1, 1, 1]);
     }
 
     #[test]

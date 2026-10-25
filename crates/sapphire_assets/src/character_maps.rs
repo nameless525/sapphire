@@ -15,7 +15,7 @@
 //! | Channel | Holds | Neutral value |
 //! |---|---|---|
 //! | R | Specular mask: where highlights may appear, and how strongly | 0, no highlight |
-//! | G | Shadow bias: an offset to N·L before the two-tone light split, `2·G − 1` ([`ilm::encode_shadow_bias`]); ≥ 0.95 stays lit, ≤ 0.05 stays in shadow | 0.5, no shift |
+//! | G | Shadow bias: an offset to N·L before the two-tone light split, `2·G − 1` ([`ilm::encode_shadow_bias`]); ≥ 0.95 stays lit, ≤ 0.05 stays in shadow ([`ilm::SHADOW_BIAS_LIT`], [`ilm::SHADOW_BIAS_SHADOWED`]) | 0.5, no shift |
 //! | B | Specular threshold: the highlight's size | 0.5 |
 //! | A | [`MaterialId`]: picks the ramp rows and the per-ID parameters | ID 0 |
 //!
@@ -117,6 +117,11 @@ pub mod ilm {
     pub fn decode_shadow_bias(value: f32) -> f32 {
         2.0 * value - 1.0
     }
+
+    /// The shadow bias at and above which a texel stays lit whatever the light.
+    pub const SHADOW_BIAS_LIT: f32 = 0.95;
+    /// The shadow bias at and below which a texel stays in shadow whatever the light.
+    pub const SHADOW_BIAS_SHADOWED: f32 = 0.05;
 
     /// The step between two material IDs' stored values.
     const STEP: f32 = 1.0 / (MATERIAL_IDS - 1) as f32;

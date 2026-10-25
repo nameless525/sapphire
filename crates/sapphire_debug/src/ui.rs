@@ -289,7 +289,19 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ),
         );
         let render = &frame.render;
-        row(ui, "Draws", format!("{} per mesh pass, {} instances", render.draws, render.instances));
+        row(
+            ui,
+            "Draws",
+            format!(
+                "{} surfaces ({} alpha-tested, {} transparent), {} outlines, {} instances",
+                render.draws,
+                render.alpha_tested_draws,
+                render.transparent_draws,
+                render.outline_draws,
+                render.instances
+            ),
+        );
+        row(ui, "Character pipelines", render.character_pipelines.to_string());
         row(ui, "Changed instances", render.changed_instances.to_string());
         row(ui, "Draw-list builds", render.draw_list_builds.to_string());
         row(ui, "Mesh pool", format_bytes(render.mesh_pool_bytes));

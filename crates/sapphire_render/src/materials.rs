@@ -14,8 +14,9 @@
 //!   the last frame are uploaded by the frame's uploads pass, through the staging belt, in runs
 //!   of consecutive slots, like instances.
 //! - **Group 3** holds the material's texture per slot, a white 1×1 fallback where none is
-//!   bound (shaders skip those slots on the block's bound bits), and the two samplers. Each
-//!   bound texture must carry the swizzle the material was cooked with.
+//!   bound (shaders skip those slots on the block's bound bits), and the three samplers. Each
+//!   bound texture must carry the swizzle the material was cooked with, and slots of linear data
+//!   (normal, control, mask and SDF maps) take no sRGB texture: decoding would bend the data.
 //! - Only the anime character family draws so far, so the scene group (group 2) is built for its
 //!   buffer alone. Each family that gets shaders (W2–W6) gets a scene group of its own, rebuilt
 //!   when the instance buffer or its family's buffer grows.
@@ -23,7 +24,7 @@
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{ArchivedMaterial, MaterialFamily, MaterialFlags};
+use sapphire_assets::material::{ArchivedMaterial, MaterialFamily, MaterialFlags, TextureUsage};
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
@@ -54,6 +55,8 @@ pub(crate) struct Materials {
     records: Vec<MaterialRecord>,
     sampler: wgpu::Sampler,
     ramp_sampler: wgpu::Sampler,
+    /// Nearest, level 0: material IDs.
+    id_sampler: wgpu::Sampler,
     /// Bound to every slot without a texture.
     fallback: wgpu::TextureView,
     /// Slots the next uploads pass writes (stats).
@@ -142,6 +145,14 @@ impl Materials {
             lod_max_clamp: 0.0,
             ..Default::default()
         });
+        // Material IDs must never blend, across texels or mips (`character_maps`).
+        let id_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("material id"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            lod_max_clamp: 0.0,
+            ..Default::default()
+        });
         let fallback = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("material fallback"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -159,7 +170,7 @@ impl Materials {
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         );
         let fallback = fallback.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { families, records: Vec::new(), sampler, ramp_sampler, fallback, pending: 0 }
+        Self { families, records: Vec::new(), sampler, ramp_sampler, id_sampler, fallback, pending: 0 }
     }
 
     /// Validates `material`, gives it the next slot of its family's buffer and binds its
@@ -243,6 +254,10 @@ impl Materials {
                     found: found.to_string(),
                 });
             }
+            let format = texture.texture().format();
+            if holds_data(desc.usage) && format.is_srgb() {
+                return Err(RenderError::SrgbData { slot: desc.name, format });
+            }
             views.push(texture.view());
         }
         let mut entries: Vec<wgpu::BindGroupEntry<'_>> = views
@@ -260,6 +275,10 @@ impl Materials {
         entries.push(wgpu::BindGroupEntry {
             binding: material_binding::RAMP_SAMPLER,
             resource: wgpu::BindingResource::Sampler(&self.ramp_sampler),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: material_binding::ID_SAMPLER,
+            resource: wgpu::BindingResource::Sampler(&self.id_sampler),
         });
         Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(family.name()),
@@ -304,6 +323,14 @@ impl Materials {
     /// dirty slots, and draws bind each material's group 3, indexed by handle.
     pub(crate) fn split_for_record(&mut self) -> (MaterialUploads<'_>, &[MaterialRecord]) {
         (MaterialUploads { families: &mut self.families }, &self.records)
+    }
+}
+
+/// Whether a slot of `usage` holds linear data, which an sRGB texture would decode as color.
+fn holds_data(usage: TextureUsage) -> bool {
+    match usage {
+        TextureUsage::Normal | TextureUsage::Mask | TextureUsage::Control | TextureUsage::FaceShadow => true,
+        TextureUsage::Color | TextureUsage::Light | TextureUsage::Ramp => false,
     }
 }
 

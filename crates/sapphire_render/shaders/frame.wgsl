@@ -73,8 +73,9 @@ struct PackedVertex {
     // sharing a position; outlines extrude along it.
     @location(1) normal: vec2<f32>,
     @location(2) outline_normal: vec2<f32>,
-    // Slot 3: unorm16 × 2 across the mesh's UV bounds, then rgb: albedo tint (sRGB-encoded),
-    // a: outline width scale.
+    // Slot 3: unorm16 × 2 across the mesh's UV bounds, then the vertex color's character data
+    // (linear: r ambient occlusion, g outline-width scale, b outline Z-offset scale) and, in a,
+    // the vertex flags byte as unorm8 (`sapphire_assets::mesh::VertexFlags`).
     @location(3) uv: vec2<f32>,
     @location(4) color: vec4<f32>,
 }
@@ -93,13 +94,19 @@ struct DrawRecord {
     @location(9) uv_transform: vec4<f32>,
 }
 
+// The vertex flags' material ID field (`VertexFlags::MATERIAL_ID_MASK`).
+const VERTEX_MATERIAL_ID_MASK: u32 = 7u;
+
 // A mesh vertex, decoded to object space.
 struct MeshVertex {
     position: vec3<f32>,
     normal: vec3<f32>,
     outline_normal: vec3<f32>,
     uv: vec2<f32>,
-    color: vec4<f32>,
+    // r: ambient occlusion; g: outline-width scale; b: outline Z-offset scale.
+    color: vec3<f32>,
+    // `VertexFlags` bits.
+    flags: u32,
 }
 
 fn decode_vertex(packed: PackedVertex, draw: DrawRecord) -> MeshVertex {
@@ -108,7 +115,9 @@ fn decode_vertex(packed: PackedVertex, draw: DrawRecord) -> MeshVertex {
     vertex.normal = oct_decode(packed.normal);
     vertex.outline_normal = oct_decode(packed.outline_normal);
     vertex.uv = draw.uv_transform.xy + draw.uv_transform.zw * packed.uv;
-    vertex.color = packed.color;
+    vertex.color = packed.color.rgb;
+    // Unorm8 n arrives as n / 255, which rounds back exactly.
+    vertex.flags = u32(round(packed.color.a * 255.0));
     return vertex;
 }
 
@@ -126,12 +135,6 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     let t = max(-z, 0.0);
     let xy = e + select(vec2<f32>(t), vec2<f32>(-t), e >= vec2<f32>(0.0));
     return normalize(vec3<f32>(xy, z));
-}
-
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let low = c / 12.92;
-    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(high, low, c <= vec3<f32>(0.04045));
 }
 
 // Normalizes, mapping a zero vector to zero instead of NaN.

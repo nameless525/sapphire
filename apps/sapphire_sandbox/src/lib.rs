@@ -44,6 +44,9 @@
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
+//! - `--swatches`: place three spheres on the character's other side that show the anime
+//!   character shader's diffuse modes over cooked maps (ramp mode, ramp mode with a subsurface
+//!   mix, three bands; M1 C1).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
@@ -78,6 +81,7 @@ mod orbit;
 mod scene;
 mod skinned;
 mod stats;
+mod swatches;
 mod turntable;
 
 use std::cell::RefCell;

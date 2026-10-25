@@ -1,4 +1,5 @@
 use super::*;
+use crate::character_maps::MaterialId;
 use crate::material::{AnimeCharacterMaterial, Material, MaterialError};
 use crate::texture::Swizzle;
 
@@ -16,7 +17,8 @@ fn quad(format: PositionFormat) -> Mesh {
         normal: [0.0, 0.0, 1.0],
         outline_normal: [0.0, 0.0, 1.0],
         uv: [x, 1.0 - y],
-        color: [255, 255, 255, 200],
+        color: [128, 200, 255],
+        flags: VertexFlags::with_material_id(MaterialId::new(x as u8 + 2).unwrap()),
     };
     let vertices = [vertex(0.0, 0.0), vertex(1.0, 0.0), vertex(1.0, 2.0), vertex(0.0, 2.0)];
     let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
@@ -130,7 +132,9 @@ fn packing_bounds_fit_the_vertices() {
         let vertex = mesh.streams.vertex(index).unwrap();
         assert_eq!(vertex.position[2], 0.5, "a flat axis decodes exactly");
         assert_eq!(vertex.normal, [0.0, 0.0, 1.0]);
-        assert_eq!(vertex.color, [255, 255, 255, 200]);
+        assert_eq!(vertex.color, [128, 200, 255]);
+        let id = mesh.streams.vertex(index).unwrap().flags.material_id().get();
+        assert_eq!(id, if index == 1 || index == 2 { 3 } else { 2 });
     }
     assert_eq!(mesh.streams.vertex(4), None);
     assert_eq!(Bounds::enclosing([]), Bounds::default());
@@ -152,7 +156,7 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 3 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 4 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;
@@ -187,6 +191,14 @@ fn rejects_meshes_the_gpu_cannot_use() {
             p[1] = QuantizedPosition::from_bytes([0, 0, 0, 0, 0, 0, 1, 0]);
         },
         |e| matches!(e, MeshError::ReservedNotZero { vertex: 1 }),
+    );
+    check(
+        |m| {
+            let bytes = m.streams.surface[2].to_bytes();
+            m.streams.surface[2] =
+                VertexSurface::from_bytes([bytes[0], bytes[1], bytes[2], bytes[3], 0, 0, 0, 0x0b]);
+        },
+        |e| matches!(e, MeshError::ReservedFlags { vertex: 2, bits: 0x0b }),
     );
     check(
         |m| {

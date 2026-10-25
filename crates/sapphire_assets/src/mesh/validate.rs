@@ -5,6 +5,7 @@ use sapphire_serialize::cooked::CookedError;
 
 use super::{
     ArchivedMesh, ArchivedPositions, ArchivedSkin, ArchivedSlotMaterial, ArchivedVertexStreams, Bounds,
+    VertexFlags, VertexSurface,
 };
 use crate::material::MaterialError;
 
@@ -28,6 +29,8 @@ pub enum MeshError {
     OutsideBounds { vertex: usize },
     #[error("vertex {vertex} sets the reserved position component")]
     ReservedNotZero { vertex: usize },
+    #[error("vertex {vertex} sets reserved flag bits ({bits:#04x})")]
+    ReservedFlags { vertex: usize, bits: u8 },
     #[error("index count {0} is not a multiple of 3")]
     NotTriangles(usize),
     #[error("index {index} at position {position} is out of range for {vertex_count} vertices")]
@@ -202,6 +205,12 @@ impl ArchivedVertexStreams {
         }
         if !self.uv_bounds.to_native().is_valid() {
             return Err(MeshError::InvalidUvBounds);
+        }
+        // Reserved bits get meanings later (faces, eyes); a mesh cooked before then must not
+        // turn them on by accident.
+        let reserved = |surface: &VertexSurface| surface.flags_bits() & VertexFlags::RESERVED_MASK;
+        if let Some(vertex) = self.surface.iter().position(|surface| reserved(surface) != 0) {
+            return Err(MeshError::ReservedFlags { vertex, bits: self.surface[vertex].flags_bits() });
         }
         match &self.positions {
             ArchivedPositions::Quantized(values) => {

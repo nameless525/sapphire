@@ -1,6 +1,6 @@
-//! The anime character family: cel-shaded characters with authored light response (spec
-//! §5.12, M1 plan pillar 2). The anime character shader reads its block; C1 grows that shader
-//! into the full uber-shader over the same data.
+//! The anime character family: characters with authored light response (spec §5.12, M1 plan
+//! pillar 2). The anime character shader (M1 C1's uber-shader) reads its block: ramp and band
+//! diffuse, the control map's regions and bias, and the static permutations of its flags.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -41,14 +41,14 @@ use crate::texture::Swizzle;
 ///
 /// Everything left out takes its default, so new fields join without a schema version.
 ///
-/// - **Light split:** N·L, shifted by the control map's shadow bias, is thresholded into a lit
+/// - **Light split:** N·L, offset by the control map's shadow bias, is thresholded into a lit
 ///   and a shadow side. The shadow side takes an authored color, never a darkened albedo.
 /// - **Diffuse:** [`DiffuseMode::Bands`] (ZZZ: two or three analytic bands with per-region
 ///   colors, no ramp, cheapest on mobile) or [`DiffuseMode::Ramp`] (Genshin, Star Rail, WuWa: a
 ///   ramp texture row per region, a day and a night row, mixed with a subsurface tint).
 /// - **Regions:** up to [`AnimeCharacterParams::MAX_REGIONS`] sets of per-region parameters,
-///   picked per pixel by the control map's alpha (its material ID). Region 0 also covers
-///   materials without a control map.
+///   picked per pixel by the control map's alpha (its material ID), or without a control map
+///   by the vertex's material ID (`sapphire_assets::mesh::VertexFlags`).
 /// - **Surface:** body, face, hair or eye. Faces, hair and eyes are static permutation bits of
 ///   the anime character shader, each with settings of its own.
 ///
@@ -60,7 +60,7 @@ use crate::texture::Swizzle;
 #[serde(default)]
 pub struct AnimeCharacterMaterial {
     pub surface: CharacterSurface,
-    /// Lit albedo, linear RGBA. Multiplies `base_color_map` and the vertex tint.
+    /// Lit albedo, linear RGBA. Multiplies `base_color_map`.
     pub base_color: [f32; 4],
     /// RGB albedo with painted gradients and AO; A is coverage for `alpha`.
     pub base_color_map: Option<AssetId>,
@@ -77,7 +77,8 @@ pub struct AnimeCharacterMaterial {
     pub regions: Vec<CharacterRegion>,
     pub rim: Rim,
     pub specular: Specular,
-    /// A spheremap for metals and gloss, gated by the control map's B channel.
+    /// A spheremap for metals and gloss. Which control map channel gates it is C7's to settle:
+    /// A7's layout has no channel of its own for it (R is the specular mask, B its threshold).
     pub matcap: Option<Matcap>,
     pub outline: Outline,
 }
@@ -203,7 +204,8 @@ pub struct EyeShading {
 pub struct LightSplit {
     /// N·L at the split, before the control map's bias moves it.
     pub threshold: f32,
-    /// Half-width of the transition beyond the one-pixel edge every split gets.
+    /// Half-width of the transition, in N·L, where it is wider than the one-pixel edge every
+    /// split gets.
     pub softness: f32,
 }
 
@@ -274,7 +276,8 @@ pub struct CharacterRegion {
     pub night_ramp_row: Option<u16>,
     /// Ramp mode: the tint the row mixes with (WuWa skin: a warm peach).
     pub subsurface_color: [f32; 3],
-    /// Specular color × intensity, gated by the control map's G; black turns it off.
+    /// Specular color × intensity, gated by the control map's specular mask (R); black turns it
+    /// off.
     pub specular_color: [f32; 3],
     /// Highlight size: the Blinn exponent, or the GGX roughness.
     pub specular_size: f32,
@@ -377,9 +380,10 @@ impl Matcap {
 #[serde(default)]
 pub struct Outline {
     /// Pixels at a 1080-pixel-high target, scaled with resolution and independent of the field
-    /// of view; vertex alpha and the distance curve also apply. 0 turns it off.
+    /// of view; the vertex color's G and the distance curve also apply. 0 turns it off.
     pub width: f32,
-    /// Pushes the hull away from the camera, in meters, so it doesn't poke through the surface.
+    /// Pushes the hull away from the camera along the view ray, in meters, times the vertex
+    /// color's B, so it doesn't poke through nearby surfaces.
     pub z_offset: f32,
 }
 

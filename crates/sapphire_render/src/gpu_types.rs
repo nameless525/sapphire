@@ -39,6 +39,7 @@ impl FrameUniforms {
             sky_zenith: frame.sky.zenith.extend(1.0).to_array(),
             sky_horizon: frame.sky.horizon.extend(1.0).to_array(),
             sky_ground: frame.sky.ground.extend(1.0).to_array(),
+            // NaN clamps to 0, so a bad packet draws day rather than spreading NaN.
             time: [frame.time_seconds, 0.0, 0.0, 0.0],
             lights: lights.lights,
             clusters: lights.clusters,

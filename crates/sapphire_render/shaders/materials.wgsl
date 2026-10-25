@@ -6,8 +6,9 @@
 //
 // Every block has `modes` (x: bit `i` set when texture slot `i` binds a texture, then the
 // family's flags) and `swizzles` (each slot's swizzle code, two to a word). A family's textures
-// are group 3: slot `i` at binding `i`, the trilinear repeating sampler at 8 and the clamped
-// ramp sampler at 9 (`pipelines::material_binding`).
+// are group 3: slot `i` at binding `i`, the trilinear repeating sampler at 8, the clamped ramp
+// sampler at 9 and the nearest level-0 sampler for material IDs at 10
+// (`pipelines::material_binding`).
 
 // --- Anime character (`AnimeCharacterParams`): the anime character shader and its outlines.
 
@@ -16,7 +17,7 @@ struct AnimeCharacterRegion {
     shade: vec4<f32>,
     // rgb: deep shade (three bands); a: night ramp row.
     deep_shade: vec4<f32>,
-    // rgb: the subsurface tint ramp rows mix with.
+    // rgb: the subsurface tint ramp rows mix with (ramp mode).
     subsurface: vec4<f32>,
     // rgb: specular color × intensity; a: size.
     specular: vec4<f32>,
@@ -44,9 +45,9 @@ struct AnimeCharacterParams {
     // style << 8.
     modes: vec4<u32>,
     swizzles: vec4<u32>,
-    // Picked per pixel by the control map's alpha (C1); region 0 without one. Regions from
-    // `modes.y` on are zero, so the region read from the map is clamped below `modes.y`, and read
-    // with `textureLoad` (or nearest filtering) so IDs never blend across region borders.
+    // Picked per pixel by the control map's alpha, read unfiltered so IDs never blend across
+    // region borders, or by the vertex's material ID without a control map. Regions from
+    // `modes.y` on are zero, so the shaders clamp the ID below `modes.y`.
     regions: array<AnimeCharacterRegion, 8>,
 }
 

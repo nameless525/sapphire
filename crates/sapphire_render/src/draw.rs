@@ -6,7 +6,8 @@
 //! mesh's sources. Each pass binds only the streams it reads ([`MeshPass`]). Streams are rebound
 //! only when the next draw's mesh (or deformed instance) differs, so a mesh's submeshes share
 //! one binding. Passes that shade bind each draw's material (group 3) the same way: only when
-//! it changes.
+//! it changes. Draws come in groups of one surface variant (the draw list's), each drawn
+//! through its own pipeline; the outline pass draws only the draws that have a hull.
 
 use std::ops::Range;
 
@@ -17,7 +18,7 @@ use crate::buffer::GrowableBuffer;
 use crate::gpu_types::DrawData;
 use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
-use crate::pipelines::{MeshPass, format_index, slot};
+use crate::pipelines::{MeshPass, SurfaceVariant, format_index, slot};
 use crate::scene::DrawList;
 use crate::skinning::SkinnedOutputs;
 
@@ -37,29 +38,54 @@ pub(crate) struct MeshDraws<'a> {
     pub materials: &'a [MaterialRecord],
 }
 
+/// Which of a variant's draws a pass draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DrawSet {
+    /// Every surface.
+    Surfaces,
+    /// Only those with an outline hull.
+    Outlines,
+}
+
+impl DrawSet {
+    fn includes(self, outline: bool) -> bool {
+        self == Self::Surfaces || outline
+    }
+}
+
 impl MeshDraws<'_> {
-    /// Whether there are static meshes in `format` to draw.
-    pub(crate) fn has_static(&self, format: PositionFormat) -> bool {
-        !self.list.commands[format_index(format)].is_empty()
+    /// Whether there are static meshes in `format` of `variant` to draw.
+    pub(crate) fn has_static(&self, format: PositionFormat, variant: SurfaceVariant) -> bool {
+        !self.list.commands[format_index(format)][variant.index()].is_empty()
     }
 
-    /// Whether there are skinned or morphed instances to draw.
-    pub(crate) fn has_deformed(&self) -> bool {
-        !self.list.deformed.is_empty()
+    /// Whether there are skinned or morphed instances of `variant` to draw.
+    pub(crate) fn has_deformed(&self, variant: SurfaceVariant) -> bool {
+        !self.list.deformed[variant.index()].is_empty()
     }
 
-    /// Draws every static mesh in `format` with the streams `kind` reads, through the pipeline
-    /// already set. The index buffer must be bound.
+    /// Whether there are skinned or morphed instances of any variant to draw.
+    pub(crate) fn has_any_deformed(&self) -> bool {
+        SurfaceVariant::ALL.into_iter().any(|variant| self.has_deformed(variant))
+    }
+
+    /// Draws `set` of the static meshes in `format` of `variant` with the streams `kind` reads,
+    /// through the pipeline already set. The index buffer must be bound.
     pub(crate) fn draw_static(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kind: MeshPass,
         format: PositionFormat,
+        variant: SurfaceVariant,
+        set: DrawSet,
     ) {
         let slab = self.meshes.slab(format);
         let mut bound_first_vertex = None;
         let mut bound_material = None;
-        for command in &self.list.commands[format_index(format)] {
+        for command in &self.list.commands[format_index(format)][variant.index()] {
+            if !set.includes(command.outline) {
+                continue;
+            }
             self.bind_material(pass, kind, command.material, &mut bound_material);
             if bound_first_vertex != Some(command.first_vertex) {
                 let vertex = u64::from(command.first_vertex);
@@ -81,13 +107,22 @@ impl MeshDraws<'_> {
         }
     }
 
-    /// Draws every skinned or morphed instance with the streams `kind` reads, through the f32
-    /// pipeline already set. The index buffer must be bound.
-    pub(crate) fn draw_deformed(&self, pass: &mut wgpu::RenderPass<'_>, kind: MeshPass) {
+    /// Draws `set` of the skinned or morphed instances of `variant` with the streams `kind`
+    /// reads, through the f32 pipeline already set. The index buffer must be bound.
+    pub(crate) fn draw_deformed(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        variant: SurfaceVariant,
+        set: DrawSet,
+    ) {
         let outputs_buffer = self.skinned.buffer();
         let mut bound_slot = None;
         let mut bound_material = None;
-        for command in &self.list.deformed {
+        for command in &self.list.deformed[variant.index()] {
+            if !set.includes(command.outline) {
+                continue;
+            }
             if bound_slot != Some(command.slot) {
                 // An instance whose outputs didn't fit (`SkinningStats::unplaced`) doesn't draw.
                 let Some(outputs) = self.skinned.get(command.slot) else { continue };

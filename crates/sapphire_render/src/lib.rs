@@ -22,7 +22,9 @@
 //!   their cooked swizzles.
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
-//! - The scene pipelines: two-tone anime character opaque, inverted-hull outline, sky gradient.
+//! - The scene pipelines: the anime character uber-shader and its inverted-hull outline, in
+//!   one pipeline per static permutation (see "The anime character shader" below), and the sky
+//!   gradient.
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
 //!   view and capped, then listed for the anime character shader by clustered forward+ (a
 //!   16 × 9 × 24 grid binned by a compute pass, desktop) or per-object lists (at most 4 per
@@ -108,7 +110,7 @@
 //! | 0 | draw record: instance, material, the mesh's dequantization | 48, per instance | every mesh pass |
 //! | 1 | positions: unorm16 across the bounds, or f32 | 8 or 12 | every mesh pass, and alone by shadow passes and the character prepass |
 //! | 2 | shading: octahedral normal and outline normal | 8 | surface shading, outline, scene prepass |
-//! | 3 | surface: unorm16 UV, RGBA8 color | 8 | surface shading, outline (width scale) |
+//! | 3 | surface: unorm16 UV, vertex color (AO, outline width, outline Z offset) and flags as unorm8 × 4 | 8 | surface shading, outline (width and Z offset) |
 //! | 4 | previous positions: where the vertex was when last drawn, in slot 1's format | 8 or 12 | scene prepass (velocity) |
 //!
 //! The dequantization travels in the draw record rather than a mesh table, so decoding costs
@@ -210,15 +212,41 @@
 //! (sources, frame data, outputs). That leaves one spare in the fragment stage, two in the vertex
 //! stage and one in the skinning pass. Group 3 is the last of the 4 bind groups the floor allows;
 //! the prepasses, which read no material textures, leave it out. The anime character family
-//! binds 7 of the 16 sampled textures and 2 of the 16 samplers a fragment stage gets, leaving 9
-//! textures for frame-wide ones (shadow cascades, probes, the sky cubemap); the other families
-//! bind 1 to 5. Local lights take only two fragment bindings because both light paths share one
+//! binds 7 of the 16 sampled textures and 3 of the 16 samplers a fragment stage gets (trilinear,
+//! ramp, and nearest for material IDs), leaving 9 textures for frame-wide ones (shadow cascades,
+//! probes, the sky cubemap); the other families bind 1 to 5. Local lights take only two fragment bindings because both light paths share one
 //! list buffer layout, a count and then 16-bit light indices, read by cluster index or by
 //! instance slot (passed from the vertex stage as a flat varying). Compute skinning writes
 //! vertex buffers and adds nothing to the vertex stage, and packs a mesh's streams, skin and
 //! morphs into one buffer, and a frame's jobs, palettes and weights into another, to stay within
 //! its four. Draw records are vertex data rather than a third vertex-stage storage buffer for the
 //! same reason.
+//!
+//! # The anime character shader (M1 C1)
+//!
+//! `shaders/anime_character.wgsl` is one uber-shader for every anime character material (spec
+//! §5.12): N·L, pushed toward shadow by vertex AO and the cast shadow and offset by the control
+//! map's shadow bias, split at the material's threshold, with an authored shadow color from one
+//! of two diffuse modes, ramp rows or two to three analytic bands, both per region. The control
+//! map's material ID picks the region (read unfiltered from level 0), or the vertex's own
+//! without a control map. The file's header has the details.
+//!
+//! - **Static permutations** are at most eight bits (`pipelines::Permutation`): of
+//!   them, alpha test and transparency are shader variants today, through pipeline-overridable
+//!   constants, and each variant's pipelines are built when a mesh or a material edit first
+//!   needs them. Everything
+//!   else (ramp or bands, a deep band, which maps are bound) is a branch on the block that every
+//!   pixel of a draw takes alike.
+//! - **Draw order** within the main pass: opaque surfaces, alpha-tested ones, their outlines
+//!   (only for materials with one), the sky, then transparent surfaces blended over it. Draws
+//!   are grouped by permutation; transparent ones keep the draw list's order.
+//! - **The frame** gives the day/night factor ramp mode blends day and night rows by
+//!   ([`FramePacket::day_night`], from time of day).
+//! - **The vertex contract** is `sapphire_assets::mesh`'s: vertex color R ambient occlusion, G
+//!   outline-width scale, B outline Z-offset scale, and a flags byte whose low bits are the
+//!   vertex's material ID.
+//! - **Cast shadows** enter through one function, `cast_shadow`, which R4's cascades fill; it
+//!   returns 1 (lit) until then.
 //!
 //! # Material buffers
 //!
@@ -265,12 +293,18 @@
 //!   quality tiers' render scale and dynamic resolution then drive their input size.
 //! - **Material families' shaders:** sky (W2), fog cards (W3), environment (W4) and foliage
 //!   (W6) bring pipelines that bind their family's buffer (in a scene group of their own) and
-//!   group 3. The anime character shader grows ramp and three-band diffuse, per-region reads of
-//!   the control map (its alpha read without filtering, clamped to the region count), faces,
-//!   hair and eyes (C1–C7). Alpha-tested and transparent materials draw opaque until C1's
-//!   permutations. Outlines v2 (C4) adds the outline Z offset already in the block, skips the
-//!   hull for materials without `MaterialFlags::OUTLINE`, and makes group 3 visible to the
-//!   vertex stage if a width texture needs it.
+//!   group 3.
+//! - **The anime character shader** (see above) grows faces (C3), the character light rig and
+//!   stylized GI (C2), hair and eyes (C5, C6) with their permutation bits, and specular,
+//!   matcaps and stockings (C7) over the control map channels it already reads. Shadows (R4)
+//!   fill `cast_shadow`. Outlines v2 (C4) take each pixel's region from the control map as the
+//!   surface does (today the vertex's), add the authored width curve and view-space flattening,
+//!   and make group 3 visible to the vertex stage if a width texture needs it. Cooked
+//!   MikkTSpace tangents, with C4's tangent-space outline normals, replace the normal map's
+//!   screen-derivative frame.
+//! - **Permutations' remaining passes:** the prepasses cut alpha-tested materials out (a variant
+//!   binding group 3) once something reads them; transparent surfaces sort back to front with
+//!   draw sorting; alpha-to-coverage for alpha-tested surfaces under MSAA.
 //! - **Textures replaced at runtime** (hot reload, A8) rebind the materials that use them;
 //!   anisotropic filtering joins the quality tiers.
 

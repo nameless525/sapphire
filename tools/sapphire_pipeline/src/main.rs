@@ -21,7 +21,8 @@ Sapphire asset pipeline: generate, import, bake and cook source assets.
 
 Usage:
   sapphire_pipeline gen-samples --out <DIR>
-      Write the procedural sample source assets (mannequin.glb) into DIR, created if missing.
+      Write the procedural sample source assets (mannequin.glb, the swatch maps and materials)
+      into DIR, created if missing.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
       Cook one .gltf/.glb/.vrm file into a .smesh file (default cook: desktop), with the
       settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.

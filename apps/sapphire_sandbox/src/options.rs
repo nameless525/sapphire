@@ -44,6 +44,8 @@ pub(crate) struct Options {
     pub time_of_day: Option<f32>,
     /// `--day-length <seconds>`: run the day, one every this many seconds of world time.
     pub day_length: Option<f32>,
+    /// `--swatches`: place the anime character shader swatches beside the character.
+    pub swatches: bool,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -149,6 +151,7 @@ impl Options {
                     }
                     options.day_length = Some(seconds);
                 }
+                "--swatches" => options.swatches = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,

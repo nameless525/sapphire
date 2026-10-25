@@ -1,9 +1,14 @@
 //! Procedurally generated source assets for bringing up the renderer.
 //!
-//! They are written as ordinary glTF, so they travel the same import → bake → cook path
-//! as artist content.
+//! They are written as ordinary sources (glTF, anime map documents and their PNG masks), so
+//! they travel the same import → bake → cook path as artist content:
+//!
+//! - the mannequin, `mannequin.glb`;
+//! - the shader swatches' content ([`swatch`]): a ramp, a control map and three materials
+//!   for the sandbox's `--swatches` spheres (M1 C1).
 
 mod shapes;
+pub mod swatch;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,16 +21,30 @@ use crate::gltf_writer::GltfWriter;
 /// File name of the mannequin sample.
 pub const MANNEQUIN_FILE_NAME: &str = "mannequin.glb";
 
-/// `COLOR_0` alpha on the head: the outline-width scale (255 = 1.0). Faces read better
+/// `COLOR_0` green on the head: the outline-width scale (255 = 1.0). Faces read better
 /// with a finer line than clothing does.
-pub const HEAD_OUTLINE_ALPHA: u8 = 140;
+pub const HEAD_OUTLINE_WIDTH: u8 = 140;
 
 /// Writes every sample source asset into `dir` (creating it) and returns their paths.
 pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(MANNEQUIN_FILE_NAME);
-    std::fs::write(&path, mannequin_glb())?;
-    Ok(vec![path])
+    let files = [
+        (MANNEQUIN_FILE_NAME, mannequin_glb()),
+        (swatch::RAMP_FILE_NAME, swatch::ramp_document().into_bytes()),
+        (swatch::ILM_FILE_NAME, swatch::ilm_document().into_bytes()),
+        (swatch::MATERIAL_ID_FILE_NAME, swatch::material_id_png()?),
+        (swatch::SHADOW_BIAS_FILE_NAME, swatch::shadow_bias_png()?),
+        (swatch::RAMP_MATERIAL_FILE_NAME, swatch::ramp_material_document().into_bytes()),
+        (swatch::SUBSURFACE_MATERIAL_FILE_NAME, swatch::subsurface_material_document().into_bytes()),
+        (swatch::BAND_MATERIAL_FILE_NAME, swatch::band_material_document().into_bytes()),
+    ];
+    let mut paths = Vec::with_capacity(files.len());
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes)?;
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// A character material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
@@ -112,7 +131,7 @@ const HAT_HEIGHT: f32 = 0.3;
 ///
 /// A stylized figure that exercises the anime character renderer and the importer:
 ///
-/// - A sphere head (skin, thinner outline via `COLOR_0` alpha) under a hair cap.
+/// - A sphere head (skin, thinner outline via `COLOR_0` green) under a hair cap.
 /// - Capsule torso (flattened by a non-uniform node scale) and legs in the outfit color.
 /// - Capsule arms in skin, the left one a mirror (negative scale) of the right.
 /// - A hard-edged cone hat in the accent color and a hard-edged box pedestal.
@@ -123,7 +142,8 @@ pub fn mannequin_glb() -> Vec<u8> {
     let [skin, outfit, hair, accent, pedestal] = LOOKS.map(|look| gltf.add_material(look.material()));
 
     let mut head_geometry = shapes::sphere(HEAD_RADIUS, 32, 24);
-    head_geometry.colors = vec![[255, 255, 255, HEAD_OUTLINE_ALPHA]; head_geometry.positions.len()];
+    // Unoccluded, the thinner outline, the material's Z offset; glTF requires an alpha.
+    head_geometry.colors = vec![[255, HEAD_OUTLINE_WIDTH, 255, 255]; head_geometry.positions.len()];
 
     let pedestal_mesh =
         gltf.add_mesh("Pedestal", &[(&shapes::cuboid(PEDESTAL_HALF_EXTENTS), Some(pedestal))]);
@@ -246,12 +266,14 @@ mod tests {
 
         // Only the head carries a thinner outline, and all of it does.
         let head_center = Vec3::new(0.0, PEDESTAL_TOP + HEAD_HEIGHT, 0.0);
-        let thin: Vec<_> = mesh.vertices.iter().filter(|v| v.color[3] == HEAD_OUTLINE_ALPHA).collect();
+        let thin: Vec<_> = mesh.vertices.iter().filter(|v| v.color[1] == HEAD_OUTLINE_WIDTH).collect();
         assert_eq!(thin.len(), shapes::sphere(HEAD_RADIUS, 32, 24).positions.len());
         for v in &thin {
             assert!((Vec3::from(v.position).distance(head_center) - HEAD_RADIUS).abs() < 1e-4);
         }
-        assert!(mesh.vertices.iter().all(|v| v.color[3] == HEAD_OUTLINE_ALPHA || v.color[3] == 255));
+        assert!(
+            mesh.vertices.iter().all(|v| v.color == [255, HEAD_OUTLINE_WIDTH, 255] || v.color == [255; 3])
+        );
 
         let Bounds { min, max } = Bounds::enclosing(mesh.vertices.iter().map(|v| v.position));
         assert_eq!(min[1], 0.0, "pedestal rests on the ground");
@@ -294,8 +316,19 @@ mod tests {
     #[test]
     fn writes_samples_to_disk() {
         let dir = crate::test_util::TempDir::new("samples");
-        let written = write_all(&dir.path().join("nested")).unwrap();
-        assert_eq!(written, [dir.path().join("nested").join(MANNEQUIN_FILE_NAME)]);
+        let nested = dir.path().join("nested");
+        let written = write_all(&nested).unwrap();
+        let names = [
+            MANNEQUIN_FILE_NAME,
+            swatch::RAMP_FILE_NAME,
+            swatch::ILM_FILE_NAME,
+            swatch::MATERIAL_ID_FILE_NAME,
+            swatch::SHADOW_BIAS_FILE_NAME,
+            swatch::RAMP_MATERIAL_FILE_NAME,
+            swatch::SUBSURFACE_MATERIAL_FILE_NAME,
+            swatch::BAND_MATERIAL_FILE_NAME,
+        ];
+        assert_eq!(written, names.map(|name| nested.join(name)));
         assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }
 }

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use super::*;
 use crate::material::{AnimeCharacterMaterial, Material};
-use crate::mesh::{MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, Vertex};
+use crate::mesh::{
+    MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 use crate::pack::{Codec, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 
@@ -41,7 +43,8 @@ fn mesh_bytes(material: AssetId) -> Vec<u8> {
         normal: [0.0, 0.0, 1.0],
         outline_normal: [0.0, 0.0, 1.0],
         uv: [x, y],
-        color: [255; 4],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
     };
     let slot = MaterialSlot { name: "skin".into(), material: SlotMaterial::Asset(material) };
     let submeshes = vec![Submesh { first_index: 0, index_count: 3, material: 0 }];

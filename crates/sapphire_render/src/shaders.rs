@@ -400,6 +400,83 @@ mod tests {
             .collect();
         expected.insert(material_binding::SAMPLER, "material_sampler".into());
         expected.insert(material_binding::RAMP_SAMPLER, "ramp_sampler".into());
+        expected.insert(material_binding::ID_SAMPLER, "material_id_sampler".into());
         assert_eq!(bindings, expected);
+    }
+
+    /// The value of the WGSL `const` called `name`, an `f32` (const-evaluated by naga).
+    fn wgsl_f32(module: &naga::Module, name: &str) -> f32 {
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no WGSL const {name}"));
+        match module.global_expressions[constant.init] {
+            naga::Expression::Literal(naga::Literal::F32(value)) => value,
+            ref other => panic!("{name} is {other:?}, not an f32 literal"),
+        }
+    }
+
+    /// The anime character contract's numbers, as the shaders and `sapphire_assets` both state
+    /// them: the vertex flags, the control map's encodings and the ramp rows.
+    #[test]
+    fn wgsl_character_contract_matches_rust() {
+        use sapphire_assets::character_maps::{MATERIAL_IDS, ilm, ramp};
+        use sapphire_assets::mesh::VertexFlags;
+        let character = validate("anime_character", ANIME_CHARACTER);
+        let outline = validate("outline", OUTLINE);
+        for module in [&character, &outline] {
+            assert_eq!(wgsl_u32(module, "VERTEX_MATERIAL_ID_MASK"), u32::from(VertexFlags::MATERIAL_ID_MASK));
+        }
+        assert_eq!(wgsl_f32(&character, "SHADOW_BIAS_NEUTRAL"), ilm::NEUTRAL[ilm::SHADOW_BIAS]);
+        assert_eq!(wgsl_f32(&character, "SHADOW_BIAS_LIT"), ilm::SHADOW_BIAS_LIT);
+        assert_eq!(wgsl_f32(&character, "SHADOW_BIAS_SHADOWED"), ilm::SHADOW_BIAS_SHADOWED);
+        assert_eq!(wgsl_f32(&character, "RAMP_ROWS"), ramp::ROWS as f32);
+        assert_eq!(wgsl_f32(&character, "MATERIAL_ID_LEVELS"), f32::from(MATERIAL_IDS));
+    }
+
+    /// Every static permutation of every mesh pass specializes and validates: what each variant's
+    /// pipeline compiles (the GPU tests build them on the device too).
+    #[test]
+    fn every_permutation_specializes_and_validates() {
+        use crate::pipelines::{SurfaceVariant, override_constant};
+        let passes = [
+            ("anime_character", ANIME_CHARACTER, SurfaceVariant::ALL.as_slice()),
+            ("outline", OUTLINE, SurfaceVariant::DEPTH_WRITING.as_slice()),
+        ];
+        for (name, source, variants) in passes {
+            let module = validate(name, source);
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .expect("validated above");
+            // Every permutation constant the module declares, by name.
+            let overrides: Vec<&str> =
+                module.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
+            for &variant in variants {
+                let constants: naga::back::PipelineConstants =
+                    variant.constants().iter().map(|&(key, value)| (key.to_owned(), value)).collect();
+                for key in constants.keys() {
+                    assert!(overrides.contains(&key.as_str()), "{name}.wgsl has no override {key}");
+                }
+                for entry_point in &module.entry_points {
+                    let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                    naga::back::pipeline_constants::process_overrides(&module, &info, stage, &constants)
+                        .unwrap_or_else(|error| {
+                            panic!("{name}.wgsl {variant:?} {}: {error}", entry_point.name)
+                        });
+                }
+            }
+            assert!(overrides.contains(&override_constant::ALPHA_TEST), "{name}.wgsl");
+        }
+        let character = validate("anime_character", ANIME_CHARACTER);
+        assert!(
+            character
+                .overrides
+                .iter()
+                .any(|(_, o)| o.name.as_deref() == Some(override_constant::TRANSPARENT))
+        );
     }
 }

@@ -1,0 +1,16 @@
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Constant(0.0),
+        shadow_bias: Image(
+            path: "swatch_bias.png",
+            channel: R,
+        ),
+        specular_threshold: Constant(0.5),
+        material_id: Image(
+            path: "swatch_ids.png",
+            channel: R,
+        ),
+    ),
+)

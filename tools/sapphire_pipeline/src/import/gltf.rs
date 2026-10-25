@@ -18,7 +18,19 @@
 //!   Everything else keeps its default. In Blender these are custom properties on the
 //!   material, exported with "Include → Custom Properties". A mesh's sidecar can bind slots to
 //!   material documents instead (see [`sapphire_assets::material`]).
-//! - `COLOR_0` RGB becomes the sRGB vertex tint and its alpha the outline-width scale.
+//! - `COLOR_0` RGB becomes the anime character vertex color, linear data as glTF defines it
+//!   (`sapphire_assets::mesh`, "Vertex color and flags"): R ambient occlusion, G outline-width
+//!   scale, B outline Z-offset scale. Its alpha is ignored. Without `COLOR_0` every channel
+//!   is 1. Blender converts its byte color attributes from sRGB to linear on export, so data
+//!   painted there belongs in a float color attribute.
+//! - A `_MATERIAL_ID` attribute (SCALAR: float holding whole numbers, or unsigned byte or
+//!   short, not normalized) gives each vertex a material ID from 0 to 7, the region its
+//!   material shades it with when the material has no control map ([`VertexFlags`]). The
+//!   renderer passes it on flat, from one vertex of each triangle, so a triangle's three
+//!   vertices must share it ([`GltfImportError::MixedMaterialIds`]): vertices on a border
+//!   between IDs are split, one per side. In Blender that is an integer attribute named
+//!   `_MATERIAL_ID` on the face-corner domain (so the exporter splits them), exported with
+//!   "Include → Attributes". Without one every vertex has ID 0.
 //! - Missing normals are replaced by flat face normals.
 //! - An `_OUTLINE_NORMAL` attribute (VEC3: float, or normalized byte or short) is an authored
 //!   outline normal, in the same space as `NORMAL`. It wins over the welded bake
@@ -72,13 +84,16 @@ use ::gltf::buffer::Source;
 use ::gltf::mesh::{Mode, Semantic};
 use ::gltf::{Accessor, Document, Gltf, Material, Mesh, Node, Primitive, Scene};
 use glam::{Mat3, Mat4, Vec3};
+use sapphire_assets::character_maps::{MATERIAL_IDS, MaterialId};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial};
-use sapphire_assets::mesh::{Joint, JointTransform, Lod, SkinBind, Submesh, Vertex};
+use sapphire_assets::mesh::{
+    Joint, JointTransform, Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
 use crate::cache::Stage;
-use crate::color::{linear_to_srgb, unorm8};
+use crate::color::unorm8;
 use crate::mesh::{
     ImportedDelta, ImportedMaterial, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights,
 };
@@ -88,7 +103,7 @@ const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file.
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 4 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 5 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -147,6 +162,15 @@ pub enum GltfImportError {
     AttributeCount { at: PrimitiveRef, semantic: String, found: usize, expected: usize },
     #[error("{at}: {semantic} as {dimensions:?} of {data_type:?} is not supported")]
     UnsupportedAccessor { at: PrimitiveRef, semantic: String, data_type: DataType, dimensions: Dimensions },
+    #[error(
+        "{at}: vertex {vertex} has _MATERIAL_ID {value}; material IDs are whole numbers below {MATERIAL_IDS}"
+    )]
+    MaterialIdOutOfRange { at: PrimitiveRef, vertex: usize, value: f32 },
+    #[error(
+        "{at}: triangle {triangle} has _MATERIAL_ID {ids:?} at its corners; a triangle's vertices must \
+         share one ID (split vertices at region borders, as a face-corner attribute does)"
+    )]
+    MixedMaterialIds { at: PrimitiveRef, triangle: usize, ids: [u8; 3] },
     #[error("{at}: index count {count} is not a multiple of 3")]
     NotTriangles { at: PrimitiveRef, count: usize },
     #[error("{at}: index {index} is out of range for {vertex_count} vertices")]
@@ -606,7 +630,8 @@ struct PrimitiveData {
     /// As the file stores them, for morph targets' normal deltas.
     source_normals: Option<Vec<Vec3>>,
     uvs: Option<Vec<[f32; 2]>>,
-    colors: Option<Vec<[u8; 4]>>,
+    colors: Option<Vec<[u8; 3]>>,
+    material_ids: Option<Vec<MaterialId>>,
     /// Normalized.
     outline_normals: Option<Vec<Vec3>>,
 }
@@ -657,6 +682,7 @@ impl Builder<'_> {
             colors: read_attribute(&at, "COLOR_0", declared(Semantic::Colors(0)), vertex_count, || {
                 reader.read_colors(0).map(|iter| iter.into_rgba_f32().map(vertex_color).collect())
             })?,
+            material_ids: read_material_ids(&at, primitive, &get_buffer, vertex_count)?,
             outline_normals: read_outline_normals(&at, primitive, &get_buffer, vertex_count)?
                 .map(|normals| normals.into_iter().map(transform_normal).collect()),
             positions,
@@ -690,6 +716,14 @@ impl Builder<'_> {
             .iter()
             .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
             .collect();
+        if let Some(ids) = &data.material_ids {
+            let corner_ids = |triangle: &[u32; 3]| triangle.map(|i| ids[i as usize].get());
+            if let Some((triangle, corners)) =
+                triangles.iter().map(corner_ids).enumerate().find(|(_, [a, b, c])| a != b || b != c)
+            {
+                return Err(GltfImportError::MixedMaterialIds { at, triangle, ids: corners });
+            }
+        }
 
         // `sources[i]` is the primitive vertex that new vertex `i` comes from, and `normals[i]`
         // its shading normal.
@@ -720,7 +754,11 @@ impl Builder<'_> {
                 normal: normal.to_array(),
                 outline_normal: outline.to_array(),
                 uv: data.uvs.as_ref().map_or([0.0; 2], |uvs| uvs[s]),
-                color: data.colors.as_ref().map_or([u8::MAX; 4], |colors| colors[s]),
+                color: data.colors.as_ref().map_or(VERTEX_COLOR_NEUTRAL, |colors| colors[s]),
+                flags: data
+                    .material_ids
+                    .as_ref()
+                    .map_or(VertexFlags::NONE, |ids| VertexFlags::with_material_id(ids[s])),
             });
         }
         let authored = data.outline_normals.is_some();
@@ -871,6 +909,8 @@ impl Builder<'_> {
 /// The custom attribute holding authored outline normals, without glTF's leading underscore
 /// (`gltf` strips it).
 const OUTLINE_NORMAL: &str = "OUTLINE_NORMAL";
+/// The custom attribute holding per-vertex material IDs, likewise.
+const MATERIAL_ID: &str = "MATERIAL_ID";
 
 /// Reads an optional per-vertex attribute, distinguishing "absent" from "declared but
 /// unreadable" and checking its length against `POSITION`.
@@ -949,6 +989,47 @@ where
     read_attribute(at, semantic, true, vertex_count, || normals)
 }
 
+/// The primitive's `_MATERIAL_ID` attribute, if it has one.
+fn read_material_ids<'a, 's, F>(
+    at: &PrimitiveRef,
+    primitive: &Primitive<'a>,
+    get_buffer: &F,
+    vertex_count: usize,
+) -> Result<Option<Vec<MaterialId>>, GltfImportError>
+where
+    F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let Some(accessor) = primitive.get(&Semantic::Extras(MATERIAL_ID.to_owned())) else {
+        return Ok(None);
+    };
+    let semantic = "_MATERIAL_ID";
+    let allowed = [(DataType::F32, false), (DataType::U8, false), (DataType::U16, false)];
+    check_accessor(at, semantic, &accessor, Dimensions::Scalar, &allowed)?;
+    let values: Option<Vec<f32>> = match accessor.data_type() {
+        DataType::U8 => ::gltf::accessor::Iter::<u8>::new(accessor, get_buffer.clone())
+            .map(|iter| iter.map(f32::from).collect()),
+        DataType::U16 => ::gltf::accessor::Iter::<u16>::new(accessor, get_buffer.clone())
+            .map(|iter| iter.map(f32::from).collect()),
+        _ => ::gltf::accessor::Iter::<f32>::new(accessor, get_buffer.clone()).map(Iterator::collect),
+    };
+    let Some(values) = read_attribute(at, semantic, true, vertex_count, || values)? else {
+        return Ok(None);
+    };
+    values
+        .iter()
+        .enumerate()
+        .map(|(vertex, &value)| {
+            // Whole numbers only: an ID can't blend, and a fraction means the attribute holds
+            // something else.
+            let id = (value.fract() == 0.0 && (0.0..f32::from(MATERIAL_IDS)).contains(&value))
+                .then(|| MaterialId::new(value as u8))
+                .flatten();
+            id.ok_or(GltfImportError::MaterialIdOutOfRange { at: at.clone(), vertex, value })
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 /// Every vertex's influences from all `JOINTS_n`/`WEIGHTS_n` sets, as palette entries through
 /// `binds` (the skin's joints' entries), reduced to the four heaviest.
 fn read_weights<'a, 's, F>(
@@ -1003,10 +1084,9 @@ where
     Ok(influences.into_iter().map(|list| SkinWeights::strongest(list).unwrap_or(fallback)).collect())
 }
 
-/// glTF `COLOR_0` is linear; the cooked tint is sRGB. Alpha is the outline-width scale,
-/// which is a plain linear factor.
-fn vertex_color([r, g, b, a]: [f32; 4]) -> [u8; 4] {
-    [unorm8(linear_to_srgb(r)), unorm8(linear_to_srgb(g)), unorm8(linear_to_srgb(b)), unorm8(a)]
+/// glTF `COLOR_0` is linear, as the cooked vertex color's data channels are. Alpha is unused.
+fn vertex_color([r, g, b, _]: [f32; 4]) -> [u8; 3] {
+    [unorm8(r), unorm8(g), unorm8(b)]
 }
 
 /// Every material's slot name, by glTF material index: its own name unless another material

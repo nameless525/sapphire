@@ -31,7 +31,7 @@
 //! | `matcapTexture`, `matcapFactor` | `matcap` | The texture as a color texture; strength the factor's brightest channel |
 //! | `rimLightingMixFactor` | `matcap.shadow_strength` | `strength × (1 − mix)`: how much of the matcap the shadow side keeps. Sapphire's rim always leans to the lit side |
 //! | `outlineWidthMode`, `outlineWidthFactor` | `outline.width` (pixels at 1080p) | None → 0. Screen: `factor × 1080`, the factor being a fraction of the full screen height. World: the width in pixels from [`WORLD_OUTLINE_DISTANCE`] through a [`WORLD_OUTLINE_FOV_DEGREES`] field of view, since Sapphire's outlines are screen-constant (spec §5.12) |
-//! | `outlineWidthMultiplyTexture` (G) | vertex color alpha | Sampled at each vertex's UV and baked into the outline-width scale the mesh carries (the research note's mobile-friendly choice). Extracted as a mask too |
+//! | `outlineWidthMultiplyTexture` (G) | vertex color G, the outline-width scale | Sampled at each vertex's UV and baked into the outline-width scale the mesh carries (the research note's mobile-friendly choice). Extracted as a mask too |
 //! | `outlineColorFactor` | `regions[0].outline_color` | As it is |
 //! | `normalTexture` (glTF) | `normal_map` | As it is, as a normal map; its `scale` is dropped |
 //!
@@ -44,7 +44,8 @@
 //! - `uvAnimation*` and its mask: no UV animation. The mask is extracted.
 //! - `giEqualizationFactor`: GI stylization is the character light rig's (C2).
 //! - `outlineLightingMixFactor`: C4 lights outlines itself.
-//! - `transparentWithZWrite`, `renderQueueOffsetNumber`: no sort control; `Blend` always sorts.
+//! - `transparentWithZWrite`, `renderQueueOffsetNumber`: no sort control; `Blend` materials draw
+//!   in the transparent pass after the sky (C1), back to front once draws sort.
 //! - `doubleSided` (glTF): materials carry no cull mode; characters draw back-face culled.
 //! - `KHR_texture_transform` and `texCoord`: meshes carry one UV set and materials no UV
 //!   transform.

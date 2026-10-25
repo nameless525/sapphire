@@ -6,7 +6,9 @@ use std::alloc::System;
 use std::sync::Arc;
 
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
-use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, Vertex};
+use sapphire_assets::mesh::{
+    MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 use sapphire_assets::pack::{Codec, PackAsset, write_pack};
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_assets::{
@@ -56,7 +58,8 @@ fn mesh(n: u8) -> Vec<u8> {
         normal: [0.0, 0.0, 1.0],
         outline_normal: [0.0, 0.0, 1.0],
         uv: [x, y],
-        color: [255; 4],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
     };
     let slot = MaterialSlot { name: "body".into(), material: SlotMaterial::Asset(id(2, n)) };
     let submeshes = vec![Submesh { first_index: 0, index_count: 3, material: 0 }];

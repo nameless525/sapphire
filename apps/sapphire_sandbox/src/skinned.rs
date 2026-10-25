@@ -22,7 +22,7 @@ use std::f32::consts::{PI, TAU};
 use sapphire_assets::material::{AnimeCharacterMaterial, CharacterRegion, Material, Outline, Rim};
 use sapphire_assets::mesh::{
     Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, Vertex, VertexInfluence, quantize_weights,
+    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, quantize_weights,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_ecs::prelude::*;
@@ -175,7 +175,8 @@ pub(crate) fn stalk_mesh() -> Mesh {
                 normal,
                 outline_normal: normal,
                 uv: [segment as f32 / SEGMENTS as f32, y / HEIGHT],
-                color: [255; 4],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
             });
         }
     }

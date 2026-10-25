@@ -8,7 +8,7 @@ use sapphire_assets::material::{
 };
 use sapphire_assets::mesh::{
     Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, Vertex, VertexInfluence,
+    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
@@ -54,7 +54,8 @@ fn sphere_geometry(center: Vec3, radius: f32) -> (Vec<Vertex>, Vec<u32>) {
                 normal: n.to_array(),
                 outline_normal: n.to_array(),
                 uv: [segment as f32 / SEGMENTS as f32, ring as f32 / RINGS as f32],
-                color: [255; 4],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
             });
         }
     }
@@ -756,7 +757,8 @@ fn square(material: AnimeCharacterMaterial) -> Mesh {
         normal: [0.0, 0.0, 1.0],
         outline_normal: [0.0, 0.0, 1.0],
         uv: [0.0; 2],
-        color: [255; 4],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
     };
     let vertices = [vertex(-0.4, -0.4), vertex(0.4, -0.4), vertex(0.4, 0.4), vertex(-0.4, 0.4)];
     let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];

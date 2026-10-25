@@ -12,6 +12,9 @@
 //! - **The skinned stalk** (`--skinned`): a procedural skinned and morphed mesh beside the
 //!   character, with its own `EntityClock`, a [`Sway`](skinned::Sway) and a
 //!   [`RenderPose`](extract::RenderPose) (see [`crate::skinned`]).
+//! - **The shader swatches** (`--swatches`): three spheres in a column on the character's other
+//!   side, static, each with a [`RenderMesh`] and its placement ([`Scene::spawn_swatches`],
+//!   [`crate::swatches`]).
 //! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
@@ -44,6 +47,7 @@ use crate::extract::{self, RenderExtract, RenderLight, RenderMesh};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::skinned::{self, Sway};
+use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
 
 /// World slow motion while toggled, in per-mille (perfect-dodge style, spec §4.5).
@@ -66,7 +70,9 @@ pub(crate) struct Scene {
     character: Entity,
     /// The skinned stalk, with `--skinned`.
     stalk: Option<Entity>,
-    /// The character's object-space bounds, which demo lights are placed around.
+    /// The shader swatches, with `--swatches`.
+    swatches: Option<[Entity; SWATCHES]>,
+    /// The character's object-space bounds, which demo lights and swatches are placed around.
     bounds: [[f32; 3]; 2],
 }
 
@@ -104,7 +110,7 @@ impl Scene {
             );
         }
         ecs.startup();
-        Self { ecs, character, stalk, bounds }
+        Self { ecs, character, stalk, swatches: None, bounds }
     }
 
     /// [`Self::new`] with the character drawing `mesh`.
@@ -165,6 +171,27 @@ impl Scene {
         let clock = time_of_day.clock_mut();
         clock.set_hours(hours);
         clock.set_day_length(day_length);
+    }
+
+    /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
+    /// `meshes`, top to bottom. They never move, so they are extracted once.
+    pub fn spawn_swatches(&mut self, meshes: [MeshHandle; SWATCHES]) {
+        let bounds = self.bounds;
+        let world = self.ecs.world_mut();
+        let mut index = 0;
+        self.swatches = Some(meshes.map(|mesh| {
+            let place = extract::RenderTransform(swatches::placement(bounds, index));
+            index += 1;
+            world.spawn((RenderMesh(mesh), place)).id()
+        }));
+    }
+
+    /// Sets the meshes the swatches draw again: after GPU device loss.
+    pub fn set_swatch_meshes(&mut self, meshes: [MeshHandle; SWATCHES]) {
+        debug_assert!(self.swatches.is_some(), "no swatches were spawned");
+        for (entity, mesh) in self.swatches.into_iter().flatten().zip(meshes) {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
     }
 
     /// Applies input queued since the last fixed step. Call before the frame's steps.

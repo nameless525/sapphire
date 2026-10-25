@@ -15,8 +15,10 @@
 //!     [`mtoon`]; as generated materials they reference no textures (A3), so they draw with
 //!     their factors. `extract-materials` writes the textured ones out as documents with the
 //!     file's images ([`crate::extract`]).
-//!   - Vertex colors are ignored, as MToon ignores them: tints are white, and the outline-width
-//!     scale is the material's outline width texture sampled at each vertex (or 1).
+//!   - `COLOR_0` is ignored, as MToon ignores vertex colors: the vertex color's character data
+//!     (`sapphire_assets::mesh`) is neutral, unoccluded with the material's Z offset, but for
+//!     its outline-width scale (G), the material's outline width texture sampled at each
+//!     vertex (or 1).
 //! - **The rig** (`.srig`, a [sub-asset](crate::cook::SubAsset) with an ID derived from the
 //!   source's): humanoid bones, expressions as morph-target weights, look-at, spring bones and
 //!   constraints, by joint, morph target and material slot of that mesh
@@ -56,6 +58,7 @@ use std::collections::hash_map::Entry;
 use gltf::image::Source;
 use gltf::texture::WrappingMode;
 use gltf::{Document, Gltf};
+use sapphire_assets::mesh::VERTEX_COLOR_NEUTRAL;
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION};
 use sapphire_reflect::Versioned;
 use serde::de::DeserializeOwned;
@@ -80,6 +83,9 @@ pub const IMPORTER: Stage = Stage { name: "vrm", version: (1 << 16) | gltf_impor
 
 /// Packing a rig. Bump the version whenever it changes output for the same import.
 pub const RIG_COOKER: Stage = Stage { name: "srig", version: 1 };
+
+/// The vertex color channel holding the outline-width scale (`sapphire_assets::mesh`).
+const OUTLINE_WIDTH_CHANNEL: usize = 1;
 
 /// A VRM source's rig.
 pub const RIG: SubAsset = SubAsset {
@@ -454,11 +460,12 @@ impl VrmImport {
         self.images().decode(index)
     }
 
-    /// Sets every vertex color to white with the outline-width scale its material's outline
-    /// width texture gives it, sampled bilinearly at its UV with the texture's wrap modes.
+    /// Sets every vertex color to neutral data but for the outline-width scale (G) its
+    /// material's outline width texture gives it, sampled bilinearly at its UV with the
+    /// texture's wrap modes.
     fn bake_outline_widths(&mut self) -> Result<(), VrmImportError> {
         for vertex in &mut self.mesh.vertices {
-            vertex.color = [u8::MAX; 4];
+            vertex.color = VERTEX_COLOR_NEUTRAL;
         }
         let mut masks: HashMap<(usize, mtoon::Channel), Mask> = HashMap::new();
         let mut baked = vec![false; self.mesh.vertices.len()];
@@ -480,7 +487,7 @@ impl VrmImport {
                 let index = index as usize;
                 if !std::mem::replace(&mut baked[index], true) {
                     let vertex = &mut self.mesh.vertices[index];
-                    vertex.color[3] = unorm8(mask.sample(vertex.uv, wrap));
+                    vertex.color[OUTLINE_WIDTH_CHANNEL] = unorm8(mask.sample(vertex.uv, wrap));
                 }
             }
         }

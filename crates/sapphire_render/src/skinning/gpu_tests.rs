@@ -5,7 +5,8 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_assets::material::{AnimeCharacterMaterial, Material, Outline, Rim};
 use sapphire_assets::mesh::{
     Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, Vertex, VertexInfluence, VertexShading, quantize_weights,
+    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, VertexShading,
+    quantize_weights,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
@@ -81,7 +82,8 @@ fn random_mesh(rng: &mut Rng, vertices: usize, palette: usize, format: PositionF
                 normal: normal.to_array(),
                 outline_normal: (normal + 0.3 * rng.direction()).normalize().to_array(),
                 uv: [rng.next(), rng.next()],
-                color: [255; 4],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
             }
         })
         .collect();
@@ -284,7 +286,8 @@ fn prepass_depth_equals_the_main_pass_depth() {
                     normal: n.to_array(),
                     outline_normal: n.to_array(),
                     uv: [0.0; 2],
-                    color: [255; 4],
+                    color: VERTEX_COLOR_NEUTRAL,
+                    flags: VertexFlags::NONE,
                 });
             }
         }

@@ -1,4 +1,13 @@
 use super::*;
+use crate::material::{AnimeCharacterMaterial, Material, MaterialError};
+use crate::texture::Swizzle;
+
+/// The generated default material, as a slot.
+fn default_slot() -> MaterialSlot {
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let material = Material::from_document(&AnimeCharacterMaterial::default(), &swizzles).unwrap();
+    MaterialSlot::embedded("default", material)
+}
 
 /// A quad (two triangles) with a two-joint skin and one morph target.
 fn quad(format: PositionFormat) -> Mesh {
@@ -15,7 +24,7 @@ fn quad(format: PositionFormat) -> Mesh {
         &vertices,
         vec![0, 1, 2, 0, 2, 3, 0, 1, 2],
         submeshes,
-        vec![ToonMaterialParams::default()],
+        vec![default_slot()],
         format,
     );
     // LOD1: one triangle, reading the first three vertices.
@@ -53,6 +62,11 @@ fn quad(format: PositionFormat) -> Mesh {
     mesh
 }
 
+fn default_slot_params() -> Vec<u8> {
+    let SlotMaterial::Embedded(material) = default_slot().material else { unreachable!() };
+    material.params
+}
+
 fn read_error(mesh: &Mesh) -> MeshError {
     Mesh::read(&mesh.to_cooked().expect("cook")).expect_err("invalid mesh")
 }
@@ -66,7 +80,6 @@ fn element_sizes_are_stable() {
     assert_eq!(size_of::<Influence8>(), 8);
     assert_eq!(size_of::<Influence16>(), 12);
     assert_eq!(size_of::<MorphDelta>(), 16);
-    assert_eq!(size_of::<ToonMaterialParams>(), 64);
     for format in PositionFormat::ALL {
         assert_eq!(format.stride() % 4, 0, "vertex buffer strides must be multiples of 4");
     }
@@ -87,7 +100,11 @@ fn cooked_meshes_round_trip_and_are_read_in_place() {
         assert_eq!((streams.shading_bytes().len(), streams.surface_bytes().len()), (32, 32));
         assert_eq!(&archived.index_bytes()[4..8], &1u32.to_le_bytes());
         assert_eq!(archived.skin.as_ref().unwrap().influences.as_bytes().len(), 32);
-        assert_eq!(archived.materials[0].to_native(), ToonMaterialParams::default());
+        assert_eq!(archived.materials[0].name, "default");
+        let ArchivedSlotMaterial::Embedded(material) = &archived.materials[0].material else {
+            panic!("an embedded material");
+        };
+        assert_eq!(material.params(), &default_slot_params()[..]);
 
         // The shaders' affine decode reproduces the vertices.
         let (offset, scale) = streams.position_transform();
@@ -135,7 +152,7 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 2 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 3 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;
@@ -172,8 +189,11 @@ fn rejects_meshes_the_gpu_cannot_use() {
         |e| matches!(e, MeshError::ReservedNotZero { vertex: 1 }),
     );
     check(
-        |m| m.materials[0].params[3] = f32::INFINITY,
-        |e| matches!(e, MeshError::NonFiniteMaterial { material: 0 }),
+        |m| {
+            let SlotMaterial::Embedded(material) = &mut m.materials[0].material else { unreachable!() };
+            material.params.pop();
+        },
+        |e| matches!(e, MeshError::InvalidMaterial { slot: 0, source: MaterialError::ParamsSize { .. } }),
     );
     check(|m| m.lods.clear(), |e| matches!(e, MeshError::NoLods));
     check(|m| m.lods[0].vertex_count = 3, |e| matches!(e, MeshError::LodVertexCount { lod: 0, .. }));

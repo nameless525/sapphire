@@ -32,7 +32,8 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, SkyGradient, ViewData,
+    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, RenderError, Renderer, SkyGradient,
+    ViewData,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 
@@ -292,6 +293,17 @@ where
 pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
     let bounds = mesh.streams.bounds.to_native();
     [bounds.min, bounds.max]
+}
+
+/// Uploads the character `mesh` with the anime character materials it embeds, and returns it
+/// with its bounds. A material slot its sidecar binds to a material asset fails here: the app
+/// resolves asset IDs once packs exist (M1 A4).
+pub(crate) fn upload_character(
+    renderer: &mut Renderer,
+    mesh: &ArchivedMesh,
+) -> Result<(MeshHandle, [[f32; 3]; 2]), RenderError> {
+    let materials = renderer.upload_embedded_materials(mesh)?;
+    Ok((renderer.upload_mesh(mesh, &materials)?, mesh_bounds(mesh)))
 }
 
 #[cfg(test)]

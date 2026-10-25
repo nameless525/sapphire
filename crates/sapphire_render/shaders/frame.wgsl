@@ -6,8 +6,10 @@
 //              1) and their lists (binding 2) are declared in lights.wgsl and toon.wgsl
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
-//   2  scene   persistent scene buffers: instances, materials
-//   3  —       reserved for material textures (ramps, ILM masks, face SDF maps) in M1
+//   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
+//              family the pass draws (materials.wgsl)
+//   3  material one material's textures and samplers, per family (toon.wgsl declares the anime
+//              character family's)
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
 // colors linear HDR light, unclamped: passes write `Rgba16Float` scene color, which post.wgsl
@@ -50,21 +52,11 @@ struct InstanceData {
     previous_world_from_object: mat4x4<f32>,
 }
 
-// Mirrors `sapphire_assets::mesh::ToonMaterialParams`.
-struct ToonMaterial {
-    base_color: vec4<f32>,
-    // Multiplier applied to the albedo on the shadow side of the light split.
-    shade_color: vec4<f32>,
-    outline_color: vec4<f32>,
-    // x: shadow threshold on N·L in [-1, 1]; y: split softness; z: rim strength;
-    // w: outline width in pixels at a 1080-pixel-high target.
-    params: vec4<f32>,
-}
-
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<uniform> view: ViewUniforms;
 @group(2) @binding(0) var<storage, read> instances: array<InstanceData>;
-@group(2) @binding(1) var<storage, read> materials: array<ToonMaterial>;
+// The anime character family's blocks, by the draw record's material slot.
+@group(2) @binding(1) var<storage, read> materials: array<AnimeCharacterParams>;
 
 // A mesh vertex as stored: the packed streams of `sapphire_assets::mesh::VertexStreams`, in
 // vertex buffer slots 1–3 (`pipelines::{POSITION_*, SHADING, SURFACE}_ATTRIBUTES`), each bound

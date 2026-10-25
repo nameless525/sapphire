@@ -286,11 +286,13 @@ impl Swizzle {
         })
     }
 
-    fn to_ktx(self) -> [u8; 4] {
+    /// The `KTXswizzle` text: four of `rgba01`.
+    pub fn to_ktx(self) -> [u8; 4] {
         self.0.map(Component::to_ktx)
     }
 
-    fn from_ktx(text: &[u8]) -> Option<Self> {
+    /// The swizzle `KTXswizzle` text spells, or `None` if it isn't four of `rgba01`.
+    pub fn from_ktx(text: &[u8]) -> Option<Self> {
         let chars: [u8; 4] = text.try_into().ok()?;
         let mut components = [Component::R; 4];
         for (component, byte) in components.iter_mut().zip(chars) {

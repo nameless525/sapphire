@@ -1,6 +1,6 @@
-//! The mesh pool (spec §5.12): every mesh's vertex streams live in shared stream buffers, its
-//! indices in one shared index buffer, and its materials in one storage buffer indexed by
-//! material ID.
+//! The mesh pool (spec §5.12): every mesh's vertex streams live in shared stream buffers and
+//! its indices in one shared index buffer. Its material slots name uploaded materials
+//! (`materials`), which live in their family's parameter buffer.
 //!
 //! Uploads copy the cooked streams byte for byte: the renderer reads the quantized encodings
 //! of `sapphire_assets::mesh` directly, and its vertex shaders decode them with the per-mesh
@@ -45,20 +45,19 @@
 //! (all of a body, usually) costs one read of its two offsets.
 
 use sapphire_assets::mesh::{
-    ArchivedInfluences, ArchivedMesh, MorphDelta, PositionFormat, ToonMaterialParams, VertexShading,
-    VertexSurface,
+    ArchivedInfluences, ArchivedMesh, MorphDelta, PositionFormat, VertexShading, VertexSurface,
 };
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
 use crate::buffer::GrowableBuffer;
 use crate::gpu_types::Dequantize;
+use crate::materials::MaterialHandle;
 use crate::pipelines::format_index;
 
 const SHADING_BYTES: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_BYTES: u64 = size_of::<VertexSurface>() as u64;
 const INDEX_BYTES: u64 = size_of::<u32>() as u64;
-const MATERIAL_BYTES: u64 = size_of::<ToonMaterialParams>() as u64;
 
 /// Vulkan devices without `fullDrawIndexUint32` (some Vulkan 1.1 phones) only guarantee
 /// index values up to 2^24 − 1, which caps a single mesh (not the pool).
@@ -87,12 +86,22 @@ impl MeshHandle {
     }
 }
 
-/// A submesh with its indices and material resolved to pool-global positions.
+/// A submesh with its indices resolved to pool-global positions and its material slot to the
+/// material uploaded for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SubmeshDraw {
     pub first_index: u32,
     pub index_count: u32,
-    pub material: u32,
+    pub material: SubmeshMaterial,
+}
+
+/// The material a submesh draws with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SubmeshMaterial {
+    /// Selects its group 3.
+    pub handle: MaterialHandle,
+    /// Its slot in the family's parameter buffer, which the draw record carries.
+    pub slot: u32,
 }
 
 /// Where a mesh lives in the pool.
@@ -238,7 +247,6 @@ impl Slab {
 /// Buffers an upload replaced, so bind groups that reference them must be rebuilt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PoolMoves {
-    pub materials: bool,
     pub deformable: bool,
 }
 
@@ -250,9 +258,7 @@ pub(crate) struct MeshPool {
     deformable: GrowableBuffer,
     deformable_words: u32,
     indices: GrowableBuffer,
-    materials: GrowableBuffer,
     index_count: u32,
-    material_count: u32,
     records: Vec<MeshRecord>,
 }
 
@@ -282,28 +288,25 @@ impl MeshPool {
                 1 << 19,
                 limits.max_buffer_size,
             ),
-            materials: GrowableBuffer::new(
-                device,
-                "materials",
-                wgpu::BufferUsages::STORAGE,
-                64 * MATERIAL_BYTES,
-                max_storage,
-            ),
             index_count: 0,
-            material_count: 0,
             records: Vec::new(),
         }
     }
 
-    /// Appends a mesh and its materials: a static mesh's streams to its format's slab, a skinned
-    /// or morphed one's to the deformable buffer. Returns the handle and the buffers it replaced.
+    /// Appends a mesh whose material slots draw with `materials`, one per slot: a static mesh's
+    /// streams to its format's slab, a skinned or morphed one's to the deformable buffer.
+    /// Returns the handle and the buffers it replaced.
     pub(crate) fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mesh: &ArchivedMesh,
+        materials: &[SubmeshMaterial],
     ) -> Result<(MeshHandle, PoolMoves), RenderError> {
         mesh.validate()?;
+        if materials.len() != mesh.materials.len() {
+            return Err(RenderError::MaterialCount { slots: mesh.materials.len(), handles: materials.len() });
+        }
         let streams = &mesh.streams;
         let vertices = streams.len();
         if vertices > MAX_MESH_VERTICES {
@@ -311,11 +314,9 @@ impl MeshPool {
         }
         let deformable = mesh.skin.is_some() || !mesh.morph_targets.is_empty();
         let index_count = grow(self.index_count, mesh.indices.len(), "indices")?;
-        let material_count = grow(self.material_count, mesh.materials.len(), "materials")?;
         let handle =
             MeshHandle(u32::try_from(self.records.len()).map_err(|_| RenderError::MeshPoolFull("meshes"))?);
         fits(&self.indices, u64::from(index_count) * INDEX_BYTES, "indices")?;
-        fits(&self.materials, u64::from(material_count) * MATERIAL_BYTES, "materials")?;
 
         // Everything that can fail is checked before anything is written.
         let mut moves = PoolMoves::default();
@@ -365,18 +366,6 @@ impl MeshPool {
         self.indices.reserve(device, queue, u64::from(index_count) * INDEX_BYTES, index_offset);
         write(queue, self.indices.buffer(), index_offset, mesh.index_bytes());
 
-        let material_offset = u64::from(self.material_count) * MATERIAL_BYTES;
-        moves.materials = self.materials.reserve(
-            device,
-            queue,
-            u64::from(material_count) * MATERIAL_BYTES,
-            material_offset,
-        );
-        // Materials are a few 64-byte entries; converting them out of the archive (whose floats
-        // are little-endian wrappers) costs nothing worth avoiding.
-        let materials: Vec<ToonMaterialParams> = mesh.materials.iter().map(|m| m.to_native()).collect();
-        write(queue, self.materials.buffer(), material_offset, bytemuck::cast_slice(&materials));
-
         self.records.push(MeshRecord {
             streams: record_streams,
             dequantize,
@@ -389,7 +378,7 @@ impl MeshPool {
                         .map(|s| SubmeshDraw {
                             first_index: self.index_count + s.first_index.to_native(),
                             index_count: s.index_count.to_native(),
-                            material: self.material_count + s.material.to_native(),
+                            material: materials[s.material.to_native() as usize],
                         })
                         .collect()
                 })
@@ -397,7 +386,6 @@ impl MeshPool {
             lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
         });
         self.index_count = index_count;
-        self.material_count = material_count;
         Ok((handle, moves))
     }
 
@@ -418,24 +406,16 @@ impl MeshPool {
         self.indices.buffer()
     }
 
-    pub(crate) fn material_buffer(&self) -> &wgpu::Buffer {
-        self.materials.buffer()
-    }
-
-    /// Bytes in use: vertex streams (with skin and morph data), indices and materials.
+    /// Bytes in use: vertex streams (with skin and morph data) and indices.
     pub(crate) fn bytes_used(&self) -> u64 {
         self.slabs.iter().map(Slab::bytes_used).sum::<u64>()
             + u64::from(self.deformable_words) * 4
             + u64::from(self.index_count) * INDEX_BYTES
-            + u64::from(self.material_count) * MATERIAL_BYTES
     }
 
     /// Times any pool buffer grew.
     pub(crate) fn growths(&self) -> u32 {
-        self.slabs.iter().map(Slab::growths).sum::<u32>()
-            + self.deformable.growths()
-            + self.indices.growths()
-            + self.materials.growths()
+        self.slabs.iter().map(Slab::growths).sum::<u32>() + self.deformable.growths() + self.indices.growths()
     }
 }
 

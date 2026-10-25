@@ -22,8 +22,8 @@
 //! bumping one (`Mesh::VERSION`) recooks everything in that format without a stage bump.
 //!
 //! New kinds of asset plug in without changing the key: textures, materials and skinned
-//! meshes each bring an [`ImportSettings`] variant and a [`Recipe`], and a material that reads
-//! a texture's cooked output lists it as a [`Dependency::Asset`]. The key's inputs are
+//! meshes each brought an [`ImportSettings`] variant and a [`Recipe`], and a material, which
+//! reads its textures' cooked output, lists each as a [`Dependency::Asset`] (M1 A3). The key's inputs are
 //! encoded with postcard, so it is the same on every machine and build, as a shared cache
 //! will need.
 //!
@@ -332,7 +332,7 @@ mod tests {
             ],
         ];
         // Every mesh setting: the bake's weld, the LOD chain (each field of a level, the level
-        // count and the mobile skip) and the position format.
+        // count and the mobile skip), the position format and the material bindings.
         fn mesh_settings(edit: impl FnOnce(&mut MeshSettings)) -> ImportSettings {
             let mut mesh = MeshSettings::default();
             edit(&mut mesh);
@@ -346,6 +346,9 @@ mod tests {
             mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.003)], 0).unwrap()),
             mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.002)], 0).unwrap()),
             mesh_settings(|m| m.position_format = PositionFormat::Float32),
+            mesh_settings(|m| {
+                m.materials.insert("Skin".into(), AssetId::from_bytes([5; 16]));
+            }),
         ];
         let mut variants = vec![
             KeyInputs { source: blake3::hash(b"edited source"), ..base },
@@ -375,7 +378,7 @@ mod tests {
             dependencies: &[file("mesh.bin", b"buffer")],
         });
         // Recorded once. A change here means every cache, local or shared, misses.
-        assert_eq!(key.to_string(), "a918a6859be71ac637bb39c15958ffb39ad3a8eeb14b18f0a76672e14601de29");
+        assert_eq!(key.to_string(), "7d8afd3e19f7c21d075598cdf6f14f268df6352f9ac4ae6a861fb33d9b80c3fe");
     }
 
     #[test]

@@ -187,7 +187,10 @@ fn rotation_x(degrees: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
-    use sapphire_assets::mesh::{Bounds, PositionFormat, ToonMaterialParams};
+    use std::collections::BTreeMap;
+
+    use sapphire_assets::material::CharacterRegion;
+    use sapphire_assets::mesh::{Bounds, PositionFormat};
 
     use super::*;
     use crate::import;
@@ -207,21 +210,38 @@ mod tests {
     #[test]
     fn reimports_with_materials_parts_and_outline_widths() {
         let mesh = import::gltf::import_slice(&mannequin_glb(), None).expect("re-import");
-        let cooked = mesh.pack(PositionFormat::Float32).to_cooked().expect("cook");
+        let cooked = mesh.pack(PositionFormat::Float32, &BTreeMap::new()).unwrap().to_cooked().expect("cook");
         sapphire_assets::mesh::Mesh::read(&cooked).expect("structurally valid");
 
         // 9 part instances: pedestal, 2 legs, torso, 2 arms, head, hair, hat.
         assert_eq!(mesh.lods[0].submeshes.len(), 9);
         assert_eq!(mesh.materials.len(), LOOKS.len());
+        // Every parameter carries over into the generated anime character materials.
+        let rgb = |[r, g, b]: [u8; 3]| {
+            let [r, g, b, _] = srgb8(r, g, b);
+            [r, g, b]
+        };
         for look in LOOKS {
+            let slot = mesh.materials.iter().find(|m| m.name == look.name);
+            let material = &slot.unwrap_or_else(|| panic!("material {} missing", look.name)).generated;
             let [r, g, b] = look.base;
-            let material = mesh
-                .materials
-                .iter()
-                .find(|m| m.base_color == srgb8(r, g, b))
-                .unwrap_or_else(|| panic!("material {} missing", look.name));
-            assert_eq!(material.params, look.toon_params, "{}", look.name);
-            assert_ne!(material.shade_color, ToonMaterialParams::default().shade_color);
+            assert_eq!(material.base_color, srgb8(r, g, b), "{}", look.name);
+            let [threshold, softness, rim, outline] = look.toon_params;
+            assert_eq!(
+                (material.light_split.threshold, material.light_split.softness),
+                (threshold, softness)
+            );
+            assert_eq!((material.rim.strength, material.outline.width), (rim, outline), "{}", look.name);
+            assert_eq!(
+                material.regions,
+                [CharacterRegion {
+                    shade_color: rgb(look.shade),
+                    outline_color: rgb(look.outline),
+                    ..CharacterRegion::default()
+                }],
+                "{}",
+                look.name
+            );
         }
 
         // Only the head carries a thinner outline, and all of it does.

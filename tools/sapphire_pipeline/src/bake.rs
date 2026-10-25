@@ -180,7 +180,7 @@ fn neighbors([x, y, z]: [i64; 3]) -> impl Iterator<Item = [i64; 3]> {
 #[cfg(test)]
 mod tests {
     use glam::{EulerRot, Quat};
-    use sapphire_assets::mesh::{Lod, Submesh, ToonMaterialParams};
+    use sapphire_assets::mesh::{Lod, Submesh};
 
     use super::*;
 
@@ -189,7 +189,7 @@ mod tests {
         ImportedMesh {
             authored_outline: vec![false; vertices.len()],
             lods: vec![Lod { vertex_count: vertices.len() as u32, error: 0.0, submeshes: vec![submesh] }],
-            materials: vec![ToonMaterialParams::default()],
+            materials: vec![crate::test_util::material("default")],
             vertices,
             indices,
             ..ImportedMesh::default()

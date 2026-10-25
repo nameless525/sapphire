@@ -1,4 +1,4 @@
-//! Renders the M0 toon test scene offscreen and writes it to a PNG.
+//! Renders the M0 test scene, two anime character materials, offscreen and writes it to a PNG.
 //!
 //! ```text
 //! cargo run -p sapphire_render --example headless -- out.png [fov_degrees]
@@ -18,7 +18,11 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use glam::{Mat4, Quat, Vec3};
-use sapphire_assets::mesh::{Mesh, PositionFormat, Submesh, ToonMaterialParams, Vertex};
+use sapphire_assets::material::{
+    AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, Rim,
+};
+use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex};
+use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     CameraData, DirectionalLight, FramePacket, InstanceId, MeshInstance, Msaa, RenderSettings, Renderer,
@@ -48,9 +52,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
     let mut renderer =
         Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X4, ..RenderSettings::default() })?;
-    // Cooked and read back in place, as the runtime loads a mesh.
+    // Cooked and read back in place, as the runtime loads a mesh, with the materials it embeds.
     let cooked = test_scene().to_cooked()?;
-    let mesh = renderer.upload_mesh(Mesh::read(&cooked)?)?;
+    let scene = Mesh::read(&cooked)?;
+    let materials = renderer.upload_embedded_materials(scene)?;
+    let mesh = renderer.upload_mesh(scene, &materials)?;
 
     let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
         label: Some("headless target"),
@@ -160,23 +166,38 @@ fn test_scene() -> Mesh {
 
     mesh.materials = vec![
         // A warm "skin" tone whose shadow side shifts toward rose-violet instead of grey.
-        ToonMaterialParams {
-            base_color: [0.95, 0.62, 0.50, 1.0],
-            shade_color: [0.78, 0.55, 0.70, 1.0],
-            outline_color: [0.24, 0.09, 0.10, 1.0],
-            // Outline width in pixels at 1080p (3.9 px in this 540p image).
-            params: [0.05, 0.02, 0.4, 7.8],
-        },
+        material("skin", [0.95, 0.62, 0.50], [0.78, 0.55, 0.70], [0.24, 0.09, 0.10], 0.05, 0.4),
         // A saturated blue with a violet shadow tint and a navy outline.
-        ToonMaterialParams {
-            base_color: [0.16, 0.36, 0.85, 1.0],
-            shade_color: [0.55, 0.50, 0.85, 1.0],
-            outline_color: [0.03, 0.03, 0.12, 1.0],
-            params: [0.0, 0.02, 0.3, 7.8],
-        },
+        material("blue", [0.16, 0.36, 0.85], [0.55, 0.50, 0.85], [0.03, 0.03, 0.12], 0.0, 0.3),
     ];
     average_outline_normals(&mut mesh.vertices);
     Mesh::from_vertices(&mesh.vertices, mesh.indices, mesh.submeshes, mesh.materials, PositionFormat::Unorm16)
+}
+
+/// An anime character material in two cel bands, embedded in the mesh: linear colors, the
+/// light-split threshold and the rim strength. Outlines are 7.8 px at 1080p (3.9 px here).
+fn material(
+    name: &str,
+    base: [f32; 3],
+    shade: [f32; 3],
+    outline: [f32; 3],
+    threshold: f32,
+    rim: f32,
+) -> MaterialSlot {
+    let document = AnimeCharacterMaterial {
+        base_color: [base[0], base[1], base[2], 1.0],
+        light_split: LightSplit { threshold, softness: 0.02 },
+        regions: vec![CharacterRegion {
+            shade_color: shade,
+            outline_color: outline,
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: rim, ..Rim::default() },
+        outline: Outline { width: 7.8, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
+    };
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    MaterialSlot::embedded(name, Material::from_document(&document, &swizzles).expect("a valid material"))
 }
 
 /// The scene's geometry and materials before packing.
@@ -185,7 +206,7 @@ struct Parts {
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
     submeshes: Vec<Submesh>,
-    materials: Vec<ToonMaterialParams>,
+    materials: Vec<MaterialSlot>,
 }
 
 /// Runs `build` to produce one object's vertices and indices, then appends them as a

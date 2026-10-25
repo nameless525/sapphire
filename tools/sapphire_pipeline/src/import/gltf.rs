@@ -9,11 +9,15 @@
 //!   glTF ignores a skinned mesh node's own transform (§3.7.3.3), and the skin's palette moves
 //!   them. See "Skins" below.
 //! - Each primitive (per node instance) becomes one submesh of LOD0.
-//! - `baseColorFactor` becomes [`ToonMaterialParams::base_color`]. Material `extras` may
-//!   set `shade_color`, `outline_color` (linear RGB or RGBA) and `toon_params`
-//!   (`[shadow threshold, softness, rim strength, outline width]`); everything else keeps
-//!   [`ToonMaterialParams::default`]. In Blender these are custom properties on the
-//!   material, exported with "Include → Custom Properties".
+//! - Each glTF material becomes a material slot, named after the material (`#<index>` for an
+//!   unnamed one, `<name>#<index>` when two share a name, `#default` for glTF's default
+//!   material), holding a generated [`AnimeCharacterMaterial`]: `baseColorFactor` is its base
+//!   color, `alphaMode` and `alphaCutoff` its alpha, and material `extras` may set
+//!   `shade_color` and `outline_color` (region 0's, linear RGB or RGBA, alpha ignored) and
+//!   `toon_params` (`[light-split threshold, softness, rim strength, outline width]`).
+//!   Everything else keeps its default. In Blender these are custom properties on the
+//!   material, exported with "Include → Custom Properties". A mesh's sidecar can bind slots to
+//!   material documents instead (see [`sapphire_assets::material`]).
 //! - `COLOR_0` RGB becomes the sRGB vertex tint and its alpha the outline-width scale.
 //! - Missing normals are replaced by flat face normals.
 //! - An `_OUTLINE_NORMAL` attribute (VEC3: float, or normalized byte or short) is an authored
@@ -54,9 +58,10 @@
 //! [`MORPH_NORMAL_EPSILON`] are left out. Tangent deltas are ignored until meshes carry
 //! tangents; outline normals are not morphed.
 //!
-//! Textures and animation are ignored until their packages land. External buffers are part
-//! of the source: [`external_files`] lists them for the content cache key. Images join that
-//! list when textures are imported (M1 A2).
+//! glTF textures and animation are ignored: textures are separate sources (M1 A2) that material
+//! documents reference, and VRM import (A6) extracts a file's embedded images as such sources.
+//! External buffers are part of the source: [`external_files`] lists them for the content
+//! cache key.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -67,17 +72,23 @@ use ::gltf::buffer::Source;
 use ::gltf::mesh::{Mode, Semantic};
 use ::gltf::{Accessor, Document, Gltf, Material, Mesh, Node, Primitive, Scene};
 use glam::{Mat3, Mat4, Vec3};
-use sapphire_assets::mesh::{Joint, JointTransform, Lod, SkinBind, Submesh, ToonMaterialParams, Vertex};
+use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial};
+use sapphire_assets::mesh::{Joint, JointTransform, Lod, SkinBind, Submesh, Vertex};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
 use crate::cache::Stage;
 use crate::color::{linear_to_srgb, unorm8};
-use crate::mesh::{ImportedDelta, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights};
+use crate::mesh::{
+    ImportedDelta, ImportedMaterial, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights,
+};
+
+/// The material slot name of glTF's default material, which primitives without a material use.
+const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file.
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 2 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 3 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -140,7 +151,7 @@ pub enum GltfImportError {
     NotTriangles { at: PrimitiveRef, count: usize },
     #[error("{at}: index {index} is out of range for {vertex_count} vertices")]
     IndexOutOfRange { at: PrimitiveRef, index: u32, vertex_count: usize },
-    #[error("material {material}: invalid toon extras")]
+    #[error("material {material}: invalid material extras")]
     MaterialExtras {
         material: String,
         #[source]
@@ -188,6 +199,7 @@ pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMes
         buffers: &buffers,
         mesh: ImportedMesh { lods: vec![Lod::default()], ..ImportedMesh::default() },
         materials: HashMap::new(),
+        slot_names: slot_names(&document),
         skeleton,
         targets: HashMap::new(),
     };
@@ -492,15 +504,18 @@ fn percent_decode(uri: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Toon parameters authored as glTF material extras. Unknown keys are ignored, because
-/// Blender exports every custom property on the material.
+/// Anime character parameters authored as glTF material extras. Unknown keys are ignored,
+/// because Blender exports every custom property on the material.
 #[derive(Debug, Default, Deserialize)]
-struct ToonExtras {
+struct MaterialExtras {
     #[serde(default, deserialize_with = "linear_rgba")]
     shade_color: Option<[f32; 4]>,
     #[serde(default, deserialize_with = "linear_rgba")]
     outline_color: Option<[f32; 4]>,
-    toon_params: Option<[f32; 4]>,
+    /// `[light-split threshold, softness, rim strength, outline width]`: the key M0's Blender
+    /// workflow and the sample mannequin use.
+    #[serde(rename = "toon_params")]
+    shading: Option<[f32; 4]>,
 }
 
 /// Accepts RGB (opaque) or RGBA, since Blender color properties can be either.
@@ -524,6 +539,8 @@ struct Builder<'a> {
     mesh: ImportedMesh,
     /// glTF material index (`None` = the default material) → cooked material slot.
     materials: HashMap<Option<usize>, u32>,
+    /// Slot names by glTF material index.
+    slot_names: Vec<String>,
     skeleton: Option<Skeleton>,
     /// Morph target name → index into `mesh.morph_targets`.
     targets: HashMap<String, usize>,
@@ -779,7 +796,9 @@ impl Builder<'_> {
             return Ok(slot);
         }
         let slot = u32::try_from(self.mesh.materials.len()).map_err(|_| GltfImportError::TooLarge)?;
-        self.mesh.materials.push(toon_material(material)?);
+        let name =
+            material.index().map_or_else(|| DEFAULT_SLOT.to_owned(), |index| self.slot_names[index].clone());
+        self.mesh.materials.push(ImportedMaterial { name, generated: generated_material(material)? });
         self.materials.insert(material.index(), slot);
         Ok(slot)
     }
@@ -945,35 +964,82 @@ fn vertex_color([r, g, b, a]: [f32; 4]) -> [u8; 4] {
     [unorm8(linear_to_srgb(r)), unorm8(linear_to_srgb(g)), unorm8(linear_to_srgb(b)), unorm8(a)]
 }
 
-fn toon_material(material: &Material<'_>) -> Result<ToonMaterialParams, GltfImportError> {
-    let mut params = ToonMaterialParams {
+/// Every material's slot name, by glTF material index: its own name unless another material
+/// shares it.
+fn slot_names(document: &Document) -> Vec<String> {
+    let mut names: Vec<String> = document
+        .materials()
+        .enumerate()
+        .map(|(index, material)| match material.name() {
+            Some(name) if document.materials().filter(|other| other.name() == Some(name)).count() == 1 => {
+                name.to_owned()
+            }
+            Some(name) => format!("{name}#{index}"),
+            None => format!("#{index}"),
+        })
+        .collect();
+    // A literal name can still match a made-up one (`Plain#1`, `#default`): suffix the clashing
+    // names with their index until every name, and the default material's, is unique. Each pass
+    // makes the clashing names longer and distinct from one another, so this ends.
+    loop {
+        let clashing: Vec<usize> = (0..names.len())
+            .filter(|&index| {
+                names[index] == DEFAULT_SLOT || names.iter().filter(|name| **name == names[index]).count() > 1
+            })
+            .collect();
+        if clashing.is_empty() {
+            return names;
+        }
+        for index in clashing {
+            names[index] = format!("{}#{index}", names[index]);
+        }
+    }
+}
+
+/// The anime character material a glTF material describes.
+fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial, GltfImportError> {
+    let alpha = match material.alpha_mode() {
+        ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        ::gltf::material::AlphaMode::Mask => {
+            // glTF allows any cutoff from 0; above 1 everything is discarded either way.
+            AlphaMode::Mask { cutoff: material.alpha_cutoff().unwrap_or(0.5).clamp(0.0, 1.0) }
+        }
+        ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+    };
+    let mut generated = AnimeCharacterMaterial {
         base_color: material.pbr_metallic_roughness().base_color_factor(),
-        ..ToonMaterialParams::default()
+        alpha,
+        ..AnimeCharacterMaterial::default()
     };
     let Some(raw) = material.extras() else {
-        return Ok(params);
+        return Ok(generated);
     };
     let invalid = |source| GltfImportError::MaterialExtras {
         material: describe(material.name(), material.index()),
         source,
     };
     // glTF recommends, but doesn't require, extras to be an object; anything else can't
-    // carry toon parameters.
+    // carry material parameters.
     let value: serde_json::Value = serde_json::from_str(raw.get()).map_err(invalid)?;
     if !value.is_object() {
-        return Ok(params);
+        return Ok(generated);
     }
-    let extras = ToonExtras::deserialize(value).map_err(invalid)?;
+    let extras = MaterialExtras::deserialize(value).map_err(invalid)?;
+    let rgb = |[r, g, b, _]: [f32; 4]| [r, g, b];
+    let region = &mut generated.regions[0];
     if let Some(shade_color) = extras.shade_color {
-        params.shade_color = shade_color;
+        region.shade_color = rgb(shade_color);
     }
     if let Some(outline_color) = extras.outline_color {
-        params.outline_color = outline_color;
+        region.outline_color = rgb(outline_color);
     }
-    if let Some(toon_params) = extras.toon_params {
-        params.params = toon_params;
+    if let Some([threshold, softness, rim, outline_width]) = extras.shading {
+        generated.light_split.threshold = threshold;
+        generated.light_split.softness = softness;
+        generated.rim.strength = rim;
+        generated.outline.width = outline_width;
     }
-    Ok(params)
+    Ok(generated)
 }
 
 fn describe(name: Option<&str>, index: Option<usize>) -> String {

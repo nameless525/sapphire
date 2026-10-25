@@ -5,9 +5,10 @@
 // The hull is pushed in clip space by a width in pixels, so the outline is equally thick at
 // any field of view and any resolution:
 //
-//   width_px = params.w × vertex alpha × (target height / 1080) × distance curve
+//   width_px = edges.z × region scale × vertex alpha × (target height / 1080) × distance curve
 //
-// params.w is authored in pixels at a 1080-pixel-high target. The distance curve keeps the
+// The material's outline width (`AnimeCharacterParams::edges.z`, scaled by region 0's) is
+// authored in pixels at a 1080-pixel-high target, and its color is region 0's. The distance curve keeps the
 // width constant between OUTLINE_NEAR_DEPTH and OUTLINE_FAR_DEPTH, thins it beyond (so distant
 // characters don't turn into outlines), and lets it grow in extreme close-ups. M1 replaces the
 // curve with an artist-authored one (spec §5.12 "Outlines").
@@ -25,7 +26,9 @@ struct OutlineVaryings {
 fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
-    let material = materials[draw.material];
+    // The material's width × region 0's scale (C4 picks the region per vertex), read field by
+    // field rather than copying the whole block.
+    let width = materials[draw.material].edges.z * materials[draw.material].regions[0].outline.w;
 
     let world_position = instance.world_from_object * vec4<f32>(vertex.position, 1.0);
     var clip = view.clip_from_world * world_position;
@@ -40,7 +43,7 @@ fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     // Perspective projection: clip.w is the view depth.
     let depth = max(clip.w, 1e-4);
     let distance_curve = clamp(depth, OUTLINE_NEAR_DEPTH, OUTLINE_FAR_DEPTH) / depth;
-    let width_px = material.params.w * vertex.color.a * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT)
+    let width_px = width * vertex.color.a * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT)
         * distance_curve;
 
     // Pixels to NDC is 2 / size per axis; multiplying by w undoes the perspective divide.
@@ -54,5 +57,5 @@ fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
 
 @fragment
 fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
-    return vec4<f32>(materials[in.material].outline_color.rgb, 1.0);
+    return vec4<f32>(materials[in.material].regions[0].outline.rgb, 1.0);
 }

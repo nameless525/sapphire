@@ -3,7 +3,10 @@
 
 use sapphire_serialize::cooked::CookedError;
 
-use super::{ArchivedMesh, ArchivedPositions, ArchivedSkin, ArchivedVertexStreams, Bounds};
+use super::{
+    ArchivedMesh, ArchivedPositions, ArchivedSkin, ArchivedSlotMaterial, ArchivedVertexStreams, Bounds,
+};
+use crate::material::MaterialError;
 
 /// A cooked mesh that can't be read, or breaks an invariant of the format.
 #[derive(Debug, thiserror::Error)]
@@ -29,8 +32,12 @@ pub enum MeshError {
     NotTriangles(usize),
     #[error("index {index} at position {position} is out of range for {vertex_count} vertices")]
     IndexOutOfRange { position: usize, index: u32, vertex_count: usize },
-    #[error("material {material} has a non-finite parameter")]
-    NonFiniteMaterial { material: usize },
+    #[error("material slot {slot} embeds an invalid material")]
+    InvalidMaterial {
+        slot: usize,
+        #[source]
+        source: MaterialError,
+    },
     #[error("the mesh has no LODs")]
     NoLods,
     #[error(
@@ -93,12 +100,10 @@ impl ArchivedMesh {
         {
             return Err(MeshError::IndexOutOfRange { position, index, vertex_count });
         }
-        if let Some(material) = self.materials.iter().position(|m| {
-            [&m.base_color, &m.shade_color, &m.outline_color, &m.params]
-                .iter()
-                .any(|v| v.iter().any(|c| !c.to_native().is_finite()))
-        }) {
-            return Err(MeshError::NonFiniteMaterial { material });
+        for (slot, material) in self.materials.iter().enumerate() {
+            if let ArchivedSlotMaterial::Embedded(material) = &material.material {
+                material.validate().map_err(|source| MeshError::InvalidMaterial { slot, source })?;
+            }
         }
         self.validate_lods(vertex_count)?;
         if let Some(skin) = self.skin.as_ref() {

@@ -1,11 +1,17 @@
-//! WGSL sources, embedded at build time. Each scene pass is `frame.wgsl` followed by the
+//! WGSL sources, embedded at build time. Each scene pass is `frame.wgsl` and `materials.wgsl`
+//! (the material families' blocks, which frame.wgsl's material binding names) followed by the
 //! files it uses, its own last; M1 replaces the concatenation with WESL imports (spec §5.12).
 //! The post passes share `post.wgsl`, and compute skinning has `skinning.wgsl`; both stand
 //! alone.
 
 macro_rules! pass_source {
     ($($file:literal),+) => {
-        concat!(include_str!("../shaders/frame.wgsl") $(, "\n", include_str!(concat!("../shaders/", $file)))+)
+        concat!(
+            include_str!("../shaders/frame.wgsl"),
+            "\n",
+            include_str!("../shaders/materials.wgsl")
+            $(, "\n", include_str!(concat!("../shaders/", $file)))+
+        )
     };
 }
 
@@ -28,7 +34,11 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use sapphire_assets::mesh::{PositionFormat, ToonMaterialParams};
+    use sapphire_assets::material::{
+        AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, EnvironmentParams, FogCardParams,
+        FoliageParams, SkyParams,
+    };
+    use sapphire_assets::mesh::PositionFormat;
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
@@ -196,7 +206,12 @@ mod tests {
             ("toon", TOON, "FrameUniforms", size_of::<FrameUniforms>()),
             ("toon", TOON, "ViewUniforms", size_of::<ViewUniforms>()),
             ("toon", TOON, "InstanceData", size_of::<InstanceData>()),
-            ("toon", TOON, "ToonMaterial", size_of::<ToonMaterialParams>()),
+            ("toon", TOON, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
+            ("toon", TOON, "AnimeCharacterRegion", size_of::<AnimeCharacterRegion>()),
+            ("sky", SKY, "EnvironmentParams", size_of::<EnvironmentParams>()),
+            ("sky", SKY, "FoliageParams", size_of::<FoliageParams>()),
+            ("sky", SKY, "SkyParams", size_of::<SkyParams>()),
+            ("sky", SKY, "FogCardParams", size_of::<FogCardParams>()),
             ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
             ("toon", TOON, "LocalLight", size_of::<GpuLight>()),
             ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
@@ -213,6 +228,84 @@ mod tests {
                 .find(|(_, ty)| ty.name.as_deref() == Some(name))
                 .unwrap_or_else(|| panic!("no WGSL struct {name}"));
             assert_eq!(layouter[handle].size as usize, rust_size, "{name}: WGSL vs Rust size");
+        }
+    }
+
+    /// `(field, offset)` for each listed field of a Rust struct.
+    macro_rules! offsets {
+        ($ty:ty { $($field:ident),+ $(,)? }) => {
+            vec![$((stringify!($field), std::mem::offset_of!($ty, $field))),+]
+        };
+    }
+
+    /// Material blocks are copied into their buffers byte for byte, so beyond their sizes, every
+    /// field must sit where the WGSL struct reads it.
+    #[test]
+    fn material_blocks_match_wgsl_field_by_field() {
+        let blocks = [
+            (
+                "AnimeCharacterParams",
+                offsets!(AnimeCharacterParams {
+                    base_color,
+                    split,
+                    edges,
+                    terms,
+                    surface,
+                    surface_color,
+                    modes,
+                    swizzles,
+                    regions,
+                }),
+            ),
+            (
+                "AnimeCharacterRegion",
+                offsets!(AnimeCharacterRegion { shade, deep_shade, subsurface, specular, rim, outline }),
+            ),
+            (
+                "EnvironmentParams",
+                offsets!(EnvironmentParams {
+                    base_color,
+                    surface,
+                    shaping,
+                    terminator,
+                    shadow_tint,
+                    distance,
+                    emission,
+                    modes,
+                    swizzles,
+                }),
+            ),
+            (
+                "FoliageParams",
+                offsets!(FoliageParams {
+                    base_color,
+                    shading,
+                    shadow_tint,
+                    translucency,
+                    gradient_root,
+                    gradient_tip,
+                    wind,
+                    distance,
+                    modes,
+                    swizzles,
+                }),
+            ),
+            ("SkyParams", offsets!(SkyParams { discs, stars, clouds, cirrus, modes, swizzles })),
+            ("FogCardParams", offsets!(FogCardParams { color, fade, scroll, modes, swizzles })),
+        ];
+        let module = validate("toon", TOON);
+        for (name, rust) in blocks {
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no WGSL struct {name}"));
+            let naga::TypeInner::Struct { members, .. } = &ty.inner else { panic!("{name} is a struct") };
+            let wgsl: Vec<(&str, usize)> = members
+                .iter()
+                .map(|member| (member.name.as_deref().unwrap_or_default(), member.offset as usize))
+                .collect();
+            assert_eq!(wgsl, rust, "{name}: WGSL vs Rust fields");
         }
     }
 
@@ -257,5 +350,56 @@ mod tests {
         assert_eq!(wgsl_u32(&skinning, "FLAG_SKIN"), flags::SKIN);
         assert_eq!(wgsl_u32(&skinning, "FLAG_WIDE_INFLUENCES"), flags::WIDE_INFLUENCES);
         assert_eq!(wgsl_u32(&skinning, "FLAG_MORPHS"), flags::MORPHS);
+    }
+
+    #[test]
+    fn wgsl_material_constants_match_rust() {
+        use crate::pipelines::material_binding;
+        type M = AnimeCharacterMaterial;
+        type P = AnimeCharacterParams;
+        let character = validate("toon", TOON);
+        let slots = [
+            ("CHARACTER_BASE_COLOR", M::BASE_COLOR),
+            ("CHARACTER_CONTROL", M::CONTROL),
+            ("CHARACTER_NORMAL", M::NORMAL),
+            ("CHARACTER_RAMP", M::RAMP),
+            ("CHARACTER_FACE_SHADOW", M::FACE_SHADOW),
+            ("CHARACTER_SURFACE_MASK", M::SURFACE_MASK),
+            ("CHARACTER_MATCAP", M::MATCAP),
+        ];
+        assert_eq!(slots.len(), M::TEXTURE_SLOTS.len());
+        for (name, slot) in slots {
+            assert_eq!(wgsl_u32(&character, name) as usize, slot, "{name}");
+        }
+        let values = [
+            ("CHARACTER_FLAG_RAMP", P::FLAG_RAMP),
+            ("CHARACTER_FLAG_DEEP_SHADE", P::FLAG_DEEP_SHADE),
+            ("CHARACTER_FLAG_ALPHA_TEST", P::FLAG_ALPHA_TEST),
+            ("CHARACTER_FLAG_TRANSPARENT", P::FLAG_TRANSPARENT),
+            ("CHARACTER_SURFACE_BODY", P::SURFACE_BODY),
+            ("CHARACTER_SURFACE_FACE", P::SURFACE_FACE),
+            ("CHARACTER_SURFACE_HAIR", P::SURFACE_HAIR),
+            ("CHARACTER_SURFACE_EYE", P::SURFACE_EYE),
+        ];
+        for (name, value) in values {
+            assert_eq!(wgsl_u32(&character, name), value, "{name}");
+        }
+        // Group 3: the texture slots at their own indices, then the two samplers.
+        let bindings: BTreeMap<u32, String> = character
+            .global_variables
+            .iter()
+            .filter_map(|(_, global)| {
+                let binding = global.binding.as_ref().filter(|binding| binding.group == 3)?;
+                Some((binding.binding, global.name.clone().unwrap_or_default()))
+            })
+            .collect();
+        let mut expected: BTreeMap<u32, String> = M::TEXTURE_SLOTS
+            .iter()
+            .zip(0..)
+            .map(|(slot, binding)| (binding, format!("{}_map", slot.name)))
+            .collect();
+        expected.insert(material_binding::SAMPLER, "material_sampler".into());
+        expected.insert(material_binding::RAMP_SAMPLER, "ramp_sampler".into());
+        assert_eq!(bindings, expected);
     }
 }

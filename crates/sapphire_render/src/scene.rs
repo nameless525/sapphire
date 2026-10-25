@@ -38,6 +38,7 @@ use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
+use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::format_index;
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
@@ -387,23 +388,26 @@ impl Hasher for IdHasher {
 
 /// One `draw_indexed` call on the CPU-driven path, with `base_vertex` 0 and instances `0..1`:
 /// the mesh's streams (vertex slots 1–3) are bound at `first_vertex` of their slab (indices are
-/// mesh-relative) and slot 0 at draw record `draw_id`.
+/// mesh-relative), slot 0 at draw record `draw_id`, and group 3 to `material`'s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DrawCommand {
     pub indices: Range<u32>,
     pub first_vertex: u32,
     pub draw_id: u32,
+    pub material: MaterialHandle,
 }
 
 /// A draw of a skinned or morphed instance on the CPU-driven path: positions and shading
 /// (slots 1 and 2) come from the skinning outputs of the instance in `slot`, the surface stream
-/// (slot 3) from its mesh's sources at word `surface` of the deformable buffer.
+/// (slot 3) from its mesh's sources at word `surface` of the deformable buffer, and group 3 from
+/// `material`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeformedDraw {
     pub indices: Range<u32>,
     pub slot: u32,
     pub surface: u32,
     pub draw_id: u32,
+    pub material: MaterialHandle,
 }
 
 /// The draws for every live instance: one per submesh of the mesh's LOD0. Its vectors are
@@ -434,10 +438,11 @@ impl DrawList {
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {
                     instance: slot,
-                    material: submesh.material,
+                    material: submesh.material.slot,
                     dequantize: record.dequantize,
                 });
                 let indices = submesh.first_index..submesh.first_index + submesh.index_count;
+                let material = submesh.material.handle;
                 match &record.streams {
                     MeshStreams::Slab { format, first_vertex } => {
                         let first_vertex = *first_vertex;
@@ -445,10 +450,12 @@ impl DrawList {
                             indices,
                             first_vertex,
                             draw_id,
+                            material,
                         });
                     }
                     MeshStreams::Deformable(source) => {
-                        self.deformed.push(DeformedDraw { indices, slot, surface: source.surface, draw_id });
+                        let surface = source.surface;
+                        self.deformed.push(DeformedDraw { indices, slot, surface, draw_id, material });
                     }
                 }
             }
@@ -473,7 +480,12 @@ mod tests {
     use super::*;
     use crate::MeshInstance;
     use crate::gpu_types::Dequantize;
-    use crate::mesh_pool::{DeformSource, SubmeshDraw};
+    use crate::mesh_pool::{DeformSource, SubmeshDraw, SubmeshMaterial};
+
+    /// Material `slot`, uploaded as handle `slot + 10`.
+    fn material(slot: u32) -> SubmeshMaterial {
+        SubmeshMaterial { handle: MaterialHandle(slot + 10), slot }
+    }
 
     fn instance(id: u64, mesh: u32, x: f32) -> MeshInstance {
         MeshInstance {
@@ -639,8 +651,8 @@ mod tests {
                 streams: slab(PositionFormat::Unorm16, 0),
                 dequantize: quantized,
                 lods: vec![
-                    vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }],
-                    vec![SubmeshDraw { first_index: 6, index_count: 3, material: 0 }],
+                    vec![SubmeshDraw { first_index: 0, index_count: 6, material: material(0) }],
+                    vec![SubmeshDraw { first_index: 6, index_count: 3, material: material(0) }],
                 ],
                 lod_vertices: vec![24, 12],
             },
@@ -648,21 +660,21 @@ mod tests {
                 streams: slab(PositionFormat::Unorm16, 24),
                 dequantize: quantized,
                 lods: vec![vec![
-                    SubmeshDraw { first_index: 9, index_count: 3, material: 1 },
-                    SubmeshDraw { first_index: 12, index_count: 12, material: 2 },
+                    SubmeshDraw { first_index: 9, index_count: 3, material: material(1) },
+                    SubmeshDraw { first_index: 12, index_count: 12, material: material(2) },
                 ]],
                 lod_vertices: vec![8],
             },
             MeshRecord {
                 streams: slab(PositionFormat::Float32, 0),
                 dequantize: identity,
-                lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: 3 }]],
+                lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: material(3) }]],
                 lod_vertices: vec![3],
             },
             MeshRecord {
                 streams: MeshStreams::Deformable(DeformSource { surface: 90, ..DeformSource::default() }),
                 dequantize: identity,
-                lods: vec![vec![SubmeshDraw { first_index: 27, index_count: 6, material: 4 }]],
+                lods: vec![vec![SubmeshDraw { first_index: 27, index_count: 6, material: material(4) }]],
                 lod_vertices: vec![4],
             },
         ];
@@ -693,10 +705,20 @@ mod tests {
             ]
         );
         let [unorm16, float32] = &list.commands;
-        assert_eq!(unorm16[1], DrawCommand { indices: 12..24, first_vertex: 24, draw_id: 1 });
-        assert_eq!(unorm16[2], DrawCommand { indices: 0..6, first_vertex: 0, draw_id: 2 });
-        assert_eq!(float32[..], [DrawCommand { indices: 24..27, first_vertex: 0, draw_id: 3 }]);
-        assert_eq!(list.deformed[..], [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4 }]);
+        let command = |indices, first_vertex, draw_id, slot: u32| DrawCommand {
+            indices,
+            first_vertex,
+            draw_id,
+            material: MaterialHandle(slot + 10),
+        };
+        assert_eq!(unorm16[1], command(12..24, 24, 1, 2));
+        assert_eq!(unorm16[2], command(0..6, 0, 2, 0));
+        assert_eq!(float32[..], [command(24..27, 0, 3, 3)]);
+        let material = MaterialHandle(14);
+        assert_eq!(
+            list.deformed[..],
+            [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material }]
+        );
         assert_eq!(list.len(), 5);
 
         // Rebuilding reuses the vectors instead of appending.

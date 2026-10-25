@@ -5,7 +5,8 @@
 //! instance's positions and normals from its skinning outputs, and its surface stream from its
 //! mesh's sources. Each pass binds only the streams it reads ([`MeshPass`]). Streams are rebound
 //! only when the next draw's mesh (or deformed instance) differs, so a mesh's submeshes share
-//! one binding.
+//! one binding. Passes that shade bind each draw's material (group 3) the same way: only when
+//! it changes.
 
 use std::ops::Range;
 
@@ -14,6 +15,7 @@ use sapphire_rhi::wgpu;
 
 use crate::buffer::GrowableBuffer;
 use crate::gpu_types::DrawData;
+use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{MeshPass, format_index, slot};
 use crate::scene::DrawList;
@@ -31,6 +33,8 @@ pub(crate) struct MeshDraws<'a> {
     /// The draw records.
     pub records: &'a GrowableBuffer,
     pub skinned: SkinnedOutputs<'a>,
+    /// Every uploaded material, by handle: their group 3.
+    pub materials: &'a [MaterialRecord],
 }
 
 impl MeshDraws<'_> {
@@ -54,7 +58,9 @@ impl MeshDraws<'_> {
     ) {
         let slab = self.meshes.slab(format);
         let mut bound_first_vertex = None;
+        let mut bound_material = None;
         for command in &self.list.commands[format_index(format)] {
+            self.bind_material(pass, kind, command.material, &mut bound_material);
             if bound_first_vertex != Some(command.first_vertex) {
                 let vertex = u64::from(command.first_vertex);
                 let positions = slab.positions().slice(vertex * slab.position_stride()..);
@@ -80,6 +86,7 @@ impl MeshDraws<'_> {
     pub(crate) fn draw_deformed(&self, pass: &mut wgpu::RenderPass<'_>, kind: MeshPass) {
         let outputs_buffer = self.skinned.buffer();
         let mut bound_slot = None;
+        let mut bound_material = None;
         for command in &self.list.deformed {
             if bound_slot != Some(command.slot) {
                 // An instance whose outputs didn't fit (`SkinningStats::unplaced`) doesn't draw.
@@ -100,7 +107,22 @@ impl MeshDraws<'_> {
                 }
                 bound_slot = Some(command.slot);
             }
+            self.bind_material(pass, kind, command.material, &mut bound_material);
             self.draw(pass, command.draw_id, command.indices.clone());
+        }
+    }
+
+    /// Binds `material`'s group 3 if `kind` shades with materials and it isn't bound already.
+    fn bind_material(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        material: MaterialHandle,
+        bound: &mut Option<MaterialHandle>,
+    ) {
+        if kind.binds_materials() && *bound != Some(material) {
+            pass.set_bind_group(3, &self.materials[material.index()].bind_group, &[]);
+            *bound = Some(material);
         }
     }
 

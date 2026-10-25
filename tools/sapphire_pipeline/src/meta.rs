@@ -32,10 +32,15 @@
 //!                 mobile_skip: 1,
 //!             ),
 //!             position_format: Unorm16,
+//!             materials: {
+//!                 "Skin": "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b",
+//!             },
 //!         )),
 //!     ),
 //! )
 //! ```
+//!
+//! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //!
 //! [`resolve`] keeps these rules:
 //!
@@ -54,7 +59,7 @@
 //! new setting needs no schema version. The importer and its settings are part of the
 //! asset's [cache key](crate::cache); the ID is not, because no cooked format holds it yet.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -68,6 +73,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
 use crate::character_maps::{MapKind, MapSettings};
+use crate::material::{self, MaterialSettings};
 use crate::optimize::LodSettings;
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 
@@ -99,15 +105,21 @@ pub enum ImportSettings {
     /// An anime character map document (`.facesdf.ron`, `.ramp.ron`, `.ilm.ron`): the map it
     /// describes is generated, then cooked as a texture (M1 A7).
     CharacterMap(MapSettings),
+    /// A material document (`.material.ron`) of any family (M1 A3).
+    Material(MaterialSettings),
 }
 
 impl ImportSettings {
     /// The default settings for `source`, picked by its extension, or `None` if no importer
     /// reads it.
     pub fn for_source(source: &Path) -> Option<Self> {
-        // Map documents are known by compound extensions, before the last one is looked at.
+        // Map and material documents are known by compound extensions, before the last one is
+        // looked at.
         if let Some(kind) = MapKind::for_path(source) {
             return Some(Self::CharacterMap(kind.default_settings()));
+        }
+        if material::is_source(source) {
+            return Some(Self::Material(MaterialSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -125,7 +137,7 @@ impl ImportSettings {
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
             Self::Gltf(settings) => Some(settings),
-            Self::Texture(_) | Self::CharacterMap(_) => None,
+            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) => None,
         }
     }
 }
@@ -141,6 +153,10 @@ pub struct MeshSettings {
     /// How positions are stored: quantized to 16 bits across the bounds (the default), or as
     /// f32 for meshes too large for that or whose edges must meet a neighbor's exactly.
     pub position_format: PositionFormat,
+    /// Material assets bound to the source's material slots, by slot name (the glTF material's
+    /// name): `materials: {"Skin": "<id>"}`. Unbound slots embed the material the importer
+    /// generates from the source.
+    pub materials: BTreeMap<String, AssetId>,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.
@@ -416,7 +432,7 @@ mod tests {
             "(\n    type: \"sapphire::assets::AssetMeta\",\n    version: 1,\n    data: (\n        id: \
              \"{ID}\",\n        importer: Gltf((\n            outline: (\n                \
              weld_tolerance: 0.002,\n            ),\n            lods: (\n                levels: [\n{}{}{}                \
-             ],\n                mobile_skip: 1,\n            ),\n            position_format: Unorm16,\n        )),\n    \
+             ],\n                mobile_skip: 1,\n            ),\n            position_format: Unorm16,\n            materials: {{}},\n        )),\n    \
              ),\n)\n",
             level("0.5", "0.002"),
             level("0.25", "0.01"),
@@ -476,6 +492,11 @@ mod tests {
             ImportSettings::for_source(Path::new("sky.EXR")),
             Some(ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_) }))
         ));
+        assert_eq!(
+            ImportSettings::for_source(Path::new("characters/skin.material.ron")),
+            Some(ImportSettings::Material(MaterialSettings::default()))
+        );
+        assert!(ImportSettings::for_source(Path::new("tiers.ron")).is_none(), "other RON is not a material");
         assert!(ImportSettings::for_source(Path::new("notes.txt")).is_none());
         assert!(ImportSettings::for_source(Path::new("model.glb.meta")).is_none());
     }

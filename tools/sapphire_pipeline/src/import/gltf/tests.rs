@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+
 use glam::{Quat, Vec4};
+use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
 use sapphire_assets::mesh::{Bounds, PositionFormat};
 use serde_json::json;
 
@@ -14,7 +17,8 @@ fn assert_vec_eq(actual: [f32; 3], expected: Vec3) {
 
 /// Packs and reads back `mesh`, so every structural invariant of the cooked format is checked.
 fn assert_cooks(mesh: &ImportedMesh) {
-    let bytes = mesh.pack(PositionFormat::Float32).to_cooked().expect("cook");
+    let bytes =
+        mesh.pack(PositionFormat::Float32, &BTreeMap::new()).expect("pack").to_cooked().expect("cook");
     sapphire_assets::mesh::Mesh::read(&bytes).expect("a valid cooked mesh");
 }
 
@@ -115,11 +119,13 @@ fn converts_vertex_colors_and_reads_uvs() {
 }
 
 #[test]
-fn maps_materials_and_toon_extras() {
+fn maps_materials_and_their_extras() {
     let mut writer = GltfWriter::default();
-    let toon = writer.add_material(json!({
-        "name": "Toon",
+    let skin = writer.add_material(json!({
+        "name": "Skin",
         "pbrMetallicRoughness": { "baseColorFactor": [0.5, 0.25, 0.125, 1.0] },
+        "alphaMode": "MASK",
+        "alphaCutoff": 0.3,
         "extras": {
             "shade_color": [0.1, 0.2, 0.3],
             "outline_color": [0.0, 0.0, 0.0, 0.5],
@@ -128,35 +134,68 @@ fn maps_materials_and_toon_extras() {
         },
     }));
     let plain = writer.add_material(json!({ "name": "Plain", "extras": ["not", "an", "object"] }));
+    let twin = writer.add_material(json!({ "name": "Plain", "alphaMode": "BLEND" }));
+    let unnamed = writer.add_material(json!({}));
     let triangle = slanted_triangle(true);
-    let mesh = writer.add_mesh(
-        "Mesh",
-        &[(&triangle, Some(toon)), (&triangle, Some(plain)), (&triangle, Some(toon)), (&triangle, None)],
-    );
+    let parts = [skin, plain, skin, twin, unnamed].map(|material| (&triangle, Some(material)));
+    let mesh = writer.add_mesh("Mesh", &[parts.as_slice(), &[(&triangle, None)]].concat());
     let node = writer.add_node(json!({ "mesh": mesh }));
     writer.add_root(node);
 
     let imported = import_slice(&writer.to_glb(), None).unwrap();
     assert_cooks(&imported);
     let slots: Vec<u32> = submeshes(&imported).iter().map(|s| s.material).collect();
-    assert_eq!(slots, [0, 1, 0, 2], "materials are deduplicated in first-use order");
-    assert_eq!(
-        imported.materials[0],
-        ToonMaterialParams {
-            base_color: [0.5, 0.25, 0.125, 1.0],
-            shade_color: [0.1, 0.2, 0.3, 1.0],
-            outline_color: [0.0, 0.0, 0.0, 0.5],
-            params: [0.2, 0.05, 0.4, 0.006],
-        }
-    );
-    let defaults = ToonMaterialParams::default();
-    assert_eq!(imported.materials[1], ToonMaterialParams { base_color: [1.0; 4], ..defaults });
+    assert_eq!(slots, [0, 1, 0, 2, 3, 4], "materials are deduplicated in first-use order");
+    let names: Vec<&str> = imported.materials.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["Skin", "Plain#1", "Plain#2", "#3", "#default"], "slot names are unique");
+    let defaults = AnimeCharacterMaterial::default();
+    let mut expected = AnimeCharacterMaterial {
+        base_color: [0.5, 0.25, 0.125, 1.0],
+        alpha: AlphaMode::Mask { cutoff: 0.3 },
+        regions: vec![CharacterRegion {
+            shade_color: [0.1, 0.2, 0.3],
+            outline_color: [0.0, 0.0, 0.0],
+            ..CharacterRegion::default()
+        }],
+        ..defaults.clone()
+    };
+    expected.light_split.threshold = 0.2;
+    expected.light_split.softness = 0.05;
+    expected.rim.strength = 0.4;
+    expected.outline.width = 0.006;
+    assert_eq!(imported.materials[0].generated, expected);
+    let white = AnimeCharacterMaterial { base_color: [1.0; 4], ..defaults.clone() };
+    assert_eq!(imported.materials[1].generated, white);
+    assert_eq!(imported.materials[2].generated.alpha, AlphaMode::Blend);
     // The glTF default material is white.
-    assert_eq!(imported.materials[2], ToonMaterialParams { base_color: [1.0; 4], ..defaults });
+    assert_eq!(imported.materials[4].generated, white);
 }
 
 #[test]
-fn rejects_malformed_toon_extras() {
+fn slot_names_stay_unique_when_names_look_made_up() {
+    let mut writer = GltfWriter::default();
+    let materials = [
+        json!({ "name": "Plain" }),
+        json!({ "name": "Plain", "alphaMode": "MASK", "alphaCutoff": 3.0 }),
+        json!({ "name": "Plain#1" }),
+        json!({ "name": "#default" }),
+    ]
+    .map(|material| writer.add_material(material));
+    let triangle = slanted_triangle(true);
+    let parts: Vec<_> = materials.iter().map(|&material| (&triangle, Some(material))).collect();
+    let mesh = writer.add_mesh("Mesh", &[parts.as_slice(), &[(&triangle, None)]].concat());
+    let node = writer.add_node(json!({ "mesh": mesh }));
+    writer.add_root(node);
+
+    let imported = import_slice(&writer.to_glb(), None).unwrap();
+    let names: Vec<&str> = imported.materials.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["Plain#0", "Plain#1#1", "Plain#1#2", "#default#3", "#default"]);
+    // glTF allows any cutoff from 0; above 1 is the same as 1.
+    assert_eq!(imported.materials[1].generated.alpha, AlphaMode::Mask { cutoff: 1.0 });
+}
+
+#[test]
+fn rejects_malformed_material_extras() {
     let mut writer = GltfWriter::default();
     let material =
         writer.add_material(json!({ "name": "Broken", "extras": { "toon_params": [0.1, 0.2, 0.3] } }));
@@ -166,7 +205,7 @@ fn rejects_malformed_toon_extras() {
 
     let err = import_slice(&writer.to_glb(), None).unwrap_err();
     assert!(matches!(&err, GltfImportError::MaterialExtras { material, .. } if material == "\"Broken\""));
-    assert_eq!(err.to_string(), "material \"Broken\": invalid toon extras");
+    assert_eq!(err.to_string(), "material \"Broken\": invalid material extras");
 
     let mut writer = GltfWriter::default();
     let material = writer.add_material(json!({ "extras": { "shade_color": [0.1, 0.2] } }));

@@ -2,17 +2,37 @@
 //! `cargo test -p sapphire_render --tests -- --ignored`.
 
 use glam::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_assets::material::{AnimeCharacterMaterial, Material, Outline, Rim};
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
-    Submesh, ToonMaterialParams, Vertex, VertexInfluence, VertexShading, quantize_weights,
+    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
+    SkinBind, Submesh, Vertex, VertexInfluence, VertexShading, quantize_weights,
 };
+use sapphire_assets::texture::Swizzle;
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 use super::reference;
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
-    CameraData, FramePacketRing, InstanceId, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
+    CameraData, FramePacketRing, InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer,
+    ViewData,
 };
+
+/// `material` embedded in a mesh's material slot, as the glTF importer embeds one.
+fn slot(material: &AnimeCharacterMaterial) -> MaterialSlot {
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    MaterialSlot::embedded(
+        "material",
+        Material::from_document(material, &swizzles).expect("a valid material"),
+    )
+}
+
+/// Cooks `mesh` and uploads it the way the runtime loads one, with the materials it embeds.
+fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
+    let bytes = mesh.to_cooked().expect("cook");
+    let mesh = Mesh::read(&bytes).expect("valid");
+    let materials = renderer.upload_embedded_materials(mesh).expect("materials");
+    renderer.upload_mesh(mesh, &materials).expect("upload")
+}
 
 /// A deterministic generator (PCG-style LCG), so failures reproduce.
 struct Rng(u64);
@@ -67,8 +87,8 @@ fn random_mesh(rng: &mut Rng, vertices: usize, palette: usize, format: PositionF
         .collect();
     let indices: Vec<u32> = (0..(vertices as u32 / 3) * 3).collect();
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
-    let mut mesh =
-        Mesh::from_vertices(&vertex_data, indices, submeshes, vec![ToonMaterialParams::default()], format);
+    let slots = vec![slot(&AnimeCharacterMaterial::default())];
+    let mut mesh = Mesh::from_vertices(&vertex_data, indices, submeshes, slots, format);
     let influences: Vec<VertexInfluence> = (0..vertices)
         .map(|_| {
             let count = 1 + rng.index(4);
@@ -160,13 +180,7 @@ fn gpu_skinning_matches_the_cpu_reference() {
     ];
     let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
         .expect("renderer");
-    let handles: Vec<_> = meshes
-        .iter()
-        .map(|mesh| {
-            let bytes = mesh.to_cooked().expect("cook");
-            renderer.upload_mesh(Mesh::read(&bytes).expect("valid")).expect("upload")
-        })
-        .collect();
+    let handles: Vec<_> = meshes.iter().map(|mesh| upload(&mut renderer, mesh)).collect();
     let texture = target(&gpu, (64, 64));
     let view = texture.create_view(&Default::default());
     let mut packets = FramePacketRing::new();
@@ -252,7 +266,11 @@ fn prepass_depth_equals_the_main_pass_depth() {
     let gpu = gpu();
     let size = (161, 97);
     // No outlines: the hull would write depth in the main pass only.
-    let material = ToonMaterialParams { params: [0.0, 0.02, 0.3, 0.0], ..ToonMaterialParams::default() };
+    let material = slot(&AnimeCharacterMaterial {
+        rim: Rim { strength: 0.3, ..Rim::default() },
+        outline: Outline { width: 0.0, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
+    });
     let sphere = |center: Vec3, radius: f32| {
         let mut vertices = Vec::new();
         let (rings, segments) = (24u32, 32u32);
@@ -287,7 +305,7 @@ fn prepass_depth_equals_the_main_pass_depth() {
         &vertices,
         indices.clone(),
         submeshes.clone(),
-        vec![material],
+        vec![material.clone()],
         PositionFormat::Unorm16,
     );
     // Every vertex follows the second palette entry.
@@ -305,10 +323,6 @@ fn prepass_depth_equals_the_main_pass_depth() {
     let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
     let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, settings).expect("renderer");
     renderer.readable_depth = true;
-    let upload = |renderer: &mut Renderer, mesh: &Mesh| {
-        let bytes = mesh.to_cooked().expect("cook");
-        renderer.upload_mesh(Mesh::read(&bytes).expect("valid")).expect("upload")
-    };
     let (character, prop) = (upload(&mut renderer, &character), upload(&mut renderer, &prop));
     let mut packets = FramePacketRing::new();
     let packet = packets.begin();

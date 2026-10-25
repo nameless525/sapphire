@@ -4,7 +4,8 @@
 use std::mem::offset_of;
 use std::num::NonZeroU64;
 
-use sapphire_assets::mesh::{PositionFormat, ToonMaterialParams, VertexShading, VertexSurface};
+use sapphire_assets::material::{AnimeCharacterParams, MaterialFamily};
+use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
@@ -123,6 +124,12 @@ impl MeshPass {
         self == Self::ScenePrepass
     }
 
+    /// Whether the pass shades with materials, binding each draw's group 3: only the main pass;
+    /// the prepasses' layout leaves group 3 out.
+    pub(crate) fn binds_materials(self) -> bool {
+        self == Self::Main
+    }
+
     /// The pass's vertex buffers for a mesh in `format`, in slot order.
     pub(crate) fn buffers(self, format: PositionFormat) -> [Option<wgpu::VertexBufferLayout<'static>>; 5] {
         let vertex = |stride: usize, attributes| {
@@ -150,15 +157,27 @@ impl MeshPass {
     }
 }
 
-/// The bind group layouts of `shaders/frame.wgsl`. Group 3 (material textures) arrives in M1.
+/// Group 3's bindings: texture slot `i` of a family at binding `i` (families have at most
+/// [`material_binding::SAMPLER`] slots), then the samplers.
+pub(crate) mod material_binding {
+    /// Trilinear, repeating: every UV-mapped slot.
+    pub const SAMPLER: u32 = 8;
+    /// Linear and clamped, without mips: ramps, read at a row's texel centers so rows never
+    /// blend.
+    pub const RAMP_SAMPLER: u32 = 9;
+}
+
+/// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
 #[derive(Debug)]
 pub(crate) struct Layouts {
     /// Group 0: frame constants, local lights and their lists.
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
-    /// Group 2: instances and materials.
+    /// Group 2: instances and a material family's parameter buffer.
     pub scene: wgpu::BindGroupLayout,
+    /// Group 3 per [`MaterialFamily::ALL`] entry: the family's texture slots and samplers.
+    pub materials: [wgpu::BindGroupLayout; MaterialFamily::ALL.len()],
 }
 
 impl Layouts {
@@ -197,11 +216,46 @@ impl Layouts {
                 "scene",
                 &[
                     buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
-                    buffer(1, S::VERTEX_FRAGMENT, storage, false, size_of::<ToonMaterialParams>()),
+                    // Each family's pipelines bind their own family's buffer here; only the
+                    // anime character family draws so far.
+                    buffer(1, S::VERTEX_FRAGMENT, storage, false, size_of::<AnimeCharacterParams>()),
                 ],
             ),
+            materials: MaterialFamily::ALL.map(|family| material_layout(device, family)),
         }
     }
+}
+
+/// Group 3 for `family`: one filterable 2D texture per slot, fragment-visible, then the two
+/// samplers ([`material_binding`]).
+fn material_layout(device: &wgpu::Device, family: MaterialFamily) -> wgpu::BindGroupLayout {
+    let fragment = wgpu::ShaderStages::FRAGMENT;
+    let slots = family.texture_slots().len() as u32;
+    debug_assert!(slots <= material_binding::SAMPLER, "texture slots end before the samplers");
+    let mut entries: Vec<wgpu::BindGroupLayoutEntry> = (0..slots)
+        .map(|binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: fragment,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        })
+        .collect();
+    for binding in [material_binding::SAMPLER, material_binding::RAMP_SAMPLER] {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: fragment,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        });
+    }
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some(family.name()),
+        entries: &entries,
+    })
 }
 
 /// Fixed-function state that differs between passes. Entry points are `vs_<name>` and
@@ -245,7 +299,11 @@ pub(crate) struct Pipelines {
 /// What every scene pipeline shares, kept to build the f32 ones later.
 #[derive(Debug)]
 struct PipelineTarget {
+    /// Groups 0–2, for passes that read no material textures: the sky and the prepasses.
     layout: wgpu::PipelineLayout,
+    /// Groups 0–2 and the anime character family's group 3: the passes that shade with it
+    /// (its shader and its outlines).
+    character_layout: wgpu::PipelineLayout,
     color_format: wgpu::TextureFormat,
     sample_count: u32,
     cache: Option<wgpu::PipelineCache>,
@@ -264,7 +322,18 @@ impl Pipelines {
             bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene)],
             immediate_size: 0,
         });
-        let target = PipelineTarget { layout, color_format, sample_count, cache: cache.cloned() };
+        let character_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("anime character"),
+            bind_group_layouts: &[
+                Some(&layouts.frame),
+                Some(&layouts.view),
+                Some(&layouts.scene),
+                Some(&layouts.materials[MaterialFamily::AnimeCharacter.index()]),
+            ],
+            immediate_size: 0,
+        });
+        let target =
+            PipelineTarget { layout, character_layout, color_format, sample_count, cache: cache.cloned() };
         let module = |name, source: &str| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
@@ -303,8 +372,10 @@ impl Pipelines {
             return;
         }
         let buffers = MeshPass::Main.buffers(format);
-        let toon = self.target.build(
+        let character = &self.target.character_layout;
+        let toon = self.target.build_with(
             device,
+            character,
             PassDesc {
                 name: "toon",
                 module: &self.toon_module,
@@ -315,8 +386,9 @@ impl Pipelines {
             },
         );
         // Inverted hull: keep only the back faces of the extruded shell.
-        let outline = self.target.build(
+        let outline = self.target.build_with(
             device,
+            character,
             PassDesc {
                 name: "outline",
                 module: &self.outline_module,
@@ -414,7 +486,17 @@ impl PipelineTarget {
         })
     }
 
+    /// A pipeline on the groups 0–2 layout.
     fn build(&self, device: &wgpu::Device, pass: PassDesc<'_>) -> wgpu::RenderPipeline {
+        self.build_with(device, &self.layout, pass)
+    }
+
+    fn build_with(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        pass: PassDesc<'_>,
+    ) -> wgpu::RenderPipeline {
         let color_targets = [Some(wgpu::ColorTargetState {
             format: self.color_format,
             blend: None,
@@ -423,7 +505,7 @@ impl PipelineTarget {
         let (vs, fs) = (format!("vs_{}", pass.name), format!("fs_{}", pass.name));
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(pass.name),
-            layout: Some(&self.layout),
+            layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: pass.module,
                 entry_point: Some(&vs),

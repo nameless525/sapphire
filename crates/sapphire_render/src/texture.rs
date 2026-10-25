@@ -9,9 +9,9 @@
 //! check over the formats a cook uses.
 //!
 //! Levels are uploaded as they are, with one `Queue::write_texture` each: textures are
-//! one-off uploads, like meshes. Binding textures into materials (and applying their
-//! [`Swizzle`], which wgpu views can't) is A3's; a texture pool with handles, residency and
-//! the per-frame upload budget come with the asset runtime (A4).
+//! one-off uploads, like meshes. Materials bind them (`materials`, M1 A3), and shaders apply
+//! their [`Swizzle`], which wgpu views can't, from the material's block. A texture pool with
+//! handles, residency and the per-frame upload budget come with the asset runtime (A4).
 
 use sapphire_assets::texture::{AstcBlock, Swizzle, Texture, TextureFormat, TextureFormatError};
 use sapphire_rhi::{FormatSupport, GpuContext, wgpu};

@@ -19,10 +19,12 @@
 
 use std::f32::consts::{PI, TAU};
 
+use sapphire_assets::material::{AnimeCharacterMaterial, CharacterRegion, Material, Outline, Rim};
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
-    Submesh, ToonMaterialParams, Vertex, VertexInfluence, quantize_weights,
+    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
+    SkinBind, Submesh, Vertex, VertexInfluence, quantize_weights,
 };
+use sapphire_assets::texture::Swizzle;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_render::{MeshHandle, RenderError, Renderer};
@@ -136,11 +138,13 @@ pub(crate) fn placement(bounds: [[f32; 3]; 2]) -> Mat4 {
     Mat4::from_scale_rotation_translation(Vec3::splat(scale), Quat::IDENTITY, base)
 }
 
-/// Builds, cooks and uploads the stalk, the way content is loaded: cooked bytes read in place.
+/// Builds, cooks and uploads the stalk, the way content is loaded: cooked bytes read in place,
+/// with the anime character material it embeds.
 pub(crate) fn upload_stalk(renderer: &mut Renderer) -> Result<MeshHandle, RenderError> {
     let bytes = stalk_mesh().to_cooked().expect("a procedural mesh cooks");
     let mesh = Mesh::read(&bytes)?;
-    renderer.upload_mesh(mesh)
+    let materials = renderer.upload_embedded_materials(mesh)?;
+    renderer.upload_mesh(mesh, &materials)
 }
 
 /// The stalk (see the module docs).
@@ -185,15 +189,22 @@ pub(crate) fn stalk_mesh() -> Mesh {
             indices.extend([a, b, c, c, b, d]);
         }
     }
-    let material = ToonMaterialParams {
+    let material = AnimeCharacterMaterial {
         base_color: [0.16, 0.62, 0.66, 1.0],
-        shade_color: [0.55, 0.62, 0.85, 1.0],
-        outline_color: [0.04, 0.1, 0.12, 1.0],
-        params: [0.0, 0.02, 0.35, 4.0],
+        regions: vec![CharacterRegion {
+            shade_color: [0.55, 0.62, 0.85],
+            outline_color: [0.04, 0.1, 0.12],
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: 0.35, ..Rim::default() },
+        outline: Outline { width: 4.0, ..Outline::default() },
+        ..AnimeCharacterMaterial::default()
     };
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let material = Material::from_document(&material, &swizzles).expect("the stalk's material is valid");
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
-    let mut mesh =
-        Mesh::from_vertices(&vertices, indices, submeshes, vec![material], PositionFormat::Unorm16);
+    let slots = vec![MaterialSlot::embedded("stalk", material)];
+    let mut mesh = Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16);
 
     let influences: Vec<VertexInfluence> = vertices
         .iter()

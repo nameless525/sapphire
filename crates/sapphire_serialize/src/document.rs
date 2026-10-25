@@ -5,10 +5,10 @@
 //!
 //! ```ron
 //! (
-//!     type: "sapphire::render::ToonMaterial",
-//!     version: 2,
+//!     type: "sapphire::render::AnimeCharacterMaterial",
+//!     version: 1,
 //!     data: (
-//!         base_color: (1.0, 0.9, 0.8),
+//!         base_color: (1.0, 0.9, 0.8, 1.0),
 //!     ),
 //! )
 //! ```
@@ -93,6 +93,12 @@ pub fn from_ron_dynamic(registry: &TypeRegistry, text: &str) -> Result<Box<dyn R
     let envelope = Envelope::parse(text)?;
     let document = registered(registry, &envelope.type_name)?;
     (document.load)(text, envelope)
+}
+
+/// The stable name a document's envelope gives its type, without decoding its data: for
+/// readers that pick the type to decode as from a closed set (material families).
+pub fn type_name(text: &str) -> Result<String, DocumentError> {
+    Ok(Envelope::parse(text)?.type_name)
 }
 
 /// Writes a value of any type registered with `#[reflect(Document)]` as a document.

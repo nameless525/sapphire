@@ -4,12 +4,17 @@
 //! Importers produce an [`ImportedMesh`] with a single LOD; [`bake`](crate::bake) fills in
 //! outline normals; [`optimize`](crate::optimize) reorders it for the GPU and adds the LOD
 //! chain; [`ImportedMesh::pack`] quantizes it into the cooked
-//! [`Mesh`].
+//! [`Mesh`] and resolves its material slots.
 
+use std::collections::BTreeMap;
+
+use sapphire_assets::AssetId;
+use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialDocument, MaterialError};
 use sapphire_assets::mesh::{
-    Influences, Joint, Lod, MAX_INFLUENCES, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
-    ToonMaterialParams, Vertex, VertexInfluence, VertexStreams, quantize_weights,
+    Influences, Joint, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat,
+    Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence, VertexStreams, quantize_weights,
 };
+use sapphire_assets::texture::Swizzle;
 
 /// An imported mesh. Every per-vertex vector has one entry per vertex.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,9 +27,37 @@ pub struct ImportedMesh {
     pub indices: Vec<u32>,
     /// LOD0 first. Importers write LOD0 alone, with one submesh per source primitive.
     pub lods: Vec<Lod>,
-    pub materials: Vec<ToonMaterialParams>,
+    /// The material slots submeshes index, as the importer generated them from the source.
+    pub materials: Vec<ImportedMaterial>,
     pub skin: Option<ImportedSkin>,
     pub morph_targets: Vec<ImportedMorphTarget>,
+}
+
+/// A material slot as imported: the source's name for it, and the anime character material
+/// generated from the source's description of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedMaterial {
+    /// Unique within the mesh; sidecar bindings name slots by it.
+    pub name: String,
+    pub generated: AnimeCharacterMaterial,
+}
+
+/// A material slot that can't be packed.
+#[derive(Debug, thiserror::Error)]
+pub enum MaterialSlotError {
+    #[error("the sidecar binds material slot {name:?}, but the source's slots are {}", slots.join(", "))]
+    UnknownSlot { name: String, slots: Vec<String> },
+    #[error(
+        "the material generated for slot {slot:?} references textures; textured materials are \
+         documents, bound to the slot in the mesh's sidecar"
+    )]
+    Textured { slot: String },
+    #[error("the material generated for slot {slot:?} is invalid")]
+    Invalid {
+        slot: String,
+        #[source]
+        source: MaterialError,
+    },
 }
 
 /// A skin before packing: the cooked skeleton and palette, and full-precision weights.
@@ -97,8 +130,41 @@ impl SkinWeights {
 }
 
 impl ImportedMesh {
-    /// Packs the mesh into its cooked form.
-    pub fn pack(&self, format: PositionFormat) -> Mesh {
+    /// Packs the mesh into its cooked form. Slots named in `bindings` reference those material
+    /// assets; the others embed the material the importer generated.
+    pub fn pack(
+        &self,
+        format: PositionFormat,
+        bindings: &BTreeMap<String, AssetId>,
+    ) -> Result<Mesh, MaterialSlotError> {
+        if let Some(name) = bindings.keys().find(|name| !self.materials.iter().any(|m| &m.name == *name)) {
+            let slots = self.materials.iter().map(|m| format!("{:?}", m.name)).collect();
+            return Err(MaterialSlotError::UnknownSlot { name: name.clone(), slots });
+        }
+        let materials =
+            self.materials
+                .iter()
+                .map(|imported| {
+                    let material = match bindings.get(&imported.name) {
+                        Some(&id) => SlotMaterial::Asset(id),
+                        None => {
+                            // Generated materials reference no textures, so a mesh never
+                            // depends on a texture's cook; textured materials are documents
+                            // (`sapphire_assets::material`).
+                            let textures = imported.generated.textures();
+                            if textures.iter().any(Option::is_some) {
+                                return Err(MaterialSlotError::Textured { slot: imported.name.clone() });
+                            }
+                            let swizzles = vec![Swizzle::IDENTITY; textures.len()];
+                            let material = Material::from_document(&imported.generated, &swizzles).map_err(
+                                |source| MaterialSlotError::Invalid { slot: imported.name.clone(), source },
+                            )?;
+                            SlotMaterial::Embedded(material)
+                        }
+                    };
+                    Ok(MaterialSlot { name: imported.name.clone(), material })
+                })
+                .collect::<Result<_, _>>()?;
         let skin = self.skin.as_ref().map(|skin| {
             let influences: Vec<VertexInfluence> = skin
                 .weights
@@ -123,15 +189,15 @@ impl ImportedMesh {
             morph_deltas
                 .extend(target.deltas.iter().map(|d| MorphDelta::new(d.vertex, d.position, d.normal)));
         }
-        Mesh {
+        Ok(Mesh {
             streams: VertexStreams::pack(&self.vertices, format),
             indices: self.indices.clone(),
             lods: self.lods.clone(),
-            materials: self.materials.clone(),
+            materials,
             skin,
             morph_targets,
             morph_deltas,
-        }
+        })
     }
 }
 

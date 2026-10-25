@@ -87,7 +87,7 @@ impl Stage {
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
         let (character, bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
-            renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
+            scene::upload_character(&mut renderer, mesh)
         })?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
         if options.lights {

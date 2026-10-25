@@ -4,7 +4,9 @@
 use std::f32::consts::{PI, TAU};
 
 use glam::{Mat4, Vec3};
-use sapphire_assets::mesh::{Mesh, PositionFormat, Submesh, ToonMaterialParams, Vertex};
+use sapphire_assets::material::{AnimeCharacterMaterial, CharacterRegion, Material, Outline, Rim};
+use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex};
+use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, GraphReport};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle,
@@ -64,14 +66,22 @@ fn sphere(rgb: [f32; 3], outline_px: f32) -> Mesh {
         }
     }
     // Lit everywhere (no shadow tone or rim), so only the outline and the silhouette show.
-    let material = ToonMaterialParams {
+    let material = AnimeCharacterMaterial {
         base_color: [rgb[0], rgb[1], rgb[2], 1.0],
-        shade_color: [1.0; 4],
-        outline_color: [0.0, 0.0, 0.0, 1.0],
-        params: [0.0, 0.02, 0.0, outline_px],
+        regions: vec![CharacterRegion {
+            shade_color: [1.0; 3],
+            outline_color: [0.0; 3],
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: 0.0, ..Rim::default() },
+        outline: Outline { width: outline_px, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
     };
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let material = Material::from_document(&material, &swizzles).expect("a valid material");
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
-    Mesh::from_vertices(&vertices, indices, submeshes, vec![material], PositionFormat::Unorm16)
+    let slots = vec![MaterialSlot::embedded("sphere", material)];
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
 }
 
 /// Post that shows linear values below about 0.98 as they are: a tone curve linear from black,
@@ -122,7 +132,9 @@ impl Scene {
         let mut renderer = Renderer::new(gpu, FORMAT, RenderSettings { msaa, ..RenderSettings::default() })
             .expect("renderer");
         let bytes = mesh.to_cooked().expect("cook");
-        let mesh = renderer.upload_mesh(Mesh::read(&bytes).expect("a valid mesh")).expect("upload");
+        let mesh = Mesh::read(&bytes).expect("a valid mesh");
+        let materials = renderer.upload_embedded_materials(mesh).expect("materials");
+        let mesh = renderer.upload_mesh(mesh, &materials).expect("upload");
         let mut graph = GraphExecutor::new();
         graph.set_report(true);
         Self { renderer, graph, packets: FramePacketRing::new(), mesh, post, added: false }

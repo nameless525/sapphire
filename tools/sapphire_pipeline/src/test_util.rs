@@ -2,7 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_assets::material::AnimeCharacterMaterial;
 use sapphire_serialize::cooked::AlignedVec;
+
+use crate::mesh::ImportedMaterial;
+
+/// An imported material slot named `name`, with the default generated material.
+pub(crate) fn material(name: &str) -> ImportedMaterial {
+    ImportedMaterial { name: name.to_owned(), generated: AnimeCharacterMaterial::default() }
+}
 
 /// The file at `path`, in memory aligned as cooked data must be.
 pub(crate) fn read_aligned(path: &Path) -> AlignedVec {

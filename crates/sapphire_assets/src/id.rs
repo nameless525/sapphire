@@ -24,6 +24,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// - **rkyv archives** (cooked data): the archived form is `AssetId` itself, 16 bytes with
 ///   alignment 1, so cooked data hands out `&AssetId` in place with no conversion and no
 ///   padding around it.
+/// - **Reflection:** an opaque value (`sapphire::assets::AssetId`), so reflected documents that
+///   reference assets (materials) load by type name and an inspector shows the ID whole.
 #[derive(
     Clone,
     Copy,
@@ -37,9 +39,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
     rkyv::Deserialize,
     rkyv::Portable,
     rkyv::bytecheck::CheckBytes,
+    bevy_reflect::Reflect,
 )]
 #[rkyv(as = AssetId)]
 #[bytecheck(crate = rkyv::bytecheck)]
+#[reflect(opaque, Clone, Debug, PartialEq, Hash)]
+#[type_path = "sapphire::assets"]
 #[repr(transparent)]
 pub struct AssetId([u8; 16]);
 

@@ -6,7 +6,9 @@ use std::num::NonZeroU64;
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
-use sapphire_assets::mesh::{ArchivedMesh, MeshError, PositionFormat};
+use sapphire_assets::AssetId;
+use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily};
+use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +17,8 @@ use crate::draw::MeshDraws;
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
-use crate::mesh_pool::MeshPool;
+use crate::materials::{MaterialHandle, Materials};
+use crate::mesh_pool::{MeshPool, SubmeshMaterial};
 use crate::pipelines::{
     DEPTH_FORMAT, Layouts, MeshPass, MeshPipelines, NORMALS_FORMAT, Pipelines, SCENE_COLOR_FORMAT,
     VELOCITY_FORMAT,
@@ -23,6 +26,7 @@ use crate::pipelines::{
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
 use crate::skinning::{Skinning, SkinningStats};
+use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
 /// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
@@ -115,6 +119,30 @@ pub enum RenderError {
     NotFilterable(wgpu::TextureFormat),
     #[error("{format:?} does not support {samples}x MSAA on this device")]
     UnsupportedMsaa { format: wgpu::TextureFormat, samples: u32 },
+    #[error("invalid material: {0}")]
+    InvalidMaterial(#[from] MaterialError),
+    #[error("texture slot `{slot}` binds {id}, which the material's textures don't include")]
+    MissingTexture { slot: &'static str, id: AssetId },
+    #[error(
+        "texture slot `{slot}` was cooked against a texture with swizzle `{expected}`, but the texture \
+         bound has `{found}`; recook the material with its textures' cook"
+    )]
+    TextureSwizzle { slot: &'static str, expected: String, found: String },
+    #[error("{0:?} was not uploaded to this renderer")]
+    UnknownMaterial(MaterialHandle),
+    #[error("a {from} material can't be updated into a {to} one")]
+    MaterialFamilyChanged { from: MaterialFamily, to: MaterialFamily },
+    #[error("the {0} family's material buffer is full")]
+    MaterialPoolFull(MaterialFamily),
+    #[error("the mesh has {slots} material slots, but {handles} materials were given")]
+    MaterialCount { slots: usize, handles: usize },
+    #[error("{0} materials have no shaders yet, so meshes can't draw with them")]
+    NotDrawable(MaterialFamily),
+    #[error(
+        "material slot {slot:?} names material asset {id}, which only the asset runtime resolves (M1 A4); \
+         upload it with `upload_material`"
+    )]
+    UnresolvedMaterial { slot: String, id: AssetId },
 }
 
 /// Renderer counters for the stats overlay and Tracy (rule R9).
@@ -130,8 +158,15 @@ pub struct RenderStats {
     /// Times the draw list was rebuilt since the renderer was created: only when instances
     /// are added or removed, change mesh, or meshes are uploaded.
     pub draw_list_builds: u32,
-    /// Mesh pool bytes in use: vertices, indices and materials.
+    /// Mesh pool bytes in use: vertices (with skin and morph data) and indices.
     pub mesh_pool_bytes: u64,
+    /// Materials uploaded, across every family.
+    pub materials: u32,
+    /// Bytes of every family's material slots.
+    pub material_bytes: u64,
+    /// Material slots the last prepared frame uploads: those uploaded or updated since the
+    /// frame before. A material edit uploads one.
+    pub material_uploads: u32,
     /// GPU buffers reallocated to grow, since the renderer was created. Growth copies data and
     /// rebuilds bind groups, so it should settle after loading.
     pub buffer_growths: u32,
@@ -201,6 +236,8 @@ pub struct Renderer {
     /// The frame's local lights, their lists and the cluster pass.
     lights: Lights,
     meshes: MeshPool,
+    /// Every family's parameter buffer and each material's group 3.
+    materials: Materials,
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
     scene_bind_group: wgpu::BindGroup,
@@ -286,8 +323,9 @@ impl Renderer {
             }],
         });
         let meshes = MeshPool::new(&device);
+        let materials = Materials::new(&device, gpu.queue());
         let scene = GpuScene::new(&device);
-        let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &meshes);
+        let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &materials);
         let skinning = Skinning::new(&device);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         tracing::info!(
@@ -312,6 +350,7 @@ impl Renderer {
             view_bind_group,
             lights,
             meshes,
+            materials,
             scene,
             scene_bind_group,
             skinning,
@@ -326,16 +365,94 @@ impl Renderer {
         })
     }
 
+    /// Validates and uploads a cooked material ([`sapphire_assets::material::Material::read`])
+    /// into the next slot of its family's parameter buffer, and binds its textures (group 3),
+    /// which `textures` resolves by ID. Each must have the swizzle the material was cooked with.
+    /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
+    /// the next recorded frame.
+    ///
+    /// Every family uploads. Only anime character materials draw so far: the other families'
+    /// shaders come with their packages (sky W2, fog cards W3, environment W4, foliage W6).
+    pub fn upload_material<'t>(
+        &mut self,
+        material: &ArchivedMaterial,
+        textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
+    ) -> Result<MaterialHandle, RenderError> {
+        let (handle, replaced) =
+            self.materials.upload(&self.device, &self.queue, &self.layouts.materials, material, textures)?;
+        if replaced && material.family == MaterialFamily::AnimeCharacter {
+            self.scene_bind_group =
+                create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.materials);
+        }
+        self.update_pool_stats();
+        Ok(handle)
+    }
+
+    /// Replaces material `handle` in place with `material`, of the same family: its one slot is
+    /// rewritten and uploaded with the next recorded frame, and its textures rebound. Nothing
+    /// else is uploaded or rebuilt, so this is how hot reload (A8) and live link (A9) apply a
+    /// material edit.
+    pub fn update_material<'t>(
+        &mut self,
+        handle: MaterialHandle,
+        material: &ArchivedMaterial,
+        textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
+    ) -> Result<(), RenderError> {
+        self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)
+    }
+
+    /// Uploads the materials `mesh` embeds, one handle per material slot, for
+    /// [`Self::upload_mesh`]. Embedded materials reference no textures (importers make no texture
+    /// assets). A slot bound to a material asset fails with
+    /// [`RenderError::UnresolvedMaterial`]: those load through the asset runtime once packs
+    /// resolve IDs (M1 A4), and are uploaded with [`Self::upload_material`].
+    pub fn upload_embedded_materials(
+        &mut self,
+        mesh: &ArchivedMesh,
+    ) -> Result<Vec<MaterialHandle>, RenderError> {
+        // Checked first: slots are never freed, so a failure halfway would leak the earlier ones.
+        for slot in mesh.materials.iter() {
+            match &slot.material {
+                ArchivedSlotMaterial::Embedded(material) => material.validate()?,
+                ArchivedSlotMaterial::Asset(id) => {
+                    return Err(RenderError::UnresolvedMaterial { slot: slot.name.to_string(), id: *id });
+                }
+            }
+        }
+        mesh.materials
+            .iter()
+            .filter_map(|slot| match &slot.material {
+                ArchivedSlotMaterial::Embedded(material) => Some(self.upload_material(material, |_| None)),
+                ArchivedSlotMaterial::Asset(_) => None,
+            })
+            .collect()
+    }
+
     /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
-    /// and its materials into the mesh pool. Its streams are copied as they are; all its LODs'
-    /// indices are uploaded and LOD0 is drawn. A skinned or morphed mesh also uploads its skin
-    /// and morph targets, and each of its instances is drawn from its own skinning outputs, in
-    /// its bind pose until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)).
+    /// into the mesh pool, drawing material slot `i` with `materials[i]`. Its streams are copied
+    /// as they are; all its LODs' indices are uploaded and LOD0 is drawn. A skinned or morphed
+    /// mesh also uploads its skin and morph targets, and each of its instances is drawn from its
+    /// own skinning outputs, in its bind pose until a packet poses it
+    /// ([`SkinnedInstance`](crate::SkinnedInstance)).
     ///
     /// The first mesh with f32 positions, or skinned or morphed, also builds the f32 pipelines;
     /// the first skinned or morphed one the skinning and character prepass pipelines.
-    pub fn upload_mesh(&mut self, mesh: &ArchivedMesh) -> Result<MeshHandle, RenderError> {
-        let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh)?;
+    pub fn upload_mesh(
+        &mut self,
+        mesh: &ArchivedMesh,
+        materials: &[MaterialHandle],
+    ) -> Result<MeshHandle, RenderError> {
+        let materials = materials
+            .iter()
+            .map(|&handle| {
+                let record = self.materials.record(handle).ok_or(RenderError::UnknownMaterial(handle))?;
+                if record.family != MaterialFamily::AnimeCharacter {
+                    return Err(RenderError::NotDrawable(record.family));
+                }
+                Ok(SubmeshMaterial { handle, slot: record.slot })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
         let record = &self.meshes.records()[handle.index()];
         self.pipelines.prepare_format(&self.device, record.draw_format());
         if record.deform().is_some() {
@@ -347,10 +464,6 @@ impl Renderer {
         }
         let bounds = mesh.streams.bounds.to_native();
         self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
-        if moves.materials {
-            self.scene_bind_group =
-                create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.meshes);
-        }
         self.scene.meshes_changed();
         self.update_pool_stats();
         Ok(handle)
@@ -377,8 +490,9 @@ impl Renderer {
 
         if self.scene.prepare(device, queue, packet.frame, &packet.instances, self.meshes.records()) {
             self.scene_bind_group =
-                create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.meshes);
+                create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.materials);
         }
+        self.materials.prepare();
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         if self.lights.prepare(device, queue, packet, self.scene.slots()) {
             self.frame_bind_group =
@@ -398,6 +512,7 @@ impl Renderer {
         self.stats.lut_bakes = self.post.bakes();
         self.stats.lights = self.lights.stats();
         self.stats.skinning = self.skinning.stats();
+        self.stats.material_uploads = self.materials.pending();
         self.update_pool_stats();
     }
 
@@ -491,6 +606,7 @@ impl Renderer {
             ref view_bind_group,
             ref mut lights,
             ref meshes,
+            ref mut materials,
             ref mut scene,
             ref scene_bind_group,
             ref skinning,
@@ -499,9 +615,16 @@ impl Renderer {
             ..
         } = *self;
         let (scene_uploads, draw_list, records) = scene.split_for_record();
+        let (material_uploads, material_records) = materials.split_for_record();
         let (light_uploads, cluster_pass) = lights.split_for_record();
         let skinning_frame = skinning.frame();
-        let mesh_draws = MeshDraws { meshes, list: draw_list, records, skinned: skinning.outputs() };
+        let mesh_draws = MeshDraws {
+            meshes,
+            list: draw_list,
+            records,
+            skinned: skinning.outputs(),
+            materials: material_records,
+        };
         let (post_uniforms, post_buffer) = post.uniforms(size != output);
         // A handle, so `post` can be borrowed mutably for its passes below.
         let post_buffer = post_buffer.clone();
@@ -513,6 +636,7 @@ impl Renderer {
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
             upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
             scene_uploads.write(uploads, ctx.encoder);
+            material_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
             if let Some(skinning) = &skinning_frame {
                 skinning.upload(uploads, ctx.encoder);
@@ -688,10 +812,21 @@ impl Renderer {
         &self.skinning
     }
 
+    /// The materials, for tests that read their buffers back.
+    #[cfg(test)]
+    pub(crate) fn materials(&self) -> &Materials {
+        &self.materials
+    }
+
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
-        self.stats.buffer_growths =
-            self.meshes.growths() + self.scene.growths() + self.lights.growths() + self.skinning.growths();
+        self.stats.materials = self.materials.len();
+        self.stats.material_bytes = self.materials.bytes_used();
+        self.stats.buffer_growths = self.meshes.growths()
+            + self.materials.growths()
+            + self.scene.growths()
+            + self.lights.growths()
+            + self.skinning.growths();
     }
 }
 
@@ -761,18 +896,21 @@ fn create_frame_bind_group(
     })
 }
 
+/// Group 2 for the anime character family's pipelines (and the prepasses): instances and that
+/// family's materials.
 fn create_scene_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     scene: &GpuScene,
-    meshes: &MeshPool,
+    materials: &Materials,
 ) -> wgpu::BindGroup {
+    let character = materials.buffer(MaterialFamily::AnimeCharacter);
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("scene"),
         layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: meshes.material_buffer().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: character.as_entire_binding() },
         ],
     })
 }

@@ -14,6 +14,8 @@
 //! 4. Keys each asset ([`CacheKey`]) and takes its output from the [`Cache`], or imports,
 //!    bakes, validates and cooks it and stores the result. An output is written only when its
 //!    bytes change, so a file watcher (hot reload, A8) sees exactly the assets that changed.
+//!    Materials read the cooked textures they reference, so they cook after every other asset;
+//!    their keys depend on those textures' keys.
 //!
 //! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
 //! format, whose versions are part of the cache key:
@@ -27,6 +29,10 @@
 //! - **Anime character maps** cook `.facesdf.ron`, `.ramp.ron` and `.ilm.ron` documents →
 //!   `.ktx2` (A7): the map a document describes is generated, then cooked as its texture
 //!   class ([`character_maps`]).
+//! - **Materials** cook `.material.ron` documents → `.smat` (A3), checked against the textures
+//!   they reference ([`material`]). A mesh's slots embed the materials the importer generated,
+//!   or name the material assets its sidecar binds them to, which must be materials of the same
+//!   tree.
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
@@ -39,6 +45,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use sapphire_assets::AssetId;
+use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
@@ -47,6 +54,8 @@ use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
+use crate::material::{self, MaterialCookError, Referenced, TextureKind};
+use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
 use crate::texture::{self, TextureError};
 use crate::{bake, optimize};
@@ -108,7 +117,7 @@ pub struct Recipe {
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
-const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION];
+const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION];
 
 /// Extension of the temporary files outputs are written through.
 const TEMP_EXTENSION: &str = "tmp";
@@ -136,6 +145,23 @@ impl Recipe {
                 format: TEXTURE_VERSION,
                 extension: TEXTURE_EXTENSION,
             },
+            ImportSettings::Material(_) => Self {
+                importer: material::IMPORTER,
+                cooker: material::COOKER,
+                format: Material::VERSION,
+                extension: MATERIAL_EXTENSION,
+            },
+        }
+    }
+
+    /// Where a source at `relative` cooks to, relative to the output root: its path with the
+    /// cooked extension in place of the source's (`samples/mannequin.glb` →
+    /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`).
+    pub fn output_path(&self, relative: &Path) -> PathBuf {
+        if material::is_source(relative) {
+            material::output_path(relative, self.extension)
+        } else {
+            relative.with_extension(self.extension)
         }
     }
 }
@@ -173,6 +199,24 @@ pub enum CookError {
         #[source]
         source: MeshError,
     },
+    #[error("failed to cook material {}", path.display())]
+    Material {
+        path: PathBuf,
+        /// Boxed: document errors are large, and every cook result carries this type.
+        #[source]
+        source: Box<MaterialCookError>,
+    },
+    #[error("failed to resolve the material slots of {}", path.display())]
+    MaterialSlot {
+        path: PathBuf,
+        #[source]
+        source: MaterialSlotError,
+    },
+    #[error(
+        "{} binds material slot {slot:?} to {id}, which is not a material document of this content tree",
+        path.display()
+    )]
+    NotAMaterial { path: PathBuf, slot: String, id: AssetId },
     #[error("{} and {} would both cook to {}", first.display(), second.display(), output.display())]
     OutputCollision { first: PathBuf, second: PathBuf, output: PathBuf },
     #[error("failed to read {}", path.display())]
@@ -259,21 +303,28 @@ pub fn cook_dir(
     for asset in resolved.assets {
         let recipe = Recipe::for_settings(&asset.meta.importer);
         let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
-        let output = out_root.join(relative).with_extension(recipe.extension);
+        let output = out_root.join(recipe.output_path(relative));
         if let Some(first) = outputs.insert(output.clone(), asset.path.clone()) {
             return Err(CookError::OutputCollision { first, second: asset.path, output });
         }
-        plan.push((asset, recipe, output));
+        plan.push(Planned { asset, recipe, output });
     }
     // Before writing, so an output whose name only changed case (on a case-insensitive file
     // system) is replaced rather than removed as stale.
     let removed = prune(out_root, &outputs)?;
 
     let cache = options.cache.map(Cache::new);
-    let assets = plan
-        .into_iter()
-        .map(|(asset, recipe, output)| cook_asset(asset, &recipe, output, cache.as_ref(), options.cook))
-        .collect::<Result<_, _>>()?;
+    let by_id = plan.iter().enumerate().map(|(index, planned)| (planned.asset.meta.id, index)).collect();
+    // Materials read the cooked textures they reference, so everything else cooks first.
+    let (materials, others): (Vec<usize>, Vec<usize>) =
+        (0..plan.len()).partition(|&index| plan[index].is_material());
+    let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
+    for index in others.into_iter().chain(materials) {
+        let assets = Assets { plan: &plan, by_id: &by_id, cooked: &cooked };
+        let asset = cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)?;
+        cooked[index] = Some(asset);
+    }
+    let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     Ok(CookReport {
         assets,
         created_sidecars: resolved.created,
@@ -282,17 +333,53 @@ pub fn cook_dir(
     })
 }
 
+/// A source asset, its recipe and where it cooks to.
+struct Planned {
+    asset: SourceAsset,
+    recipe: Recipe,
+    output: PathBuf,
+}
+
+impl Planned {
+    fn is_material(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::Material(_))
+    }
+}
+
+/// The content tree's assets by ID, with what has cooked so far.
+struct Assets<'a> {
+    plan: &'a [Planned],
+    by_id: &'a HashMap<AssetId, usize>,
+    cooked: &'a [Option<CookedAsset>],
+}
+
+impl<'a> Assets<'a> {
+    fn get(&self, id: AssetId) -> Option<&'a Planned> {
+        self.by_id.get(&id).map(|&index| &self.plan[index])
+    }
+
+    /// What a material's cook knows about asset `id`.
+    fn referenced(&self, id: AssetId) -> Option<Referenced<'a>> {
+        let index = *self.by_id.get(&id)?;
+        let planned = &self.plan[index];
+        Some(Referenced {
+            source: &planned.asset.path,
+            class: TextureKind::of(&planned.asset.meta.importer),
+            cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
+        })
+    }
+}
+
 /// Brings one asset's output up to date.
 fn cook_asset(
-    asset: SourceAsset,
-    recipe: &Recipe,
-    output: PathBuf,
+    planned: &Planned,
+    assets: &Assets<'_>,
     cache: Option<&Cache>,
     cook: Cook,
 ) -> Result<CookedAsset, CookError> {
-    let SourceAsset { path, meta } = asset;
-    let bytes = fs::read(&path).map_err(|source| CookError::Read { path: path.clone(), source })?;
-    let dependencies = dependencies(&path, &bytes, &meta.importer)?;
+    let Planned { asset: SourceAsset { path, meta }, recipe, output } = planned;
+    let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source })?;
+    let dependencies = dependencies(path, &bytes, &meta.importer, assets)?;
     let key = CacheKey::new(&KeyInputs {
         source: blake3::hash(&bytes),
         recipe,
@@ -300,7 +387,7 @@ fn cook_asset(
         cook,
         dependencies: &dependencies,
     });
-    let current = file_hash(&output)?;
+    let current = file_hash(output)?;
     let done =
         |status| CookedAsset { id: meta.id, source: path.clone(), output: output.clone(), key, status };
 
@@ -316,7 +403,7 @@ fn cook_asset(
     let (status, cooked) = match cached {
         Some(cooked) => (CookStatus::Cached, cooked),
         None => {
-            let cooked = cook_source(&path, &bytes, &meta.importer, cook)?;
+            let cooked = cook_source(path, &bytes, &meta.importer, cook, assets)?;
             if let Some(cache) = cache {
                 cache.put(&key, &cooked)?;
             }
@@ -324,7 +411,7 @@ fn cook_asset(
         }
     };
     if current != Some(blake3::hash(&cooked)) {
-        write_atomically(&output, &cooked)?;
+        write_atomically(output, &cooked)?;
     }
     Ok(done(status))
 }
@@ -335,6 +422,7 @@ fn cook_source(
     bytes: &[u8],
     settings: &ImportSettings,
     cook: Cook,
+    assets: &Assets<'_>,
 ) -> Result<Vec<u8>, CookError> {
     match settings {
         ImportSettings::Gltf(settings) => {
@@ -346,6 +434,9 @@ fn cook_source(
         ImportSettings::CharacterMap(settings) => {
             character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
         }
+        ImportSettings::Material(_) => material::read(bytes)
+            .and_then(|document| material::cook(&document, |id| assets.referenced(id)))
+            .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -399,10 +490,23 @@ fn is_hidden(relative: &Path) -> bool {
     })
 }
 
-/// Everything besides its own bytes that cooking `path` reads: part of its cache key.
-fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<Vec<Dependency>, CookError> {
+/// Everything besides its own bytes that cooking `path` reads: part of its cache key. Also
+/// checks the asset references the source makes, on every cook, cached or not, since a
+/// referenced asset can change or disappear while the source stays the same.
+fn dependencies(
+    path: &Path,
+    bytes: &[u8],
+    settings: &ImportSettings,
+    assets: &Assets<'_>,
+) -> Result<Vec<Dependency>, CookError> {
     match settings {
-        ImportSettings::Gltf(_) => {
+        ImportSettings::Gltf(settings) => {
+            // The mesh holds only the bound materials' IDs, so their contents aren't inputs.
+            for (slot, &id) in &settings.materials {
+                if !assets.get(id).is_some_and(Planned::is_material) {
+                    return Err(CookError::NotAMaterial { path: path.to_owned(), slot: slot.clone(), id });
+                }
+            }
             let files = gltf::external_files(bytes)
                 .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
             let dir = path.parent().unwrap_or(Path::new(""));
@@ -428,6 +532,9 @@ fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<
                 })
                 .collect()
         }
+        ImportSettings::Material(_) => material::read(bytes)
+            .and_then(|document| material::dependencies(&document, |id| assets.referenced(id)))
+            .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -437,7 +544,8 @@ fn import_mesh(path: &Path, bytes: &[u8], settings: &MeshSettings, cook: Cook) -
         .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
     bake::outline_normals(&mut mesh, &settings.outline);
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
-    Ok(mesh.pack(settings.position_format))
+    mesh.pack(settings.position_format, &settings.materials)
+        .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })
 }
 
 /// `mesh` as cooked bytes, read back through the runtime's checks ([`Mesh::read`]) so a cook
@@ -555,16 +663,24 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookError> {
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
-    use sapphire_assets::mesh::PositionFormat;
+    use sapphire_assets::material::{
+        AnimeCharacterMaterial, CharacterSurface, DiffuseMode, HairShading, RampDiffuse, TextureBinding,
+    };
+    use sapphire_assets::mesh::{PositionFormat, SlotMaterial};
+    use sapphire_assets::texture::{Component, Swizzle};
     use serde_json::json;
 
     use super::*;
     use crate::bake::OutlineSettings;
     use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
+    use crate::material::MaterialSettings;
     use crate::meta::{AssetMeta, sidecar_path};
     use crate::optimize::LodSettings;
     use crate::samples;
     use crate::test_util::{TempDir, read_aligned};
+    use crate::texture::{
+        ColorSettings, MaskChannels, MaskSettings, RampSettings, TextureClass, TextureSettings,
+    };
 
     /// A source tree, an output directory and a cache, all in one scratch directory.
     struct Scratch {
@@ -1016,6 +1132,194 @@ mod tests {
                 );
             }
         }
+    }
+
+    const ALBEDO: &str = "a1b2c3d4-0000-4000-8000-000000000001";
+    const RAMP: &str = "a1b2c3d4-0000-4000-8000-000000000002";
+    const HAIR_MASK: &str = "a1b2c3d4-0000-4000-8000-000000000003";
+    const HAIR: &str = "a1b2c3d4-0000-4000-8000-000000000004";
+
+    fn id(text: &str) -> AssetId {
+        text.parse().unwrap()
+    }
+
+    /// Writes a sidecar with a known ID, so documents can reference the asset.
+    fn write_sidecar(source: &Path, id: &str, importer: ImportSettings) {
+        let meta = AssetMeta { id: id.parse().unwrap(), importer };
+        fs::write(sidecar_path(source), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+    }
+
+    impl Scratch {
+        /// A `width × height` RGBA PNG at `relative`, cooked as `class`, with ID `id`.
+        fn add_texture(&self, relative: &str, id: &str, class: TextureClass, seed: u8) -> PathBuf {
+            let path = self.source().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // 16 rows tall, as ramps must be (A7's layout).
+            let image = ::image::RgbaImage::from_fn(16, 16, |x, y| {
+                ::image::Rgba([(x * 16) as u8 ^ seed, (y * 16) as u8, seed, 255 - (x * 8) as u8])
+            });
+            image.save_with_format(&path, ::image::ImageFormat::Png).unwrap();
+            write_sidecar(&path, id, ImportSettings::Texture(TextureSettings { class }));
+            path
+        }
+
+        /// A material document at `relative` with ID `id`.
+        fn add_material(&self, relative: &str, id: &str, material: &AnimeCharacterMaterial) -> PathBuf {
+            let path = self.source().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, sapphire_serialize::to_ron(material).unwrap()).unwrap();
+            write_sidecar(&path, id, ImportSettings::Material(MaterialSettings::default()));
+            path
+        }
+
+        /// Hair textures and a hair material using them: albedo, a ramp, and a two-channel
+        /// highlight mask (which ASTC stores with a swizzle).
+        fn add_hair(&self) -> PathBuf {
+            self.add_texture("hair/albedo.png", ALBEDO, TextureClass::Color(ColorSettings::default()), 1);
+            self.add_texture("hair/ramp.png", RAMP, TextureClass::Ramp(RampSettings::default()), 2);
+            let two = MaskSettings { channels: MaskChannels::Two, ..MaskSettings::default() };
+            self.add_texture("hair/mask.png", HAIR_MASK, TextureClass::Mask(two), 3);
+            self.add_material("hair/hair.material.ron", HAIR, &hair_material(id(RAMP)))
+        }
+    }
+
+    fn hair_material(ramp: AssetId) -> AnimeCharacterMaterial {
+        AnimeCharacterMaterial {
+            surface: CharacterSurface::Hair(HairShading {
+                mask_map: Some(id(HAIR_MASK)),
+                ..HairShading::default()
+            }),
+            base_color_map: Some(id(ALBEDO)),
+            diffuse: DiffuseMode::Ramp(RampDiffuse { map: ramp, mix: 0.5 }),
+            ..AnimeCharacterMaterial::default()
+        }
+    }
+
+    fn asset<'a>(report: &'a CookReport, source: &Path) -> &'a CookedAsset {
+        report.assets.iter().find(|asset| asset.source == source).expect("the asset was cooked")
+    }
+
+    #[test]
+    fn materials_cook_against_the_textures_they_reference() {
+        let scratch = Scratch::new("cook_materials");
+        let hair = scratch.add_hair();
+        let ra01 = Swizzle([Component::R, Component::A, Component::Zero, Component::One]);
+        for (cook, mask_swizzle) in [(Cook::Desktop, Swizzle::IDENTITY), (Cook::Mobile, ra01)] {
+            let report = scratch.cook_with(cook, true);
+            let material = asset(&report, &hair);
+            assert_eq!(material.output, scratch.out_for(cook).join("hair/hair.smat"));
+            assert_eq!(material.id, id(HAIR));
+            let cooked = Material::from_cooked(&read_aligned(&material.output)).unwrap();
+            let binding = |slot: usize| cooked.textures[slot];
+            assert_eq!(binding(AnimeCharacterMaterial::BASE_COLOR).texture, Some(id(ALBEDO)));
+            assert_eq!(binding(AnimeCharacterMaterial::RAMP).texture, Some(id(RAMP)));
+            let mask = binding(AnimeCharacterMaterial::SURFACE_MASK);
+            assert_eq!((mask.texture, mask.swizzle), (Some(id(HAIR_MASK)), mask_swizzle.to_ktx()), "{cook}");
+            assert_eq!(binding(AnimeCharacterMaterial::CONTROL), TextureBinding::UNBOUND);
+        }
+        // Deterministic: without a cache, a second cook writes the same bytes.
+        let output = scratch.out().join("hair/hair.smat");
+        let first = fs::read(&output).unwrap();
+        fs::remove_file(&output).unwrap();
+        scratch.cook_with(Cook::Desktop, false);
+        assert!(fs::read(&output).unwrap() == first);
+    }
+
+    #[test]
+    fn a_material_recooks_when_a_texture_it_references_changes() {
+        let scratch = Scratch::new("cook_material_dependencies");
+        let hair = scratch.add_hair();
+        let first = scratch.cook();
+        assert!(statuses(&scratch.cook()).iter().all(|&status| status == CookStatus::UpToDate));
+
+        // New ramp pixels: the ramp and the material (whose key holds the ramp's) recook; the
+        // other textures don't.
+        let ramp = scratch.add_texture("hair/ramp.png", RAMP, TextureClass::Ramp(RampSettings::default()), 9);
+        let report = scratch.cook();
+        assert_eq!(asset(&report, &ramp).status, CookStatus::Cooked);
+        assert_eq!(asset(&report, &hair).status, CookStatus::Cooked);
+        assert_ne!(asset(&report, &hair).key, asset(&first, &hair).key);
+        let albedo = scratch.source().join("hair/albedo.png");
+        assert_eq!(asset(&report, &albedo).status, CookStatus::UpToDate);
+
+        // A texture that disappears fails the material, cached or not.
+        fs::remove_file(&ramp).unwrap();
+        fs::remove_file(sidecar_path(&ramp)).unwrap();
+        let error = scratch_error(&scratch);
+        let CookError::Material { path, source } = &error else { panic!("{error:?}") };
+        assert_eq!(path, &hair);
+        assert!(matches!(**source, MaterialCookError::MissingTexture { slot: "ramp", .. }), "{source}");
+    }
+
+    #[test]
+    fn material_references_must_be_textures_of_the_right_class() {
+        let scratch = Scratch::new("cook_material_references");
+        scratch.add_hair();
+        let mannequin = scratch.add_mannequin("mannequin.glb");
+        let mesh = "a1b2c3d4-0000-4000-8000-000000000005";
+        write_sidecar(&mannequin, mesh, ImportSettings::Gltf(MeshSettings::default()));
+        let error_for = |ramp: AssetId| {
+            scratch.add_material("hair/hair.material.ron", HAIR, &hair_material(ramp));
+            let CookError::Material { source, .. } = scratch_error(&scratch) else {
+                panic!("a material error")
+            };
+            *source
+        };
+        let error = error_for(id(ALBEDO));
+        assert!(
+            matches!(&error, MaterialCookError::WrongClass { slot: "ramp", class: "color", .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("needs a ramp"), "{error}");
+        assert!(matches!(error_for(id(mesh)), MaterialCookError::NotATexture { slot: "ramp", .. }));
+        let unknown = id("a1b2c3d4-0000-4000-8000-0000000000ff");
+        assert!(matches!(error_for(unknown), MaterialCookError::MissingTexture { id, .. } if id == unknown));
+
+        // A ramp that doesn't have A7's 16 rows.
+        scratch.add_material("hair/hair.material.ron", HAIR, &hair_material(id(RAMP)));
+        let ramp = scratch.source().join("hair/ramp.png");
+        ::image::RgbaImage::new(16, 8).save_with_format(&ramp, ::image::ImageFormat::Png).unwrap();
+        let CookError::Material { source, .. } = scratch_error(&scratch) else { panic!("a material error") };
+        assert!(matches!(*source, MaterialCookError::RampRows { height: 8 }), "{source}");
+    }
+
+    #[test]
+    fn mesh_sidecars_bind_slots_to_material_documents() {
+        let scratch = Scratch::new("cook_material_bindings");
+        scratch.add_hair();
+        let mannequin = scratch.add_mannequin("mannequin.glb");
+        let mut settings = MeshSettings::default();
+        let bind = |settings: &MeshSettings| {
+            let sidecar = sidecar_path(&mannequin);
+            let id = meta::read(&sidecar).map_or_else(|_| meta::new_id().unwrap(), |meta| meta.id);
+            let meta = AssetMeta { id, importer: ImportSettings::Gltf(settings.clone()) };
+            fs::write(sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        };
+        settings.materials.insert("Hair".into(), id(HAIR));
+        bind(&settings);
+        scratch.cook();
+        let mesh = read_mesh(&scratch.out().join("mannequin.smesh"));
+        for slot in &mesh.materials {
+            match (&slot.material, slot.name.as_str()) {
+                (SlotMaterial::Asset(bound), "Hair") => assert_eq!(*bound, id(HAIR)),
+                (SlotMaterial::Embedded(_), name) => assert_ne!(name, "Hair"),
+                (other, name) => panic!("slot {name}: {other:?}"),
+            }
+        }
+        assert_eq!(mesh.materials.len(), 5);
+
+        settings.materials.insert("Cape".into(), id(HAIR));
+        bind(&settings);
+        let error = scratch_error(&scratch);
+        assert!(
+            matches!(&error, CookError::MaterialSlot { source: MaterialSlotError::UnknownSlot { name, .. }, .. } if name == "Cape"),
+            "{error:?}"
+        );
+        settings.materials.remove("Cape");
+        settings.materials.insert("Skin".into(), id(ALBEDO));
+        bind(&settings);
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::NotAMaterial { slot, .. } if slot == "Skin"), "{error:?}");
     }
 
     #[test]

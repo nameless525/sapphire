@@ -9,8 +9,9 @@
 //! - [`meta`]: `.meta` sidecars, which give every source asset its [`AssetId`] and import
 //!   settings, and the only place new IDs are made.
 //! - [`import`]: source file → engine-neutral intermediate: an
-//!   [`ImportedMesh`](mesh::ImportedMesh) with skins, morph targets and authored outline
-//!   normals, or a [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR.
+//!   [`ImportedMesh`](mesh::ImportedMesh) with skins, morph targets, authored outline normals
+//!   and anime character materials generated from the source's, or a
+//!   [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR.
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
 //!   [`Mesh`](sapphire_assets::mesh::Mesh) (quantized streams).
 //! - [`bake`]: derived data computed offline: smoothed outline normals where none are authored.
@@ -21,6 +22,9 @@
 //! - [`character_maps`]: the anime character maps, generated from RON documents and cooked
 //!   as textures: SDF face maps from threshold masks, ramps from color stops, and ILM maps
 //!   packed from separate masks.
+//! - [`material`]: material documents (`.material.ron`) cooked to
+//!   [`Material`](sapphire_assets::material::Material)s, checked against the textures (and
+//!   character maps) they reference, whose swizzles they record.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache.
 //! - [`cache`]: the cache key over everything that determines a cooked output, and the local
@@ -29,8 +33,9 @@
 //!
 //! # Does not own
 //!
-//! - The [`AssetId`] type and the cooked formats (`.smesh`, the KTX2 texture profile, what
-//!   the character maps' texels mean): `sapphire_assets`, shared with the runtime.
+//! - The [`AssetId`] type, the cooked formats (`.smesh`, the KTX2 texture profile, `.smat`,
+//!   what the character maps' texels mean) and the material documents and their GPU blocks:
+//!   `sapphire_assets`, shared with the runtime.
 //! - Baking masks from a character in Blender: a script under `tools/blender/`, described
 //!   in `docs/blender-mask-bake.md`.
 //! - Document and archive formats: `sapphire_serialize` (sidecars are its RON documents).
@@ -49,9 +54,10 @@
 //!
 //! # Later milestones
 //!
-//! - Materials (A3) as a further importer and recipe; FBX through `ufbx`.
+//! - FBX through `ufbx`; VRM 1.0 (A6), whose MToon materials become generated anime character
+//!   materials and whose embedded images are extracted as texture sources.
 //! - Skeletons as assets of their own, shared by meshes and animation clips (ozz archives,
-//!   M2); today each skinned mesh embeds its skeleton, as it embeds its materials.
+//!   M2); today each skinned mesh embeds its skeleton.
 //! - Packs (A4), a shared cache, and the editor's daemon mode.
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
@@ -63,6 +69,7 @@ mod color;
 pub mod cook;
 mod gltf_writer;
 pub mod import;
+pub mod material;
 pub mod mesh;
 pub mod meta;
 pub mod optimize;

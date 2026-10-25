@@ -7,10 +7,17 @@
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4).
 //! - Turning packets into pixels.
-//! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), a
-//!   material buffer indexed by material ID, and instance and draw-record buffers kept across
-//!   frames and updated from each packet's instance deltas. Only changed instances are
-//!   uploaded, and the draw list is rebuilt only when the drawn set changes.
+//! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
+//!   material buffers, and instance and draw-record buffers kept across frames and updated from
+//!   each packet's instance deltas. Only changed instances are uploaded, and the draw list is
+//!   rebuilt only when the drawn set changes.
+//! - Materials on the GPU (`materials`, M1 A3): cooked
+//!   [`Material`](sapphire_assets::material::Material)s of every family in stable slots of their
+//!   family's parameter buffer, each block copied as cooked, and their textures in group 3 (see
+//!   "Material buffers" below). [`Renderer::update_material`] rewrites one slot: the path for
+//!   hot reload and live link. The anime character family drives the anime character shader
+//!   (`shaders/toon.wgsl`) and its outlines, which sample its textures through their cooked
+//!   swizzles.
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
@@ -54,10 +61,14 @@
 //! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
 //!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
 //!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
-//! - Mesh and texture cooking: meshes arrive as cooked [`sapphire_assets::mesh::ArchivedMesh`]es,
-//!   read in place, with outline normals, vertex order and LODs done by the pipeline; textures
-//!   as [`sapphire_assets::texture::Texture`] with their mip chains, compressed for the
-//!   device's cook.
+//! - Mesh, texture and material cooking: meshes arrive as cooked
+//!   [`sapphire_assets::mesh::ArchivedMesh`]es, read in place, with outline normals, vertex
+//!   order and LODs done by the pipeline; textures as [`sapphire_assets::texture::Texture`] with
+//!   their mip chains, compressed for the device's cook; materials as packed GPU blocks with
+//!   their texture references checked against the textures' classes.
+//! - Resolving asset IDs: the app hands [`Renderer::upload_material`] the textures a material
+//!   names, and [`Renderer::upload_mesh`] a material per mesh slot (the asset runtime, A4,
+//!   takes this over).
 //!
 //! # Conventions
 //!
@@ -65,7 +76,7 @@
 //!   plane, 0 at infinity, cleared to 0 and tested with `Greater` (better float precision).
 //! - Shading is linear HDR light, unclamped, into `Rgba16Float` scene color. Post tone maps
 //!   and grades it into the target, whose sRGB format encodes on write.
-//! - Outline widths (`ToonMaterialParams::params.w`) are pixels at a 1080-pixel-high target.
+//! - Outline widths (`AnimeCharacterParams::edges.z`) are pixels at a 1080-pixel-high target.
 //!
 //! # Submission paths
 //!
@@ -167,8 +178,9 @@
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn), by slot | `prepare`, changed instances only, and once more when they come to rest |
-//! | 2 scene | 1: storage | vertex, fragment | toon materials | mesh upload |
-//! | 3 | — | — | material textures (M1) | — |
+//! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot | the uploads pass, changed slots only |
+//! | 3 material | 0–7: textures | fragment | one material's texture slots, white 1×1 where unbound | material upload or update |
+//! | 3 material | 8, 9: samplers | fragment | trilinear repeating; linear clamped for ramps | — |
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
 //! prepasses bind groups 0–2 like the main pass and read no storage buffer beyond the
@@ -191,13 +203,34 @@
 //! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 3 (materials, lights, light
 //! lists), compute 2 in the cluster pass (lights, cluster lists) and 3 in the skinning pass
 //! (sources, frame data, outputs). That leaves one spare in the fragment stage, two in the vertex
-//! stage and one in the skinning pass. Local lights take only two fragment bindings because both
-//! light paths share one list buffer layout, a count and then 16-bit light indices, read by
-//! cluster index or by instance slot (passed from the vertex stage as a flat varying). Compute
-//! skinning writes vertex buffers and adds nothing to the vertex stage, and packs a mesh's
-//! streams, skin and morphs into one buffer, and a frame's jobs, palettes and weights into
-//! another, to stay within its four. Draw records are vertex data rather than a third
-//! vertex-stage storage buffer for the same reason.
+//! stage and one in the skinning pass. Group 3 is the last of the 4 bind groups the floor allows;
+//! the prepasses, which read no material textures, leave it out. The anime character family
+//! binds 7 of the 16 sampled textures and 2 of the 16 samplers a fragment stage gets, leaving 9
+//! textures for frame-wide ones (shadow cascades, probes, the sky cubemap); the other families
+//! bind 1 to 5. Local lights take only two fragment bindings because both light paths share one
+//! list buffer layout, a count and then 16-bit light indices, read by cluster index or by
+//! instance slot (passed from the vertex stage as a flat varying). Compute skinning writes
+//! vertex buffers and adds nothing to the vertex stage, and packs a mesh's streams, skin and
+//! morphs into one buffer, and a frame's jobs, palettes and weights into another, to stay within
+//! its four. Draw records are vertex data rather than a third vertex-stage storage buffer for the
+//! same reason.
+//!
+//! # Material buffers
+//!
+//! Each material family has a parameter buffer of its own, an array of its block
+//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 896 bytes for the anime
+//! character family, 80 to 160 for the others. One shared array would pad every slot to the
+//! largest block, and a pipeline only reads its own family, so each family's pipelines bind
+//! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. A draw
+//! record's `material` is the slot in that buffer; a slot is kept for the renderer's lifetime
+//! and written through a CPU mirror, so editing a material uploads its one block with the next
+//! frame and nothing else. Every family uploads and binds its textures today; only the anime
+//! character family has shaders, so [`Renderer::upload_mesh`] accepts only its materials.
+//!
+//! Material textures are sampled with explicit gradients (taken once per pixel, in uniform
+//! control flow) so that unbound slots can be skipped on a branch, and every sample goes through
+//! the slot's swizzle code from the block, which makes ASTC's two-channel textures read as
+//! BC5's do.
 //!
 //! # Later milestones
 //!
@@ -225,6 +258,16 @@
 //!   is upsampled bilinearly. TAA's own upsampling (R7), a spatial upscaler (an FSR1-style EASU
 //!   and RCAS port, or MetalFX spatial) and DLSS or MetalFX temporal take over from it; the
 //!   quality tiers' render scale and dynamic resolution then drive their input size.
+//! - **Material families' shaders:** sky (W2), fog cards (W3), environment (W4) and foliage
+//!   (W6) bring pipelines that bind their family's buffer (in a scene group of their own) and
+//!   group 3. The anime character shader grows ramp and three-band diffuse, per-region reads of
+//!   the control map (its alpha read without filtering, clamped to the region count), faces,
+//!   hair and eyes (C1–C7). Alpha-tested and transparent materials draw opaque until C1's
+//!   permutations. Outlines v2 (C4) adds the outline Z offset already in the block, skips the
+//!   hull for materials without `MaterialFlags::OUTLINE`, and makes group 3 visible to the
+//!   vertex stage if a width texture needs it.
+//! - **Textures replaced at runtime** (hot reload, A8) rebind the materials that use them;
+//!   anisotropic filtering joins the quality tiers.
 
 mod buffer;
 mod draw;
@@ -232,6 +275,7 @@ mod frame;
 mod gpu_types;
 pub mod graph;
 mod lights;
+mod materials;
 mod mesh_pool;
 mod pipelines;
 mod post;
@@ -247,6 +291,7 @@ pub use frame::{
     LocalLight, MeshInstance, PacketRange, SkinnedInstance, SkyGradient, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
+pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;
 pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
 pub use renderer::{

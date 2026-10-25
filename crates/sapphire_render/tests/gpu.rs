@@ -3,15 +3,19 @@
 use std::f32::consts::{PI, TAU};
 
 use glam::{Affine3A, Mat4, Quat, Vec3};
-use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
-    Submesh, ToonMaterialParams, Vertex, VertexInfluence,
+use sapphire_assets::material::{
+    AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, Rim,
 };
+use sapphire_assets::mesh::{
+    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
+    SkinBind, Submesh, Vertex, VertexInfluence,
+};
+use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LightPath,
-    LocalLight, MeshHandle, MeshInstance, Msaa, PostParams, PrepassTargets, RenderError, RenderSettings,
-    Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
+    LocalLight, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, PrepassTargets, RenderError,
+    RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -66,44 +70,66 @@ fn sphere_geometry(center: Vec3, radius: f32) -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+/// `material` cooked as the importer embeds a generated one: no textures.
+fn cooked(material: &AnimeCharacterMaterial) -> Material {
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    Material::from_document(material, &swizzles).expect("a valid material")
+}
+
 /// A UV sphere of `radius` around `center` with one material, positions stored in `format`.
-fn sphere_at(center: Vec3, radius: f32, material: ToonMaterialParams, format: PositionFormat) -> Mesh {
+fn sphere_at(center: Vec3, radius: f32, material: AnimeCharacterMaterial, format: PositionFormat) -> Mesh {
     let (vertices, indices) = sphere_geometry(center, radius);
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
-    Mesh::from_vertices(&vertices, indices, submeshes, vec![material], format)
+    let slots = vec![MaterialSlot::embedded("sphere", cooked(&material))];
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, format)
 }
 
 /// A unit-radius UV sphere at the origin with one material.
-fn sphere(material: ToonMaterialParams) -> Mesh {
+fn sphere(material: AnimeCharacterMaterial) -> Mesh {
     sphere_at(Vec3::ZERO, 1.0, material, PositionFormat::Unorm16)
 }
 
-/// Uploads `mesh` the way the runtime loads one: cooked to bytes, then read in place.
+/// Uploads `mesh` the way the runtime loads one: cooked to bytes, then read in place, with the
+/// materials it embeds.
 fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
     let bytes = mesh.to_cooked().expect("cook");
-    renderer.upload_mesh(Mesh::read(&bytes).expect("a valid mesh")).expect("upload")
+    let mesh = Mesh::read(&bytes).expect("a valid mesh");
+    let materials = renderer.upload_embedded_materials(mesh).expect("materials");
+    renderer.upload_mesh(mesh, &materials).expect("upload")
 }
 
 /// A flat material: no shadow tone and no rim, black outline.
-fn flat(rgb: [f32; 3], outline_px: f32) -> ToonMaterialParams {
-    ToonMaterialParams {
+fn flat(rgb: [f32; 3], outline_px: f32) -> AnimeCharacterMaterial {
+    AnimeCharacterMaterial {
         base_color: [rgb[0], rgb[1], rgb[2], 1.0],
-        shade_color: [1.0; 4],
-        outline_color: [0.0, 0.0, 0.0, 1.0],
-        params: [0.0, 0.02, 0.0, outline_px],
+        light_split: LightSplit { threshold: 0.0, softness: 0.02 },
+        regions: vec![CharacterRegion {
+            shade_color: [1.0; 3],
+            outline_color: [0.0; 3],
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: 0.0, ..Rim::default() },
+        outline: Outline { width: outline_px, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
     }
+}
+
+/// `material` with `rgb` as its shadow side's color, a multiplier on albedo.
+fn shaded(mut material: AnimeCharacterMaterial, rgb: [f32; 3]) -> AnimeCharacterMaterial {
+    material.regions[0].shade_color = rgb;
+    material
 }
 
 /// Linear 0.5 grey, the same as the test sky: lit by the unit sun plus 12% sky ambient.
 const GREY: [f32; 3] = [0.5 / 1.06; 3];
 
-fn white(outline_px: f32) -> ToonMaterialParams {
+fn white(outline_px: f32) -> AnimeCharacterMaterial {
     flat([1.0; 3], outline_px)
 }
 
 /// Fully lit in `rgb`, with no outline.
-fn colored(rgb: [f32; 3]) -> ToonMaterialParams {
-    ToonMaterialParams { base_color: [rgb[0], rgb[1], rgb[2], 1.0], shade_color: [1.0; 4], ..white(0.0) }
+fn colored(rgb: [f32; 3]) -> AnimeCharacterMaterial {
+    flat(rgb, 0.0)
 }
 
 fn instance(id: u64, mesh: MeshHandle, transform: Mat4) -> MeshInstance {
@@ -489,7 +515,7 @@ fn mesh_relative_indices_draw_every_mesh() {
     // 24 bytes a vertex over the three quantized streams.
     let sphere_bytes = {
         let mesh = sphere(white(0.0));
-        (mesh.streams.len() * 24 + mesh.indices.len() * 4 + size_of::<ToonMaterialParams>()) as u64
+        (mesh.streams.len() * 24 + mesh.indices.len() * 4) as u64
     };
     assert_eq!(stats.mesh_pool_bytes, 4 * sphere_bytes);
 }
@@ -511,11 +537,16 @@ fn quantized_meshes_match_their_f32_reference() {
     let view = texture.create_view(&Default::default());
     // Off-center and not unit-sized, so a wrong dequantization offset or scale shows.
     let (center, radius) = (Vec3::new(0.31, -0.17, 0.12), 0.83);
-    let material = ToonMaterialParams {
+    let material = AnimeCharacterMaterial {
         base_color: [0.9, 0.55, 0.4, 1.0],
-        shade_color: [0.6, 0.5, 0.8, 1.0],
-        outline_color: [0.1, 0.05, 0.1, 1.0],
-        params: [0.0, 0.02, 0.4, 6.0],
+        regions: vec![CharacterRegion {
+            shade_color: [0.6, 0.5, 0.8],
+            outline_color: [0.1, 0.05, 0.1],
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: 0.4, ..Rim::default() },
+        outline: Outline { width: 6.0, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
     };
     let render = |format| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
@@ -526,7 +557,7 @@ fn quantized_meshes_match_their_f32_reference() {
             intensity: 1.0,
         };
         frames.sky = SkyGradient::default();
-        let mesh = upload(&mut frames.renderer, &sphere_at(center, radius, material, format));
+        let mesh = upload(&mut frames.renderer, &sphere_at(center, radius, material.clone(), format));
         let camera = CameraData::look_at(
             center + Vec3::new(0.0, 0.0, 3.0),
             center,
@@ -551,7 +582,7 @@ fn quantized_meshes_match_their_f32_reference() {
 
 /// A sphere skinned to two palette entries, the upper half bending with the second, and with one
 /// morph target that would move every vertex half a meter, at full default weight.
-fn skinned_sphere(material: ToonMaterialParams) -> Mesh {
+fn skinned_sphere(material: AnimeCharacterMaterial) -> Mesh {
     let mut mesh = sphere(material);
     let influences: Vec<VertexInfluence> = (0..mesh.streams.len())
         .map(|v| {
@@ -639,7 +670,7 @@ fn skinned_meshes_draw_in_bind_pose_until_posed() {
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
     let material = flat([0.9, 0.2, 0.15], 3.0);
-    let plain = sphere(material);
+    let plain = sphere(material.clone());
     let skinned = skinned_sphere(material);
     let render = |mesh: &Mesh, pose: Option<Vec<Affine3A>>| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
@@ -680,13 +711,19 @@ fn posed_skins_and_morphs_match_the_same_mesh_deformed_on_the_cpu() {
     let size = (160, 120);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
-    let material = ToonMaterialParams {
+    let material = AnimeCharacterMaterial {
         base_color: [0.9, 0.55, 0.4, 1.0],
-        shade_color: [0.6, 0.5, 0.8, 1.0],
-        outline_color: [0.1, 0.05, 0.1, 1.0],
-        params: [0.0, 0.02, 0.4, 3.0],
+        light_split: LightSplit { threshold: 0.0, softness: 0.02 },
+        regions: vec![CharacterRegion {
+            shade_color: [0.6, 0.5, 0.8],
+            outline_color: [0.1, 0.05, 0.1],
+            ..CharacterRegion::default()
+        }],
+        rim: Rim { strength: 0.4, ..Rim::default() },
+        outline: Outline { width: 3.0, z_offset: 0.0 },
+        ..AnimeCharacterMaterial::default()
     };
-    let skinned = skinned_sphere(material);
+    let skinned = skinned_sphere(material.clone());
     let render = |mesh: &Mesh, pose: Option<(Vec<Affine3A>, Vec<f32>)>| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
         frames.sun =
@@ -707,13 +744,13 @@ fn posed_skins_and_morphs_match_the_same_mesh_deformed_on_the_cpu() {
             "{weights:?}: GPU vs CPU deformation: mean {mean:.4} steps, {differing} pixels differ by more than 8"
         );
         assert!(mean < 0.1 && differing <= 30, "mean {mean} steps, {differing} pixels");
-        let bind = render(&sphere(material), None);
+        let bind = render(&sphere(material.clone()), None);
         assert!(difference(&bind, &gpu_pixels, 8).1 > 200, "the pose moved the sphere");
     }
 }
 
 /// A camera-facing square of side 0.8 at the origin, in the XY plane.
-fn square(material: ToonMaterialParams) -> Mesh {
+fn square(material: AnimeCharacterMaterial) -> Mesh {
     let vertex = |x: f32, y: f32| Vertex {
         position: [x, y, 0.0],
         normal: [0.0, 0.0, 1.0],
@@ -723,7 +760,8 @@ fn square(material: ToonMaterialParams) -> Mesh {
     };
     let vertices = [vertex(-0.4, -0.4), vertex(0.4, -0.4), vertex(0.4, 0.4), vertex(-0.4, 0.4)];
     let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
-    Mesh::from_vertices(&vertices, vec![0, 1, 2, 0, 2, 3], submeshes, vec![material], PositionFormat::Unorm16)
+    let slots = vec![MaterialSlot::embedded("square", cooked(&material))];
+    Mesh::from_vertices(&vertices, vec![0, 1, 2, 0, 2, 3], submeshes, slots, PositionFormat::Unorm16)
 }
 
 #[test]
@@ -735,7 +773,7 @@ fn velocity_follows_transforms_skins_and_the_camera() {
     let view = texture.create_view(&Default::default());
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
     let material = flat([0.5; 3], 0.0);
-    let still = upload(&mut frames.renderer, &square(material));
+    let still = upload(&mut frames.renderer, &square(material.clone()));
     let mut skinned = square(material);
     skinned.skin = Some(Skin {
         joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
@@ -804,14 +842,14 @@ fn velocity_follows_transforms_skins_and_the_camera() {
 fn skinning_and_prepasses_run_at_any_size_and_msaa() {
     let gpu = gpu();
     let material = white(3.0);
-    let mut morph_only = sphere(material);
+    let mut morph_only = sphere(material.clone());
     morph_only.morph_targets =
         vec![MorphTarget { name: "dent".into(), default_weight: 0.0, first_delta: 0, delta_count: 2 }];
     morph_only.morph_deltas =
         vec![MorphDelta::new(3, [0.0, -0.2, 0.0], [0.0; 3]), MorphDelta::new(40, [0.1, 0.0, 0.0], [0.0; 3])];
     for msaa in [Msaa::Off, Msaa::X4] {
         let mut frames = Frames::new(&gpu, FORMAT, msaa).expect("renderer");
-        let meshes = [sphere(material), skinned_sphere(material), morph_only.clone()]
+        let meshes = [sphere(material.clone()), skinned_sphere(material.clone()), morph_only.clone()]
             .map(|mesh| upload(&mut frames.renderer, &mesh));
         let mut add: Vec<MeshInstance> = meshes
             .iter()
@@ -1136,8 +1174,8 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
 
 /// White on the lit side and half as bright in shadow, with no rim or outline: the plainest
 /// two-tone material, so each light's split shows as a factor of two.
-fn two_tone() -> ToonMaterialParams {
-    ToonMaterialParams { shade_color: [0.5, 0.5, 0.5, 1.0], ..flat([1.0; 3], 0.0) }
+fn two_tone() -> AnimeCharacterMaterial {
+    shaded(flat([1.0; 3], 0.0), [0.5; 3])
 }
 
 fn point_light(position: Vec3, color: Vec3, intensity: f32, range: f32) -> LocalLight {
@@ -1230,10 +1268,7 @@ fn four_lights_scene(frames: &mut Frames) -> Vec<MeshInstance> {
         .into_iter()
         .enumerate()
         .map(|(index, rgb)| {
-            let mesh = upload(
-                &mut frames.renderer,
-                &sphere(ToonMaterialParams { shade_color: [0.55, 0.5, 0.65, 1.0], ..flat(rgb, 3.0) }),
-            );
+            let mesh = upload(&mut frames.renderer, &sphere(shaded(flat(rgb, 3.0), [0.55, 0.5, 0.65])));
             let x = (index as f32 - 1.0) * 1.4;
             instance(
                 index as u64,
@@ -1382,4 +1417,179 @@ fn per_object_lists_survive_their_buffer_growing() {
     assert_eq!(after.lights.object_lists, 200, "the same lights: only the new instances");
     assert_eq!(red_center(&mut frames, &[]), red, "instance 0's list survived the growth");
     assert_eq!(frames.renderer.stats().lights.object_lists, 0);
+}
+
+/// `material` cooked against textures with these swizzles, one per slot, as cooked bytes.
+fn cooked_with(
+    material: &AnimeCharacterMaterial,
+    swizzles: &[Swizzle],
+) -> sapphire_assets::material::AlignedVec {
+    Material::from_document(material, swizzles).expect("a valid material").to_cooked().expect("cook")
+}
+
+/// A unit sphere drawn with an already uploaded material.
+fn upload_with(renderer: &mut Renderer, material: MaterialHandle) -> MeshHandle {
+    let bytes = sphere(white(0.0)).to_cooked().expect("cook");
+    renderer.upload_mesh(Mesh::read(&bytes).expect("a valid mesh"), &[material]).expect("upload")
+}
+
+/// The linear RGB of the middle row's pixel at `x`.
+fn linear_at(pixels: &[[u8; 4]], (width, height): (u32, u32), x: usize) -> [f32; 3] {
+    let pixel = pixels[(height / 2 * width) as usize + x];
+    [0, 1, 2].map(|c| srgb_to_linear(pixel[c]))
+}
+
+fn assert_near(actual: [f32; 3], expected: [f32; 3], what: &str) {
+    let close = actual.iter().zip(expected).all(|(a, e)| (a - e).abs() < 0.02);
+    assert!(close, "{what}: {actual:?}, expected {expected:?}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn material_parameters_reach_the_shader() {
+    let gpu = gpu();
+    let size = (128, 128);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+    // No ambient, and the sun from the right: N·L is the sphere's x, so with threshold 0 the
+    // split runs down the middle, lit to the right. At 0.8 every tone stays below the tone
+    // curve's shoulder.
+    frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    frames.sun = DirectionalLight { direction: Vec3::NEG_X, color: Vec3::ONE, intensity: 0.8 };
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let bytes = cooked_with(&two_tone(), &swizzles);
+    let material = frames.renderer.upload_material(Material::read(&bytes).unwrap(), |_| None).unwrap();
+    let mesh = upload_with(&mut frames.renderer, material);
+    let camera = framing_camera(38.0, size, 0.6);
+    let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
+    let mut render = |frames: &mut Frames| {
+        let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
+        assert!(error.is_none(), "{error:?}");
+        read_back(&gpu, &texture)
+    };
+    // The middle row's pixel over the sphere point with x = `sphere_x`.
+    let column = |sphere_x: f32| {
+        let point = Vec3::new(sphere_x, 0.0, (1.0 - sphere_x * sphere_x).sqrt());
+        let clip = camera.proj * camera.view * point.extend(1.0);
+        (clip.x / clip.w + 1.0) * 0.5 * size.0 as f32
+    };
+    let (lit_x, shadow_x) = (column(0.7) as usize, column(-0.7) as usize);
+    let edit = |frames: &mut Frames, edit: &dyn Fn(&mut AnimeCharacterMaterial)| {
+        let mut document = two_tone();
+        edit(&mut document);
+        let bytes = cooked_with(&document, &swizzles);
+        frames.renderer.update_material(material, Material::read(&bytes).unwrap(), |_| None).unwrap();
+    };
+
+    let pixels = render(&mut frames);
+    assert_near(linear_at(&pixels, size, lit_x), [0.8; 3], "lit");
+    assert_near(linear_at(&pixels, size, shadow_x), [0.4; 3], "shadow");
+    let builds = frames.renderer.stats().draw_list_builds;
+
+    // Moving the threshold to 0.5 moves the split to where N·L is 0.5.
+    edit(&mut frames, &|m| m.light_split.threshold = 0.5);
+    let red = middle_row_red(&render(&mut frames), size);
+    assert_eq!(frames.renderer.stats().material_uploads, 1, "an edit uploads its one slot");
+    let center = size.0 as usize / 2;
+    let (_, split) = (center - 20..center + 30)
+        .map(|x| (red[x + 2] - red[x], x + 1))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("pixels");
+    let expected = column(0.5);
+    assert!((split as f32 + 0.5 - expected).abs() < 2.0, "split at {split}, expected {expected:.1}");
+
+    // New colors: the lit side is the base color, the shadow side the base times the shade.
+    edit(&mut frames, &|m| {
+        m.base_color = [0.2, 0.6, 1.0, 1.0];
+        m.regions[0].shade_color = [0.5, 0.25, 1.0];
+    });
+    let pixels = render(&mut frames);
+    assert_near(linear_at(&pixels, size, lit_x), [0.16, 0.48, 0.8], "new base color");
+    assert_near(linear_at(&pixels, size, shadow_x), [0.08, 0.12, 0.8], "new shade color");
+    assert_eq!(frames.renderer.stats().draw_list_builds, builds, "edits never rebuild the draw list");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn textured_materials_sample_through_their_swizzle() {
+    use sapphire_assets::AssetId;
+    use sapphire_assets::texture::{Component, Texture, TextureDesc, TextureFormat};
+    use sapphire_pipeline::cook::Cook;
+    use sapphire_pipeline::import::image::{ChannelLayout, SourceImage};
+    use sapphire_pipeline::texture::{self, MaskChannels, MaskSettings, TextureClass, TextureSettings};
+    use sapphire_render::texture::{GpuTexture, check_format};
+
+    let gpu = gpu();
+    let size = (64, 64);
+    let target_texture = target(&gpu, FORMAT, size);
+    let view = target_texture.create_view(&Default::default());
+    let id: AssetId = "7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d".parse().unwrap();
+    // Lit head-on by the unit sun plus 6% sky ambient, so this base color shows the texture's
+    // logical channels as they are.
+    let document = AnimeCharacterMaterial {
+        base_color: [1.0 / 1.06, 1.0 / 1.06, 1.0 / 1.06, 1.0],
+        base_color_map: Some(id),
+        ..flat([1.0; 3], 0.0)
+    };
+    let slot_swizzles = |swizzle: Swizzle| {
+        let mut swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        swizzles[AnimeCharacterMaterial::BASE_COLOR] = swizzle;
+        swizzles
+    };
+    // Draws the sphere with `document` bound to `texture`, and returns the center's linear RGB.
+    let center_color = |texture: &GpuTexture| {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+        let bytes = cooked_with(&document, &slot_swizzles(texture.swizzle()));
+        let lookup = |asked: AssetId| (asked == id).then_some(texture);
+        let material = frames.renderer.upload_material(Material::read(&bytes).unwrap(), lookup).unwrap();
+        let mesh = upload_with(&mut frames.renderer, material);
+        let instances = [instance(0, mesh, Mat4::IDENTITY)];
+        let error = frames.render(&gpu, &view, framing_camera(38.0, size, 0.6), &instances, &[]);
+        assert!(error.is_none(), "{error:?}");
+        linear_at(&read_back(&gpu, &target_texture), size, size.0 as usize / 2)
+    };
+
+    // On every device: an uncompressed texture whose swizzle reverses its color channels.
+    let reversed = Swizzle([Component::B, Component::G, Component::R, Component::One]);
+    let srgb = |c: f32| {
+        (if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 } * 255.0).round() as u8
+    };
+    let texel = [srgb(0.8), srgb(0.5), srgb(0.2), 255];
+    let texels: Vec<u8> = texel.repeat(16);
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 4,
+        height: 4,
+        mip_level_count: 1,
+        swizzle: reversed,
+    };
+    let texture = GpuTexture::upload(&gpu, &Texture { desc, levels: vec![&texels] }, "reversed").unwrap();
+    assert_near(center_color(&texture), [0.2, 0.5, 0.8], "the swizzle reverses the channels");
+
+    // The material checks what it binds: a texture whose swizzle differs from the one it was
+    // cooked against, or none at all, is an error.
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+    let identity = cooked_with(&document, &slot_swizzles(Swizzle::IDENTITY));
+    let error =
+        frames.renderer.upload_material(Material::read(&identity).unwrap(), |_| Some(&texture)).unwrap_err();
+    assert!(matches!(error, RenderError::TextureSwizzle { slot: "base_color", .. }), "{error}");
+    let error = frames.renderer.upload_material(Material::read(&identity).unwrap(), |_| None).unwrap_err();
+    assert!(matches!(error, RenderError::MissingTexture { slot: "base_color", .. }), "{error}");
+
+    // With ASTC: a two-channel mask from the mobile cook, which ASTC stores as luminance plus
+    // alpha and reads back through `ra01`.
+    let image =
+        SourceImage::new(16, 16, ChannelLayout::GrayAlpha, vec![[0.75, 0.75, 0.75, 0.25]; 256]).unwrap();
+    let mask = MaskSettings { channels: MaskChannels::Two, ..MaskSettings::default() };
+    let settings = TextureSettings { class: TextureClass::Mask(mask) };
+    let cooked = texture::cook(&image, &settings, Cook::Mobile).unwrap();
+    let astc = cooked.texture();
+    if check_format(&gpu, astc.desc.format).is_err() {
+        eprintln!("{} has no ASTC: skipped the mobile cook's mask", gpu.caps().adapter.name);
+        return;
+    }
+    assert_eq!(astc.desc.swizzle.to_string(), "ra01");
+    let texture = GpuTexture::upload(&gpu, &astc, "mask").unwrap();
+    assert_near(center_color(&texture), [0.75, 0.25, 0.0], "ASTC's two channels through `ra01`");
 }

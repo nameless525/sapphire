@@ -2,10 +2,13 @@ use std::collections::BTreeSet;
 use std::f32::consts::{PI, TAU};
 
 use glam::Vec3;
-use sapphire_assets::mesh::{Mesh, PositionFormat, ToonMaterialParams, Vertex};
+use std::collections::BTreeMap;
+
+use sapphire_assets::mesh::{Mesh, PositionFormat, Vertex};
 
 use super::*;
 use crate::mesh::{ImportedDelta, ImportedMorphTarget, ImportedSkin, SkinWeights};
+use crate::test_util::material;
 
 const TOLERANCE: f32 = bake::DEFAULT_WELD_TOLERANCE;
 
@@ -14,7 +17,7 @@ const TOLERANCE: f32 = bake::DEFAULT_WELD_TOLERANCE;
 /// submesh, as an exporter splits a mesh by material.
 fn two_material_sphere(rings: u32, segments: u32) -> ImportedMesh {
     let mut mesh = ImportedMesh {
-        materials: vec![ToonMaterialParams::default(); 2],
+        materials: vec![material("north"), material("south")],
         lods: vec![Lod::default()],
         ..ImportedMesh::default()
     };
@@ -101,7 +104,7 @@ fn lods_shrink_monotonically_within_their_error_targets() {
         mesh.lods.iter().map(|lod| lod.error).collect::<Vec<_>>(),
     );
     // And the result is a valid cooked mesh: every LOD inside its prefix, and so on.
-    Mesh::read(&mesh.pack(PositionFormat::Unorm16).to_cooked().unwrap()).unwrap();
+    Mesh::read(&mesh.pack(PositionFormat::Unorm16, &BTreeMap::new()).unwrap().to_cooked().unwrap()).unwrap();
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn parts_that_simplify_away_keep_the_errors_monotonic() {
     // The sphere plus a 1 mm triangle of its own material, far smaller than any LOD's budget,
     // which the coarser levels drop altogether.
     let mut mesh = two_material_sphere(48, 64);
-    mesh.materials.push(ToonMaterialParams::default());
+    mesh.materials.push(material("speck"));
     let base = mesh.vertices.len() as u32;
     for position in [[2.0, 0.0, 0.0], [2.001, 0.0, 0.0], [2.0, 0.001, 0.0]] {
         mesh.vertices.push(Vertex { position, normal: [0.0, 0.0, 1.0], ..mesh.vertices[0] });
@@ -126,7 +129,8 @@ fn parts_that_simplify_away_keep_the_errors_monotonic() {
     assert!((1..mesh.lods.len()).any(|lod| !has_speck(lod)), "the speck is simplified away");
     assert!(mesh.lods.windows(2).all(|pair| pair[1].error >= pair[0].error), "{:?}", mesh.lods);
     assert!(mesh.lods.iter().all(|lod| !lod.submeshes.is_empty()), "no LOD is empty");
-    Mesh::read(&mesh.pack(PositionFormat::Unorm16).to_cooked().unwrap()).expect("cooks");
+    Mesh::read(&mesh.pack(PositionFormat::Unorm16, &BTreeMap::new()).unwrap().to_cooked().unwrap())
+        .expect("cooks");
 }
 
 #[test]

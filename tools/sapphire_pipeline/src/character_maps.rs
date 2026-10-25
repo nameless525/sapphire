@@ -45,8 +45,9 @@
 //!   binarized today, so their resolution sets the edge's precision.
 //! - Ramp texture arrays once texture arrays exist (A2's later milestones), and color-coded
 //!   material-ID maps (a palette of flat colors) besides gray levels.
-//! - Material documents (A3) that name these maps by asset ID, and a per-instance debug view
-//!   of the face map's threshold (F5).
+//! - A per-instance debug view of the face map's threshold (F5). Material documents (A3) name
+//!   these maps by asset ID like any texture: the material cook treats a map document as the
+//!   texture class it cooks to.
 
 pub mod face_sdf;
 pub mod ilm;

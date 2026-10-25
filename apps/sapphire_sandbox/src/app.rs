@@ -627,7 +627,7 @@ fn create_renderer(
 ) -> Result<SceneRenderer, AppInitError> {
     let mut renderer = Renderer::new(gpu, format, settings)?;
     let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
-        renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
+        scene::upload_character(&mut renderer, mesh)
     })?;
     let stalk = skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
     Ok(SceneRenderer { renderer, character, character_bounds, stalk })

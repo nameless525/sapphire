@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::filesystem::SDL_GetBasePath;
-use sdl3_sys::gamepad::{SDL_CloseGamepad, SDL_Gamepad, SDL_OpenGamepad};
+use sdl3_sys::gamepad::{SDL_CloseGamepad, SDL_Gamepad, SDL_GetGamepadType, SDL_OpenGamepad};
 use sdl3_sys::hints::{
     SDL_HINT_IOS_HIDE_HOME_INDICATOR, SDL_HINT_MAC_BACKGROUND_APP, SDL_HINT_MOUSE_TOUCH_EVENTS,
     SDL_HINT_ORIENTATIONS, SDL_HINT_PEN_MOUSE_EVENTS, SDL_HINT_PEN_TOUCH_EVENTS, SDL_HINT_TOUCH_MOUSE_EVENTS,
@@ -22,7 +22,7 @@ use sdl3_sys::video::SDL_GetCurrentVideoDriver;
 
 use crate::content::{self, ContentFs};
 use crate::dirs;
-use crate::event::{self, Event, GamepadEvent, GamepadId, Keycode, LifecycleEvent, Timestamp};
+use crate::event::{self, Event, GamepadEvent, GamepadId, GamepadType, Keycode, LifecycleEvent, Timestamp};
 use crate::system::SystemInfo;
 use crate::window::{Window, WindowDesc};
 use crate::{AppMetadata, LOG_TARGET, sdl};
@@ -169,8 +169,9 @@ impl Platform {
         let event = event::translate(raw)?;
         match event {
             // A gamepad that fails to open sends no input, so it isn't announced.
-            Event::Gamepad { gamepad, event: GamepadEvent::Added, .. } if !self.open_gamepad(gamepad) => {
-                return None;
+            Event::Gamepad { timestamp, gamepad, event: GamepadEvent::Added { .. } } => {
+                let kind = self.open_gamepad(gamepad)?;
+                return Some(Event::Gamepad { timestamp, gamepad, event: GamepadEvent::Added { kind } });
             }
             Event::Gamepad { gamepad, event: GamepadEvent::Removed, .. } => self.close_gamepad(gamepad),
             Event::Lifecycle { event: transition, .. } if self.repeats_last_transition(transition) => {
@@ -189,21 +190,26 @@ impl Platform {
             && self.last_background_transition.replace(transition) == Some(transition)
     }
 
-    fn open_gamepad(&mut self, id: GamepadId) -> bool {
-        if self.gamepads.iter().any(|&(open, _)| open == id) {
-            return true;
-        }
-        // SAFETY: the gamepad subsystem is initialized and `id` came from SDL.
-        match NonNull::new(unsafe { SDL_OpenGamepad(SDL_JoystickID(id.0)) }) {
-            Some(gamepad) => {
-                self.gamepads.push((id, gamepad));
-                true
-            }
-            None => {
-                tracing::warn!(target: LOG_TARGET, ?id, error = %sdl::last_error(), "failed to open gamepad");
-                false
-            }
-        }
+    /// Opens the gamepad, once, and returns its type; `None` if it can't be opened.
+    fn open_gamepad(&mut self, id: GamepadId) -> Option<GamepadType> {
+        let gamepad = match self.gamepads.iter().find(|&&(open, _)| open == id) {
+            Some(&(_, gamepad)) => gamepad,
+            // SAFETY: the gamepad subsystem is initialized and `id` came from SDL.
+            None => match NonNull::new(unsafe { SDL_OpenGamepad(SDL_JoystickID(id.0)) }) {
+                Some(gamepad) => {
+                    self.gamepads.push((id, gamepad));
+                    gamepad
+                }
+                None => {
+                    tracing::warn!(target: LOG_TARGET, ?id, error = %sdl::last_error(), "failed to open gamepad");
+                    return None;
+                }
+            },
+        };
+        // SAFETY: every gamepad in the list is open until its removal closes it.
+        let kind = GamepadType::from_sdl(unsafe { SDL_GetGamepadType(gamepad.as_ptr()) });
+        tracing::info!(target: LOG_TARGET, ?id, ?kind, "gamepad connected");
+        Some(kind)
     }
 
     fn close_gamepad(&mut self, id: GamepadId) {

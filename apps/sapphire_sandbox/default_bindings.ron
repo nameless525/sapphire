@@ -1,0 +1,68 @@
+// The sandbox's default bindings (sapphire_input), compiled into the app; see src/input.rs.
+//
+// Camera actions are per update, so every device adds into one action: `orbit` is (yaw, pitch)
+// in radians and `zoom` is the natural log of the distance factor (below zero moves closer).
+// Held keys, the stick and the triggers are rates, scaled by the update's length; mouse, wheel,
+// drag and pinch are already per update.
+(
+    type: "sapphire::input::InputBindings",
+    version: 1,
+    data: (
+        actions: [
+            (name: "orbit", kind: Axis2D),
+            (name: "zoom", kind: Axis1D),
+            // The left mouse button, held: the chord that turns mouse motion into orbiting.
+            (name: "grab", kind: Button),
+            // World slow motion on and off (perfect-dodge style).
+            (name: "slow_motion", kind: Button),
+            // A few ticks of hitstop on the turntable.
+            (name: "hitstop", kind: Button),
+            (name: "quit", kind: Button),
+        ],
+        contexts: [
+            (
+                name: "camera",
+                bindings: [
+                    (action: "grab", source: Mouse(Left)),
+                    // 0.008 rad per point of mouse drag, 0.006 per point of finger drag.
+                    (action: "orbit", source: MouseMotion, chord: "grab", modifiers: [Scale((-0.008, -0.008))]),
+                    (action: "orbit", source: Touch(Drag), modifiers: [Scale((-0.006, -0.006))]),
+                    // Arrow keys: 1.5 rad/s.
+                    (action: "orbit", source: Key(Left), modifiers: [Scale((1.5, 0.0)), ScaleByDeltaTime]),
+                    (action: "orbit", source: Key(Right), modifiers: [Scale((-1.5, 0.0)), ScaleByDeltaTime]),
+                    (action: "orbit", source: Key(Up), modifiers: [Swizzle, Scale((0.0, 1.5)), ScaleByDeltaTime]),
+                    (action: "orbit", source: Key(Down), modifiers: [Swizzle, Scale((0.0, -1.5)), ScaleByDeltaTime]),
+                    // Right stick: 2.5 rad/s at full tilt.
+                    (
+                        action: "orbit",
+                        source: PadStick(Right),
+                        modifiers: [DeadZone(lower: 0.15, shape: Axial), Scale((-2.5, 2.5)), ScaleByDeltaTime],
+                    ),
+                    // 0.9× the distance per wheel notch away from you: ln 0.9.
+                    (action: "zoom", source: MouseWheel, modifiers: [Scale((-0.10536052, 0.0))]),
+                    // Spreading two fingers zooms in by as much as they spread.
+                    (action: "zoom", source: Touch(Pinch), modifiers: [Negate(X)]),
+                    // Triggers: 3× the distance per second at full pull, out on the left: ln 3.
+                    (action: "zoom", source: PadAxis(LeftTrigger), modifiers: [Scale((1.0986123, 0.0)), ScaleByDeltaTime]),
+                    (action: "zoom", source: PadAxis(RightTrigger), modifiers: [Scale((-1.0986123, 0.0)), ScaleByDeltaTime]),
+                ],
+            ),
+            (
+                name: "debug",
+                bindings: [
+                    (action: "slow_motion", source: Key(Space), trigger: Pressed, name: "slow_motion.keyboard"),
+                    (action: "slow_motion", source: Pad(South), trigger: Pressed, name: "slow_motion.gamepad"),
+                    (action: "slow_motion", source: Touch(Press), trigger: DoubleTap(seconds: 0.3)),
+                    (action: "hitstop", source: Key(H), trigger: Pressed, name: "hitstop.keyboard"),
+                    (action: "hitstop", source: Pad(East), trigger: Pressed, name: "hitstop.gamepad"),
+                    (action: "hitstop", source: Touch(Press), trigger: Hold(seconds: 0.5)),
+                ],
+            ),
+            // Enabled on desktop only: mobile apps don't quit themselves.
+            (
+                name: "desktop",
+                bindings: [(action: "quit", source: Key(Escape), trigger: Pressed)],
+            ),
+        ],
+    ),
+)

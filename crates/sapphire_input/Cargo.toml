@@ -1,0 +1,25 @@
+[package]
+name = "sapphire_input"
+description = "Action mapping on Unreal's Enhanced Input model: contexts, actions, modifiers, triggers, touch gestures and rebinding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The `Reflect` derives find the crate by this name (see sapphire_reflect).
+bevy_reflect.workspace = true
+profiling.workspace = true
+sapphire_math.workspace = true
+sapphire_platform.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The counting allocator, for the steady-state allocation test.
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

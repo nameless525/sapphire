@@ -65,8 +65,11 @@ Each command cooks the sample content, builds the sandbox, packages it where the
 |---|---|
 | Drag (mouse or finger), arrow keys, right stick | Orbit |
 | Wheel, pinch, triggers | Zoom |
-| `Space` or gamepad South | World slow motion |
-| `H` or gamepad East | Hitstop |
+| `Space`, gamepad South or a double tap | World slow motion |
+| `H`, gamepad East or a long press | Hitstop |
+| `Esc` (desktop) | Quit |
+
+The bindings are a `sapphire_input` document, [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron).
 
 ## Checking visuals and performance without a window
 

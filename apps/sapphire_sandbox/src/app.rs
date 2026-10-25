@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, GamepadEvent, LifecycleEvent, Os,
-    Platform, Scancode, SurfaceHandle, Window, WindowDesc, WindowEvent,
+    App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
+    SurfaceHandle, Window, WindowDesc, WindowEvent,
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::{MeshHandle, Msaa, RenderSettings, Renderer};
@@ -16,7 +16,7 @@ use sapphire_rhi::{
 use sapphire_time::{FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource};
 
 use crate::LOG_TARGET;
-use crate::input::InputState;
+use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::{self, Scene};
 use crate::stats::FrameStats;
@@ -44,9 +44,7 @@ pub struct SandboxApp {
     msaa: Msaa,
 
     scene: Scene,
-    input: InputState,
-    /// Desktop-only behavior, such as `Esc` quitting.
-    desktop: bool,
+    input: SandboxInput,
 
     real: RealClock,
     driver: FixedStepDriver,
@@ -86,6 +84,8 @@ impl App for SandboxApp {
             ..base
         };
         let stack = create_gpu_stack(platform, &window, debug, options.msaa)?;
+        // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
+        let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
         Ok(Self {
             renderer: stack.renderer,
             graph: stack.graph,
@@ -96,8 +96,7 @@ impl App for SandboxApp {
             gpu_debug: debug,
             msaa: options.msaa,
             scene: Scene::with_character(stack.character, stack.character_bounds),
-            input: InputState::default(),
-            desktop: info.device_class == DeviceClass::Desktop,
+            input,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
             background_pause: None,
@@ -109,6 +108,9 @@ impl App for SandboxApp {
     }
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
+        // Input queues for the next frame. Losing focus or the foreground releases everything
+        // held, since the releases may never arrive.
+        self.input.handle_event(event);
         match event {
             Event::Quit { .. } => return AppControl::Exit,
             Event::Window { event, .. } => match *event {
@@ -120,34 +122,9 @@ impl App for SandboxApp {
                     let size = self.window.pixel_size();
                     self.resize(size.width, size.height);
                 }
-                WindowEvent::FocusLost => self.input.release_all(),
                 _ => {}
             },
             Event::Lifecycle { event, .. } => self.lifecycle(*event),
-            Event::Key(key) => {
-                if self.desktop && key.down && !key.repeat && key.scancode == Scancode::ESCAPE {
-                    return AppControl::Exit;
-                }
-                self.input.key(key.scancode, key.down, key.repeat);
-            }
-            Event::MouseButton(button) => self.input.mouse_button(button.button, button.down),
-            Event::MouseMotion(motion) => {
-                self.input.mouse_motion(&mut self.scene.camera_mut(), motion.dx, motion.dy)
-            }
-            Event::MouseWheel(wheel) => InputState::mouse_wheel(&mut self.scene.camera_mut(), wheel.y),
-            Event::Touch(touch) => {
-                let size = self.window.size();
-                self.input.touch(
-                    &mut self.scene.camera_mut(),
-                    touch,
-                    [size.width as f32, size.height as f32],
-                );
-            }
-            Event::Gamepad { event, .. } => match *event {
-                GamepadEvent::Axis { axis, value } => self.input.gamepad_axis(axis, value),
-                GamepadEvent::Button { button, down } => self.input.gamepad_button(button, down),
-                _ => {}
-            },
             _ => {}
         }
         AppControl::Continue
@@ -155,6 +132,10 @@ impl App for SandboxApp {
 
     fn iterate(&mut self, platform: &mut Platform) -> AppControl {
         let frame_time = self.real.update();
+        // On the clock event timestamps use, so every trigger is judged on one timeline.
+        if self.input.update(platform.now()) {
+            return AppControl::Exit;
+        }
         if self.suspended {
             std::thread::sleep(IDLE_FRAME);
             return self.frame_limit_control().unwrap_or(AppControl::Continue);
@@ -172,7 +153,7 @@ impl App for SandboxApp {
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
         let mut camera = self.scene.camera_mut();
-        self.input.update(&mut camera, dt);
+        self.input.drive_camera(&mut camera);
         camera.update(dt);
         let presented = match self.render(steps.alpha) {
             Ok(presented) => presented,
@@ -273,7 +254,6 @@ impl SandboxApp {
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
-                self.input.release_all();
                 if !Os::CURRENT.keeps_surface_in_background() {
                     self.surface = None;
                 }

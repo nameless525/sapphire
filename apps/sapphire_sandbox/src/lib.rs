@@ -6,12 +6,15 @@
 //!
 //! # Controls
 //!
+//! The default bindings are a `sapphire_input` document, `default_bindings.ron`, compiled into
+//! the app (see `input.rs`).
+//!
 //! | Input | Action |
 //! |---|---|
 //! | Left-drag, one-finger drag, right stick, arrow keys | Orbit |
 //! | Wheel, pinch, triggers | Zoom |
-//! | `Space`, gamepad South | Toggle world slow motion (perfect-dodge style, 0.2×) |
-//! | `H`, gamepad East | 8-tick hitstop on the turntable |
+//! | `Space`, gamepad South, double tap | Toggle world slow motion (perfect-dodge style, 0.2×) |
+//! | `H`, gamepad East, long press (0.5 s) | 8-tick hitstop on the turntable |
 //! | `Esc` | Quit (desktop) |
 //!
 //! # Arguments

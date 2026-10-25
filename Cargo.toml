@@ -21,6 +21,7 @@ members = [
     "crates/sapphire_rhi",
     "crates/sapphire_serialize",
     # L3 subsystems
+    "crates/sapphire_input",
     "crates/sapphire_render",
     # Apps
     "apps/sapphire_sandbox",
@@ -49,6 +50,7 @@ sapphire_ecs = { path = "crates/sapphire_ecs" }
 sapphire_reflect = { path = "crates/sapphire_reflect" }
 sapphire_rhi = { path = "crates/sapphire_rhi" }
 sapphire_serialize = { path = "crates/sapphire_serialize" }
+sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
 
 # --- Foundation ---

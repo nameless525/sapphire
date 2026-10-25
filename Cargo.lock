@@ -1799,6 +1799,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_input"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "profiling",
+ "sapphire_core",
+ "sapphire_math",
+ "sapphire_platform",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "sapphire_jobs"
 version = "0.1.0"
 dependencies = [
@@ -1900,6 +1915,7 @@ dependencies = [
  "sapphire_core",
  "sapphire_crash",
  "sapphire_ecs",
+ "sapphire_input",
  "sapphire_jobs",
  "sapphire_math",
  "sapphire_platform",

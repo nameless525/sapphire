@@ -293,7 +293,7 @@ pub struct FramePacket {
 | `sapphire_audio` | L3 | FMOD Studio integration and cue playback | FMOD (own bindings); `kira` as fallback | M2 |
 | `sapphire_vfx` | L3 | GPU particles, trails, decals, screen effects | `sapphire_render` | M2–M3 |
 | `sapphire_ui` | L3 | Retained game UI, text, touch controls | `taffy`, `parley` | M3 |
-| `sapphire_input` | L3 | Action mapping, contexts, rebinding, glyphs | `sapphire_platform` | M1 |
+| `sapphire_input` | L3 | Action mapping, contexts, rebinding, glyphs | `sapphire_platform`, `sapphire_serialize` | M1 |
 | `sapphire_nav` | L3 | Navmesh baking and runtime pathfinding | `rerecast`, `landmass` | M3 |
 | `sapphire_debug` | L3 | Debug draw, stats, dev console, inspector (dev only) | `egui`, `egui-wgpu` | M1 |
 | `sapphire_world` | L4 | Zones, cells, prefabs, spawning, transitions | — | M3 |
@@ -813,6 +813,17 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - DualSense LED and gyro *later*.
 - **Touch:** gestures (swipe-to-dodge, drag-camera, pinch) are recognized here, and on-screen buttons inject actions. Target assist is stronger on touch.
 - **Rebinding:** saved to user settings. The prompt glyph switches to the last-used device.
+- **As built (M1 F4):**
+  - One pipeline for every device: platform events become `RawInput` (in each device's own conventions, with slots for gamepads and fingers), and bindings read a vocabulary of sources the crate owns, such as `Key(W)`, `PadStick(Right)`, `Touch(Swipe(Left))` and `Virtual("attack")`, because those names are a data format. Every source yields a 2D value, positive up on every device.
+  - Contexts are enabled at an integer priority; among equal priorities the latest enabled wins. Consumption is static, as in Unreal: a context's consuming actions (the default) hide their sources from lower contexts. A newly enabled context ignores inputs already held until they are released (all but `Down` bindings), so the key that opened a menu doesn't also close it.
+  - Chords are a binding's `chord`: an action that must be triggered. While it is, the chord also blocks the unchorded bindings of its source in its own and lower contexts, so `Ctrl+S` doesn't fire `S`. Actions are evaluated in chord-dependency order; cycles are a load error.
+  - `update(now)` replays the frame's queued input in order and judges every binding at each input's own timestamp, and at every trigger deadline in between. Action events (started, triggered, completed, canceled) carry the device event's timestamp, or the exact instant of a time-driven change (a hold completes at its press plus the hold time); a press and release within one frame both count. Motion (mouse, wheel, drag, pinch) is summed per update instead, and its action starts at the first motion's timestamp.
+  - The crate reads no clock (rule R2): the app passes `Platform::now`, the clock event timestamps use. Authored durations round to whole microseconds and are compared in integer nanoseconds, so trigger timing is exact under synthetic timestamps.
+  - Touch gestures: press (so taps, double taps and long presses come from the ordinary triggers; dragging or a second finger cancels it without firing release triggers), one-finger drag, two-finger pinch (the natural log of the spread, so per-update sums compose) and swipes by dominant direction. On-screen controls inject values into `Virtual` sources, which bind like devices, so an on-screen attack button can tap or hold like a key.
+  - Bindings are `sapphire::input::InputBindings` RON documents (schema version 1), registered for loading by type name. `rebind(name, source)` recompiles the map; `capture_next` takes the next press for a rebinding UI. Losing focus or the foreground releases everything without firing release triggers.
+  - The last-used device is keyboard and mouse, touch, or a gamepad family (Xbox, PlayStation, Nintendo, generic) from SDL's gamepad type, which `GamepadEvent::Added` now carries.
+  - Steady-state frames allocate nothing (tested over 1000 frames of every device, with context switches). Cost on the sandbox's 19 bindings (Apple M5, release): about 0.2 µs for an update without input and 1 µs for one with five inputs.
+  - The sandbox's default bindings are a document compiled into the app rather than cooked content: the app must stay controllable when content fails to load, and bindings don't vary per cook. Its camera actions are per-update quantities (radians, and the log of the distance factor), so mouse, touch, keys, stick and triggers all add into one action, the rate-driven ones through `ScaleByDeltaTime`. Touch also reaches the debug actions: double tap for slow motion, long press for hitstop.
 
 ### 5.19 `sapphire_nav` (L3)
 
@@ -1104,6 +1115,7 @@ On **foreground**:
   - Steam Deck: gamepad glyphs, and a 1280×800 layout check.
   - Mobile: touch plus optional gamepad. On-screen controls hide when a gamepad connects.
 - **Text input:** SDL3 text-input events show the on-screen keyboard on mobile (for name entry and the dev console).
+- **As built (M1 F4):** every device is live on every platform, through one set of bindings. `sapphire_input` reports the last-used device kind with the gamepad's glyph family (the Steam Deck counts as Xbox, whose A/B/X/Y positions it shares) and how many gamepads are connected; showing glyphs and hiding on-screen controls are `game_ui`'s (M3). Text input is not forwarded yet.
 
 ### 6.7 Store and platform compliance
 

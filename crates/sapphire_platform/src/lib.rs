@@ -10,7 +10,7 @@
 //!   surface from: a `CAMetalLayer` on Apple platforms, `raw-window-handle` 0.6 handles
 //!   elsewhere, kept alive for as long as the surface needs them.
 //! - **Raw input and OS events** as engine-owned [`Event`]s, each with SDL's
-//!   nanosecond [`Timestamp`]. Mapping them to actions is `sapphire_input`'s job (M1).
+//!   nanosecond [`Timestamp`]. Mapping them to actions is `sapphire_input`'s job.
 //! - **Content and user storage:** [`ContentFs`] for packaged read-only content
 //!   (including APK assets), [`user_dir`] for settings and saves, and [`cache_dir`] for
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
@@ -93,9 +93,9 @@ pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_w
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
 pub use dirs::{cache_dir, user_dir};
 pub use event::{
-    Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, KeyEvent, Keycode, LifecycleEvent,
-    Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode, Timestamp,
-    TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
+    Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, GamepadType, KeyEvent, Keycode,
+    LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,
+    Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
 pub use log::sdl_log;
 pub use platform::{Platform, PlatformError};

@@ -32,6 +32,7 @@ sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 sapphire_serialize = { kind = "runtime", layer = 2 }
 # L3 subsystems.
+sapphire_input = { kind = "runtime", layer = 3 }
 sapphire_render = { kind = "runtime", layer = 3 }
 # Apps.
 # `tracy`: stream profiling zones to Tracy (spec §5.3).

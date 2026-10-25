@@ -31,6 +31,7 @@ path = "src/main.rs"
 sapphire_assets.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
+sapphire_input.workspace = true
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
 sapphire_platform.workspace = true

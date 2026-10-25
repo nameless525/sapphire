@@ -1,33 +1,29 @@
-//! Maps raw platform input onto the orbit camera and the simulation.
+//! The sandbox's input: `sapphire_input` with the default bindings, and what the sandbox does
+//! with their actions.
 //!
-//! M0 stand-in for `sapphire_input` (M1, spec §5.18), which adds contexts, action mapping and
-//! rebinding. The split it already follows:
-//!
-//! - **Camera input is presentation.** Pointer gestures apply immediately; held keys, sticks
-//!   and triggers apply per frame for the real `dt`.
-//! - **Simulation input is queued.** Presses become [`SimActions`] that the next fixed step
-//!   consumes, so an input lands on a tick rather than whenever the OS delivered it (spec
-//!   §4.2 step 1, rule R3), and replays stay deterministic.
+//! - **Bindings** are the document `default_bindings.ron`, compiled into the app. Embedded
+//!   rather than cooked: the app must stay controllable (and quittable) when content fails to
+//!   load, the bindings don't differ per cook, and player rebinds will come from user settings
+//!   on top of them (M3) rather than replace them.
+//! - **Camera input is presentation.** `orbit` and `zoom` apply once per frame on the real
+//!   clock, so the camera stays responsive in slow motion.
+//! - **Simulation input is queued.** `slow_motion` and `hitstop` become [`SimActions`] that the
+//!   next fixed step consumes, so an input lands on a tick rather than whenever the OS delivered
+//!   it (spec §4.2 step 1, rule R3), and replays stay deterministic.
 
-use sapphire_platform::{
-    FingerId, GamepadAxis, GamepadButton, MouseButton, Scancode, TouchEvent, TouchPhase,
-};
+use sapphire_input::{ActionEventKind, ActionId, InputMap, InputSystem};
+use sapphire_math::Vec2;
+use sapphire_platform::{AppInitError, Event, Size, Timestamp};
 
 use crate::orbit::OrbitCamera;
 
-/// Radians per window point of mouse drag.
-const MOUSE_ORBIT: f32 = 0.008;
-/// Radians per window point of finger drag.
-const TOUCH_ORBIT: f32 = 0.006;
-/// Distance factor per wheel notch.
-const WHEEL_ZOOM: f32 = 0.9;
-/// Radians per second while an arrow key is held.
-const KEY_ORBIT: f32 = 1.5;
-/// Radians per second at full stick.
-const STICK_ORBIT: f32 = 2.5;
-/// Distance factor per second at full trigger.
-const TRIGGER_ZOOM: f32 = 3.0;
-const STICK_DEADZONE: f32 = 0.15;
+/// The default bindings document.
+const BINDINGS: &str = include_str!("../default_bindings.ron");
+
+/// Contexts enabled everywhere, with their priorities. Their sources don't overlap yet.
+const CONTEXTS: [(&str, i32); 2] = [("camera", 0), ("debug", 10)];
+/// Enabled on desktop only: `Esc` quits there.
+const DESKTOP_CONTEXT: (&str, i32) = ("desktop", 20);
 
 /// Simulation actions requested since the last fixed step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,185 +34,251 @@ pub(crate) struct SimActions {
     pub hitstop: bool,
 }
 
-#[derive(Default)]
-pub(crate) struct InputState {
-    dragging: bool,
-    /// Up to two tracked fingers with their last positions in window points.
-    fingers: [Option<(FingerId, [f32; 2])>; 2],
-    /// Held arrow keys: left, right, up, down.
-    arrows: [bool; 4],
-    stick: [f32; 2],
-    triggers: [f32; 2],
-    actions: SimActions,
+/// The actions the sandbox reads.
+#[derive(Clone, Copy, Debug)]
+struct Actions {
+    orbit: ActionId,
+    zoom: ActionId,
+    slow_motion: ActionId,
+    hitstop: ActionId,
+    quit: ActionId,
 }
 
-impl InputState {
-    pub fn key(&mut self, scancode: Scancode, down: bool, repeat: bool) {
-        let press = down && !repeat;
-        match scancode {
-            Scancode::LEFT => self.arrows[0] = down,
-            Scancode::RIGHT => self.arrows[1] = down,
-            Scancode::UP => self.arrows[2] = down,
-            Scancode::DOWN => self.arrows[3] = down,
-            Scancode::SPACE if press => self.actions.toggle_slow_motion ^= true,
-            Scancode::H if press => self.actions.hitstop = true,
-            _ => {}
+pub(crate) struct SandboxInput {
+    system: InputSystem,
+    actions: Actions,
+    queued: SimActions,
+}
+
+impl SandboxInput {
+    /// Input from the default bindings, for a window `window_size` points large. `desktop`
+    /// enables the desktop-only context.
+    pub fn new(desktop: bool, window_size: Size) -> Result<Self, AppInitError> {
+        let map = InputMap::from_ron(BINDINGS)
+            .map_err(|error| AppInitError::msg(format!("default bindings: {error}")))?;
+        let action = |name: &str| {
+            map.action(name)
+                .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` action")))
+        };
+        let actions = Actions {
+            orbit: action("orbit")?,
+            zoom: action("zoom")?,
+            slow_motion: action("slow_motion")?,
+            hitstop: action("hitstop")?,
+            quit: action("quit")?,
+        };
+        let mut system = InputSystem::new(map);
+        for (name, priority) in CONTEXTS.into_iter().chain(desktop.then_some(DESKTOP_CONTEXT)) {
+            let context = system
+                .map()
+                .context(name)
+                .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` context")))?;
+            system.enable_context(context, priority);
         }
+        system.set_window_size(window_size.width as f32, window_size.height as f32);
+        Ok(Self { system, actions, queued: SimActions::default() })
     }
 
-    pub fn gamepad_button(&mut self, button: GamepadButton, down: bool) {
-        match button {
-            GamepadButton::South if down => self.actions.toggle_slow_motion ^= true,
-            GamepadButton::East if down => self.actions.hitstop = true,
-            _ => {}
-        }
+    /// Queues a platform event for the next [`Self::update`].
+    pub fn handle_event(&mut self, event: &Event) {
+        self.system.handle_event(event);
     }
 
-    pub fn gamepad_axis(&mut self, axis: GamepadAxis, value: f32) {
-        match axis {
-            GamepadAxis::RightX => self.stick[0] = value,
-            GamepadAxis::RightY => self.stick[1] = value,
-            GamepadAxis::LeftTrigger => self.triggers[0] = value,
-            GamepadAxis::RightTrigger => self.triggers[1] = value,
-            GamepadAxis::LeftX | GamepadAxis::LeftY => {}
-        }
-    }
-
-    pub fn mouse_button(&mut self, button: MouseButton, down: bool) {
-        if button == MouseButton::Left {
-            self.dragging = down;
-        }
-    }
-
-    pub fn mouse_motion(&self, camera: &mut OrbitCamera, dx: f32, dy: f32) {
-        if self.dragging {
-            camera.rotate(-dx * MOUSE_ORBIT, dy * MOUSE_ORBIT);
-        }
-    }
-
-    pub fn mouse_wheel(camera: &mut OrbitCamera, notches: f32) {
-        camera.zoom(WHEEL_ZOOM.powf(notches));
-    }
-
-    /// One finger orbits; two fingers pinch-zoom. `window_size` is in window points: touch
-    /// coordinates are normalized per axis, so gestures are measured after scaling back, or a
-    /// wide screen would pinch-zoom on a rotation and pitch faster than it yaws.
-    pub fn touch(&mut self, camera: &mut OrbitCamera, event: &TouchEvent, window_size: [f32; 2]) {
-        let position = [event.x * window_size[0], event.y * window_size[1]];
-        match event.phase {
-            TouchPhase::Down => {
-                // A finger we already track (its release was lost) restarts in place.
-                let slot =
-                    self.finger_index(event.finger).or_else(|| self.fingers.iter().position(Option::is_none));
-                if let Some(slot) = slot {
-                    self.fingers[slot] = Some((event.finger, position));
-                }
+    /// Processes the frame's input as of `now` (the platform clock) and queues the simulation
+    /// actions it triggered. Returns whether the player asked to quit.
+    pub fn update(&mut self, now: Timestamp) -> bool {
+        self.system.update(now);
+        for event in self.system.events() {
+            if event.kind != ActionEventKind::Triggered {
+                continue;
             }
-            TouchPhase::Moved => {
-                let Some(index) = self.finger_index(event.finger) else { return };
-                let previous = self.fingers[index].map_or(position, |(_, p)| p);
-                match self.fingers[1 - index] {
-                    Some((_, other)) => {
-                        let (before, after) = (distance(other, previous), distance(other, position));
-                        if before > f32::EPSILON && after > f32::EPSILON {
-                            camera.zoom(before / after);
-                        }
-                    }
-                    None => camera.rotate(
-                        -(position[0] - previous[0]) * TOUCH_ORBIT,
-                        (position[1] - previous[1]) * TOUCH_ORBIT,
-                    ),
-                }
-                self.fingers[index] = Some((event.finger, position));
-            }
-            TouchPhase::Up | TouchPhase::Canceled => {
-                if let Some(index) = self.finger_index(event.finger) {
-                    self.fingers[index] = None;
-                }
+            if event.action == self.actions.slow_motion {
+                self.queued.toggle_slow_motion ^= true;
+            } else if event.action == self.actions.hitstop {
+                self.queued.hitstop = true;
             }
         }
+        self.system.state(self.actions.quit).fired()
     }
 
-    /// Applies held keys, stick and triggers for `dt` real seconds.
-    pub fn update(&self, camera: &mut OrbitCamera, dt: f32) {
-        let held =
-            |negative: bool, positive: bool| f32::from(u8::from(positive)) - f32::from(u8::from(negative));
-        let [left, right, up, down] = self.arrows;
-        let [stick_x, stick_y] = self.stick.map(deadzone);
-        let yaw = held(right, left) * KEY_ORBIT - stick_x * STICK_ORBIT;
-        let pitch = held(down, up) * KEY_ORBIT - stick_y * STICK_ORBIT;
-        if yaw != 0.0 || pitch != 0.0 {
-            camera.rotate(yaw * dt, pitch * dt);
+    /// Applies this frame's orbit and zoom.
+    pub fn drive_camera(&self, camera: &mut OrbitCamera) {
+        let orbit = self.system.state(self.actions.orbit).value();
+        if orbit != Vec2::ZERO {
+            camera.rotate(orbit.x, orbit.y);
         }
-        let zoom = self.triggers[0] - self.triggers[1];
+        let zoom = self.system.state(self.actions.zoom).axis();
         if zoom != 0.0 {
-            camera.zoom(TRIGGER_ZOOM.powf(zoom * dt));
+            camera.zoom(zoom.exp());
         }
     }
 
     /// Takes the actions queued for the next fixed step.
     pub fn take_actions(&mut self) -> SimActions {
-        std::mem::take(&mut self.actions)
-    }
-
-    /// Forgets held keys, buttons and fingers. Call when focus or the foreground is lost:
-    /// their releases may never arrive.
-    pub fn release_all(&mut self) {
-        let actions = self.actions;
-        *self = Self { actions, ..Self::default() };
-    }
-
-    fn finger_index(&self, finger: FingerId) -> Option<usize> {
-        self.fingers.iter().position(|slot| slot.is_some_and(|(id, _)| id == finger))
-    }
-}
-
-fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
-
-fn deadzone(value: f32) -> f32 {
-    if value.abs() < STICK_DEADZONE {
-        0.0
-    } else {
-        (value - STICK_DEADZONE * value.signum()) / (1.0 - STICK_DEADZONE)
+        std::mem::take(&mut self.queued)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use sapphire_input::{PadAxis, PadButton, RawInput};
+    use sapphire_platform::{GamepadType, Scancode, TouchPhase};
+
     use super::*;
 
-    #[test]
-    fn deadzone_rescales_to_full_range() {
-        assert_eq!(deadzone(0.1), 0.0);
-        assert_eq!(deadzone(-0.1), 0.0);
-        assert!((deadzone(1.0) - 1.0).abs() < 1e-6);
-        assert!((deadzone(-1.0) + 1.0).abs() < 1e-6);
+    fn ms(ms: u64) -> Timestamp {
+        Timestamp::from_nanos(ms * 1_000_000)
+    }
+
+    fn input(desktop: bool) -> SandboxInput {
+        let mut input =
+            SandboxInput::new(desktop, Size { width: 1000, height: 500 }).expect("default bindings");
+        input.update(ms(0));
+        input
+    }
+
+    impl SandboxInput {
+        fn push(&mut self, t: u64, raw: RawInput) {
+            self.system.push(ms(t), raw);
+        }
+
+        fn key(&mut self, t: u64, scancode: Scancode, down: bool) {
+            self.push(t, RawInput::Key { scancode, down });
+        }
+
+        fn orbit(&self) -> Vec2 {
+            self.system.state(self.actions.orbit).value()
+        }
+
+        /// The distance factor this frame's zoom applies.
+        fn zoom_factor(&self) -> f32 {
+            self.system.state(self.actions.zoom).axis().exp()
+        }
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
     }
 
     #[test]
     fn presses_queue_actions_for_the_next_step() {
-        let mut input = InputState::default();
-        input.key(Scancode::SPACE, true, false);
-        input.key(Scancode::SPACE, true, true); // auto-repeat is ignored
-        input.gamepad_button(GamepadButton::East, true);
+        let mut input = input(true);
+        input.key(1, Scancode::SPACE, true);
+        input.push(2, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+        input.push(3, RawInput::PadButton { pad: 0, button: PadButton::East, down: true });
+        assert!(!input.update(ms(16)));
         assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: true, hitstop: true });
         assert_eq!(input.take_actions(), SimActions::default());
 
         // Two toggles before a step cancel out.
-        input.key(Scancode::SPACE, true, false);
-        input.gamepad_button(GamepadButton::South, true);
+        input.key(20, Scancode::SPACE, false);
+        input.key(21, Scancode::SPACE, true);
+        input.push(22, RawInput::PadButton { pad: 0, button: PadButton::South, down: true });
+        input.update(ms(32));
         assert!(!input.take_actions().toggle_slow_motion);
     }
 
     #[test]
-    fn release_all_drops_held_state_but_keeps_queued_actions() {
-        let mut input = InputState::default();
-        input.key(Scancode::LEFT, true, false);
-        input.key(Scancode::H, true, false);
-        input.release_all();
-        assert_eq!(input.arrows, [false; 4]);
+    fn releasing_everything_drops_held_input_but_keeps_queued_actions() {
+        let mut input = input(true);
+        input.key(1, Scancode::LEFT, true);
+        input.key(2, Scancode::H, true);
+        input.update(ms(16));
+        assert!(input.orbit().x > 0.0);
+        input.system.release_all(ms(20));
+        input.update(ms(32));
+        assert_eq!(input.orbit(), Vec2::ZERO);
         assert!(input.take_actions().hitstop);
+    }
+
+    #[test]
+    fn camera_rates_match_the_m0_controls() {
+        let mut input = input(true);
+        // Arrow keys: 1.5 rad/s, left orbits positive yaw; up pitches positive.
+        input.key(1, Scancode::LEFT, true);
+        input.key(2, Scancode::UP, true);
+        input.update(ms(50));
+        assert!(
+            close(input.orbit().x, 1.5 * 0.05) && close(input.orbit().y, 1.5 * 0.05),
+            "{}",
+            input.orbit()
+        );
+        input.key(51, Scancode::LEFT, false);
+        input.key(52, Scancode::UP, false);
+        input.update(ms(60));
+
+        // The mouse orbits only while the left button is held: 0.008 rad per point.
+        input.push(61, RawInput::MouseMotion { delta: Vec2::new(10.0, 5.0) });
+        input.update(ms(70));
+        assert_eq!(input.orbit(), Vec2::ZERO);
+        input.push(71, RawInput::MouseButton { button: sapphire_input::MouseButton::Left, down: true });
+        input.push(72, RawInput::MouseMotion { delta: Vec2::new(10.0, 5.0) });
+        input.update(ms(80));
+        assert!(close(input.orbit().x, -0.08) && close(input.orbit().y, 0.04), "{}", input.orbit());
+
+        // One wheel notch away is 0.9× the distance.
+        input.push(81, RawInput::MouseWheel { delta: Vec2::new(0.0, 1.0) });
+        input.update(ms(90));
+        assert!(close(input.zoom_factor(), 0.9));
+
+        // Right stick, past its 0.15 axial dead zone, at 2.5 rad/s; SDL's -1 is up.
+        input.push(91, RawInput::GamepadAdded { pad: 0, kind: GamepadType::Standard });
+        input.push(92, RawInput::PadAxis { pad: 0, axis: PadAxis::RightX, value: 1.0 });
+        input.push(93, RawInput::PadAxis { pad: 0, axis: PadAxis::RightY, value: -0.1 });
+        input.update(ms(100));
+        assert!(close(input.orbit().x, -2.5 * 0.01) && input.orbit().y == 0.0, "{}", input.orbit());
+        input.push(101, RawInput::PadAxis { pad: 0, axis: PadAxis::RightX, value: 0.0 });
+
+        // Full left trigger: 3× the distance per second.
+        input.push(102, RawInput::PadAxis { pad: 0, axis: PadAxis::LeftTrigger, value: 1.0 });
+        input.update(ms(200));
+        assert!(close(input.zoom_factor(), 3f32.powf(0.1)));
+    }
+
+    #[test]
+    fn touch_orbits_zooms_and_reaches_the_debug_actions() {
+        let mut input = input(false);
+        let touch = |input: &mut SandboxInput, t, finger, phase, x, y| {
+            input.push(t, RawInput::Touch { finger, phase, position: Vec2::new(x, y) });
+        };
+        // One finger: 0.006 rad per point, dragging right orbits negative yaw.
+        touch(&mut input, 1, 0, TouchPhase::Down, 500.0, 250.0);
+        touch(&mut input, 2, 0, TouchPhase::Moved, 520.0, 250.0);
+        input.update(ms(16));
+        assert!(close(input.orbit().x, -0.12) && input.orbit().y == 0.0, "{}", input.orbit());
+
+        // A second finger pinches: spreading from 100 to 200 points halves the distance.
+        touch(&mut input, 20, 1, TouchPhase::Down, 620.0, 250.0);
+        touch(&mut input, 21, 1, TouchPhase::Moved, 720.0, 250.0);
+        input.update(ms(32));
+        assert!(close(input.zoom_factor(), 0.5));
+        assert_eq!(input.orbit(), Vec2::ZERO, "two fingers don't orbit");
+        touch(&mut input, 40, 0, TouchPhase::Up, 520.0, 250.0);
+        touch(&mut input, 41, 1, TouchPhase::Up, 720.0, 250.0);
+        input.update(ms(48));
+
+        // A double tap toggles slow motion; a long press is a hitstop.
+        for (t, phase) in
+            [(100, TouchPhase::Down), (150, TouchPhase::Up), (250, TouchPhase::Down), (300, TouchPhase::Up)]
+        {
+            touch(&mut input, t, 0, phase, 300.0, 300.0);
+        }
+        input.update(ms(316));
+        assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: true, hitstop: false });
+        touch(&mut input, 1000, 0, TouchPhase::Down, 300.0, 300.0);
+        input.update(ms(1600));
+        assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: false, hitstop: true });
+    }
+
+    #[test]
+    fn escape_quits_on_desktop_only() {
+        let mut desktop = input(true);
+        desktop.key(1, Scancode::ESCAPE, true);
+        assert!(desktop.update(ms(16)));
+        assert!(!desktop.update(ms(32)), "once per press");
+
+        let mut mobile = input(false);
+        mobile.key(1, Scancode::ESCAPE, true);
+        assert!(!mobile.update(ms(16)));
     }
 }

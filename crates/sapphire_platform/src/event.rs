@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use sdl3_sys::events::{SDL_Event, SDL_EventType};
-use sdl3_sys::gamepad::{SDL_GamepadAxis, SDL_GamepadButton};
+use sdl3_sys::gamepad::{SDL_GamepadAxis, SDL_GamepadButton, SDL_GamepadType};
 use sdl3_sys::keycode::SDL_Keymod;
 use sdl3_sys::mouse::SDL_MOUSEWHEEL_FLIPPED;
 use sdl3_sys::pen::SDL_PEN_TOUCHID;
@@ -472,7 +472,10 @@ pub struct GamepadId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GamepadEvent {
     /// A gamepad connected and has been opened; its input events follow.
-    Added,
+    Added {
+        /// The controller SDL identified, for button glyphs.
+        kind: GamepadType,
+    },
     /// The gamepad disconnected.
     Removed,
     Button {
@@ -484,6 +487,51 @@ pub enum GamepadEvent {
         axis: GamepadAxis,
         value: f32,
     },
+}
+
+/// What controller a gamepad is, as SDL identifies it from its USB IDs and mapping. Prompt
+/// glyphs follow it (spec §5.18); buttons are always named by position ([`GamepadButton`]),
+/// whatever their labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum GamepadType {
+    /// SDL can't tell what this controller is.
+    Unknown,
+    /// A controller with a standard layout but no recognized family.
+    Standard,
+    Xbox360,
+    XboxOne,
+    PlayStation3,
+    PlayStation4,
+    PlayStation5,
+    SwitchPro,
+    JoyConLeft,
+    JoyConRight,
+    /// Two Joy-Cons acting as one controller.
+    JoyConPair,
+    GameCube,
+    /// Valve's Steam Controller and Steam Deck.
+    Steam,
+}
+
+impl GamepadType {
+    pub(crate) fn from_sdl(kind: SDL_GamepadType) -> Self {
+        match kind {
+            SDL_GamepadType::STANDARD => Self::Standard,
+            SDL_GamepadType::XBOX360 => Self::Xbox360,
+            SDL_GamepadType::XBOXONE => Self::XboxOne,
+            SDL_GamepadType::PS3 => Self::PlayStation3,
+            SDL_GamepadType::PS4 => Self::PlayStation4,
+            SDL_GamepadType::PS5 => Self::PlayStation5,
+            SDL_GamepadType::NINTENDO_SWITCH_PRO => Self::SwitchPro,
+            SDL_GamepadType::NINTENDO_SWITCH_JOYCON_LEFT => Self::JoyConLeft,
+            SDL_GamepadType::NINTENDO_SWITCH_JOYCON_RIGHT => Self::JoyConRight,
+            SDL_GamepadType::NINTENDO_SWITCH_JOYCON_PAIR => Self::JoyConPair,
+            SDL_GamepadType::GAMECUBE => Self::GameCube,
+            SDL_GamepadType::STEAM => Self::Steam,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 /// A gamepad button, named by position (Xbox layout) rather than label.
@@ -616,8 +664,8 @@ fn window_event(tag: SDL_EventType, data1: i32, data2: i32) -> Option<WindowEven
 
 /// Translates an SDL event, or returns `None` for event kinds the engine doesn't use.
 ///
-/// Text input and IME events are not forwarded yet; they arrive with `sapphire_input`
-/// in M1 (spec §5.1, §6.6).
+/// Text input and IME events are not forwarded yet; they arrive with their first users, the
+/// dev console and name entry (spec §5.1, §6.6).
 pub(crate) fn translate(raw: &SDL_Event) -> Option<Event> {
     // SAFETY: every SDL event variant begins with the common header (type, reserved,
     // timestamp), so these two fields are initialized whatever the variant.
@@ -717,8 +765,13 @@ pub(crate) fn translate(raw: &SDL_Event) -> Option<Event> {
         SDL_EventType::GAMEPAD_ADDED | SDL_EventType::GAMEPAD_REMOVED => {
             // SAFETY: the tag says this is a gamepad-device event.
             let e = unsafe { &raw.gdevice };
-            let event =
-                if tag == SDL_EventType::GAMEPAD_ADDED { GamepadEvent::Added } else { GamepadEvent::Removed };
+            // SDL knows the type once the gamepad is open, so `Platform::translate_event`, which
+            // opens it, fills in the kind.
+            let event = if tag == SDL_EventType::GAMEPAD_ADDED {
+                GamepadEvent::Added { kind: GamepadType::Unknown }
+            } else {
+                GamepadEvent::Removed
+            };
             Some(Event::Gamepad { timestamp, gamepad: GamepadId(e.which.0), event })
         }
         SDL_EventType::GAMEPAD_BUTTON_DOWN | SDL_EventType::GAMEPAD_BUTTON_UP => {
@@ -940,8 +993,10 @@ mod tests {
         });
         assert!(matches!(
             translate(&added),
-            Some(Event::Gamepad { gamepad: GamepadId(8), event: GamepadEvent::Added, .. })
+            Some(Event::Gamepad { gamepad: GamepadId(8), event: GamepadEvent::Added { .. }, .. })
         ));
+        assert_eq!(GamepadType::from_sdl(SDL_GamepadType::PS5), GamepadType::PlayStation5);
+        assert_eq!(GamepadType::from_sdl(SDL_GamepadType::COUNT), GamepadType::Unknown);
 
         let button = event_with(|e| {
             e.gbutton = SDL_GamepadButtonEvent {

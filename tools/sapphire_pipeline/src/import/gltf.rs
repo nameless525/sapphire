@@ -187,6 +187,29 @@ pub fn import(path: &Path) -> Result<ImportedMesh, GltfImportError> {
 pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMesh, GltfImportError> {
     let Gltf { document, blob } = Gltf::from_slice(bytes).map_err(GltfImportError::Parse)?;
     let buffers = load_buffers(&document, base_dir, blob)?;
+    import_scene(&document, &buffers, &[]).map(|scene| scene.mesh)
+}
+
+/// A scene as imported, with where the importer put the document's nodes and materials: what
+/// importers that build on this one (VRM, M1 A6) need to address the mesh by glTF index.
+#[derive(Clone, Debug)]
+pub(crate) struct SceneImport {
+    pub mesh: ImportedMesh,
+    /// The skeleton joint of each node that is one.
+    pub joint_of_node: HashMap<usize, u16>,
+    /// The material slot of each glTF material a primitive uses (`None`: glTF's default).
+    pub slot_of_material: HashMap<Option<usize>, u32>,
+}
+
+/// Imports the default scene of a parsed document whose buffers are loaded. Nodes in
+/// `extra_joints` join the skeleton, with their ancestors, as if a skin used them: a VRM's
+/// spring bones, colliders and constraint targets may be nodes no vertex is weighted to. Nodes
+/// that aren't in the scene are left out, for the caller to report.
+pub(crate) fn import_scene(
+    document: &Document,
+    buffers: &[Vec<u8>],
+    extra_joints: &[usize],
+) -> Result<SceneImport, GltfImportError> {
     // Blender always writes `scene`; fall back to the first scene for files that don't.
     let scene =
         document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
@@ -194,12 +217,12 @@ pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMes
     // facing +Z, and so is engine object space (as is VRM 1.0). Blender's exporter already
     // converts from its +Z-up space, so source coordinates pass through unchanged.
     let nodes = flatten(&scene)?;
-    let skeleton = Skeleton::build(&document, &nodes, &buffers)?;
+    let skeleton = Skeleton::build(document, &nodes, buffers, extra_joints)?;
     let mut builder = Builder {
-        buffers: &buffers,
+        buffers,
         mesh: ImportedMesh { lods: vec![Lod::default()], ..ImportedMesh::default() },
         materials: HashMap::new(),
-        slot_names: slot_names(&document),
+        slot_names: slot_names(document),
         skeleton,
         targets: HashMap::new(),
     };
@@ -211,7 +234,10 @@ pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMes
             }
         }
     }
-    builder.finish()
+    let joint_of_node =
+        builder.skeleton.as_ref().map(|skeleton| skeleton.joint_of.clone()).unwrap_or_default();
+    let slot_of_material = builder.materials.clone();
+    Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material })
 }
 
 /// One visit of a node in the scene's depth-first walk. A node reached through two parents
@@ -270,11 +296,13 @@ struct Skeleton {
 }
 
 impl Skeleton {
-    /// The skeleton of every skin a scene node uses, or `None` if no node is skinned.
+    /// The skeleton of every skin a scene node uses and of `extra_joints` (those in the scene),
+    /// or `None` if no node is skinned and there are no extra joints.
     fn build(
         document: &Document,
         nodes: &[SceneNode],
         buffers: &[Vec<u8>],
+        extra_joints: &[usize],
     ) -> Result<Option<Self>, GltfImportError> {
         let gltf_node = |index: usize| document.nodes().nth(index).expect("flattened from this document");
         let mut skins: Vec<::gltf::Skin<'_>> = Vec::new();
@@ -286,27 +314,35 @@ impl Skeleton {
                 skins.push(skin);
             }
         }
-        if skins.is_empty() {
-            return Ok(None);
-        }
         let mut first_visit: HashMap<usize, usize> = HashMap::new();
         for (visit, scene_node) in nodes.iter().enumerate() {
             first_visit.entry(scene_node.node).or_insert(visit);
         }
+        let extra_visits: Vec<usize> =
+            extra_joints.iter().filter_map(|node| first_visit.get(node).copied()).collect();
+        if skins.is_empty() && extra_visits.is_empty() {
+            return Ok(None);
+        }
         // Every joint and its ancestors.
         let mut included = vec![false; nodes.len()];
+        let mut include = |mut visit: Option<usize>| {
+            while let Some(current) = visit {
+                included[current] = true;
+                visit = nodes[current].parent;
+            }
+        };
         for skin in &skins {
             for joint in skin.joints() {
-                let mut visit =
-                    Some(*first_visit.get(&joint.index()).ok_or(GltfImportError::JointNotInScene {
+                include(Some(
+                    *first_visit.get(&joint.index()).ok_or(GltfImportError::JointNotInScene {
                         skin: skin.index(),
                         node: joint.index(),
-                    })?);
-                while let Some(current) = visit {
-                    included[current] = true;
-                    visit = nodes[current].parent;
-                }
+                    })?,
+                ));
             }
+        }
+        for &visit in &extra_visits {
+            include(Some(visit));
         }
         let mut skeleton = Self {
             joints: Vec::new(),
@@ -394,7 +430,7 @@ impl Skeleton {
 /// Loads every buffer of `document`: the GLB binary chunk, base64 `data:` URIs, or files
 /// relative to `base_dir`. This is `gltf::import_buffers`, whose `import` feature would also
 /// build an image decoder (`image`) the pipeline doesn't use until textures arrive in M1.
-fn load_buffers(
+pub(crate) fn load_buffers(
     document: &Document,
     base_dir: Option<&Path>,
     mut blob: Option<Vec<u8>>,
@@ -531,6 +567,23 @@ fn linear_rgba<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<[f32
 struct MeshExtras {
     #[serde(default, rename = "targetNames")]
     target_names: Vec<String>,
+}
+
+/// The names `mesh`'s extras give its morph targets, by index.
+pub(crate) fn morph_target_names(mesh: &Mesh<'_>) -> Vec<String> {
+    mesh.extras()
+        .as_ref()
+        .and_then(|raw| serde_json::from_str::<MeshExtras>(raw.get()).ok())
+        .unwrap_or_default()
+        .target_names
+}
+
+/// The name morph target `k` of `mesh` is imported (and merged) under: its name from the
+/// mesh's extras (`names`, [`morph_target_names`]), or `<mesh>/<k>`.
+pub(crate) fn morph_target_name(mesh: &Mesh<'_>, names: &[String], k: usize) -> String {
+    names.get(k).cloned().unwrap_or_else(|| {
+        format!("{}/{k}", mesh.name().map_or_else(|| format!("#{}", mesh.index()), str::to_owned))
+    })
 }
 
 struct Builder<'a> {
@@ -718,12 +771,7 @@ impl Builder<'_> {
         if targets.is_empty() {
             return Ok(());
         }
-        let names = mesh
-            .extras()
-            .as_ref()
-            .and_then(|raw| serde_json::from_str::<MeshExtras>(raw.get()).ok())
-            .unwrap_or_default()
-            .target_names;
+        let names = morph_target_names(mesh);
         let defaults = node.weights().or(mesh.weights()).unwrap_or_default();
         let linear = Mat3::from_mat4(transform);
         let normal_matrix = linear.inverse().transpose();
@@ -746,9 +794,7 @@ impl Builder<'_> {
                     });
                 }
             }
-            let name = names.get(k).cloned().unwrap_or_else(|| {
-                format!("{}/{k}", mesh.name().map_or_else(|| format!("#{}", mesh.index()), str::to_owned))
-            });
+            let name = morph_target_name(mesh, &names, k);
             let target = *self.targets.entry(name.clone()).or_insert_with(|| {
                 self.mesh.morph_targets.push(ImportedMorphTarget {
                     name: name.clone(),
@@ -995,19 +1041,23 @@ fn slot_names(document: &Document) -> Vec<String> {
     }
 }
 
-/// The anime character material a glTF material describes.
-fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial, GltfImportError> {
-    let alpha = match material.alpha_mode() {
+/// A glTF material's `alphaMode` and `alphaCutoff`.
+pub(crate) fn alpha_mode(material: &Material<'_>) -> AlphaMode {
+    match material.alpha_mode() {
         ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
         ::gltf::material::AlphaMode::Mask => {
             // glTF allows any cutoff from 0; above 1 everything is discarded either way.
             AlphaMode::Mask { cutoff: material.alpha_cutoff().unwrap_or(0.5).clamp(0.0, 1.0) }
         }
         ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-    };
+    }
+}
+
+/// The anime character material a glTF material describes.
+fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial, GltfImportError> {
     let mut generated = AnimeCharacterMaterial {
         base_color: material.pbr_metallic_roughness().base_color_factor(),
-        alpha,
+        alpha: alpha_mode(material),
         ..AnimeCharacterMaterial::default()
     };
     let Some(raw) = material.extras() else {

@@ -75,8 +75,6 @@
 //!   yet.
 //! - Ramp arrays and per-region reads of the control map (C1): until then the anime character
 //!   shader shades with region 0 and two bands.
-//! - An `extract-materials` pipeline command that writes a mesh's generated materials out as
-//!   documents and binds them in its sidecar, as a starting point for authoring (with A6).
 
 mod character;
 mod common;

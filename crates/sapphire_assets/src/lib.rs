@@ -16,8 +16,11 @@
 //!   environment, foliage, sky, fog card), and packing them into GPU blocks, which runtime
 //!   tools (live link, the overlay) can do as well as the cooker.
 //! - What the anime character maps' texels mean ([`character_maps`], M1 A7): the ILM channel
-//!   assignment and material-ID encoding, the ramp rows, and the SDF face-map angle encoding,
-//!   for the same reason.
+//!   assignment and material-ID and shadow-bias encodings, the ramp rows, and the SDF
+//!   face-map angle encoding, for the same reason.
+//! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
+//!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
+//!   for animation (M2) to read.
 //!
 //! # Does not own
 //!
@@ -26,7 +29,8 @@
 //! - Importing, optimizing and simplifying meshes: the pipeline. [`mesh::Mesh::from_vertices`]
 //!   packs procedural single-LOD meshes and nothing more.
 //! - Data formats in general (RON documents, the rkyv cooked envelope): `sapphire_serialize`.
-//! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2).
+//! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2), which
+//!   also simulates spring bones and evaluates constraints and expressions from a rig.
 //! - Checking that a material's textures exist and suit their slots: the pipeline, which knows
 //!   texture classes. Binding textures and drawing materials: the renderer.
 //!
@@ -49,6 +53,7 @@ pub mod character_maps;
 mod id;
 pub mod material;
 pub mod mesh;
+pub mod rig;
 pub mod texture;
 
 pub use id::{AssetId, ParseAssetIdError};

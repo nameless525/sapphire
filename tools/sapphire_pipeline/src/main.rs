@@ -1,6 +1,6 @@
 //! `sapphire_pipeline`: command-line front end to the asset pipeline.
 //!
-//! The arguments are parsed by hand, as in xtask: four commands and a handful of options don't
+//! The arguments are parsed by hand, as in xtask: five commands and a handful of options don't
 //! justify clap's build time, which xtask's cook pays in a release build too.
 
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use anyhow::{Context as _, anyhow, bail};
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
+use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::samples;
 
@@ -21,8 +22,14 @@ Usage:
   sapphire_pipeline gen-samples --out <DIR>
       Write the procedural sample source assets (mannequin.glb) into DIR, created if missing.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
-      Cook one .gltf/.glb file into a .smesh file (default cook: desktop), with the settings
-      of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
+      Cook one .gltf/.glb/.vrm file into a .smesh file (default cook: desktop), with the
+      settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
+  sapphire_pipeline extract-materials <SOURCE> [--all]
+      Write the materials of a .vrm/.gltf/.glb source out as material documents, with a VRM's
+      images as textures and its shading shift textures as ILM maps, into a folder named after
+      the source, and bind them in the source's sidecar. By default only the materials that
+      bind textures; --all extracts every material. Never overwrites a file, and keeps the
+      materials the sidecar already binds.
   sapphire_pipeline bake-map <DOCUMENT> <OUTPUT>
       Generate the map a .facesdf.ron, .ramp.ron or .ilm.ron document describes, with the
       settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
@@ -33,6 +40,7 @@ Usage:
       only when they change, and stale cooked files under --out are removed.
 
 Options:
+  --all                      extract-materials: every material, not only textured ones.
   --cook <COOK>              Target cook: desktop or mobile.
   --cache <DIR>              Content cache: reuse the cooked output of any asset whose
                              inputs are unchanged, and store new ones.
@@ -46,6 +54,7 @@ enum Command {
     GenSamples { out: PathBuf },
     CookMesh { input: PathBuf, output: PathBuf, cook: Cook, outline: Option<OutlineSettings> },
     BakeMap { input: PathBuf, output: PathBuf },
+    ExtractMaterials { source: PathBuf, all: bool },
     Cook { source: PathBuf, out: PathBuf, cook: Cook, cache: Option<PathBuf>, locked: bool },
     Help,
     Version,
@@ -99,6 +108,24 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::BakeMap { input, output } => {
             bake_map(&input, &output)?;
             eprintln!("baked {} -> {}", input.display(), output.display());
+        }
+        Command::ExtractMaterials { source, all } => {
+            let extraction = extract::extract_materials(&source, &ExtractOptions { all })?;
+            for path in &extraction.written {
+                eprintln!("wrote {}", path.display());
+            }
+            for slot in &extraction.kept {
+                eprintln!("kept {slot:?}: its sidecar binds it already");
+            }
+            for (slot, id) in &extraction.bound {
+                eprintln!("bound {slot:?} to {id}");
+            }
+            eprintln!(
+                "{}: {} material(s) bound, {} file(s) written; commit them with the source",
+                source.display(),
+                extraction.bound.len(),
+                extraction.written.len()
+            );
         }
         Command::Cook { source, out, cook, cache, locked } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked };
@@ -201,6 +228,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             let [input, output] = options.positional()?;
             Command::BakeMap { input: input.into(), output: output.into() }
         }
+        "extract-materials" => {
+            let all = options.flag("--all");
+            let [source] = options.positional()?;
+            Command::ExtractMaterials { source: source.into(), all }
+        }
         "cook" => Command::Cook {
             source: options.required("--source")?,
             out: options.required("--out")?,
@@ -292,6 +324,14 @@ mod tests {
             Command::BakeMap { input: "face.facesdf.ron".into(), output: "face.png".into() }
         );
         assert_eq!(
+            parse(&["extract-materials", "alicia.vrm"]).unwrap(),
+            Command::ExtractMaterials { source: "alicia.vrm".into(), all: false }
+        );
+        assert_eq!(
+            parse(&["extract-materials", "--all", "alicia.vrm"]).unwrap(),
+            Command::ExtractMaterials { source: "alicia.vrm".into(), all: true }
+        );
+        assert_eq!(
             parse(&["cook", "--source", "content", "--out", "out", "--cook", "desktop", "--locked"]).unwrap(),
             Command::Cook {
                 source: "content".into(),
@@ -327,6 +367,8 @@ mod tests {
         );
         assert!(parse(&["cook-mesh", "a.glb"]).is_err(), "one path");
         assert!(parse(&["bake-map", "a.ramp.ron"]).is_err(), "one path");
+        assert!(parse(&["extract-materials"]).is_err(), "no source");
+        assert!(parse(&["extract-materials", "a.vrm", "--cook", "mobile"]).is_err(), "no cook");
         assert!(
             parse(&["bake-map", "a.ramp.ron", "a.png", "--cook", "mobile"]).is_err(),
             "no cook: before compression"

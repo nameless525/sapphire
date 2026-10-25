@@ -41,6 +41,9 @@
 //! ```
 //!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
+//! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
+//! settings above, and a note of the file's VRM version, read from the file when the sidecar is
+//! created ([`ImportSettings::for_new_sidecar`]; M1 A6).
 //!
 //! [`resolve`] keeps these rules:
 //!
@@ -54,6 +57,9 @@
 //!   without a source stops, rather than give a moved source a new ID.
 //! - **IDs are unique.** Two sidecars holding one ID (a source copied with its sidecar) are
 //!   an error; deleting the copy's sidecar gives it a new ID.
+//! - **Sub-assets derive theirs.** A source that cooks to more than one asset (a VRM's rig,
+//!   M1 A6) gives each further asset an ID derived from its own and the sub-asset's name
+//!   ([`sub_asset_id`]), so those IDs are as stable as the sidecar's and need no storage.
 //!
 //! A sidecar may leave settings out, and they take their defaults (`#[serde(default)]`), so a
 //! new setting needs no schema version. The importer and its settings are part of the
@@ -73,6 +79,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
 use crate::character_maps::{MapKind, MapSettings};
+use crate::import::vrm::{self, VrmSettings};
 use crate::material::{self, MaterialSettings};
 use crate::optimize::LodSettings;
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
@@ -107,6 +114,8 @@ pub enum ImportSettings {
     CharacterMap(MapSettings),
     /// A material document (`.material.ron`) of any family (M1 A3).
     Material(MaterialSettings),
+    /// A VRM character (`.vrm`), 1.0 or 0.x: a mesh as glTF's, and its rig (M1 A6).
+    Vrm(VrmSettings),
 }
 
 impl ImportSettings {
@@ -124,6 +133,7 @@ impl ImportSettings {
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
+            "vrm" => Some(Self::Vrm(VrmSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
             "exr" => {
@@ -133,10 +143,31 @@ impl ImportSettings {
         }
     }
 
+    /// The settings a new sidecar for `source` gets: [`Self::for_source`]'s, plus what only the
+    /// file can tell: a VRM's version, its sidecar's note. A file that can't be read or isn't a
+    /// VRM notes nothing, and its cook reports why.
+    pub fn for_new_sidecar(source: &Path) -> Option<Self> {
+        let mut settings = Self::for_source(source)?;
+        if let Self::Vrm(vrm) = &mut settings {
+            vrm.version = fs::read(source).ok().and_then(|bytes| vrm::detect_version(&bytes));
+        }
+        Some(settings)
+    }
+
     /// The settings of a mesh importer, or `None` for other kinds of source.
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
             Self::Gltf(settings) => Some(settings),
+            Self::Vrm(settings) => Some(&settings.mesh),
+            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) => None,
+        }
+    }
+
+    /// [`Self::mesh`], to change.
+    pub fn mesh_mut(&mut self) -> Option<&mut MeshSettings> {
+        match self {
+            Self::Gltf(settings) => Some(settings),
+            Self::Vrm(settings) => Some(&mut settings.mesh),
             Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) => None,
         }
     }
@@ -183,6 +214,20 @@ pub fn new_id() -> Result<AssetId, getrandom::Error> {
     bytes[6] = 0x40 | (bytes[6] & 0x0f);
     bytes[8] = 0x80 | (bytes[8] & 0x3f);
     Ok(AssetId::from_bytes(bytes))
+}
+
+/// The ID of sub-asset `name` of the source whose ID is `parent`: blake3 of both, laid out as a
+/// version 8 (custom) UUID (RFC 9562 §5.8), so it never collides with a random version 4 one.
+/// The same parent and name always give the same ID.
+pub fn sub_asset_id(parent: AssetId, name: &str) -> AssetId {
+    let hash = blake3::Hasher::new_derive_key("sapphire_pipeline 2026-10-25 sub-asset id")
+        .update(&parent.to_bytes())
+        .update(name.as_bytes())
+        .finalize();
+    let mut bytes: [u8; 16] = hash.as_bytes()[..16].try_into().expect("blake3 hashes are 32 bytes");
+    bytes[6] = 0x80 | (bytes[6] & 0x0f);
+    bytes[8] = 0x80 | (bytes[8] & 0x3f);
+    AssetId::from_bytes(bytes)
 }
 
 /// Sidecars that can't be read, written or trusted.
@@ -248,7 +293,7 @@ pub fn read(path: &Path) -> Result<AssetMeta, MetaError> {
 
 /// Writes `meta` as a new sidecar at `path`. Never replaces a file: returns `false` if one
 /// is already there (another cook created it first).
-fn create(path: &Path, meta: &AssetMeta) -> Result<bool, MetaError> {
+pub(crate) fn create(path: &Path, meta: &AssetMeta) -> Result<bool, MetaError> {
     let text = to_ron(meta).expect("an AssetMeta always serializes");
     let write_error = |source| MetaError::Write { path: path.to_owned(), source };
     let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
@@ -258,6 +303,19 @@ fn create(path: &Path, meta: &AssetMeta) -> Result<bool, MetaError> {
     };
     file.write_all(text.as_bytes()).map_err(write_error)?;
     Ok(true)
+}
+
+/// Replaces the sidecar at `path` with `meta`, through a temporary file and a rename. Cooks
+/// never do this; explicit commands that change a source's settings at the user's request do
+/// (`extract-materials` binding the documents it writes).
+pub(crate) fn rewrite(path: &Path, meta: &AssetMeta) -> Result<(), MetaError> {
+    let text = to_ron(meta).expect("an AssetMeta always serializes");
+    let write_error = |source| MetaError::Write { path: path.to_owned(), source };
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    fs::write(&temp, text).map_err(write_error)?;
+    fs::rename(&temp, path).map_err(write_error)
 }
 
 /// The source assets and sidecars under a content root.
@@ -363,7 +421,8 @@ pub fn resolve(tree: &SourceTree, locked: bool) -> Result<Resolved, MetaError> {
             Some(meta) => meta,
             None => {
                 let sidecar = sidecar_path(source);
-                let importer = ImportSettings::for_source(source).expect("scanned sources have an importer");
+                let importer =
+                    ImportSettings::for_new_sidecar(source).expect("scanned sources have an importer");
                 let fresh = AssetMeta { id: new_id().map_err(MetaError::Entropy)?, importer };
                 let meta = if create(&sidecar, &fresh)? {
                     created.push(sidecar.clone());

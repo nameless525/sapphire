@@ -26,14 +26,16 @@ ctt.workspace = true
 getrandom.workspace = true
 glam.workspace = true
 # `extras` exposes per-object custom properties, which is how Blender drives character shading parameters.
-# `utils` reads accessors; buffers load in `import::gltf` rather than through `import`, which
-# would also build an image decoder.
-gltf = { workspace = true, features = ["extras", "utils", "names"] }
+# `extensions` exposes extensions gltf doesn't model, which is how VRM files carry theirs (M1 A6).
+# `utils` reads accessors; buffers load in `import::gltf` rather than through `import` (which
+# vrm-spec's dependency on gltf's defaults builds anyway, see the workspace manifest).
+gltf = { workspace = true, features = ["extras", "extensions", "utils", "names"] }
 image.workspace = true
 meshopt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+vrm-spec.workspace = true
 
 [lints]
 workspace = true

@@ -33,6 +33,13 @@
 //!   they reference ([`material`]). A mesh's slots embed the materials the importer generated,
 //!   or name the material assets its sidecar binds them to, which must be materials of the same
 //!   tree.
+//! - **VRM characters** cook `.vrm` → `.smesh` like glTF meshes, plus a `.srig` rig (A6,
+//!   [`vrm`]).
+//!
+//! A source may cook to more than one asset: its own, and [`SubAsset`]s, each with its own
+//! recipe, output beside the source's (`alicia.smesh`, `alicia.srig`) and an ID derived from the
+//! source's ([`meta::sub_asset_id`]). Each is planned, keyed and cached as an asset of its own,
+//! so a report lists it and a pack (A4) can address it; each imports the source itself.
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
@@ -47,6 +54,7 @@ use std::str::FromStr;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
 
@@ -54,6 +62,7 @@ use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
+use crate::import::vrm::{self, VrmImportError, VrmSettings};
 use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
@@ -117,7 +126,16 @@ pub struct Recipe {
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
-const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION];
+const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION, RIG_EXTENSION];
+
+/// An asset a source cooks to besides its own (see the [module docs](self)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubAsset {
+    /// Unique among the source's sub-assets, and never changed: the sub-asset's ID is derived
+    /// from it.
+    pub name: &'static str,
+    pub recipe: Recipe,
+}
 
 /// Extension of the temporary files outputs are written through.
 const TEMP_EXTENSION: &str = "tmp";
@@ -151,6 +169,23 @@ impl Recipe {
                 format: Material::VERSION,
                 extension: MATERIAL_EXTENSION,
             },
+            ImportSettings::Vrm(_) => Self {
+                importer: vrm::IMPORTER,
+                cooker: MESH_COOKER,
+                format: Mesh::VERSION,
+                extension: MESH_EXTENSION,
+            },
+        }
+    }
+
+    /// The sub-assets sources read with `settings` cook to besides their own asset.
+    pub fn sub_assets(settings: &ImportSettings) -> &'static [SubAsset] {
+        match settings {
+            ImportSettings::Vrm(_) => &[vrm::RIG],
+            ImportSettings::Gltf(_)
+            | ImportSettings::Texture(_)
+            | ImportSettings::CharacterMap(_)
+            | ImportSettings::Material(_) => &[],
         }
     }
 
@@ -169,7 +204,7 @@ impl Recipe {
 /// Errors from cooking. Each names the file it concerns.
 #[derive(Debug, thiserror::Error)]
 pub enum CookError {
-    #[error("{} is not a supported mesh source (expected .gltf or .glb)", path.display())]
+    #[error("{} is not a supported mesh source (expected .gltf, .glb or .vrm)", path.display())]
     UnsupportedSource { path: PathBuf },
     #[error(transparent)]
     Meta(#[from] MetaError),
@@ -178,6 +213,19 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: GltfImportError,
+    },
+    #[error("failed to import VRM {}", path.display())]
+    Vrm {
+        path: PathBuf,
+        /// Boxed: glTF and JSON errors are large, and every cook result carries this type.
+        #[source]
+        source: Box<VrmImportError>,
+    },
+    #[error("cooked rig from {} is invalid", path.display())]
+    InvalidRig {
+        path: PathBuf,
+        #[source]
+        source: RigError,
     },
     #[error("failed to cook texture {}", path.display())]
     Texture {
@@ -301,20 +349,36 @@ pub fn cook_dir(
     let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
     let mut plan = Vec::with_capacity(resolved.assets.len());
     for asset in resolved.assets {
-        let recipe = Recipe::for_settings(&asset.meta.importer);
-        let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
-        let output = out_root.join(recipe.output_path(relative));
-        if let Some(first) = outputs.insert(output.clone(), asset.path.clone()) {
-            return Err(CookError::OutputCollision { first, second: asset.path, output });
+        let own = (asset.meta.id, None, Recipe::for_settings(&asset.meta.importer));
+        let sub_assets = Recipe::sub_assets(&asset.meta.importer)
+            .iter()
+            .map(|sub| (meta::sub_asset_id(asset.meta.id, sub.name), Some(sub.name), sub.recipe));
+        for (id, sub_asset, recipe) in std::iter::once(own).chain(sub_assets) {
+            let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
+            let output = out_root.join(recipe.output_path(relative));
+            if let Some(first) = outputs.insert(output.clone(), asset.path.clone()) {
+                return Err(CookError::OutputCollision { first, second: asset.path, output });
+            }
+            plan.push(Planned { asset: asset.clone(), id, sub_asset, recipe, output });
         }
-        plan.push(Planned { asset, recipe, output });
     }
     // Before writing, so an output whose name only changed case (on a case-insensitive file
     // system) is replaced rather than removed as stale.
     let removed = prune(out_root, &outputs)?;
 
     let cache = options.cache.map(Cache::new);
-    let by_id = plan.iter().enumerate().map(|(index, planned)| (planned.asset.meta.id, index)).collect();
+    let mut by_id = HashMap::with_capacity(plan.len());
+    for (index, planned) in plan.iter().enumerate() {
+        // Sidecar IDs are unique (checked by `meta::resolve`) and random; a derived ID equal to
+        // another is beyond unlikely, but would silently alias two assets.
+        if let Some(first) = by_id.insert(planned.id, index) {
+            return Err(CookError::Meta(MetaError::DuplicateId {
+                id: planned.id,
+                first: plan[first].asset.path.clone(),
+                second: planned.asset.path.clone(),
+            }));
+        }
+    }
     // Materials read the cooked textures they reference, so everything else cooks first.
     let (materials, others): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_material());
@@ -333,9 +397,14 @@ pub fn cook_dir(
     })
 }
 
-/// A source asset, its recipe and where it cooks to.
+/// A source asset, its recipe and where it cooks to: the source's own asset, or one of its
+/// sub-assets.
 struct Planned {
     asset: SourceAsset,
+    /// The sidecar's ID, or the sub-asset's derived one.
+    id: AssetId,
+    /// The sub-asset's name, `None` for the source's own asset.
+    sub_asset: Option<&'static str>,
     recipe: Recipe,
     output: PathBuf,
 }
@@ -377,7 +446,7 @@ fn cook_asset(
     cache: Option<&Cache>,
     cook: Cook,
 ) -> Result<CookedAsset, CookError> {
-    let Planned { asset: SourceAsset { path, meta }, recipe, output } = planned;
+    let Planned { asset: SourceAsset { path, meta }, id, sub_asset, recipe, output } = planned;
     let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source })?;
     let dependencies = dependencies(path, &bytes, &meta.importer, assets)?;
     let key = CacheKey::new(&KeyInputs {
@@ -388,8 +457,7 @@ fn cook_asset(
         dependencies: &dependencies,
     });
     let current = file_hash(output)?;
-    let done =
-        |status| CookedAsset { id: meta.id, source: path.clone(), output: output.clone(), key, status };
+    let done = |status| CookedAsset { id: *id, source: path.clone(), output: output.clone(), key, status };
 
     let mut cached = None;
     if let Some(cache) = cache
@@ -403,7 +471,7 @@ fn cook_asset(
     let (status, cooked) = match cached {
         Some(cooked) => (CookStatus::Cached, cooked),
         None => {
-            let cooked = cook_source(path, &bytes, &meta.importer, cook, assets)?;
+            let cooked = cook_source(path, &bytes, &meta.importer, *sub_asset, cook, assets)?;
             if let Some(cache) = cache {
                 cache.put(&key, &cooked)?;
             }
@@ -416,19 +484,31 @@ fn cook_asset(
     Ok(done(status))
 }
 
-/// Imports, bakes and cooks one source: the bytes of its cooked file.
+/// Imports, bakes and cooks one source, or the sub-asset `sub_asset` of it: the bytes of its
+/// cooked file.
 fn cook_source(
     path: &Path,
     bytes: &[u8],
     settings: &ImportSettings,
+    sub_asset: Option<&str>,
     cook: Cook,
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, CookError> {
     match settings {
-        ImportSettings::Gltf(settings) => {
+        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) if sub_asset.is_none() => {
             let mesh = import_mesh(path, bytes, settings, cook)?;
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
+        ImportSettings::Vrm(settings) => {
+            debug_assert_eq!(sub_asset, Some(vrm::RIG.name), "a VRM's only sub-asset is its rig");
+            let rig = vrm::import_rig(bytes, settings.version).map_err(vrm_error(path))?;
+            let invalid = |source| CookError::InvalidRig { path: path.to_owned(), source };
+            let cooked = rig.to_cooked().map_err(|error| invalid(RigError::Cooked(error)))?;
+            // The runtime's checks, so a cook never writes a rig animation would refuse.
+            CharacterRig::read(&cooked).map_err(invalid)?;
+            Ok(cooked.into_vec())
+        }
+        ImportSettings::Gltf(_) => unreachable!("glTF sources have no sub-assets"),
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::CharacterMap(settings) => {
@@ -438,6 +518,11 @@ fn cook_source(
             .and_then(|document| material::cook(&document, |id| assets.referenced(id)))
             .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
     }
+}
+
+/// Wraps a VRM import error as the cook error for the source at `path`.
+fn vrm_error(path: &Path) -> impl Fn(VrmImportError) -> CookError + '_ {
+    move |source| CookError::Vrm { path: path.to_owned(), source: Box::new(source) }
 }
 
 /// Wraps a map error as the cook error for the document at `path`.
@@ -500,12 +585,17 @@ fn dependencies(
     assets: &Assets<'_>,
 ) -> Result<Vec<Dependency>, CookError> {
     match settings {
-        ImportSettings::Gltf(settings) => {
+        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) => {
+            let mesh = settings.mesh().expect("mesh importers have mesh settings");
             // The mesh holds only the bound materials' IDs, so their contents aren't inputs.
-            for (slot, &id) in &settings.materials {
+            for (slot, &id) in &mesh.materials {
                 if !assets.get(id).is_some_and(Planned::is_material) {
                     return Err(CookError::NotAMaterial { path: path.to_owned(), slot: slot.clone(), id });
                 }
+            }
+            if matches!(settings, ImportSettings::Vrm(_)) {
+                // VRM files are GLB: they read nothing besides themselves.
+                return Ok(Vec::new());
             }
             let files = gltf::external_files(bytes)
                 .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
@@ -538,10 +628,22 @@ fn dependencies(
     }
 }
 
-/// Imports, bakes, optimizes and packs one mesh source read from `path`, for `cook`.
-fn import_mesh(path: &Path, bytes: &[u8], settings: &MeshSettings, cook: Cook) -> Result<Mesh, CookError> {
-    let mut mesh = gltf::import_slice(bytes, path.parent())
-        .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
+/// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF
+/// or VRM), for `cook`.
+fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook) -> Result<Mesh, CookError> {
+    let (mut mesh, settings) = match importer {
+        ImportSettings::Gltf(settings) => (
+            gltf::import_slice(bytes, path.parent())
+                .map_err(|source| CookError::Import { path: path.to_owned(), source })?,
+            settings,
+        ),
+        ImportSettings::Vrm(settings) => {
+            (vrm::import(bytes, settings.version).map_err(vrm_error(path))?.mesh, &settings.mesh)
+        }
+        ImportSettings::Texture(_) | ImportSettings::CharacterMap(_) | ImportSettings::Material(_) => {
+            return Err(CookError::UnsupportedSource { path: path.to_owned() });
+        }
+    };
     bake::outline_normals(&mut mesh, &settings.outline);
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
     mesh.pack(settings.position_format, &settings.materials)
@@ -580,11 +682,16 @@ fn cook_mesh_with_bytes(
     settings: &MeshSettings,
     cook: Cook,
 ) -> Result<(Mesh, sapphire_serialize::cooked::AlignedVec), CookError> {
-    if !matches!(ImportSettings::for_source(source), Some(ImportSettings::Gltf(_))) {
-        return Err(CookError::UnsupportedSource { path: source.to_owned() });
-    }
+    // The importer by extension, with `settings` for the mesh; a VRM's version isn't checked.
+    let importer = match ImportSettings::for_source(source) {
+        Some(ImportSettings::Gltf(_)) => ImportSettings::Gltf(settings.clone()),
+        Some(ImportSettings::Vrm(_)) => {
+            ImportSettings::Vrm(VrmSettings { mesh: settings.clone(), version: None })
+        }
+        _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
+    };
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = import_mesh(source, &bytes, settings, cook)?;
+    let mesh = import_mesh(source, &bytes, &importer, cook)?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
 }

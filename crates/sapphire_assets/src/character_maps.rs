@@ -15,9 +15,13 @@
 //! | Channel | Holds | Neutral value |
 //! |---|---|---|
 //! | R | Specular mask: where highlights may appear, and how strongly | 0, no highlight |
-//! | G | Shadow bias: shifts the two-tone light split; ≥ 0.95 stays lit, ≤ 0.05 stays in shadow | 0.5, no shift |
+//! | G | Shadow bias: an offset to N·L before the two-tone light split, `2·G − 1` ([`ilm::encode_shadow_bias`]); ≥ 0.95 stays lit, ≤ 0.05 stays in shadow | 0.5, no shift |
 //! | B | Specular threshold: the highlight's size | 0.5 |
 //! | A | [`MaterialId`]: picks the ramp rows and the per-ID parameters | ID 0 |
+//!
+//! The shadow bias spans N·L's own range: 0 and 1 stand for offsets of −1 and +1, so a
+//! texel at 1 is lit down to N·L = −1 + the split's threshold, and MToon's shading shift
+//! texture (`N·L + shift × scale`, M1 A6) is the same quantity. Positive offsets light a texel.
 //!
 //! Material ID `k` is stored as `k / 7`, evenly spaced with IDs 0 and 7 at exactly 0 and 1.
 //! Decoding rounds to the nearest of the eight levels, so it tolerates errors under half a
@@ -100,6 +104,19 @@ pub mod ilm {
     /// The texel that changes nothing: no highlight, no shadow shift, a middling highlight size,
     /// material ID 0.
     pub const NEUTRAL: [f32; 4] = [0.0, 0.5, 0.5, 0.0];
+
+    /// The stored shadow bias of an offset to N·L: `0.5 + offset / 2`, clamped to `[0, 1]`
+    /// (offsets beyond ±1 move the split past every N·L anyway).
+    pub fn encode_shadow_bias(offset: f32) -> f32 {
+        (0.5 + 0.5 * offset).clamp(0.0, 1.0)
+    }
+
+    /// The offset to N·L a stored (or sampled) shadow bias stands for: `2·value − 1`. A
+    /// positive offset lights a texel: the split compares `N·L + offset` with its threshold,
+    /// so a shader that moves the threshold instead moves it by `−offset`.
+    pub fn decode_shadow_bias(value: f32) -> f32 {
+        2.0 * value - 1.0
+    }
 
     /// The step between two material IDs' stored values.
     const STEP: f32 = 1.0 / (MATERIAL_IDS - 1) as f32;
@@ -188,6 +205,17 @@ mod tests {
         assert_eq!(ilm::decode_material_id(-1.0).get(), 0);
         assert_eq!(ilm::decode_material_id(2.0).get(), 7);
         assert_eq!(ilm::decode_material_id(f32::NAN).get(), 0);
+    }
+
+    #[test]
+    fn shadow_bias_spans_n_dot_l() {
+        assert_eq!(ilm::encode_shadow_bias(0.0), ilm::NEUTRAL[ilm::SHADOW_BIAS]);
+        assert_eq!(ilm::encode_shadow_bias(1.0), 1.0);
+        assert_eq!(ilm::encode_shadow_bias(-1.0), 0.0);
+        assert_eq!(ilm::encode_shadow_bias(3.0), 1.0, "clamped");
+        for offset in [-1.0, -0.4, 0.0, 0.25, 1.0] {
+            assert!((ilm::decode_shadow_bias(ilm::encode_shadow_bias(offset)) - offset).abs() < 1e-6);
+        }
     }
 
     #[test]

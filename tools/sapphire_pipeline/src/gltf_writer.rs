@@ -57,11 +57,18 @@ pub(crate) struct GltfWriter {
     bin: Vec<u8>,
     buffer_views: Vec<Value>,
     accessors: Vec<Value>,
+    images: Vec<Value>,
+    samplers: Vec<Value>,
+    textures: Vec<Value>,
     materials: Vec<Value>,
     meshes: Vec<Value>,
     nodes: Vec<Value>,
     skins: Vec<Value>,
     scene_roots: Vec<usize>,
+    /// Root extensions, by name.
+    extensions: serde_json::Map<String, Value>,
+    /// Every extension the document uses, root or not, sorted.
+    extensions_used: Vec<String>,
 }
 
 impl GltfWriter {
@@ -130,6 +137,44 @@ impl GltfWriter {
         self.scene_roots.push(node);
     }
 
+    /// Adds an image embedded in the buffer (encoded `bytes` of `mime_type`) and returns its
+    /// index.
+    #[cfg(test)]
+    pub fn add_image(&mut self, name: &str, mime_type: &str, bytes: &[u8]) -> usize {
+        let view = self.add_view(bytes, None);
+        self.images.push(json!({ "name": name, "mimeType": mime_type, "bufferView": view }));
+        self.images.len() - 1
+    }
+
+    /// Adds a sampler (raw glTF JSON) and returns its index.
+    #[cfg(test)]
+    pub fn add_sampler(&mut self, sampler: Value) -> usize {
+        self.samplers.push(sampler);
+        self.samplers.len() - 1
+    }
+
+    /// Adds a texture (raw glTF JSON: source, sampler) and returns its index.
+    #[cfg(test)]
+    pub fn add_texture(&mut self, texture: Value) -> usize {
+        self.textures.push(texture);
+        self.textures.len() - 1
+    }
+
+    /// Sets root extension `name` to `value`, and lists it as used.
+    #[cfg(test)]
+    pub fn set_extension(&mut self, name: &str, value: Value) {
+        self.extensions.insert(name.to_owned(), value);
+        self.use_extension(name);
+    }
+
+    /// Lists extension `name` as used, for extensions on materials or nodes.
+    #[cfg(test)]
+    pub fn use_extension(&mut self, name: &str) {
+        if let Err(at) = self.extensions_used.binary_search_by(|used| used.as_str().cmp(name)) {
+            self.extensions_used.insert(at, name.to_owned());
+        }
+    }
+
     /// The binary buffer the document's accessors point into.
     #[cfg(test)]
     pub fn bin(&self) -> &[u8] {
@@ -147,9 +192,16 @@ impl GltfWriter {
             "meshes": self.meshes,
             "skins": self.skins,
             "materials": self.materials,
+            "textures": self.textures,
+            "samplers": self.samplers,
+            "images": self.images,
             "accessors": self.accessors,
             "bufferViews": self.buffer_views,
+            "extensionsUsed": self.extensions_used,
         });
+        if !self.extensions.is_empty() {
+            doc["extensions"] = Value::Object(self.extensions.clone());
+        }
         if !self.bin.is_empty() {
             let mut buffer = json!({ "byteLength": self.bin.len() });
             if let Some(uri) = buffer_uri {
@@ -270,6 +322,13 @@ impl GltfWriter {
     /// Adds `bytes` as a buffer view, for vertex data (`target`) or other data such as inverse
     /// bind matrices (`None`), and `accessor` reading it.
     fn add_accessor(&mut self, bytes: &[u8], target: Option<u32>, mut accessor: Value) -> usize {
+        accessor["bufferView"] = self.add_view(bytes, target).into();
+        self.accessors.push(accessor);
+        self.accessors.len() - 1
+    }
+
+    /// Adds `bytes` as a buffer view and returns its index.
+    fn add_view(&mut self, bytes: &[u8], target: Option<u32>) -> usize {
         // Every component type we write is at most 4 bytes, so 4-byte alignment satisfies
         // glTF's rule that accessor offsets are multiples of the component size.
         pad(&mut self.bin, 0);
@@ -279,9 +338,7 @@ impl GltfWriter {
         }
         self.buffer_views.push(view);
         self.bin.extend_from_slice(bytes);
-        accessor["bufferView"] = (self.buffer_views.len() - 1).into();
-        self.accessors.push(accessor);
-        self.accessors.len() - 1
+        self.buffer_views.len() - 1
     }
 }
 

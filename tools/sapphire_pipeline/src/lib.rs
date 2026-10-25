@@ -11,7 +11,12 @@
 //! - [`import`]: source file → engine-neutral intermediate: an
 //!   [`ImportedMesh`](mesh::ImportedMesh) with skins, morph targets, authored outline normals
 //!   and anime character materials generated from the source's, or a
-//!   [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR.
+//!   [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR. VRM 1.0 and 0.x files
+//!   ([`import::vrm`], M1 A6) import as a mesh whose MToon materials map onto anime character
+//!   materials, and a [`CharacterRig`](sapphire_assets::rig::CharacterRig): humanoid,
+//!   expressions, look-at, spring bones and constraints.
+//! - [`extract`]: the `extract-materials` command, which writes a mesh's materials out as
+//!   material documents bound in its sidecar, and a VRM's images as texture sources.
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
 //!   [`Mesh`](sapphire_assets::mesh::Mesh) (quantized streams).
 //! - [`bake`]: derived data computed offline: smoothed outline normals where none are authored.
@@ -26,7 +31,8 @@
 //!   [`Material`](sapphire_assets::material::Material)s, checked against the textures (and
 //!   character maps) they reference, whose swizzles they record.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
-//!   disk through the content cache.
+//!   disk through the content cache; a source can cook to sub-assets beside its own (a VRM's
+//!   rig).
 //! - [`cache`]: the cache key over everything that determines a cooked output, and the local
 //!   store of cooked outputs by key.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer.
@@ -34,8 +40,10 @@
 //! # Does not own
 //!
 //! - The [`AssetId`] type, the cooked formats (`.smesh`, the KTX2 texture profile, `.smat`,
-//!   what the character maps' texels mean) and the material documents and their GPU blocks:
-//!   `sapphire_assets`, shared with the runtime.
+//!   `.srig`, what the character maps' texels mean) and the material documents and their GPU
+//!   blocks: `sapphire_assets`, shared with the runtime.
+//! - Simulating spring bones and evaluating constraints and expressions: animation
+//!   (`sapphire_anim`, M2), from the rigs cooked here.
 //! - Baking masks from a character in Blender: a script under `tools/blender/`, described
 //!   in `docs/blender-mask-bake.md`.
 //! - Document and archive formats: `sapphire_serialize` (sidecars are its RON documents).
@@ -50,14 +58,18 @@
 //! [`AssetId`] to its data. Until then the pipeline writes no ID-to-path manifest: rule R5
 //! keeps path strings out of the runtime, so A4 would replace it, and the packer is a
 //! pipeline stage that gets each asset's ID and output from the cook in process
-//! ([`cook::CookReport`]).
+//! ([`cook::CookReport`]). Sub-assets (a VRM's rig beside its mesh, `alicia.srig`) are assets
+//! like any other there, with IDs derived from their source's ([`meta::sub_asset_id`]).
 //!
 //! # Later milestones
 //!
-//! - FBX through `ufbx`; VRM 1.0 (A6), whose MToon materials become generated anime character
-//!   materials and whose embedded images are extracted as texture sources.
+//! - FBX through `ufbx`.
+//! - VRM: as the anime character family gains slots (C1–C7: a rim mask, emission, a shade map,
+//!   UV animation, a cull mode), the MToon mapping fills them, and extraction binds the
+//!   textures it already writes. `VRMC_springBone_extended_collider` and VRMA animations
+//!   (`VRMC_vrm_animation`) with M2's animation.
 //! - Skeletons as assets of their own, shared by meshes and animation clips (ozz archives,
-//!   M2); today each skinned mesh embeds its skeleton.
+//!   M2); today each skinned mesh embeds its skeleton, and a VRM's rig indexes its mesh's.
 //! - Packs (A4), a shared cache, and the editor's daemon mode.
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
@@ -67,6 +79,7 @@ pub mod cache;
 pub mod character_maps;
 mod color;
 pub mod cook;
+pub mod extract;
 mod gltf_writer;
 pub mod import;
 pub mod material;

@@ -151,13 +151,21 @@ sapphire_pipeline = { path = "tools/sapphire_pipeline" }
 # FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.
 nv-flip = "0.1.2"
 gltf = { version = "1.4.1", default-features = false }
+# pixiv's serde types for VRM 1.0 (VRMC_vrm, VRMC_materials_mtoon, VRMC_springBone) and VRM 0.x
+# (M1 A6). `gltf_index`, which types indices as gltf's, is required: the crate doesn't build
+# without it. `rustc_hash` is off; the importer sorts whatever it reads from the crate's maps.
+# It depends on gltf with gltf's default features, so gltf's `import` (base64, urlencoding and
+# image's PNG and JPEG decoders) is built too, though the pipeline loads buffers itself.
+vrm-spec = { version = "0.1.1", default-features = false, features = ["gltf_index"] }
 # Texture compression (M1 A2, spec §5.27). Only the encoders the cooks use: bc7enc-rdo for BC7,
 # Intel's ISPC kernels (prebuilt, so no ISPC toolchain is needed) for BC4, BC5 and BC6H, and
 # astcenc for ASTC. No `rayon`: every surface encodes serially, so output never depends on the
 # thread count.
 ctt = { version = "0.6.0", default-features = false, features = ["encoder-bc7enc", "encoder-intel", "encoder-astcenc", "ispc-prebuilt"] }
-# PNG, TGA and EXR decoding for the texture importer, and nothing else: no `rayon`, no other formats.
-image = { version = "0.25.10", default-features = false, features = ["png", "tga", "exr"] }
+# PNG, TGA and EXR decoding for the texture importer, and JPEG for the images VRM files embed
+# (M1 A6: decoded for outline-width masks, and written out as PNG sources by extract-materials).
+# No `rayon`, no other formats.
+image = { version = "0.25.10", default-features = false, features = ["png", "tga", "exr", "jpeg"] }
 # meshoptimizer (C++, MIT, built with `cc`): vertex-cache, overdraw and vertex-fetch
 # optimization and LOD simplification in the mesh cook (spec §5.27).
 meshopt = "0.7.0"

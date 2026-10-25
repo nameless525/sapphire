@@ -61,4 +61,4 @@ edges = [
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec"]

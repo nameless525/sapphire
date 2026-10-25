@@ -8,3 +8,6 @@
 /platform/android/.gradle
 /platform/android/**/build
 /platform/android/local.properties
+
+# Claude Code agent worktrees: separate checkouts of this repo, each with its own target/.
+/.claude/worktrees/

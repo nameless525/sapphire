@@ -44,7 +44,8 @@ struct ToonVaryings {
 }
 
 @vertex
-fn vs_toon(vertex: MeshVertex, draw: DrawRecord) -> ToonVaryings {
+fn vs_toon(packed: PackedVertex, draw: DrawRecord) -> ToonVaryings {
+    let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(vertex.position, 1.0);
     var out: ToonVaryings;

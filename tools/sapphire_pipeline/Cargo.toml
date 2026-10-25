@@ -27,6 +27,7 @@ glam.workspace = true
 # would also build an image decoder.
 gltf = { workspace = true, features = ["extras", "utils", "names"] }
 image.workspace = true
+meshopt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -848,6 +848,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,6 +1265,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "meshopt"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a403c16e3ca5752600e1d4c5ba3ba2a6496f407ded66e767f05279514363f461"
+dependencies = [
+ "bitflags",
+ "cc",
+ "float-cmp",
+ "thiserror",
 ]
 
 [[package]]
@@ -1922,6 +1943,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "663ba70707f96e871406fe10d68128412e619b06d1d47cb91c3a4c6501176240"
 dependencies = [
  "bytecheck",
+ "bytemuck",
 ]
 
 [[package]]
@@ -2024,11 +2046,16 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "sapphire_assets"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "bytemuck",
+ "half",
  "ktx2",
  "postcard",
+ "rend",
  "rkyv",
  "ron",
+ "sapphire_reflect",
+ "sapphire_serialize",
  "serde",
  "thiserror",
 ]
@@ -2115,6 +2142,7 @@ dependencies = [
  "glam",
  "gltf",
  "image",
+ "meshopt",
  "sapphire_assets",
  "sapphire_reflect",
  "sapphire_serialize",

@@ -6,14 +6,19 @@
 //!   text, serde and rkyv forms are defined here, because cooked data and documents both
 //!   hold IDs.
 //! - Cooked formats shared by the cooker (`sapphire_pipeline`, which writes them) and the
-//!   runtime (which reads them): [`mesh`], M0's `.smesh`, and [`texture`], KTX2 files whose
-//!   levels the renderer uploads as they are (M1 A2).
+//!   runtime (which reads them): [`mesh`], `.smesh` meshes with quantized vertex streams,
+//!   LODs, skins and morph targets, read in place (M1 A5), and [`texture`], KTX2 files whose
+//!   levels the renderer uploads as they are (M1 A2). The mesh element encodings live here
+//!   too, both directions, so cooker and runtime can't drift apart.
 //!
 //! # Does not own
 //!
 //! - Creating IDs, `.meta` sidecars, import settings and the content cache: the pipeline
 //!   (tools). The runtime never generates an ID, so it never needs entropy.
-//! - Data formats in general (RON documents, rkyv archives): `sapphire_serialize`.
+//! - Importing, optimizing and simplifying meshes: the pipeline. [`mesh::Mesh::from_vertices`]
+//!   packs procedural single-LOD meshes and nothing more.
+//! - Data formats in general (RON documents, the rkyv cooked envelope): `sapphire_serialize`.
+//! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2).
 //!
 //! # Later milestones
 //!

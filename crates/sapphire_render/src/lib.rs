@@ -7,10 +7,12 @@
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4).
 //! - Turning packets into pixels.
-//! - The persistent GPU scene: a mesh pool (shared vertex and index buffers), a material
-//!   buffer indexed by material ID, and instance and draw-record buffers kept across frames
-//!   and updated from each packet's instance deltas. Only changed instances are uploaded, and
-//!   the draw list is rebuilt only when the drawn set changes.
+//! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), a
+//!   material buffer indexed by material ID, and instance and draw-record buffers kept across
+//!   frames and updated from each packet's instance deltas. Only changed instances are
+//!   uploaded, and the draw list is rebuilt only when the drawn set changes.
+//! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
+//!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
 //!   view and capped, then listed for the toon shader by clustered forward+ (a 16 × 9 × 24
@@ -36,9 +38,10 @@
 //! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
 //!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
 //!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
-//! - Mesh and texture cooking: meshes arrive as [`sapphire_assets::mesh::MeshAsset`] with
-//!   smoothed outline normals already baked, textures as [`sapphire_assets::texture::Texture`]
-//!   with their mip chains, compressed for the device's cook.
+//! - Mesh and texture cooking: meshes arrive as cooked [`sapphire_assets::mesh::ArchivedMesh`]es,
+//!   read in place, with outline normals, vertex order and LODs done by the pipeline; textures
+//!   as [`sapphire_assets::texture::Texture`] with their mip chains, compressed for the
+//!   device's cook.
 //!
 //! # Conventions
 //!
@@ -55,12 +58,50 @@
 //! shaders therefore serve two submission strategies:
 //!
 //! - **CPU-driven (M0, portable everywhere):** one `draw_indexed` per draw with
-//!   `base_vertex = 0` and instances `0..1`. The mesh's vertices and the draw record are
+//!   `base_vertex = 0` and instances `0..1`. The mesh's streams and the draw record are
 //!   selected by vertex-buffer offsets. It needs no base-vertex or first-instance support, so
 //!   it runs on the iOS Simulator.
 //! - **GPU-driven (later, desktop first):** GPU culling writes multi-draw-indirect records
-//!   whose `base_vertex` is the mesh's first vertex and whose `first_instance` is the draw
-//!   record. Gated on `GpuCaps::multi_draw_indirect`.
+//!   whose `base_vertex` is the mesh's first vertex in its slab and whose `first_instance` is
+//!   the draw record. One indirect batch per position format, since each format has its own
+//!   slab and pipelines. Gated on `GpuCaps::multi_draw_indirect`.
+//!
+//! # Vertex streams
+//!
+//! A cooked mesh's vertices are three streams, uploaded as cooked and decoded in the vertex
+//! shaders (`decode_vertex` in `shaders/frame.wgsl`):
+//!
+//! | Slot | Stream | Bytes | Read by |
+//! |---|---|---|---|
+//! | 0 | draw record: instance, material, the mesh's dequantization | 48, per instance | every mesh pass |
+//! | 1 | positions: unorm16 across the bounds, or f32 | 8 or 12 | every mesh pass, and alone by shadow and depth passes |
+//! | 2 | shading: octahedral normal and outline normal | 8 | toon, outline |
+//! | 3 | surface: unorm16 UV, RGBA8 color | 8 | toon, outline (width scale) |
+//!
+//! The dequantization travels in the draw record rather than a mesh table, so decoding costs
+//! no binding (see the budget below). Both position formats share the shaders: f32 positions
+//! use an identity transform, and only the pipelines' slot 1 attribute differs. f32-position
+//! pipelines are built when the first such mesh is uploaded.
+//!
+//! # Skinned meshes (M1 A5 → R2)
+//!
+//! Skinned meshes upload their streams like any other and draw in **bind pose**, morph
+//! targets at weight 0; their skins and morph targets stay in the cooked mesh. Compute
+//! skinning (M1 R2) builds on this:
+//!
+//! - Upload [`Skin::influences`](sapphire_assets::mesh::Skin) (u8 or u16 palette indices plus
+//!   unorm8 weights, 8 or 12 bytes a vertex) and the morph deltas (16 bytes each: vertex,
+//!   binary16 position and normal deltas, sparse per target) as storage buffers, byte for byte.
+//! - Palettes are `model_from_joint(bind.joint) × bind.inverse_bind_matrix` per
+//!   [`SkinBind`](sapphire_assets::mesh::SkinBind); joints are parents-first with names and
+//!   rest poses, the shape ozz-animation's skeleton takes (spec §5.13).
+//! - Decode positions to f32 before adding deltas (morphed and skinned positions leave the
+//!   bind-pose bounds), and write per-instance positions as f32 (slot 1, drawn with the f32
+//!   pipelines and an identity dequantization in the draw record) and shading in the
+//!   [`VertexShading`](sapphire_assets::mesh::VertexShading) layout (slot 2). The surface stream
+//!   stays shared in the pool.
+//! - Every LOD reads a prefix of the streams, so a distant character's dispatch skins only
+//!   `lods[n].vertex_count` vertices.
 //!
 //! # Binding budget
 //!
@@ -74,7 +115,7 @@
 //! | 2 scene | 1: storage | vertex, fragment | toon materials | mesh upload |
 //! | 3 | — | — | material textures (M1) | — |
 //!
-//! Vertex buffers: slot 0 is the mesh pool, slot 1 the draw records.
+//! Vertex buffers: slot 0 is the draw records, slots 1–3 a mesh's streams (above).
 //!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
 //! and a sampler, 1 the textures the pass reads. The light-cluster pass (`shaders/clusters.wgsl`)
@@ -101,6 +142,9 @@
 //!   layers, the character rig's ceiling and rim, local-light shadows, and two-level culling for
 //!   hundreds of lights. Mesh bounds move from the per-object light lists into the mesh records
 //!   once CPU culling needs them too.
+//! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
+//!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
+//!   then draws use LOD0.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
 

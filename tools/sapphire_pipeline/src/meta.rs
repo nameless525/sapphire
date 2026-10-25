@@ -14,6 +14,24 @@
 //!             outline: (
 //!                 weld_tolerance: 0.0001,
 //!             ),
+//!             lods: (
+//!                 levels: [
+//!                     (
+//!                         triangle_ratio: 0.5,
+//!                         max_error: 0.002,
+//!                     ),
+//!                     (
+//!                         triangle_ratio: 0.25,
+//!                         max_error: 0.01,
+//!                     ),
+//!                     (
+//!                         triangle_ratio: 0.125,
+//!                         max_error: 0.03,
+//!                     ),
+//!                 ],
+//!                 mobile_skip: 1,
+//!             ),
+//!             position_format: Unorm16,
 //!         )),
 //!     ),
 //! )
@@ -43,11 +61,13 @@ use std::path::{Path, PathBuf};
 
 use bevy_reflect::TypePath;
 use sapphire_assets::AssetId;
+use sapphire_assets::mesh::PositionFormat;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
+use crate::optimize::LodSettings;
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.
@@ -71,7 +91,7 @@ impl Versioned for AssetMeta {
 /// the pipeline as a variant here and a [`Recipe`](crate::cook::Recipe) that cooks it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ImportSettings {
-    /// glTF 2.0 (`.gltf`, `.glb`), flattened into one static mesh.
+    /// glTF 2.0 (`.gltf`, `.glb`), flattened into one mesh, skinned if the scene is.
     Gltf(MeshSettings),
     /// PNG, TGA or EXR, cooked as its texture class says (M1 A2).
     Texture(TextureSettings),
@@ -103,11 +123,16 @@ impl ImportSettings {
 }
 
 /// Import settings for meshes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeshSettings {
-    /// How outline normals are baked.
+    /// How outline normals are baked where the source doesn't author them.
     pub outline: OutlineSettings,
+    /// The LOD chain, and how much of it the mobile cook drops.
+    pub lods: LodSettings,
+    /// How positions are stored: quantized to 16 bits across the bounds (the default), or as
+    /// f32 for meshes too large for that or whose edges must meet a neighbor's exactly.
+    pub position_format: PositionFormat,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.
@@ -352,7 +377,8 @@ mod tests {
 
     fn meta(weld_tolerance: f32) -> AssetMeta {
         let outline = OutlineSettings::with_weld_tolerance(weld_tolerance).unwrap();
-        AssetMeta { id: ID.parse().unwrap(), importer: ImportSettings::Gltf(MeshSettings { outline }) }
+        let settings = MeshSettings { outline, ..MeshSettings::default() };
+        AssetMeta { id: ID.parse().unwrap(), importer: ImportSettings::Gltf(settings) }
     }
 
     /// Two mesh sources, `a.glb` and `nested/b.gltf`; neither has a sidecar.
@@ -372,10 +398,21 @@ mod tests {
     #[test]
     fn sidecars_are_versioned_documents() {
         let text = to_ron(&meta(0.002)).unwrap();
+        let level = |ratio: &str, error: &str| {
+            format!(
+                "                    (\n                        triangle_ratio: {ratio},\n                        \
+                 max_error: {error},\n                    ),\n"
+            )
+        };
         let expected = format!(
             "(\n    type: \"sapphire::assets::AssetMeta\",\n    version: 1,\n    data: (\n        id: \
              \"{ID}\",\n        importer: Gltf((\n            outline: (\n                \
-             weld_tolerance: 0.002,\n            ),\n        )),\n    ),\n)\n"
+             weld_tolerance: 0.002,\n            ),\n            lods: (\n                levels: [\n{}{}{}                \
+             ],\n                mobile_skip: 1,\n            ),\n            position_format: Unorm16,\n        )),\n    \
+             ),\n)\n",
+            level("0.5", "0.002"),
+            level("0.25", "0.01"),
+            level("0.125", "0.03"),
         );
         assert_eq!(text, expected);
         assert_eq!(from_ron::<AssetMeta>(&text).unwrap(), meta(0.002));
@@ -391,6 +428,30 @@ mod tests {
         let invalid = short.replace("Gltf(())", "Gltf((outline: (weld_tolerance: -1.0)))");
         let error = from_ron::<AssetMeta>(&invalid).unwrap_err();
         assert!(error.to_string().contains("positive, finite"), "{error}");
+
+        // Mesh settings beyond the bake: LODs and the position format.
+        let custom = short.replace(
+            "Gltf(())",
+            "Gltf((lods: (levels: [(triangle_ratio: 0.3, max_error: 0.05)], mobile_skip: 0), \
+             position_format: Float32))",
+        );
+        let settings =
+            from_ron::<AssetMeta>(&custom).unwrap().importer.mesh().expect("mesh settings").clone();
+        assert_eq!(settings.position_format, PositionFormat::Float32);
+        assert_eq!(settings.lods.levels().len(), 1);
+        assert_eq!(settings.lods.mobile_skip(), 0);
+        let no_lods = short.replace("Gltf(())", "Gltf((lods: (levels: [])))");
+        let settings =
+            from_ron::<AssetMeta>(&no_lods).unwrap().importer.mesh().expect("mesh settings").clone();
+        assert_eq!(settings.lods, LodSettings::none(), "no levels: nothing for mobile to skip");
+        let too_many = short.replace("Gltf(())", "Gltf((lods: (levels: [], mobile_skip: 1)))");
+        let error = from_ron::<AssetMeta>(&too_many).unwrap_err();
+        assert!(error.to_string().contains("mobile_skip"), "{error}");
+        let rising = short.replace(
+            "Gltf(())",
+            "Gltf((lods: (levels: [(triangle_ratio: 0.5, max_error: 0.1), (triangle_ratio: 0.6, max_error: 0.2)])))",
+        );
+        assert!(from_ron::<AssetMeta>(&rising).is_err(), "ratios must fall level by level");
     }
 
     #[test]

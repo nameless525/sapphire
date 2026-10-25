@@ -97,14 +97,27 @@ impl InstanceData {
     }
 }
 
-/// One draw record: which instance and which material a draw uses. Read by the vertex
-/// shaders as instance-step vertex attributes (WGSL `DrawRecord`, locations 5 and 6) from a
-/// buffer bound at the draw's record; see the crate docs on submission paths.
+/// One draw record: which instance and which material a draw uses, and how to decode its
+/// mesh's vertices. Read by the vertex shaders as instance-step vertex attributes (WGSL
+/// `DrawRecord`, locations 5–9) from a buffer bound at the draw's record; see the crate docs on
+/// submission paths. 48 bytes.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct DrawData {
     pub instance: u32,
     pub material: u32,
+    pub dequantize: Dequantize,
+}
+
+/// A mesh's vertex dequantization: object position = `position_offset + position_scale × p`,
+/// `uv = uv_transform.xy + uv_transform.zw × uv`, with `p` and `uv` as the vertex fetch reads
+/// them (see `sapphire_assets::mesh::ArchivedVertexStreams::position_transform`). 40 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub(crate) struct Dequantize {
+    pub position_offset: [f32; 3],
+    pub position_scale: [f32; 3],
+    pub uv_transform: [f32; 4],
 }
 
 #[cfg(test)]

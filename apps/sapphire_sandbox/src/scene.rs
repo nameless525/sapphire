@@ -22,7 +22,7 @@
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
-use sapphire_assets::mesh::MeshAsset;
+use sapphire_assets::mesh::{AlignedVec, ArchivedMesh, Mesh};
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
@@ -218,23 +218,45 @@ fn drawable_aspect(target_size: Option<(u32, u32)>) -> Option<f32> {
     Some(width as f32 / height as f32)
 }
 
-/// Reads and validates a cooked mesh from the app's content.
-pub(crate) fn load_mesh(platform: &Platform, path: &str) -> Result<MeshAsset, AppInitError> {
-    let bytes = platform.content().read(path).map_err(|error| {
+/// Reads a cooked mesh from the app's content into aligned memory, checks it, and hands it,
+/// read in place, to `use_mesh` (to upload it and take its bounds). The bytes live for the call
+/// only: the renderer copies what it keeps.
+pub(crate) fn load_mesh<R, E>(
+    platform: &Platform,
+    path: &str,
+    use_mesh: impl FnOnce(&ArchivedMesh) -> Result<R, E>,
+) -> Result<R, AppInitError>
+where
+    AppInitError: From<E>,
+{
+    let content = platform.content();
+    let missing = |error: &dyn std::fmt::Display| {
         AppInitError::msg(format!(
-            "{error} (content root {:?}; cook it with `cargo xtask content`)",
-            platform.content().root()
+            "{path}: {error} (content root {:?}; cook it with `cargo xtask content`)",
+            content.root()
         ))
-    })?;
-    let mesh = MeshAsset::from_bytes(&bytes)?;
+    };
+    let mut file = content.open(path).map_err(|error| missing(&error))?;
+    let mut bytes: AlignedVec = AlignedVec::new();
+    bytes.extend_from_reader(&mut file).map_err(|error| missing(&error))?;
+    let mesh = Mesh::read(&bytes)?;
+    let lod0_triangles: u32 = mesh.lods[0].submeshes.iter().map(|s| s.index_count.to_native() / 3).sum();
     tracing::info!(
         target: LOG_TARGET,
         path,
-        vertices = mesh.vertices.len(),
-        triangles = mesh.indices.len() / 3,
+        vertices = mesh.streams.len(),
+        triangles = lod0_triangles,
+        lods = mesh.lods.len(),
+        skinned = mesh.skin.is_some(),
         "mesh loaded"
     );
-    Ok(mesh)
+    Ok(use_mesh(mesh)?)
+}
+
+/// A mesh's object-space bounds as the scene frames them: `[min, max]`.
+pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
+    let bounds = mesh.streams.bounds.to_native();
+    [bounds.min, bounds.max]
 }
 
 #[cfg(test)]

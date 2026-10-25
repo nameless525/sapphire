@@ -16,9 +16,12 @@
 //! (later) writes equivalent multi-draw-indirect records on the GPU, using `base_vertex` and
 //! `first_instance` instead (see the crate docs).
 //!
-//! Draws come in slot order. Sorting opaque draws by pipeline, material and mesh (§5.12) comes
-//! with a second opaque pipeline; because the list is rebuilt only when the set changes, the
-//! sort will cost nothing on frames that only move instances.
+//! Draws are grouped by the meshes' position format, whose pipelines and stream slab differ,
+//! and come in slot order within a group. Each draw record carries its mesh's dequantization,
+//! so the vertex shaders decode any mesh without another binding. Sorting opaque draws by
+//! pipeline, material and mesh (§5.12) comes with a second opaque pipeline; because the list
+//! is rebuilt only when the set changes, the sort will cost nothing on frames that only move
+//! instances.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -31,6 +34,7 @@ use sapphire_rhi::wgpu;
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::mesh_pool::MeshRecord;
+use crate::pipelines::format_index;
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -156,7 +160,7 @@ impl GpuScene {
 
     /// Draw commands per mesh pass.
     pub(crate) fn draw_count(&self) -> u32 {
-        to_u32(self.draw_list.commands.len())
+        to_u32(self.draw_list.len())
     }
 
     /// Instances the last packet added or changed.
@@ -346,8 +350,8 @@ impl Hasher for IdHasher {
 }
 
 /// One `draw_indexed` call on the CPU-driven path, with `base_vertex` 0 and instances `0..1`:
-/// vertex slot 0 is bound at `first_vertex` (indices are mesh-relative) and slot 1 at draw
-/// record `draw_id`.
+/// the mesh's streams (vertex slots 1–3) are bound at `first_vertex` of their slab (indices are
+/// mesh-relative) and slot 0 at draw record `draw_id`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DrawCommand {
     pub indices: Range<u32>,
@@ -355,33 +359,46 @@ pub(crate) struct DrawCommand {
     pub draw_id: u32,
 }
 
-/// The draws for every live instance: one per submesh. Its vectors are reused across
-/// rebuilds.
+/// The draws for every live instance: one per submesh of the mesh's LOD0. Its vectors are
+/// reused across rebuilds.
 #[derive(Debug, Default)]
 pub(crate) struct DrawList {
     pub draws: Vec<DrawData>,
-    pub commands: Vec<DrawCommand>,
+    /// Per [`PositionFormat::ALL`] entry, since each format has its own pipelines and slab.
+    pub commands: [Vec<DrawCommand>; 2],
 }
 
 impl DrawList {
     pub(crate) fn build(&mut self, meshes: &[MeshRecord], slots: &InstanceSlots) {
         profiling::scope!("DrawList::build");
         self.draws.clear();
-        self.commands.clear();
+        for commands in &mut self.commands {
+            commands.clear();
+        }
         for (slot, mesh) in slots.live() {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
             let Some(record) = record else { continue };
-            for submesh in &record.submeshes {
+            let commands = &mut self.commands[format_index(record.format)];
+            for submesh in &record.lods[0] {
                 let draw_id = to_u32(self.draws.len());
-                self.draws.push(DrawData { instance: slot, material: submesh.material });
-                self.commands.push(DrawCommand {
+                self.draws.push(DrawData {
+                    instance: slot,
+                    material: submesh.material,
+                    dequantize: record.dequantize,
+                });
+                commands.push(DrawCommand {
                     indices: submesh.first_index..submesh.first_index + submesh.index_count,
                     first_vertex: record.first_vertex,
                     draw_id,
                 });
             }
         }
+    }
+
+    /// Draw commands per mesh pass.
+    pub(crate) fn len(&self) -> usize {
+        self.commands.iter().map(Vec::len).sum()
     }
 }
 
@@ -392,9 +409,11 @@ fn to_u32(len: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
+    use sapphire_assets::mesh::PositionFormat;
 
     use super::*;
     use crate::MeshInstance;
+    use crate::gpu_types::Dequantize;
     use crate::mesh_pool::SubmeshDraw;
 
     fn instance(id: u64, mesh: u32, x: f32) -> MeshInstance {
@@ -505,42 +524,63 @@ mod tests {
     }
 
     #[test]
-    fn draw_list_expands_live_slots_into_one_draw_per_submesh() {
+    fn draw_list_expands_live_slots_into_one_draw_per_lod0_submesh() {
+        let quantized = Dequantize {
+            position_offset: [-1.0; 3],
+            position_scale: [2.0; 3],
+            uv_transform: [0.0, 0.0, 1.0, 1.0],
+        };
+        let identity = Dequantize { position_offset: [0.0; 3], position_scale: [1.0; 3], ..quantized };
         let meshes = [
             MeshRecord {
+                format: PositionFormat::Unorm16,
                 first_vertex: 0,
-                submeshes: vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }],
+                dequantize: quantized,
+                lods: vec![
+                    vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }],
+                    vec![SubmeshDraw { first_index: 6, index_count: 3, material: 0 }],
+                ],
             },
             MeshRecord {
+                format: PositionFormat::Unorm16,
                 first_vertex: 24,
-                submeshes: vec![
-                    SubmeshDraw { first_index: 6, index_count: 3, material: 1 },
-                    SubmeshDraw { first_index: 9, index_count: 12, material: 2 },
-                ],
+                dequantize: quantized,
+                lods: vec![vec![
+                    SubmeshDraw { first_index: 9, index_count: 3, material: 1 },
+                    SubmeshDraw { first_index: 12, index_count: 12, material: 2 },
+                ]],
+            },
+            MeshRecord {
+                format: PositionFormat::Float32,
+                first_vertex: 0,
+                dequantize: identity,
+                lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: 3 }]],
             },
         ];
         let mut slots = InstanceSlots::default();
-        slots.apply(&deltas(&[instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 0.0)], &[]));
+        let instances = [instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 0.0), instance(4, 2, 0.0)];
+        slots.apply(&deltas(&instances, &[]));
         slots.apply(&deltas(&[], &[1]));
         let mut list = DrawList::default();
         list.build(&meshes, &slots);
 
-        // Slot 0 is free; draws refer to instances by slot.
+        // Slot 0 is free; draws refer to instances by slot, carry their mesh's dequantization,
+        // and draw LOD0.
+        let draw = |instance, material, dequantize| DrawData { instance, material, dequantize };
         assert_eq!(
             list.draws,
-            [
-                DrawData { instance: 1, material: 1 },
-                DrawData { instance: 1, material: 2 },
-                DrawData { instance: 2, material: 0 },
-            ]
+            [draw(1, 1, quantized), draw(1, 2, quantized), draw(2, 0, quantized), draw(3, 3, identity)]
         );
-        assert_eq!(list.commands[1], DrawCommand { indices: 9..21, first_vertex: 24, draw_id: 1 });
-        assert_eq!(list.commands[2], DrawCommand { indices: 0..6, first_vertex: 0, draw_id: 2 });
+        let [unorm16, float32] = &list.commands;
+        assert_eq!(unorm16[1], DrawCommand { indices: 12..24, first_vertex: 24, draw_id: 1 });
+        assert_eq!(unorm16[2], DrawCommand { indices: 0..6, first_vertex: 0, draw_id: 2 });
+        assert_eq!(float32[..], [DrawCommand { indices: 24..27, first_vertex: 0, draw_id: 3 }]);
+        assert_eq!(list.len(), 4);
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3]));
         list.build(&meshes, &slots);
-        assert_eq!((list.draws.len(), list.commands.len()), (2, 2));
+        assert_eq!((list.draws.len(), list.len()), (3, 3));
     }
 
     #[test]

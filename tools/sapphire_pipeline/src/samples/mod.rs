@@ -187,7 +187,7 @@ fn rotation_x(degrees: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
-    use sapphire_assets::mesh::ToonMaterialParams;
+    use sapphire_assets::mesh::{Bounds, PositionFormat, ToonMaterialParams};
 
     use super::*;
     use crate::import;
@@ -207,10 +207,11 @@ mod tests {
     #[test]
     fn reimports_with_materials_parts_and_outline_widths() {
         let mesh = import::gltf::import_slice(&mannequin_glb(), None).expect("re-import");
-        mesh.validate().expect("structurally valid");
+        let cooked = mesh.pack(PositionFormat::Float32).to_cooked().expect("cook");
+        sapphire_assets::mesh::Mesh::read(&cooked).expect("structurally valid");
 
         // 9 part instances: pedestal, 2 legs, torso, 2 arms, head, hair, hat.
-        assert_eq!(mesh.submeshes.len(), 9);
+        assert_eq!(mesh.lods[0].submeshes.len(), 9);
         assert_eq!(mesh.materials.len(), LOOKS.len());
         for look in LOOKS {
             let [r, g, b] = look.base;
@@ -232,7 +233,7 @@ mod tests {
         }
         assert!(mesh.vertices.iter().all(|v| v.color[3] == HEAD_OUTLINE_ALPHA || v.color[3] == 255));
 
-        let [min, max] = mesh.bounds;
+        let Bounds { min, max } = Bounds::enclosing(mesh.vertices.iter().map(|v| v.position));
         assert_eq!(min[1], 0.0, "pedestal rests on the ground");
         assert_eq!([min[0], max[0], min[2], max[2]], [-0.55, 0.55, -0.55, 0.55]);
         assert!((2.0..2.2).contains(&max[1]), "hat tip at {}", max[1]);

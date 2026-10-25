@@ -3,7 +3,10 @@
 use std::f32::consts::{PI, TAU};
 
 use glam::{Mat4, Quat, Vec3};
-use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
+use sapphire_assets::mesh::{
+    Influences, Joint, JointTransform, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
+    Submesh, ToonMaterialParams, Vertex, VertexInfluence,
+};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LightPath,
@@ -32,42 +35,53 @@ fn target(gpu: &GpuContext, format: wgpu::TextureFormat, (width, height): (u32, 
     })
 }
 
-/// A unit-radius UV sphere at the origin with one material.
-fn sphere(material: ToonMaterialParams) -> MeshAsset {
+/// The vertices and indices of a UV sphere of `radius` around `center`.
+fn sphere_geometry(center: Vec3, radius: f32) -> (Vec<Vertex>, Vec<u32>) {
     const RINGS: u32 = 48;
     const SEGMENTS: u32 = 64;
-    let mut mesh = MeshAsset::default();
+    let mut vertices = Vec::new();
     for ring in 0..=RINGS {
         let theta = PI * ring as f32 / RINGS as f32;
         for segment in 0..=SEGMENTS {
             let phi = TAU * segment as f32 / SEGMENTS as f32;
-            let n = [theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin()];
-            mesh.vertices.push(MeshVertex {
-                position: n,
-                normal: n,
-                outline_normal: n,
-                uv: [0.0; 2],
+            let n = Vec3::new(theta.sin() * phi.cos(), theta.cos(), theta.sin() * phi.sin());
+            vertices.push(Vertex {
+                position: (center + n * radius).to_array(),
+                normal: n.to_array(),
+                outline_normal: n.to_array(),
+                uv: [segment as f32 / SEGMENTS as f32, ring as f32 / RINGS as f32],
                 color: [255; 4],
             });
         }
     }
     let stride = SEGMENTS + 1;
+    let mut indices = Vec::new();
     for ring in 0..RINGS {
         for segment in 0..SEGMENTS {
             let a = ring * stride + segment;
             let (b, c, d) = (a + stride, a + 1, a + stride + 1);
-            mesh.indices.extend([a, c, b, c, d, b]);
+            indices.extend([a, c, b, c, d, b]);
         }
     }
-    mesh.submeshes.push(Submesh {
-        first_index: 0,
-        index_count: mesh.indices.len() as u32,
-        material_index: 0,
-        _reserved: 0,
-    });
-    mesh.materials.push(material);
-    mesh.bounds = [[-1.0; 3], [1.0; 3]];
-    mesh
+    (vertices, indices)
+}
+
+/// A UV sphere of `radius` around `center` with one material, positions stored in `format`.
+fn sphere_at(center: Vec3, radius: f32, material: ToonMaterialParams, format: PositionFormat) -> Mesh {
+    let (vertices, indices) = sphere_geometry(center, radius);
+    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
+    Mesh::from_vertices(&vertices, indices, submeshes, vec![material], format)
+}
+
+/// A unit-radius UV sphere at the origin with one material.
+fn sphere(material: ToonMaterialParams) -> Mesh {
+    sphere_at(Vec3::ZERO, 1.0, material, PositionFormat::Unorm16)
+}
+
+/// Uploads `mesh` the way the runtime loads one: cooked to bytes, then read in place.
+fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
+    let bytes = mesh.to_cooked().expect("cook");
+    renderer.upload_mesh(Mesh::read(&bytes).expect("a valid mesh")).expect("upload")
 }
 
 /// A flat material: no shadow tone and no rim, black outline.
@@ -253,7 +267,7 @@ fn left_outline_width(pixels: &[[u8; 4]], (width, height): (u32, u32)) -> f32 {
 fn outline_width_is_independent_of_fov_and_resolution() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
-    let mesh = frames.renderer.upload_mesh(&sphere(flat(GREY, 10.0))).expect("upload");
+    let mesh = upload(&mut frames.renderer, &sphere(flat(GREY, 10.0)));
     // Added by the first frame; the scene keeps it for the rest.
     let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
     for size in [(960, 540), (1920, 1080)] {
@@ -302,7 +316,7 @@ fn msaa_support_matches_device_validation() {
             match Frames::new(&gpu, format, msaa) {
                 Ok(mut frames) => {
                     assert!(supported, "{format:?} x{samples} accepted but unsupported");
-                    let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
+                    let handle = upload(&mut frames.renderer, &mesh);
                     let texture = target(&gpu, format, (64, 64));
                     let view = texture.create_view(&Default::default());
                     let instances = [instance(0, handle, Mat4::IDENTITY)];
@@ -329,7 +343,7 @@ fn msaa_support_matches_device_validation() {
 fn internal_targets_follow_the_target_size() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
-    let mesh = frames.renderer.upload_mesh(&sphere(white(4.0))).expect("upload");
+    let mesh = upload(&mut frames.renderer, &sphere(white(4.0)));
     let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
     frames.post = PostParams::default();
     for size in [(480, 270), (481, 270), (17, 1000), (480, 270)] {
@@ -352,9 +366,9 @@ fn mesh_relative_indices_draw_every_mesh() {
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
     // Several meshes, so the last one starts deep inside the shared vertex buffer.
     for _ in 0..3 {
-        frames.renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
+        upload(&mut frames.renderer, &sphere(colored([1.0, 0.0, 0.0])));
     }
-    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let green = upload(&mut frames.renderer, &sphere(colored([0.0, 1.0, 0.0])));
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
@@ -365,13 +379,111 @@ fn mesh_relative_indices_draw_every_mesh() {
 
     let stats = frames.renderer.stats();
     assert_eq!((stats.draws, stats.instances), (1, 1));
+    // 24 bytes a vertex over the three quantized streams.
     let sphere_bytes = {
         let mesh = sphere(white(0.0));
-        (mesh.vertices.len() * size_of::<MeshVertex>()
-            + mesh.indices.len() * 4
-            + size_of::<ToonMaterialParams>()) as u64
+        (mesh.streams.len() * 24 + mesh.indices.len() * 4 + size_of::<ToonMaterialParams>()) as u64
     };
     assert_eq!(stats.mesh_pool_bytes, 4 * sphere_bytes);
+}
+
+/// The mean of each channel's absolute difference, in 8-bit steps, and how many pixels differ by
+/// more than `threshold` steps in some channel.
+fn difference(a: &[[u8; 4]], b: &[[u8; 4]], threshold: u8) -> (f64, usize) {
+    let total: u64 = a.iter().zip(b).flat_map(|(a, b)| (0..3).map(|c| u64::from(a[c].abs_diff(b[c])))).sum();
+    let differing = a.iter().zip(b).filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > threshold)).count();
+    (total as f64 / (3 * a.len()) as f64, differing)
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn quantized_meshes_match_their_f32_reference() {
+    let gpu = gpu();
+    let size = (320, 240);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    // Off-center and not unit-sized, so a wrong dequantization offset or scale shows.
+    let (center, radius) = (Vec3::new(0.31, -0.17, 0.12), 0.83);
+    let material = ToonMaterialParams {
+        base_color: [0.9, 0.55, 0.4, 1.0],
+        shade_color: [0.6, 0.5, 0.8, 1.0],
+        outline_color: [0.1, 0.05, 0.1, 1.0],
+        params: [0.0, 0.02, 0.4, 6.0],
+    };
+    let render = |format| {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+        // Light from the upper left, so the toon terminator crosses the sphere.
+        frames.sun = DirectionalLight {
+            direction: Vec3::new(0.6, -0.5, -0.6).normalize(),
+            color: Vec3::ONE,
+            intensity: 1.0,
+        };
+        frames.sky = SkyGradient::default();
+        let mesh = upload(&mut frames.renderer, &sphere_at(center, radius, material, format));
+        let camera = CameraData::look_at(
+            center + Vec3::new(0.0, 0.0, 3.0),
+            center,
+            Vec3::Y,
+            38f32.to_radians(),
+            size.0 as f32 / size.1 as f32,
+            0.05,
+        );
+        let error = frames.render(&gpu, &view, camera, &[instance(0, mesh, Mat4::IDENTITY)], &[]);
+        assert!(error.is_none(), "{format:?}: {error:?}");
+        read_back(&gpu, &texture)
+    };
+    let reference = render(PositionFormat::Float32);
+    let quantized = render(PositionFormat::Unorm16);
+    let (mean, differing) = difference(&reference, &quantized, 8);
+    eprintln!("quantized vs f32 positions: mean {mean:.4} steps, {differing} pixels differ by more than 8");
+    // Positions are within 13 µm here, under 1/1000 of a pixel, so only a few silhouette pixels
+    // whose MSAA samples sit right on an edge may flip (4 of 76 800 on an M5).
+    assert!(mean < 0.05 && differing <= 16, "mean {mean} steps, {differing} pixels");
+    assert!(reference.iter().any(|p| p[..3] != reference[0][..3]), "the sphere is in the picture");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skinned_and_morphed_meshes_draw_in_bind_pose() {
+    let gpu = gpu();
+    let size = (96, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let plain = sphere(flat([0.9, 0.2, 0.15], 3.0));
+    let mut skinned = plain.clone();
+    let vertex_count = skinned.streams.len();
+    let mut tip = Joint { name: "tip".into(), parent: Some(0), rest: JointTransform::IDENTITY };
+    tip.rest.translation = [0.0, 1.0, 0.0];
+    skinned.skin = Some(Skin {
+        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }, tip],
+        binds: vec![
+            SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() },
+            SkinBind {
+                joint: 1,
+                inverse_bind_matrix: Mat4::from_translation(Vec3::NEG_Y).to_cols_array_2d(),
+            },
+        ],
+        influences: Influences::pack(
+            &vec![VertexInfluence { binds: [1, 0, 0, 0], weights: [128, 127, 0, 0] }; vertex_count],
+            2,
+        ),
+    });
+    // A target that would move every vertex half a meter, at full default weight.
+    skinned.morph_targets =
+        vec![MorphTarget { name: "grow".into(), default_weight: 1.0, first_delta: 0, delta_count: 2 }];
+    skinned.morph_deltas =
+        vec![MorphDelta::new(0, [0.5, 0.0, 0.0], [0.0; 3]), MorphDelta::new(1, [0.5, 0.0, 0.0], [0.0; 3])];
+    let render = |mesh: &Mesh| {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+        let handle = upload(&mut frames.renderer, mesh);
+        let camera = framing_camera(38.0, size, 0.6);
+        assert!(frames.render(&gpu, &view, camera, &[instance(0, handle, Mat4::IDENTITY)], &[]).is_none());
+        (read_back(&gpu, &texture), frames.renderer.stats().mesh_pool_bytes)
+    };
+    let (plain_pixels, plain_bytes) = render(&plain);
+    let (skinned_pixels, skinned_bytes) = render(&skinned);
+    assert!(skinned_pixels == plain_pixels, "until compute skinning (R2), skinned meshes draw in bind pose");
+    assert_eq!(skinned_bytes, plain_bytes, "skin and morph data stay in the cooked mesh for now");
 }
 
 /// A pixel of `rgb`'s hue: one channel high, the others low.
@@ -387,8 +499,8 @@ const GREEN: [bool; 3] = [false, true, false];
 fn instances_persist_and_update_from_deltas() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
-    let red = frames.renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
-    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let red = upload(&mut frames.renderer, &sphere(colored([1.0, 0.0, 0.0])));
+    let green = upload(&mut frames.renderer, &sphere(colored([0.0, 1.0, 0.0])));
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
@@ -447,7 +559,7 @@ impl PostScene {
 
     fn new(gpu: &GpuContext) -> Self {
         let mut frames = Frames::new(gpu, FORMAT, Msaa::default()).expect("renderer");
-        let mesh = frames.renderer.upload_mesh(&sphere(flat([0.9, 0.2, 0.15], 3.0))).expect("upload");
+        let mesh = upload(&mut frames.renderer, &sphere(flat([0.9, 0.2, 0.15], 3.0)));
         frames.sky = SkyGradient::default();
         Self {
             frames,
@@ -488,7 +600,7 @@ fn values_above_one_survive_into_bloom() {
     let view = texture.create_view(&Default::default());
     let glow_around = |brightness: f32| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
-        let mesh = frames.renderer.upload_mesh(&sphere(flat([brightness; 3], 0.0))).expect("upload");
+        let mesh = upload(&mut frames.renderer, &sphere(flat([brightness; 3], 0.0)));
         frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
         // A hard threshold at 1: anything clamped to 1 on the way would add no bloom at all.
         frames.post.bloom = BloomParams { threshold: 1.0, knee: 0.0, intensity: 1.0, scatter: 0.7 };
@@ -512,7 +624,7 @@ fn values_above_one_survive_into_bloom() {
 fn growing_the_instance_buffer_keeps_uploaded_instances() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
-    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let green = upload(&mut frames.renderer, &sphere(colored([0.0, 1.0, 0.0])));
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
@@ -585,7 +697,7 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
         for bloom_levels in [0, 1, 5, sapphire_render::MAX_BLOOM_LEVELS] {
             let settings = RenderSettings { msaa, bloom_levels, ..RenderSettings::default() };
             let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
-            let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
+            let handle = upload(&mut frames.renderer, &mesh);
             frames.post =
                 PostParams { grade_b: strong_grade(0.3), grade_blend: 0.5, ..PostParams::default() };
             let mut add = vec![instance(0, handle, Mat4::IDENTITY)];
@@ -628,7 +740,7 @@ fn a_local_light_shifts_the_toon_split() {
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
-    let mesh = frames.renderer.upload_mesh(&sphere(two_tone())).expect("upload");
+    let mesh = upload(&mut frames.renderer, &sphere(two_tone()));
     frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
     // The sun from the left lights the left half: 0.5 lit, 0.25 in shadow.
     frames.sun = DirectionalLight { direction: Vec3::X, color: Vec3::ONE, intensity: 0.5 };
@@ -700,13 +812,10 @@ fn four_lights_scene(frames: &mut Frames) -> Vec<MeshInstance> {
         .into_iter()
         .enumerate()
         .map(|(index, rgb)| {
-            let mesh = frames
-                .renderer
-                .upload_mesh(&sphere(ToonMaterialParams {
-                    shade_color: [0.55, 0.5, 0.65, 1.0],
-                    ..flat(rgb, 3.0)
-                }))
-                .expect("upload");
+            let mesh = upload(
+                &mut frames.renderer,
+                &sphere(ToonMaterialParams { shade_color: [0.55, 0.5, 0.65, 1.0], ..flat(rgb, 3.0) }),
+            );
             let x = (index as f32 - 1.0) * 1.4;
             instance(
                 index as u64,
@@ -796,7 +905,7 @@ fn local_lights_run_at_any_size_and_msaa_on_both_paths() {
             let settings =
                 RenderSettings { msaa, light_path, max_lights: u32::MAX, ..RenderSettings::default() };
             let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
-            let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
+            let handle = upload(&mut frames.renderer, &mesh);
             frames.lights = vec![
                 point_light(Vec3::new(1.2, 0.5, 1.0), Vec3::new(1.0, 0.5, 0.2), 1.0, 3.0),
                 LocalLight {
@@ -828,7 +937,7 @@ fn per_object_lists_survive_their_buffer_growing() {
     let gpu = gpu();
     let settings = RenderSettings { light_path: LightPath::PerObject, ..RenderSettings::default() };
     let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
-    let mesh = frames.renderer.upload_mesh(&sphere(two_tone())).expect("upload");
+    let mesh = upload(&mut frames.renderer, &sphere(two_tone()));
     frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
     frames.sun = DirectionalLight { direction: Vec3::Z, color: Vec3::ONE, intensity: 0.1 };
     frames.lights = vec![point_light(Vec3::new(0.0, 0.0, 2.0), Vec3::X, 1.0, 3.0)];

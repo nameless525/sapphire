@@ -77,10 +77,10 @@ fn run(command: Command) -> anyhow::Result<()> {
             let sidecar = meta::sidecar_path(&input);
             let mut settings = if sidecar.exists() {
                 let meta = meta::read(&sidecar)?;
-                *meta
-                    .importer
+                meta.importer
                     .mesh()
                     .with_context(|| format!("{} isn't a mesh's sidecar", sidecar.display()))?
+                    .clone()
             } else {
                 MeshSettings::default()
             };

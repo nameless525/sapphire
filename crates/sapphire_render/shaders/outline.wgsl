@@ -22,7 +22,8 @@ struct OutlineVaryings {
 }
 
 @vertex
-fn vs_outline(vertex: MeshVertex, draw: DrawRecord) -> OutlineVaryings {
+fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
+    let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let material = materials[draw.material];
 

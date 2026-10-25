@@ -18,7 +18,7 @@ use std::fs::File;
 use std::io::BufWriter;
 
 use glam::{Mat4, Quat, Vec3};
-use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
+use sapphire_assets::mesh::{Mesh, PositionFormat, Submesh, ToonMaterialParams, Vertex};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     CameraData, DirectionalLight, FramePacket, InstanceId, MeshInstance, Msaa, RenderSettings, Renderer,
@@ -48,7 +48,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
     let mut renderer =
         Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X4, ..RenderSettings::default() })?;
-    let mesh = renderer.upload_mesh(&test_scene())?;
+    // Cooked and read back in place, as the runtime loads a mesh.
+    let cooked = test_scene().to_cooked()?;
+    let mesh = renderer.upload_mesh(Mesh::read(&cooked)?)?;
 
     let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
         label: Some("headless target"),
@@ -144,8 +146,8 @@ fn read_back(gpu: &GpuContext, texture: &wgpu::Texture) -> Result<Vec<u8>, Box<d
 }
 
 /// A smooth sphere (material 0) beside a rotated hard-edged cube (material 1).
-fn test_scene() -> MeshAsset {
-    let mut mesh = MeshAsset::default();
+fn test_scene() -> Mesh {
+    let mut mesh = Parts::default();
     append_submesh(&mut mesh, 0, |vertices, indices| {
         uv_sphere(vertices, indices, Vec3::new(-0.95, 0.75, 0.0), 0.75)
     });
@@ -174,32 +176,31 @@ fn test_scene() -> MeshAsset {
         },
     ];
     average_outline_normals(&mut mesh.vertices);
-    mesh.bounds = bounds(&mesh.vertices);
-    mesh
+    Mesh::from_vertices(&mesh.vertices, mesh.indices, mesh.submeshes, mesh.materials, PositionFormat::Unorm16)
+}
+
+/// The scene's geometry and materials before packing.
+#[derive(Default)]
+struct Parts {
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
+    submeshes: Vec<Submesh>,
+    materials: Vec<ToonMaterialParams>,
 }
 
 /// Runs `build` to produce one object's vertices and indices, then appends them as a
 /// submesh drawn with `material`.
-fn append_submesh(
-    mesh: &mut MeshAsset,
-    material: u32,
-    build: impl FnOnce(&mut Vec<MeshVertex>, &mut Vec<u32>),
-) {
+fn append_submesh(mesh: &mut Parts, material: u32, build: impl FnOnce(&mut Vec<Vertex>, &mut Vec<u32>)) {
     let (base_vertex, first_index) = (mesh.vertices.len() as u32, mesh.indices.len() as u32);
     let (mut vertices, mut indices) = (Vec::new(), Vec::new());
     build(&mut vertices, &mut indices);
     mesh.vertices.extend(vertices);
     mesh.indices.extend(indices.iter().map(|i| i + base_vertex));
-    mesh.submeshes.push(Submesh {
-        first_index,
-        index_count: indices.len() as u32,
-        material_index: material,
-        _reserved: 0,
-    });
+    mesh.submeshes.push(Submesh { first_index, index_count: indices.len() as u32, material });
 }
 
-fn vertex(position: Vec3, normal: Vec3, uv: [f32; 2]) -> MeshVertex {
-    MeshVertex {
+fn vertex(position: Vec3, normal: Vec3, uv: [f32; 2]) -> Vertex {
+    Vertex {
         position: position.to_array(),
         normal: normal.to_array(),
         outline_normal: normal.to_array(),
@@ -208,7 +209,7 @@ fn vertex(position: Vec3, normal: Vec3, uv: [f32; 2]) -> MeshVertex {
     }
 }
 
-fn uv_sphere(vertices: &mut Vec<MeshVertex>, indices: &mut Vec<u32>, center: Vec3, radius: f32) {
+fn uv_sphere(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, center: Vec3, radius: f32) {
     const RINGS: u32 = 32;
     const SEGMENTS: u32 = 48;
     for ring in 0..=RINGS {
@@ -236,7 +237,7 @@ fn uv_sphere(vertices: &mut Vec<MeshVertex>, indices: &mut Vec<u32>, center: Vec
     }
 }
 
-fn cube(vertices: &mut Vec<MeshVertex>, indices: &mut Vec<u32>, transform: Mat4, half_extent: f32) {
+fn cube(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, transform: Mat4, half_extent: f32) {
     // (outward normal, in-face "right" axis); "up" is normal × right, so corners listed
     // right-handed around the normal are counter-clockwise seen from outside.
     let faces = [
@@ -264,8 +265,8 @@ fn cube(vertices: &mut Vec<MeshVertex>, indices: &mut Vec<u32>, transform: Mat4,
 
 /// Sets every vertex's outline normal to the average shading normal of all vertices at the
 /// same position, so hard edges don't split the outline hull.
-fn average_outline_normals(vertices: &mut [MeshVertex]) {
-    let key = |v: &MeshVertex| v.position.map(|c| (c * 1.0e4).round() as i32);
+fn average_outline_normals(vertices: &mut [Vertex]) {
+    let key = |v: &Vertex| v.position.map(|c| (c * 1.0e4).round() as i32);
     let mut sums: HashMap<[i32; 3], Vec3> = HashMap::new();
     for v in vertices.iter() {
         *sums.entry(key(v)).or_default() += Vec3::from(v.normal);
@@ -273,12 +274,4 @@ fn average_outline_normals(vertices: &mut [MeshVertex]) {
     for v in vertices.iter_mut() {
         v.outline_normal = sums[&key(v)].normalize_or_zero().to_array();
     }
-}
-
-fn bounds(vertices: &[MeshVertex]) -> [[f32; 3]; 2] {
-    let (min, max) = vertices.iter().fold((Vec3::MAX, Vec3::MIN), |(min, max), v| {
-        let p = Vec3::from(v.position);
-        (min.min(p), max.max(p))
-    });
-    [min.to_array(), max.to_array()]
 }

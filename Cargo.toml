@@ -97,6 +97,11 @@ ron = "0.12.2"
 # Cooked data: little-endian, aligned, 32-bit relative pointers (rkyv's defaults), validated
 # with bytecheck.
 rkyv = "0.8.18"
+# rkyv's little-endian primitives, already in its tree. `bytemuck-1` makes them `Pod`, so
+# archived arrays (cooked mesh indices) upload to the GPU as they lie, without a copy.
+rend = { version = "0.5.4", default-features = false, features = ["bytemuck-1"] }
+# IEEE half floats for packed data (cooked morph deltas). Already in the runtime tree via naga.
+half = { version = "2.7.1", default-features = false }
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 
 # --- Assets and content (spec §5.10, §5.27) ---
@@ -138,6 +143,9 @@ gltf = { version = "1.4.1", default-features = false }
 ctt = { version = "0.6.0", default-features = false, features = ["encoder-bc7enc", "encoder-intel", "encoder-astcenc", "ispc-prebuilt"] }
 # PNG, TGA and EXR decoding for the texture importer, and nothing else: no `rayon`, no other formats.
 image = { version = "0.25.10", default-features = false, features = ["png", "tga", "exr"] }
+# meshoptimizer (C++, MIT, built with `cc`): vertex-cache, overdraw and vertex-fetch
+# optimization and LOD simplification in the mesh cook (spec §5.27).
+meshopt = "0.7.0"
 # OS entropy for new asset IDs: only the pipeline creates them. Not on the tool-only list, because
 # runtime crates may still reach it through other dependencies (rustls's `ring`, for one).
 getrandom = "0.4.3"

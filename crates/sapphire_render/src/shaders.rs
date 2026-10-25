@@ -23,13 +23,13 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use sapphire_assets::mesh::ToonMaterialParams;
+    use sapphire_assets::mesh::{PositionFormat, ToonMaterialParams};
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
-    use crate::pipelines::{DRAW_ATTRIBUTES, MESH_VERTEX_ATTRIBUTES};
+    use crate::pipelines::{DRAW_ATTRIBUTES, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES, position_attributes};
     use crate::post::PostUniforms;
 
     const PASSES: [(&str, &str, &[&str]); 5] = [
@@ -66,12 +66,31 @@ mod tests {
     /// The shader type a vertex attribute of `format` arrives as.
     fn shader_input_type(format: wgpu::VertexFormat) -> naga::TypeInner {
         use naga::{Scalar, TypeInner, VectorSize};
+        let float = |size| TypeInner::Vector { size, scalar: Scalar::F32 };
         match format {
-            wgpu::VertexFormat::Float32x2 => TypeInner::Vector { size: VectorSize::Bi, scalar: Scalar::F32 },
-            wgpu::VertexFormat::Float32x3 => TypeInner::Vector { size: VectorSize::Tri, scalar: Scalar::F32 },
-            wgpu::VertexFormat::Unorm8x4 => TypeInner::Vector { size: VectorSize::Quad, scalar: Scalar::F32 },
+            wgpu::VertexFormat::Float32x2 | wgpu::VertexFormat::Snorm16x2 | wgpu::VertexFormat::Unorm16x2 => {
+                float(VectorSize::Bi)
+            }
+            wgpu::VertexFormat::Float32x3 => float(VectorSize::Tri),
+            wgpu::VertexFormat::Float32x4 | wgpu::VertexFormat::Unorm8x4 | wgpu::VertexFormat::Unorm16x4 => {
+                float(VectorSize::Quad)
+            }
             wgpu::VertexFormat::Uint32 => TypeInner::Scalar(Scalar::U32),
             other => panic!("add {other:?} to shader_input_type"),
+        }
+    }
+
+    /// Whether a shader input of type `shader` can take an attribute of type `attribute`: the
+    /// same scalar, and at least as many components, since the vertex fetch fills missing ones
+    /// with (0, 0, 0, 1).
+    fn accepts(shader: &naga::TypeInner, attribute: &naga::TypeInner) -> bool {
+        use naga::TypeInner;
+        match (shader, attribute) {
+            (TypeInner::Scalar(a), TypeInner::Scalar(b)) => a == b,
+            (TypeInner::Vector { size: a, scalar: sa }, TypeInner::Vector { size: b, scalar: sb }) => {
+                sa == sb && (*a as u8) >= (*b as u8)
+            }
+            _ => false,
         }
     }
 
@@ -97,25 +116,57 @@ mod tests {
 
     #[test]
     fn vertex_inputs_match_rust_vertex_layouts() {
-        let expected: BTreeMap<u32, naga::TypeInner> = MESH_VERTEX_ATTRIBUTES
-            .iter()
-            .chain(&DRAW_ATTRIBUTES)
-            .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
-            .collect();
-        for (name, source, entry_points) in PASSES {
-            if matches!(name, "sky" | "post" | "clusters") {
-                continue; // Fullscreen triangles and compute: no vertex buffers.
+        for format in PositionFormat::ALL {
+            let attributes: BTreeMap<u32, naga::TypeInner> = DRAW_ATTRIBUTES
+                .iter()
+                .chain(position_attributes(format))
+                .chain(&SHADING_ATTRIBUTES)
+                .chain(&SURFACE_ATTRIBUTES)
+                .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
+                .collect();
+            for (name, source, entry_points) in PASSES {
+                if matches!(name, "sky" | "post" | "clusters") {
+                    continue; // Fullscreen triangles and compute: no vertex buffers.
+                }
+                let vertex_entry = entry_points[0];
+                let module = validate(name, source);
+                let entry_point =
+                    module.entry_points.iter().find(|ep| ep.name == vertex_entry).expect("entry point");
+                let mut inputs = BTreeMap::new();
+                for argument in &entry_point.function.arguments {
+                    collect_locations(&module, argument.ty, argument.binding.as_ref(), &mut inputs);
+                }
+                assert_eq!(
+                    inputs.keys().collect::<Vec<_>>(),
+                    attributes.keys().collect::<Vec<_>>(),
+                    "{name}.wgsl vertex input locations vs pipelines.rs layouts ({format:?})"
+                );
+                for (location, shader) in &inputs {
+                    let attribute = &attributes[location];
+                    assert!(
+                        accepts(shader, attribute),
+                        "{name}.wgsl location {location}: {shader:?} can't take {attribute:?} ({format:?})"
+                    );
+                }
             }
-            let vertex_entry = entry_points[0];
-            let module = validate(name, source);
-            let entry_point =
-                module.entry_points.iter().find(|ep| ep.name == vertex_entry).expect("entry point");
-            let mut inputs = BTreeMap::new();
-            for argument in &entry_point.function.arguments {
-                collect_locations(&module, argument.ty, argument.binding.as_ref(), &mut inputs);
-            }
-            assert_eq!(inputs, expected, "{name}.wgsl vertex inputs vs pipelines.rs layouts");
         }
+    }
+
+    #[test]
+    fn vertex_layouts_match_the_packed_streams() {
+        use sapphire_assets::mesh::{VertexShading, VertexSurface};
+
+        use crate::gpu_types::DrawData;
+        let end = |attributes: &[wgpu::VertexAttribute]| {
+            attributes.iter().map(|a| a.offset + a.format.size()).max().unwrap_or(0)
+        };
+        for format in PositionFormat::ALL {
+            assert_eq!(end(position_attributes(format)), format.stride() as u64, "{format:?}");
+        }
+        assert_eq!(end(&SHADING_ATTRIBUTES), size_of::<VertexShading>() as u64);
+        assert_eq!(end(&SURFACE_ATTRIBUTES), size_of::<VertexSurface>() as u64);
+        assert_eq!(end(&DRAW_ATTRIBUTES), size_of::<DrawData>() as u64);
+        assert_eq!(size_of::<DrawData>(), 48);
     }
 
     #[test]

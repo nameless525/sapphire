@@ -2,6 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_serialize::cooked::AlignedVec;
+
+/// The file at `path`, in memory aligned as cooked data must be.
+pub(crate) fn read_aligned(path: &Path) -> AlignedVec {
+    let mut bytes = AlignedVec::new();
+    bytes.extend_from_slice(&std::fs::read(path).expect("read a cooked file"));
+    bytes
+}
+
 /// A uniquely named scratch directory that is removed on drop.
 pub(crate) struct TempDir(PathBuf);
 

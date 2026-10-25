@@ -27,8 +27,28 @@ pub(crate) struct Geometry {
     pub uvs: Vec<[f32; 2]>,
     /// `COLOR_0` as normalized unsigned bytes. glTF defines these as *linear* RGBA.
     pub colors: Vec<[u8; 4]>,
+    /// The custom `_OUTLINE_NORMAL` attribute.
+    pub outline_normals: Vec<[f32; 3]>,
+    /// `JOINTS_n` / `WEIGHTS_n`, one pair per set.
+    pub influences: Vec<InfluenceSet>,
+    /// Morph targets, in order.
+    pub targets: Vec<MorphGeometry>,
     /// Empty means a non-indexed primitive.
     pub indices: Vec<u32>,
+}
+
+/// One `JOINTS_n` / `WEIGHTS_n` pair: indices into the skin's joints, and their weights.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InfluenceSet {
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+}
+
+/// One morph target's displacements. Empty streams are omitted.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MorphGeometry {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
 }
 
 /// Accumulates a glTF document and its binary buffer.
@@ -40,6 +60,7 @@ pub(crate) struct GltfWriter {
     materials: Vec<Value>,
     meshes: Vec<Value>,
     nodes: Vec<Value>,
+    skins: Vec<Value>,
     scene_roots: Vec<usize>,
 }
 
@@ -59,6 +80,11 @@ impl GltfWriter {
                 if !geometry.indices.is_empty() {
                     primitive["indices"] = self.add_indices(&geometry.indices).into();
                 }
+                if !geometry.targets.is_empty() {
+                    let targets: Vec<Value> =
+                        geometry.targets.iter().map(|target| self.add_target(target)).collect();
+                    primitive["targets"] = targets.into();
+                }
                 if let Some(material) = material {
                     primitive["material"] = material.into();
                 }
@@ -69,10 +95,34 @@ impl GltfWriter {
         self.meshes.len() - 1
     }
 
-    /// Adds a node (raw glTF JSON: name, mesh, children, TRS) and returns its index.
+    /// Sets a top-level field of mesh `mesh`, such as `weights` or `extras`.
+    #[cfg(test)]
+    pub fn set_mesh_field(&mut self, mesh: usize, key: &str, value: Value) {
+        self.meshes[mesh][key] = value;
+    }
+
+    /// Adds a node (raw glTF JSON: name, mesh, skin, children, TRS) and returns its index.
     pub fn add_node(&mut self, node: Value) -> usize {
         self.nodes.push(node);
         self.nodes.len() - 1
+    }
+
+    /// Adds a skin over the `joints` nodes, with one column-major inverse bind matrix per
+    /// joint (none means identities), and returns its index.
+    #[cfg(test)]
+    pub fn add_skin(&mut self, joints: &[usize], inverse_bind_matrices: Option<&[[f32; 16]]>) -> usize {
+        let mut skin = json!({ "joints": joints });
+        if let Some(matrices) = inverse_bind_matrices {
+            skin["inverseBindMatrices"] = self
+                .add_accessor(
+                    bytemuck::cast_slice(matrices),
+                    None,
+                    json!({ "componentType": FLOAT, "type": "MAT4", "count": matrices.len() }),
+                )
+                .into();
+        }
+        self.skins.push(skin);
+        self.skins.len() - 1
     }
 
     /// Makes `node` a root of the default scene.
@@ -95,6 +145,7 @@ impl GltfWriter {
             "scenes": [{ "nodes": self.scene_roots }],
             "nodes": self.nodes,
             "meshes": self.meshes,
+            "skins": self.skins,
             "materials": self.materials,
             "accessors": self.accessors,
             "bufferViews": self.buffer_views,
@@ -118,29 +169,15 @@ impl GltfWriter {
     }
 
     fn add_attributes(&mut self, geometry: &Geometry) -> Value {
-        let (min, max) = position_bounds(&geometry.positions);
-        let mut attributes = json!({
-            "POSITION": self.add_accessor(
-                bytemuck::cast_slice(&geometry.positions),
-                ARRAY_BUFFER,
-                json!({ "componentType": FLOAT, "type": "VEC3", "count": geometry.positions.len(),
-                        "min": min, "max": max }),
-            ),
-        });
+        let mut attributes = json!({ "POSITION": self.add_positions(&geometry.positions) });
         if !geometry.normals.is_empty() {
-            attributes["NORMAL"] = self
-                .add_accessor(
-                    bytemuck::cast_slice(&geometry.normals),
-                    ARRAY_BUFFER,
-                    json!({ "componentType": FLOAT, "type": "VEC3", "count": geometry.normals.len() }),
-                )
-                .into();
+            attributes["NORMAL"] = self.add_vec3(&geometry.normals).into();
         }
         if !geometry.uvs.is_empty() {
             attributes["TEXCOORD_0"] = self
                 .add_accessor(
                     bytemuck::cast_slice(&geometry.uvs),
-                    ARRAY_BUFFER,
+                    Some(ARRAY_BUFFER),
                     json!({ "componentType": FLOAT, "type": "VEC2", "count": geometry.uvs.len() }),
                 )
                 .into();
@@ -149,13 +186,65 @@ impl GltfWriter {
             attributes["COLOR_0"] = self
                 .add_accessor(
                     bytemuck::cast_slice(&geometry.colors),
-                    ARRAY_BUFFER,
+                    Some(ARRAY_BUFFER),
                     json!({ "componentType": UNSIGNED_BYTE, "normalized": true, "type": "VEC4",
                             "count": geometry.colors.len() }),
                 )
                 .into();
         }
+        if !geometry.outline_normals.is_empty() {
+            attributes["_OUTLINE_NORMAL"] = self.add_vec3(&geometry.outline_normals).into();
+        }
+        for (set, influences) in geometry.influences.iter().enumerate() {
+            // Unsigned bytes whenever every joint fits, as exporters write them.
+            let count = influences.joints.len();
+            let joints = if influences.joints.iter().flatten().all(|&joint| joint <= u16::from(u8::MAX)) {
+                let narrow: Vec<u8> = influences.joints.iter().flatten().map(|&joint| joint as u8).collect();
+                let accessor = json!({ "componentType": UNSIGNED_BYTE, "type": "VEC4", "count": count });
+                self.add_accessor(&narrow, Some(ARRAY_BUFFER), accessor)
+            } else {
+                let accessor = json!({ "componentType": UNSIGNED_SHORT, "type": "VEC4", "count": count });
+                self.add_accessor(bytemuck::cast_slice(&influences.joints), Some(ARRAY_BUFFER), accessor)
+            };
+            attributes[format!("JOINTS_{set}")] = joints.into();
+            attributes[format!("WEIGHTS_{set}")] = self
+                .add_accessor(
+                    bytemuck::cast_slice(&influences.weights),
+                    Some(ARRAY_BUFFER),
+                    json!({ "componentType": FLOAT, "type": "VEC4", "count": influences.weights.len() }),
+                )
+                .into();
+        }
         attributes
+    }
+
+    fn add_target(&mut self, target: &MorphGeometry) -> Value {
+        let mut attributes = json!({});
+        if !target.positions.is_empty() {
+            attributes["POSITION"] = self.add_positions(&target.positions).into();
+        }
+        if !target.normals.is_empty() {
+            attributes["NORMAL"] = self.add_vec3(&target.normals).into();
+        }
+        attributes
+    }
+
+    /// A `POSITION` accessor, which glTF requires to carry its bounds.
+    fn add_positions(&mut self, positions: &[[f32; 3]]) -> usize {
+        let (min, max) = position_bounds(positions);
+        self.add_accessor(
+            bytemuck::cast_slice(positions),
+            Some(ARRAY_BUFFER),
+            json!({ "componentType": FLOAT, "type": "VEC3", "count": positions.len(), "min": min, "max": max }),
+        )
+    }
+
+    fn add_vec3(&mut self, values: &[[f32; 3]]) -> usize {
+        self.add_accessor(
+            bytemuck::cast_slice(values),
+            Some(ARRAY_BUFFER),
+            json!({ "componentType": FLOAT, "type": "VEC3", "count": values.len() }),
+        )
     }
 
     fn add_indices(&mut self, indices: &[u32]) -> usize {
@@ -164,22 +253,31 @@ impl GltfWriter {
         if indices.iter().all(|&i| i <= u32::from(u16::MAX)) {
             let narrow: Vec<u16> =
                 indices.iter().map(|&i| u16::try_from(i).expect("checked above")).collect();
-            self.add_accessor(bytemuck::cast_slice(&narrow), ELEMENT_ARRAY_BUFFER, accessor(UNSIGNED_SHORT))
+            self.add_accessor(
+                bytemuck::cast_slice(&narrow),
+                Some(ELEMENT_ARRAY_BUFFER),
+                accessor(UNSIGNED_SHORT),
+            )
         } else {
-            self.add_accessor(bytemuck::cast_slice(indices), ELEMENT_ARRAY_BUFFER, accessor(UNSIGNED_INT))
+            self.add_accessor(
+                bytemuck::cast_slice(indices),
+                Some(ELEMENT_ARRAY_BUFFER),
+                accessor(UNSIGNED_INT),
+            )
         }
     }
 
-    fn add_accessor(&mut self, bytes: &[u8], target: u32, mut accessor: Value) -> usize {
+    /// Adds `bytes` as a buffer view, for vertex data (`target`) or other data such as inverse
+    /// bind matrices (`None`), and `accessor` reading it.
+    fn add_accessor(&mut self, bytes: &[u8], target: Option<u32>, mut accessor: Value) -> usize {
         // Every component type we write is at most 4 bytes, so 4-byte alignment satisfies
         // glTF's rule that accessor offsets are multiples of the component size.
         pad(&mut self.bin, 0);
-        self.buffer_views.push(json!({
-            "buffer": 0,
-            "byteOffset": self.bin.len(),
-            "byteLength": bytes.len(),
-            "target": target,
-        }));
+        let mut view = json!({ "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len() });
+        if let Some(target) = target {
+            view["target"] = target.into();
+        }
+        self.buffer_views.push(view);
         self.bin.extend_from_slice(bytes);
         accessor["bufferView"] = (self.buffer_views.len() - 1).into();
         self.accessors.push(accessor);

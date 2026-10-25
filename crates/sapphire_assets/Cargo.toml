@@ -7,9 +7,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Cooked meshes derive `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
 bytemuck.workspace = true
+half.workspace = true
 ktx2.workspace = true
+rend.workspace = true
 rkyv.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

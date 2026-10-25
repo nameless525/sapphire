@@ -70,8 +70,10 @@ impl Stage {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(DeviceClass::Desktop))?;
-        let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
-        let mut scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
+        let (character, bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
+            renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
+        })?;
+        let mut scene = Scene::with_character(character, bounds);
         if options.lights {
             scene.spawn_demo_lights();
         }

@@ -16,10 +16,14 @@
 //!    bytes change, so a file watcher (hot reload, A8) sees exactly the assets that changed.
 //!
 //! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
-//! format, whose versions are part of the cache key. glTF cooks to `.smesh` (A1): both cooks
-//! write the same mesh until the mobile cook gets its lower-detail LOD0 (spec §5.27), though
-//! they still have separate keys. PNG, TGA and EXR cook to `.ktx2` (A2), BCn on desktop and
-//! ASTC on mobile ([`texture`]).
+//! format, whose versions are part of the cache key:
+//!
+//! - **Meshes** cook glTF → `.smesh` (A1, A5): import, outline bake,
+//!   [optimization and LODs](crate::optimize), packing, then a read-back of the cooked bytes
+//!   through the runtime's own checks. The two cooks differ in the LOD chain: the mobile cook
+//!   drops its first levels, for a lower-detail LOD0 and fewer LODs (spec §5.27).
+//! - **Textures** cook PNG, TGA and EXR → `.ktx2` (A2), BCn on desktop and ASTC on mobile
+//!   ([`texture`]).
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
@@ -32,15 +36,16 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::mesh::{MESH_EXTENSION, MESH_VERSION, MeshAsset, MeshFormatError};
+use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
+use sapphire_reflect::Versioned;
 
-use crate::bake;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
 use crate::texture::{self, TextureError};
+use crate::{bake, optimize};
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android.
@@ -94,9 +99,9 @@ pub struct Recipe {
     pub extension: &'static str,
 }
 
-/// Bake, validation and the `.smesh` writer. Bump its version whenever they change output for
-/// the same imported mesh.
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 1 };
+/// Bake, optimization and LODs, packing and the `.smesh` writer. Bump its version whenever
+/// they change output for the same imported mesh.
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
 const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION];
@@ -111,7 +116,7 @@ impl Recipe {
             ImportSettings::Gltf(_) => Self {
                 importer: gltf::IMPORTER,
                 cooker: MESH_COOKER,
-                format: MESH_VERSION,
+                format: Mesh::VERSION,
                 extension: MESH_EXTENSION,
             },
             ImportSettings::Texture(_) => Self {
@@ -148,7 +153,7 @@ pub enum CookError {
     Invalid {
         path: PathBuf,
         #[source]
-        source: MeshFormatError,
+        source: MeshError,
     },
     #[error("{} and {} would both cook to {}", first.display(), second.display(), output.display())]
     OutputCollision { first: PathBuf, second: PathBuf, output: PathBuf },
@@ -312,7 +317,10 @@ fn cook_source(
     cook: Cook,
 ) -> Result<Vec<u8>, CookError> {
     match settings {
-        ImportSettings::Gltf(mesh) => Ok(import_mesh(path, bytes, mesh, cook)?.to_bytes()),
+        ImportSettings::Gltf(settings) => {
+            let mesh = import_mesh(path, bytes, settings, cook)?;
+            Ok(cooked_bytes(path, &mesh)?.into_vec())
+        }
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
     }
@@ -339,32 +347,27 @@ fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<
     }
 }
 
-/// Imports, bakes and validates one mesh source read from `path`.
-fn import_mesh(
-    path: &Path,
-    bytes: &[u8],
-    settings: &MeshSettings,
-    cook: Cook,
-) -> Result<MeshAsset, CookError> {
+/// Imports, bakes, optimizes and packs one mesh source read from `path`, for `cook`.
+fn import_mesh(path: &Path, bytes: &[u8], settings: &MeshSettings, cook: Cook) -> Result<Mesh, CookError> {
     let mut mesh = gltf::import_slice(bytes, path.parent())
         .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
     bake::outline_normals(&mut mesh, &settings.outline);
-    match cook {
-        // Identical until the mobile cook gets its lower-detail LOD0 and fewer LODs
-        // (spec §5.27, M1).
-        Cook::Desktop | Cook::Mobile => {}
-    }
-    mesh.validate().map_err(|source| CookError::Invalid { path: path.to_owned(), source })?;
-    Ok(mesh)
+    optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
+    Ok(mesh.pack(settings.position_format))
 }
 
-/// Imports, bakes and validates one mesh source.
-pub fn cook_mesh(source: &Path, settings: &MeshSettings, cook: Cook) -> Result<MeshAsset, CookError> {
-    if !matches!(ImportSettings::for_source(source), Some(ImportSettings::Gltf(_))) {
-        return Err(CookError::UnsupportedSource { path: source.to_owned() });
-    }
-    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    import_mesh(source, &bytes, settings, cook)
+/// `mesh` as cooked bytes, read back through the runtime's checks ([`Mesh::read`]) so a cook
+/// never writes a mesh the runtime would refuse.
+fn cooked_bytes(path: &Path, mesh: &Mesh) -> Result<sapphire_serialize::cooked::AlignedVec, CookError> {
+    let invalid = |source| CookError::Invalid { path: path.to_owned(), source };
+    let bytes = mesh.to_cooked().map_err(|error| invalid(MeshError::Cooked(error)))?;
+    Mesh::read(&bytes).map_err(invalid)?;
+    Ok(bytes)
+}
+
+/// Imports, bakes, optimizes, packs and validates one mesh source.
+pub fn cook_mesh(source: &Path, settings: &MeshSettings, cook: Cook) -> Result<Mesh, CookError> {
+    cook_mesh_with_bytes(source, settings, cook).map(|(mesh, _)| mesh)
 }
 
 /// Cooks one mesh source to `output` (a `.smesh` file), creating parent directories. It
@@ -375,8 +378,23 @@ pub fn cook_mesh_file(
     settings: &MeshSettings,
     cook: Cook,
 ) -> Result<(), CookError> {
-    let mesh = cook_mesh(source, settings, cook)?;
-    write_atomically(output, &mesh.to_bytes())
+    let (_, bytes) = cook_mesh_with_bytes(source, settings, cook)?;
+    write_atomically(output, &bytes)
+}
+
+/// [`cook_mesh`], with the checked cooked bytes.
+fn cook_mesh_with_bytes(
+    source: &Path,
+    settings: &MeshSettings,
+    cook: Cook,
+) -> Result<(Mesh, sapphire_serialize::cooked::AlignedVec), CookError> {
+    if !matches!(ImportSettings::for_source(source), Some(ImportSettings::Gltf(_))) {
+        return Err(CookError::UnsupportedSource { path: source.to_owned() });
+    }
+    let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
+    let mesh = import_mesh(source, &bytes, settings, cook)?;
+    let cooked = cooked_bytes(source, &mesh)?;
+    Ok((mesh, cooked))
 }
 
 /// The blake3 hash of the file at `path`, or `None` if there is none.
@@ -453,14 +471,16 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookError> {
 #[cfg(test)]
 mod tests {
     use glam::Vec3;
+    use sapphire_assets::mesh::PositionFormat;
     use serde_json::json;
 
     use super::*;
     use crate::bake::OutlineSettings;
-    use crate::gltf_writer::{Geometry, GltfWriter};
+    use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
     use crate::meta::{AssetMeta, sidecar_path};
+    use crate::optimize::LodSettings;
     use crate::samples;
-    use crate::test_util::TempDir;
+    use crate::test_util::{TempDir, read_aligned};
 
     /// A source tree, an output directory and a cache, all in one scratch directory.
     struct Scratch {
@@ -513,8 +533,14 @@ mod tests {
         let mut meta = meta::read(&sidecar).unwrap();
         meta.importer = ImportSettings::Gltf(MeshSettings {
             outline: OutlineSettings::with_weld_tolerance(meters).unwrap(),
+            ..MeshSettings::default()
         });
         fs::write(&sidecar, sapphire_serialize::to_ron::<AssetMeta>(&meta).unwrap()).unwrap();
+    }
+
+    /// The cooked mesh at `path`.
+    fn read_mesh(path: &Path) -> Mesh {
+        Mesh::from_cooked(&read_aligned(path)).unwrap()
     }
 
     #[test]
@@ -543,17 +569,16 @@ mod tests {
             );
             assert_eq!(asset.id, meta::read(&sidecar_path(&source)).unwrap().id);
 
-            let mesh = MeshAsset::from_bytes(&fs::read(&expected).unwrap()).unwrap();
+            let mesh = read_mesh(&expected);
             // Outline normals are baked: at a pedestal corner they differ from the split
             // shading normals.
-            let corner = mesh
-                .vertices
-                .iter()
-                .find(|v| v.position == [0.55, 0.0, 0.55])
+            let corner = (0..mesh.streams.len())
+                .filter_map(|index| mesh.streams.vertex(index))
+                .find(|v| Vec3::from(v.position).abs_diff_eq(Vec3::new(0.55, 0.0, 0.55), 1e-4))
                 .expect("pedestal bottom corner");
             assert_ne!(corner.outline_normal, corner.normal);
             assert!(
-                Vec3::from(corner.outline_normal).abs_diff_eq(Vec3::new(1.0, -1.0, 1.0).normalize(), 1e-5)
+                Vec3::from(corner.outline_normal).abs_diff_eq(Vec3::new(1.0, -1.0, 1.0).normalize(), 1e-4)
             );
         }
         assert!(!scratch.out().join(".hidden").exists());
@@ -716,11 +741,197 @@ mod tests {
     fn settings_reach_the_bake() {
         let source = TempDir::new("cook_settings");
         let path = samples::write_all(source.path()).unwrap().remove(0);
-        let default = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
-        let coarse = MeshSettings { outline: OutlineSettings::with_weld_tolerance(0.05).unwrap() };
+        // Without LODs, so the vertex order can't change with the seams the weld finds.
+        let no_lods = MeshSettings { lods: LodSettings::none(), ..MeshSettings::default() };
+        let default = cook_mesh(&path, &no_lods, Cook::Desktop).unwrap();
+        let coarse =
+            MeshSettings { outline: OutlineSettings::with_weld_tolerance(0.05).unwrap(), ..no_lods.clone() };
         let welded = cook_mesh(&path, &coarse, Cook::Desktop).unwrap();
-        assert_eq!(default.vertices.len(), welded.vertices.len());
-        assert_ne!(default.vertices, welded.vertices, "a 5 cm weld must change some outline normals");
+        assert_eq!(default.streams.len(), welded.streams.len());
+        assert_eq!(default.streams.positions, welded.streams.positions);
+        assert_ne!(
+            default.streams.shading, welded.streams.shading,
+            "a 5 cm weld must change some outline normals"
+        );
+    }
+
+    #[test]
+    fn lod_and_position_settings_reach_the_cook() {
+        let source = TempDir::new("cook_lod_settings");
+        let path = samples::write_all(source.path()).unwrap().remove(0);
+        let cook = |settings: &MeshSettings, cook| cook_mesh(&path, settings, cook).unwrap();
+        let default = cook(&MeshSettings::default(), Cook::Desktop);
+        assert!(default.lods.len() > 1, "the mannequin simplifies");
+        assert_eq!(default.streams.position_format(), PositionFormat::Unorm16);
+        let single = MeshSettings { lods: LodSettings::none(), ..MeshSettings::default() };
+        for target in Cook::ALL {
+            assert_eq!(cook(&single, target).lods.len(), 1);
+        }
+        let float = MeshSettings { position_format: PositionFormat::Float32, ..MeshSettings::default() };
+        let float = cook(&float, Cook::Desktop);
+        assert_eq!(float.streams.position_format(), PositionFormat::Float32);
+        assert_eq!((float.indices, float.streams.shading), (default.indices, default.streams.shading));
+    }
+
+    #[test]
+    fn the_mobile_cook_has_a_lower_detail_lod0_and_fewer_lods() {
+        let source = TempDir::new("cook_mobile");
+        let path = samples::write_all(source.path()).unwrap().remove(0);
+        let desktop = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
+        let mobile = cook_mesh(&path, &MeshSettings::default(), Cook::Mobile).unwrap();
+        let triangles = |mesh: &Mesh, lod: usize| -> u32 {
+            mesh.lods[lod].submeshes.iter().map(|submesh| submesh.index_count / 3).sum()
+        };
+        assert_eq!(mobile.lods.len(), desktop.lods.len() - 1);
+        for lod in 0..mobile.lods.len() {
+            assert_eq!(triangles(&mobile, lod), triangles(&desktop, lod + 1), "mobile LOD{lod}");
+            assert_eq!(mobile.lods[lod].error, desktop.lods[lod + 1].error);
+        }
+        assert!(mobile.lods[0].error > 0.0, "mobile LOD0 is simplified");
+        assert!(mobile.streams.len() < desktop.streams.len(), "vertices only desktop LOD0 used are dropped");
+        assert_eq!(mobile.streams.len() as u32, desktop.lods[1].vertex_count);
+        eprintln!(
+            "mannequin: desktop LOD triangles {:?}, errors {:?} m; {} vertices desktop, {} mobile",
+            (0..desktop.lods.len()).map(|lod| triangles(&desktop, lod)).collect::<Vec<_>>(),
+            desktop.lods.iter().map(|lod| lod.error).collect::<Vec<_>>(),
+            desktop.streams.len(),
+            mobile.streams.len()
+        );
+    }
+
+    #[test]
+    fn cooks_are_deterministic() {
+        let scratch = Scratch::new("cook_determinism");
+        scratch.add_mannequin("mannequin.glb");
+        let output = scratch.out().join("mannequin.smesh");
+        scratch.cook_with(Cook::Desktop, false);
+        let first = fs::read(&output).unwrap();
+        fs::remove_file(&output).unwrap();
+        scratch.cook_with(Cook::Desktop, false);
+        assert!(fs::read(&output).unwrap() == first, "two cooks of one source write the same bytes");
+        scratch.cook_with(Cook::Mobile, false);
+        assert!(fs::read(scratch.out_for(Cook::Mobile).join("mannequin.smesh")).unwrap() != first);
+    }
+
+    /// A hard-edged roof: two quads meeting at 90° along the x axis, with split normals.
+    fn roof(outline_normals: bool) -> Geometry {
+        let (left, right) = (Vec3::new(0.0, 1.0, -1.0).normalize(), Vec3::new(0.0, 1.0, 1.0).normalize());
+        Geometry {
+            positions: vec![
+                [0.0, 0.0, -1.0],
+                [1.0, 0.0, -1.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
+            normals: [left; 4].into_iter().chain([right; 4]).map(|n| n.to_array()).collect(),
+            outline_normals: if outline_normals { vec![[0.0, 1.0, 0.0]; 8] } else { Vec::new() },
+            indices: vec![0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6],
+            ..Geometry::default()
+        }
+    }
+
+    #[test]
+    fn authored_outline_normals_win_over_the_welded_bake() {
+        let source = TempDir::new("cook_authored_outline");
+        let cook = |outline_normals: bool| {
+            let mut writer = GltfWriter::default();
+            let mesh = writer.add_mesh("Roof", &[(&roof(outline_normals), None)]);
+            let node = writer.add_node(json!({ "mesh": mesh }));
+            writer.add_root(node);
+            let path = source.path().join("roof.glb");
+            fs::write(&path, writer.to_glb()).unwrap();
+            let mesh = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
+            (0..mesh.streams.len()).map(|index| mesh.streams.vertex(index).unwrap()).collect::<Vec<_>>()
+        };
+        // Baked: the ridge vertices (y = 1) average both faces, the eaves keep their face's.
+        for vertex in cook(false) {
+            let expected = if vertex.position[1] == 1.0 { Vec3::Y } else { Vec3::from(vertex.normal) };
+            assert!(Vec3::from(vertex.outline_normal).abs_diff_eq(expected, 1e-4), "{vertex:?}");
+        }
+        // Authored: every vertex keeps the authored direction, eaves included.
+        for vertex in cook(true) {
+            assert!(Vec3::from(vertex.outline_normal).abs_diff_eq(Vec3::Y, 1e-4), "{vertex:?}");
+            assert!(!Vec3::from(vertex.normal).abs_diff_eq(Vec3::Y, 0.1), "shading normals stay split");
+        }
+    }
+
+    /// Vertices above this height are raised by [`skinned_strip`]'s morph target. It lies
+    /// between rows, so quantization can't move a vertex across it.
+    const RAISED_ABOVE: f32 = 0.51;
+
+    /// A vertical strip of `rows` (40) quads from y = 0 to 1, skinned to two joints (the upper
+    /// joint's weight is y) with one morph target, `raise`, that lifts the top half by 0.1.
+    fn skinned_strip(rows: u32) -> Vec<u8> {
+        let mut geometry = Geometry::default();
+        let mut influences = InfluenceSet::default();
+        let mut raise = MorphGeometry::default();
+        for row in 0..=rows {
+            let y = row as f32 / rows as f32;
+            for x in [0.0, 0.2] {
+                geometry.positions.push([x, y, 0.0]);
+                geometry.normals.push([0.0, 0.0, 1.0]);
+                influences.joints.push([0, 1, 0, 0]);
+                influences.weights.push([1.0 - y, y, 0.0, 0.0]);
+                raise.positions.push(if y > RAISED_ABOVE { [0.0, 0.1, 0.0] } else { [0.0; 3] });
+            }
+        }
+        for row in 0..rows {
+            let a = 2 * row;
+            geometry.indices.extend([a, a + 1, a + 3, a, a + 3, a + 2]);
+        }
+        geometry.influences = vec![influences];
+        geometry.targets = vec![raise];
+        let mut writer = GltfWriter::default();
+        let lower = writer.add_node(json!({ "name": "Lower" }));
+        let upper = writer.add_node(json!({ "name": "Upper", "translation": [0.0, 1.0, 0.0] }));
+        let mut doc_nodes = vec![lower, upper];
+        let skin = writer.add_skin(&doc_nodes, None);
+        let mesh = writer.add_mesh("Strip", &[(&geometry, None)]);
+        writer.set_mesh_field(mesh, "extras", json!({ "targetNames": ["raise"] }));
+        let body = writer.add_node(json!({ "name": "Body", "mesh": mesh, "skin": skin }));
+        doc_nodes.push(body);
+        for node in doc_nodes {
+            writer.add_root(node);
+        }
+        writer.to_glb()
+    }
+
+    #[test]
+    fn skins_and_morph_targets_follow_the_vertex_reorder() {
+        let source = TempDir::new("cook_skinned");
+        let path = source.path().join("strip.glb");
+        fs::write(&path, skinned_strip(40)).unwrap();
+        for target in Cook::ALL {
+            let mesh = cook_mesh(&path, &MeshSettings::default(), target).unwrap();
+            assert!(mesh.lods.len() > 1, "{target}: a flat strip simplifies");
+            let skin = mesh.skin.as_ref().expect("skinned");
+            let names: Vec<&str> = skin.joints.iter().map(|joint| joint.name.as_str()).collect();
+            assert_eq!(names, ["Lower", "Upper"]);
+            for index in 0..mesh.streams.len() {
+                let y = mesh.streams.vertex(index).unwrap().position[1];
+                let influence = skin.influences.get(index).unwrap();
+                let upper = influence.binds.iter().zip(influence.weights).find(|(bind, _)| **bind == 1);
+                let upper = upper.map_or(0.0, |(_, weight)| f32::from(weight) / 255.0);
+                assert!((upper - y).abs() <= 1.0 / 255.0, "{target}: vertex {index} at y {y} weighs {upper}");
+            }
+            let [raise] = &mesh.morph_targets[..] else { panic!("one target") };
+            assert_eq!(raise.name, "raise");
+            let deltas = &mesh.morph_deltas[raise.first_delta as usize..][..raise.delta_count as usize];
+            let height = |index: usize| mesh.streams.vertex(index).unwrap().position[1];
+            let raised = (0..mesh.streams.len()).filter(|&index| height(index) > RAISED_ABOVE).count();
+            assert_eq!(deltas.len(), raised, "{target}: one delta per raised vertex");
+            for delta in deltas {
+                let y = height(delta.vertex() as usize);
+                assert!(
+                    y > RAISED_ABOVE && (delta.position()[1] - 0.1).abs() < 1e-4,
+                    "{target}: {delta:?} at y {y}"
+                );
+            }
+        }
     }
 
     #[test]

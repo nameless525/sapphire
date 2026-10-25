@@ -451,16 +451,10 @@ fn create_gpu_stack(
     let format = surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
     let mut renderer = Renderer::new(&gpu, format, settings)?;
 
-    let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
-    let character = renderer.upload_mesh(&mesh)?;
-    Ok(GpuStack {
-        renderer,
-        graph: GraphExecutor::new(),
-        surface,
-        gpu,
-        character,
-        character_bounds: mesh.bounds,
-    })
+    let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
+        renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
+    })?;
+    Ok(GpuStack { renderer, graph: GraphExecutor::new(), surface, gpu, character, character_bounds })
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

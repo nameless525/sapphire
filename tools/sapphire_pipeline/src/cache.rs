@@ -19,7 +19,7 @@
 //! importer or cooker that changes its output for the same input must bump that
 //! [`Stage`]'s version.** Nothing checks keys against the code, and deleting the cache
 //! directory is the remedy for a forgotten bump. A cooked format's version is in the key, so
-//! bumping one (`MESH_VERSION`) recooks everything in that format without a stage bump.
+//! bumping one (`Mesh::VERSION`) recooks everything in that format without a stage bump.
 //!
 //! New kinds of asset plug in without changing the key: textures, materials and skinned
 //! meshes each bring an [`ImportSettings`] variant and a [`Recipe`], and a material that reads
@@ -265,9 +265,12 @@ fn is_absent(error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_assets::mesh::PositionFormat;
+
     use super::*;
     use crate::bake::OutlineSettings;
     use crate::meta::MeshSettings;
+    use crate::optimize::{LodLevel, LodSettings};
     use crate::test_util::TempDir;
 
     const RECIPE: Recipe = Recipe {
@@ -279,7 +282,7 @@ mod tests {
 
     fn settings(weld_tolerance: f32) -> ImportSettings {
         let outline = OutlineSettings::with_weld_tolerance(weld_tolerance).unwrap();
-        ImportSettings::Gltf(MeshSettings { outline })
+        ImportSettings::Gltf(MeshSettings { outline, ..MeshSettings::default() })
     }
 
     fn file(path: &str, contents: &[u8]) -> Dependency {
@@ -328,11 +331,28 @@ mod tests {
                 Dependency::Asset { id: AssetId::from_bytes([4; 16]), key: CacheKey([2; 32]) },
             ],
         ];
+        // Every mesh setting: the bake's weld, the LOD chain (each field of a level, the level
+        // count and the mobile skip) and the position format.
+        fn mesh_settings(edit: impl FnOnce(&mut MeshSettings)) -> ImportSettings {
+            let mut mesh = MeshSettings::default();
+            edit(&mut mesh);
+            ImportSettings::Gltf(mesh)
+        }
+        let level = |triangle_ratio, max_error| LodLevel { triangle_ratio, max_error };
+        let mesh_variants = [
+            mesh_settings(|m| m.lods = LodSettings::none()),
+            mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.002)], 1).unwrap()),
+            mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.4, 0.002)], 0).unwrap()),
+            mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.003)], 0).unwrap()),
+            mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.002)], 0).unwrap()),
+            mesh_settings(|m| m.position_format = PositionFormat::Float32),
+        ];
         let mut variants = vec![
             KeyInputs { source: blake3::hash(b"edited source"), ..base },
             KeyInputs { settings: &coarse_settings, ..base },
             KeyInputs { cook: Cook::Mobile, ..base },
         ];
+        variants.extend(mesh_variants.iter().map(|settings| KeyInputs { settings, ..base }));
         variants.extend(recipes.iter().map(|recipe| KeyInputs { recipe, ..base }));
         variants.extend(dependency_sets.iter().map(|dependencies| KeyInputs { dependencies, ..base }));
 
@@ -355,7 +375,7 @@ mod tests {
             dependencies: &[file("mesh.bin", b"buffer")],
         });
         // Recorded once. A change here means every cache, local or shared, misses.
-        assert_eq!(key.to_string(), "f978be1f7ef42a69bf93ff92611f845441f475aee905e85df79657d751f7500c");
+        assert_eq!(key.to_string(), "a918a6859be71ac637bb39c15958ffb39ad3a8eeb14b18f0a76672e14601de29");
     }
 
     #[test]

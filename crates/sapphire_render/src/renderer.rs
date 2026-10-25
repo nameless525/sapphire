@@ -3,7 +3,7 @@
 
 use std::num::NonZeroU64;
 
-use sapphire_assets::mesh::{MeshAsset, MeshFormatError, MeshVertex};
+use sapphire_assets::mesh::{ArchivedMesh, MeshError, PositionFormat, VertexShading, VertexSurface};
 use sapphire_core::target::FormFactor;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
@@ -12,12 +12,13 @@ use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::mesh_pool::MeshPool;
-use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines, SCENE_COLOR_FORMAT};
+use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines, SCENE_COLOR_FORMAT, format_index, slot};
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
-const VERTEX_STRIDE: u64 = size_of::<MeshVertex>() as u64;
+const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
+const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 
 /// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
@@ -90,7 +91,7 @@ impl Default for RenderSettings {
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
     #[error("invalid mesh: {0}")]
-    InvalidMesh(#[from] MeshFormatError),
+    InvalidMesh(#[from] MeshError),
     #[error("mesh has {vertices} vertices; at most 2^24 are portable")]
     MeshTooLarge { vertices: usize },
     #[error("mesh pool is out of room for {0}")]
@@ -263,10 +264,17 @@ impl Renderer {
         })
     }
 
-    /// Validates and uploads a cooked mesh and its materials into the mesh pool.
-    pub fn upload_mesh(&mut self, mesh: &MeshAsset) -> Result<MeshHandle, RenderError> {
+    /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
+    /// and its materials into the mesh pool. Its streams are copied as they are; all its LODs'
+    /// indices are uploaded and LOD0 is drawn. A skinned mesh draws in its bind pose, and its
+    /// morph targets at weight 0, until compute skinning (M1 R2).
+    ///
+    /// The first mesh with f32 positions also builds that format's pipelines.
+    pub fn upload_mesh(&mut self, mesh: &ArchivedMesh) -> Result<MeshHandle, RenderError> {
         let (handle, materials_moved) = self.meshes.upload(&self.device, &self.queue, mesh)?;
-        self.lights.mesh_uploaded(handle, mesh.bounds);
+        self.pipelines.prepare_format(&self.device, mesh.streams.position_format());
+        let bounds = mesh.streams.bounds.to_native();
+        self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
         if materials_moved {
             self.scene_bind_group =
                 create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.meshes);
@@ -446,25 +454,49 @@ impl Renderer {
             pass.set_bind_group(1, view_bind_group, &[0]);
             pass.set_bind_group(2, scene_bind_group, &[]);
 
-            let commands = &draw_list.commands;
-            if !commands.is_empty() {
+            if draw_list.len() > 0 {
                 pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
                 // Pass 1: toon opaque. Pass 2: outlines, after opaque so depth rejects the hull
                 // wherever the mesh itself covers it.
-                for pipeline in [&pipelines.toon, &pipelines.outline] {
-                    pass.set_pipeline(pipeline);
-                    let mut bound_first_vertex = None;
-                    // CPU-driven submission (see the crate docs): offsets select the mesh's
-                    // vertices and the draw record, so base vertex and first instance stay 0.
-                    for command in commands {
-                        if bound_first_vertex != Some(command.first_vertex) {
-                            let offset = u64::from(command.first_vertex) * VERTEX_STRIDE;
-                            pass.set_vertex_buffer(0, meshes.vertex_buffer().slice(offset..));
-                            bound_first_vertex = Some(command.first_vertex);
+                for outline in [false, true] {
+                    for format in PositionFormat::ALL {
+                        let commands = &draw_list.commands[format_index(format)];
+                        if commands.is_empty() {
+                            continue;
                         }
-                        let record = u64::from(command.draw_id) * DRAW_STRIDE;
-                        pass.set_vertex_buffer(1, draws.buffer().slice(record..record + DRAW_STRIDE));
-                        pass.draw_indexed(command.indices.clone(), 0, 0..1);
+                        let mesh_pipelines =
+                            pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+                        pass.set_pipeline(if outline {
+                            &mesh_pipelines.outline
+                        } else {
+                            &mesh_pipelines.toon
+                        });
+                        let slab = meshes.slab(format);
+                        let mut bound_first_vertex = None;
+                        // CPU-driven submission (see the crate docs): offsets select the mesh's
+                        // streams and the draw record, so base vertex and first instance stay 0.
+                        for command in commands {
+                            if bound_first_vertex != Some(command.first_vertex) {
+                                let vertex = u64::from(command.first_vertex);
+                                let positions = slab.positions().slice(vertex * slab.position_stride()..);
+                                pass.set_vertex_buffer(slot::POSITIONS, positions);
+                                pass.set_vertex_buffer(
+                                    slot::SHADING,
+                                    slab.shading().slice(vertex * SHADING_STRIDE..),
+                                );
+                                pass.set_vertex_buffer(
+                                    slot::SURFACE,
+                                    slab.surface().slice(vertex * SURFACE_STRIDE..),
+                                );
+                                bound_first_vertex = Some(command.first_vertex);
+                            }
+                            let record = u64::from(command.draw_id) * DRAW_STRIDE;
+                            pass.set_vertex_buffer(
+                                slot::DRAW,
+                                draws.buffer().slice(record..record + DRAW_STRIDE),
+                            );
+                            pass.draw_indexed(command.indices.clone(), 0, 0..1);
+                        }
                     }
                 }
             }

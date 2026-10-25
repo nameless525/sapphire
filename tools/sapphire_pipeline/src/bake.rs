@@ -1,13 +1,16 @@
 //! Offline bakes: data derived from imported geometry.
 //!
-//! Spec §5.27 lists "smoothed outline normals baked in" for both cooks. Meshopt
-//! optimization, quantized vertex streams and LODs join here in M1.
+//! Spec §5.27 lists smoothed outline normals for both cooks, authored or baked by welding.
+//! Vertex order, LODs and quantization are later stages ([`optimize`](crate::optimize),
+//! [`ImportedMesh::pack`]).
 
 use std::collections::HashMap;
 
 use glam::Vec3;
-use sapphire_assets::mesh::{MeshAsset, MeshVertex};
+use sapphire_assets::mesh::Vertex;
 use serde::{Deserialize, Serialize};
+
+use crate::mesh::ImportedMesh;
 
 /// Default [`OutlineSettings::weld_tolerance`]: 0.1 mm. Far below modeling precision on
 /// characters and props, and above `f32` rounding for object-space coordinates up to
@@ -75,7 +78,8 @@ impl Default for OutlineSettings {
     }
 }
 
-/// Bakes [`MeshVertex::outline_normal`] for inverted-hull outlines.
+/// Bakes [`Vertex::outline_normal`] for inverted-hull outlines, except where the source
+/// authored one ([`ImportedMesh::authored_outline`]): authored outline normals always win.
 ///
 /// Vertices are welded by position (within [`OutlineSettings::weld_tolerance`]), and
 /// every welded position gets the angle-weighted average of the face normals around it.
@@ -90,7 +94,7 @@ impl Default for OutlineSettings {
 /// # Panics
 ///
 /// If an index is out of range; validate untrusted meshes first.
-pub fn outline_normals(mesh: &mut MeshAsset, settings: &OutlineSettings) {
+pub fn outline_normals(mesh: &mut ImportedMesh, settings: &OutlineSettings) {
     let (group_of, group_count) = weld(&mesh.vertices, settings.weld_tolerance);
     let mut sums = vec![Vec3::ZERO; group_count];
     let mut weights = vec![0.0f32; group_count];
@@ -107,7 +111,10 @@ pub fn outline_normals(mesh: &mut MeshAsset, settings: &OutlineSettings) {
             weights[group] += angle;
         }
     }
-    for (vertex, &group) in mesh.vertices.iter_mut().zip(&group_of) {
+    for (index, (vertex, &group)) in mesh.vertices.iter_mut().zip(&group_of).enumerate() {
+        if mesh.authored_outline.get(index).copied().unwrap_or(false) {
+            continue;
+        }
         let sum = sums[group];
         // Also false for a position with no usable triangles (zero weight).
         if sum.length() > CANCELLATION_RATIO * weights[group] {
@@ -134,7 +141,7 @@ fn face_normal([a, b, c]: [Vec3; 3]) -> Option<Vec3> {
 /// lies in one of the 27 surrounding cells. Searching those (rather than comparing
 /// rounded positions) keeps near-identical positions together when they straddle a cell
 /// boundary.
-fn weld(vertices: &[MeshVertex], tolerance: f32) -> (Vec<usize>, usize) {
+pub(crate) fn weld(vertices: &[Vertex], tolerance: f32) -> (Vec<usize>, usize) {
     let cell_of = |p: Vec3| (p / tolerance).floor().to_array().map(|c| c as i64);
 
     let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
@@ -173,35 +180,32 @@ fn neighbors([x, y, z]: [i64; 3]) -> impl Iterator<Item = [i64; 3]> {
 #[cfg(test)]
 mod tests {
     use glam::{EulerRot, Quat};
-    use sapphire_assets::mesh::{Submesh, ToonMaterialParams};
+    use sapphire_assets::mesh::{Lod, Submesh, ToonMaterialParams};
 
     use super::*;
 
-    fn mesh_from(vertices: Vec<MeshVertex>, indices: Vec<u32>) -> MeshAsset {
-        MeshAsset {
-            submeshes: vec![Submesh {
-                first_index: 0,
-                index_count: indices.len() as u32,
-                material_index: 0,
-                _reserved: 0,
-            }],
+    fn mesh_from(vertices: Vec<Vertex>, indices: Vec<u32>) -> ImportedMesh {
+        let submesh = Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 };
+        ImportedMesh {
+            authored_outline: vec![false; vertices.len()],
+            lods: vec![Lod { vertex_count: vertices.len() as u32, error: 0.0, submeshes: vec![submesh] }],
             materials: vec![ToonMaterialParams::default()],
             vertices,
             indices,
-            bounds: [[-1.0; 3], [1.0; 3]],
+            ..ImportedMesh::default()
         }
     }
 
-    fn vertex(position: Vec3, normal: Vec3) -> MeshVertex {
-        MeshVertex {
+    fn vertex(position: Vec3, normal: Vec3) -> Vertex {
+        Vertex {
             position: position.to_array(),
             normal: normal.to_array(),
             outline_normal: normal.to_array(),
-            ..MeshVertex::default()
+            ..Vertex::default()
         }
     }
 
-    fn bake(mesh: &mut MeshAsset) {
+    fn bake(mesh: &mut ImportedMesh) {
         outline_normals(mesh, &OutlineSettings::default());
     }
 
@@ -212,7 +216,7 @@ mod tests {
     }
 
     /// A unit cube with split normals: 4 vertices per face, 2 triangles per face.
-    fn hard_edged_cube() -> MeshAsset {
+    fn hard_edged_cube() -> ImportedMesh {
         // (normal, u, v) with u × v = normal, so the corners below wind counter-clockwise.
         let faces = [
             (Vec3::X, Vec3::Y, Vec3::Z),
@@ -248,6 +252,26 @@ mod tests {
     }
 
     #[test]
+    fn authored_outline_normals_win_over_the_bake() {
+        let mut cube = hard_edged_cube();
+        // The +X face (vertices 0–3) carries authored outline normals; the rest are baked.
+        let authored = Vec3::new(1.0, 0.2, 0.0).normalize().to_array();
+        for vertex in 0..4 {
+            cube.authored_outline[vertex] = true;
+            cube.vertices[vertex].outline_normal = authored;
+        }
+        bake(&mut cube);
+        for (index, v) in cube.vertices.iter().enumerate() {
+            if index < 4 {
+                assert_eq!(v.outline_normal, authored, "vertex {index} is authored");
+            } else {
+                let expected = Vec3::from(v.position).signum().normalize();
+                assert!(Vec3::from(v.outline_normal).abs_diff_eq(expected, 1e-6), "vertex {index}: {v:?}");
+            }
+        }
+    }
+
+    #[test]
     fn result_does_not_depend_on_triangulation() {
         let mut a = hard_edged_cube();
         let mut b = hard_edged_cube();
@@ -275,7 +299,7 @@ mod tests {
         let cell = |p: Vec3| (p.x / tolerance).floor();
         assert_ne!(cell(positions[0]), cell(positions[1]), "test points must straddle a cell boundary");
 
-        let vertices: Vec<MeshVertex> = positions.iter().map(|&p| vertex(p, Vec3::Y)).collect();
+        let vertices: Vec<Vertex> = positions.iter().map(|&p| vertex(p, Vec3::Y)).collect();
         let (groups, count) = weld(&vertices, tolerance);
         assert_eq!(groups[0], groups[1], "near-duplicates in neighboring cells must weld");
         assert_ne!(groups[2], groups[0], "points two tolerances apart must not weld");
@@ -286,7 +310,7 @@ mod tests {
     fn weld_tolerance_is_absolute_and_configurable() {
         // A 1 km scene: a relative tolerance would weld millimeter-apart vertices here.
         let positions = [Vec3::ZERO, Vec3::new(0.001, 0.0, 0.0), Vec3::new(1000.0, 0.0, 0.0)];
-        let vertices: Vec<MeshVertex> = positions.iter().map(|&p| vertex(p, Vec3::Y)).collect();
+        let vertices: Vec<Vertex> = positions.iter().map(|&p| vertex(p, Vec3::Y)).collect();
         assert_eq!(weld(&vertices, DEFAULT_WELD_TOLERANCE).1, 3);
         let coarse = OutlineSettings::with_weld_tolerance(0.01).unwrap();
         assert_eq!(weld(&vertices, coarse.weld_tolerance()).1, 2);
@@ -307,7 +331,7 @@ mod tests {
             .map(|p| rotation * (p + Vec3::new(3.7, -1.3, 0.2)));
         let n = rotation * Vec3::Z;
         for back in [[4, 6, 5, 4, 7, 6], [4, 7, 5, 5, 7, 6]] {
-            let mut vertices: Vec<MeshVertex> = corners.iter().map(|&p| vertex(p, n)).collect();
+            let mut vertices: Vec<Vertex> = corners.iter().map(|&p| vertex(p, n)).collect();
             vertices.extend(corners.iter().map(|&p| vertex(p, -n)));
             let mut indices = vec![0, 1, 2, 0, 2, 3];
             indices.extend(back);

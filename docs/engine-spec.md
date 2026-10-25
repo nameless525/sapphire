@@ -466,6 +466,11 @@ Each module below follows the same template:
   - Live-link diffs.
   - Luau binding generation.
   - Debug inspector.
+- **As built (M1 F2):**
+  - Stable names are `#[type_path = "sapphire::<area>"]` attributes. `stable_name` reads them, asserting in debug builds that the path was set; `stable_hash` (FNV-1a 64) is the ID binary headers store.
+  - `Versioned` carries `VERSION` and an `upgrade` that decodes the previous version's frozen type and converts it, so data of any supported age walks the chain one version at a time. Migrations are typed Rust, the same for RON and postcard. RON's untyped `Value` can't represent enum variants, so migrations never rewrite trees.
+  - Serde attributes absorb compatible changes in RON (`default`, `alias`, ignored unknown fields) without a version bump.
+  - `bevy_reflect` runs without automatic (`inventory`) registration; types are registered explicitly.
 
 ### 5.9 `sapphire_serialize` (L2)
 
@@ -475,6 +480,11 @@ Each module below follows the same template:
   - In shipping builds, skip validation only for packs whose blake3 hash was verified against a signed manifest.
 - **Saves and network:** `postcard` with a versioned header.
 - **Never use `bincode`.** Version 3.0.0 is a deliberate `compile_error!` and the project is abandoned.
+- **As built (M1 F2):**
+  - RON documents are `(type: "<stable name>", version: N, data: ...)`. `implicit_some` is on, and errors inside `data` point at the document's own line and column. `#[reflect(Document)]` registers a loader, so `from_ron_dynamic` loads a document knowing only its type name (hot reload, live link, the editor).
+  - Saves and cooked data share a 32-byte little-endian header: magic (`SPSV`, `SPCK`), header format, the stable-name hash, schema version and payload length. 32 bytes keep the archive that follows 16-byte aligned.
+  - postcard is positional, so any field change to a saved type needs a version bump. `skip_serializing_if` is forbidden there.
+  - Cooked access always validates with bytecheck. `access_unchecked` is `unsafe` and meant for data proven intact another way, such as a pack whose blake3 hash matched its signed manifest. A version mismatch means "recook" (`Stale`); there are no upgrades for cooked data.
 
 ### 5.10 `sapphire_assets` (L2)
 
@@ -1279,7 +1289,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `glam` | 0.33 | `sapphire_math` and up | The line `bevy_reflect` 0.20 reflects (`^0.33.2`), so math types reflect directly; moves with Bevy (M1 F1) |
 | `libm`, `rand_pcg` | latest | `sapphire_math` | `libm` **unchecked** |
 | `bevy_ecs`, `bevy_tasks`, `bevy_reflect` | 0.20 | `sapphire_ecs`, `sapphire_jobs`, `sapphire_reflect` | Pin per milestone |
-| `serde`, `ron`, `rkyv`, `postcard` | –, –, 0.8, 1.1 | `sapphire_serialize` | **Never** `bincode` |
+| `serde`, `ron`, `rkyv`, `postcard` | 1, 0.12, 0.8, 1.1 | `sapphire_serialize` | **Never** `bincode` |
 | `zstd`, `lz4_flex`, `memmap2`, `blake3` | latest | `sapphire_assets` | |
 | `notify` | 8.2 | `sapphire_assets` (dev), tools | |
 | `wgpu`, `naga` | 30 | `sapphire_rhi`, `sapphire_render` | |

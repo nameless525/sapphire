@@ -13,7 +13,8 @@
 //!
 //! Does not own: the frame loop and the fixed-step accumulator (the app drives
 //! `sapphire_time::FixedStepDriver` and calls [`Ecs::fixed_step`] once per step), the
-//! `FramePacket` that extraction fills (M1 F3), or reflection (F2).
+//! `FramePacket` that extraction fills (M1 F3), or reflection (`sapphire_reflect`; components gain
+//! `ReflectComponent` with the inspector, F5).
 //!
 //! # Executors
 //!

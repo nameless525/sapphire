@@ -17,7 +17,9 @@ members = [
     # L2 services
     "crates/sapphire_assets",
     "crates/sapphire_ecs",
+    "crates/sapphire_reflect",
     "crates/sapphire_rhi",
+    "crates/sapphire_serialize",
     # L3 subsystems
     "crates/sapphire_render",
     # Apps
@@ -44,7 +46,9 @@ sapphire_time = { path = "crates/sapphire_time" }
 sapphire_crash = { path = "crates/sapphire_crash" }
 sapphire_assets = { path = "crates/sapphire_assets" }
 sapphire_ecs = { path = "crates/sapphire_ecs" }
+sapphire_reflect = { path = "crates/sapphire_reflect" }
 sapphire_rhi = { path = "crates/sapphire_rhi" }
+sapphire_serialize = { path = "crates/sapphire_serialize" }
 sapphire_render = { path = "crates/sapphire_render" }
 
 # --- Foundation ---
@@ -77,9 +81,21 @@ sdl3-sys = { version = "0.7.2", default-features = false }
 raw-window-handle = "0.6.2"
 
 # --- ECS (spec §5.6) ---
-# Pinned per milestone and re-exported through sapphire_ecs. No reflection yet (M1 F2), and no
-# `backtrace` (error backtraces are captured by sapphire_crash instead).
+# Pinned per milestone and re-exported through sapphire_ecs. Its `bevy_reflect` feature
+# (ReflectComponent) waits for the inspector (M1 F5), and `backtrace` stays off (error backtraces
+# are captured by sapphire_crash instead).
 bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "multi_threaded", "async_executor"] }
+
+# --- Reflection and serialization (spec §5.8, §5.9) ---
+# Pinned with bevy_ecs. Automatic registration (`inventory`) is off: types are registered
+# explicitly.
+bevy_reflect = { version = "0.20.0", default-features = false, features = ["std", "glam"] }
+serde = { version = "1.0", features = ["derive"] }
+ron = "0.12.2"
+# Cooked data: little-endian, aligned, 32-bit relative pointers (rkyv's defaults), validated
+# with bytecheck.
+rkyv = "0.8.18"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 
 # --- Jobs ---
 bevy_tasks = { version = "0.20.0", features = ["multi_threaded"] }
@@ -104,7 +120,6 @@ sapphire_testkit = { path = "tools/sapphire_testkit" }
 # FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.
 nv-flip = "0.1.2"
 gltf = { version = "1.4.1", default-features = false }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 cargo_metadata = "0.23"

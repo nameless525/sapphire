@@ -28,7 +28,9 @@ sapphire_crash = { kind = "runtime", layer = 1 }
 # L2 services.
 sapphire_assets = { kind = "runtime", layer = 2 }
 sapphire_ecs = { kind = "runtime", layer = 2 }
+sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
+sapphire_serialize = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 sapphire_render = { kind = "runtime", layer = 3 }
 # Apps.
@@ -41,7 +43,10 @@ xtask = { kind = "tool" }
 
 # Same-layer dependencies that are allowed, as [from, to] pairs.
 [allow]
-edges = []
+edges = [
+    # Formats store reflection's stable names and schema versions.
+    ["sapphire_serialize", "sapphire_reflect"],
+]
 
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.

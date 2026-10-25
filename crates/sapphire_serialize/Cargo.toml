@@ -1,0 +1,22 @@
+[package]
+name = "sapphire_serialize"
+description = "Sapphire's data formats: RON documents, postcard saves and rkyv cooked data, each with a stable type name and schema version."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+postcard.workspace = true
+rkyv.workspace = true
+ron.workspace = true
+sapphire_reflect.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The tests derive `Reflect` and `TypePath`, whose derives find the crate by this name.
+bevy_reflect.workspace = true
+
+[lints]
+workspace = true

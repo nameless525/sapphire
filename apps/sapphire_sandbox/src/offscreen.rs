@@ -6,9 +6,9 @@
 //! desktop someone is using: [`capture`](crate::capture) writes a PNG (the hook for
 //! golden-image tests, spec §9) and [`bench`](crate::bench) measures the per-frame CPU path.
 
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
+use sapphire_render::Renderer;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
-use sapphire_render::{Msaa, RenderSettings, Renderer};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 use crate::LOG_TARGET;
@@ -32,16 +32,15 @@ impl App for OffscreenApp {
         }
         let offscreen = options
             .offscreen
+            .as_ref()
             .ok_or_else(|| AppInitError::msg("OffscreenApp needs --capture <png> or --bench <frames>"))?;
         let (width, height) = (offscreen.width, offscreen.height);
-        match offscreen.mode {
+        match &offscreen.mode {
             OffscreenMode::Capture { path, ticks } => {
-                let mut stage = Stage::new(platform, options.msaa)?;
-                crate::capture::run(&mut stage, &path, ticks, width, height)?;
+                let mut stage = Stage::new(platform, &options)?;
+                crate::capture::run(&mut stage, path, *ticks, width, height)?;
             }
-            OffscreenMode::Bench { frames } => {
-                crate::bench::run(platform, options.msaa, frames, width, height)?
-            }
+            OffscreenMode::Bench { frames } => crate::bench::run(platform, &options, *frames, width, height)?,
         }
         Ok(Self)
     }
@@ -66,12 +65,16 @@ pub(crate) struct Stage {
 }
 
 impl Stage {
-    pub fn new(platform: &Platform, msaa: Msaa) -> Result<Self, AppInitError> {
+    /// The scene and renderer `options` ask for. Offscreen modes run on desktops only.
+    pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
-        let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa, ..RenderSettings::default() })?;
+        let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(DeviceClass::Desktop))?;
         let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
-        let scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
+        let mut scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
+        if options.lights {
+            scene.spawn_demo_lights();
+        }
         Ok(Self { renderer, graph: GraphExecutor::new(), scene, gpu, _instance: instance })
     }
 

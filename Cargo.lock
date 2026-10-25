@@ -1883,6 +1883,7 @@ dependencies = [
  "pollster",
  "profiling",
  "sapphire_assets",
+ "sapphire_core",
  "sapphire_jobs",
  "sapphire_rhi",
  "thiserror",

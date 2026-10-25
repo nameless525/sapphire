@@ -6,9 +6,9 @@ use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle,
-    MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData,
-    Vignette,
+    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LightPath,
+    LocalLight, MeshHandle, MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer,
+    SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -140,6 +140,11 @@ struct Frames {
     sky: SkyGradient,
     /// Copied into every packet: [`passthrough`] by default.
     post: PostParams,
+    /// Copied into every packet: along the view direction by default, so everything the camera
+    /// sees is lit.
+    sun: DirectionalLight,
+    /// Copied into every packet: none by default.
+    lights: Vec<LocalLight>,
 }
 
 impl Frames {
@@ -162,6 +167,8 @@ impl Frames {
                 ground: Vec3::splat(0.5),
             },
             post: passthrough(),
+            sun: DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 },
+            lights: Vec::new(),
         })
     }
 
@@ -178,8 +185,8 @@ impl Frames {
     ) -> Option<wgpu::Error> {
         let packet = self.packets.begin();
         packet.views.push(ViewData { camera });
-        // Light along the view direction, so everything the camera sees is lit.
-        packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
+        packet.sun = self.sun;
+        packet.lights.extend_from_slice(&self.lights);
         packet.sky = self.sky;
         packet.post = self.post;
         packet.instances.changed.extend_from_slice(changed);
@@ -576,7 +583,7 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
     let mesh = sphere(white(4.0));
     for msaa in [Msaa::Off, Msaa::X4] {
         for bloom_levels in [0, 1, 5, sapphire_render::MAX_BLOOM_LEVELS] {
-            let settings = RenderSettings { msaa, bloom_levels };
+            let settings = RenderSettings { msaa, bloom_levels, ..RenderSettings::default() };
             let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
             let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
             frames.post =
@@ -595,4 +602,257 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
             }
         }
     }
+}
+
+/// White on the lit side and half as bright in shadow, with no rim or outline: the plainest
+/// two-tone material, so each light's split shows as a factor of two.
+fn two_tone() -> ToonMaterialParams {
+    ToonMaterialParams { shade_color: [0.5, 0.5, 0.5, 1.0], ..flat([1.0; 3], 0.0) }
+}
+
+fn point_light(position: Vec3, color: Vec3, intensity: f32, range: f32) -> LocalLight {
+    LocalLight { position, color, intensity, range, kind: LightKind::Point }
+}
+
+/// Linear red along the middle row.
+fn middle_row_red(pixels: &[[u8; 4]], (width, height): (u32, u32)) -> Vec<f32> {
+    let row = &pixels[(height / 2 * width) as usize..][..width as usize];
+    row.iter().map(|pixel| srgb_to_linear(pixel[0])).collect()
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_local_light_shifts_the_toon_split() {
+    let gpu = gpu();
+    let size = (160, 160);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+    let mesh = frames.renderer.upload_mesh(&sphere(two_tone())).expect("upload");
+    frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    // The sun from the left lights the left half: 0.5 lit, 0.25 in shadow.
+    frames.sun = DirectionalLight { direction: Vec3::X, color: Vec3::ONE, intensity: 0.5 };
+    let camera = framing_camera(38.0, size, 0.6);
+    let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
+    let mut render = |frames: &mut Frames| {
+        let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
+        assert!(error.is_none(), "{error:?}");
+        read_back(&gpu, &texture)
+    };
+    let unlit = render(&mut frames);
+    // A red light to the right of the sphere, on the side the sun leaves in shadow.
+    let light = Vec3::new(2.0, 0.0, 0.3);
+    frames.lights = vec![point_light(light, Vec3::X, 0.6, 4.0)];
+    let lit = render(&mut frames);
+    assert_eq!(frames.renderer.stats().lights.drawn, 1);
+
+    // Where the light's own terminator crosses the middle row: the visible point X of the unit
+    // sphere with N·(P − X) = 0, that is P·X = 1, found by bisection and projected.
+    let (mut low, mut high) = (0.0f32, std::f32::consts::FRAC_PI_2);
+    for _ in 0..40 {
+        let middle = (low + high) * 0.5;
+        if light.dot(Vec3::new(middle.sin(), 0.0, middle.cos())) < 1.0 { low = middle } else { high = middle }
+    }
+    let terminator = Vec3::new(low.sin(), 0.0, low.cos());
+    let clip = camera.proj * camera.view * terminator.extend(1.0);
+    let terminator_x = (clip.x / clip.w + 1.0) * 0.5 * size.0 as f32;
+
+    let (before, after) = (middle_row_red(&unlit, size), middle_row_red(&lit, size));
+    let center = size.0 as usize / 2;
+    // The sphere's right half, inside its outline-free silhouette.
+    let right: Vec<usize> = (center + 3..size.0 as usize).take_while(|&x| before[x] > 0.1).collect();
+    assert!(right.len() > 30, "the sphere covers the right half: {}", right.len());
+    let shade = before[right[0]];
+    assert!((shade - 0.25).abs() < 0.03, "the sun's shadow tone: {shade}");
+    assert!(right.iter().all(|&x| (before[x] - shade).abs() < 0.01), "without the light, one flat tone");
+
+    // With it, the red the light adds jumps across its terminator within two pixels: the
+    // light's shadow tone is half its lit tone. A Lambert term would rise by about 1/40 of
+    // its range per pixel here.
+    let added: Vec<f32> = (0..size.0 as usize).map(|x| after[x] - before[x]).collect();
+    let (jump, at) = right[..right.len() - 2]
+        .iter()
+        .map(|&x| (added[x + 2] - added[x], x + 1))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("pixels");
+    eprintln!(
+        "local split at x = {at} (expected {terminator_x:.1}): +{jump:.3} over 2 px, {:.3} → {:.3} red added",
+        added[at - 2],
+        added[at + 3]
+    );
+    assert!(jump > 0.35 * added[at + 1], "a crisp split: +{jump:.3} against {:.3}", added[at + 1]);
+    assert!((at as f32 + 0.5 - terminator_x).abs() < 3.0, "the split at {at}, expected {terminator_x:.1}");
+    // Beyond it the light pushes the sun's shadow into a lit tone brighter than the sun's own.
+    let pushed = after[at + 3];
+    assert!(pushed > before[center - 8], "{pushed} against the sun-lit {}", before[center - 8]);
+    // Short of it the light still tints, in its own shadow tone: the material's half.
+    let ratio = added[at - 2] / added[at + 3];
+    assert!((0.35..0.65).contains(&ratio), "shadow tone / lit tone: {ratio}");
+    // Red light adds no green.
+    let green = |pixels: &[[u8; 4]], x: usize| pixels[(size.1 / 2 * size.0) as usize + x][1];
+    assert!(right.iter().all(|&x| green(&unlit, x).abs_diff(green(&lit, x)) <= 1));
+}
+
+/// Three spheres in a row and four lights around them: two points and two spots.
+fn four_lights_scene(frames: &mut Frames) -> Vec<MeshInstance> {
+    let colors = [[0.9, 0.85, 0.8], [0.6, 0.8, 0.95], [0.95, 0.7, 0.6]];
+    let instances = colors
+        .into_iter()
+        .enumerate()
+        .map(|(index, rgb)| {
+            let mesh = frames
+                .renderer
+                .upload_mesh(&sphere(ToonMaterialParams {
+                    shade_color: [0.55, 0.5, 0.65, 1.0],
+                    ..flat(rgb, 3.0)
+                }))
+                .expect("upload");
+            let x = (index as f32 - 1.0) * 1.4;
+            instance(
+                index as u64,
+                mesh,
+                Mat4::from_scale_rotation_translation(
+                    Vec3::splat(0.6),
+                    Quat::IDENTITY,
+                    Vec3::new(x, 0.0, 0.0),
+                ),
+            )
+        })
+        .collect();
+    let spot = |position: Vec3, target: Vec3, color: Vec3| LocalLight {
+        position,
+        color,
+        intensity: 1.5,
+        range: 5.0,
+        kind: LightKind::Spot { direction: target - position, inner_angle: 0.15, outer_angle: 0.3 },
+    };
+    frames.lights = vec![
+        point_light(Vec3::new(-1.0, 0.8, 0.8), Vec3::new(1.0, 0.4, 0.1), 1.2, 1.8),
+        point_light(Vec3::new(1.6, -0.5, -0.5), Vec3::new(0.2, 0.7, 1.0), 2.0, 1.5),
+        spot(Vec3::new(0.0, 2.5, 1.5), Vec3::ZERO, Vec3::new(1.0, 0.3, 0.7)),
+        spot(Vec3::new(2.5, 1.0, 2.0), Vec3::new(1.4, 0.0, 0.0), Vec3::ONE),
+    ];
+    frames.sun = DirectionalLight { direction: Vec3::new(0.5, -0.6, -0.6), color: Vec3::ONE, intensity: 0.8 };
+    instances
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn clustered_and_per_object_paths_draw_four_lights_alike() {
+    let gpu = gpu();
+    let size = (256, 144);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = CameraData::look_at(Vec3::new(0.5, 1.0, 4.5), Vec3::ZERO, Vec3::Y, 0.8, 16.0 / 9.0, 0.05);
+    let render = |light_path, lights: bool| {
+        let settings = RenderSettings { light_path, ..RenderSettings::default() };
+        let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+        frames.post = PostParams::default();
+        frames.sky = SkyGradient::default();
+        let instances = four_lights_scene(&mut frames);
+        if !lights {
+            frames.lights.clear();
+        }
+        let error = frames.render(&gpu, &view, camera, &instances, &[]);
+        assert!(error.is_none(), "{light_path:?}: {error:?}");
+        (read_back(&gpu, &texture), frames.renderer.stats().lights, frames.graph.stats().passes)
+    };
+    let (clustered, clustered_stats, clustered_passes) = render(LightPath::Clustered, true);
+    let (per_object, object_stats, object_passes) = render(LightPath::PerObject, true);
+    let (unlit, ..) = render(LightPath::Clustered, false);
+
+    assert_eq!(
+        (clustered_stats.drawn, clustered_stats.clusters, clustered_stats.list_capacity),
+        (4, 3456, 64)
+    );
+    assert_eq!((object_stats.drawn, object_stats.clusters, object_stats.object_lists), (4, 0, 3));
+    assert_eq!(clustered_passes, object_passes + 1, "only the clustered path bins");
+    let changed = unlit.iter().zip(&clustered).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "the lights light the scene: {changed} pixels");
+    // Each sphere lists every light that reaches it in index order, as its clusters do, so the
+    // paths sum the same lights in the same order.
+    let differences: Vec<u8> = clustered
+        .iter()
+        .zip(&per_object)
+        .map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0))
+        .collect();
+    let differing = differences.iter().filter(|&&difference| difference > 1).count();
+    let worst = differences.iter().copied().max().unwrap_or(0);
+    eprintln!("clustered vs per-object: {differing} pixels differ by more than 1, at most {worst}");
+    assert!(
+        differing <= (size.0 * size.1 / 1000) as usize && worst <= 8,
+        "{differing} pixels, worst {worst}"
+    );
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn local_lights_run_at_any_size_and_msaa_on_both_paths() {
+    let gpu = gpu();
+    let mesh = sphere(white(4.0));
+    for light_path in [LightPath::Clustered, LightPath::PerObject] {
+        for msaa in [Msaa::Off, Msaa::X4] {
+            // Asking for more lights than ever fit is clamped to MAX_LIGHTS.
+            let settings =
+                RenderSettings { msaa, light_path, max_lights: u32::MAX, ..RenderSettings::default() };
+            let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+            let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
+            frames.lights = vec![
+                point_light(Vec3::new(1.2, 0.5, 1.0), Vec3::new(1.0, 0.5, 0.2), 1.0, 3.0),
+                LocalLight {
+                    kind: LightKind::Spot { direction: Vec3::NEG_Y, inner_angle: 0.2, outer_angle: 0.5 },
+                    ..point_light(Vec3::new(0.0, 2.0, 0.0), Vec3::ONE, 1.0, 4.0)
+                },
+            ];
+            let mut add = vec![instance(0, handle, Mat4::IDENTITY)];
+            for size in [(1, 1), (3, 2), (17, 1000), (641, 359)] {
+                let texture = target(&gpu, FORMAT, size);
+                let view = texture.create_view(&Default::default());
+                let camera = framing_camera(38.0, size, 0.5);
+                let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
+                assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
+                // Uploads, main and the composite (no bloom), plus the cluster pass.
+                let expected = 3 + u32::from(light_path == LightPath::Clustered);
+                assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
+                let stats = frames.renderer.stats().lights;
+                let capacity = if light_path == LightPath::Clustered { 64 } else { 4 };
+                assert_eq!((stats.drawn, stats.list_capacity), (2, capacity));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn per_object_lists_survive_their_buffer_growing() {
+    let gpu = gpu();
+    let settings = RenderSettings { light_path: LightPath::PerObject, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    let mesh = frames.renderer.upload_mesh(&sphere(two_tone())).expect("upload");
+    frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    frames.sun = DirectionalLight { direction: Vec3::Z, color: Vec3::ONE, intensity: 0.1 };
+    frames.lights = vec![point_light(Vec3::new(0.0, 0.0, 2.0), Vec3::X, 1.0, 3.0)];
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, size, 0.5);
+    let hidden = |ids: std::ops::Range<u64>| ids.map(|id| instance(id, mesh, Mat4::ZERO)).collect::<Vec<_>>();
+    let red_center = |frames: &mut Frames, changed: &[MeshInstance]| {
+        assert!(frames.render(&gpu, &view, camera, changed, &[]).is_none());
+        read_back(&gpu, &texture)[(32 * 64 + 32) as usize][0]
+    };
+
+    let mut first = vec![instance(0, mesh, Mat4::IDENTITY)];
+    first.extend(hidden(1..200));
+    let red = red_center(&mut frames, &first);
+    assert!(red > 150, "lit red by its list: {red}");
+    let before = frames.renderer.stats();
+    assert_eq!(before.lights.object_lists, 200, "new lights: every instance");
+    // Past the first 256 lists: the list buffer grows while instance 0's list is uploaded.
+    assert_eq!(red_center(&mut frames, &hidden(200..400)), red);
+    let after = frames.renderer.stats();
+    assert!(after.buffer_growths > before.buffer_growths, "{after:?}");
+    assert_eq!(after.lights.object_lists, 200, "the same lights: only the new instances");
+    assert_eq!(red_center(&mut frames, &[]), red, "instance 0's list survived the growth");
+    assert_eq!(frames.renderer.stats().lights.object_lists, 0);
 }

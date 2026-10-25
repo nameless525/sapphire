@@ -8,7 +8,7 @@ use sapphire_platform::{
     SurfaceHandle, Window, WindowDesc, WindowEvent,
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
-use sapphire_render::{MeshHandle, Msaa, RenderSettings, Renderer};
+use sapphire_render::{MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget,
@@ -41,7 +41,7 @@ pub struct SandboxApp {
     recovery: SurfaceRecovery,
     /// How the GPU stack is built, kept to rebuild it after device loss.
     gpu_debug: GpuDebug,
-    msaa: Msaa,
+    settings: RenderSettings,
 
     scene: Scene,
     input: SandboxInput,
@@ -83,9 +83,14 @@ impl App for SandboxApp {
             object_labels: base.object_labels && !(info.is_emulator && info.os == Os::Android),
             ..base
         };
-        let stack = create_gpu_stack(platform, &window, debug, options.msaa)?;
+        let settings = options.render_settings(info.device_class);
+        let stack = create_gpu_stack(platform, &window, debug, settings)?;
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
+        let mut scene = Scene::with_character(stack.character, stack.character_bounds);
+        if options.lights {
+            scene.spawn_demo_lights();
+        }
         Ok(Self {
             renderer: stack.renderer,
             graph: stack.graph,
@@ -94,8 +99,8 @@ impl App for SandboxApp {
             window,
             recovery: SurfaceRecovery::default(),
             gpu_debug: debug,
-            msaa: options.msaa,
-            scene: Scene::with_character(stack.character, stack.character_bounds),
+            settings,
+            scene,
             input,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
@@ -330,7 +335,7 @@ impl SandboxApp {
         // The old surface has to go before a new one is created for the same native window.
         self.surface = None;
         self.recovery.attempted(self.real.elapsed());
-        match create_gpu_stack(platform, &self.window, self.gpu_debug, self.msaa) {
+        match create_gpu_stack(platform, &self.window, self.gpu_debug, self.settings) {
             Ok(stack) => {
                 // Field order matters even here: the renderer goes before the old context.
                 self.renderer = stack.renderer;
@@ -425,7 +430,7 @@ fn create_gpu_stack(
     platform: &Platform,
     window: &Window,
     debug: GpuDebug,
-    msaa: Msaa,
+    settings: RenderSettings,
 ) -> Result<GpuStack, AppInitError> {
     let instance = GpuInstance::new(&GpuInstanceDesc { debug, ..GpuInstanceDesc::default() })?;
     let handle = window.surface_handle()?;
@@ -444,7 +449,7 @@ fn create_gpu_stack(
     let size = window.pixel_size();
     surface.configure(&gpu, size.width, size.height, PresentPolicy::Fifo)?;
     let format = surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
-    let mut renderer = Renderer::new(&gpu, format, RenderSettings { msaa, ..RenderSettings::default() })?;
+    let mut renderer = Renderer::new(&gpu, format, settings)?;
 
     let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
     let character = renderer.upload_mesh(&mesh)?;

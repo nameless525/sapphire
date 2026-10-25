@@ -1,28 +1,38 @@
 //! The simulation's side of the extract boundary (spec §4.6): render proxies as ECS data, and
 //! the `Extract` systems that copy what changed into the frame's [`FramePacket`].
 //!
-//! - **Render proxies:** an entity draws while it has a [`RenderMesh`]. Its [`RenderTransform`]
-//!   (required, identity by default) is where it draws this frame; whatever poses the entity
-//!   writes it, only when it moves.
+//! - **Render proxies:** an entity draws while it has a [`RenderMesh`], and lights while it has
+//!   a [`RenderLight`]. Its [`RenderTransform`] (required, identity by default) is where it draws
+//!   or lights from this frame; whatever poses the entity writes it, only when it moves.
 //! - **[`RenderExtract`]** holds the packet ring, and whether the next extraction resends
 //!   everything.
 //! - **[`extract_instances`]** writes instance deltas with bevy change detection: `Changed`
 //!   (which includes additions) for added, re-meshed or moved instances, and
 //!   `RemovedComponents` for ones that stopped drawing. An entity that didn't change adds
 //!   nothing to the packet.
+//! - **[`extract_lights`]** writes every light, every frame: a frame has a few dozen at most, and
+//!   the renderer culls and lists them per frame anyway, so deltas would buy nothing.
 //!
 //! Extraction must run every frame, drawn or not: `RemovedComponents` keeps removals only until
 //! the second `Cleanup` after them, and the renderer must see every packet's deltas.
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::Mat4;
-use sapphire_render::{FramePacket, FramePacketRing, InstanceId, MeshHandle, MeshInstance};
+use sapphire_render::{
+    FramePacket, FramePacketRing, InstanceId, LightKind, LocalLight, MeshHandle, MeshInstance,
+};
 
 /// The mesh an entity draws. Adding it starts drawing; removing it (or despawning the entity)
 /// stops.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 #[require(RenderTransform)]
 pub(crate) struct RenderMesh(pub MeshHandle);
+
+/// A light an entity casts. Its position and spot direction are in the entity's space, placed by
+/// its [`RenderTransform`]; its range is in world meters, whatever the transform's scale.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[require(RenderTransform)]
+pub(crate) struct RenderLight(pub LocalLight);
 
 /// Where an entity draws this frame: object to world, interpolated between the last two fixed
 /// steps. Written before [`extract_instances`] runs, through `set_if_neq` so an entity that
@@ -99,6 +109,26 @@ pub(crate) fn extract_instances(
     }
 }
 
+/// Writes this frame's lights, in query order. Runs in `Extract`.
+pub(crate) fn extract_lights(
+    mut extract: ResMut<'_, RenderExtract>,
+    lights: Query<'_, '_, (&RenderLight, &RenderTransform)>,
+) {
+    let packet = extract.packet_mut();
+    packet.lights.extend(lights.iter().map(|(light, transform)| place(light.0, transform.0)));
+}
+
+/// `light` from an entity at `transform`.
+fn place(light: LocalLight, transform: Mat4) -> LocalLight {
+    let kind = match light.kind {
+        LightKind::Point => LightKind::Point,
+        LightKind::Spot { direction, inner_angle, outer_angle } => {
+            LightKind::Spot { direction: transform.transform_vector3(direction), inner_angle, outer_angle }
+        }
+    };
+    LocalLight { position: transform.transform_point3(light.position), kind, ..light }
+}
+
 #[cfg(test)]
 mod tests {
     use sapphire_math::Vec3;
@@ -118,7 +148,7 @@ mod tests {
     fn ecs() -> Ecs {
         let mut ecs = Ecs::new();
         ecs.world_mut().insert_resource(RenderExtract::default());
-        ecs.add_systems(Extract, extract_instances);
+        ecs.add_systems(Extract, (extract_instances, extract_lights).chain());
         ecs.startup();
         ecs
     }
@@ -197,6 +227,43 @@ mod tests {
         // Drawing again is an addition.
         ecs.world_mut().entity_mut(a).insert(mesh(0));
         assert_eq!(ids(&frame(&mut ecs)), [a_id]);
+    }
+
+    #[test]
+    fn lights_are_placed_by_their_transform_every_frame() {
+        let mut ecs = ecs();
+        let spot = LocalLight {
+            position: Vec3::new(0.0, 1.0, 0.0),
+            color: Vec3::new(1.0, 0.5, 0.2),
+            intensity: 2.0,
+            range: 3.0,
+            kind: LightKind::Spot { direction: Vec3::NEG_Y, inner_angle: 0.2, outer_angle: 0.4 },
+        };
+        let point = LocalLight { kind: LightKind::Point, ..spot };
+        let world = ecs.world_mut();
+        // Turned a quarter around Z and moved: the spot then points along +X.
+        let turned = Mat4::from_rotation_translation(
+            sapphire_math::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            Vec3::new(5.0, 0.0, 0.0),
+        );
+        world.spawn((RenderLight(spot), RenderTransform(turned)));
+        world.spawn(RenderLight(point));
+
+        let lights = |ecs: &mut Ecs| {
+            ecs.world_mut().resource_mut::<RenderExtract>().begin();
+            ecs.extract();
+            let lights = ecs.world().resource::<RenderExtract>().packet().lights.clone();
+            ecs.cleanup();
+            lights
+        };
+        let first = lights(&mut ecs);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[1], point, "an identity transform by default");
+        let LightKind::Spot { direction, .. } = first[0].kind else { panic!("a spot") };
+        assert!((first[0].position - Vec3::new(4.0, 0.0, 0.0)).length() < 1e-5);
+        assert!((direction - Vec3::X).length() < 1e-5);
+        assert_eq!((first[0].range, first[0].intensity, first[0].color), (3.0, 2.0, spot.color));
+        assert_eq!(lights(&mut ecs), first, "unchanged lights are still sent every frame");
     }
 
     #[test]

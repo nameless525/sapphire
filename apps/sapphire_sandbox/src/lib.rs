@@ -23,6 +23,9 @@
 //! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
 //!   presented in time.
 //! - `--msaa off|2|4|8`: override the MSAA setting.
+//! - `--lights`: place three colored local lights around the character.
+//! - `--light-path clustered|per-object`: override how local lights are listed (clustered on
+//!   desktop, per-object on mobile by default).
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default

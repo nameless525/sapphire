@@ -6,6 +6,8 @@
 //! frame simulates (§4.2).
 //!
 //! - **Views and scene constants** are rewritten whole every frame; they are small.
+//! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
+//!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
 //!   packet carries only the instances added, changed or removed since the previous one. The
 //!   renderer must therefore see every packet, in order (see [`crate::Renderer::prepare`]).
@@ -28,7 +30,7 @@ const RING_SIZE: usize = 3;
 /// # Later milestones
 ///
 /// The packet grows with the systems that feed it (spec §4.6): skinned instances with their
-/// palette ranges (R2, A5), morph weights, lights (R5), VFX spawns and emitter parameters,
+/// palette ranges (R2, A5), morph weights, VFX spawns and emitter parameters,
 /// gameplay-triggered post effects in `post` (P3), the UI draw list, and debug draws (dev
 /// builds). Shadow cascades (R4) and UI 3D insets add views after the main
 /// camera, and the time of day (W1) resolves into the scene constants.
@@ -49,6 +51,10 @@ pub struct FramePacket {
     pub time_seconds: f32,
     /// Exposure, bloom, tone curve, grade and vignette. Defaults to Sapphire's default look.
     pub post: PostParams,
+    /// Point and spot lights. When more are visible than the renderer's
+    /// [`RenderSettings::max_lights`](crate::RenderSettings::max_lights) allows, it keeps the
+    /// nearest; a cluster that more reach than it can list keeps the earliest in this order.
+    pub lights: Vec<LocalLight>,
     /// Mesh instances added, changed or removed since the previous packet.
     pub instances: InstanceDeltas,
 }
@@ -61,13 +67,14 @@ impl FramePacket {
 
     /// Empties the packet for `frame`, keeping its vectors' capacity.
     fn reset(&mut self, frame: u64) {
-        let Self { frame: number, views, sun, sky, time_seconds, post, instances } = self;
+        let Self { frame: number, views, sun, sky, time_seconds, post, lights, instances } = self;
         *number = frame;
         views.clear();
         *sun = DirectionalLight::default();
         *sky = SkyGradient::default();
         *time_seconds = 0.0;
         *post = PostParams::default();
+        lights.clear();
         instances.changed.clear();
         instances.removed.clear();
     }
@@ -180,6 +187,40 @@ impl Default for DirectionalLight {
     }
 }
 
+/// A point or spot light (spec §5.12 "Lighting"). The toon shader adds it to the sun's light
+/// within the toon model: the same light/shadow split and authored shadow color, in the light's
+/// color (see `toon.wgsl`).
+///
+/// Its brightness is `color × intensity` wherever it is near, fading smoothly to nothing at
+/// `range`, with no inverse-square hot spot: an intensity of 1 lights a surface next to it as
+/// brightly as a unit sun.
+///
+/// The renderer ignores a light that can't light anything: a range under a millimeter or not
+/// finite, an intensity that isn't positive, a black or non-finite color, or a spot without a
+/// direction. Negative color channels count as 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocalLight {
+    /// World-space position.
+    pub position: Vec3,
+    /// Linear RGB.
+    pub color: Vec3,
+    pub intensity: f32,
+    /// Distance in meters at which the light has faded to nothing.
+    pub range: f32,
+    pub kind: LightKind,
+}
+
+/// The shape of a [`LocalLight`]'s light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightKind {
+    /// Light in every direction.
+    Point,
+    /// A cone along `direction` (need not be normalized): full brightness within
+    /// `inner_angle` of it, fading smoothly to nothing at `outer_angle`. Both are half-angles in
+    /// radians, at most π; an inner angle beyond the outer one is taken as the outer one.
+    Spot { direction: Vec3, inner_angle: f32, outer_angle: f32 },
+}
+
 /// One drawn mesh, as an instance delta carries it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshInstance {
@@ -230,6 +271,13 @@ mod tests {
         packet.views.push(ViewData { camera });
         packet.sun.intensity = 2.0;
         packet.time_seconds = 1.5;
+        packet.lights.push(LocalLight {
+            position: Vec3::Y,
+            color: Vec3::ONE,
+            intensity: 1.0,
+            range: 2.0,
+            kind: LightKind::Point,
+        });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -264,6 +312,7 @@ mod tests {
             (
                 packet.views.as_ptr(),
                 packet.views.capacity(),
+                packet.lights.as_ptr(),
                 packet.instances.changed.as_ptr(),
                 packet.instances.changed.capacity(),
                 packet.instances.removed.as_ptr(),

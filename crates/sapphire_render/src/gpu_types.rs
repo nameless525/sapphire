@@ -4,6 +4,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
+use crate::lights::LightUniforms;
 use crate::{CameraData, FramePacket};
 
 /// Per-frame constants (WGSL `FrameUniforms`, group 0).
@@ -19,10 +20,14 @@ pub(crate) struct FrameUniforms {
     pub sky_ground: [f32; 4],
     /// x: time in seconds (wrapped by the app, see `FramePacket::time_seconds`).
     pub time: [f32; 4],
+    /// Light and list counts (see `LightUniforms`).
+    pub lights: [u32; 4],
+    /// The cluster grid's depth slices.
+    pub clusters: [f32; 4],
 }
 
 impl FrameUniforms {
-    pub(crate) fn new(frame: &FramePacket) -> Self {
+    pub(crate) fn new(frame: &FramePacket, lights: LightUniforms) -> Self {
         let toward_sun = (-frame.sun.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
             sun_direction: toward_sun.extend(0.0).to_array(),
@@ -31,6 +36,8 @@ impl FrameUniforms {
             sky_horizon: frame.sky.horizon.extend(1.0).to_array(),
             sky_ground: frame.sky.ground.extend(1.0).to_array(),
             time: [frame.time_seconds, 0.0, 0.0, 0.0],
+            lights: lights.lights,
+            clusters: lights.clusters,
         }
     }
 }

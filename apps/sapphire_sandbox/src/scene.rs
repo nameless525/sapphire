@@ -6,8 +6,10 @@
 //!   handle, and the [`RenderExtract`] packet ring that extraction fills.
 //! - **The character entity:** a [`Turntable`], its `EntityClock`, and the [`RenderMesh`] and
 //!   [`RenderTransform`](extract::RenderTransform) it draws with.
+//! - **Demo lights** (`--lights`): three colored local lights around the character, entities
+//!   with a [`RenderLight`] each ([`Scene::spawn_demo_lights`]).
 //! - **Systems:** turntables spin in `FixedCombat`. `Extract` poses them, then writes the
-//!   instances that changed into the frame's packet (see [`crate::extract`]).
+//!   instances that changed and the lights into the frame's packet (see [`crate::extract`]).
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!
@@ -24,11 +26,13 @@ use sapphire_assets::mesh::MeshAsset;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{DirectionalLight, FramePacket, MeshHandle, PostParams, SkyGradient, ViewData};
+use sapphire_render::{
+    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, PostParams, SkyGradient, ViewData,
+};
 use sapphire_time::{ScaleHandle, ScaleSource};
 
 use crate::LOG_TARGET;
-use crate::extract::{self, RenderExtract, RenderMesh};
+use crate::extract::{self, RenderExtract, RenderLight, RenderMesh};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::turntable::{self, Turntable};
@@ -55,6 +59,8 @@ struct SlowMotion(Option<ScaleHandle>);
 pub(crate) struct Scene {
     ecs: Ecs,
     character: Entity,
+    /// The character's object-space bounds, which demo lights are placed around.
+    bounds: [[f32; 3]; 2],
 }
 
 impl Scene {
@@ -68,10 +74,12 @@ impl Scene {
         world.insert_resource(RenderExtract::default());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
         let character = world.spawn((Turntable::default(), clock)).id();
-        ecs.add_systems(FixedCombat, turntable::spin)
-            .add_systems(Extract, (turntable::pose, extract::extract_instances).chain());
+        ecs.add_systems(FixedCombat, turntable::spin).add_systems(
+            Extract,
+            (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
+        );
         ecs.startup();
-        Self { ecs, character }
+        Self { ecs, character, bounds }
     }
 
     /// [`Self::new`] with the character drawing `mesh`.
@@ -79,6 +87,50 @@ impl Scene {
         let mut scene = Self::new(bounds);
         scene.set_character_mesh(mesh);
         scene
+    }
+
+    /// Spawns three colored local lights around the character, placed by its bounds so they
+    /// fall where the sun leaves shadow: a warm lantern beside its head on the right, a cyan
+    /// light behind its left arm, and a narrow pink spot from above onto the floor in front of
+    /// it. The golden scene `turntable-lights` shows them.
+    pub fn spawn_demo_lights(&mut self) {
+        let [min, max] = self.bounds.map(Vec3::from);
+        let height = (max.y - min.y).max(0.1);
+        let base = Vec3::new((min.x + max.x) * 0.5, min.y, (min.z + max.z) * 0.5);
+        // In units of the character's height, from the middle of its feet.
+        let at = |x: f32, y: f32, z: f32| base + Vec3::new(x, y, z) * height;
+        let spot_position = at(-0.3, 1.1, 0.55);
+        let spot_target = at(-0.08, 0.1, 0.16);
+        let lights = [
+            LocalLight {
+                position: at(0.32, 0.78, 0.12),
+                color: Vec3::new(1.0, 0.42, 0.12),
+                intensity: 1.8,
+                range: 0.55 * height,
+                kind: LightKind::Point,
+            },
+            LocalLight {
+                position: at(-0.28, 0.24, -0.22),
+                color: Vec3::new(0.2, 0.75, 1.0),
+                intensity: 2.0,
+                range: 0.42 * height,
+                kind: LightKind::Point,
+            },
+            LocalLight {
+                position: spot_position,
+                color: Vec3::new(1.0, 0.3, 0.65),
+                intensity: 2.5,
+                range: 1.8 * height,
+                kind: LightKind::Spot {
+                    direction: spot_target - spot_position,
+                    inner_angle: 0.12,
+                    outer_angle: 0.16,
+                },
+            },
+        ];
+        for light in lights {
+            self.ecs.world_mut().spawn(RenderLight(light));
+        }
     }
 
     /// Applies input queued since the last fixed step. Call before the frame's steps.
@@ -222,6 +274,7 @@ mod tests {
     fn fixed_steps_do_not_allocate_from_the_first() {
         // As the app runs it: steps from the first frame on, with frames in between.
         let mut scene = scene();
+        scene.spawn_demo_lights();
         let mut allocations = 0;
         for _ in 0..60 {
             let ((), steps) = sapphire_core::alloc::count_in_scope(|| {
@@ -233,6 +286,28 @@ mod tests {
             scene.end_frame();
         }
         assert_eq!(allocations, 0, "rule R6");
+    }
+
+    #[test]
+    fn demo_lights_surround_the_character() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS);
+        scene.spawn_demo_lights();
+        for _ in 0..2 {
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            assert_eq!(packet.lights.len(), 3, "every frame");
+            let [min, max] = BOUNDS.map(Vec3::from);
+            for light in &packet.lights {
+                let nearest = light.position.clamp(min, max);
+                assert!(
+                    light.position.distance(nearest) < light.range * 0.5,
+                    "{light:?} reaches the character"
+                );
+            }
+            let LightKind::Spot { direction, .. } = packet.lights[2].kind else { panic!("a spot") };
+            let to_floor = Vec3::new(-0.16, 0.2, 0.32) - packet.lights[2].position;
+            assert!(direction.normalize().dot(to_floor.normalize()) > 0.999, "aimed in front of the feet");
+            scene.end_frame();
+        }
     }
 
     #[test]
@@ -255,6 +330,7 @@ mod tests {
         let packet = scene.frame_packet(1.0, Some((1920, 1080)));
         assert_eq!(packet.views.len(), 1);
         assert_eq!(packet.sun, SUN);
+        assert!(packet.lights.is_empty(), "no demo lights unless asked for");
         assert_eq!(changed(packet), [character], "added");
         let first = packet.instances.changed[0].transform;
         scene.end_frame();

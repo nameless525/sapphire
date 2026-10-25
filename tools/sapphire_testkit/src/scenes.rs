@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 3] {
+pub fn scenes() -> [Scene; 4] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -38,6 +38,13 @@ pub fn scenes() -> [Scene; 3] {
         Scene {
             name: "turntable-msaa-off",
             args: &["--capture-ticks", "90", "--msaa", "off"],
+            thresholds: Thresholds::default(),
+        },
+        // Three colored local lights through the clustered path (M1 R5): their splits on the
+        // head and arm, and a spot's pool on the pedestal.
+        Scene {
+            name: "turntable-lights",
+            args: &["--capture-ticks", "90", "--lights"],
             thresholds: Thresholds::default(),
         },
     ]

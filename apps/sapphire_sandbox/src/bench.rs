@@ -13,19 +13,19 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::Msaa;
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
+use crate::options::Options;
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;
 
 pub(crate) fn run(
     platform: &Platform,
-    msaa: Msaa,
+    options: &Options,
     frames: u32,
     width: u32,
     height: u32,
@@ -34,7 +34,7 @@ pub(crate) fn run(
         return Err(AppInitError::msg("--bench needs at least one frame"));
     }
     let startup = Stopwatch::start();
-    let mut stage = Stage::new(platform, msaa)?;
+    let mut stage = Stage::new(platform, options)?;
     let startup = startup.elapsed();
 
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
@@ -68,7 +68,8 @@ pub(crate) fn run(
         frames,
         width,
         height,
-        msaa = msaa.sample_count(),
+        msaa = options.msaa.sample_count(),
+        lights = options.lights,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),

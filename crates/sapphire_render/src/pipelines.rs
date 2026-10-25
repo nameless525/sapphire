@@ -7,6 +7,7 @@ use sapphire_assets::mesh::{MeshVertex, ToonMaterialParams};
 use sapphire_rhi::wgpu;
 
 use crate::gpu_types::{DrawData, FrameUniforms, InstanceData, ViewUniforms};
+use crate::lights::GpuLight;
 use crate::shaders;
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
@@ -39,9 +40,9 @@ const fn attribute(location: u32, format: wgpu::VertexFormat, offset: usize) -> 
 /// The bind group layouts of `shaders/frame.wgsl`. Group 3 (material textures) arrives in M1.
 #[derive(Debug)]
 pub(crate) struct Layouts {
-    /// Group 0: frame constants.
+    /// Group 0: frame constants, local lights and their lists.
     pub frame: wgpu::BindGroupLayout,
-    /// Group 1: one view, bound with a dynamic offset.
+    /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
     /// Group 2: instances and materials.
     pub scene: wgpu::BindGroupLayout,
@@ -69,9 +70,16 @@ impl Layouts {
         Self {
             frame: layout(
                 "frame",
-                &[buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>())],
+                &[
+                    buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>()),
+                    buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
+                    buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
+                ],
             ),
-            view: layout("view", &[buffer(0, S::VERTEX_FRAGMENT, uniform, true, size_of::<ViewUniforms>())]),
+            view: layout(
+                "view",
+                &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
+            ),
             scene: layout(
                 "scene",
                 &[

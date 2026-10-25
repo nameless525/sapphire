@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use sapphire_render::Msaa;
+use sapphire_platform::DeviceClass;
+use sapphire_render::{LightPath, Msaa, RenderSettings};
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
@@ -21,6 +22,10 @@ pub(crate) struct Options {
     /// Exit after this many presented frames.
     pub frame_limit: Option<u64>,
     pub msaa: Msaa,
+    /// `--lights`: place the demo lights around the character.
+    pub lights: bool,
+    /// `--light-path clustered|per-object`: override the device's default.
+    pub light_path: Option<LightPath>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
 }
@@ -46,11 +51,21 @@ pub(crate) enum OffscreenMode {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { frame_limit: None, msaa: Msaa::X4, offscreen: None }
+        Self { frame_limit: None, msaa: Msaa::X4, lights: false, light_path: None, offscreen: None }
     }
 }
 
 impl Options {
+    /// The renderer settings: the defaults for `class`, with the options' overrides.
+    pub fn render_settings(&self, class: DeviceClass) -> RenderSettings {
+        let defaults = RenderSettings::for_device(class);
+        RenderSettings {
+            msaa: self.msaa,
+            light_path: self.light_path.unwrap_or(defaults.light_path),
+            ..defaults
+        }
+    }
+
     /// Parses `args`, which includes the program name first. Unknown arguments are returned
     /// so the caller can warn about them; SDL and the OS may pass their own.
     pub fn parse(args: &[String]) -> Result<(Self, Vec<String>), String> {
@@ -77,6 +92,18 @@ impl Options {
                         "8" => Msaa::X8,
                         other => return Err(format!("--msaa expects off, 2, 4 or 8, got {other:?}")),
                     };
+                }
+                "--lights" => options.lights = true,
+                "--light-path" => {
+                    options.light_path = Some(match value("--light-path")?.as_str() {
+                        "clustered" => LightPath::Clustered,
+                        "per-object" => LightPath::PerObject,
+                        other => {
+                            return Err(format!(
+                                "--light-path expects clustered or per-object, got {other:?}"
+                            ));
+                        }
+                    });
                 }
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
@@ -135,8 +162,26 @@ mod tests {
     #[test]
     fn parses_known_options() {
         let (options, unknown) = parse(&["--frames", "120", "--msaa", "off"]).unwrap();
-        assert_eq!(options, Options { frame_limit: Some(120), msaa: Msaa::Off, offscreen: None });
+        assert_eq!(options, Options { frame_limit: Some(120), msaa: Msaa::Off, ..Options::default() });
         assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn light_options_override_the_device_defaults() {
+        let (options, _) = parse(&["--lights", "--light-path", "per-object", "--msaa", "2"]).unwrap();
+        assert!(options.lights);
+        let settings = options.render_settings(DeviceClass::Desktop);
+        assert_eq!(settings.light_path, LightPath::PerObject);
+        assert_eq!((settings.msaa, settings.max_lights), (Msaa::X2, 64), "the rest stay desktop defaults");
+
+        let defaults = Options::default();
+        assert!(!defaults.lights);
+        assert_eq!(defaults.render_settings(DeviceClass::Desktop).light_path, LightPath::Clustered);
+        let mobile = defaults.render_settings(DeviceClass::Mobile);
+        assert_eq!((mobile.light_path, mobile.max_lights), (LightPath::PerObject, 8));
+        let (clustered, _) = parse(&["--light-path=clustered"]).unwrap();
+        assert_eq!(clustered.render_settings(DeviceClass::Mobile).light_path, LightPath::Clustered);
+        assert!(parse(&["--light-path", "deferred"]).is_err());
     }
 
     #[test]

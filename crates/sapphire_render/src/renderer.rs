@@ -1,14 +1,16 @@
 //! The renderer: a main pass with three pipelines (toon, outline, sky) into HDR scene color,
-//! then post-processing into the target.
+//! lit by the sun and the frame's local lights, then post-processing into the target.
 
 use std::num::NonZeroU64;
 
 use sapphire_assets::mesh::{MeshAsset, MeshFormatError, MeshVertex};
+use sapphire_core::target::FormFactor;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::buffer;
 use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, TextureId};
+use crate::lights::{LightPath, LightStats, Lights};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines, SCENE_COLOR_FORMAT};
 use crate::post::PostProcess;
@@ -56,11 +58,31 @@ pub struct RenderSettings {
     /// tiers cut it on mobile. 0 turns bloom off; more than
     /// [`MAX_BLOOM_LEVELS`](crate::MAX_BLOOM_LEVELS) is clamped.
     pub bloom_levels: u32,
+    /// How local lights reach the toon shader: clustered on desktop, per-object lists on
+    /// mobile ([`Self::for_device`]). Either runs on every backend.
+    pub light_path: LightPath,
+    /// The most local lights a frame draws once culled to the view; the nearest are kept
+    /// (spec §3.4 budgets 64 on desktop and 8 on mobile). 0 turns local lights off; more than
+    /// [`MAX_LIGHTS`](crate::MAX_LIGHTS) is clamped.
+    pub max_lights: u32,
+}
+
+impl RenderSettings {
+    /// The defaults for a class of device, until quality tiers (R6) choose per device:
+    /// desktops cluster their lights, and phones and tablets use per-object lists with the
+    /// mobile light budget.
+    pub fn for_device(class: FormFactor) -> Self {
+        match class {
+            FormFactor::Desktop => Self::default(),
+            FormFactor::Mobile => Self { light_path: LightPath::PerObject, max_lights: 8, ..Self::default() },
+        }
+    }
 }
 
 impl Default for RenderSettings {
+    /// The desktop defaults.
     fn default() -> Self {
-        Self { msaa: Msaa::default(), bloom_levels: 5 }
+        Self { msaa: Msaa::default(), bloom_levels: 5, light_path: LightPath::Clustered, max_lights: 64 }
     }
 }
 
@@ -102,6 +124,8 @@ pub struct RenderStats {
     /// Grading LUTs baked since the renderer was created. Bakes happen only when the grade or
     /// tone curve changes, so this should grow at time-of-day keys and settings changes only.
     pub lut_bakes: u32,
+    /// Local lights and their lists in the last prepared frame.
+    pub lights: LightStats,
 }
 
 /// Draws [`FramePacket`]s.
@@ -127,6 +151,8 @@ pub struct Renderer {
     frame_bind_group: wgpu::BindGroup,
     view_uniforms: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
+    /// The frame's local lights, their lists and the cluster pass.
+    lights: Lights,
     meshes: MeshPool,
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
@@ -189,11 +215,8 @@ impl Renderer {
         // One view slot in M0. M1 sizes this for every view (main camera, shadow cascades) at
         // a stride of `min_uniform_buffer_offset_alignment` and binds each by offset.
         let view_uniforms = uniform("view uniforms", size_of::<ViewUniforms>());
-        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &layouts.frame,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() }],
-        });
+        let lights = Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache());
+        let frame_bind_group = create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights);
         let view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &layouts.view,
@@ -210,7 +233,14 @@ impl Renderer {
         let scene = GpuScene::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &meshes);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
-        tracing::info!(target: LOG_TARGET, ?color_format, msaa = samples, "renderer created");
+        tracing::info!(
+            target: LOG_TARGET,
+            ?color_format,
+            msaa = samples,
+            light_path = ?settings.light_path,
+            max_lights = settings.max_lights,
+            "renderer created"
+        );
         Ok(Self {
             device,
             queue: gpu.queue().clone(),
@@ -222,6 +252,7 @@ impl Renderer {
             frame_bind_group,
             view_uniforms,
             view_bind_group,
+            lights,
             meshes,
             scene,
             scene_bind_group,
@@ -235,6 +266,7 @@ impl Renderer {
     /// Validates and uploads a cooked mesh and its materials into the mesh pool.
     pub fn upload_mesh(&mut self, mesh: &MeshAsset) -> Result<MeshHandle, RenderError> {
         let (handle, materials_moved) = self.meshes.upload(&self.device, &self.queue, mesh)?;
+        self.lights.mesh_uploaded(handle, mesh.bounds);
         if materials_moved {
             self.scene_bind_group =
                 create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.meshes);
@@ -245,9 +277,9 @@ impl Renderer {
     }
 
     /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
-    /// (rebuilding the draw list only if the drawn set changed), computes the frame constants,
-    /// sizes the buffers and bakes any grading LUT the packet's post parameters changed.
-    /// [`Self::record`] then uploads what changed and draws.
+    /// (rebuilding the draw list only if the drawn set changed), culls and lists the local
+    /// lights, computes the frame constants, sizes the buffers and bakes any grading LUT the
+    /// packet's post parameters changed. [`Self::record`] then uploads what changed and draws.
     ///
     /// Every packet must be prepared, in order, including frames that draw nothing (no target,
     /// so no [`Self::record`]): a skipped packet would lose its deltas. Debug builds check the
@@ -266,17 +298,23 @@ impl Renderer {
             self.scene_bind_group =
                 create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.meshes);
         }
+        if self.lights.prepare(device, queue, packet, self.scene.slots()) {
+            self.frame_bind_group =
+                create_frame_bind_group(device, &self.layouts.frame, &self.frame_uniforms, &self.lights);
+        }
 
         // Without a main view the frame has nothing to draw.
+        let lights = self.lights.uniforms();
         self.prepared = packet
             .main_view()
-            .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet) });
+            .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet, lights) });
         self.post.prepare(queue, &packet.post);
         self.stats.draws = self.scene.draw_count();
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
+        self.stats.lights = self.lights.stats();
         self.update_pool_stats();
     }
 
@@ -295,7 +333,8 @@ impl Renderer {
     /// The toon, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color (see the
-    /// `post` module).
+    /// `post` module). On the clustered light path, frames with local lights first bin them in
+    /// a compute pass (see the `lights` module).
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
@@ -335,6 +374,7 @@ impl Renderer {
             ref frame_bind_group,
             ref view_uniforms,
             ref view_bind_group,
+            ref mut lights,
             ref meshes,
             ref mut scene,
             ref scene_bind_group,
@@ -343,6 +383,7 @@ impl Renderer {
             ..
         } = *self;
         let (scene_uploads, draw_list, draws) = scene.split_for_record();
+        let (light_uploads, cluster_pass) = lights.split_for_record();
         let (post_uniforms, post_buffer) = post.uniforms();
         // A handle, so `post` can be borrowed mutably for its passes below.
         let post_buffer = post_buffer.clone();
@@ -358,9 +399,17 @@ impl Renderer {
                 bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
             );
             scene_uploads.write(uploads, ctx.encoder);
+            light_uploads.write(uploads, ctx.encoder);
             upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
+        // Also a side effect: the main pass reads the cluster lists it writes.
+        if let Some(cluster_pass) = cluster_pass {
+            graph
+                .add_pass("light clusters")
+                .side_effect()
+                .record(move |ctx| cluster_pass.record(ctx.encoder, view_bind_group, labels));
+        }
 
         let mut main = graph.add_pass("main").write(scene_color).write(depth);
         if let Some(msaa_color) = msaa_color {
@@ -432,9 +481,15 @@ impl Renderer {
         self.stats
     }
 
+    /// The local lights, for tests that read their buffers back.
+    #[cfg(test)]
+    pub(crate) fn lights(&self) -> &Lights {
+        &self.lights
+    }
+
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
-        self.stats.buffer_growths = self.meshes.growths() + self.scene.growths();
+        self.stats.buffer_growths = self.meshes.growths() + self.scene.growths() + self.lights.growths();
     }
 }
 
@@ -446,6 +501,23 @@ fn upload(
     bytes: &[u8],
 ) {
     buffer::stage(belt, encoder, target, 0, bytes);
+}
+
+fn create_frame_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    frame_uniforms: &wgpu::Buffer,
+    lights: &Lights,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("frame"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
+        ],
+    })
 }
 
 fn create_scene_bind_group(

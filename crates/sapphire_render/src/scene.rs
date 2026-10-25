@@ -25,6 +25,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 
 use bytemuck::Zeroable;
+use glam::Mat4;
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
@@ -128,6 +129,11 @@ impl GpuScene {
 
     pub(crate) fn instance_buffer(&self) -> &wgpu::Buffer {
         self.instances.buffer()
+    }
+
+    /// The instances by slot, as the last `prepare` left them.
+    pub(crate) fn slots(&self) -> &InstanceSlots {
+        &self.slots
     }
 
     /// Splits the scene between a frame's passes: the uploads pass writes what changed, and
@@ -280,6 +286,18 @@ impl InstanceSlots {
         self.ids.len()
     }
 
+    /// The slot of a live instance.
+    pub(crate) fn slot(&self, id: InstanceId) -> Option<u32> {
+        self.ids.get(&id).copied()
+    }
+
+    /// Live slots with their meshes and transforms, in slot order.
+    pub(crate) fn live_transforms(&self) -> impl Iterator<Item = (u32, MeshHandle, Mat4)> + '_ {
+        self.live().map(|(slot, mesh)| {
+            (slot, mesh, Mat4::from_cols_array_2d(&self.data[slot as usize].world_from_object))
+        })
+    }
+
     /// Live slots and their meshes, in slot order.
     pub(crate) fn live(&self) -> impl Iterator<Item = (u32, MeshHandle)> + '_ {
         self.slots
@@ -373,7 +391,7 @@ fn to_u32(len: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat4, Vec3};
+    use glam::Vec3;
 
     use super::*;
     use crate::MeshInstance;

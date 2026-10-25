@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_render"
-description = "Sapphire's renderer: toon character shading, inverted-hull outlines, sky gradient, HDR bloom and grading."
+description = "Sapphire's renderer: toon character shading with clustered or per-object local lights, inverted-hull outlines, sky gradient, HDR bloom and grading."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,8 @@ bytemuck.workspace = true
 glam.workspace = true
 profiling.workspace = true
 sapphire_assets.workspace = true
+# The device class (`target::FormFactor`) that render defaults are chosen by.
+sapphire_core.workspace = true
 sapphire_jobs.workspace = true
 sapphire_rhi.workspace = true
 thiserror.workspace = true

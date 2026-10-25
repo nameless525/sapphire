@@ -1,5 +1,9 @@
 //! `--capture <png>`: renders the sandbox scene after a fixed number of simulation ticks into
 //! an offscreen target and writes it as a PNG (see [`crate::offscreen`]).
+//!
+//! Next to the PNG it writes `<name>.adapter.txt` (`backend=`, `adapter=`, `device_type=`,
+//! `driver=` lines) naming the GPU that rendered it, so golden-image tests
+//! (`cargo xtask golden`) compare against the right backend's reference.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -24,6 +28,7 @@ pub(crate) fn run(
     }
     let pixels = render(stage, width, height)?;
     write_png(path, width, height, &pixels)?;
+    write_adapter_info(path, &stage.gpu.caps().adapter)?;
     tracing::info!(target: LOG_TARGET, path = %path.display(), width, height, ticks, "captured frame");
     Ok(())
 }
@@ -76,6 +81,21 @@ fn read_back(
     receiver.recv().map_err(AppInitError::msg)?.map_err(AppInitError::msg)?;
     let mapped = readback.get_mapped_range(..).map_err(AppInitError::msg)?;
     Ok(mapped.chunks_exact(padded_row_bytes).flat_map(|row| &row[..row_bytes]).copied().collect())
+}
+
+/// `<capture>.adapter.txt`: which GPU rendered the capture.
+fn write_adapter_info(path: &Path, adapter: &wgpu::AdapterInfo) -> Result<(), AppInitError> {
+    let info_path = path.with_extension("adapter.txt");
+    let info = format!(
+        "backend={}\nadapter={}\ndevice_type={:?}\ndriver={} {}\n",
+        adapter.backend.to_str(),
+        adapter.name,
+        adapter.device_type,
+        adapter.driver,
+        adapter.driver_info,
+    );
+    std::fs::write(&info_path, info)
+        .map_err(|error| AppInitError::msg(format!("{}: {error}", info_path.display())))
 }
 
 fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), AppInitError> {

@@ -87,6 +87,15 @@ cargo xtask run --platform desktop -- --capture out.png --capture-ticks 120 --si
 
 On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb exec-out screencap -p > <png>` (Android) while the app runs.
 
+### Golden images
+
+`cargo xtask golden` renders the golden scenes with `--capture` (640×360) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP:
+
+- **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
+- **Gates:** mean and 99th-percentile error, not the maximum, because toon edges flip whole pixels between backends.
+- **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`). CI uploads both.
+- **New scene or intended change:** `cargo xtask golden --update` writes this machine's family. The other families' images come from the failing CI run's artifacts.
+
 ## Everyday commands
 
 ```bash

@@ -24,6 +24,7 @@ use std::str::FromStr;
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
+use crate::content;
 use crate::workspace::{self, CargoBuild};
 
 /// A deployment target.
@@ -155,6 +156,20 @@ impl App {
         );
         Ok(Self { package: package.to_owned(), version, bundle_id, bundle_name, display_name, build })
     }
+}
+
+/// Environment variable the platform layer reads to find content outside a bundle.
+pub const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
+
+/// Cooks for desktop and builds the app for the host, for commands that launch it themselves
+/// (`golden`). Keep the [`content::Cooked`] alive while the app runs.
+pub fn desktop_build(app: &App, options: &Options) -> anyhow::Result<(content::Cooked, PathBuf)> {
+    desktop::prepare(app, options)
+}
+
+/// The environment host builds need: only macOS needs any (see `macos::build_env`).
+pub fn host_build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
+    desktop::build_env()
 }
 
 /// Options shared by `bundle` and `run`.

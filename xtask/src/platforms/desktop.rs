@@ -13,8 +13,7 @@ use super::{App, Options, Platform, macos};
 use crate::content::{self, Cook};
 use crate::workspace;
 
-/// Environment variable the platform layer reads to find content outside a bundle.
-const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
+use super::CONTENT_DIR_ENV;
 
 /// Builds `target/desktop/<Name>/`: the executable with the desktop cook in `content/`
 /// beside it, where the platform layer looks by default.
@@ -36,12 +35,18 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
 /// against the cooked directory, without bundling.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     // Held while the app runs, so no other xtask run recooks the content under it.
-    let content = content::cook(Cook::Desktop)?;
-    let executable = super::executable(app, None, &build_env()?, options)?;
+    let (content, executable) = prepare(app, options)?;
     super::launch(Command::new(executable).args(args).env(CONTENT_DIR_ENV, &content.dir), options)
 }
 
+/// Cooks for desktop and builds for the host: what [`run`] launches.
+pub fn prepare(app: &App, options: &Options) -> anyhow::Result<(content::Cooked, PathBuf)> {
+    let content = content::cook(Cook::Desktop)?;
+    let executable = super::executable(app, None, &build_env()?, options)?;
+    Ok((content, executable))
+}
+
 /// Host-specific build environment: only macOS needs any (see [`macos::build_env`]).
-fn build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
+pub fn build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
     if std::env::consts::OS == "macos" { macos::build_env() } else { Ok(Vec::new()) }
 }

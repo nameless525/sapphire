@@ -24,6 +24,7 @@ members = [
     "apps/sapphire_sandbox",
     # Tools (never shipped)
     "tools/sapphire_pipeline",
+    "tools/sapphire_testkit",
     "xtask",
 ]
 
@@ -99,6 +100,9 @@ png = "0.18"
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
+sapphire_testkit = { path = "tools/sapphire_testkit" }
+# FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.
+nv-flip = "0.1.2"
 gltf = { version = "1.4.1", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

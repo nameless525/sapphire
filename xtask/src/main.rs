@@ -2,10 +2,12 @@
 //!
 //! Owns layer checking, content cooking, and building, bundling and launching the apps
 //! per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
-//! as a process. `package` (store artifacts) and `golden` / `replay` come later.
+//! as a process, and golden-image tests (`golden`), which compare sandbox captures with
+//! per-backend references. `package` (store artifacts) and `replay` come later.
 
 mod cli;
 mod content;
+mod golden;
 mod layers;
 mod platforms;
 mod workspace;
@@ -43,6 +45,12 @@ Commands:
         android   bundles, uses the connected device or boots the sapphire_api36
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
+  golden [--update] [--scene <name>]
+      Render the golden scenes with the sandbox's offscreen capture (640x360, no window)
+      and compare them with tests/golden/<scene>.<backend family>.png using FLIP.
+      Failures leave .actual.png and .diff.png files under target/golden/. A scene with
+      no golden for this backend family fails in CI and is skipped locally. --update
+      writes this family's goldens instead.
   help
       Show this message.
 
@@ -97,6 +105,12 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             options.dry_run = args.flag("--dry-run");
             let app_args = args.finish(true)?;
             platforms::run(platform, &App::load(SANDBOX)?, &options, &app_args)
+        }
+        "golden" => {
+            let update = args.flag("--update");
+            let scene = args.value::<String>("--scene")?;
+            args.finish(false)?;
+            golden::run(update, scene.as_deref())
         }
         "help" | "--help" | "-h" => {
             eprintln!("{USAGE}");

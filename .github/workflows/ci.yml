@@ -113,6 +113,78 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 
+  # Golden images (spec §9 gate 3, M1 plan Q6): sandbox captures compared with per-backend
+  # references in tests/golden by `cargo xtask golden`. Each runner renders with a pinned CPU or
+  # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
+  golden:
+    name: Golden images (${{ matrix.family }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan }
+          - { os: windows-2025, family: dx12-warp, backend: dx12 }
+          - { os: macos-26, family: metal, backend: metal }
+    runs-on: ${{ matrix.os }}
+    # Metal on the hosted runner's paravirtual GPU is informational until it has run clean
+    # for two weeks; wgpu itself still tests on macos-14 (M1 plan §3).
+    continue-on-error: ${{ matrix.family == 'metal' }}
+    timeout-minutes: 45
+    env:
+      SAPPHIRE_GPU_BACKEND: ${{ matrix.backend }}
+      # Validation slows CPU rasterizers, and Metal's is broken on the paravirtual device.
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install SDL3 build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS libvulkan1
+      # Mesa's lavapipe, pinned to the build wgpu's CI uses rather than apt's, whose updates
+      # would change the goldens. The checksum guards the third-party release asset.
+      - name: Install lavapipe (Mesa 26.1.3)
+        if: runner.os == 'Linux'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL --retry 5 -o mesa.tar.xz https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
+          echo "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  mesa.tar.xz" | sha256sum -c -
+          mkdir mesa && tar xpf mesa.tar.xz -C mesa
+          cat > lavapipe.json <<JSON
+          {"file_format_version": "1.0.1", "ICD": {"library_path": "$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so", "api_version": "1.4.348", "library_arch": "64"}}
+          JSON
+          echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Select the macOS SDK
+        if: runner.os == 'macOS'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+      - name: Install Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      - name: Build the sandbox
+        run: cargo build --package sapphire_sandbox --locked
+      # WARP from NuGet, pinned and placed next to the executable so D3D12 loads it instead
+      # of the runner's system copy. Its license allows testing only, so it's downloaded here
+      # and never committed.
+      - name: Install WARP 1.0.21
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
+          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
+          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
+          Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
+      - name: Golden images
+        run: cargo --locked xtask --locked golden
+      - name: Upload captures and diffs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-${{ matrix.family }}
+          path: target/golden/
+          if-no-files-found: ignore
+
   mobile-build-ios:
     name: Mobile build (iOS)
     runs-on: macos-26

@@ -36,6 +36,7 @@ sapphire_render = { kind = "runtime", layer = 3 }
 sapphire_sandbox = { kind = "app", features = ["tracy"] }
 # Tools.
 sapphire_pipeline = { kind = "tool" }
+sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
 
 # Same-layer dependencies that are allowed, as [from, to] pairs.

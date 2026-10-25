@@ -6,7 +6,8 @@
 //!   text, serde and rkyv forms are defined here, because cooked data and documents both
 //!   hold IDs.
 //! - Cooked formats shared by the cooker (`sapphire_pipeline`, which writes them) and the
-//!   runtime (which reads them): [`mesh`], M0's `.smesh`.
+//!   runtime (which reads them): [`mesh`], M0's `.smesh`, and [`texture`], KTX2 files whose
+//!   levels the renderer uploads as they are (M1 A2).
 //!
 //! # Does not own
 //!
@@ -24,8 +25,12 @@
 //!   replace it.
 //! - Hot reload behind handles (A8), and `Reflect` for [`AssetId`] once reflected documents
 //!   hold asset references (materials, A3; the inspector, F5).
+//! - Texture residency per tier budget, and mip streaming later still (spec §5.10): a
+//!   [`texture::Texture`] already exposes each level on its own, smallest last in the list
+//!   and first in the file.
 
 mod id;
 pub mod mesh;
+pub mod texture;
 
 pub use id::{AssetId, ParseAssetIdError};

@@ -8,8 +8,12 @@
 //!
 //! - [`meta`]: `.meta` sidecars, which give every source asset its [`AssetId`] and import
 //!   settings, and the only place new IDs are made.
-//! - [`import`]: source file → engine-neutral [`MeshAsset`](sapphire_assets::mesh::MeshAsset).
+//! - [`import`]: source file → engine-neutral intermediate: a
+//!   [`MeshAsset`](sapphire_assets::mesh::MeshAsset), or a [`SourceImage`](import::image::SourceImage)
+//!   from PNG, TGA or EXR.
 //! - [`bake`]: derived data computed offline, such as smoothed outline normals.
+//! - [`texture`]: texture classes and their per-cook formats, mip chains, and compression
+//!   through ctt into KTX2 [`Texture`](sapphire_assets::texture::Texture)s.
 //! - [`cook`]: import + bake + validate for a target cook, written to disk through the
 //!   content cache.
 //! - [`cache`]: the cache key over everything that determines a cooked output, and the local
@@ -18,7 +22,8 @@
 //!
 //! # Does not own
 //!
-//! - The [`AssetId`] type and the cooked formats: `sapphire_assets`, shared with the runtime.
+//! - The [`AssetId`] type and the cooked formats (`.smesh`, the KTX2 texture profile):
+//!   `sapphire_assets`, shared with the runtime.
 //! - Document and archive formats: `sapphire_serialize` (sidecars are its RON documents).
 //! - Locking and output locations: xtask (`cargo xtask content` cooks into
 //!   `target/content/<cook>/` with the cache in `target/content/cache/`).
@@ -35,8 +40,8 @@
 //!
 //! # Later milestones
 //!
-//! - Textures (A2), materials (A3) and skinned meshes (A5) as further importers and recipes,
-//!   FBX through `ufbx`, meshopt optimization and LODs.
+//! - Materials (A3) and skinned meshes (A5) as further importers and recipes, FBX through
+//!   `ufbx`, meshopt optimization and LODs.
 //! - Packs (A4), a shared cache, and the editor's daemon mode.
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
@@ -51,3 +56,4 @@ pub mod meta;
 pub mod samples;
 #[cfg(test)]
 mod test_util;
+pub mod texture;

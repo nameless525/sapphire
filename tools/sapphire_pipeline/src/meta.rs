@@ -48,6 +48,7 @@ use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
+use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.
 pub const SIDECAR_EXTENSION: &str = "meta";
@@ -72,6 +73,8 @@ impl Versioned for AssetMeta {
 pub enum ImportSettings {
     /// glTF 2.0 (`.gltf`, `.glb`), flattened into one static mesh.
     Gltf(MeshSettings),
+    /// PNG, TGA or EXR, cooked as its texture class says (M1 A2).
+    Texture(TextureSettings),
 }
 
 impl ImportSettings {
@@ -81,6 +84,11 @@ impl ImportSettings {
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
+            // Integer images are colors until their sidecar says otherwise; float images are HDR.
+            "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
+            "exr" => {
+                Some(Self::Texture(TextureSettings { class: TextureClass::Hdr(HdrSettings::default()) }))
+            }
             _ => None,
         }
     }
@@ -89,6 +97,7 @@ impl ImportSettings {
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
             Self::Gltf(settings) => Some(settings),
+            Self::Texture(_) => None,
         }
     }
 }
@@ -390,6 +399,14 @@ mod tests {
         assert_eq!(sidecar_path(source), Path::new("content/samples/mannequin.glb.meta"));
         assert_eq!(source_path(&sidecar_path(source)), source);
         assert!(ImportSettings::for_source(Path::new("model.GLB")).is_some());
+        assert_eq!(
+            ImportSettings::for_source(Path::new("albedo.png")),
+            Some(ImportSettings::Texture(TextureSettings::default()))
+        );
+        assert!(matches!(
+            ImportSettings::for_source(Path::new("sky.EXR")),
+            Some(ImportSettings::Texture(TextureSettings { class: TextureClass::Hdr(_) }))
+        ));
         assert!(ImportSettings::for_source(Path::new("notes.txt")).is_none());
         assert!(ImportSettings::for_source(Path::new("model.glb.meta")).is_none());
     }

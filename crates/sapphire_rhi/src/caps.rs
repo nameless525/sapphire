@@ -34,6 +34,8 @@ fn optional_features() -> Features {
         | Features::RG11B10UFLOAT_RENDERABLE
         | Features::TEXTURE_COMPRESSION_BC
         | Features::TEXTURE_COMPRESSION_ASTC
+        // R16 / RG16 unorm: the desktop cook's 16-bit SDF face maps (M1 A2).
+        | Features::TEXTURE_FORMAT_16BIT_NORM
         | Features::TIMESTAMP_QUERY
         | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
         | Features::TIMESTAMP_QUERY_INSIDE_PASSES

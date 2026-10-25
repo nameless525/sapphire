@@ -103,6 +103,9 @@ postcard = { version = "1.1.3", default-features = false, features = ["use-std"]
 # The pipeline's content-cache keys today; pack and download hashes in sapphire_assets later (A4),
 # so it isn't tool-only. Its SIMD kernels build with the C compiler SDL's build already needs.
 blake3 = "1.8.7"
+# KTX2, the cooked texture container (M1 A2): sapphire_assets reads and writes it (the pipeline
+# writes through it). Its only dependency is bitflags; ctt uses the same version.
+ktx2 = "0.5.0"
 
 # --- Jobs ---
 bevy_tasks = { version = "0.20.0", features = ["multi_threaded"] }
@@ -124,9 +127,17 @@ objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_testkit = { path = "tools/sapphire_testkit" }
+sapphire_pipeline = { path = "tools/sapphire_pipeline" }
 # FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.
 nv-flip = "0.1.2"
 gltf = { version = "1.4.1", default-features = false }
+# Texture compression (M1 A2, spec §5.27). Only the encoders the cooks use: bc7enc-rdo for BC7,
+# Intel's ISPC kernels (prebuilt, so no ISPC toolchain is needed) for BC4, BC5 and BC6H, and
+# astcenc for ASTC. No `rayon`: every surface encodes serially, so output never depends on the
+# thread count.
+ctt = { version = "0.6.0", default-features = false, features = ["encoder-bc7enc", "encoder-intel", "encoder-astcenc", "ispc-prebuilt"] }
+# PNG, TGA and EXR decoding for the texture importer, and nothing else: no `rayon`, no other formats.
+image = { version = "0.25.10", default-features = false, features = ["png", "tga", "exr"] }
 # OS entropy for new asset IDs: only the pipeline creates them. Not on the tool-only list, because
 # runtime crates may still reach it through other dependencies (rustls's `ring`, for one).
 getrandom = "0.4.3"

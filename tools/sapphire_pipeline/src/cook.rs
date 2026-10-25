@@ -16,9 +16,10 @@
 //!    bytes change, so a file watcher (hot reload, A8) sees exactly the assets that changed.
 //!
 //! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
-//! format, whose versions are part of the cache key. A1 has one, glTF → `.smesh`. Both cooks
-//! write the same mesh until the mobile cook gets its lower-detail LOD0 (spec §5.27); they
-//! still have separate keys.
+//! format, whose versions are part of the cache key. glTF cooks to `.smesh` (A1): both cooks
+//! write the same mesh until the mobile cook gets its lower-detail LOD0 (spec §5.27), though
+//! they still have separate keys. PNG, TGA and EXR cook to `.ktx2` (A2), BCn on desktop and
+//! ASTC on mobile ([`texture`]).
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
@@ -32,11 +33,14 @@ use std::str::FromStr;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::{MESH_EXTENSION, MESH_VERSION, MeshAsset, MeshFormatError};
+use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 
 use crate::bake;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::import::gltf::{self, GltfImportError};
+use crate::import::image;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
+use crate::texture::{self, TextureError};
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android.
@@ -95,7 +99,7 @@ pub struct Recipe {
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 1 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
-const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION];
+const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION];
 
 /// Extension of the temporary files outputs are written through.
 const TEMP_EXTENSION: &str = "tmp";
@@ -109,6 +113,12 @@ impl Recipe {
                 cooker: MESH_COOKER,
                 format: MESH_VERSION,
                 extension: MESH_EXTENSION,
+            },
+            ImportSettings::Texture(_) => Self {
+                importer: image::IMPORTER,
+                cooker: texture::COOKER,
+                format: TEXTURE_VERSION,
+                extension: TEXTURE_EXTENSION,
             },
         }
     }
@@ -126,6 +136,13 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: GltfImportError,
+    },
+    #[error("failed to cook texture {}", path.display())]
+    Texture {
+        path: PathBuf,
+        /// Boxed: decoder and encoder errors are large, and every cook result carries this type.
+        #[source]
+        source: Box<TextureError>,
     },
     #[error("cooked mesh from {} is invalid", path.display())]
     Invalid {
@@ -296,6 +313,8 @@ fn cook_source(
 ) -> Result<Vec<u8>, CookError> {
     match settings {
         ImportSettings::Gltf(mesh) => Ok(import_mesh(path, bytes, mesh, cook)?.to_bytes()),
+        ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
+            .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -315,6 +334,8 @@ fn dependencies(path: &Path, bytes: &[u8], settings: &ImportSettings) -> Result<
                 })
                 .collect()
         }
+        // Images are self-contained.
+        ImportSettings::Texture(_) => Ok(Vec::new()),
     }
 }
 

@@ -23,6 +23,8 @@ tracing.workspace = true
 png.workspace = true
 # Waits on error scopes in the GPU tests.
 pollster.workspace = true
+# Cooks the textures the GPU tests upload. Tools may be dev-dependencies (xtask check-layers).
+sapphire_pipeline.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

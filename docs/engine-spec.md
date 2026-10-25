@@ -529,6 +529,11 @@ Each module below follows the same template:
   - serde writes the text in human-readable formats (RON) and the 16 bytes in binary ones (postcard). rkyv archives an `AssetId` as itself (alignment 1), so cooked data hands out `&AssetId` in place.
   - IDs are random, laid out as version 4 UUIDs. Only the pipeline creates them; the runtime parses and compares them and never needs entropy.
   - **Decision:** addressing cooked data by ID waits for packs (A4), whose table of contents is the runtime's ID index. A1 adds no ID-to-path manifest: rule R5 keeps path strings out of the runtime, and A4 would replace it. Until then the sandbox loads `samples/mannequin.smesh` by path.
+- **As built (M1 A2, `sapphire_assets::texture`, `sapphire_render::texture`):**
+  - A cooked texture is a KTX2 file restricted to one 2D image and its mip chain: one of 20 formats (RGBA8 sRGB, R8, RG8, R16, RG16, RGBA16F, RGB9E5, BC4, BC5, BC6H, BC7 linear and sRGB, ASTC 4×4 to 8×8 LDR), no supercompression (packs compress, A4), and level 0 a whole number of blocks, which WebGPU requires. Levels are tightly packed and stored smallest first at KTX2's alignment.
+  - The key/value data holds `KTXswizzle` where the stored channels aren't the logical ones (ASTC keeps two channels as luminance plus alpha, so normals and two-channel masks carry `ra01`), and `SapphireTextureVersion`. The reader rejects other versions, other data format descriptors and anything malformed without panicking: it compares the descriptor's bytes before the `ktx2` crate parses them, because ktx2 0.5.0's parser panics on some malformed descriptors. `Texture` borrows its levels from the file, so reading copies nothing.
+  - **Decision:** KTX2 rather than an engine format. It already is a container of GPU-ready levels with a self-describing format, standard tools read it, and packs can hold it as one blob per texture. The writer sits next to the reader, on the `ktx2` crate's header and DFD types, because ctt's own KTX2 writer can't add key/value entries.
+  - The renderer uploads every level with one `Queue::write_texture` after checking that the device can filter the format. A device without its cook's formats (BC without BC support, ASTC without ASTC) gets an error naming the cook it needs. `check_format` runs the same check without uploading; the boot check of §6.1 calls it once the runtime knows its cook (A4). `GpuCaps` also enables `TEXTURE_FORMAT_16BIT_NORM` now, for the desktop cook's 16-bit SDF maps. Binding textures into materials, and applying their swizzle in shaders, is A3's.
 
 **Tests**
 
@@ -1032,12 +1037,20 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - Timings on the M5: `cargo xtask content` takes 0.26–0.27 s cold, warm, or after touching or changing the one sample mesh. Nearly all of that is cargo checking that xtask and the pipeline are built; the pipeline itself takes 11 ms cold and 8 ms warm. On 200 distinct meshes (27 MB of sources) it takes 0.46 s cold, 0.06 s warm or with one source changed (1 cooked, 199 up to date), and 0.10 s to restore every output from the cache.
   - Cooked outputs keep mirroring their source paths; addressing them by ID waits for packs (A4, see §5.10).
   - Later: a shared cache behind the same key, pruning old entries (deleting the directory is always safe), a stat cache so unchanged sources aren't rehashed, and parallel cooking.
+- **As built (M1 A2, `sapphire_pipeline::{import::image, texture}`):**
+  - PNG, TGA and EXR import through `image` 0.25, built with only those decoders, into linear `f32` RGBA that remembers the source's channel layout. Integer samples are decoded as the texture class says (sRGB for color, ramp and HDR classes, linear for data maps), float samples are always linear, and non-finite samples are errors.
+  - The class is a typed import setting in the sidecar (`importer: Texture((class: Normal((flip_y: true))))`). New PNG and TGA sidecars default to color, EXR to HDR. The formats per class and cook are the table below: masks pick BC4, BC5 or BC7 by channel count, SDF maps are 16-bit on desktop by default and 8-bit on mobile, and mobile HDR is RGB9E5 by default (RGBA16F keeps alpha). ASTC blocks are 4×4 by default, configurable per color, normal and mask texture, and fixed at 4×4 for ILM maps.
+  - The pipeline generates mip chains itself. Each level is the area average of level 0 over its footprint, a box filter of the exact scale factor, so odd sizes stay aligned and nothing rings or haloes. Averaging is in linear light: color weights by alpha, normals are averaged as vectors with Z rebuilt and renormalized, and everything else is averaged per channel.
+  - Each level then goes through its own `ctt::convert` call with a named encoder (bc7enc-rdo for BC7, Intel's prebuilt ISPC kernels for BC4, BC5 and BC6H, astcenc for ASTC), so ctt's broken BC7 mip chains (its issue #114) never come into play. ctt is told the levels are premultiplied on both sides: its float path otherwise premultiplies straight alpha and divides it back out, which destroys data packed into alpha.
+  - Textures plug in as a recipe (importer `image` 1, cooker `ktx2 (ktx2 0.5.0, ctt 0.6.0)` 1, format `TEXTURE_VERSION`) without changing the cache key. Two cooks of one source are byte-identical (serial encoders, no timestamps). A test ties the cooker's name to the versions of every `ctt*` crate and of `ktx2` in `Cargo.lock`, so upgrading an encoder (each is its own crate on a caret range) or the descriptor generator the reader checks against recooks every texture.
+  - Timings on the M5 (release, encoders serial): a 2048² color texture cooks in 1.2 s to BC7 and 0.5 s to ASTC 4×4, and a 1024² normal map to BC5 in about 30 ms.
+  - A GPU test cooks every class for both cooks, uploads the KTX2 and samples every level back on Metal, down to the 1×1 levels, within each format's tolerance.
 
 | Asset | Source | Importer | `desktop` cook | `mobile` cook |
 |---|---|---|---|---|
 | Meshes (static and skinned) | Blender → glTF 2.0; FBX via `ufbx` | `gltf` 1.4, `ufbx` 0.11 | Quantized vertex streams; `meshopt` 0.7 vertex-cache / overdraw / fetch optimization; LODs; outline normals, either authored (an `_OUTLINE_NORMAL` vertex attribute, from M1) or baked by welding (M0: angle-weighted, sliver- and cancellation-safe, 0.1 mm weld) | Same, with a lower-detail LOD0 and fewer LODs |
 | Color textures | PNG / TGA / EXR | `image`, `exr` | KTX2 (`ktx2` 0.5) BC7 via `ctt` 0.6 | KTX2 ASTC 4×4–8×8 per texture class, via `ctt` |
-| Normal maps / masks / HDR | same | same | BC5 / BC4 / BC6H | ASTC; HDR as RGBA16F or RGB9E5 |
+| Normal maps / masks / HDR | same | same | BC5 / BC4, BC5 or BC7 by channel count / BC6H | ASTC; HDR as RGBA16F or RGB9E5 |
 | Ramps, ILM maps, SDF face maps | Painted | `image` | Uncompressed RGBA8 (ramps), BC7 (ILM), R8/R16 (SDF) | RGBA8, ASTC 4×4, R8 |
 | Animation | glTF / FBX | `ufbx` / `gltf` | ozz archives plus root-motion track and curves | Same, with stronger compression |
 | Move graphs, frame data, effects, UI, tiers | Editor documents (RON) | serde | rkyv | rkyv |
@@ -1378,8 +1391,8 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `egui`, `egui-wgpu`, `egui_dock` / `egui_tiles`, `egui_plot` | 0.37 line | `sapphire_debug`, `sapphire_editor` | |
 | `transform-gizmo`, `egui-snarl` | 0.11, 0.12 | `sapphire_editor` | |
 | `gltf`, `ufbx` | 1.4, 0.11 | `sapphire_pipeline` | |
-| `ctt`, `ktx2`, `meshopt` | 0.6, 0.5, 0.7 | `sapphire_pipeline` | `basis-universal` is stale |
-| `image`, `exr`, `rayon` | latest | `sapphire_pipeline` | Tools only |
+| `ctt`, `ktx2`, `meshopt` | 0.6, 0.5, 0.7 | `sapphire_pipeline`; `ktx2` also `sapphire_assets` | `basis-universal` is stale. ctt with only the bc7enc-rdo, ISPC (prebuilt) and astcenc encoders, and no `rayon` |
+| `image`, `exr`, `rayon` | 0.25, 1.74, latest | `sapphire_pipeline` | Tools only. `image` with only its PNG, TGA and EXR decoders; `exr` comes through it |
 | `insta`, `nv-flip`, `criterion` | latest | `sapphire_testkit` | `dssim` is AGPL, so avoid it |
 | `cargo-ndk`, `sccache`, `cargo-hakari`, `cargo-nextest`, `cargo-deny` | 4.1, 0.18, –, –, – | Tooling | `bacon` is AGPL (fine as a local tool, not as a dependency) |
 

@@ -22,6 +22,8 @@
 //!   [`PostParams`].
 //! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
 //!   parallel recording and the frame's one submit.
+//! - Texture uploads ([`texture`], M1 A2): cooked KTX2 textures to sampled GPU textures with
+//!   every mip level, after checking that the device supports their format.
 //!
 //! # Does not own
 //!
@@ -34,8 +36,9 @@
 //! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
 //!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
 //!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
-//! - Mesh cooking: meshes arrive as [`sapphire_assets::mesh::MeshAsset`] with smoothed
-//!   outline normals already baked.
+//! - Mesh and texture cooking: meshes arrive as [`sapphire_assets::mesh::MeshAsset`] with
+//!   smoothed outline normals already baked, textures as [`sapphire_assets::texture::Texture`]
+//!   with their mip chains, compressed for the device's cook.
 //!
 //! # Conventions
 //!
@@ -112,6 +115,7 @@ mod post;
 mod renderer;
 mod scene;
 mod shaders;
+pub mod texture;
 
 pub use frame::{
     CameraData, DirectionalLight, FramePacket, FramePacketRing, InstanceDeltas, InstanceId, LightKind,

@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_assets"
-description = "Runtime asset identity, formats and loading: asset IDs and the cooked mesh format."
+description = "Runtime asset identity, formats and loading: asset IDs and the cooked mesh and texture formats."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
+ktx2.workspace = true
 rkyv.workspace = true
 serde.workspace = true
 thiserror.workspace = true

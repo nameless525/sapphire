@@ -3,7 +3,8 @@
 //! exactly what the app draws.
 //!
 //! - **Resources:** `WorldClock` (from `sapphire_ecs`), the [`OrbitCamera`], the slow-motion
-//!   handle, and the [`RenderExtract`] packet ring that extraction fills.
+//!   handle, [`TimeOfDay`] (the default day, on a clock of its own issued by the world clock),
+//!   and the [`RenderExtract`] packet ring that extraction fills.
 //! - **The character entity:** a [`Turntable`], its `EntityClock`, and the [`RenderMesh`] and
 //!   [`RenderTransform`](extract::RenderTransform) it draws with.
 //! - **Demo lights** (`--lights`): three colored local lights around the character, entities
@@ -11,12 +12,16 @@
 //! - **The skinned stalk** (`--skinned`): a procedural skinned and morphed mesh beside the
 //!   character, with its own `EntityClock`, a [`Sway`](skinned::Sway) and a
 //!   [`RenderPose`](extract::RenderPose) (see [`crate::skinned`]).
-//! - **Systems:** turntables spin, and stalks sway, in `FixedCombat`. `Extract` poses them,
+//! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
+//!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
 //!   frame's packet (see [`crate::extract`]). The stalk's systems are added only with `--skinned`,
 //!   since each system in `Extract` costs an allocation per frame (below).
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
+//!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
+//!   probe, and writes them; the player's filter strength (`post.filter_strength`) goes on top.
+//!   It runs there rather than as an `Extract` system, which would cost an allocation a frame.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -31,11 +36,9 @@ use sapphire_assets::mesh::{AlignedVec, ArchivedMesh, Mesh};
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{
-    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, RenderError, Renderer, SkyGradient,
-    ViewData,
-};
+use sapphire_render::{FramePacket, LightKind, LocalLight, MeshHandle, RenderError, Renderer, ViewData};
 use sapphire_time::{ScaleHandle, ScaleSource};
+use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh};
@@ -52,12 +55,10 @@ const SLOW_MOTION: u32 = 200;
 const HITSTOP_TICKS: u16 = 8;
 /// Shader time wraps so it keeps f32 precision over long sessions.
 const SHADER_TIME_WRAP_SECONDS: f64 = 3600.0;
-
-const SUN: DirectionalLight = DirectionalLight {
-    direction: Vec3::new(0.55, -0.7, -0.45),
-    color: Vec3::new(1.0, 0.97, 0.92),
-    intensity: 1.0,
-};
+/// The hour the scene starts at unless `--time-of-day` says otherwise: the default day's 10:00
+/// key, which is exactly the look the sandbox drew before time of day, so golden images that
+/// don't choose a time are unchanged.
+pub(crate) const DEFAULT_TIME_OF_DAY: f32 = 10.0;
 
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
@@ -82,6 +83,10 @@ impl Scene {
         world.insert_resource(OrbitCamera::framing(bounds));
         world.insert_resource(SlowMotion::default());
         world.insert_resource(RenderExtract::default());
+        let day_clock = world.resource_mut::<WorldClock>().0.new_local_clock();
+        let time_of_day = TimeOfDay::new(TodTimeline::default_day(), day_clock, DEFAULT_TIME_OF_DAY)
+            .expect("the default day sets every group");
+        world.insert_resource(time_of_day);
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
         let character = world.spawn((Turntable::default(), clock)).id();
         let stalk = skinned.then(|| {
@@ -89,10 +94,12 @@ impl Scene {
             let place = extract::RenderTransform(skinned::placement(bounds));
             world.spawn((Sway::default(), clock, place, skinned::rest_pose())).id()
         });
-        ecs.add_systems(FixedCombat, turntable::spin).add_systems(
-            Extract,
-            (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
-        );
+        ecs.add_systems(FixedFirst, tick_time_of_day.after(SimSet::Clocks))
+            .add_systems(FixedCombat, turntable::spin)
+            .add_systems(
+                Extract,
+                (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
+            );
         if skinned {
             ecs.add_systems(FixedCombat, skinned::sway).add_systems(
                 Extract,
@@ -154,6 +161,15 @@ impl Scene {
         }
     }
 
+    /// Sets the hour, and runs a day in `day_length` seconds of world time (or stops the cycle
+    /// with `None`).
+    pub fn set_day(&mut self, hours: f32, day_length: Option<f32>) {
+        let mut time_of_day = self.time_of_day_mut();
+        let clock = time_of_day.clock_mut();
+        clock.set_hours(hours);
+        clock.set_day_length(day_length);
+    }
+
     /// Applies input queued since the last fixed step. Call before the frame's steps.
     pub fn apply(&mut self, actions: SimActions) {
         let world = self.ecs.world_mut();
@@ -190,18 +206,18 @@ impl Scene {
         self.ecs.presentation(alpha);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
+            let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
-                packet.views.push(ViewData { camera: world.resource::<OrbitCamera>().camera_data(aspect) });
+                packet.views.push(ViewData { camera: camera.camera_data(aspect) });
             }
+            let probe = camera.eye();
             let clock = &world.resource::<WorldClock>().0;
             // Interpolated like everything else drawn this frame.
             let time =
                 clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
-            packet.sun = SUN;
-            packet.sky = SkyGradient::default();
             packet.time_seconds = (time % SHADER_TIME_WRAP_SECONDS) as f32;
-            // The look-dev cvars on the default look, until time of day resolves it (W1).
-            packet.post = crate::cvars::post_params();
+            world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
+            packet.post.filter_strength = crate::cvars::filter_strength();
         });
         self.ecs.extract();
         self.ecs.world().resource::<RenderExtract>().packet()
@@ -230,6 +246,14 @@ impl Scene {
     #[cfg(feature = "dev")]
     pub fn world_clock(&self) -> &sapphire_time::ScaledClock {
         &self.ecs.world().resource::<WorldClock>().0
+    }
+
+    pub fn time_of_day(&self) -> &TimeOfDay {
+        self.ecs.world().resource()
+    }
+
+    pub fn time_of_day_mut(&mut self) -> Mut<'_, TimeOfDay> {
+        self.ecs.world_mut().resource_mut()
     }
 
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.
@@ -314,6 +338,13 @@ mod tests {
     use super::*;
 
     const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
+
+    /// The sun the sandbox drew with before time of day.
+    const SUN: sapphire_render::DirectionalLight = sapphire_render::DirectionalLight {
+        direction: Vec3::new(0.55, -0.7, -0.45),
+        color: Vec3::new(1.0, 0.97, 0.92),
+        intensity: 1.0,
+    };
 
     fn scene() -> Scene {
         Scene::new(BOUNDS, false)
@@ -408,6 +439,25 @@ mod tests {
     }
 
     #[test]
+    fn time_of_day_runs_on_the_world_clock() {
+        let mut scene = scene();
+        scene.set_day(18.0, Some(24.0));
+        for _ in 0..TICK_HZ {
+            scene.step();
+        }
+        let hours = |scene: &Scene| scene.time_of_day().clock().hours(0.0);
+        assert!((hours(&scene) - 19.0).abs() < 1e-4, "an hour a second");
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert!(packet.day_night > 0.0, "past sunset");
+        scene.end_frame();
+        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        for _ in 0..TICK_HZ {
+            scene.step();
+        }
+        assert!((hours(&scene) - 19.2).abs() < 1e-4, "slowed with the world");
+    }
+
+    #[test]
     fn the_main_view_needs_a_drawable_target() {
         assert_eq!(drawable_aspect(Some((1920, 1080))), Some(1920.0 / 1080.0));
         for size in [None, Some((0, 1080)), Some((1920, 0))] {
@@ -426,7 +476,10 @@ mod tests {
         scene.step();
         let packet = scene.frame_packet(1.0, Some((1920, 1080)));
         assert_eq!(packet.views.len(), 1);
+        // At the default hour, time of day draws the sandbox's look from before it existed.
         assert_eq!(packet.sun, SUN);
+        assert_eq!(packet.sky, sapphire_render::SkyGradient::default());
+        assert_eq!(packet.post, sapphire_render::PostParams::default());
         assert!(packet.lights.is_empty(), "no demo lights unless asked for");
         assert_eq!(changed(packet), [character], "added");
         let first = packet.instances.changed[0].transform;

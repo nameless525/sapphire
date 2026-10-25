@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 6] {
+pub fn scenes() -> [Scene; 7] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -59,6 +59,14 @@ pub fn scenes() -> [Scene; 6] {
         Scene {
             name: "turntable-skinned",
             args: &["--capture-ticks", "90", "--skinned"],
+            thresholds: Thresholds::default(),
+        },
+        // Sunset from the default day (M1 W1), between its golden-hour and sunset keys: a low
+        // orange key light from the right, the sky's horizon band, violet-tinted shade and
+        // post's two grading LUTs blended (80% toward sunset's).
+        Scene {
+            name: "turntable-sunset",
+            args: &["--capture-ticks", "90", "--time-of-day", "18.5"],
             thresholds: Thresholds::default(),
         },
     ]

@@ -42,6 +42,7 @@ bevy_ecs.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_time.workspace = true
+sapphire_world.workspace = true
 png.workspace = true
 profiling.workspace = true
 tracing.workspace = true

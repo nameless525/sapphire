@@ -67,6 +67,13 @@ pub fn tan(x: f32) -> f32 {
     libm::tanf(x)
 }
 
+/// Arccosine of `x`, in radians within [0, π]. NaN outside [−1, 1].
+#[inline]
+#[must_use]
+pub fn acos(x: f32) -> f32 {
+    libm::acosf(x)
+}
+
 /// Four-quadrant arctangent of `y / x`, in radians within [−π, π].
 #[inline]
 #[must_use]
@@ -104,6 +111,35 @@ pub fn quat_from_axis_angle(axis: Vec3, angle: f32) -> Quat {
     let (s, c) = sin_cos(angle * 0.5);
     let v = axis * s;
     Quat::from_xyzw(v.x, v.y, v.z, c)
+}
+
+/// The unit vector `t` of the way from `from`'s direction to `to`'s along the great circle
+/// between them, at constant angular speed (spherical linear interpolation), computed
+/// deterministically. Neither input needs to be unit length; a zero vector counts as +Y.
+///
+/// Directions less than about 2° apart blend linearly and renormalize, where the circle is too
+/// short to divide by. Opposite directions have no unique circle: the blend turns about an axis
+/// perpendicular to `from`, chosen from `from` alone, so the same inputs always take the same
+/// path.
+#[must_use]
+pub fn slerp_direction(from: Vec3, to: Vec3, t: f32) -> Vec3 {
+    let a = from.try_normalize().unwrap_or(Vec3::Y);
+    let b = to.try_normalize().unwrap_or(Vec3::Y);
+    let cos = a.dot(b).clamp(-1.0, 1.0);
+    if cos > 0.9995 {
+        return a.lerp(b, t).try_normalize().unwrap_or(a);
+    }
+    if cos < -0.9995 {
+        // Any axis perpendicular to `from`: the cross product with whichever world axis it is
+        // furthest from.
+        let other = if a.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
+        let axis = a.cross(other).normalize();
+        let (sin_turn, cos_turn) = sin_cos(t * std::f32::consts::PI);
+        return (a * cos_turn + axis.cross(a) * sin_turn).normalize();
+    }
+    let angle = acos(cos);
+    let sin_angle = sin(angle);
+    (a * (sin((1.0 - t) * angle) / sin_angle) + b * (sin(t * angle) / sin_angle)).normalize()
 }
 
 #[cfg(test)]
@@ -161,6 +197,27 @@ mod tests {
         for (name, value, bits) in cases {
             assert_eq!(value.to_bits(), bits, "{name} = {value} ({:#010x})", value.to_bits());
         }
+    }
+
+    #[test]
+    fn slerp_follows_the_great_circle_at_constant_speed() {
+        let (from, to) = (Vec3::X, Vec3::Y);
+        for step in 0..=8 {
+            let t = step as f32 / 8.0;
+            let v = slerp_direction(from * 2.0, to * 0.5, t);
+            assert!(v.is_normalized());
+            let expected = Vec3::new((t * FRAC_PI_2).cos(), (t * FRAC_PI_2).sin(), 0.0);
+            assert!(v.abs_diff_eq(expected, 1e-6), "{t}: {v} vs {expected}");
+        }
+        // Nearly parallel and opposite directions still give unit vectors on a path.
+        let near = slerp_direction(Vec3::X, Vec3::new(1.0, 1e-4, 0.0), 0.5);
+        assert!(near.is_normalized() && near.y > 0.0);
+        for from in [Vec3::X, Vec3::Y, Vec3::new(0.3, -0.7, 0.2)] {
+            let half = slerp_direction(from, -from, 0.5);
+            assert!(half.is_normalized() && half.dot(from).abs() < 1e-5, "a quarter turn from {from}");
+            assert!(slerp_direction(from, -from, 1.0).abs_diff_eq(-from.normalize(), 1e-5));
+        }
+        assert_eq!(slerp_direction(Vec3::ZERO, Vec3::ZERO, 0.3), Vec3::Y);
     }
 
     const GOLDEN: [u32; 7] =

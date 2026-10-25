@@ -1,0 +1,32 @@
+[package]
+name = "sapphire_world"
+description = "The world framework. For now, time of day: one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# bevy's `Resource` derive finds the crate by this name (see sapphire_ecs).
+bevy_ecs.workspace = true
+# The `Reflect` derives on time-of-day keys find the crate by this name (see sapphire_reflect).
+bevy_reflect.workspace = true
+profiling.workspace = true
+sapphire_ecs.workspace = true
+sapphire_math.workspace = true
+sapphire_reflect.workspace = true
+# Time of day resolves into the frame packet's plain scene constants (rule R4: the renderer
+# never depends on this crate).
+sapphire_render.workspace = true
+sapphire_serialize.workspace = true
+sapphire_time.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The counting allocator, for the allocation tests.
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

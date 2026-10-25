@@ -1,0 +1,191 @@
+// Sapphire's default day (M1 W1), compiled into `sapphire_world`: `TodTimeline::default_day`,
+// whose module docs say how keys blend. Packs (A4) will carry timelines as content.
+//
+// - Eight keys: midnight, the blue hour, sunrise, day, afternoon, golden hour, sunset and dusk.
+//   Each sets every group, so this can be the base timeline; between keys every group blends
+//   linearly in time (colors in OkLab, directions along great circles).
+// - 10:00 is exactly the renderer's default look: the sun the sandbox has always drawn with,
+//   `SkyGradient::default()` and `PostParams::default()`. A scene that doesn't choose a time
+//   starts there, so its frames are what they were before time of day.
+// - Directions are the way light travels, from the body into the scene. Looking from the
+//   sandbox's camera, the sun rises on the left, passes high on the camera's side (lighting the
+//   character from the front), and sets on the right; the moon rises on the left as the sun
+//   sets, and sets on the right as it rises. The key light follows the sun by day and the moon
+//   at night, turning across the camera's side in the two twilights.
+// - A body lights the scene only from above the horizon, so each one's intensity reaches 0 at
+//   the key where it reaches the horizon (the sun at 5:00 and 20:00, the moon at 18:45), and
+//   stays 0 below it.
+// - Characters get a key light of their own, brighter than the world's at night so they read
+//   (WuWa fits character brightness across the day); C2 draws it. Until then they are lit by
+//   the world's key light.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                // Midnight: a deep blue night under a high moon, lifted by exposure.
+                time: 0.0,
+                sun: (direction: (-0.05, 0.85, 0.52), color: (1.0, 0.5, 0.3), intensity: 0.0),
+                moon: (direction: (0.05, -0.85, -0.52), color: (0.62, 0.72, 1.0), intensity: 0.42),
+                sky: (zenith: (0.008, 0.016, 0.07), horizon: (0.05, 0.08, 0.22), ground: (0.025, 0.025, 0.05)),
+                ambient: (sky: (0.2, 0.28, 0.6), ground: (0.04, 0.05, 0.09), intensity: 0.22),
+                fog: (
+                    near: (color: (0.06, 0.09, 0.2), density: 0.0),
+                    far: (color: (0.05, 0.08, 0.22), density: 0.004, start: 25.0),
+                    height: (color: (0.06, 0.09, 0.2), density: 0.02, falloff: 0.25),
+                ),
+                shadow_tint: (0.22, 0.26, 0.5),
+                character: (color: (0.66, 0.74, 1.0), intensity: 0.8),
+                day_night: 1.0,
+                exposure: 0.7,
+                grade: (temperature: -0.2, contrast: 1.05, saturation: 1.05, lift: (0.0, 0.01, 0.035)),
+                bloom: (threshold: 0.8, knee: 0.5, intensity: 0.3, scatter: 0.75),
+                vignette: (intensity: 0.3, start: 0.4),
+            ),
+            (
+                // The blue hour before dawn: the moon low on the right, the sky paling.
+                time: 5.0,
+                sun: (direction: (0.92, 0.0, -0.39), color: (1.0, 0.55, 0.4), intensity: 0.0),
+                moon: (direction: (-0.75, -0.3, -0.6), color: (0.62, 0.72, 1.0), intensity: 0.22),
+                sky: (zenith: (0.03, 0.05, 0.2), horizon: (0.32, 0.3, 0.52), ground: (0.07, 0.07, 0.12)),
+                ambient: (sky: (0.4, 0.4, 0.62), ground: (0.08, 0.08, 0.13), intensity: 0.18),
+                fog: (
+                    near: (color: (0.36, 0.36, 0.55), density: 0.004),
+                    far: (color: (0.32, 0.3, 0.52), density: 0.006, start: 20.0),
+                    height: (color: (0.36, 0.36, 0.55), density: 0.04, falloff: 0.3),
+                ),
+                shadow_tint: (0.3, 0.3, 0.55),
+                character: (color: (0.72, 0.76, 1.0), intensity: 0.75),
+                day_night: 0.9,
+                exposure: 0.5,
+                grade: (temperature: -0.15, tint: 0.04, contrast: 1.05, saturation: 1.1, lift: (0.005, 0.01, 0.035)),
+                bloom: (threshold: 0.85, knee: 0.5, intensity: 0.3, scatter: 0.72),
+                vignette: (intensity: 0.26, start: 0.42),
+            ),
+            (
+                // Sunrise: a low, peach-orange sun on the left, morning mist.
+                time: 6.5,
+                sun: (direction: (0.9, -0.06, -0.43), color: (1.0, 0.62, 0.42), intensity: 0.8),
+                moon: (direction: (-0.9, -0.02, -0.43), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.09, 0.2, 0.56), horizon: (1.0, 0.66, 0.5), ground: (0.14, 0.12, 0.2)),
+                ambient: (sky: (1.0, 0.7, 0.62), ground: (0.14, 0.12, 0.2), intensity: 0.13),
+                fog: (
+                    near: (color: (1.0, 0.75, 0.65), density: 0.006),
+                    far: (color: (1.0, 0.66, 0.5), density: 0.006, start: 20.0),
+                    height: (color: (1.0, 0.75, 0.65), density: 0.05, falloff: 0.3),
+                    sun_inscatter: (0.6, 0.33, 0.18),
+                ),
+                shadow_tint: (0.45, 0.36, 0.55),
+                character: (color: (1.0, 0.72, 0.58), intensity: 0.95),
+                day_night: 0.35,
+                exposure: 0.15,
+                grade: (temperature: 0.06, tint: 0.04, contrast: 1.05, saturation: 1.18, lift: (0.01, 0.005, 0.02)),
+                bloom: (threshold: 0.9, knee: 0.5, intensity: 0.32, scatter: 0.72),
+                vignette: (intensity: 0.2, start: 0.45),
+            ),
+            (
+                // Day: exactly the renderer's default look (see the top of this file).
+                time: 10.0,
+                sun: (direction: (0.55, -0.7, -0.45), color: (1.0, 0.97, 0.92), intensity: 1.0),
+                moon: (direction: (-0.55, 0.7, 0.45), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.1, 0.3, 0.8), horizon: (0.62, 0.78, 0.95), ground: (0.36, 0.34, 0.42)),
+                ambient: (sky: (0.62, 0.78, 0.95), ground: (0.36, 0.34, 0.42), intensity: 0.12),
+                fog: (
+                    far: (color: (0.62, 0.78, 0.95), density: 0.002, start: 40.0),
+                    height: (color: (0.66, 0.8, 0.95), density: 0.012, falloff: 0.2),
+                    sun_inscatter: (0.15, 0.14, 0.12),
+                ),
+                shadow_tint: (0.38, 0.42, 0.62),
+                character: (color: (1.0, 0.97, 0.92), intensity: 1.0),
+                day_night: 0.0,
+                exposure: 0.0,
+                grade: (contrast: 1.05, saturation: 1.15, lift: (0.0, 0.005, 0.015)),
+                bloom: (threshold: 1.0, knee: 0.5, intensity: 0.25, scatter: 0.7),
+                vignette: (intensity: 0.18, start: 0.45),
+            ),
+            (
+                // Afternoon: the sun high on the right, a touch warmer; the day's grade.
+                time: 14.0,
+                sun: (direction: (-0.3, -0.85, -0.45), color: (1.0, 0.95, 0.88), intensity: 1.0),
+                moon: (direction: (0.3, 0.85, 0.45), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.09, 0.28, 0.78), horizon: (0.68, 0.8, 0.93), ground: (0.38, 0.35, 0.4)),
+                ambient: (sky: (0.68, 0.8, 0.93), ground: (0.38, 0.35, 0.4), intensity: 0.12),
+                fog: (
+                    far: (color: (0.68, 0.8, 0.93), density: 0.002, start: 40.0),
+                    height: (color: (0.7, 0.8, 0.92), density: 0.012, falloff: 0.2),
+                    sun_inscatter: (0.16, 0.14, 0.12),
+                ),
+                shadow_tint: (0.38, 0.42, 0.62),
+                character: (color: (1.0, 0.95, 0.88), intensity: 1.0),
+                day_night: 0.0,
+                exposure: 0.0,
+                grade: (contrast: 1.05, saturation: 1.15, lift: (0.0, 0.005, 0.015)),
+                bloom: (threshold: 1.0, knee: 0.5, intensity: 0.25, scatter: 0.7),
+                vignette: (intensity: 0.18, start: 0.45),
+            ),
+            (
+                // Golden hour: a low golden sun on the right, an amber horizon.
+                time: 17.5,
+                sun: (direction: (-0.85, -0.3, -0.45), color: (1.0, 0.78, 0.52), intensity: 0.95),
+                moon: (direction: (0.85, 0.3, -0.42), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.05, 0.18, 0.62), horizon: (1.0, 0.78, 0.5), ground: (0.16, 0.13, 0.18)),
+                ambient: (sky: (1.0, 0.78, 0.6), ground: (0.16, 0.13, 0.18), intensity: 0.12),
+                fog: (
+                    far: (color: (1.0, 0.8, 0.55), density: 0.003, start: 30.0),
+                    height: (color: (1.0, 0.78, 0.6), density: 0.015, falloff: 0.2),
+                    sun_inscatter: (0.5, 0.34, 0.18),
+                ),
+                shadow_tint: (0.45, 0.38, 0.6),
+                character: (color: (1.0, 0.82, 0.62), intensity: 1.0),
+                day_night: 0.0,
+                exposure: 0.05,
+                grade: (temperature: 0.04, contrast: 1.06, saturation: 1.2, lift: (0.005, 0.0, 0.02), gain: (1.0, 0.98, 0.96)),
+                bloom: (threshold: 0.95, knee: 0.5, intensity: 0.28, scatter: 0.7),
+                vignette: (intensity: 0.2, start: 0.45),
+            ),
+            (
+                // Sunset: an orange sun on the horizon, a violet zenith, purple shadows.
+                time: 18.75,
+                sun: (direction: (-0.92, -0.04, -0.4), color: (1.0, 0.5, 0.3), intensity: 0.75),
+                moon: (direction: (0.92, 0.0, -0.39), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.07, 0.07, 0.36), horizon: (1.0, 0.45, 0.18), ground: (0.09, 0.07, 0.13)),
+                ambient: (sky: (0.9, 0.5, 0.45), ground: (0.09, 0.07, 0.13), intensity: 0.14),
+                fog: (
+                    near: (color: (1.0, 0.55, 0.4), density: 0.002),
+                    far: (color: (1.0, 0.45, 0.18), density: 0.004, start: 25.0),
+                    height: (color: (0.9, 0.5, 0.45), density: 0.02, falloff: 0.25),
+                    sun_inscatter: (0.7, 0.3, 0.14),
+                ),
+                shadow_tint: (0.42, 0.3, 0.55),
+                character: (color: (1.0, 0.66, 0.5), intensity: 0.95),
+                day_night: 0.3,
+                exposure: 0.15,
+                grade: (temperature: 0.08, tint: 0.05, contrast: 1.06, saturation: 1.22, lift: (0.01, 0.0, 0.03)),
+                bloom: (threshold: 0.9, knee: 0.5, intensity: 0.32, scatter: 0.72),
+                vignette: (intensity: 0.22, start: 0.45),
+            ),
+            (
+                // Dusk: the sun down, a purple horizon, the moon rising on the left.
+                time: 20.0,
+                sun: (direction: (-0.94, 0.0, -0.34), color: (1.0, 0.42, 0.3), intensity: 0.0),
+                moon: (direction: (0.72, -0.3, -0.62), color: (0.62, 0.72, 1.0), intensity: 0.22),
+                sky: (zenith: (0.025, 0.035, 0.16), horizon: (0.22, 0.15, 0.34), ground: (0.05, 0.05, 0.09)),
+                ambient: (sky: (0.35, 0.3, 0.55), ground: (0.08, 0.07, 0.12), intensity: 0.18),
+                fog: (
+                    near: (color: (0.3, 0.22, 0.4), density: 0.002),
+                    far: (color: (0.22, 0.15, 0.34), density: 0.005, start: 25.0),
+                    height: (color: (0.3, 0.22, 0.4), density: 0.025, falloff: 0.25),
+                ),
+                shadow_tint: (0.25, 0.25, 0.5),
+                character: (color: (0.75, 0.72, 1.0), intensity: 0.75),
+                day_night: 0.85,
+                exposure: 0.45,
+                grade: (temperature: -0.1, tint: 0.1, contrast: 1.04, saturation: 1.1, lift: (0.01, 0.01, 0.035)),
+                bloom: (threshold: 0.85, knee: 0.5, intensity: 0.3, scatter: 0.72),
+                vignette: (intensity: 0.26, start: 0.42),
+            ),
+        ],
+    ),
+)

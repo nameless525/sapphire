@@ -80,7 +80,7 @@ Development builds add the debug overlay (`sapphire_debug`, egui): frame time an
 cargo xtask run --platform macos --features dev
 ```
 
-`--debug-overlay` shows it from the first frame, optionally with a list of panels (`stats`, `graph`, `time`, `console`, `cvars` or `all`). It works in offscreen captures too, for checking it without a window:
+`--debug-overlay` shows it from the first frame, optionally with a list of panels (`stats`, `graph`, `time`, `day`, `console`, `cvars` or `all`). The `day` panel scrubs time of day: the day strip, every value it resolves, and a character preview under the scrubbed key light. It works in offscreen captures too, for checking it without a window:
 
 ```bash
 cargo xtask run --platform desktop --features dev -- --capture overlay.png --size 1280x720 --debug-overlay=all
@@ -95,7 +95,7 @@ On a desktop, the sandbox has two offscreen modes. Neither opens a window, start
 - `--capture <png> [--capture-ticks N]` renders the scene after N fixed ticks and writes a PNG. It's the hook for golden-image tests later.
 - `--bench <frames>` runs the per-frame CPU path (fixed step, `Renderer::prepare`, encoding, submit) that many times and logs CPU time and allocations per frame.
 
-Both render at `--size WxH` (default 1920x1080). `xtask run --platform desktop` cooks the content and points the app at it:
+Both render at `--size WxH` (default 1920x1080). `--time-of-day <hours>` sets the hour (default 10, the default day's key that matches the look from before time of day) and `--day-length <seconds>` runs the day cycle, in these modes and in the window alike. `xtask run --platform desktop` cooks the content and points the app at it:
 
 ```bash
 cargo xtask run --platform desktop --release -- --bench 600
@@ -152,7 +152,7 @@ cargo xtask bundle --platform android --release
 ## Layout
 
 ```
-crates/   runtime crates (they ship), layered L0–L3, and dev-only sapphire_debug; see ADR 0001
+crates/   runtime crates (they ship), layered L0–L4, and dev-only sapphire_debug; see ADR 0001
 apps/     shipping binaries (sapphire_sandbox)
 tools/    never-shipped tools (sapphire_pipeline)
 xtask/    build automation and the layer checker

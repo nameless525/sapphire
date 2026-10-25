@@ -11,6 +11,7 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
+use sapphire_world::tod::TimeOfDay;
 
 use crate::budget::CpuStages;
 use crate::history::FrameTimes;
@@ -18,6 +19,7 @@ use crate::input::{EguiInput, WindowMetrics};
 use crate::render::OverlayRenderer;
 use crate::route::{Owner, Router, UiState};
 use crate::time::TimeControls;
+use crate::time_of_day::TodControls;
 use crate::ui::{self, Panels, UiMemory, View};
 use crate::{GPU_TIMING, UI_SCALE};
 
@@ -61,6 +63,8 @@ pub struct OverlayFrame<'a> {
     pub gamepads: usize,
     pub cvars: &'a CvarRegistry,
     pub world_clock: &'a ScaledClock,
+    /// The world's time of day, if the app runs one: the time-of-day panel's.
+    pub time_of_day: Option<&'a TimeOfDay>,
 }
 
 /// What the app should do for the overlay after [`DebugOverlay::update`].
@@ -105,6 +109,7 @@ pub struct DebugOverlay {
     stages: Option<CpuStages>,
     memory: UiMemory,
     time: TimeControls,
+    day: TodControls,
     cost: OverlayCost,
     gpu_timing: bool,
     max_texture_side: usize,
@@ -132,6 +137,7 @@ impl DebugOverlay {
             stages: None,
             memory: UiMemory::new(config.panels),
             time: TimeControls::default(),
+            day: TodControls::default(),
             cost: OverlayCost::default(),
             gpu_timing: false,
             max_texture_side: gpu.caps().limits.max_texture_dimension_2d as usize,
@@ -224,6 +230,12 @@ impl DebugOverlay {
         &mut self.time
     }
 
+    /// Time of day's developer controls. The app calls [`TodControls::apply`] before every
+    /// fixed step, shown or not.
+    pub fn tod_controls(&mut self) -> &mut TodControls {
+        &mut self.day
+    }
+
     /// Turns the executor's graph report and GPU timing on while the overlay shows them, and GPU
     /// timing also while `app_timing` says the app reads it (dynamic resolution,
     /// `Quality::wants_gpu_timing`), so the two never switch it off under each other. Call it
@@ -278,9 +290,9 @@ impl DebugOverlay {
             gpu_timing: self.gpu_timing,
         };
         let ctx = self.ctx.clone();
-        let (memory, time) = (&mut self.memory, &mut self.time);
+        let (memory, time, day) = (&mut self.memory, &mut self.time, &mut self.day);
         let mut hide = false;
-        let output = ctx.run_pass(raw, |ctx| hide = ui::show(ctx, memory, time, &view));
+        let output = ctx.run_pass(raw, |ctx| hide = ui::show(ctx, memory, time, day, &view));
 
         self.wants_keyboard = ctx.text_edit_focused();
         // Text input follows focus alone: egui reports the field's area only on frames it lays

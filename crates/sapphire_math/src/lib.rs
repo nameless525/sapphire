@@ -1,5 +1,5 @@
 //! Math for Sapphire (spec §5.4): glam re-exports plus the engine's transforms, bounds, culling
-//! volumes, projection, springs and deterministic scalar functions.
+//! volumes, projection, springs, easing, color spaces and deterministic scalar functions.
 //!
 //! # Coordinate convention
 //!
@@ -27,13 +27,20 @@
 //! Bounds and planes store [`Vec3A`] (16-byte aligned, SIMD friendly); [`Transform`] stores
 //! [`Vec3`] because it is mostly authored data. Use [`Affine3A`] for transforms applied in bulk.
 //!
+//! # Color
+//!
+//! [`color`] holds the sRGB transfer functions and OkLab, shared by the runtime (time of day
+//! blends its colors in OkLab) and the pipeline (ramps), so both blend colors the same way.
+//!
 //! # Not here yet
 //!
-//! `Ray`, easing and piecewise curves, and the seeded simulation RNG (spec §5.4) arrive with
-//! their first consumers in M1–M2.
+//! `Ray`, piecewise curves beyond keyed easing ([`ease`]), and the seeded simulation RNG (spec
+//! §5.4) arrive with their first consumers in M1–M2.
 
 pub mod bounds;
+pub mod color;
 pub mod det;
+pub mod ease;
 pub mod frustum;
 pub mod projection;
 pub mod spring;
@@ -43,6 +50,7 @@ pub use glam;
 pub use glam::{Affine2, Affine3A, EulerRot, Mat2, Mat3, Mat3A, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 
 pub use bounds::{Aabb, Sphere};
+pub use ease::Ease;
 pub use frustum::{Frustum, Plane};
 pub use spring::{SpringDamper, damp};
 pub use transform::Transform;

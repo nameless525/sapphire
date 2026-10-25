@@ -23,6 +23,8 @@ members = [
     # L3 subsystems
     "crates/sapphire_input",
     "crates/sapphire_render",
+    # L4 framework
+    "crates/sapphire_world",
     # Dev-only: development builds, through an app's `dev` feature
     "crates/sapphire_debug",
     # Apps
@@ -55,6 +57,7 @@ sapphire_rhi = { path = "crates/sapphire_rhi" }
 sapphire_serialize = { path = "crates/sapphire_serialize" }
 sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
+sapphire_world = { path = "crates/sapphire_world" }
 sapphire_debug = { path = "crates/sapphire_debug" }
 
 # --- Foundation ---

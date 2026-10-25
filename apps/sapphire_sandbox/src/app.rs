@@ -119,6 +119,7 @@ impl App for SandboxApp {
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
+        scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
         if options.lights {
             scene.spawn_demo_lights();
         }

@@ -90,6 +90,7 @@ impl Stage {
             scene::upload_character(&mut renderer, mesh)
         })?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
+        scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
         if options.lights {
             scene.spawn_demo_lights();
         }

@@ -5,7 +5,11 @@
 //! into the simulation or gameplay types, so it can be handed to render workers while the next
 //! frame simulates (§4.2).
 //!
-//! - **Views and scene constants** are rewritten whole every frame; they are small.
+//! - **Views and scene constants** are rewritten whole every frame; they are small. The scene
+//!   constants are the frame's look: the key light, the sun and moon, the sky gradient, ambient
+//!   light, fog, the shadow tint, the character rig's key light, the day/night factor and
+//!   post-processing. Time of day resolves all of them from one set of keys
+//!   (`sapphire_world::tod`, M1 W1; look pillar 1); the renderer sees only the values.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
@@ -38,7 +42,12 @@ const RING_SIZE: usize = 3;
 /// The packet grows with the systems that feed it (spec §4.6): VFX spawns and emitter
 /// parameters, gameplay-triggered post effects in `post` (P3), the UI draw list, and debug
 /// draws (dev builds). Shadow cascades (R4) and UI 3D insets add views after the main
-/// camera, and the time of day (W1) resolves into the scene constants.
+/// camera.
+///
+/// Some scene constants are carried for the packages that will read them and drawn from
+/// nothing yet: [`Self::celestial`] (the sky's sun and moon, W2), [`Self::ambient`] (W4, W5,
+/// C2), [`Self::fog`] (W3), [`Self::shadow_tint`] (R4, W4, C2) and [`Self::character_light`]
+/// (C2). Each type's docs name its readers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
@@ -47,8 +56,23 @@ pub struct FramePacket {
     /// What to draw from. The first view is the main camera; with none, the frame draws
     /// nothing (no target this frame), though its instance deltas still apply.
     pub views: Vec<ViewData>,
+    /// The world's key light, which shades the scene and (with R4) casts its shadows: the sun
+    /// by day and the moon at night, blended through twilight by time of day.
     pub sun: DirectionalLight,
     pub sky: SkyGradient,
+    /// The sun and the moon themselves, for the sky to draw (W2).
+    pub celestial: Celestial,
+    pub ambient: AmbientLight,
+    pub fog: Fog,
+    /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
+    /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
+    /// by shadows (R4), the environment shader (W4) and the character rig (C2).
+    pub shadow_tint: Vec3,
+    pub character_light: CharacterLight,
+    /// 0 by day, 1 at night: the anime character shader's day/night ramp blend (C1; spec §5.12
+    /// "Ramps"), and anything else that has a day and a night look. The frame uniforms carry it
+    /// as `day_night`.
+    pub day_night: f32,
     /// Presentation time in seconds, read from the owning clock (rule R2), for shader
     /// animation. The app wraps it to a fixed period (the sandbox uses an hour) so it keeps
     /// f32 precision in long sessions; shaders may only use it for effects that are periodic
@@ -110,6 +134,12 @@ impl FramePacket {
             views,
             sun,
             sky,
+            celestial,
+            ambient,
+            fog,
+            shadow_tint,
+            character_light,
+            day_night,
             time_seconds,
             post,
             lights,
@@ -122,6 +152,12 @@ impl FramePacket {
         views.clear();
         *sun = DirectionalLight::default();
         *sky = SkyGradient::default();
+        *celestial = Celestial::default();
+        *ambient = AmbientLight::default();
+        *fog = Fog::default();
+        *shadow_tint = Vec3::ZERO;
+        *character_light = CharacterLight::default();
+        *day_night = 0.0;
         *time_seconds = 0.0;
         *post = PostParams::default();
         lights.clear();
@@ -272,7 +308,8 @@ impl CameraData {
     }
 }
 
-/// The key light. For characters this is the artist-curved virtual key light (spec §5.12).
+/// A light from infinitely far away: the key light ([`FramePacket::sun`]), or the sun or moon
+/// themselves ([`Celestial`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DirectionalLight {
     /// Direction the light travels, from the sun into the scene. Need not be normalized.
@@ -286,6 +323,117 @@ impl Default for DirectionalLight {
     /// White light of intensity 1, straight down.
     fn default() -> Self {
         Self { direction: Vec3::NEG_Y, color: Vec3::ONE, intensity: 1.0 }
+    }
+}
+
+/// The sun and the moon as the sky draws them (W2: their discs and halos), each with the light
+/// it gives: where it is (opposite the direction its light travels), its color and intensity.
+///
+/// The key light ([`FramePacket::sun`]) is resolved from these by time of day: the sun's while
+/// only the sun shines, the moon's while only the moon does, and a blend of the two through
+/// twilight. A body's intensity can be 0 while it is still drawn (the moon by day).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Celestial {
+    pub sun: DirectionalLight,
+    pub moon: DirectionalLight,
+}
+
+impl Default for Celestial {
+    /// The default sun straight overhead, and a dark moon below the horizon.
+    fn default() -> Self {
+        Self {
+            sun: DirectionalLight::default(),
+            moon: DirectionalLight { direction: Vec3::Y, color: Vec3::new(0.6, 0.7, 1.0), intensity: 0.0 },
+        }
+    }
+}
+
+/// Low-frequency ambient light (look pillar 4): a hemisphere of sky light from above and bounce
+/// light from below, `color × intensity` in linear RGB.
+///
+/// Read by the environment shader (W4), the probe grid, as the tint of its per-key bake (W5),
+/// and the character rig's stylized GI (C2). The anime character shader takes its ambient from
+/// the sky gradient until C2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AmbientLight {
+    /// From above.
+    pub sky: Vec3,
+    /// From below.
+    pub ground: Vec3,
+    pub intensity: f32,
+}
+
+impl Default for AmbientLight {
+    /// The default sky's horizon from above and its ground from below, at the strength the
+    /// anime character shader gives its sky ambient.
+    fn default() -> Self {
+        let sky = SkyGradient::default();
+        Self { sky: sky.horizon, ground: sky.ground, intensity: 0.12 }
+    }
+}
+
+/// Distance and height fog (look pillar 3: layered atmosphere), read by W3: two distance layers
+/// and a height layer, each fading what lies behind it toward its color, plus light scattered
+/// toward the camera around the sun.
+///
+/// Densities are extinction per meter: a layer's fog is `1 − exp(−density × meters)` over the
+/// meters of view ray inside it. The default has none.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fog {
+    /// Haze near the camera.
+    pub near: FogLayer,
+    /// Aerial perspective: what melts distant geometry into the sky. W3 takes its color from
+    /// the sky's horizon in the view direction, tinted by this layer's.
+    pub far: FogLayer,
+    pub height: HeightFog,
+    /// Linear RGB light the fog scatters toward the camera around the sun's direction
+    /// (color × strength); black for none.
+    pub sun_inscatter: Vec3,
+}
+
+/// One distance layer of [`Fog`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FogLayer {
+    /// Linear RGB.
+    pub color: Vec3,
+    /// Extinction per meter: 0 is clear.
+    pub density: f32,
+    /// Meters from the camera where the layer begins.
+    pub start: f32,
+}
+
+/// Fog that thickens toward the ground: its density is `density × exp(−falloff × (y − base))`
+/// at height `y` (meters, world space).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HeightFog {
+    /// Linear RGB.
+    pub color: Vec3,
+    /// Extinction per meter at `base`.
+    pub density: f32,
+    /// How fast it thins with height, per meter.
+    pub falloff: f32,
+    /// The height, in meters, where `density` holds.
+    pub base: f32,
+}
+
+/// The character rig's key light (spec §5.12 "Character light rig"; C2). Characters are lit by
+/// a virtual key light of their own, whose color and brightness time of day curves separately
+/// from the world's (as WuWa fits its character brightness across the day), so they read well
+/// at every hour. Its direction is the key light's ([`FramePacket::sun`]) until C2 adds
+/// per-character offsets and presets.
+///
+/// Read by C2; the anime character shader lights by [`FramePacket::sun`] until then.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterLight {
+    /// Linear RGB.
+    pub color: Vec3,
+    pub intensity: f32,
+}
+
+impl Default for CharacterLight {
+    /// White light of intensity 1, as the default key light.
+    fn default() -> Self {
+        Self { color: Vec3::ONE, intensity: 1.0 }
     }
 }
 
@@ -373,6 +521,9 @@ mod tests {
         let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
         packet.views.push(ViewData { camera });
         packet.sun.intensity = 2.0;
+        packet.fog.far.density = 0.01;
+        packet.shadow_tint = Vec3::splat(0.4);
+        packet.day_night = 1.0;
         packet.time_seconds = 1.5;
         packet.lights.push(LocalLight {
             position: Vec3::Y,

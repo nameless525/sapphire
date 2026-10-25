@@ -1,9 +1,10 @@
 //! Sapphire Sandbox, the engine test bed (milestone M0, spec §10).
 //!
 //! It runs the whole engine path on every platform: the SDL3 platform layer, the fixed 60 Hz
-//! simulation on the engine clocks and ECS, plain-data
-//! [`FramePacket`](sapphire_render::FramePacket)s filled by change-detecting extract systems,
-//! and the wgpu anime renderer's persistent scene, drawing the cooked sample mannequin.
+//! simulation on the engine clocks and ECS, time of day (`sapphire_world::tod`) resolving the
+//! frame's look, plain-data [`FramePacket`](sapphire_render::FramePacket)s filled by
+//! change-detecting extract systems, and the wgpu anime renderer's persistent scene, drawing the
+//! cooked sample mannequin.
 //!
 //! # Controls
 //!
@@ -22,10 +23,11 @@
 //! # Development builds
 //!
 //! The `dev` feature links `sapphire_debug` (rule R8), all of it behind `dev.rs`: the debug
-//! overlay, which sees platform events before the game's input, applies its time controls
-//! before each fixed step and draws after post, and the cvar registry it edits, holding the
-//! sandbox's look-dev cvars (`cvars.rs`, compiled in every build so they read their defaults)
-//! and the renderer's quality cvars (`r.tier`, `r.render_scale`, `r.dynamic_resolution`).
+//! overlay, which sees platform events before the game's input, applies its time and
+//! time-of-day controls before each fixed step and draws after post, and the cvar registry it
+//! edits, holding the sandbox's cvars (`cvars.rs`, compiled in every build so they read their
+//! defaults) and the renderer's quality cvars (`r.tier`, `r.render_scale`,
+//! `r.dynamic_resolution`).
 //! Without the feature none of it is compiled.
 //!
 //! # Arguments
@@ -44,9 +46,14 @@
 //!   (compute skinning, M1 R2).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
+//! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
+//!   default day's key that is exactly the look from before time of day). Time stands still
+//!   unless `--day-length` runs it.
+//! - `--day-length <seconds>`: run the day, one every this many seconds of world time (so
+//!   pause and slow motion reach it).
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
-//!   default panels or a comma-separated list (`stats`, `graph`, `time`, `console`, `cvars`,
-//!   `all`). Offscreen captures draw it too.
+//!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
+//!   `cvars`, `all`). Offscreen captures draw it too.
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default

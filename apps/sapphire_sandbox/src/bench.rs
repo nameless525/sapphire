@@ -7,7 +7,9 @@
 //! After a warm-up it logs CPU time per frame (that span, without the GPU wait) and
 //! allocations per frame (the whole frame, wait included, like the windowed stats). It leaves
 //! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
-//! repeatable check for changes to the frame path against the budgets of spec §3.
+//! repeatable check for changes to the frame path against the budgets of spec §3. It also logs
+//! time of day's own resolve time per frame (part of extraction), against its 0.05 ms budget;
+//! `--day-length` makes the hour move every frame.
 //!
 //! While the frame graph times passes on the GPU (with `--dynamic-resolution`, or the overlay
 //! shown) it also logs the mean GPU pass span of the frames whose timings came back: the GPU
@@ -56,6 +58,8 @@ pub(crate) fn run(
     let mut cpu = Vec::with_capacity(frames.min(1 << 20) as usize);
     let mut gpu_wait = Duration::ZERO;
     let (mut allocations, mut bytes) = (0, 0);
+    // Time of day's resolve, per measured frame: its total and its slowest.
+    let (mut tod_total, mut tod_max) = (Duration::ZERO, Duration::ZERO);
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -73,6 +77,9 @@ pub(crate) fn run(
             gpu_wait += wait;
             allocations += after.total_allocations - before.total_allocations;
             bytes += after.total_bytes - before.total_bytes;
+            let tod = stage.scene.time_of_day().stats().resolve_time;
+            tod_total += tod;
+            tod_max = tod_max.max(tod);
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -112,6 +119,8 @@ pub(crate) fn run(
         gpu_span_us_mean = %gpu_span,
         timed_frames = timed,
         allocs_per_frame = format_args!("{:.1}", allocations as f64 / f64::from(frames)),
+        tod_us_mean = format_args!("{:.2}", micros(tod_total / frames)),
+        tod_us_max = format_args!("{:.2}", micros(tod_max)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),

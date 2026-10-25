@@ -1,0 +1,399 @@
+//! Time of day as a whole: the default day, documents, timelines, zones and cutscenes.
+
+use std::sync::Arc;
+
+use sapphire_math::Vec3;
+use sapphire_math::color::linear_srgb_to_oklab;
+use sapphire_render::{ColorGrade, DirectionalLight, FramePacket, PostParams, SkyGradient};
+use sapphire_serialize::DocumentError;
+use sapphire_time::{ScaleSource, ScaledClock};
+
+use super::*;
+
+/// The sun the sandbox drew with before time of day, and the reference time that reproduces it.
+const DAY_SUN: DirectionalLight = DirectionalLight {
+    direction: Vec3::new(0.55, -0.7, -0.45),
+    color: Vec3::new(1.0, 0.97, 0.92),
+    intensity: 1.0,
+};
+const DAY: f32 = 10.0;
+
+fn time_of_day(hours: f32) -> (ScaledClock, TimeOfDay) {
+    let mut world = ScaledClock::new();
+    let clock = world.new_local_clock();
+    let tod = TimeOfDay::new(TodTimeline::default_day(), clock, hours).expect("complete");
+    (world, tod)
+}
+
+/// A key setting only the groups a test needs.
+fn key(time: f32) -> TodKey {
+    TodKey { time, ..TodKey::default() }
+}
+
+fn sky(color: [f32; 3]) -> Option<SkyKey> {
+    Some(SkyKey { zenith: color, horizon: color, ground: color })
+}
+
+#[test]
+fn the_default_day_reproduces_the_default_look_exactly() {
+    let day = TodTimeline::default_day();
+    assert!(day.is_complete());
+    let look = day.evaluate(DAY);
+    assert_eq!(look.key_light(), DAY_SUN, "the moon is dark at 10:00");
+    assert_eq!(look.sky, SkyGradient::default());
+    assert_eq!(look.post(), PostParams::default());
+    // Through the whole resolve, as the app runs it.
+    let (_, mut tod) = time_of_day(DAY);
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::new(1.0, 2.0, 3.0), 0.6).write(&mut packet);
+    assert_eq!(
+        (packet.sun, packet.sky, packet.post),
+        (DAY_SUN, SkyGradient::default(), PostParams::default())
+    );
+    assert_eq!(packet.day_night, 0.0);
+    // Bit for bit: the floats compare equal, but -0.0 == 0.0 too.
+    assert_eq!(
+        packet.sun.direction.to_array().map(f32::to_bits),
+        DAY_SUN.direction.to_array().map(f32::to_bits)
+    );
+}
+
+#[test]
+fn the_default_day_round_trips_as_a_document() {
+    let day = TodTimeline::default_day();
+    let text = day.to_ron().expect("write");
+    assert!(text.starts_with("(\n    type: \"sapphire::world::TodTimeline\",\n    version: 1,\n"), "{text}");
+    assert_eq!(TodTimeline::from_ron(&text).expect("read"), day);
+    assert_eq!(day.keys().len(), 8);
+    assert!(day.keys().windows(2).all(|pair| pair[0].time < pair[1].time));
+}
+
+#[test]
+fn documents_are_checked_when_read() {
+    let read = |keys: &str| {
+        TodTimeline::from_ron(&format!(
+            r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [{keys}]))"#
+        ))
+    };
+    let invalid = |keys: &str| match read(keys) {
+        Err(DocumentError::Parse(error)) => error.to_string(),
+        other => panic!("expected a validation error, got {other:?}"),
+    };
+    assert!(read("(time: 3.0, exposure: 1.0)").is_ok());
+    assert!(invalid("").contains("no keys"));
+    assert!(invalid("(time: 24.0, exposure: 1.0)").contains("outside 0 ≤ hours < 24"));
+    assert!(
+        invalid("(time: 5.0, exposure: 1.0), (time: 2.0, exposure: 1.0)").contains("times must increase")
+    );
+    let mixed = invalid("(time: 1.0, exposure: 1.0), (time: 2.0, exposure: 1.0, day_night: 1.0)");
+    assert!(mixed.contains("key 1 sets day_night, exposure but the first key sets exposure"), "{mixed}");
+    assert!(invalid("(time: 1.0, day_night: 2.0)").contains("`day_night` must be within 0..=1"));
+    assert!(invalid("(time: 1.0, exposre: 1.0)").contains("exposre"), "typos are errors, not ignored");
+    let extra = TodTimeline::from_ron(
+        r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0, exposure: 1.0)], sky: ()))"#,
+    );
+    assert!(matches!(extra, Err(DocumentError::Parse(_))), "unknown fields outside keys too");
+    let wrong = r#"(type: "sapphire::world::TodCutscene", version: 1, data: (duration: 1.0))"#;
+    assert!(matches!(TodTimeline::from_ron(wrong), Err(DocumentError::WrongType { .. })));
+    let newer = r#"(type: "sapphire::world::TodTimeline", version: 2, data: (keys: []))"#;
+    assert!(matches!(TodTimeline::from_ron(newer), Err(DocumentError::TooNew { found: 2, current: 1 })));
+}
+
+#[test]
+fn only_complete_timelines_can_be_the_base() {
+    let partial = TodTimeline::new(vec![TodKey { exposure: Some(1.0), ..key(0.0) }]).expect("valid");
+    assert!(!partial.is_complete());
+    let clock = ScaledClock::new().new_local_clock();
+    assert_eq!(TimeOfDay::new(partial.clone(), clock, 0.0).unwrap_err(), TodError::Incomplete(TodGroup::Sun));
+    let (_, mut tod) = time_of_day(DAY);
+    assert!(tod.set_timeline(partial).is_err());
+    assert_eq!(tod.revision(), 0);
+    assert!(tod.set_timeline(TodTimeline::default_day()).is_ok());
+    assert_eq!(tod.revision(), 1);
+}
+
+#[test]
+fn colors_blend_in_oklab() {
+    let (warm, cool) = ([1.0, 0.45, 0.2], [0.1, 0.15, 0.6]);
+    let timeline =
+        TodTimeline::new(vec![TodKey { sky: sky(warm), ..key(6.0) }, TodKey { sky: sky(cool), ..key(12.0) }])
+            .expect("valid");
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let (warm_lab, cool_lab) = (lab(Vec3::from(warm)), lab(Vec3::from(cool)));
+    for (hours, t) in [(7.5, 0.25), (9.0, 0.5), (10.5, 0.75)] {
+        let horizon = timeline.evaluate(hours).sky.horizon;
+        assert!(
+            lab(horizon).abs_diff_eq(warm_lab.lerp(cool_lab, t), 1e-4),
+            "{hours}: a straight line in OkLab"
+        );
+    }
+    assert_eq!(timeline.evaluate(6.0).sky.horizon, Vec3::from(warm), "exact on a key");
+}
+
+#[test]
+fn timelines_wrap_at_midnight() {
+    let timeline = TodTimeline::new(vec![
+        TodKey { exposure: Some(1.0), ..key(4.0) },
+        TodKey { exposure: Some(2.0), ..key(12.0) },
+        TodKey { exposure: Some(3.0), ..key(22.0) },
+    ])
+    .expect("valid");
+    let exposure = |hours: f32| timeline.evaluate(hours).exposure;
+    // 22:00 to 04:00 is six hours across midnight.
+    assert_eq!(timeline.segment(1.0), Segment { from: 2, to: 0, weight: 0.5 });
+    assert_eq!(exposure(1.0), 2.0);
+    assert_eq!(exposure(23.5), 2.5);
+    assert!((exposure(0.0) - 7.0 / 3.0).abs() < 1e-6);
+    assert_eq!(exposure(25.0), 2.0, "times past the day wrap into it");
+    assert_eq!(exposure(-23.0), 2.0);
+    assert_eq!(exposure(4.0), 1.0);
+    assert_eq!(exposure(8.0), 1.5);
+    // Continuous through midnight.
+    assert!((exposure(23.999) - exposure(0.0)).abs() < 1e-3);
+    // One key holds all day.
+    let still = TodTimeline::new(vec![TodKey { exposure: Some(5.0), ..key(13.0) }]).expect("valid");
+    assert_eq!(still.evaluate(2.0).exposure, 5.0);
+}
+
+#[test]
+fn easing_shapes_each_segment() {
+    let keys = |ease| {
+        TodTimeline::new(vec![
+            TodKey { ease, exposure: Some(0.0), ..key(0.0) },
+            TodKey { exposure: Some(1.0), ..key(4.0) },
+        ])
+        .expect("valid")
+    };
+    let at = |ease, hours| keys(ease).evaluate(hours).exposure;
+    assert_eq!(at(TodEase::Linear, 1.0), 0.25);
+    assert_eq!(at(TodEase::Smooth, 2.0), 0.5);
+    assert!(at(TodEase::Smooth, 0.4) < 0.1);
+    assert_eq!(at(TodEase::In, 2.0), 0.25);
+    assert_eq!(at(TodEase::Out, 2.0), 0.75);
+    assert_eq!(at(TodEase::Hold, 3.9), 0.0);
+    assert_eq!(at(TodEase::Hold, 4.0), 1.0);
+    // The second key's own ease shapes the way back around the day.
+    assert_eq!(at(TodEase::Hold, 14.0), 1.0 - 0.5);
+}
+
+#[test]
+fn the_default_day_never_lights_from_below() {
+    let day = TodTimeline::default_day();
+    for minute in 0..24 * 60 {
+        let key = day.evaluate(minute as f32 / 60.0).key_light();
+        assert!(key.intensity == 0.0 || key.direction.y < 0.0, "{minute} min: {key:?} travels upward");
+    }
+}
+
+#[test]
+fn the_sun_moves_along_a_great_circle() {
+    let to_sun = |direction: Vec3| -direction.normalize();
+    let day = TodTimeline::default_day();
+    let (morning, afternoon) =
+        (to_sun(day.evaluate(10.0).sun.direction), to_sun(day.evaluate(14.0).sun.direction));
+    let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos();
+    let total = angle(morning, afternoon);
+    for hours in [10.5, 11.0, 12.0, 13.5] {
+        let sun = to_sun(day.evaluate(hours).sun.direction);
+        let progress = (hours - 10.0) / 4.0;
+        assert!((angle(morning, sun) - progress * total).abs() < 1e-4, "{hours}: constant angular speed");
+        assert!((angle(morning, sun) + angle(sun, afternoon) - total).abs() < 1e-4, "{hours}: on the arc");
+    }
+}
+
+#[test]
+fn neighboring_grades_blend_as_two_luts_and_a_single_grade_uses_one() {
+    let day = TodTimeline::default_day();
+    let grade =
+        |hours: f32| ColorGrade::from(day.keys().iter().find(|k| k.time == hours).unwrap().grade.unwrap());
+    // Golden hour to sunset, 40% of the way.
+    let post = day.evaluate(18.0).post();
+    assert_eq!((post.grade_a, post.grade_b), (grade(17.5), grade(18.75)));
+    assert!((post.grade_blend - 0.4).abs() < 1e-5);
+    // Day and afternoon share a grade: one LUT, no blend.
+    let post = day.evaluate(12.0).post();
+    assert_eq!((post.grade_a, post.grade_b, post.grade_blend), (grade(10.0), grade(10.0), 0.0));
+}
+
+fn zone(groups: TodKey) -> Arc<TodTimeline> {
+    Arc::new(TodTimeline::new(vec![groups]).expect("valid"))
+}
+
+#[test]
+fn zones_blend_their_groups_by_weight_and_priority() {
+    let (_, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    // A cave: dark, cold sky and +1 stop, with a 10 m blend around a 5 m sphere.
+    let cave = TodKey { sky: sky([0.0, 0.0, 0.1]), exposure: Some(1.0), ..key(0.0) };
+    let shape = VolumeShape::Sphere { center: Vec3::new(20.0, 0.0, 0.0), radius: 5.0 };
+    let id = tod.add_volume(TodVolume { blend_distance: 10.0, ..TodVolume::new(shape, zone(cave)) });
+    let at = |tod: &mut TimeOfDay, x: f32| *tod.resolve(Vec3::new(x, 0.0, 0.0), 0.0);
+
+    let inside = at(&mut tod, 20.0);
+    assert_eq!(inside.look.exposure, 1.0);
+    assert_eq!(inside.look.sky.zenith, Vec3::new(0.0, 0.0, 0.1));
+    assert_eq!(inside.look.sun, base.look.sun, "groups the zone doesn't set stay the base's");
+    assert_eq!(tod.stats().active_volumes, 1);
+
+    let edge = at(&mut tod, 35.0);
+    assert_eq!(edge.look, base.look, "beyond the blend distance");
+    assert_eq!(tod.stats().active_volumes, 0);
+
+    let halfway = at(&mut tod, 30.0);
+    assert_eq!(halfway.look.exposure, 0.5, "halfway through the blend");
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let expected = lab(base.look.sky.zenith).lerp(lab(Vec3::new(0.0, 0.0, 0.1)), 0.5);
+    assert!(lab(halfway.look.sky.zenith).abs_diff_eq(expected, 1e-4));
+
+    // A higher priority volume applies over it, whatever order they were added in.
+    let bright = TodKey { exposure: Some(-2.0), ..key(0.0) };
+    let cover = VolumeShape::Box { center: Vec3::new(20.0, 0.0, 0.0), half_extents: Vec3::splat(2.0) };
+    tod.add_volume(TodVolume { priority: 1, ..TodVolume::new(cover, zone(bright)) });
+    let lower = TodKey { exposure: Some(4.0), ..key(0.0) };
+    tod.add_volume(TodVolume { priority: -1, ..TodVolume::new(cover, zone(lower)) });
+    assert_eq!(at(&mut tod, 20.0).look.exposure, -2.0);
+    assert_eq!(tod.volumes().map(|(_, volume)| volume.priority).collect::<Vec<_>>(), [-1, 0, 1]);
+
+    assert!(tod.remove_volume(id).is_some());
+    assert!(tod.remove_volume(id).is_none());
+    assert_eq!(tod.volumes().len(), 2);
+}
+
+#[test]
+fn a_zone_grade_over_a_time_blend_keeps_the_two_heaviest_luts() {
+    let (_, mut tod) = time_of_day(18.0);
+    let zone_grade = ColorGrade { saturation: 0.5, ..ColorGrade::NEUTRAL };
+    let grey = TodKey { grade: Some(zone_grade.into()), ..key(0.0) };
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 1.0 };
+    tod.add_volume(TodVolume { strength: 0.2, ..TodVolume::new(shape, zone(grey)) });
+    tod.resolve(Vec3::ZERO, 0.0);
+    // Golden hour 0.48, sunset 0.32, the zone 0.2: the zone's grade is dropped.
+    let stats = tod.stats();
+    assert!((stats.dropped_grade_weight - 0.2).abs() < 1e-5, "{stats:?}");
+    let post = tod.frame().look.post();
+    assert_ne!(post.grade_b, zone_grade);
+    assert!((post.grade_blend - 0.4).abs() < 1e-5, "the remaining pair renormalized");
+}
+
+#[test]
+fn cutscenes_blend_in_and_out() {
+    let (mut world, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    // A 4 s shot at sunset with a second's blend each way, which also warms exposure.
+    let shot = TodCutscene::new(
+        4.0,
+        1.0,
+        1.0,
+        Some(ShotTime { hours: 18.75, hours_per_second: 0.0 }),
+        vec![TodKey { exposure: Some(1.0), ..key(0.0) }, TodKey { exposure: Some(2.0), ..key(4.0) }],
+    )
+    .expect("valid");
+    let sunset = TodTimeline::default_day().evaluate(18.75);
+    tod.play_cutscene(Arc::new(shot.clone()));
+    let mut weights = Vec::new();
+    for _ in 0..300 {
+        world.tick();
+        tod.tick(&world);
+        let frame = *tod.resolve(Vec3::ZERO, 0.0);
+        weights.push(tod.stats().cutscene_weight);
+        assert_eq!(frame.hours, DAY, "the world's clock is untouched");
+        if let Some((_, seconds)) = tod.cutscene()
+            && (1.5..2.5).contains(&seconds)
+        {
+            assert_eq!(frame.look.sky, sunset.sky, "fully in: the sunset's look");
+            assert!((frame.look.exposure - (1.0 + seconds / 4.0)).abs() < 1e-3, "the shot's own keys");
+        }
+    }
+    // Eased in over the first second, held, eased out over the last, then gone.
+    assert!(weights[0] > 0.0 && weights[0] < 0.01);
+    assert!(weights[29] > 0.4 && weights[29] < 0.6, "halfway in: {}", weights[29]);
+    assert!(weights[60..180].iter().all(|&weight| weight == 1.0));
+    assert!(weights[209] > 0.4 && weights[209] < 0.6, "halfway out: {}", weights[209]);
+    assert!(weights[240..].iter().all(|&weight| weight == 0.0));
+    assert!(tod.cutscene().is_none(), "it ended by itself");
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look, base.look);
+
+    // Partway in, the look is a crossfade of the two.
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(0.5);
+    let partway = *tod.resolve(Vec3::ZERO, 0.0);
+    let weight = tod.stats().cutscene_weight;
+    assert!(weight > 0.0 && weight < 1.0);
+    assert_eq!(partway.look.day_night, sunset.day_night * weight);
+    tod.stop_cutscene();
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look, base.look);
+}
+
+#[test]
+fn cutscene_documents_are_checked() {
+    let read = |data: &str| {
+        TodCutscene::from_ron(&format!(
+            r#"(type: "sapphire::world::TodCutscene", version: 1, data: ({data}))"#
+        ))
+    };
+    let shot =
+        read("duration: 3.0, blend_in: 0.5, time: (hours: 6.5, hours_per_second: 0.5)").expect("valid");
+    assert_eq!(shot.hours(2.0), Some(7.5), "a time-lapse");
+    assert_eq!(shot.weight(-0.1), 0.0);
+    assert_eq!(shot.weight(3.0), 1.0, "no blend out: on to the last instant");
+    assert_eq!(shot.weight(3.1), 0.0);
+    assert_eq!(TodCutscene::from_ron(&shot.to_ron().expect("write")).expect("read"), shot);
+    let midnight = read("duration: 10.0, time: (hours: 23.0, hours_per_second: 0.25)").expect("valid");
+    assert_eq!(midnight.hours(8.0), Some(1.0), "wraps past midnight");
+    for (data, problem) in [
+        ("duration: 0.0, time: (hours: 1.0)", "duration"),
+        ("duration: 1.0, blend_in: 0.6, blend_out: 0.6, time: (hours: 1.0)", "fit in the duration"),
+        ("duration: 1.0, time: (hours: 25.0)", "time.hours"),
+        ("duration: 1.0", "would change nothing"),
+        ("duration: 1.0, keys: [(time: 2.0, exposure: 1.0)]", "the shot's duration"),
+    ] {
+        let error = read(data).expect_err(data).to_string();
+        assert!(error.contains(problem), "{data}: {error}");
+    }
+}
+
+#[test]
+fn resolving_is_deterministic() {
+    // Twice from scratch, through a running cycle with a zone and a cutscene: the same bits.
+    let run = || {
+        let (mut world, mut tod) = time_of_day(4.0);
+        tod.clock_mut().set_day_length(Some(30.0));
+        let shape = VolumeShape::Box { center: Vec3::ZERO, half_extents: Vec3::splat(3.0) };
+        let fog = TodKey { fog: Some(FogKey::default()), exposure: Some(0.3), ..key(0.0) };
+        tod.add_volume(TodVolume { blend_distance: 5.0, strength: 0.7, ..TodVolume::new(shape, zone(fog)) });
+        let shot = TodCutscene::new(
+            2.0,
+            0.5,
+            0.5,
+            Some(ShotTime { hours: 19.0, hours_per_second: 1.0 }),
+            Vec::new(),
+        )
+        .expect("valid");
+        let mut frames = Vec::new();
+        for step in 0..1800_u32 {
+            world.tick();
+            tod.tick(&world);
+            if step == 600 {
+                tod.play_cutscene(Arc::new(shot.clone()));
+            }
+            let probe = Vec3::new((step as f32 * 0.01).sin() * 8.0, 0.0, 0.0);
+            let mut packet = FramePacket::default();
+            tod.resolve(probe, 0.5).write(&mut packet);
+            frames.push(format!("{:?}", (packet.sun, packet.celestial, packet.sky, packet.fog, packet.post)));
+        }
+        frames
+    };
+    assert_eq!(run(), run());
+}
+
+#[test]
+fn the_cycle_pauses_with_the_world() {
+    let (mut world, mut tod) = time_of_day(6.0);
+    tod.clock_mut().set_day_length(Some(24.0));
+    world.push_scale(ScaleSource::Pause, 0).expect("room");
+    for _ in 0..60 {
+        world.tick();
+        tod.tick(&world);
+    }
+    assert_eq!(tod.resolve(Vec3::ZERO, 1.0).hours, 6.0);
+}

@@ -1,5 +1,5 @@
 //! The overlay's panels, in egui: a bar of toggles, then stats and budgets with the frame-time
-//! graph, the frame graph, time controls, the console and the cvar list.
+//! graph, the frame graph, time controls, time of day, the console and the cvar list.
 
 use std::time::Duration;
 
@@ -15,11 +15,12 @@ use crate::console::{Completion, Console, LineKind};
 use crate::history::{FrameTimes, HISTORY};
 use crate::overlay::{OverlayCost, OverlayFrame};
 use crate::time::{SPEEDS, TimeControls};
+use crate::time_of_day::{self, TodControls, TodPanel};
 use crate::{GPU_TIMING, route};
 
-const GOOD: Color32 = Color32::from_rgb(120, 200, 130);
+pub(crate) const GOOD: Color32 = Color32::from_rgb(120, 200, 130);
 const WARN: Color32 = Color32::from_rgb(230, 190, 70);
-const OVER: Color32 = Color32::from_rgb(240, 95, 85);
+pub(crate) const OVER: Color32 = Color32::from_rgb(240, 95, 85);
 
 /// Which panels are open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub struct Panels {
     pub stats: bool,
     pub graph: bool,
     pub time: bool,
+    /// Time of day.
+    pub day: bool,
     pub console: bool,
     pub cvars: bool,
 }
@@ -34,24 +37,27 @@ pub struct Panels {
 impl Default for Panels {
     /// Stats and the frame graph.
     fn default() -> Self {
-        Self { stats: true, graph: true, time: false, console: false, cvars: false }
+        Self { stats: true, graph: true, ..Self::NONE }
     }
 }
 
 impl Panels {
-    pub const NAMES: [&'static str; 5] = ["stats", "graph", "time", "console", "cvars"];
+    pub const NAMES: [&'static str; 6] = ["stats", "graph", "time", "day", "console", "cvars"];
+
+    const NONE: Self =
+        Self { stats: false, graph: false, time: false, day: false, console: false, cvars: false };
+    const ALL: Self = Self { stats: true, graph: true, time: true, day: true, console: true, cvars: true };
 
     /// A comma-separated list of [`Self::NAMES`], or `all`.
     pub fn parse(list: &str) -> Result<Self, String> {
-        let mut panels = Self { stats: false, graph: false, time: false, console: false, cvars: false };
+        let mut panels = Self::NONE;
         for name in list.split(',').map(str::trim) {
             match name {
-                "all" => {
-                    panels = Self { stats: true, graph: true, time: true, console: true, cvars: true };
-                }
+                "all" => panels = Self::ALL,
                 "stats" => panels.stats = true,
                 "graph" => panels.graph = true,
                 "time" => panels.time = true,
+                "day" => panels.day = true,
                 "console" => panels.console = true,
                 "cvars" => panels.cvars = true,
                 _ => {
@@ -72,11 +78,18 @@ pub(crate) struct UiMemory {
     console: Console,
     console_input: String,
     focus_console: bool,
+    day: TodPanel,
 }
 
 impl UiMemory {
     pub fn new(panels: Panels) -> Self {
-        Self { panels, console: Console::default(), console_input: String::new(), focus_console: true }
+        Self {
+            panels,
+            console: Console::default(),
+            console_input: String::new(),
+            focus_console: true,
+            day: TodPanel::default(),
+        }
     }
 }
 
@@ -113,16 +126,18 @@ pub(crate) fn show(
     ctx: &egui::Context,
     memory: &mut UiMemory,
     time: &mut TimeControls,
+    day: &mut TodControls,
     view: &View<'_>,
 ) -> bool {
     let hide = bar(ctx, &mut memory.panels, view);
     // First placement, laid out for screens 1280 points wide or more (windows remember where
     // they were moved): stats on the left, the frame graph on the right, time controls between
-    // them with the console under them, and the cvars under the frame graph.
+    // them with time of day below and the console under them, and the cvars under the frame
+    // graph.
     let safe = view.safe;
     let at = |x: f32, y: f32| safe.min + vec2(x, y);
     let right = |width: f32, y: f32| pos2(safe.max.x - width - 6.0, safe.min.y + y).max(at(440.0, y));
-    let UiMemory { panels, console, console_input, focus_console } = memory;
+    let UiMemory { panels, console, console_input, focus_console, day: day_panel } = memory;
     panel("Stats", &mut panels.stats, at(6.0, 44.0), safe)
         .default_width(340.0)
         .resizable(false)
@@ -133,6 +148,10 @@ pub(crate) fn show(
     panel("Time", &mut panels.time, at(440.0, 44.0), safe)
         .resizable(false)
         .show(ctx, |ui| time_controls(ui, time, view.frame.world_clock));
+    panel("Time of day", &mut panels.day, at(440.0, 180.0), safe)
+        .default_width(560.0)
+        .resizable(false)
+        .show(ctx, |ui| time_of_day::panel(ui, day_panel, day, view.frame.time_of_day));
     panel("Cvars", &mut panels.cvars, right(380.0, (safe.height() - 250.0).max(44.0)), safe)
         .default_width(380.0)
         .show(ctx, |ui| cvars(ui, view.frame.cvars));
@@ -170,6 +189,7 @@ fn bar(ctx: &egui::Context, panels: &mut Panels, view: &View<'_>) -> bool {
                     ui.toggle_value(&mut panels.stats, "Stats");
                     ui.toggle_value(&mut panels.graph, "Graph");
                     ui.toggle_value(&mut panels.time, "Time");
+                    ui.toggle_value(&mut panels.day, "Day");
                     ui.toggle_value(&mut panels.console, "Console");
                     ui.toggle_value(&mut panels.cvars, "Cvars");
                     ui.separator();
@@ -287,6 +307,19 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Skinning", skinned);
         row(ui, "Buffer growths", render.buffer_growths.to_string());
         row(ui, "LUT bakes", render.lut_bakes.to_string());
+        if let Some(tod) = frame.time_of_day {
+            let stats = tod.stats();
+            row(
+                ui,
+                "Time of day",
+                format!(
+                    "{}, {} of {} zones",
+                    format_ms(stats.resolve_time),
+                    stats.active_volumes,
+                    stats.volumes
+                ),
+            );
+        }
         // The cluster counts here are what the light-cluster heatmap view will show per pixel.
         let lights = &render.lights;
         row(

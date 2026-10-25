@@ -68,10 +68,15 @@ impl OrbitCamera {
     }
 
     pub fn camera_data(&self, aspect: f32) -> CameraData {
+        CameraData::look_at(self.eye(), self.target, Vec3::Y, FOV_Y, aspect, NEAR)
+    }
+
+    /// Where the camera is, in world space.
+    pub fn eye(&self) -> Vec3 {
         let (yaw, pitch) = (self.yaw.value, self.pitch.value);
         let offset =
             Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * self.distance.value;
-        CameraData::look_at(self.target + offset, self.target, Vec3::Y, FOV_Y, aspect, NEAR)
+        self.target + offset
     }
 }
 

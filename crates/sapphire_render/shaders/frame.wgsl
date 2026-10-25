@@ -2,9 +2,9 @@
 // pass's source; WESL imports replace the concatenation in M1 (spec §5.12).
 //
 // Bind groups (the budget behind them is in the crate docs):
-//   0  frame   per-frame constants: sun, sky, time and light counts; the local lights (binding
-//              1) and their lists (binding 2) are declared in lights.wgsl and
-//              anime_character.wgsl
+//   0  frame   per-frame constants: sun, sky, time, light counts and the day/night factor;
+//              the local lights (binding 1) and their lists (binding 2) are declared in
+//              lights.wgsl and anime_character.wgsl
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
@@ -30,6 +30,8 @@ struct FrameUniforms {
     // Local lights and their lists, and the cluster grid's depth slices (see lights.wgsl).
     lights: vec4<u32>,
     clusters: vec4<f32>,
+    // 0 by day, 1 at night, from time of day: the day/night ramp blend.
+    day_night: f32,
 }
 
 struct ViewUniforms {

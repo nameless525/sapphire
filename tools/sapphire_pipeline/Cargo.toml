@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 sapphire_assets.workspace = true
+# Color math shared with the runtime (sRGB, OkLab).
+sapphire_math.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 anyhow.workspace = true

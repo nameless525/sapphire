@@ -15,15 +15,20 @@
 //!   `GraphStats` and the transient pool, the last-used input device), the
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
-//!   and time controls.
+//!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the
+//!   resolved values and a character preview).
 //! - **[`TimeControls`]**: pause, single-step and speed on the world clock's time-scale stack.
+//! - **[`TodControls`]**: scrubbing the hour, pausing the cycle and setting the day's length on
+//!   the world's `sapphire_world::tod::TimeOfDay`.
 //! - **Its own cvars** ([`CVARS`]): `debug.ui_scale` and `debug.gpu_timing`.
 //!
 //! # Does not own
 //!
 //! - Cvars themselves: [`sapphire_core::cvar`], so runtime crates declare them without depending
 //!   on this crate (the facade of spec §5.20).
-//! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`]. The frame
+//! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`], time of day
+//!   included (the world's `TimeOfDay`, read-only: the panel changes it through
+//!   [`TodControls`]). The frame
 //!   graph's report and GPU timings are `sapphire_render::graph`'s; the overlay turns them on
 //!   while it shows them, and keeps GPU timing on while the app reads it too
 //!   ([`DebugOverlay::configure_graph`]). Quality tiers are `sapphire_render::quality`'s.
@@ -44,6 +49,7 @@
 //! overlay.record_frame(frame_time, Some(&stages));
 //! for _ in 0..steps {
 //!     overlay.time_controls().before_fixed_step(&mut world_clock);
+//!     overlay.tod_controls().apply(&mut time_of_day);
 //!     simulation.step();
 //! }
 //! // GPU timing stays on while dynamic resolution reads it, shown or not.
@@ -71,8 +77,6 @@
 //!   lights and A5's vertex inputs to settle in the shaders. They plug in as a choice cvar the
 //!   renderer declares and reads in `prepare` (`r.debug_view`, a [`sapphire_core::cvar::CvarType`]
 //!   enum), which the cvar panel already edits with a list; this crate needs no change.
-//! - **The time-of-day scrubber** (W1): a panel over `sapphire_world`'s `TodTimeline`, once it
-//!   exists, writing the scrubbed time through a cvar or the timeline's own override.
 //! - The rest of spec §5.20: the debug-draw API (lines, shapes and text from any thread, merged
 //!   at extract into the packet's `DebugDrawList`, with `sapphire_core` no-ops when no overlay is
 //!   linked), the entity inspector over `sapphire_reflect`, hitbox and hurtbox views and the
@@ -90,6 +94,7 @@ mod overlay;
 mod render;
 pub mod route;
 mod time;
+mod time_of_day;
 mod ui;
 
 use sapphire_core::cvar::{AnyCvar, Cvar};
@@ -99,6 +104,7 @@ pub use history::{FrameSummary, FrameTimes, HISTORY};
 pub use input::WindowMetrics;
 pub use overlay::{DebugOverlay, OverlayConfig, OverlayCost, OverlayFrame, OverlayOutput, TextInputArea};
 pub use time::{SPEEDS, TimeControls};
+pub use time_of_day::TodControls;
 pub use ui::Panels;
 
 /// Log target for this crate.

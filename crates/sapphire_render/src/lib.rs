@@ -5,7 +5,9 @@
 //!
 //! - The extract boundary's data (§4.6): the plain-data [`FramePacket`] and the
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
-//!   (rule R4).
+//!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
+//!   resolved scene constants (key light, sky, post, and the ambient, fog, shadow tint,
+//!   character key light and day/night factor its later packages read).
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
 //!   material buffers, and instance and draw-record buffers kept across frames and updated from
@@ -174,7 +176,7 @@
 //!
 //! | Group | Binding | Stages | Contents | Written |
 //! |---|---|---|---|---|
-//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices | `prepare` |
+//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
@@ -288,8 +290,9 @@ mod skinning;
 pub mod texture;
 
 pub use frame::{
-    CameraData, DirectionalLight, FramePacket, FramePacketRing, InstanceDeltas, InstanceId, LightKind,
-    LocalLight, MeshInstance, PacketRange, SkinnedInstance, SkyGradient, ViewData,
+    AmbientLight, CameraData, Celestial, CharacterLight, DirectionalLight, Fog, FogLayer, FramePacket,
+    FramePacketRing, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
+    SkinnedInstance, SkyGradient, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;

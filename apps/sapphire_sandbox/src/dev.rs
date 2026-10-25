@@ -131,9 +131,11 @@ impl DevTools {
         self.overlay.record_frame(frame_time, stages.as_ref());
     }
 
-    /// The time controls' hook, before each fixed step. Allocation-free (rule R6).
+    /// The time controls' hook, before each fixed step: the world clock's, and time of day's.
+    /// Allocation-free (rule R6).
     pub fn before_fixed_step(&mut self, scene: &mut Scene) {
         self.overlay.time_controls().before_fixed_step(&mut scene.world_clock_mut().0);
+        self.overlay.tod_controls().apply(&mut scene.time_of_day_mut());
     }
 
     /// Builds the overlay's frame, after `Renderer::prepare` and before the frame graph is
@@ -153,6 +155,7 @@ impl DevTools {
             gamepads: frame.input.map_or(0, SandboxInput::gamepads),
             cvars: &self.cvars,
             world_clock: frame.scene.world_clock(),
+            time_of_day: Some(frame.scene.time_of_day()),
         })
     }
 

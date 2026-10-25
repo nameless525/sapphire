@@ -2344,10 +2344,12 @@ dependencies = [
  "profiling",
  "sapphire_core",
  "sapphire_input",
+ "sapphire_math",
  "sapphire_platform",
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_time",
+ "sapphire_world",
  "tracing",
 ]
 
@@ -2411,6 +2413,7 @@ dependencies = [
  "image",
  "meshopt",
  "sapphire_assets",
+ "sapphire_math",
  "sapphire_reflect",
  "sapphire_serialize",
  "serde",
@@ -2496,6 +2499,7 @@ dependencies = [
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_time",
+ "sapphire_world",
  "tracing",
 ]
 
@@ -2525,6 +2529,24 @@ dependencies = [
 name = "sapphire_time"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "sapphire_world"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bevy_reflect",
+ "profiling",
+ "sapphire_core",
+ "sapphire_ecs",
+ "sapphire_math",
+ "sapphire_reflect",
+ "sapphire_render",
+ "sapphire_serialize",
+ "sapphire_time",
+ "serde",
  "thiserror",
 ]
 

@@ -34,6 +34,8 @@ sapphire_serialize = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 sapphire_input = { kind = "runtime", layer = 3 }
 sapphire_render = { kind = "runtime", layer = 3 }
+# L4 framework.
+sapphire_world = { kind = "runtime", layer = 4 }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Apps.

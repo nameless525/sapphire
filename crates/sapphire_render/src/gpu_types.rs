@@ -24,6 +24,10 @@ pub(crate) struct FrameUniforms {
     pub lights: [u32; 4],
     /// The cluster grid's depth slices.
     pub clusters: [f32; 4],
+    /// 0 by day, 1 at night (`FramePacket::day_night`).
+    pub day_night: f32,
+    /// Pads the struct to WGSL's 16-byte uniform alignment.
+    pub padding: [f32; 3],
 }
 
 impl FrameUniforms {
@@ -38,6 +42,8 @@ impl FrameUniforms {
             time: [frame.time_seconds, 0.0, 0.0, 0.0],
             lights: lights.lights,
             clusters: lights.clusters,
+            day_night: frame.day_night,
+            padding: [0.0; 3],
         }
     }
 }

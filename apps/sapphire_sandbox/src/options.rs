@@ -39,6 +39,11 @@ pub(crate) struct Options {
     pub dynamic_resolution: bool,
     /// `--skinned`: place the skinned stalk beside the character.
     pub skinned: bool,
+    /// `--time-of-day <hours>`: the hour the scene starts at, `0 ≤ hours < 24`, instead of the
+    /// default day's 10:00.
+    pub time_of_day: Option<f32>,
+    /// `--day-length <seconds>`: run the day, one every this many seconds of world time.
+    pub day_length: Option<f32>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -128,6 +133,22 @@ impl Options {
                 "--dynamic-resolution" => options.dynamic_resolution = true,
                 "--lights" => options.lights = true,
                 "--skinned" => options.skinned = true,
+                "--time-of-day" => {
+                    let hours: f32 = number(&value("--time-of-day")?, "--time-of-day")?;
+                    if !(0.0..24.0).contains(&hours) {
+                        return Err(format!("--time-of-day expects hours from 0 to below 24, got {hours}"));
+                    }
+                    options.time_of_day = Some(hours);
+                }
+                "--day-length" => {
+                    let seconds: f32 = number(&value("--day-length")?, "--day-length")?;
+                    if !(seconds.is_finite() && seconds > 0.0) {
+                        return Err(format!(
+                            "--day-length expects a positive number of seconds, got {seconds}"
+                        ));
+                    }
+                    options.day_length = Some(seconds);
+                }
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,
@@ -241,6 +262,18 @@ mod tests {
         assert!(parse(&["--render-scale", "0.2"]).is_err(), "below the minimum");
         assert!(parse(&["--render-scale", "1.5"]).is_err());
         assert!(parse(&["--render-scale", "NaN"]).is_err());
+    }
+
+    #[test]
+    fn time_of_day_options_set_the_hour_and_the_cycle() {
+        let (options, _) = parse(&["--time-of-day", "18.5", "--day-length=1440"]).unwrap();
+        assert_eq!((options.time_of_day, options.day_length), (Some(18.5), Some(1440.0)));
+        assert_eq!(parse(&[]).unwrap().0.time_of_day, None);
+        assert!(parse(&["--time-of-day", "24"]).is_err());
+        assert!(parse(&["--time-of-day", "-1"]).is_err());
+        assert!(parse(&["--time-of-day", "noon"]).is_err());
+        assert!(parse(&["--day-length", "0"]).is_err());
+        assert!(parse(&["--day-length", "inf"]).is_err());
     }
 
     #[test]

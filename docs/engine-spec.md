@@ -285,6 +285,11 @@ pub struct FramePacket {
   - Packet order is the lights' priority within a full cluster (§5.12); across the frame, the renderer keeps the nearest.
   - In the sandbox, an entity lights while it has a `RenderLight` (the `LocalLight` in the entity's space), placed by its required `RenderTransform` like a mesh; the range stays in world meters. `extract_lights` runs in `Extract` after the instances. `--lights` spawns three demo lights around the character, which the golden scene `turntable-lights` shows.
   - The second `Extract` system costs one allocation per frame (the executor's per-system cost, above), with lights or without.
+- **As built (M1 R2, `FramePacket::{skinned, palettes, morph_weights}`):**
+  - `skinned` is a `Vec<SkinnedInstance>`: an `InstanceId` and two `PacketRange`s, one into `palettes` (`Vec<Affine3A>`, the per-frame bone-matrix buffer) and one into `morph_weights` (`Vec<f32>`; the spec's `MorphWeights` is this flat array). `FramePacket::push_skinned` appends a pose. The ring keeps the vectors' capacity, so a warm frame allocates nothing for its poses.
+  - A palette holds finished skinning matrices: `model_from_joint(bind.joint) × bind.inverse_bind_matrix` per palette entry, in the mesh's object space. Extraction multiplies, as §5.13 has it, so the renderer never needs the skeleton. There is one weight per morph target. Missing weights count as 0, and applying the targets' default weights is up to the animation.
+  - Poses are deltas, like instances. An instance sends one when its pose changes; one that holds still (hitstop, pause) sends none and keeps its last. The renderer applies them after the packet's instance deltas, so an instance can be added and posed in one packet. An instance never posed draws in its bind pose. The renderer ignores, and counts, a pose for an instance without a skinned or morphed mesh, one whose palette length is wrong, and one with a non-finite value.
+  - In the sandbox, an entity drawing a skinned or morphed mesh has a `RenderPose` (its palette and weights, written in place only when they change). `extract_poses` runs in `Extract` after the lights. It sends the poses that changed, plus those of entities added, re-meshed or given their transform back, since the renderer starts those over in the bind pose. `--skinned` spawns the test stalk (§5.12) and only then adds its two systems, because each `Extract` system costs an allocation per frame (above).
 
 ---
 
@@ -597,7 +602,7 @@ The big one. It owns everything from `FramePacket` to pixels.
   - A write replaces a texture's contents, so a pass that keeps them (`LoadOp::Load`, partial draws) also declares a read. Culling relies on this.
   - Transients with equal descriptors and disjoint lifetimes share one pooled texture; the pool (`sapphire_rhi::TransientPool`) matches textures across frames and evicts ones unused for 60 frames.
   - Under 4 running passes, recording stays on the calling thread in one encoder; from 4, it splits into encoders of at least 2 passes on the job pool.
-  - Cost: about 10 heap allocations per frame (node lists, one boxed closure per pass) and under 1 µs of CPU for M0's two passes. Buffers become graph resources with compute skinning (R2); until then, uploads are side-effect passes added first.
+  - Cost: about 10 heap allocations per frame (node lists, one boxed closure per pass) and under 1 µs of CPU for M0's two passes. Uploads are side-effect passes added first. Buffers stay outside the graph (M1 R2's note, "Skinning and morph targets", says why).
 
 **Scene and draws**
 
@@ -609,7 +614,7 @@ The big one. It owns everything from `FramePacket` to pixels.
 - **Sorting:** opaque draws by pipeline → material → mesh, with instancing. Transparents back to front per emitter or object.
 - **As built (M1 F3, `sapphire_render::scene`):**
   - Instances live in slots of the instance buffer, found by `InstanceId` (a hash map with a one-multiply hasher) and reused through a free list. A CPU mirror holds every slot's GPU data. A packet rewrites only the slots it touches, and the uploads pass writes those through the staging belt in contiguous runs.
-  - Draw records name their instance by slot. The draw list is therefore rebuilt, and its records uploaded, only when instances are added or removed, change mesh, or meshes are uploaded; a move costs one 112-byte upload. `RenderStats` counts changed instances and draw-list builds.
+  - Draw records name their instance by slot. The draw list is therefore rebuilt, and its records uploaded, only when instances are added or removed, change mesh, or meshes are uploaded; a move costs one 112-byte upload (176 bytes since M1 R2, plus a second upload once the instance comes to rest; see that package's note). `RenderStats` counts changed instances and draw-list builds.
   - A grown instance buffer is filled by a GPU copy of the old one, so instances uploaded earlier aren't sent again.
   - Draws stay in slot order. Sorting comes with a second opaque pipeline, and costs nothing on frames that only move instances, since the list is rebuilt only when the set changes.
 
@@ -624,6 +629,39 @@ The big one. It owns everything from `FramePacket` to pixels.
   - **Skinned meshes draw in bind pose**, morph targets at weight 0. Influences and morph deltas stay in the cooked mesh, already in the storage layouts R2 needs. R2 uploads them, builds palettes as `model_from_joint × inverse_bind_matrix` per palette entry, decodes positions to f32 before adding deltas (morphed and skinned positions leave the bind-pose bounds), and writes per-instance f32 positions (slot 1, drawn through the f32 pipelines with an identity dequantization) and `VertexShading` (slot 2), keeping the pool's surface stream.
   - Golden images move by mean 0.0001 and p99 0.0018 FLIP on Metal (thresholds 0.01 and 0.3), so the goldens are unchanged. A GPU test renders a sphere with unorm16 and with f32 positions: 4 of 76,800 pixels differ by more than 8/255.
   - Cost against M1 R3 (sandbox `--bench 3000`, 1920×1080, 4× MSAA, Apple M5, release, three alternating rounds): CPU p50 90.2–90.6 µs against 90.9–91.2, GPU wait 483–512 µs against 486–525, both within noise; 298.3 allocations per frame against 294.3: the renderer's own per-frame code allocates nothing new, so the four are wgpu's, presumably for binding four vertex buffers instead of two (not traced further). The mesh pool holds 229,616 bytes against 251,696, with every LOD's indices.
+- **As built (M1 R2, `sapphire_render::{skinning, mesh_pool, draw}`, `shaders/skinning.wgsl`, `shaders/prepass.wgsl`):**
+  - **Deformable meshes.** A mesh with a skin or morph targets is deformable. Its streams, influences and morph deltas go to one deformable buffer (storage and vertex) instead of a slab.
+    - The upload regroups morph deltas by vertex with a counting sort: per vertex, its deltas in target order, each holding its target index. The skinning pass then applies morphs in the same dispatch that skins, each vertex walking only its own deltas, with no atomics and no pass per target.
+    - Every instance of a deformable mesh owns outputs in one shared buffer (first-fit ranges of vertices): f32 positions twice and `VertexShading` normals, 32 bytes a vertex. Every pass draws it from those through the f32 pipelines with an identity dequantization (slots 1 and 2), plus the mesh's own surface stream (slot 3). Static meshes are untouched and cost nothing extra.
+  - **One dispatch per frame, not one per instance.** The outputs are one read-write storage buffer, which wgpu fences between dispatches, so per-instance dispatches would run one after another and leave the GPU idle on small instances.
+    - Each instance takes a run of 64-thread workgroups and an 80-byte job (offsets, flags, dequantization) in a per-frame buffer, along with its palette (three rows per matrix) and dense weights. A workgroup finds its job by binary search.
+    - Per vertex, the pass decodes the bind pose to f32 and adds the weighted morph deltas. The binary16 deltas are decoded by hand, because naga accepts `unpack2x16float` only with the f16-in-f32 capability. It then blends four palette matrices by their unorm8 weights and transforms the position, the normal and the outline normal (normals by the blended linear part, renormalized).
+    - The outline normal isn't morphed, so the inverted hull stays closed.
+  - **What a frame skins.** Only instances posed since the last recorded frame, plus new ones in their bind pose. Poses from frames that were prepared but not recorded collapse into the latest. Only the drawn LOD's vertex prefix is skinned: LOD0 until LOD selection.
+  - **Velocity.**
+    - An instance's positions are double-buffered: a frame that skins it writes the other half, so the last drawn pose is still there for velocity. Re-skinning the previous frame from last frame's palette would read the bind pose, influences, palette and every morph delta a second time, and would need last frame's weights too. The second half costs 12 bytes a vertex of memory and one 12-byte read instead.
+    - An instance not skinned in a frame binds one half twice, so it has no motion.
+    - Instances keep the transform they were last drawn with: `InstanceData` grows to 176 bytes, and a moved instance is uploaded once more when it comes to rest. The view keeps its last view-projection.
+  - **Prepasses.** They run after skinning and before the main pass, single-sampled, at the scene's size (the target's at the render scale, M1 R6), and `Renderer::record` returns them as `PrepassTargets`.
+    - The character prepass writes the depth of characters (skinned and morphed instances) alone, position-only, on every tier.
+    - The scene prepass writes every opaque instance's depth, world normals (octahedral `Rg16Float`) and velocity (`Rg16Float`, motion in texture coordinates). Pixels no geometry covers stay 0, for TAA to reproject from depth.
+    - Every pass decodes positions through one function and marks its clip position invariant, so the depths match.
+    - Nothing reads them yet, so the frame graph culls both: two boxed closures a frame, and no GPU time. The outline hull's velocity comes with C4.
+  - **Decision: buffers stay outside the frame graph** (R1 had planned them for R2). Every buffer is persistent, compute skinning's outputs included, so declaring them would never cull a pass, and wgpu already orders accesses to them. Passes that write buffers stay side effects added before their readers. Buffer resources wait for the first transient buffers.
+  - **Bindings.** The skinning pass binds three storage buffers in its own group 0 (sources, frame data, outputs), within the floor's four. The view uniforms gain the previous view-projection and the instance buffer the previous transform. See the crate docs, "Binding budget".
+  - **Stats** (`RenderStats::skinning`, rule R9): instances; the instances, vertices and palette bytes the frame skins; output bytes; ignored poses; and instances whose outputs don't fit. The output buffer is a single storage binding, 128 MiB at the device floor, which is about 4 million vertices. The pass's GPU time is the graph's `skinning` timing. The overlay shows a skinning row.
+  - **Sandbox:** `--skinned` puts a stalk beside the character: a 1.5 m procedural capsule of 2,145 vertices, six bones with tent weights, and two sparse morph targets (`bulb` and `pinch`) with exact normal deltas. It sways and breathes on its entity clock. The golden scene `turntable-skinned` shows it (Metal golden only; lavapipe and WARP come from CI). The four earlier goldens are unchanged (mean ≤ 0.0001). The iOS Simulator runs it at 60 fps.
+  - **Tests (Metal):**
+    - The GPU outputs match a CPU reference within 1.6e-7 relative position error and 0.06° of normal. The reference covers random palettes (scale 0.5–2), 1–4 influences, u8 and u16 indices, unorm16 and f32 positions and three sparse morph targets.
+    - An instance never posed draws exactly like the unskinned mesh. With an identity palette, no pixel differs by more than 8 steps.
+    - Posed skins and morphs draw like the mesh deformed on the CPU and drawn static: no pixel differs by more than 8 steps.
+    - The scene prepass's depth equals the main pass's bit for bit. The character prepass's equals it wherever nothing stands in front.
+    - Velocity of a moved static square and a lifted skinned one matches the projection within f16 precision, is exactly 0 once they hold still, and follows a camera move.
+    - There are no validation errors from 1×1 to 17×1000, with MSAA off and 4×. Outputs survive buffer growth and reuse freed ranges, and bad poses are ignored.
+  - **Cost** against M1 F5 (sandbox `--bench 3000`, 1920×1080, 4× MSAA, Apple M5, release, three alternating rounds):
+    - Without `--skinned`: CPU p50 91.5–91.6 µs against 90.9–92.0, unchanged; p99 142–152 µs against 125–155. 303.3 allocations per frame against 299.3: the two culled prepasses' closures and longer graph lists. GPU wait within noise.
+    - With `--skinned`: CPU p50 100–103 µs, about 10 µs more, for recording the skinning pass, the stalk's draws and its two `Extract` systems. 320.4 allocations per frame, 17 more (the pass's closure, wgpu's compute pass and the systems; not traced further). The skinning pass takes 4–9 µs of GPU time for 2,145 vertices (timestamps; the main pass takes 80 µs).
+    - Rebased onto M1 R6 (0cd857e), two more alternating rounds against its head agree: without `--skinned`, p50 92.1–92.8 µs against 92.1–92.5 and the same 4 more allocations; with it, p50 101–102 µs and 8–10 µs of GPU time for skinning.
 
 **Lighting**
 

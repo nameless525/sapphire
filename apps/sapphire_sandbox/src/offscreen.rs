@@ -71,6 +71,9 @@ pub(crate) struct Stage {
     pub scene: Scene,
     /// The quality tier the renderer was made for, and each frame's render scale.
     pub quality: Quality,
+    /// Keeps the frame graph's GPU timing on whatever the quality tier wants: the bench's
+    /// GPU-timing phase.
+    pub measure_gpu: bool,
     pub gpu: GpuContext,
     _instance: GpuInstance,
 }
@@ -86,9 +89,12 @@ impl Stage {
         let (character, bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
             renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
         })?;
-        let mut scene = Scene::with_character(character, bounds);
+        let mut scene = Scene::with_character(character, bounds, options.skinned);
         if options.lights {
             scene.spawn_demo_lights();
+        }
+        if options.skinned {
+            scene.set_stalk_mesh(crate::skinned::upload_stalk(&mut renderer)?);
         }
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
@@ -105,6 +111,7 @@ impl Stage {
             graph: GraphExecutor::new(),
             scene,
             quality,
+            measure_gpu: false,
             gpu,
             _instance: instance,
         })
@@ -164,8 +171,9 @@ impl Stage {
         self.renderer.prepare(&self.gpu, packet);
         let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
+        let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
         #[cfg(not(feature = "dev"))]
-        self.graph.set_gpu_timing(&self.gpu, self.quality.wants_gpu_timing());
+        self.graph.set_gpu_timing(&self.gpu, gpu_timing);
         #[cfg(feature = "dev")]
         let overlay = {
             let started = sapphire_time::Stopwatch::start();
@@ -178,6 +186,7 @@ impl Stage {
                 window: sapphire_debug::WindowMetrics::offscreen(width, height, scale),
                 render: self.renderer.stats(),
                 quality: &self.quality,
+                gpu_timing,
                 gpu: &self.gpu,
                 input: None,
                 scene: &self.scene,

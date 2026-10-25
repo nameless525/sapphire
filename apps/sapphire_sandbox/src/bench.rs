@@ -12,6 +12,11 @@
 //! While the frame graph times passes on the GPU (with `--dynamic-resolution`, or the overlay
 //! shown) it also logs the mean GPU pass span of the frames whose timings came back: the GPU
 //! wait alone is mostly submission latency on a light scene.
+//!
+//! Then, where the device has timestamp queries, it runs [`TIMED_FRAMES`] more frames with the
+//! frame graph's GPU timing on and logs the mean GPU time of the main pass, of the skinning pass
+//! (`--skinned`) and of the whole frame. Timing comes last so it doesn't touch the CPU and
+//! allocation numbers, which stay comparable with builds that have none.
 
 use std::time::Duration;
 
@@ -26,6 +31,9 @@ use crate::options::Options;
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;
+
+/// Frames run with GPU timing on, after the CPU measurement.
+const TIMED_FRAMES: u32 = 240;
 
 /// With `--debug-overlay` the bench measures the overlay shown; otherwise, in `dev` builds,
 /// its hooks with it hidden.
@@ -95,6 +103,7 @@ pub(crate) fn run(
         dynamic_resolution = quality.dynamic.enabled,
         msaa = options.render_settings(stage.quality.render_settings()).msaa.sample_count(),
         lights = options.lights,
+        skinned = options.skinned,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),
@@ -112,5 +121,50 @@ pub(crate) fn run(
     if !alloc::is_installed() {
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
+    gpu_times(&mut stage, &view)
+}
+
+/// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's
+/// `exclusive` time (what it added to the frame; see `sapphire_render::graph::PassTime`) and its
+/// start-to-end `duration`, and the frame's span.
+fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitError> {
+    if !stage.gpu.caps().timestamp_query {
+        tracing::info!(target: LOG_TARGET, "no timestamp queries on this device: GPU times not measured");
+        return Ok(());
+    }
+    stage.measure_gpu = true;
+    // Sums of (exclusive, duration) per pass, and frames timed.
+    let mut skinning = (Duration::ZERO, Duration::ZERO, 0u32);
+    let mut main = (Duration::ZERO, Duration::ZERO, 0u32);
+    let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
+    for _ in 0..TIMED_FRAMES {
+        stage.step();
+        stage.render(view, 1.0, |_, _| {})?;
+        stage.scene.end_frame();
+        stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        let Some(timings) = stage.graph.gpu_timings().filter(|timings| timings.frame > last) else {
+            continue;
+        };
+        last = timings.frame;
+        timed += 1;
+        span += timings.span();
+        for (name, sums) in [("skinning", &mut skinning), ("main", &mut main)] {
+            if let Some(pass) = timings.get(name) {
+                *sums = (sums.0 + pass.exclusive, sums.1 + pass.duration, sums.2 + 1);
+            }
+        }
+    }
+    let micros = |total: Duration, count: u32| total.as_secs_f64() * 1e6 / f64::from(count.max(1));
+    tracing::info!(
+        target: LOG_TARGET,
+        frames = timed,
+        gpu_frame_us = format_args!("{:.1}", micros(span, timed)),
+        gpu_main_us = format_args!("{:.1}", micros(main.0, main.2)),
+        gpu_main_duration_us = format_args!("{:.1}", micros(main.1, main.2)),
+        gpu_skinning_us = format_args!("{:.1}", micros(skinning.0, skinning.2)),
+        gpu_skinning_duration_us = format_args!("{:.1}", micros(skinning.1, skinning.2)),
+        skinning_frames = skinning.2,
+        "bench gpu",
+    );
     Ok(())
 }

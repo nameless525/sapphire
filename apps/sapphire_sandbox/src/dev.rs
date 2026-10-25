@@ -40,6 +40,9 @@ pub(crate) struct FrameState<'a> {
     pub render: RenderStats,
     /// The quality tier and render scale, after this frame's [`Quality::render_scale`].
     pub quality: &'a Quality,
+    /// Whether the app reads the frame graph's GPU timings this frame (dynamic resolution, the
+    /// bench's GPU-timing phase), so they stay on whatever the overlay shows.
+    pub gpu_timing: bool,
     pub gpu: &'a GpuContext,
     /// The windowed app's input; offscreen modes have none.
     pub input: Option<&'a SandboxInput>,
@@ -137,7 +140,7 @@ impl DevTools {
     /// recorded, and sets the executor up for what it shows and for dynamic resolution, which
     /// needs GPU timings whether the overlay shows or not.
     pub fn update(&mut self, frame: FrameState<'_>, executor: &mut GraphExecutor) -> OverlayOutput {
-        self.overlay.configure_graph(executor, frame.gpu, frame.quality.wants_gpu_timing());
+        self.overlay.configure_graph(executor, frame.gpu, frame.gpu_timing);
         self.overlay.update(&OverlayFrame {
             now: self.now,
             window: frame.window,

@@ -51,6 +51,8 @@ pub(crate) struct ViewUniforms {
     pub clip_from_view: [[f32; 4]; 4],
     pub clip_from_world: [[f32; 4]; 4],
     pub world_from_clip: [[f32; 4]; 4],
+    /// `clip_from_world` in the last frame this view drew, for velocity.
+    pub previous_clip_from_world: [[f32; 4]; 4],
     /// xyz: camera position.
     pub position: [f32; 4],
     /// xy: target size in pixels; zw: reciprocals.
@@ -58,7 +60,13 @@ pub(crate) struct ViewUniforms {
 }
 
 impl ViewUniforms {
-    pub(crate) fn new(camera: &CameraData, (width, height): (u32, u32)) -> Self {
+    /// The view from `camera`, which drew the last frame with `previous_clip_from_world` (its
+    /// own `proj × view` on the first frame).
+    pub(crate) fn new(
+        camera: &CameraData,
+        (width, height): (u32, u32),
+        previous_clip_from_world: Mat4,
+    ) -> Self {
         let clip_from_world = camera.proj * camera.view;
         let (width, height) = (width as f32, height as f32);
         Self {
@@ -66,34 +74,53 @@ impl ViewUniforms {
             clip_from_view: camera.proj.to_cols_array_2d(),
             clip_from_world: clip_from_world.to_cols_array_2d(),
             world_from_clip: clip_from_world.inverse().to_cols_array_2d(),
+            previous_clip_from_world: previous_clip_from_world.to_cols_array_2d(),
             position: camera.position.extend(1.0).to_array(),
             viewport: [width, height, width.recip(), height.recip()],
         }
     }
 }
 
-/// One mesh instance (WGSL `InstanceData`, storage buffer indexed by instance).
+/// One mesh instance (WGSL `InstanceData`, storage buffer indexed by instance). 176 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct InstanceData {
     pub world_from_object: [[f32; 4]; 4],
     /// Inverse-transpose of the upper 3×3, as WGSL `mat3x3<f32>` (columns padded to 16 bytes).
     pub normal_from_object: [[f32; 4]; 3],
+    /// `world_from_object` in the last frame drawn, for velocity: equal to it unless the
+    /// instance moved since.
+    pub previous_world_from_object: [[f32; 4]; 4],
 }
 
 impl InstanceData {
+    /// A new instance at `transform`, with no motion yet.
     pub(crate) fn new(transform: Mat4) -> Self {
+        let mut data = Self::zeroed();
+        data.set_transform(transform);
+        data.previous_world_from_object = data.world_from_object;
+        data
+    }
+
+    /// Moves the instance to `transform`, keeping where it was last drawn.
+    pub(crate) fn set_transform(&mut self, transform: Mat4) {
         let inverse = Mat3::from_mat4(transform).inverse();
         // A degenerate (zero-scale) transform has no inverse; its triangles have no area anyway.
         let normal = if inverse.is_finite() { inverse.transpose() } else { Mat3::IDENTITY };
-        Self {
-            world_from_object: transform.to_cols_array_2d(),
-            normal_from_object: [
-                normal.x_axis.extend(0.0).to_array(),
-                normal.y_axis.extend(0.0).to_array(),
-                normal.z_axis.extend(0.0).to_array(),
-            ],
-        }
+        self.world_from_object = transform.to_cols_array_2d();
+        self.normal_from_object = [
+            normal.x_axis.extend(0.0).to_array(),
+            normal.y_axis.extend(0.0).to_array(),
+            normal.z_axis.extend(0.0).to_array(),
+        ];
+    }
+
+    /// After a frame drew it: its next frame starts where this one ended. Returns whether it
+    /// moved in this frame, in which case it must be uploaded once more to come to rest.
+    pub(crate) fn settle(&mut self) -> bool {
+        let moved = self.previous_world_from_object != self.world_from_object;
+        self.previous_world_from_object = self.world_from_object;
+        moved
     }
 }
 
@@ -130,5 +157,18 @@ mod tests {
         assert_eq!(data.normal_from_object[0], [0.5, 0.0, 0.0, 0.0]);
         let flat = InstanceData::new(Mat4::from_scale(Vec3::new(1.0, 0.0, 1.0)));
         assert_eq!(flat.normal_from_object[1], [0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn instances_keep_their_last_drawn_transform_until_they_settle() {
+        let at = |x: f32| Mat4::from_translation(Vec3::new(x, 0.0, 0.0));
+        let mut data = InstanceData::new(at(1.0));
+        assert_eq!(data.previous_world_from_object, data.world_from_object, "new instances don't move");
+        data.set_transform(at(2.0));
+        data.set_transform(at(3.0));
+        assert_eq!(data.previous_world_from_object, at(1.0).to_cols_array_2d(), "drawn last at 1");
+        assert!(data.settle(), "moved");
+        assert_eq!(data.previous_world_from_object, at(3.0).to_cols_array_2d());
+        assert!(!data.settle(), "at rest");
     }
 }

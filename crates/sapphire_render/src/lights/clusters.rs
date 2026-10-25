@@ -30,8 +30,9 @@
 //! the cone against a sphere around the box. Lists come out in index order, so the GPU result
 //! is deterministic and matches the CPU [`reference`] the tests compare it with.
 //!
-//! Buffers aren't frame graph resources yet (R2), so the pass is a side effect added after the
-//! uploads and before the main pass. It runs only on frames that have lights.
+//! Buffers aren't frame graph resources (see the graph's later milestones), so the pass is a
+//! side effect added after the uploads and before the main pass. It runs only on frames that
+//! have lights.
 
 use std::num::NonZeroU64;
 

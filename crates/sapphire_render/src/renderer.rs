@@ -1,26 +1,29 @@
-//! The renderer: a main pass with three pipelines (toon, outline, sky) into HDR scene color,
-//! lit by the sun and the frame's local lights, then post-processing into the target.
+//! The renderer: compute skinning, the prepasses, a main pass with three pipelines (surface,
+//! outline, sky) into HDR scene color, lit by the sun and the frame's local lights, then
+//! post-processing into the target.
 
 use std::num::NonZeroU64;
 
 use bevy_reflect::Reflect;
-use sapphire_assets::mesh::{ArchivedMesh, MeshError, PositionFormat, VertexShading, VertexSurface};
+use glam::Mat4;
+use sapphire_assets::mesh::{ArchivedMesh, MeshError, PositionFormat};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
-use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
-use crate::graph::{FrameGraph, TextureId};
+use crate::draw::MeshDraws;
+use crate::gpu_types::{FrameUniforms, ViewUniforms};
+use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::mesh_pool::MeshPool;
-use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines, SCENE_COLOR_FORMAT, format_index, slot};
+use crate::pipelines::{
+    DEPTH_FORMAT, Layouts, MeshPass, MeshPipelines, NORMALS_FORMAT, Pipelines, SCENE_COLOR_FORMAT,
+    VELOCITY_FORMAT,
+};
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
+use crate::skinning::{Skinning, SkinningStats};
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
-
-const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
-const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
-const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 
 /// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
 /// few (one per frame in flight) and reuses them, so it should hold a frame's uploads:
@@ -140,6 +143,34 @@ pub struct RenderStats {
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
     pub scene_size: (u32, u32),
+    /// Skinned and morphed instances and the skinning they need.
+    pub skinning: SkinningStats,
+}
+
+/// The prepasses' outputs in a frame's graph, which [`Renderer::record`] returns for passes
+/// added after the renderer's to read. Each is the scene's size (the target's at the render
+/// scale), single-sampled, and can be sampled and copied.
+///
+/// A prepass runs only if a later pass reads one of its outputs; the frame graph culls it
+/// otherwise, at no GPU cost. Their consumers arrive with rim light and hair shadows (C2, C5),
+/// TAA (R7) and outlines under TAA (P1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrepassTargets {
+    /// The character prepass: depth of the skinned and morphed instances alone, every tier
+    /// (`Depth32Float`, reverse-Z, cleared to 0).
+    pub character_depth: TextureId,
+    /// The scene prepass: depth of every opaque instance (`Depth32Float`).
+    pub depth: TextureId,
+    /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0).
+    pub normals: TextureId,
+    /// The scene prepass: each pixel's motion since the last drawn frame, in texture
+    /// coordinates (x right, y down; it was at `uv - velocity`), from the camera's motion, the
+    /// instance's transform and, for skinned and morphed instances, their skinned positions
+    /// (`Rg16Float`). Pixels no geometry covers stay 0; TAA reprojects those from depth.
+    pub velocity: TextureId,
+    /// The main pass's depth, stored for the tests that compare it with the prepasses'.
+    #[cfg(test)]
+    pub(crate) main_depth: TextureId,
 }
 
 /// Draws [`FramePacket`]s.
@@ -173,11 +204,20 @@ pub struct Renderer {
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
     scene_bind_group: wgpu::BindGroup,
+    /// Skinned and morphed instances' outputs and the pass that writes them.
+    skinning: Skinning,
     post: PostProcess,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
+    /// The main view's `proj × view` in the last recorded frame, for velocity.
+    previous_clip_from_world: Option<Mat4>,
+    /// Kept for the pipelines built when meshes arrive.
+    pipeline_cache: Option<wgpu::PipelineCache>,
     stats: RenderStats,
+    /// Stores the main pass's depth so a test can read it back.
+    #[cfg(test)]
+    pub(crate) readable_depth: bool,
 }
 
 #[derive(Debug)]
@@ -248,6 +288,7 @@ impl Renderer {
         let meshes = MeshPool::new(&device);
         let scene = GpuScene::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &meshes);
+        let skinning = Skinning::new(&device);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         tracing::info!(
             target: LOG_TARGET,
@@ -273,25 +314,40 @@ impl Renderer {
             meshes,
             scene,
             scene_bind_group,
+            skinning,
             post,
             uploads,
             prepared: None,
+            previous_clip_from_world: None,
+            pipeline_cache: gpu.pipeline_cache().cloned(),
             stats: RenderStats::default(),
+            #[cfg(test)]
+            readable_depth: false,
         })
     }
 
     /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
     /// and its materials into the mesh pool. Its streams are copied as they are; all its LODs'
-    /// indices are uploaded and LOD0 is drawn. A skinned mesh draws in its bind pose, and its
-    /// morph targets at weight 0, until compute skinning (M1 R2).
+    /// indices are uploaded and LOD0 is drawn. A skinned or morphed mesh also uploads its skin
+    /// and morph targets, and each of its instances is drawn from its own skinning outputs, in
+    /// its bind pose until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)).
     ///
-    /// The first mesh with f32 positions also builds that format's pipelines.
+    /// The first mesh with f32 positions, or skinned or morphed, also builds the f32 pipelines;
+    /// the first skinned or morphed one the skinning and character prepass pipelines.
     pub fn upload_mesh(&mut self, mesh: &ArchivedMesh) -> Result<MeshHandle, RenderError> {
-        let (handle, materials_moved) = self.meshes.upload(&self.device, &self.queue, mesh)?;
-        self.pipelines.prepare_format(&self.device, mesh.streams.position_format());
+        let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh)?;
+        let record = &self.meshes.records()[handle.index()];
+        self.pipelines.prepare_format(&self.device, record.draw_format());
+        if record.deform().is_some() {
+            self.pipelines.prepare_characters(&self.device);
+            self.skinning.enable(&self.device, self.pipeline_cache.as_ref());
+        }
+        if moves.deformable {
+            self.skinning.sources_moved();
+        }
         let bounds = mesh.streams.bounds.to_native();
         self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
-        if materials_moved {
+        if moves.materials {
             self.scene_bind_group =
                 create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.meshes);
         }
@@ -301,9 +357,10 @@ impl Renderer {
     }
 
     /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
-    /// (rebuilding the draw list only if the drawn set changed), culls and lists the local
-    /// lights, computes the frame constants, sizes the buffers and bakes any grading LUT the
-    /// packet's post parameters changed. [`Self::record`] then uploads what changed and draws.
+    /// (rebuilding the draw list only if the drawn set changed), keeps its poses for skinning,
+    /// culls and lists the local lights, computes the frame constants, sizes the buffers and
+    /// bakes any grading LUT the packet's post parameters changed. [`Self::record`] then
+    /// uploads what changed, skins and draws.
     ///
     /// Every packet must be prepared, in order, including frames that draw nothing (no target,
     /// so no [`Self::record`]): a skipped packet would lose its deltas. Debug builds check the
@@ -322,6 +379,7 @@ impl Renderer {
             self.scene_bind_group =
                 create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.meshes);
         }
+        self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         if self.lights.prepare(device, queue, packet, self.scene.slots()) {
             self.frame_bind_group =
                 create_frame_bind_group(device, &self.layouts.frame, &self.frame_uniforms, &self.lights);
@@ -339,39 +397,49 @@ impl Renderer {
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
         self.stats.lights = self.lights.stats();
+        self.stats.skinning = self.skinning.stats();
         self.update_pool_stats();
     }
 
-    /// The GPU half of a frame: adds the frame's uploads, the main pass and post-processing to
-    /// `graph`, drawing into `target`. Record at most once per [`Self::prepare`], and only
-    /// after preparing a packet with a main view. The renderer stays borrowed until the graph
-    /// has been executed, which submits the uploads and so returns their staging buffers for
-    /// reuse. Scene changes from prepared frames that were never recorded are uploaded by the
-    /// next recorded one.
+    /// The GPU half of a frame: adds the frame's uploads, the skinning pass, the prepasses, the
+    /// main pass and post-processing to `graph`, drawing into `target`, and returns the
+    /// prepasses' outputs for later passes to read. Record at most once per [`Self::prepare`],
+    /// and only after preparing a packet with a main view. The renderer stays borrowed until the
+    /// graph has been executed, which submits the uploads and so returns their staging buffers
+    /// for reuse. Scene changes and poses from prepared frames that were never recorded are
+    /// uploaded by the next recorded one. Returns `None`, adding nothing, without a prepared
+    /// view or for an empty target.
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
-    /// textures (HDR scene color, MSAA color, depth, the bloom chain) are transient graph
-    /// textures sized from it at the render scale ([`Self::set_render_scale`]), so any size
-    /// works, including one that changed since the last frame.
+    /// textures (HDR scene color, MSAA color, depth, the prepass targets, the bloom chain) are
+    /// transient graph textures sized from it at the render scale ([`Self::set_render_scale`]),
+    /// so any size works, including one that changed since the last frame.
     ///
-    /// The mesh, outline and sky draws share one render pass that writes linear HDR scene
+    /// The surface, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color and, below
     /// scale 1, upsamples it to the target in its final pass (see the `post` module). On the
     /// clustered light path, frames with local lights first bin them in a compute pass (see the
-    /// `lights` module).
-    pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
+    /// `lights` module); frames that pose skinned or morphed instances skin them first (see the
+    /// `skinning` module). The prepasses run only if a later pass reads what they write
+    /// ([`PrepassTargets`]).
+    pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
-        let Some(PreparedFrame { camera, constants }) = self.prepared.take() else { return };
+        let PreparedFrame { camera, constants } = self.prepared.take()?;
         let output = graph.size(target);
         if output.0 == 0 || output.1 == 0 {
-            return;
+            return None;
         }
-        // The scene renders at the render scale; the views, attachments and bloom follow it, and
-        // only post's final pass writes the target's size.
+        // The scene renders at the render scale; the views, attachments, prepass targets and
+        // bloom follow it, and only post's final pass writes the target's size.
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
+        self.skinning.begin_record(&self.device, &self.queue, &self.meshes);
+        let clip_from_world = camera.proj * camera.view;
+        let previous_clip_from_world =
+            self.previous_clip_from_world.replace(clip_from_world).unwrap_or(clip_from_world);
+
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
         let samples = self.settings.msaa.sample_count();
@@ -385,7 +453,8 @@ impl Renderer {
         // Without MSAA the pass renders straight into scene color.
         let msaa_color =
             (samples > 1).then(|| graph.create_texture("msaa color", attachment(SCENE_COLOR_FORMAT)));
-        let depth = graph.create_texture("depth", attachment(DEPTH_FORMAT));
+        let (depth_desc, depth_store) = self.main_depth(attachment(DEPTH_FORMAT));
+        let depth = graph.create_texture("depth", depth_desc);
         let scene_color = graph.create_texture(
             "scene color",
             TransientDesc {
@@ -394,6 +463,23 @@ impl Renderer {
                 ..attachment(SCENE_COLOR_FORMAT)
             },
         );
+        // Single-sampled, since later passes sample them, and copyable, so tools and tests can
+        // read them back.
+        let prepass_target = |format| TransientDesc {
+            sample_count: 1,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            ..attachment(format)
+        };
+        let targets = PrepassTargets {
+            character_depth: graph.create_texture("character depth", prepass_target(DEPTH_FORMAT)),
+            depth: graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
+            normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
+            velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
+            #[cfg(test)]
+            main_depth: depth,
+        };
 
         // The uploads need the staging belt exclusively; everything else is shared.
         let Self {
@@ -407,38 +493,89 @@ impl Renderer {
             ref meshes,
             ref mut scene,
             ref scene_bind_group,
+            ref skinning,
             ref mut post,
             ref mut uploads,
             ..
         } = *self;
-        let (scene_uploads, draw_list, draws) = scene.split_for_record();
+        let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (light_uploads, cluster_pass) = lights.split_for_record();
+        let skinning_frame = skinning.frame();
+        let mesh_draws = MeshDraws { meshes, list: draw_list, records, skinned: skinning.outputs() };
         let (post_uniforms, post_buffer) = post.uniforms(size != output);
         // A handle, so `post` can be borrowed mutably for its passes below.
         let post_buffer = post_buffer.clone();
+        let view = ViewUniforms::new(&camera, size, previous_clip_from_world);
 
-        // Buffers aren't graph resources yet, so the uploads are a side effect added first:
-        // the main pass reads what they copy.
+        // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
+        // added first: the passes after read what they copy.
         graph.add_pass("uploads").side_effect().record(move |ctx| {
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
-            upload(
-                uploads,
-                ctx.encoder,
-                view_uniforms,
-                bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
-            );
+            upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
             scene_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
+            if let Some(skinning) = &skinning_frame {
+                skinning.upload(uploads, ctx.encoder);
+            }
             upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
-        // Also a side effect: the main pass reads the cluster lists it writes.
+        // Also side effects: the passes after read the buffers they write.
+        if let Some(skinning) = skinning_frame {
+            graph.add_pass("skinning").side_effect().record(move |ctx| {
+                skinning.record(ctx.encoder, labels, ctx.compute_timestamp_writes());
+            });
+        }
         if let Some(cluster_pass) = cluster_pass {
             graph.add_pass("light clusters").side_effect().record(move |ctx| {
                 let timestamps = ctx.compute_timestamp_writes();
                 cluster_pass.record(ctx.encoder, view_bind_group, labels, timestamps);
             });
         }
+        let bind = move |pass: &mut wgpu::RenderPass<'_>| {
+            pass.set_bind_group(0, frame_bind_group, &[]);
+            pass.set_bind_group(1, view_bind_group, &[0]);
+            pass.set_bind_group(2, scene_bind_group, &[]);
+            pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+        };
+
+        // The prepasses: nothing reads them yet, so the graph culls them unless a pass added
+        // after the renderer's does (see `PrepassTargets`).
+        graph.add_pass("character prepass").write(targets.character_depth).record(move |ctx| {
+            let mut pass = begin_prepass(ctx, "character prepass", targets.character_depth, &[], labels);
+            if let Some(pipeline) = pipelines.character_prepass()
+                && mesh_draws.has_deformed()
+            {
+                bind(&mut pass);
+                pass.set_pipeline(pipeline);
+                mesh_draws.draw_deformed(&mut pass, MeshPass::CharacterPrepass);
+            }
+        });
+        graph
+            .add_pass("scene prepass")
+            .write(targets.depth)
+            .write(targets.normals)
+            .write(targets.velocity)
+            .record(move |ctx| {
+                let colors = [targets.normals, targets.velocity];
+                let mut pass = begin_prepass(ctx, "scene prepass", targets.depth, &colors, labels);
+                bind(&mut pass);
+                for format in PositionFormat::ALL {
+                    if !mesh_draws.has_static(format) {
+                        continue;
+                    }
+                    let pipelines =
+                        pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+                    pass.set_pipeline(&pipelines.scene_prepass);
+                    mesh_draws.draw_static(&mut pass, MeshPass::ScenePrepass, format);
+                }
+                if mesh_draws.has_deformed() {
+                    let pipelines =
+                        pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
+                    pass.set_pipeline(&pipelines.scene_prepass);
+                    mesh_draws.draw_deformed(&mut pass, MeshPass::ScenePrepass);
+                }
+            });
 
         let mut main = graph.add_pass("main").write(scene_color).write(depth);
         if let Some(msaa_color) = msaa_color {
@@ -463,63 +600,31 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: ctx.view(depth),
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: depth_store }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: ctx.timestamp_writes(),
                 ..Default::default()
             });
-            pass.set_bind_group(0, frame_bind_group, &[]);
-            pass.set_bind_group(1, view_bind_group, &[0]);
-            pass.set_bind_group(2, scene_bind_group, &[]);
-
-            if draw_list.len() > 0 {
-                pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                // Pass 1: toon opaque. Pass 2: outlines, after opaque so depth rejects the hull
-                // wherever the mesh itself covers it.
-                for outline in [false, true] {
-                    for format in PositionFormat::ALL {
-                        let commands = &draw_list.commands[format_index(format)];
-                        if commands.is_empty() {
-                            continue;
-                        }
-                        let mesh_pipelines =
-                            pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-                        pass.set_pipeline(if outline {
-                            &mesh_pipelines.outline
-                        } else {
-                            &mesh_pipelines.toon
-                        });
-                        let slab = meshes.slab(format);
-                        let mut bound_first_vertex = None;
-                        // CPU-driven submission (see the crate docs): offsets select the mesh's
-                        // streams and the draw record, so base vertex and first instance stay 0.
-                        for command in commands {
-                            if bound_first_vertex != Some(command.first_vertex) {
-                                let vertex = u64::from(command.first_vertex);
-                                let positions = slab.positions().slice(vertex * slab.position_stride()..);
-                                pass.set_vertex_buffer(slot::POSITIONS, positions);
-                                pass.set_vertex_buffer(
-                                    slot::SHADING,
-                                    slab.shading().slice(vertex * SHADING_STRIDE..),
-                                );
-                                pass.set_vertex_buffer(
-                                    slot::SURFACE,
-                                    slab.surface().slice(vertex * SURFACE_STRIDE..),
-                                );
-                                bound_first_vertex = Some(command.first_vertex);
-                            }
-                            let record = u64::from(command.draw_id) * DRAW_STRIDE;
-                            pass.set_vertex_buffer(
-                                slot::DRAW,
-                                draws.buffer().slice(record..record + DRAW_STRIDE),
-                            );
-                            pass.draw_indexed(command.indices.clone(), 0, 0..1);
-                        }
+            bind(&mut pass);
+            // Pass 1: the surface shading. Pass 2: outlines, after it so depth rejects the hull
+            // wherever the mesh itself covers it. Skinned and morphed instances draw last in
+            // each, through the f32 pipelines.
+            for outline in [false, true] {
+                for format in PositionFormat::ALL {
+                    if !mesh_draws.has_static(format) {
+                        continue;
                     }
+                    let mesh_pipelines =
+                        pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+                    pass.set_pipeline(main_pipeline(mesh_pipelines, outline));
+                    mesh_draws.draw_static(&mut pass, MeshPass::Main, format);
+                }
+                if mesh_draws.has_deformed() {
+                    let mesh_pipelines =
+                        pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
+                    pass.set_pipeline(main_pipeline(mesh_pipelines, outline));
+                    mesh_draws.draw_deformed(&mut pass, MeshPass::Main);
                 }
             }
             // Pass 3: sky, only where no geometry wrote depth.
@@ -528,6 +633,23 @@ impl Renderer {
         });
 
         post.record(graph, scene_color, target, labels);
+        Some(targets)
+    }
+
+    /// The main pass's depth and how it is stored: kept in tile memory and discarded.
+    #[cfg(not(test))]
+    fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
+        (desc, wgpu::StoreOp::Discard)
+    }
+
+    /// The main pass's depth and how it is stored: stored and copyable when a test reads it.
+    #[cfg(test)]
+    fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
+        if !self.readable_depth {
+            return (desc, wgpu::StoreOp::Discard);
+        }
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        (TransientDesc { usage, ..desc }, wgpu::StoreOp::Store)
     }
 
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
@@ -560,10 +682,56 @@ impl Renderer {
         &self.lights
     }
 
+    /// The skinning state, for tests that read its outputs back.
+    #[cfg(test)]
+    pub(crate) fn skinning(&self) -> &Skinning {
+        &self.skinning
+    }
+
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
-        self.stats.buffer_growths = self.meshes.growths() + self.scene.growths() + self.lights.growths();
+        self.stats.buffer_growths =
+            self.meshes.growths() + self.scene.growths() + self.lights.growths() + self.skinning.growths();
     }
+}
+
+/// The main pass's pipeline for a mesh format: the surface shading, or the outline hull.
+fn main_pipeline(pipelines: &MeshPipelines, outline: bool) -> &wgpu::RenderPipeline {
+    if outline { &pipelines.outline } else { &pipelines.toon }
+}
+
+/// Begins a prepass's render pass: `depth` and the `colors` cleared, all stored.
+fn begin_prepass<'p>(
+    ctx: &'p mut PassContext<'_>,
+    label: &'static str,
+    depth: TextureId,
+    colors: &[TextureId],
+    labels: bool,
+) -> wgpu::RenderPass<'p> {
+    let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 2] = std::array::from_fn(|index| {
+        colors.get(index).map(|&color| wgpu::RenderPassColorAttachment {
+            view: ctx.view(color),
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })
+    });
+    let depth_stencil_attachment = Some(wgpu::RenderPassDepthStencilAttachment {
+        view: ctx.view(depth),
+        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+        stencil_ops: None,
+    });
+    let timestamp_writes = ctx.timestamp_writes();
+    ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: labels.then_some(label),
+        color_attachments: &color_attachments[..colors.len()],
+        depth_stencil_attachment,
+        timestamp_writes,
+        ..Default::default()
+    })
 }
 
 /// Copies `bytes` to the start of `target` through the staging belt. Empty uploads are skipped.

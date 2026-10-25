@@ -37,6 +37,8 @@ pub(crate) struct Options {
     pub render_scale: Option<f32>,
     /// `--dynamic-resolution`: let dynamic resolution lower the render scale.
     pub dynamic_resolution: bool,
+    /// `--skinned`: place the skinned stalk beside the character.
+    pub skinned: bool,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -125,6 +127,7 @@ impl Options {
                 }
                 "--dynamic-resolution" => options.dynamic_resolution = true,
                 "--lights" => options.lights = true,
+                "--skinned" => options.skinned = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,
@@ -194,8 +197,11 @@ mod tests {
 
     #[test]
     fn parses_known_options() {
-        let (options, unknown) = parse(&["--frames", "120", "--msaa", "off"]).unwrap();
-        assert_eq!(options, Options { frame_limit: Some(120), msaa: Some(Msaa::Off), ..Options::default() });
+        let (options, unknown) = parse(&["--frames", "120", "--msaa", "off", "--skinned"]).unwrap();
+        assert_eq!(
+            options,
+            Options { frame_limit: Some(120), msaa: Some(Msaa::Off), skinned: true, ..Options::default() }
+        );
         assert!(unknown.is_empty());
     }
 

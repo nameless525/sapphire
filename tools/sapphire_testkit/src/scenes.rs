@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 5] {
+pub fn scenes() -> [Scene; 6] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -51,6 +51,14 @@ pub fn scenes() -> [Scene; 5] {
         Scene {
             name: "turntable-render-scale",
             args: &["--capture-ticks", "90", "--render-scale", "0.7"],
+            thresholds: Thresholds::default(),
+        },
+        // The procedural stalk beside the character (M1 R2): compute skinning bends it and its
+        // two morph targets swell its top and narrow its middle, drawn from its skinning outputs
+        // with shading and outline.
+        Scene {
+            name: "turntable-skinned",
+            args: &["--capture-ticks", "90", "--skinned"],
             thresholds: Thresholds::default(),
         },
     ]

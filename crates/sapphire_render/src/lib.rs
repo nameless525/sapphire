@@ -22,6 +22,12 @@
 //! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`].
+//! - Compute skinning and morph targets (`skinning`, M1 R2): every instance of a skinned or
+//!   morphed mesh draws from output streams of its own, which one dispatch a frame writes from
+//!   the packet's poses ([`SkinnedInstance`]); see "Skinned and morphed meshes" below.
+//! - The prepasses (M1 R2): a character-only depth prepass, and a scene prepass of depth, world
+//!   normals and velocity, as frame-graph transients for later passes to read
+//!   ([`PrepassTargets`]); the graph culls them while nothing does.
 //! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
 //!   parallel recording and the frame's one submit.
 //! - Texture uploads ([`texture`], M1 A2): cooked KTX2 textures to sampled GPU textures with
@@ -35,8 +41,11 @@
 //! # Does not own
 //!
 //! - Extraction: the app's systems in the ECS `Extract` schedule fill the packet, using
-//!   change detection so that only changed instances reach it. Lights are sent whole every
-//!   frame.
+//!   change detection so that only changed instances and poses reach it. Lights are sent whole
+//!   every frame.
+//! - Animation: poses arrive as finished skinning palettes (`model_from_joint ×
+//!   inverse_bind_matrix` per palette entry) and morph weights; sampling, blending and IK are
+//!   `sapphire_anim`'s (spec §5.13).
 //! - Knowing the device: the app gives [`quality`] a device profile (its class and RAM from the
 //!   platform, its GPU from `GpuCaps`) and creates the renderer with the chosen tier's
 //!   [`RenderSettings`]. The renderer never reads the platform (rule R7).
@@ -81,34 +90,73 @@
 //! | Slot | Stream | Bytes | Read by |
 //! |---|---|---|---|
 //! | 0 | draw record: instance, material, the mesh's dequantization | 48, per instance | every mesh pass |
-//! | 1 | positions: unorm16 across the bounds, or f32 | 8 or 12 | every mesh pass, and alone by shadow and depth passes |
-//! | 2 | shading: octahedral normal and outline normal | 8 | toon, outline |
-//! | 3 | surface: unorm16 UV, RGBA8 color | 8 | toon, outline (width scale) |
+//! | 1 | positions: unorm16 across the bounds, or f32 | 8 or 12 | every mesh pass, and alone by shadow passes and the character prepass |
+//! | 2 | shading: octahedral normal and outline normal | 8 | surface shading, outline, scene prepass |
+//! | 3 | surface: unorm16 UV, RGBA8 color | 8 | surface shading, outline (width scale) |
+//! | 4 | previous positions: where the vertex was when last drawn, in slot 1's format | 8 or 12 | scene prepass (velocity) |
 //!
 //! The dequantization travels in the draw record rather than a mesh table, so decoding costs
 //! no binding (see the budget below). Both position formats share the shaders: f32 positions
 //! use an identity transform, and only the pipelines' slot 1 attribute differs. f32-position
-//! pipelines are built when the first such mesh is uploaded.
+//! pipelines are built when the first such mesh, or skinned or morphed mesh, is uploaded.
 //!
-//! # Skinned meshes (M1 A5 → R2)
+//! A skinned or morphed instance binds slots 1, 2 and 4 to its skinning outputs and slot 3 to
+//! its mesh's surface stream; a static mesh binds its slab's streams, slot 4 being slot 1 again.
+//! Every pass decodes positions through `object_position` (`frame.wgsl`) and marks its clip
+//! position invariant, so the prepasses' depth is the main pass's, bit for bit.
 //!
-//! Skinned meshes upload their streams like any other and draw in **bind pose**, morph
-//! targets at weight 0; their skins and morph targets stay in the cooked mesh. Compute
-//! skinning (M1 R2) builds on this:
+//! # Skinned and morphed meshes (M1 R2)
 //!
-//! - Upload [`Skin::influences`](sapphire_assets::mesh::Skin) (u8 or u16 palette indices plus
-//!   unorm8 weights, 8 or 12 bytes a vertex) and the morph deltas (16 bytes each: vertex,
-//!   binary16 position and normal deltas, sparse per target) as storage buffers, byte for byte.
-//! - Palettes are `model_from_joint(bind.joint) × bind.inverse_bind_matrix` per
-//!   [`SkinBind`](sapphire_assets::mesh::SkinBind); joints are parents-first with names and
-//!   rest poses, the shape ozz-animation's skeleton takes (spec §5.13).
-//! - Decode positions to f32 before adding deltas (morphed and skinned positions leave the
-//!   bind-pose bounds), and write per-instance positions as f32 (slot 1, drawn with the f32
-//!   pipelines and an identity dequantization in the draw record) and shading in the
-//!   [`VertexShading`](sapphire_assets::mesh::VertexShading) layout (slot 2). The surface stream
-//!   stays shared in the pool.
-//! - Every LOD reads a prefix of the streams, so a distant character's dispatch skins only
-//!   `lods[n].vertex_count` vertices.
+//! A mesh with a skin or morph targets uploads its streams, influences and morph deltas to the
+//! pool's deformable buffer rather than a slab (`mesh_pool`), and each of its instances gets
+//! output streams of its own (`skinning`):
+//!
+//! - **Poses** come in the packet as [`SkinnedInstance`]s: a palette of
+//!   `model_from_joint(bind.joint) × bind.inverse_bind_matrix` per
+//!   [`SkinBind`](sapphire_assets::mesh::SkinBind), in the mesh's object space, and morph
+//!   weights. Instances that hold still send none and keep their last pose; one never posed
+//!   draws in its bind pose with every weight 0.
+//! - **The skinning pass** runs once a frame, before everything that draws, as one dispatch
+//!   over every instance posed since the last recorded frame: it decodes the bind pose to f32,
+//!   adds the morph deltas (regrouped by vertex at upload, so a vertex walks only its own),
+//!   blends four palette matrices per vertex, and writes f32 positions and
+//!   [`VertexShading`](sapphire_assets::mesh::VertexShading) normals. Only the drawn LOD's
+//!   prefix of the streams is skinned (LOD0 until LOD selection).
+//! - **Draws** read those outputs through the f32 pipelines with an identity dequantization
+//!   (slots 1 and 2), and the mesh's surface stream (slot 3).
+//! - **Velocity:** each instance's positions are double-buffered, so the scene prepass reads
+//!   this frame's and the last drawn frame's (slot 4); instance transforms and the view keep
+//!   their last drawn matrices too.
+//!
+//! Static meshes are untouched: they cost nothing extra and their draws are as before.
+//!
+//! # The prepasses (M1 R2)
+//!
+//! [`Renderer::record`] adds two prepasses after skinning and before the main pass, and returns
+//! their targets ([`PrepassTargets`]): all single-sampled, at the scene's size (see "Render
+//! scale"), sampled and copyable. Velocity is in texture coordinates, so it holds at any render
+//! scale, and when the scale changes between frames.
+//!
+//! - **Character prepass** (every tier): depth of the skinned and morphed instances alone,
+//!   position-only. Rim light, hair shadow on the face and eyes over the bangs read it (C2, C5).
+//! - **Scene prepass**: depth, world normals (octahedral, `Rg16Float`) and velocity
+//!   (`Rg16Float`, texture coordinates) of every opaque instance. Characters move by their
+//!   skinned positions, static meshes by their instance transform, and both by the camera's.
+//!   TAA (R7), outlines under TAA (P1), GTAO and screen-space edges read it.
+//!
+//! Nothing reads them yet, so the frame graph culls both passes: they cost two boxed closures
+//! a frame and no GPU time until a consumer lands. The outline hull isn't in the scene prepass:
+//! outlines v2 (C4) adds its velocity.
+//!
+//! # Render scale
+//!
+//! Every pass before post's final one renders at the scene's size, [`scaled_size`] of the target
+//! at the render scale: the main pass's attachments and the prepass targets, the views (whose
+//! viewport sizes outline widths and light-cluster tiles) and the bloom chain. Post's fused pass writes the target and
+//! upsamples bilinearly where the scene is smaller; at scale 1 it loads texel for texel, so
+//! frames are exactly what they were without a render scale. Passes added after the renderer's
+//! (the debug overlay, UI) draw at the target's size. Each new size is one new set of transients
+//! in the frame graph's pool, which is why dynamic resolution moves in steps.
 //!
 //! # Binding budget
 //!
@@ -117,22 +165,22 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices, camera, viewport | `record` |
-//! | 2 scene | 0: storage | vertex | instance transforms, by slot | `prepare`, changed instances only |
+//! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
+//! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn), by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | toon materials | mesh upload |
 //! | 3 | — | — | material textures (M1) | — |
 //!
-//! Vertex buffers: slot 0 is the draw records, slots 1–3 a mesh's streams (above).
+//! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
+//! prepasses bind groups 0–2 like the main pass and read no storage buffer beyond the
+//! instances.
 //!
-//! # Render scale
+//! The skinning pass (`shaders/skinning.wgsl`) binds its own group 0, all compute:
 //!
-//! Every pass before post's final one renders at the scene's size, [`scaled_size`] of the target
-//! at the render scale: the main pass's attachments, the views (whose viewport sizes outline
-//! widths and light-cluster tiles) and the bloom chain. Post's fused pass writes the target and
-//! upsamples bilinearly where the scene is smaller; at scale 1 it loads texel for texel, so
-//! frames are exactly what they were without a render scale. Passes added after the renderer's
-//! (the debug overlay, UI) draw at the target's size. Each new size is one new set of transients
-//! in the frame graph's pool, which is why dynamic resolution moves in steps.
+//! | Binding | Type | Contents | Written |
+//! |---|---|---|---|
+//! | 0 | storage | deformable meshes' streams, influences and regrouped morph deltas | mesh upload |
+//! | 1 | storage | this frame's jobs, palettes (three rows each) and morph weights | `record`, through the staging belt |
+//! | 2 | storage, read-write | every deformed instance's outputs: positions twice and normals | the skinning pass |
 //!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
 //! and a sampler, 1 the textures the pass reads. The light-cluster pass (`shaders/clusters.wgsl`)
@@ -141,20 +189,29 @@
 //!
 //! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
 //! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 3 (materials, lights, light
-//! lists), compute 2 (lights, cluster lists). That leaves one spare in the fragment stage and two
-//! in the vertex stage. Local lights take only two fragment bindings because both light paths
-//! share one list buffer layout, a count and then 16-bit light indices, read by cluster index or
-//! by instance slot (passed from the vertex stage as a flat varying). Compute skinning writes
-//! vertex buffers and adds nothing to the vertex stage. Draw records are vertex data rather than
-//! a third vertex-stage storage buffer for this reason.
+//! lists), compute 2 in the cluster pass (lights, cluster lists) and 3 in the skinning pass
+//! (sources, frame data, outputs). That leaves one spare in the fragment stage, two in the vertex
+//! stage and one in the skinning pass. Local lights take only two fragment bindings because both
+//! light paths share one list buffer layout, a count and then 16-bit light indices, read by
+//! cluster index or by instance slot (passed from the vertex stage as a flat varying). Compute
+//! skinning writes vertex buffers and adds nothing to the vertex stage, and packs a mesh's
+//! streams, skin and morphs into one buffer, and a frame's jobs, palettes and weights into
+//! another, to stay within its four. Draw records are vertex data rather than a third
+//! vertex-stage storage buffer for the same reason.
 //!
 //! # Later milestones
 //!
 //! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; mesh
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
 //!   pipeline/material/mesh draw sorting. The [`FramePacket`] grows with the systems that
-//!   feed it: skinned instances, morph weights, VFX, UI and debug draws, plus shadow-cascade
-//!   and UI-inset views.
+//!   feed it: VFX, UI and debug draws, plus shadow-cascade and UI-inset views.
+//! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
+//!   selected LOD's prefix, with posed bounds from their joints; exact normals for
+//!   non-uniformly scaled joints; morphed outline normals with C4's tangent-space outline
+//!   normals; vertex pulling for multi-draw-indirect of skinned instances.
+//! - **Prepasses:** their consumers (rim and hair shadow, TAA, outlines under TAA); the outline
+//!   hull's velocity (C4); jitter-free velocity once TAA jitters the projection (R7); and, when
+//!   TAA turns MSAA off, letting the main pass reuse the scene prepass's depth.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
 //!   layers, the character rig's ceiling and rim, local-light shadows, and two-level culling for
 //!   hundreds of lights. Mesh bounds move from the per-object light lists into the mesh records
@@ -170,6 +227,7 @@
 //!   quality tiers' render scale and dynamic resolution then drive their input size.
 
 mod buffer;
+mod draw;
 mod frame;
 mod gpu_types;
 pub mod graph;
@@ -181,16 +239,20 @@ pub mod quality;
 mod renderer;
 mod scene;
 mod shaders;
+mod skinning;
 pub mod texture;
 
 pub use frame::{
     CameraData, DirectionalLight, FramePacket, FramePacketRing, InstanceDeltas, InstanceId, LightKind,
-    LocalLight, MeshInstance, SkyGradient, ViewData,
+    LocalLight, MeshInstance, PacketRange, SkinnedInstance, SkyGradient, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use mesh_pool::MeshHandle;
 pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
-pub use renderer::{MIN_RENDER_SCALE, Msaa, RenderError, RenderSettings, RenderStats, Renderer, scaled_size};
+pub use renderer::{
+    MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, scaled_size,
+};
+pub use skinning::SkinningStats;
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

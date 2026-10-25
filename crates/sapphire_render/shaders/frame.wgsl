@@ -34,6 +34,8 @@ struct ViewUniforms {
     clip_from_view: mat4x4<f32>,
     clip_from_world: mat4x4<f32>,
     world_from_clip: mat4x4<f32>,
+    // `clip_from_world` in the last frame this view drew, for velocity.
+    previous_clip_from_world: mat4x4<f32>,
     // xyz: world-space camera position.
     position: vec4<f32>,
     // xy: target size in pixels; zw: reciprocals.
@@ -44,6 +46,8 @@ struct InstanceData {
     world_from_object: mat4x4<f32>,
     // Inverse-transpose of the upper 3×3 of `world_from_object`.
     normal_from_object: mat3x3<f32>,
+    // `world_from_object` in the last frame drawn, for velocity.
+    previous_world_from_object: mat4x4<f32>,
 }
 
 // Mirrors `sapphire_assets::mesh::ToonMaterialParams`.
@@ -66,8 +70,9 @@ struct ToonMaterial {
 // vertex buffer slots 1–3 (`pipelines::{POSITION_*, SHADING, SURFACE}_ATTRIBUTES`), each bound
 // at the mesh's first vertex because indices are mesh-relative. `decode_vertex` unpacks it.
 struct PackedVertex {
-    // Slot 1. Quantized meshes: xyz unorm16 across the mesh's bounds, w zero. f32 meshes
-    // (and, with R2, skinned output): xyz as they are, w = 1 from the vertex fetch.
+    // Slot 1. Quantized meshes: xyz unorm16 across the mesh's bounds, w zero. f32 meshes and
+    // skinned or morphed instances (their skinning outputs, `skinning.wgsl`): xyz as they are,
+    // w = 1 from the vertex fetch.
     @location(0) position: vec4<f32>,
     // Slot 2: octahedral snorm16 × 2 each. The outline normal is averaged over every vertex
     // sharing a position; outlines extrude along it.
@@ -104,12 +109,18 @@ struct MeshVertex {
 
 fn decode_vertex(packed: PackedVertex, draw: DrawRecord) -> MeshVertex {
     var vertex: MeshVertex;
-    vertex.position = draw.position_offset + draw.position_scale * packed.position.xyz;
+    vertex.position = object_position(packed.position, draw);
     vertex.normal = oct_decode(packed.normal);
     vertex.outline_normal = oct_decode(packed.outline_normal);
     vertex.uv = draw.uv_transform.xy + draw.uv_transform.zw * packed.uv;
     vertex.color = packed.color;
     return vertex;
+}
+
+// A slot 1 position in object space. Every pass decodes positions through this, so passes that
+// mark their clip position invariant compute the same depth for the same vertex.
+fn object_position(position: vec4<f32>, draw: DrawRecord) -> vec3<f32> {
+    return draw.position_offset + draw.position_scale * position.xyz;
 }
 
 // The unit vector an octahedral encoding holds (Cigolle et al., JCGT 2014); mirrors

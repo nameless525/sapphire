@@ -272,6 +272,19 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Changed instances", render.changed_instances.to_string());
         row(ui, "Draw-list builds", render.draw_list_builds.to_string());
         row(ui, "Mesh pool", format_bytes(render.mesh_pool_bytes));
+        let skinning = &render.skinning;
+        let skinned = if skinning.instances == 0 {
+            "no skinned or morphed instances".to_owned()
+        } else {
+            format!(
+                "{} of {} instances, {} vertices, {} of palettes",
+                skinning.skinned,
+                skinning.instances,
+                skinning.vertices,
+                format_bytes(u64::from(skinning.palette_bytes))
+            )
+        };
+        row(ui, "Skinning", skinned);
         row(ui, "Buffer growths", render.buffer_growths.to_string());
         row(ui, "LUT bakes", render.lut_bakes.to_string());
         // The cluster counts here are what the light-cluster heatmap view will show per pixel.

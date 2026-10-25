@@ -8,8 +8,13 @@
 //!   [`RenderTransform`](extract::RenderTransform) it draws with.
 //! - **Demo lights** (`--lights`): three colored local lights around the character, entities
 //!   with a [`RenderLight`] each ([`Scene::spawn_demo_lights`]).
-//! - **Systems:** turntables spin in `FixedCombat`. `Extract` poses them, then writes the
-//!   instances that changed and the lights into the frame's packet (see [`crate::extract`]).
+//! - **The skinned stalk** (`--skinned`): a procedural skinned and morphed mesh beside the
+//!   character, with its own `EntityClock`, a [`Sway`](skinned::Sway) and a
+//!   [`RenderPose`](extract::RenderPose) (see [`crate::skinned`]).
+//! - **Systems:** turntables spin, and stalks sway, in `FixedCombat`. `Extract` poses them,
+//!   then writes the instances that changed, the lights and the poses that changed into the
+//!   frame's packet (see [`crate::extract`]). The stalk's systems are added only with `--skinned`,
+//!   since each system in `Extract` costs an allocation per frame (below).
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!
@@ -35,6 +40,7 @@ use crate::LOG_TARGET;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
+use crate::skinned::{self, Sway};
 use crate::turntable::{self, Turntable};
 
 /// The cooked sample character, produced by `cargo xtask content`.
@@ -59,14 +65,17 @@ struct SlowMotion(Option<ScaleHandle>);
 pub(crate) struct Scene {
     ecs: Ecs,
     character: Entity,
+    /// The skinned stalk, with `--skinned`.
+    stalk: Option<Entity>,
     /// The character's object-space bounds, which demo lights are placed around.
     bounds: [[f32; 3]; 2],
 }
 
 impl Scene {
-    /// A scene around a character with the object-space `bounds`. The character draws once
-    /// it has a mesh ([`Self::set_character_mesh`]).
-    pub fn new(bounds: [[f32; 3]; 2]) -> Self {
+    /// A scene around a character with the object-space `bounds`, and with the skinned stalk
+    /// beside it if `skinned`. The character and stalk draw once they have meshes
+    /// ([`Self::set_character_mesh`], [`Self::set_stalk_mesh`]).
+    pub fn new(bounds: [[f32; 3]; 2], skinned: bool) -> Self {
         let mut ecs = Ecs::new();
         let world = ecs.world_mut();
         world.insert_resource(OrbitCamera::framing(bounds));
@@ -74,17 +83,28 @@ impl Scene {
         world.insert_resource(RenderExtract::default());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
         let character = world.spawn((Turntable::default(), clock)).id();
+        let stalk = skinned.then(|| {
+            let clock = world.resource_mut::<WorldClock>().new_entity_clock();
+            let place = extract::RenderTransform(skinned::placement(bounds));
+            world.spawn((Sway::default(), clock, place, skinned::rest_pose())).id()
+        });
         ecs.add_systems(FixedCombat, turntable::spin).add_systems(
             Extract,
             (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
         );
+        if skinned {
+            ecs.add_systems(FixedCombat, skinned::sway).add_systems(
+                Extract,
+                (skinned::pose, extract::extract_poses).chain().after(extract::extract_lights),
+            );
+        }
         ecs.startup();
-        Self { ecs, character, bounds }
+        Self { ecs, character, stalk, bounds }
     }
 
     /// [`Self::new`] with the character drawing `mesh`.
-    pub fn with_character(mesh: MeshHandle, bounds: [[f32; 3]; 2]) -> Self {
-        let mut scene = Self::new(bounds);
+    pub fn with_character(mesh: MeshHandle, bounds: [[f32; 3]; 2], skinned: bool) -> Self {
+        let mut scene = Self::new(bounds, skinned);
         scene.set_character_mesh(mesh);
         scene
     }
@@ -215,6 +235,15 @@ impl Scene {
     pub fn set_character_mesh(&mut self, mesh: MeshHandle) {
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
     }
+
+    /// Sets the mesh the skinned stalk draws (the scene has one with `--skinned`): at startup,
+    /// and again after GPU device loss.
+    pub fn set_stalk_mesh(&mut self, mesh: MeshHandle) {
+        debug_assert!(self.stalk.is_some(), "the scene was made without the skinned stalk");
+        if let Some(stalk) = self.stalk {
+            self.ecs.world_mut().entity_mut(stalk).insert(RenderMesh(mesh));
+        }
+    }
 }
 
 /// Width over height of a target the main view can draw into: none without a target, or for
@@ -275,7 +304,7 @@ mod tests {
     const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
 
     fn scene() -> Scene {
-        Scene::new(BOUNDS)
+        Scene::new(BOUNDS, false)
     }
 
     fn angle(scene: &Scene) -> f32 {
@@ -301,7 +330,8 @@ mod tests {
     #[test]
     fn fixed_steps_do_not_allocate_from_the_first() {
         // As the app runs it: steps from the first frame on, with frames in between.
-        let mut scene = scene();
+        let mut scene = Scene::new(BOUNDS, true);
+        scene.set_stalk_mesh(MeshHandle::from_raw(1));
         scene.spawn_demo_lights();
         let mut allocations = 0;
         for _ in 0..60 {
@@ -317,8 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn the_stalk_is_posed_while_it_sways_and_not_while_paused() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, true);
+        scene.set_stalk_mesh(MeshHandle::from_raw(1));
+        let stalk = InstanceId(scene.stalk.expect("skinned").to_bits());
+        let pose = |scene: &mut Scene| {
+            scene.step();
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let poses: Vec<_> = packet
+                .skinned
+                .iter()
+                .map(|skinned| (skinned.id, packet.palette(skinned).expect("in range").to_vec()))
+                .collect();
+            scene.end_frame();
+            poses
+        };
+        let first = pose(&mut scene);
+        assert_eq!(first.len(), 1);
+        assert_eq!((first[0].0, first[0].1.len()), (stalk, 6));
+        let second = pose(&mut scene);
+        assert_ne!(second[0].1, first[0].1, "it sways every step");
+
+        scene.world_clock_mut().0.push_scale(ScaleSource::Pause, 0).expect("a free scale slot");
+        pose(&mut scene);
+        assert!(pose(&mut scene).is_empty(), "paused, it holds its pose and sends none");
+    }
+
+    #[test]
     fn demo_lights_surround_the_character() {
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS);
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         scene.spawn_demo_lights();
         for _ in 0..2 {
             let packet = scene.frame_packet(1.0, Some((1920, 1080)));
@@ -348,7 +405,7 @@ mod tests {
 
     #[test]
     fn packets_carry_the_view_and_only_instances_that_moved() {
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS);
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         let character = InstanceId(scene.character.to_bits());
         let changed = |packet: &FramePacket| -> Vec<InstanceId> {
             packet.instances.changed.iter().map(|instance| instance.id).collect()

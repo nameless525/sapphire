@@ -1,4 +1,5 @@
-//! Bind group layouts, vertex layouts and render pipelines for the scene passes.
+//! Bind group layouts, vertex layouts and render pipelines for the scene passes and the
+//! prepasses.
 
 use std::mem::offset_of;
 use std::num::NonZeroU64;
@@ -18,17 +19,28 @@ pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 /// Alpha is kept for the character bloom mask (M1 C7).
 pub(crate) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// The scene prepass's world normals, octahedral: 4 bytes a pixel with f16's 11 significant
+/// bits, finer than 8-bit unorm and renderable everywhere.
+pub(crate) const NORMALS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
+/// The scene prepass's velocity, in texture coordinates. f16 resolves motion to a small
+/// fraction of a pixel at 4K up to about half the screen per frame.
+pub(crate) const VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 /// Vertex buffer slots. Every mesh pass binds the draw record and positions; a position-only
-/// pass (shadows, depth prepass) needs nothing more, so the streams it skips come last.
+/// pass (shadows, the character prepass) needs nothing more, so the streams it skips come last.
 pub(crate) mod slot {
     /// The draw record, stepped per instance.
     pub const DRAW: u32 = 0;
-    /// The mesh's position stream.
+    /// The mesh's position stream, or a skinned or morphed instance's skinning output.
     pub const POSITIONS: u32 = 1;
-    /// Normal and outline normal (rewritten by compute skinning, M1 R2).
+    /// Normal and outline normal (likewise).
     pub const SHADING: u32 = 2;
-    /// UV and vertex color.
+    /// UV and vertex color: always the mesh's.
     pub const SURFACE: u32 = 3;
+    /// Positions when the instance was last drawn, for velocity (the scene prepass): the other
+    /// half of a skinned instance's outputs, or slot 1's buffer again.
+    pub const PREVIOUS_POSITIONS: u32 = 4;
 }
 
 /// Slot 0: the draw record (WGSL `DrawRecord`).
@@ -68,29 +80,74 @@ pub(crate) fn position_attributes(format: PositionFormat) -> &'static [wgpu::Ver
     }
 }
 
+/// Slot 4 for quantized and f32 positions: slot 1's format at location 10.
+pub(crate) const PREVIOUS_UNORM16_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+    [attribute(10, wgpu::VertexFormat::Unorm16x4, 0)];
+pub(crate) const PREVIOUS_FLOAT32_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+    [attribute(10, wgpu::VertexFormat::Float32x3, 0)];
+
+/// The slot 4 attributes for meshes in `format`.
+pub(crate) fn previous_position_attributes(format: PositionFormat) -> &'static [wgpu::VertexAttribute] {
+    match format {
+        PositionFormat::Unorm16 => &PREVIOUS_UNORM16_ATTRIBUTES,
+        PositionFormat::Float32 => &PREVIOUS_FLOAT32_ATTRIBUTES,
+    }
+}
+
 const fn attribute(location: u32, format: wgpu::VertexFormat, offset: usize) -> wgpu::VertexAttribute {
     wgpu::VertexAttribute { format, offset: offset as u64, shader_location: location }
 }
 
-/// The vertex buffers of a pass that reads every stream of a mesh in `format`, in slot order.
-fn mesh_buffers(format: PositionFormat) -> [Option<wgpu::VertexBufferLayout<'static>>; 4] {
-    let vertex = |stride: usize, attributes| {
-        Some(wgpu::VertexBufferLayout {
-            array_stride: stride as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes,
-        })
-    };
-    [
-        Some(wgpu::VertexBufferLayout {
-            array_stride: size_of::<DrawData>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &DRAW_ATTRIBUTES,
-        }),
-        vertex(format.stride(), position_attributes(format)),
-        vertex(size_of::<VertexShading>(), &SHADING_ATTRIBUTES),
-        vertex(size_of::<VertexSurface>(), &SURFACE_ATTRIBUTES),
-    ]
+/// The mesh passes, by the vertex streams they read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MeshPass {
+    /// The main pass's surface and outline draws: every stream but the previous positions.
+    Main,
+    /// Positions only.
+    CharacterPrepass,
+    /// Positions, shading and previous positions.
+    ScenePrepass,
+}
+
+impl MeshPass {
+    /// The streams the pass binds besides the draw record and positions.
+    pub(crate) fn reads_shading(self) -> bool {
+        self != Self::CharacterPrepass
+    }
+
+    pub(crate) fn reads_surface(self) -> bool {
+        self == Self::Main
+    }
+
+    pub(crate) fn reads_previous(self) -> bool {
+        self == Self::ScenePrepass
+    }
+
+    /// The pass's vertex buffers for a mesh in `format`, in slot order.
+    pub(crate) fn buffers(self, format: PositionFormat) -> [Option<wgpu::VertexBufferLayout<'static>>; 5] {
+        let vertex = |stride: usize, attributes| {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: stride as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes,
+            })
+        };
+        [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: size_of::<DrawData>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &DRAW_ATTRIBUTES,
+            }),
+            vertex(format.stride(), position_attributes(format)),
+            if self.reads_shading() { vertex(size_of::<VertexShading>(), &SHADING_ATTRIBUTES) } else { None },
+            if self.reads_surface() { vertex(size_of::<VertexSurface>(), &SURFACE_ATTRIBUTES) } else { None },
+            if self.reads_previous() {
+                vertex(format.stride(), previous_position_attributes(format))
+            } else {
+                None
+            },
+        ]
+    }
 }
 
 /// The bind group layouts of `shaders/frame.wgsl`. Group 3 (material textures) arrives in M1.
@@ -164,19 +221,25 @@ struct PassDesc<'a> {
 pub(crate) struct MeshPipelines {
     pub toon: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
+    /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`).
+    pub scene_prepass: wgpu::RenderPipeline,
 }
 
 /// The scene pipelines. Quantized-mesh pipelines are built up front; the f32 ones when the
-/// first f32 mesh is uploaded ([`Self::prepare_format`]), so apps that have none never pay for
-/// compiling them.
+/// first f32 mesh, or skinned or morphed mesh, is uploaded ([`Self::prepare_format`]), and the
+/// character prepass's with the first skinned or morphed one ([`Self::prepare_characters`]), so
+/// apps that have none never pay for compiling them.
 #[derive(Debug)]
 pub(crate) struct Pipelines {
     /// Per [`PositionFormat::ALL`] entry.
     mesh: [Option<MeshPipelines>; 2],
+    /// Depth of skinned and morphed instances, whose skinning outputs are f32.
+    character_prepass: Option<wgpu::RenderPipeline>,
     pub sky: wgpu::RenderPipeline,
     target: PipelineTarget,
     toon_module: wgpu::ShaderModule,
     outline_module: wgpu::ShaderModule,
+    prepass_module: wgpu::ShaderModule,
 }
 
 /// What every scene pipeline shares, kept to build the f32 ones later.
@@ -223,10 +286,12 @@ impl Pipelines {
         );
         let mut pipelines = Self {
             mesh: [None, None],
+            character_prepass: None,
             sky,
             target,
             toon_module: module("toon", shaders::TOON),
             outline_module: module("outline", shaders::OUTLINE),
+            prepass_module: module("prepass", shaders::PREPASS),
         };
         pipelines.prepare_format(device, PositionFormat::Unorm16);
         pipelines
@@ -237,7 +302,7 @@ impl Pipelines {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
-        let buffers = mesh_buffers(format);
+        let buffers = MeshPass::Main.buffers(format);
         let toon = self.target.build(
             device,
             PassDesc {
@@ -261,16 +326,94 @@ impl Pipelines {
                 depth_compare: wgpu::CompareFunction::Greater,
             },
         );
-        self.mesh[format_index(format)] = Some(MeshPipelines { toon, outline });
+        let normals_and_velocity = [NORMALS_FORMAT, VELOCITY_FORMAT].map(|format| {
+            Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })
+        });
+        let scene_prepass = self.target.build_prepass(
+            device,
+            "scene prepass",
+            &self.prepass_module,
+            &MeshPass::ScenePrepass.buffers(format),
+            &normals_and_velocity,
+        );
+        self.mesh[format_index(format)] = Some(MeshPipelines { toon, outline, scene_prepass });
+    }
+
+    /// Builds the character prepass's pipeline unless it exists: for the first skinned or
+    /// morphed mesh.
+    pub(crate) fn prepare_characters(&mut self, device: &wgpu::Device) {
+        if self.character_prepass.is_none() {
+            let buffers = MeshPass::CharacterPrepass.buffers(PositionFormat::Float32);
+            self.character_prepass = Some(self.target.build_prepass(
+                device,
+                "character prepass",
+                &self.prepass_module,
+                &buffers,
+                &[],
+            ));
+        }
     }
 
     /// The mesh pipelines for `format`, once [`Self::prepare_format`] built them.
     pub(crate) fn mesh(&self, format: PositionFormat) -> Option<&MeshPipelines> {
         self.mesh[format_index(format)].as_ref()
     }
+
+    /// The character prepass's pipeline, once [`Self::prepare_characters`] built it.
+    pub(crate) fn character_prepass(&self) -> Option<&wgpu::RenderPipeline> {
+        self.character_prepass.as_ref()
+    }
 }
 
 impl PipelineTarget {
+    /// A prepass pipeline: back faces culled, reverse-Z depth written, no multisampling (the
+    /// targets are sampled by later passes), and `color_targets` written by the
+    /// `fs_<entry>` entry point when there are any. `name` is the entry points' suffix with
+    /// spaces as underscores.
+    fn build_prepass(
+        &self,
+        device: &wgpu::Device,
+        name: &'static str,
+        module: &wgpu::ShaderModule,
+        vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+        color_targets: &[Option<wgpu::ColorTargetState>],
+    ) -> wgpu::RenderPipeline {
+        let entry = name.replace(' ', "_");
+        let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(name),
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some(&vs),
+                compilation_options: Default::default(),
+                buffers: vertex_buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: (!color_targets.is_empty()).then(|| wgpu::FragmentState {
+                module,
+                entry_point: Some(&fs),
+                compilation_options: Default::default(),
+                targets: color_targets,
+            }),
+            multiview_mask: None,
+            cache: self.cache.as_ref(),
+        })
+    }
+
     fn build(&self, device: &wgpu::Device, pass: PassDesc<'_>) -> wgpu::RenderPipeline {
         let color_targets = [Some(wgpu::ColorTargetState {
             format: self.color_format,

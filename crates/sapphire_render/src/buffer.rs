@@ -1,5 +1,7 @@
-//! GPU buffer helpers: a buffer that grows geometrically, and writes staged through the
-//! frame's staging belt.
+//! GPU buffer helpers: a buffer that grows geometrically, writes staged through the frame's
+//! staging belt, and a range allocator for sharing one buffer between owners that come and go.
+
+use std::ops::Range;
 
 use sapphire_rhi::wgpu;
 
@@ -90,6 +92,74 @@ pub(crate) fn stage(
     }
 }
 
+/// Hands out ranges of a buffer, in whatever unit its owner counts in, first fit, and takes them
+/// back, merging free neighbors. The buffer itself is the owner's: [`Self::end`] says how much of
+/// it is in use.
+#[derive(Debug, Default)]
+pub(crate) struct RangeAllocator {
+    /// Free ranges below `end`, sorted, never adjacent to each other or to `end`.
+    free: Vec<Range<u32>>,
+    end: u32,
+}
+
+impl RangeAllocator {
+    /// The start of a new range of `len` units: the first free range that fits, or the end. An
+    /// empty range takes no room: it starts at 0.
+    pub(crate) fn allocate(&mut self, len: u32) -> u32 {
+        if len == 0 {
+            return 0;
+        }
+        if let Some(index) = self.free.iter().position(|range| range.len() as u32 >= len) {
+            let range = &mut self.free[index];
+            let start = range.start;
+            range.start += len;
+            if range.start == range.end {
+                self.free.remove(index);
+            }
+            return start;
+        }
+        let start = self.end;
+        self.end = start.checked_add(len).expect("allocations fit u32 units");
+        start
+    }
+
+    /// Returns `start..start + len`, which [`Self::allocate`] handed out.
+    pub(crate) fn free(&mut self, start: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
+        let end = start + len;
+        debug_assert!(end <= self.end, "{start}..{end} was never allocated");
+        let index = self.free.partition_point(|range| range.start < start);
+        debug_assert!(
+            self.free.get(index).is_none_or(|next| end <= next.start)
+                && index.checked_sub(1).is_none_or(|before| self.free[before].end <= start),
+            "{start}..{end} is already free"
+        );
+        let mut range = start..end;
+        if let Some(next) = self.free.get(index).filter(|next| next.start == end) {
+            range.end = next.end;
+            self.free.remove(index);
+        }
+        if let Some(before) = index.checked_sub(1).filter(|&before| self.free[before].end == start) {
+            range.start = self.free[before].start;
+            self.free.remove(before);
+        }
+        let index = self.free.partition_point(|free| free.start < range.start);
+        if range.end == self.end {
+            // Free space at the end returns to the end, so a later allocation can grow there.
+            self.end = range.start;
+        } else {
+            self.free.insert(index, range);
+        }
+    }
+
+    /// One past the last unit in use: what the buffer must hold.
+    pub(crate) fn end(&self) -> u32 {
+        self.end
+    }
+}
+
 fn create(device: &wgpu::Device, label: &str, usage: wgpu::BufferUsages, capacity: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
@@ -98,4 +168,51 @@ fn create(device: &wgpu::Device, label: &str, usage: wgpu::BufferUsages, capacit
         usage,
         mapped_at_creation: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranges_are_reused_first_fit_and_merge_when_freed() {
+        let mut ranges = RangeAllocator::default();
+        let [a, b, c, d] = [10, 20, 30, 5].map(|len| ranges.allocate(len));
+        assert_eq!(([a, b, c, d], ranges.end()), ([0, 10, 30, 60], 65));
+
+        ranges.free(b, 20);
+        assert_eq!(ranges.allocate(25), 65, "too big for the hole");
+        assert_eq!(ranges.allocate(15), 10, "first fit");
+        assert_eq!(ranges.allocate(5), 25, "the rest of the hole");
+        assert_eq!(ranges.free, []);
+
+        // Freeing neighbors merges them into one range.
+        ranges.free(a, 10);
+        ranges.free(25, 5);
+        ranges.free(10, 15);
+        assert_eq!((ranges.free.len(), ranges.free.first()), (1, Some(&(0..30))));
+        assert_eq!(ranges.allocate(30), 0);
+    }
+
+    #[test]
+    fn freeing_the_last_ranges_shrinks_the_end() {
+        let mut ranges = RangeAllocator::default();
+        let [a, b, c] = [4, 4, 4].map(|len| ranges.allocate(len));
+        ranges.free(b, 4);
+        ranges.free(c, 4);
+        assert_eq!((ranges.end(), ranges.free.len()), (4, 0), "b merged into c, and both into the end");
+        ranges.free(a, 4);
+        assert_eq!(ranges.end(), 0);
+        assert_eq!(ranges.allocate(7), 0);
+    }
+
+    #[test]
+    fn empty_ranges_take_no_room() {
+        let mut ranges = RangeAllocator::default();
+        let a = ranges.allocate(4);
+        assert_eq!((ranges.allocate(0), ranges.end()), (0, 4));
+        ranges.free(0, 0);
+        ranges.free(a, 4);
+        assert_eq!((ranges.end(), ranges.free.len()), (0, 0));
+    }
 }

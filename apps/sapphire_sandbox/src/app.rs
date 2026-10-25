@@ -24,6 +24,7 @@ use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::{self, Scene};
+use crate::skinned;
 use crate::stats::{FrameStats, Stages};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
@@ -113,12 +114,16 @@ impl App for SandboxApp {
             &device.gpu,
             device.format,
             options.render_settings(quality.render_settings()),
+            options.skinned,
         )?;
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
-        let mut scene = Scene::with_character(renderer.character, renderer.character_bounds);
+        let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         if options.lights {
             scene.spawn_demo_lights();
+        }
+        if let Some(stalk) = renderer.stalk {
+            scene.set_stalk_mesh(stalk);
         }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
@@ -328,6 +333,7 @@ impl SandboxApp {
                         window,
                         render: self.renderer.stats(),
                         quality: &self.quality,
+                        gpu_timing: self.quality.wants_gpu_timing(),
                         gpu: &self.gpu,
                         input: Some(&self.input),
                         scene: &self.scene,
@@ -450,8 +456,9 @@ impl SandboxApp {
         self.steady = false;
         self.recovery.attempted(self.real.elapsed());
         let settings = self.render_settings();
+        let skinned = self.options.skinned;
         let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
-            let renderer = create_renderer(platform, &device.gpu, device.format, settings)?;
+            let renderer = create_renderer(platform, &device.gpu, device.format, settings, skinned)?;
             Ok((device, renderer))
         });
         match stack {
@@ -465,6 +472,9 @@ impl SandboxApp {
                 self.format = device.format;
                 self.surface = Some(device.surface);
                 self.scene.set_character_mesh(renderer.character);
+                if let Some(stalk) = renderer.stalk {
+                    self.scene.set_stalk_mesh(stalk);
+                }
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
@@ -485,10 +495,14 @@ impl SandboxApp {
     fn follow_tier(&mut self, platform: &Platform) {
         let Some(previous) = self.quality.update_tier() else { return };
         self.steady = false;
-        match create_renderer(platform, &self.gpu, self.format, self.render_settings()) {
+        match create_renderer(platform, &self.gpu, self.format, self.render_settings(), self.options.skinned)
+        {
             Ok(renderer) => {
                 self.renderer = renderer.renderer;
                 self.scene.set_character_mesh(renderer.character);
+                if let Some(stalk) = renderer.stalk {
+                    self.scene.set_stalk_mesh(stalk);
+                }
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");
@@ -571,12 +585,14 @@ struct GpuDevice {
     format: wgpu::TextureFormat,
 }
 
-/// A renderer and the character it holds: built with the device, and again for a new quality
+/// A renderer and the meshes it holds: built with the device, and again for a new quality
 /// tier.
 struct SceneRenderer {
     renderer: Renderer,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
+    /// The skinned stalk, with `--skinned`.
+    stalk: Option<MeshHandle>,
 }
 
 fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Result<GpuDevice, AppInitError> {
@@ -600,18 +616,21 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
     Ok(GpuDevice { surface, gpu, format })
 }
 
-/// A renderer drawing into `format` targets with `settings`, holding the character from content.
+/// A renderer drawing into `format` targets with `settings`, holding the character from content
+/// and, if `skinned`, the skinned stalk.
 fn create_renderer(
     platform: &Platform,
     gpu: &GpuContext,
     format: wgpu::TextureFormat,
     settings: RenderSettings,
+    skinned: bool,
 ) -> Result<SceneRenderer, AppInitError> {
     let mut renderer = Renderer::new(gpu, format, settings)?;
     let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
         renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
     })?;
-    Ok(SceneRenderer { renderer, character, character_bounds })
+    let stalk = skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
+    Ok(SceneRenderer { renderer, character, character_bounds, stalk })
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

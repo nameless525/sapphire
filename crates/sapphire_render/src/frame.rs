@@ -11,14 +11,20 @@
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
 //!   packet carries only the instances added, changed or removed since the previous one. The
 //!   renderer must therefore see every packet, in order (see [`crate::Renderer::prepare`]).
+//! - **Poses are deltas too.** A [`SkinnedInstance`] gives a skinned or morphed instance a new
+//!   pose: a range of [`FramePacket::palettes`] (its skinning palette) and of
+//!   [`FramePacket::morph_weights`]. An animated character sends one every frame; one that holds
+//!   still (hitstop, pause) sends none and keeps its last pose, which costs nothing to draw.
 //!
 //! Packets live in a [`FramePacketRing`] of three, the in-flight depth of the pipelined frame:
 //! one being extracted, one being rendered, one spare so neither side waits. A packet's vectors
 //! keep their capacity when the ring reuses it, so a warm frame allocates nothing for its
 //! packet. What the packet gains in later milestones is listed on [`FramePacket`].
 
+use std::ops::Range;
+
 use glam::camera::rh::{proj::directx, view};
-use glam::{Mat4, Vec3};
+use glam::{Affine3A, Mat4, Vec3};
 
 use crate::{MeshHandle, PostParams};
 
@@ -29,10 +35,9 @@ const RING_SIZE: usize = 3;
 ///
 /// # Later milestones
 ///
-/// The packet grows with the systems that feed it (spec §4.6): skinned instances with their
-/// palette ranges (R2, A5), morph weights, VFX spawns and emitter parameters,
-/// gameplay-triggered post effects in `post` (P3), the UI draw list, and debug draws (dev
-/// builds). Shadow cascades (R4) and UI 3D insets add views after the main
+/// The packet grows with the systems that feed it (spec §4.6): VFX spawns and emitter
+/// parameters, gameplay-triggered post effects in `post` (P3), the UI draw list, and debug
+/// draws (dev builds). Shadow cascades (R4) and UI 3D insets add views after the main
 /// camera, and the time of day (W1) resolves into the scene constants.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
@@ -57,6 +62,15 @@ pub struct FramePacket {
     pub lights: Vec<LocalLight>,
     /// Mesh instances added, changed or removed since the previous packet.
     pub instances: InstanceDeltas,
+    /// New poses for skinned or morphed instances, applied after [`Self::instances`], so an
+    /// instance can be added and posed in one packet. Add them with [`Self::push_skinned`].
+    pub skinned: Vec<SkinnedInstance>,
+    /// This frame's skinning palettes, back to back: each [`SkinnedInstance::palette`] is a
+    /// range of it. The per-frame bone-matrix buffer of spec §4.6.
+    pub palettes: Vec<Affine3A>,
+    /// This frame's morph target weights, back to back: each
+    /// [`SkinnedInstance::morph_weights`] is a range of it.
+    pub morph_weights: Vec<f32>,
 }
 
 impl FramePacket {
@@ -65,9 +79,45 @@ impl FramePacket {
         self.views.first()
     }
 
+    /// Poses instance `id`: appends `palette` to [`Self::palettes`] and `morph_weights` to
+    /// [`Self::morph_weights`], then a [`SkinnedInstance`] naming both ranges. Allocates nothing
+    /// once the packet's vectors have grown to hold a frame's poses.
+    pub fn push_skinned(
+        &mut self,
+        id: InstanceId,
+        palette: impl IntoIterator<Item = Affine3A>,
+        morph_weights: impl IntoIterator<Item = f32>,
+    ) {
+        let palette = append(&mut self.palettes, palette);
+        let morph_weights = append(&mut self.morph_weights, morph_weights);
+        self.skinned.push(SkinnedInstance { id, palette, morph_weights });
+    }
+
+    /// The skinning palette `skinned` names, or `None` if its range is outside this packet's.
+    pub fn palette(&self, skinned: &SkinnedInstance) -> Option<&[Affine3A]> {
+        self.palettes.get(skinned.palette.range())
+    }
+
+    /// The morph weights `skinned` names, or `None` if its range is outside this packet's.
+    pub fn morph_weights(&self, skinned: &SkinnedInstance) -> Option<&[f32]> {
+        self.morph_weights.get(skinned.morph_weights.range())
+    }
+
     /// Empties the packet for `frame`, keeping its vectors' capacity.
     fn reset(&mut self, frame: u64) {
-        let Self { frame: number, views, sun, sky, time_seconds, post, lights, instances } = self;
+        let Self {
+            frame: number,
+            views,
+            sun,
+            sky,
+            time_seconds,
+            post,
+            lights,
+            instances,
+            skinned,
+            palettes,
+            morph_weights,
+        } = self;
         *number = frame;
         views.clear();
         *sun = DirectionalLight::default();
@@ -77,7 +127,18 @@ impl FramePacket {
         lights.clear();
         instances.changed.clear();
         instances.removed.clear();
+        skinned.clear();
+        palettes.clear();
+        morph_weights.clear();
     }
+}
+
+/// Appends `values` to `vec` and returns where they went.
+fn append<T>(vec: &mut Vec<T>, values: impl IntoIterator<Item = T>) -> PacketRange {
+    let start = vec.len();
+    vec.extend(values);
+    let index = |at: usize| u32::try_from(at).expect("a packet's palettes and weights fit u32 ranges");
+    PacketRange { start: index(start), len: index(vec.len() - start) }
 }
 
 /// The ring of packets extraction writes into, reused frame after frame.
@@ -143,6 +204,47 @@ pub struct InstanceDeltas {
 impl InstanceDeltas {
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// A skinned or morphed instance's pose this frame (spec §4.6, §5.12 "Skinning and morph
+/// targets"). The instance itself, its mesh and transform, comes through
+/// [`FramePacket::instances`]; this says only how its mesh deforms.
+///
+/// - **Palette:** one matrix per entry of the mesh's skinning palette
+///   ([`Skin::binds`](sapphire_assets::mesh::Skin)), in its order:
+///   `model_from_joint(binds[i].joint) × binds[i].inverse_bind_matrix`, with the joint's
+///   transform taken from the animated pose, in the mesh's object space (the instance's
+///   transform then places it in the world). A mesh with morph targets but no skin takes an
+///   empty palette.
+/// - **Morph weights:** one per morph target, in the mesh's order. Missing weights count as 0,
+///   and weights past the mesh's targets are ignored. The renderer never reads the targets'
+///   default weights: whatever animates them starts from those.
+///
+/// An instance that has never been posed draws in its bind pose with every weight at 0. The
+/// renderer ignores, and counts, a pose for an instance it doesn't draw with a skinned or
+/// morphed mesh, one whose palette length differs from the mesh's, and one with a non-finite
+/// matrix or weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkinnedInstance {
+    pub id: InstanceId,
+    /// The range of [`FramePacket::palettes`] holding its palette.
+    pub palette: PacketRange,
+    /// The range of [`FramePacket::morph_weights`] holding its weights.
+    pub morph_weights: PacketRange,
+}
+
+/// A range of one of a [`FramePacket`]'s flat arrays. `Copy`, unlike `Range<u32>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PacketRange {
+    pub start: u32,
+    pub len: u32,
+}
+
+impl PacketRange {
+    pub fn range(self) -> Range<usize> {
+        let start = self.start as usize;
+        start..start + self.len as usize
     }
 }
 
@@ -286,6 +388,9 @@ mod tests {
             });
         }
         packet.instances.removed.push(InstanceId(99));
+        let palette = (0..3).map(|joint| Affine3A::from_translation(Vec3::splat(joint as f32)));
+        packet.push_skinned(InstanceId(0), palette, [0.5, 1.0]);
+        packet.push_skinned(InstanceId(1), [Affine3A::IDENTITY], []);
     }
 
     #[test]
@@ -316,6 +421,9 @@ mod tests {
                 packet.instances.changed.as_ptr(),
                 packet.instances.changed.capacity(),
                 packet.instances.removed.as_ptr(),
+                packet.skinned.as_ptr(),
+                packet.palettes.as_ptr(),
+                packet.morph_weights.as_ptr(),
             )
         };
         let warm: Vec<_> = ring.packets.iter().map(storage).collect();
@@ -324,5 +432,22 @@ mod tests {
         }
         let reused: Vec<_> = ring.packets.iter().map(storage).collect();
         assert_eq!(warm, reused, "no packet vector was reallocated");
+    }
+
+    #[test]
+    fn skinned_instances_name_their_palette_and_weights() {
+        let mut packet = FramePacket::default();
+        fill(&mut packet, 0);
+        let [first, second] = packet.skinned[..] else { panic!("two poses") };
+        assert_eq!(first.palette, PacketRange { start: 0, len: 3 });
+        assert_eq!(second.palette, PacketRange { start: 3, len: 1 });
+        assert_eq!(second.morph_weights, PacketRange { start: 2, len: 0 });
+        let palette = packet.palette(&first).expect("in range");
+        assert_eq!(palette[2].translation, Vec3::splat(2.0).into());
+        assert_eq!(packet.morph_weights(&first), Some(&[0.5, 1.0][..]));
+        assert_eq!(packet.palette(&second), Some(&[Affine3A::IDENTITY][..]));
+        assert_eq!(packet.morph_weights(&second), Some(&[][..]));
+        let outside = SkinnedInstance { palette: PacketRange { start: 3, len: 2 }, ..second };
+        assert_eq!(packet.palette(&outside), None);
     }
 }

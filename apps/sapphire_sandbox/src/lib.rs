@@ -40,6 +40,8 @@
 //!   GPU budget (off by default; `r.dynamic_resolution` overrides it).
 //! - `--msaa off|2|4|8`: override the tier's MSAA.
 //! - `--lights`: place three colored local lights around the character.
+//! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
+//!   (compute skinning, M1 R2).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
@@ -66,6 +68,7 @@ mod offscreen;
 mod options;
 mod orbit;
 mod scene;
+mod skinned;
 mod stats;
 mod turntable;
 

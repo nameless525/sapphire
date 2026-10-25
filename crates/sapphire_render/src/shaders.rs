@@ -1,6 +1,7 @@
 //! WGSL sources, embedded at build time. Each scene pass is `frame.wgsl` followed by the
 //! files it uses, its own last; M1 replaces the concatenation with WESL imports (spec §5.12).
-//! The post passes share `post.wgsl`, which stands alone.
+//! The post passes share `post.wgsl`, and compute skinning has `skinning.wgsl`; both stand
+//! alone.
 
 macro_rules! pass_source {
     ($($file:literal),+) => {
@@ -13,6 +14,10 @@ pub(crate) const TOON: &str = pass_source!("lights.wgsl", "toon.wgsl");
 pub(crate) const OUTLINE: &str = pass_source!("outline.wgsl");
 /// The light-cluster compute pass.
 pub(crate) const CLUSTERS: &str = pass_source!("lights.wgsl", "clusters.wgsl");
+/// The character and scene prepasses.
+pub(crate) const PREPASS: &str = pass_source!("prepass.wgsl");
+/// Compute skinning, which binds its own group 0.
+pub(crate) const SKINNING: &str = include_str!("../shaders/skinning.wgsl");
 /// Every post pass: the bloom chain and the fused composite.
 pub(crate) const POST: &str = include_str!("../shaders/post.wgsl");
 
@@ -29,15 +34,28 @@ mod tests {
     use super::*;
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
-    use crate::pipelines::{DRAW_ATTRIBUTES, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES, position_attributes};
+    use crate::pipelines::{
+        DRAW_ATTRIBUTES, MeshPass, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES, position_attributes,
+        previous_position_attributes,
+    };
     use crate::post::PostUniforms;
 
-    const PASSES: [(&str, &str, &[&str]); 5] = [
+    const PASSES: [(&str, &str, &[&str]); 7] = [
         ("sky", SKY, &["vs_sky", "fs_sky"]),
         ("toon", TOON, &["vs_toon", "fs_toon"]),
         ("outline", OUTLINE, &["vs_outline", "fs_outline"]),
         ("post", POST, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
         ("clusters", CLUSTERS, &["cs_clusters"]),
+        ("prepass", PREPASS, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
+        ("skinning", SKINNING, &["cs_skinning"]),
+    ];
+
+    /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
+    const MESH_ENTRY_POINTS: [(&str, &str, &str, MeshPass); 4] = [
+        ("toon", TOON, "vs_toon", MeshPass::Main),
+        ("outline", OUTLINE, "vs_outline", MeshPass::Main),
+        ("prepass", PREPASS, "vs_character_prepass", MeshPass::CharacterPrepass),
+        ("prepass", PREPASS, "vs_scene_prepass", MeshPass::ScenePrepass),
     ];
 
     fn validate(name: &str, source: &str) -> naga::Module {
@@ -117,18 +135,14 @@ mod tests {
     #[test]
     fn vertex_inputs_match_rust_vertex_layouts() {
         for format in PositionFormat::ALL {
-            let attributes: BTreeMap<u32, naga::TypeInner> = DRAW_ATTRIBUTES
-                .iter()
-                .chain(position_attributes(format))
-                .chain(&SHADING_ATTRIBUTES)
-                .chain(&SURFACE_ATTRIBUTES)
-                .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
-                .collect();
-            for (name, source, entry_points) in PASSES {
-                if matches!(name, "sky" | "post" | "clusters") {
-                    continue; // Fullscreen triangles and compute: no vertex buffers.
-                }
-                let vertex_entry = entry_points[0];
+            for (name, source, vertex_entry, pass) in MESH_ENTRY_POINTS {
+                let attributes: BTreeMap<u32, naga::TypeInner> = pass
+                    .buffers(format)
+                    .iter()
+                    .flatten()
+                    .flat_map(|buffer| buffer.attributes)
+                    .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
+                    .collect();
                 let module = validate(name, source);
                 let entry_point =
                     module.entry_points.iter().find(|ep| ep.name == vertex_entry).expect("entry point");
@@ -136,16 +150,22 @@ mod tests {
                 for argument in &entry_point.function.arguments {
                     collect_locations(&module, argument.ty, argument.binding.as_ref(), &mut inputs);
                 }
-                assert_eq!(
-                    inputs.keys().collect::<Vec<_>>(),
-                    attributes.keys().collect::<Vec<_>>(),
-                    "{name}.wgsl vertex input locations vs pipelines.rs layouts ({format:?})"
-                );
                 for (location, shader) in &inputs {
-                    let attribute = &attributes[location];
+                    let attribute = attributes.get(location).unwrap_or_else(|| {
+                        panic!("{vertex_entry} location {location} has no vertex attribute ({format:?})")
+                    });
                     assert!(
                         accepts(shader, attribute),
-                        "{name}.wgsl location {location}: {shader:?} can't take {attribute:?} ({format:?})"
+                        "{vertex_entry} location {location}: {shader:?} can't take {attribute:?} ({format:?})"
+                    );
+                }
+                // The main pass's shaders read every stream they bind; a prepass may bind a
+                // stream for one of its attributes (the scene prepass ignores outline normals).
+                if pass == MeshPass::Main {
+                    assert_eq!(
+                        inputs.keys().collect::<Vec<_>>(),
+                        attributes.keys().collect::<Vec<_>>(),
+                        "{vertex_entry} vertex input locations vs pipelines.rs layouts ({format:?})"
                     );
                 }
             }
@@ -162,6 +182,7 @@ mod tests {
         };
         for format in PositionFormat::ALL {
             assert_eq!(end(position_attributes(format)), format.stride() as u64, "{format:?}");
+            assert_eq!(end(previous_position_attributes(format)), format.stride() as u64, "{format:?}");
         }
         assert_eq!(end(&SHADING_ATTRIBUTES), size_of::<VertexShading>() as u64);
         assert_eq!(end(&SURFACE_ATTRIBUTES), size_of::<VertexSurface>() as u64);
@@ -179,6 +200,8 @@ mod tests {
             ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
             ("toon", TOON, "LocalLight", size_of::<GpuLight>()),
             ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
+            ("prepass", PREPASS, "InstanceData", size_of::<InstanceData>()),
+            ("prepass", PREPASS, "ViewUniforms", size_of::<ViewUniforms>()),
         ];
         for (source_name, source, name, rust_size) in expected {
             let module = validate(source_name, source);
@@ -222,5 +245,17 @@ mod tests {
             assert_eq!(wgsl_u32(module, "LIGHT_LISTS_OBJECTS"), ListMode::Objects as u32);
         }
         assert_eq!(wgsl_u32(&clusters, "CLUSTER_WORKGROUP"), WORKGROUP_SIZE);
+    }
+
+    #[test]
+    fn wgsl_skinning_constants_match_rust() {
+        use crate::skinning::{JOB_ROWS, WORKGROUP_SIZE, flags};
+        let skinning = validate("skinning", SKINNING);
+        assert_eq!(wgsl_u32(&skinning, "SKINNING_WORKGROUP"), WORKGROUP_SIZE);
+        assert_eq!(wgsl_u32(&skinning, "JOB_ROWS"), JOB_ROWS);
+        assert_eq!(wgsl_u32(&skinning, "FLAG_FLOAT_POSITIONS"), flags::FLOAT_POSITIONS);
+        assert_eq!(wgsl_u32(&skinning, "FLAG_SKIN"), flags::SKIN);
+        assert_eq!(wgsl_u32(&skinning, "FLAG_WIDE_INFLUENCES"), flags::WIDE_INFLUENCES);
+        assert_eq!(wgsl_u32(&skinning, "FLAG_MORPHS"), flags::MORPHS);
     }
 }

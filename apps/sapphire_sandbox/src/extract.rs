@@ -3,7 +3,9 @@
 //!
 //! - **Render proxies:** an entity draws while it has a [`RenderMesh`], and lights while it has
 //!   a [`RenderLight`]. Its [`RenderTransform`] (required, identity by default) is where it draws
-//!   or lights from this frame; whatever poses the entity writes it, only when it moves.
+//!   or lights from this frame; whatever poses the entity writes it, only when it moves. An
+//!   entity drawing a skinned or morphed mesh also has a [`RenderPose`], its skinning palette and
+//!   morph weights, which animation writes only when they change.
 //! - **[`RenderExtract`]** holds the packet ring, and whether the next extraction resends
 //!   everything.
 //! - **[`extract_instances`]** writes instance deltas with bevy change detection: `Changed`
@@ -12,12 +14,16 @@
 //!   nothing to the packet.
 //! - **[`extract_lights`]** writes every light, every frame: a frame has a few dozen at most, and
 //!   the renderer culls and lists them per frame anyway, so deltas would buy nothing.
+//! - **[`extract_poses`]** writes the poses that changed, and those of entities that were added
+//!   or changed mesh (whose outputs the renderer starts over in the bind pose). Their palettes
+//!   and weights are copied into the packet's flat arrays, whose capacity the packet ring keeps,
+//!   so a warm frame allocates nothing for them.
 //!
 //! Extraction must run every frame, drawn or not: `RemovedComponents` keeps removals only until
 //! the second `Cleanup` after them, and the renderer must see every packet's deltas.
 
 use sapphire_ecs::prelude::*;
-use sapphire_math::Mat4;
+use sapphire_math::{Affine3A, Mat4};
 use sapphire_render::{
     FramePacket, FramePacketRing, InstanceId, LightKind, LocalLight, MeshHandle, MeshInstance,
 };
@@ -40,17 +46,30 @@ pub(crate) struct RenderLight(pub LocalLight);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct RenderTransform(pub Mat4);
 
+/// The pose a skinned or morphed [`RenderMesh`] draws in this frame: its skinning palette (one
+/// matrix per palette entry of the mesh, in the mesh's object space) and its morph weights (see
+/// [`sapphire_render::SkinnedInstance`]). Written in place, and only when it changes, so its
+/// vectors never reallocate and a pose that holds still isn't extracted again.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+pub(crate) struct RenderPose {
+    pub palette: Vec<Affine3A>,
+    pub morph_weights: Vec<f32>,
+}
+
 /// The packets extraction fills, and whether the next one resends everything.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct RenderExtract {
     packets: FramePacketRing,
-    /// Send every instance on the next extraction, changed or not.
+    /// Send every instance and pose on the next extraction, changed or not.
     resend: bool,
+    /// The packet being extracted resends everything.
+    resending: bool,
 }
 
 impl RenderExtract {
     /// Starts the next frame's packet, empty.
     pub fn begin(&mut self) -> &mut FramePacket {
+        self.resending = std::mem::take(&mut self.resend);
         self.packets.begin()
     }
 
@@ -90,7 +109,7 @@ pub(crate) fn extract_instances(
     mut removed_meshes: RemovedComponents<'_, '_, RenderMesh>,
     mut removed_transforms: RemovedComponents<'_, '_, RenderTransform>,
 ) {
-    let resend = std::mem::take(&mut extract.resend);
+    let resend = extract.resending;
     let deltas = &mut extract.packet_mut().instances;
     // An entity that lost only its transform stops drawing too. Despawns remove both
     // components, so the mesh's removal alone reports them.
@@ -116,6 +135,35 @@ pub(crate) fn extract_lights(
 ) {
     let packet = extract.packet_mut();
     packet.lights.extend(lights.iter().map(|(light, transform)| place(light.0, transform.0)));
+}
+
+/// A posed render proxy as extraction reads it.
+type Posed<'a> = (Entity, &'a RenderPose);
+
+/// Poses that changed, or whose entity was added, changed mesh or got its transform back: the
+/// renderer starts a new instance, or a new mesh, in its bind pose.
+type Reposed = (With<RenderMesh>, Or<(Changed<RenderPose>, Changed<RenderMesh>, Added<RenderTransform>)>);
+
+/// Writes this frame's poses. Runs in `Extract`, after the poses are written.
+pub(crate) fn extract_poses(
+    mut extract: ResMut<'_, RenderExtract>,
+    changed: Query<'_, '_, Posed<'_>, Reposed>,
+    all: Query<'_, '_, Posed<'_>, With<RenderMesh>>,
+) {
+    let resend = extract.resending;
+    let packet = extract.packet_mut();
+    let mut push = |(entity, pose): Posed<'_>| {
+        packet.push_skinned(
+            instance_id(entity),
+            pose.palette.iter().copied(),
+            pose.morph_weights.iter().copied(),
+        );
+    };
+    if resend {
+        all.iter().for_each(&mut push);
+    } else {
+        changed.iter().for_each(&mut push);
+    }
 }
 
 /// `light` from an entity at `transform`.
@@ -148,7 +196,7 @@ mod tests {
     fn ecs() -> Ecs {
         let mut ecs = Ecs::new();
         ecs.world_mut().insert_resource(RenderExtract::default());
-        ecs.add_systems(Extract, (extract_instances, extract_lights).chain());
+        ecs.add_systems(Extract, (extract_instances, extract_lights, extract_poses).chain());
         ecs.startup();
         ecs
     }
@@ -264,6 +312,54 @@ mod tests {
         assert!((direction - Vec3::X).length() < 1e-5);
         assert_eq!((first[0].range, first[0].intensity, first[0].color), (3.0, 2.0, spot.color));
         assert_eq!(lights(&mut ecs), first, "unchanged lights are still sent every frame");
+    }
+
+    /// Runs one frame's extraction and returns its poses: instance, palette and weights.
+    fn poses(ecs: &mut Ecs) -> Vec<(InstanceId, Vec<Affine3A>, Vec<f32>)> {
+        ecs.world_mut().resource_mut::<RenderExtract>().begin();
+        ecs.extract();
+        let packet = ecs.world().resource::<RenderExtract>().packet();
+        let poses = packet
+            .skinned
+            .iter()
+            .map(|skinned| {
+                let palette = packet.palette(skinned).expect("in range").to_vec();
+                (skinned.id, palette, packet.morph_weights(skinned).expect("in range").to_vec())
+            })
+            .collect();
+        ecs.cleanup();
+        poses
+    }
+
+    #[test]
+    fn poses_are_extracted_when_they_change_or_their_instance_starts_over() {
+        let mut ecs = ecs();
+        let lifted = Affine3A::from_translation(Vec3::Y);
+        let pose = RenderPose { palette: vec![Affine3A::IDENTITY, lifted], morph_weights: vec![0.25] };
+        let posed = ecs.world_mut().spawn((mesh(0), pose.clone())).id();
+        // Not drawn: a pose alone is not a render proxy.
+        ecs.world_mut().spawn(pose.clone());
+        let id = instance_id(posed);
+
+        assert_eq!(poses(&mut ecs), [(id, pose.palette.clone(), vec![0.25])], "added");
+        assert!(poses(&mut ecs).is_empty(), "a pose that holds still is sent once");
+
+        ecs.world_mut().get_mut::<RenderPose>(posed).expect("posed").morph_weights[0] = 0.5;
+        assert_eq!(poses(&mut ecs)[0].2, [0.5]);
+        // A new mesh starts its outputs over, so the pose is sent again.
+        ecs.world_mut().entity_mut(posed).insert(mesh(1));
+        assert_eq!(poses(&mut ecs).len(), 1);
+        assert!(poses(&mut ecs).is_empty());
+
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_all();
+        assert_eq!(poses(&mut ecs).len(), 1, "resent to a renderer that starts over");
+        assert!(poses(&mut ecs).is_empty());
+
+        // Losing the transform stops the instance; getting it back starts it over.
+        ecs.world_mut().entity_mut(posed).remove::<RenderTransform>();
+        assert!(poses(&mut ecs).is_empty());
+        ecs.world_mut().entity_mut(posed).insert(RenderTransform::default());
+        assert_eq!(poses(&mut ecs).len(), 1);
     }
 
     #[test]

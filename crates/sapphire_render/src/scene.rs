@@ -3,7 +3,10 @@
 //!
 //! - [`InstanceSlots`] maps stable [`InstanceId`]s to slots, reusing freed slots through a free
 //!   list, and keeps a CPU mirror of the instance buffer. Applying a packet's deltas rewrites
-//!   only the slots they touch and marks those for upload.
+//!   only the slots they touch and marks those for upload. It also lists the slots whose mesh
+//!   changed or that were freed, for the per-instance skinning state that follows them.
+//! - Each slot keeps the transform it was last drawn with, for velocity (M1 R2): a moved
+//!   instance is uploaded with both, and once more when it comes to rest.
 //! - [`DrawList`] turns the live slots into draw records and draw commands. Draws name their
 //!   instance by slot, so a transform change leaves them as they are: the list is rebuilt only
 //!   when instances are added or removed, change mesh, or meshes are uploaded.
@@ -16,8 +19,10 @@
 //! (later) writes equivalent multi-draw-indirect records on the GPU, using `base_vertex` and
 //! `first_instance` instead (see the crate docs).
 //!
-//! Draws are grouped by the meshes' position format, whose pipelines and stream slab differ,
-//! and come in slot order within a group. Each draw record carries its mesh's dequantization,
+//! Draws of static meshes are grouped by position format, whose pipelines and stream slab
+//! differ, and come in slot order within a group. Draws of skinned or morphed meshes form a
+//! group of their own: each instance draws from its own skinning outputs (f32 positions), so
+//! they bind by instance slot rather than by mesh. Each draw record carries its mesh's dequantization,
 //! so the vertex shaders decode any mesh without another binding. Sorting opaque draws by
 //! pipeline, material and mesh (§5.12) comes with a second opaque pipeline; because the list
 //! is rebuilt only when the set changes, the sort will cost nothing on frames that only move
@@ -33,7 +38,7 @@ use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
-use crate::mesh_pool::MeshRecord;
+use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::format_index;
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
@@ -218,6 +223,10 @@ pub(crate) struct InstanceSlots {
     ids: HashMap<InstanceId, u32, BuildHasherDefault<IdHasher>>,
     /// Slots written since the last flush, each listed once.
     dirty: Vec<u32>,
+    /// Slots the last `apply` freed, then slots it gave a mesh: new instances and mesh changes.
+    /// A slot freed and reused within one packet is in both.
+    freed: Vec<u32>,
+    meshed: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -235,10 +244,13 @@ impl InstanceSlots {
     /// the draw list. A transform change only marks its slot for upload.
     pub(crate) fn apply(&mut self, deltas: &InstanceDeltas) -> bool {
         let mut drawn_changed = false;
+        self.freed.clear();
+        self.meshed.clear();
         for id in &deltas.removed {
             if let Some(slot) = self.ids.remove(id) {
                 self.slots[slot as usize].id = None;
                 self.free.push(slot);
+                self.freed.push(slot);
                 drawn_changed = true;
             }
         }
@@ -248,18 +260,22 @@ impl InstanceSlots {
                     let mesh = &mut self.slots[slot as usize].mesh;
                     if *mesh != instance.mesh {
                         *mesh = instance.mesh;
+                        self.meshed.push(slot);
                         drawn_changed = true;
                     }
+                    self.data[slot as usize].set_transform(instance.transform);
                     slot
                 }
                 None => {
                     let slot = self.allocate(instance.id, instance.mesh);
                     self.ids.insert(instance.id, slot);
+                    self.meshed.push(slot);
                     drawn_changed = true;
+                    // A new instance has no motion to draw.
+                    self.data[slot as usize] = InstanceData::new(instance.transform);
                     slot
                 }
             };
-            self.data[slot as usize] = InstanceData::new(instance.transform);
             let entry = &mut self.slots[slot as usize];
             if !entry.dirty {
                 entry.dirty = true;
@@ -295,6 +311,22 @@ impl InstanceSlots {
         self.ids.get(&id).copied()
     }
 
+    /// The mesh of the live instance in `slot`.
+    pub(crate) fn mesh(&self, slot: u32) -> Option<MeshHandle> {
+        self.slots.get(slot as usize).filter(|entry| entry.id.is_some()).map(|entry| entry.mesh)
+    }
+
+    /// Slots the last [`Self::apply`] freed.
+    pub(crate) fn freed(&self) -> &[u32] {
+        &self.freed
+    }
+
+    /// Slots the last [`Self::apply`] gave a mesh, after [`Self::freed`]: added instances and
+    /// changed meshes.
+    pub(crate) fn meshed(&self) -> &[u32] {
+        &self.meshed
+    }
+
     /// Live slots with their meshes and transforms, in slot order.
     pub(crate) fn live_transforms(&self) -> impl Iterator<Item = (u32, MeshHandle, Mat4)> + '_ {
         self.live().map(|(slot, mesh)| {
@@ -311,18 +343,22 @@ impl InstanceSlots {
             .map(|(index, slot)| (to_u32(index), slot.mesh))
     }
 
-    /// Hands each run of consecutive dirty slots to `write` (first slot, data), then marks
-    /// them clean.
+    /// Hands each run of consecutive dirty slots to `write` (first slot, data), for a frame
+    /// that draws them. The slots then settle: one that moved stays dirty, so the next drawn
+    /// frame uploads it at rest (its previous transform equal to its current one) unless it
+    /// moves again; the others are marked clean.
     fn flush(&mut self, mut write: impl FnMut(u32, &[InstanceData])) {
         self.dirty.sort_unstable();
         for run in self.dirty.chunk_by(|&a, &b| b == a + 1) {
             let (first, last) = (run[0], run[run.len() - 1]);
             write(first, &self.data[first as usize..=last as usize]);
         }
-        for &slot in &self.dirty {
-            self.slots[slot as usize].dirty = false;
-        }
-        self.dirty.clear();
+        let Self { data, slots, dirty, .. } = self;
+        dirty.retain(|&slot| {
+            let moved = data[slot as usize].settle();
+            slots[slot as usize].dirty = moved;
+            moved
+        });
     }
 }
 
@@ -359,13 +395,27 @@ pub(crate) struct DrawCommand {
     pub draw_id: u32,
 }
 
+/// A draw of a skinned or morphed instance on the CPU-driven path: positions and shading
+/// (slots 1 and 2) come from the skinning outputs of the instance in `slot`, the surface stream
+/// (slot 3) from its mesh's sources at word `surface` of the deformable buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeformedDraw {
+    pub indices: Range<u32>,
+    pub slot: u32,
+    pub surface: u32,
+    pub draw_id: u32,
+}
+
 /// The draws for every live instance: one per submesh of the mesh's LOD0. Its vectors are
 /// reused across rebuilds.
 #[derive(Debug, Default)]
 pub(crate) struct DrawList {
     pub draws: Vec<DrawData>,
-    /// Per [`PositionFormat::ALL`] entry, since each format has its own pipelines and slab.
+    /// Static meshes, per [`PositionFormat::ALL`] entry, since each format has its own
+    /// pipelines and slab.
     pub commands: [Vec<DrawCommand>; 2],
+    /// Skinned and morphed meshes, drawn with the f32 pipelines.
+    pub deformed: Vec<DeformedDraw>,
 }
 
 impl DrawList {
@@ -375,11 +425,11 @@ impl DrawList {
         for commands in &mut self.commands {
             commands.clear();
         }
+        self.deformed.clear();
         for (slot, mesh) in slots.live() {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
             let Some(record) = record else { continue };
-            let commands = &mut self.commands[format_index(record.format)];
             for submesh in &record.lods[0] {
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {
@@ -387,18 +437,27 @@ impl DrawList {
                     material: submesh.material,
                     dequantize: record.dequantize,
                 });
-                commands.push(DrawCommand {
-                    indices: submesh.first_index..submesh.first_index + submesh.index_count,
-                    first_vertex: record.first_vertex,
-                    draw_id,
-                });
+                let indices = submesh.first_index..submesh.first_index + submesh.index_count;
+                match &record.streams {
+                    MeshStreams::Slab { format, first_vertex } => {
+                        let first_vertex = *first_vertex;
+                        self.commands[format_index(*format)].push(DrawCommand {
+                            indices,
+                            first_vertex,
+                            draw_id,
+                        });
+                    }
+                    MeshStreams::Deformable(source) => {
+                        self.deformed.push(DeformedDraw { indices, slot, surface: source.surface, draw_id });
+                    }
+                }
             }
         }
     }
 
     /// Draw commands per mesh pass.
     pub(crate) fn len(&self) -> usize {
-        self.commands.iter().map(Vec::len).sum()
+        self.commands.iter().map(Vec::len).sum::<usize>() + self.deformed.len()
     }
 }
 
@@ -414,7 +473,7 @@ mod tests {
     use super::*;
     use crate::MeshInstance;
     use crate::gpu_types::Dequantize;
-    use crate::mesh_pool::SubmeshDraw;
+    use crate::mesh_pool::{DeformSource, SubmeshDraw};
 
     fn instance(id: u64, mesh: u32, x: f32) -> MeshInstance {
         MeshInstance {
@@ -468,15 +527,55 @@ mod tests {
         assert_eq!(slot_of(&slots, 20), Some(1));
         assert_eq!(x(&slots, 1), 5.0);
         assert_eq!(flushed(&mut slots), [(1, 1)], "only the moved slot is uploaded");
+        assert_eq!(flushed(&mut slots), [(1, 1)], "and again once it comes to rest");
+        assert_eq!(flushed(&mut slots), []);
 
         assert!(slots.apply(&deltas(&[instance(20, 3, 5.0)], &[])), "a mesh change rebuilds the draws");
         assert_eq!(slot_of(&slots, 20), Some(1));
+        assert_eq!((slots.freed(), slots.meshed()), (&[][..], &[1][..]));
+        assert_eq!(slots.mesh(1), Some(MeshHandle::from_raw(3)));
 
         // Changed twice before an upload: listed once, with the latest data.
         slots.apply(&deltas(&[instance(10, 0, 7.0)], &[]));
         slots.apply(&deltas(&[instance(10, 0, 8.0)], &[]));
         assert_eq!(x(&slots, 0), 8.0);
         assert_eq!(flushed(&mut slots), [(0, 2)]);
+    }
+
+    #[test]
+    fn moved_instances_are_drawn_from_where_the_last_drawn_frame_left_them() {
+        let previous_x =
+            |slots: &InstanceSlots, slot: u32| slots.data[slot as usize].previous_world_from_object[3][0];
+        let mut slots = InstanceSlots::default();
+        slots.apply(&deltas(&[instance(1, 0, 1.0)], &[]));
+        assert_eq!(previous_x(&slots, 0), 1.0, "a new instance starts at rest");
+        flushed(&mut slots);
+
+        // Two packets prepared before a frame is drawn: the motion spans both.
+        slots.apply(&deltas(&[instance(1, 0, 2.0)], &[]));
+        slots.apply(&deltas(&[instance(1, 0, 3.0)], &[]));
+        assert_eq!((previous_x(&slots, 0), x(&slots, 0)), (1.0, 3.0));
+        let mut written = Vec::new();
+        slots.flush(|_, data| {
+            written
+                .extend(data.iter().map(|d| (d.previous_world_from_object[3][0], d.world_from_object[3][0])))
+        });
+        assert_eq!(written, [(1.0, 3.0)]);
+
+        // Held still: drawn once more at rest, then no more uploads.
+        written.clear();
+        slots.flush(|_, data| {
+            written
+                .extend(data.iter().map(|d| (d.previous_world_from_object[3][0], d.world_from_object[3][0])))
+        });
+        assert_eq!(written, [(3.0, 3.0)]);
+        assert_eq!(flushed(&mut slots), []);
+
+        // Moving again right after a move continues from the last drawn frame.
+        slots.apply(&deltas(&[instance(1, 0, 4.0)], &[]));
+        flushed(&mut slots);
+        slots.apply(&deltas(&[instance(1, 0, 6.0)], &[]));
+        assert_eq!(previous_x(&slots, 0), 4.0);
     }
 
     #[test]
@@ -487,6 +586,8 @@ mod tests {
         flushed(&mut slots);
 
         assert!(slots.apply(&deltas(&[], &[1, 2])));
+        assert_eq!((slots.freed(), slots.meshed()), (&[0, 1][..], &[][..]));
+        assert_eq!((slots.mesh(0), slots.mesh(2)), (None, Some(MeshHandle::from_raw(0))));
         assert_eq!((slots.len(), slots.live_count()), (3, 1));
         assert_eq!(slot_of(&slots, 3), Some(2), "survivors keep their slot");
         assert_eq!(slots.live().collect::<Vec<_>>(), [(2, MeshHandle::from_raw(0))]);
@@ -507,6 +608,7 @@ mod tests {
 
         // Removals apply first, so the instance comes back (into the slot it just freed).
         assert!(slots.apply(&deltas(&[instance(1, 2, 3.0)], &[1])));
+        assert_eq!((slots.freed(), slots.meshed()), (&[0][..], &[0][..]));
         assert_eq!(slot_of(&slots, 1), Some(0));
         assert_eq!(slots.live().collect::<Vec<_>>(), [(0, MeshHandle::from_raw(2))]);
         assert_eq!(x(&slots, 0), 3.0);
@@ -531,34 +633,47 @@ mod tests {
             uv_transform: [0.0, 0.0, 1.0, 1.0],
         };
         let identity = Dequantize { position_offset: [0.0; 3], position_scale: [1.0; 3], ..quantized };
+        let slab = |format, first_vertex| MeshStreams::Slab { format, first_vertex };
         let meshes = [
             MeshRecord {
-                format: PositionFormat::Unorm16,
-                first_vertex: 0,
+                streams: slab(PositionFormat::Unorm16, 0),
                 dequantize: quantized,
                 lods: vec![
                     vec![SubmeshDraw { first_index: 0, index_count: 6, material: 0 }],
                     vec![SubmeshDraw { first_index: 6, index_count: 3, material: 0 }],
                 ],
+                lod_vertices: vec![24, 12],
             },
             MeshRecord {
-                format: PositionFormat::Unorm16,
-                first_vertex: 24,
+                streams: slab(PositionFormat::Unorm16, 24),
                 dequantize: quantized,
                 lods: vec![vec![
                     SubmeshDraw { first_index: 9, index_count: 3, material: 1 },
                     SubmeshDraw { first_index: 12, index_count: 12, material: 2 },
                 ]],
+                lod_vertices: vec![8],
             },
             MeshRecord {
-                format: PositionFormat::Float32,
-                first_vertex: 0,
+                streams: slab(PositionFormat::Float32, 0),
                 dequantize: identity,
                 lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: 3 }]],
+                lod_vertices: vec![3],
+            },
+            MeshRecord {
+                streams: MeshStreams::Deformable(DeformSource { surface: 90, ..DeformSource::default() }),
+                dequantize: identity,
+                lods: vec![vec![SubmeshDraw { first_index: 27, index_count: 6, material: 4 }]],
+                lod_vertices: vec![4],
             },
         ];
         let mut slots = InstanceSlots::default();
-        let instances = [instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 0.0), instance(4, 2, 0.0)];
+        let instances = [
+            instance(1, 0, 0.0),
+            instance(2, 1, 0.0),
+            instance(3, 0, 0.0),
+            instance(4, 2, 0.0),
+            instance(5, 3, 0.0),
+        ];
         slots.apply(&deltas(&instances, &[]));
         slots.apply(&deltas(&[], &[1]));
         let mut list = DrawList::default();
@@ -569,16 +684,23 @@ mod tests {
         let draw = |instance, material, dequantize| DrawData { instance, material, dequantize };
         assert_eq!(
             list.draws,
-            [draw(1, 1, quantized), draw(1, 2, quantized), draw(2, 0, quantized), draw(3, 3, identity)]
+            [
+                draw(1, 1, quantized),
+                draw(1, 2, quantized),
+                draw(2, 0, quantized),
+                draw(3, 3, identity),
+                draw(4, 4, identity)
+            ]
         );
         let [unorm16, float32] = &list.commands;
         assert_eq!(unorm16[1], DrawCommand { indices: 12..24, first_vertex: 24, draw_id: 1 });
         assert_eq!(unorm16[2], DrawCommand { indices: 0..6, first_vertex: 0, draw_id: 2 });
         assert_eq!(float32[..], [DrawCommand { indices: 24..27, first_vertex: 0, draw_id: 3 }]);
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.deformed[..], [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4 }]);
+        assert_eq!(list.len(), 5);
 
         // Rebuilding reuses the vectors instead of appending.
-        slots.apply(&deltas(&[], &[3]));
+        slots.apply(&deltas(&[], &[3, 5]));
         list.build(&meshes, &slots);
         assert_eq!((list.draws.len(), list.len()), (3, 3));
     }

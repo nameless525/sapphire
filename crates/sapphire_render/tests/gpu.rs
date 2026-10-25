@@ -2,16 +2,16 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{
     Influences, Joint, JointTransform, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind,
     Submesh, ToonMaterialParams, Vertex, VertexInfluence,
 };
-use sapphire_render::graph::{FrameGraph, GraphExecutor};
+use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LightPath,
-    LocalLight, MeshHandle, MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer,
-    SkyGradient, ToneCurve, ViewData, Vignette,
+    LocalLight, MeshHandle, MeshInstance, Msaa, PostParams, PrepassTargets, RenderError, RenderSettings,
+    Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -159,6 +159,8 @@ struct Frames {
     sun: DirectionalLight,
     /// Copied into every packet: none by default.
     lights: Vec<LocalLight>,
+    /// Sent with the next packet only: instance, palette and morph weights.
+    poses: Vec<(u64, Vec<Affine3A>, Vec<f32>)>,
 }
 
 impl Frames {
@@ -183,6 +185,7 @@ impl Frames {
             post: passthrough(),
             sun: DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 },
             lights: Vec::new(),
+            poses: Vec::new(),
         })
     }
 
@@ -197,6 +200,20 @@ impl Frames {
         changed: &[MeshInstance],
         removed: &[u64],
     ) -> Option<wgpu::Error> {
+        self.render_reading(gpu, view, camera, changed, removed, &[])
+    }
+
+    /// [`Self::render`], copying the prepass targets `reads` names into readbacks, which
+    /// [`Readback::texels`] then reads. Reading a target makes its prepass run.
+    fn render_reading(
+        &mut self,
+        gpu: &GpuContext,
+        view: &wgpu::TextureView,
+        camera: CameraData,
+        changed: &[MeshInstance],
+        removed: &[u64],
+        reads: &[PrepassRead<'_>],
+    ) -> Option<wgpu::Error> {
         let packet = self.packets.begin();
         packet.views.push(ViewData { camera });
         packet.sun = self.sun;
@@ -205,14 +222,104 @@ impl Frames {
         packet.post = self.post;
         packet.instances.changed.extend_from_slice(changed);
         packet.instances.removed.extend(removed.iter().copied().map(InstanceId));
+        for (id, palette, weights) in self.poses.drain(..) {
+            packet.push_skinned(InstanceId(id), palette, weights);
+        }
 
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(gpu, self.packets.current());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", view);
-        self.renderer.record(&mut graph, target);
+        let targets = self.renderer.record(&mut graph, target).expect("a view and a target");
+        if !reads.is_empty() {
+            let reads: Vec<(TextureId, &Readback)> =
+                reads.iter().map(|(target, readback)| (target(&targets), *readback)).collect();
+            let mut pass = graph.add_pass("read prepasses").side_effect();
+            for (texture, _) in &reads {
+                pass = pass.read(*texture);
+            }
+            pass.record(move |ctx| {
+                for (texture, readback) in reads {
+                    readback.copy(ctx.encoder, ctx.texture(texture));
+                }
+            });
+        }
         self.graph.execute(gpu, graph).expect("a valid graph");
         pollster::block_on(scope.pop())
+    }
+}
+
+/// A prepass target to read back, picked from the frame's targets, and where it goes.
+type PrepassRead<'a> = (fn(&PrepassTargets) -> TextureId, &'a Readback);
+
+/// A buffer a 4-byte-per-texel texture is copied into, row by row.
+struct Readback {
+    buffer: wgpu::Buffer,
+    size: (u32, u32),
+    padded: u32,
+}
+
+impl Readback {
+    fn new(gpu: &GpuContext, size: (u32, u32)) -> Self {
+        let padded = (size.0 * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(padded * size.1),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self { buffer, size, padded }
+    }
+
+    fn copy(&self, encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture) {
+        let aspect = if texture.format().is_depth_stencil_format() {
+            wgpu::TextureAspect::DepthOnly
+        } else {
+            wgpu::TextureAspect::All
+        };
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { aspect, ..texture.as_image_copy() },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded),
+                    rows_per_image: Some(self.size.1),
+                },
+            },
+            texture.size(),
+        );
+    }
+
+    /// The texels, as 4-byte words in rows top to bottom.
+    fn texels(&self, gpu: &GpuContext) -> Vec<[u8; 4]> {
+        self.buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let texels = {
+            let mapped = self.buffer.get_mapped_range(..).expect("mapped");
+            mapped
+                .chunks_exact(self.padded as usize)
+                .flat_map(|row| row[..self.size.0 as usize * 4].as_chunks::<4>().0.iter().copied())
+                .collect()
+        };
+        self.buffer.unmap();
+        texels
+    }
+}
+
+/// An `Rg16Float` texel's two values.
+fn rg16f(texel: [u8; 4]) -> [f32; 2] {
+    [u16::from_le_bytes([texel[0], texel[1]]), u16::from_le_bytes([texel[2], texel[3]])].map(f16_to_f32)
+}
+
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let mantissa = f32::from(bits & 0x3ff);
+    sign * match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 => f32::INFINITY,
+        _ => (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
     }
 }
 
@@ -442,19 +549,22 @@ fn quantized_meshes_match_their_f32_reference() {
     assert!(reference.iter().any(|p| p[..3] != reference[0][..3]), "the sphere is in the picture");
 }
 
-#[test]
-#[ignore = "needs a GPU"]
-fn skinned_and_morphed_meshes_draw_in_bind_pose() {
-    let gpu = gpu();
-    let size = (96, 64);
-    let texture = target(&gpu, FORMAT, size);
-    let view = texture.create_view(&Default::default());
-    let plain = sphere(flat([0.9, 0.2, 0.15], 3.0));
-    let mut skinned = plain.clone();
-    let vertex_count = skinned.streams.len();
+/// A sphere skinned to two palette entries, the upper half bending with the second, and with one
+/// morph target that would move every vertex half a meter, at full default weight.
+fn skinned_sphere(material: ToonMaterialParams) -> Mesh {
+    let mut mesh = sphere(material);
+    let influences: Vec<VertexInfluence> = (0..mesh.streams.len())
+        .map(|v| {
+            let y = mesh.streams.vertex(v).expect("in range").position[1];
+            // Blends from the first entry below the equator to the second above it.
+            let upper = ((y + 0.4) / 0.8).clamp(0.0, 1.0);
+            let weights = sapphire_assets::mesh::quantize_weights([1.0 - upper, upper, 0.0, 0.0]);
+            VertexInfluence { binds: [0, 1, 0, 0], weights }
+        })
+        .collect();
     let mut tip = Joint { name: "tip".into(), parent: Some(0), rest: JointTransform::IDENTITY };
     tip.rest.translation = [0.0, 1.0, 0.0];
-    skinned.skin = Some(Skin {
+    mesh.skin = Some(Skin {
         joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }, tip],
         binds: vec![
             SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() },
@@ -463,27 +573,335 @@ fn skinned_and_morphed_meshes_draw_in_bind_pose() {
                 inverse_bind_matrix: Mat4::from_translation(Vec3::NEG_Y).to_cols_array_2d(),
             },
         ],
-        influences: Influences::pack(
-            &vec![VertexInfluence { binds: [1, 0, 0, 0], weights: [128, 127, 0, 0] }; vertex_count],
-            2,
-        ),
+        influences: Influences::pack(&influences, 2),
     });
-    // A target that would move every vertex half a meter, at full default weight.
-    skinned.morph_targets =
-        vec![MorphTarget { name: "grow".into(), default_weight: 1.0, first_delta: 0, delta_count: 2 }];
-    skinned.morph_deltas =
-        vec![MorphDelta::new(0, [0.5, 0.0, 0.0], [0.0; 3]), MorphDelta::new(1, [0.5, 0.0, 0.0], [0.0; 3])];
-    let render = |mesh: &Mesh| {
+    let vertex_count = mesh.streams.len() as u32;
+    mesh.morph_targets = vec![MorphTarget {
+        name: "shift".into(),
+        default_weight: 1.0,
+        first_delta: 0,
+        delta_count: vertex_count,
+    }];
+    mesh.morph_deltas = (0..vertex_count).map(|v| MorphDelta::new(v, [0.5, 0.0, 0.0], [0.0; 3])).collect();
+    mesh
+}
+
+/// The second palette entry of [`skinned_sphere`] turned `angle` about Z around its joint at
+/// y = 0 and lifted by `lift`.
+fn bend(angle: f32, lift: f32) -> Vec<Affine3A> {
+    let bent = Affine3A::from_rotation_translation(Quat::from_rotation_z(angle), Vec3::new(0.0, lift, 0.0));
+    vec![Affine3A::IDENTITY, bent]
+}
+
+/// `mesh` (a skinned sphere) skinned on the CPU, as a static mesh with f32 positions.
+fn skinned_on_the_cpu(mesh: &Mesh, palette: &[Affine3A], weights: &[f32]) -> Mesh {
+    let skin = mesh.skin.as_ref().expect("skinned");
+    let vertices: Vec<Vertex> = (0..mesh.streams.len())
+        .map(|v| {
+            let mut vertex = mesh.streams.vertex(v).expect("in range");
+            let mut position = Vec3::from(vertex.position);
+            for (target, morph) in mesh.morph_targets.iter().enumerate() {
+                let first = morph.first_delta as usize;
+                let deltas = &mesh.morph_deltas[first..first + morph.delta_count as usize];
+                if let Some(delta) = deltas.iter().find(|delta| delta.vertex() == v as u32) {
+                    position += weights.get(target).copied().unwrap_or(0.0) * Vec3::from(delta.position());
+                }
+            }
+            let influence = skin.influences.get(v).expect("one per vertex");
+            let mut blended = Affine3A::ZERO;
+            for (&bind, weight) in influence.binds.iter().zip(influence.weights) {
+                let weight = f32::from(weight) / 255.0;
+                blended.matrix3 += palette[bind as usize].matrix3 * weight;
+                blended.translation += palette[bind as usize].translation * weight;
+            }
+            vertex.position = blended.transform_point3(position).to_array();
+            vertex.normal = (blended.matrix3 * Vec3::from(vertex.normal)).normalize().to_array();
+            vertex.outline_normal =
+                (blended.matrix3 * Vec3::from(vertex.outline_normal)).normalize().to_array();
+            vertex
+        })
+        .collect();
+    let lod = &mesh.lods[0];
+    Mesh::from_vertices(
+        &vertices,
+        mesh.indices.clone(),
+        lod.submeshes.clone(),
+        mesh.materials.clone(),
+        PositionFormat::Float32,
+    )
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skinned_meshes_draw_in_bind_pose_until_posed() {
+    let gpu = gpu();
+    let size = (96, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let material = flat([0.9, 0.2, 0.15], 3.0);
+    let plain = sphere(material);
+    let skinned = skinned_sphere(material);
+    let render = |mesh: &Mesh, pose: Option<Vec<Affine3A>>| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
         let handle = upload(&mut frames.renderer, mesh);
+        frames.poses.extend(pose.map(|palette| (0, palette, vec![])));
         let camera = framing_camera(38.0, size, 0.6);
         assert!(frames.render(&gpu, &view, camera, &[instance(0, handle, Mat4::IDENTITY)], &[]).is_none());
-        (read_back(&gpu, &texture), frames.renderer.stats().mesh_pool_bytes)
+        (read_back(&gpu, &texture), frames.renderer.stats())
     };
-    let (plain_pixels, plain_bytes) = render(&plain);
-    let (skinned_pixels, skinned_bytes) = render(&skinned);
-    assert!(skinned_pixels == plain_pixels, "until compute skinning (R2), skinned meshes draw in bind pose");
-    assert_eq!(skinned_bytes, plain_bytes, "skin and morph data stay in the cooked mesh for now");
+    let (plain_pixels, plain_stats) = render(&plain, None);
+    let (rest_pixels, rest_stats) = render(&skinned, None);
+    assert!(rest_pixels == plain_pixels, "never posed: the bind pose, and the default morph weight unused");
+    let (identity_pixels, identity_stats) = render(&skinned, Some(vec![Affine3A::IDENTITY; 2]));
+    let (mean, differing) = difference(&plain_pixels, &identity_pixels, 8);
+    eprintln!(
+        "identity palette vs unskinned: mean {mean:.4} steps, {differing} pixels differ by more than 8"
+    );
+    // Positions come out exact; normals may round to a neighboring snorm16.
+    assert!(mean < 0.05 && differing <= 4, "mean {mean} steps, {differing} pixels");
+
+    // The skin and morph target join the pool: 8 bytes of influences and 4 of morph offsets per
+    // vertex, plus an offset and 16 bytes per delta.
+    let vertices = plain.streams.len() as u64;
+    assert_eq!(
+        rest_stats.mesh_pool_bytes,
+        plain_stats.mesh_pool_bytes + 8 * vertices + 4 * (vertices + 1) + 16 * vertices
+    );
+    let (rest, identity) = (rest_stats.skinning, identity_stats.skinning);
+    assert_eq!((rest.instances, rest.skinned, rest.vertices, rest.palette_bytes), (1, 1, vertices as u32, 0));
+    assert_eq!((identity.skinned, identity.palette_bytes, identity.output_bytes), (1, 96, 32 * vertices));
+    assert_eq!(plain_stats.skinning, sapphire_render::SkinningStats::default(), "static meshes cost nothing");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn posed_skins_and_morphs_match_the_same_mesh_deformed_on_the_cpu() {
+    let gpu = gpu();
+    let size = (160, 120);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let material = ToonMaterialParams {
+        base_color: [0.9, 0.55, 0.4, 1.0],
+        shade_color: [0.6, 0.5, 0.8, 1.0],
+        outline_color: [0.1, 0.05, 0.1, 1.0],
+        params: [0.0, 0.02, 0.4, 3.0],
+    };
+    let skinned = skinned_sphere(material);
+    let render = |mesh: &Mesh, pose: Option<(Vec<Affine3A>, Vec<f32>)>| {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+        frames.sun =
+            DirectionalLight { direction: Vec3::new(0.6, -0.5, -0.6), color: Vec3::ONE, intensity: 1.0 };
+        let handle = upload(&mut frames.renderer, mesh);
+        frames.poses.extend(pose.map(|(palette, weights)| (0, palette, weights)));
+        let camera = framing_camera(38.0, size, 0.45);
+        assert!(frames.render(&gpu, &view, camera, &[instance(0, handle, Mat4::IDENTITY)], &[]).is_none());
+        read_back(&gpu, &texture)
+    };
+    for (palette, weights) in
+        [(bend(0.6, 0.1), vec![0.0]), (bend(-0.3, 0.0), vec![0.4]), (bend(0.0, 0.0), vec![-0.25])]
+    {
+        let gpu_pixels = render(&skinned, Some((palette.clone(), weights.clone())));
+        let cpu_pixels = render(&skinned_on_the_cpu(&skinned, &palette, &weights), None);
+        let (mean, differing) = difference(&cpu_pixels, &gpu_pixels, 8);
+        eprintln!(
+            "{weights:?}: GPU vs CPU deformation: mean {mean:.4} steps, {differing} pixels differ by more than 8"
+        );
+        assert!(mean < 0.1 && differing <= 30, "mean {mean} steps, {differing} pixels");
+        let bind = render(&sphere(material), None);
+        assert!(difference(&bind, &gpu_pixels, 8).1 > 200, "the pose moved the sphere");
+    }
+}
+
+/// A camera-facing square of side 0.8 at the origin, in the XY plane.
+fn square(material: ToonMaterialParams) -> Mesh {
+    let vertex = |x: f32, y: f32| Vertex {
+        position: [x, y, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        outline_normal: [0.0, 0.0, 1.0],
+        uv: [0.0; 2],
+        color: [255; 4],
+    };
+    let vertices = [vertex(-0.4, -0.4), vertex(0.4, -0.4), vertex(0.4, 0.4), vertex(-0.4, 0.4)];
+    let submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
+    Mesh::from_vertices(&vertices, vec![0, 1, 2, 0, 2, 3], submeshes, vec![material], PositionFormat::Unorm16)
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn velocity_follows_transforms_skins_and_the_camera() {
+    let gpu = gpu();
+    let size = (200, 100);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let material = flat([0.5; 3], 0.0);
+    let still = upload(&mut frames.renderer, &square(material));
+    let mut skinned = square(material);
+    skinned.skin = Some(Skin {
+        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        binds: vec![SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() }],
+        influences: Influences::pack(&[VertexInfluence { binds: [0; 4], weights: [255, 0, 0, 0] }; 4], 1),
+    });
+    let skinned = upload(&mut frames.renderer, &skinned);
+    let fov = 60f32.to_radians();
+    let aspect = size.0 as f32 / size.1 as f32;
+    let look = |x: f32| {
+        CameraData::look_at(Vec3::new(x, 0.0, 3.0), Vec3::new(x, 0.0, 0.0), Vec3::Y, fov, aspect, 0.05)
+    };
+    let velocity = Readback::new(&gpu, size);
+    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity, &velocity)];
+    // The velocity at a world point on the z = 0 plane, seen from `camera`.
+    let texel = |camera: &CameraData, point: Vec3, texels: &[[u8; 4]]| {
+        let clip = camera.proj * camera.view * point.extend(1.0);
+        let ndc = clip.truncate() / clip.w;
+        let x = ((ndc.x + 1.0) * 0.5 * size.0 as f32) as u32;
+        let y = ((1.0 - ndc.y) * 0.5 * size.1 as f32) as u32;
+        rg16f(texels[(y * size.0 + x) as usize])
+    };
+    let near = |found: [f32; 2], expected: [f32; 2]| (0..2).all(|i| (found[i] - expected[i]).abs() < 1e-4);
+    // A world motion of `distance` at view depth 3 moves `focal × distance / 3` in NDC, half that
+    // in texture coordinates.
+    let (focal_x, focal_y) = (1.0 / ((fov * 0.5).tan() * aspect), 1.0 / (fov * 0.5).tan());
+
+    let static_at = |x: f32| instance(1, still, Mat4::from_translation(Vec3::new(x, 0.0, 0.0)));
+    let skinned_at = instance(2, skinned, Mat4::from_translation(Vec3::new(0.6, 0.0, 0.0)));
+    let camera = look(0.0);
+    assert!(
+        frames.render_reading(&gpu, &view, camera, &[static_at(-0.6), skinned_at], &[], &reads).is_none()
+    );
+    let texels = velocity.texels(&gpu);
+    assert!(texels.iter().all(|&texel| rg16f(texel) == [0.0, 0.0]), "nothing has moved yet");
+
+    // The static square moves right, the skinned one's palette lifts it.
+    frames.poses.push((2, vec![Affine3A::from_translation(Vec3::new(0.0, 0.05, 0.0))], vec![]));
+    assert!(frames.render_reading(&gpu, &view, camera, &[static_at(-0.5)], &[], &reads).is_none());
+    let texels = velocity.texels(&gpu);
+    let moved = texel(&camera, Vec3::new(-0.5, 0.0, 0.0), &texels);
+    let lifted = texel(&camera, Vec3::new(0.6, 0.05, 0.0), &texels);
+    eprintln!("moved {moved:?}, lifted {lifted:?}");
+    assert!(near(moved, [0.5 * focal_x * 0.1 / 3.0, 0.0]), "{moved:?}");
+    assert!(near(lifted, [0.0, -0.5 * focal_y * 0.05 / 3.0]), "{lifted:?}");
+    assert_eq!(rg16f(texels[0]), [0.0, 0.0], "the background");
+
+    // Both hold still: no motion.
+    assert!(frames.render_reading(&gpu, &view, camera, &[], &[], &reads).is_none());
+    let texels = velocity.texels(&gpu);
+    assert_eq!(texel(&camera, Vec3::new(-0.5, 0.0, 0.0), &texels), [0.0, 0.0]);
+    assert_eq!(texel(&camera, Vec3::new(0.6, 0.05, 0.0), &texels), [0.0, 0.0]);
+
+    // The camera moves right: everything moves left.
+    let moved_camera = look(0.1);
+    assert!(frames.render_reading(&gpu, &view, moved_camera, &[], &[], &reads).is_none());
+    let texels = velocity.texels(&gpu);
+    for point in [Vec3::new(-0.5, 0.0, 0.0), Vec3::new(0.6, 0.05, 0.0)] {
+        let found = texel(&moved_camera, point, &texels);
+        assert!(near(found, [-0.5 * focal_x * 0.1 / 3.0, 0.0]), "{point}: {found:?}");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skinning_and_prepasses_run_at_any_size_and_msaa() {
+    let gpu = gpu();
+    let material = white(3.0);
+    let mut morph_only = sphere(material);
+    morph_only.morph_targets =
+        vec![MorphTarget { name: "dent".into(), default_weight: 0.0, first_delta: 0, delta_count: 2 }];
+    morph_only.morph_deltas =
+        vec![MorphDelta::new(3, [0.0, -0.2, 0.0], [0.0; 3]), MorphDelta::new(40, [0.1, 0.0, 0.0], [0.0; 3])];
+    for msaa in [Msaa::Off, Msaa::X4] {
+        let mut frames = Frames::new(&gpu, FORMAT, msaa).expect("renderer");
+        let meshes = [sphere(material), skinned_sphere(material), morph_only.clone()]
+            .map(|mesh| upload(&mut frames.renderer, &mesh));
+        let mut add: Vec<MeshInstance> = meshes
+            .iter()
+            .enumerate()
+            .map(|(index, &mesh)| {
+                instance(index as u64, mesh, Mat4::from_translation(Vec3::new(index as f32 - 1.0, 0.0, 0.0)))
+            })
+            .collect();
+        for (frame, size) in [(1, 1), (17, 1000), (481, 270), (64, 64)].into_iter().enumerate() {
+            let texture = target(&gpu, FORMAT, size);
+            let view = texture.create_view(&Default::default());
+            let readbacks = [(); 4].map(|()| Readback::new(&gpu, size));
+            let reads: [PrepassRead<'_>; 4] = [
+                (|targets| targets.character_depth, &readbacks[0]),
+                (|targets| targets.depth, &readbacks[1]),
+                (|targets| targets.normals, &readbacks[2]),
+                (|targets| targets.velocity, &readbacks[3]),
+            ];
+            frames.poses.push((1, bend(0.1 * frame as f32, 0.0), vec![0.5]));
+            frames.poses.push((2, vec![], vec![frame as f32 * 0.3]));
+            let camera = framing_camera(38.0, size, 0.3);
+            let error = frames.render_reading(&gpu, &view, camera, &std::mem::take(&mut add), &[], &reads);
+            assert!(error.is_none(), "{msaa:?} at {size:?}: {error:?}");
+            // Uploads, skinning, both prepasses, main, the composite (no bloom) and the
+            // readback.
+            let expected = 7;
+            assert_eq!(frames.graph.stats().passes, expected, "{msaa:?} at {size:?}");
+            let stats = frames.renderer.stats().skinning;
+            assert_eq!((stats.instances, stats.skinned, stats.ignored_poses), (2, 2, 0));
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skinned_outputs_survive_growth_and_bad_poses_are_ignored() {
+    let gpu = gpu();
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let mesh = upload(&mut frames.renderer, &skinned_sphere(white(3.0)));
+    let still = upload(&mut frames.renderer, &sphere(white(3.0)));
+    let camera = framing_camera(38.0, size, 0.5);
+    let far_away = |ids: std::ops::Range<u64>| {
+        ids.map(|id| instance(id, mesh, Mat4::from_translation(Vec3::new(0.0, 0.0, 100.0))))
+            .collect::<Vec<_>>()
+    };
+
+    frames.poses.push((0, bend(0.7, 0.2), vec![0.3]));
+    assert!(
+        frames
+            .render(
+                &gpu,
+                &view,
+                camera,
+                &[instance(0, mesh, Mat4::IDENTITY), instance(99, still, Mat4::ZERO)],
+                &[]
+            )
+            .is_none()
+    );
+    let posed = read_back(&gpu, &texture);
+    let before = frames.renderer.stats();
+
+    // Thirty more characters grow the output buffer while instance 0 holds its pose.
+    assert!(frames.render(&gpu, &view, camera, &far_away(1..31), &[]).is_none());
+    let grown = frames.renderer.stats();
+    assert!(grown.buffer_growths > before.buffer_growths, "{grown:?}");
+    assert_eq!((grown.skinning.instances, grown.skinning.skinned), (31, 30), "only the new ones skin");
+    assert!(read_back(&gpu, &texture) == posed, "instance 0's outputs moved with the buffer");
+
+    // Removed and added again: the freed outputs are reused.
+    let bytes = grown.skinning.output_bytes;
+    assert!(frames.render(&gpu, &view, camera, &[], &(1..31).collect::<Vec<_>>()).is_none());
+    assert_eq!(frames.renderer.stats().skinning.instances, 1);
+    assert!(frames.render(&gpu, &view, camera, &far_away(31..61), &[]).is_none());
+    assert_eq!(frames.renderer.stats().skinning.output_bytes, bytes);
+
+    // Poses that can't apply change nothing: an unknown instance, a static one, a palette of the
+    // wrong length, and a NaN weight.
+    frames.poses = vec![
+        (500, bend(0.1, 0.0), vec![]),
+        (99, bend(0.1, 0.0), vec![]),
+        (0, vec![Affine3A::IDENTITY], vec![]),
+        (0, bend(0.1, 0.0), vec![f32::NAN]),
+    ];
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    let stats = frames.renderer.stats().skinning;
+    assert_eq!((stats.ignored_poses, stats.skinned), (4, 0));
+    assert!(read_back(&gpu, &texture) == posed);
 }
 
 /// A pixel of `rgb`'s hue: one channel high, the others low.

@@ -46,9 +46,11 @@
 //!
 //! # Later milestones
 //!
-//! - Buffers as graph resources, once compute skinning (R2) hands buffers between passes.
-//!   Until then, passes that write buffers other passes read (uploads) are side effects that
-//!   come first.
+//! - Buffers as graph resources, with the first transient buffers (GPU culling's per-frame draw
+//!   lists). Every buffer so far is persistent, compute skinning's outputs included (M1 R2):
+//!   declaring one would never cull a pass, since it outlives the frame as an imported texture
+//!   does, and wgpu already orders accesses to it. Passes that write buffers other passes read
+//!   (uploads, skinning, light clusters) are side effects added before their readers.
 //! - Textures kept into the next frame (TAA history).
 //! - A per-pass cost hint, so parallel recording splits by work instead of pass count. GPU
 //!   timings could seed it.

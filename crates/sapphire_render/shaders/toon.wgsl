@@ -31,7 +31,8 @@ const LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
 
 struct ToonVaryings {
-    @builtin(position) clip_position: vec4<f32>,
+    // Invariant, so the prepasses (prepass.wgsl) compute the same depth.
+    @builtin(position) @invariant clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) world_normal: vec3<f32>,
     // Unused until M1 samples ramp, ILM and base textures.

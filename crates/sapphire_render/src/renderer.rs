@@ -5,21 +5,21 @@ use std::num::NonZeroU64;
 use sapphire_assets::mesh::{MeshAsset, MeshFormatError, MeshVertex};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
-use crate::buffer::GrowableBuffer;
-use crate::gpu_types::{DrawData, FrameUniforms, InstanceData, ViewUniforms};
+use crate::buffer;
+use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, TextureId};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines};
-use crate::scene::DrawList;
-use crate::{CameraData, FrameView, LOG_TARGET, MeshHandle};
+use crate::scene::GpuScene;
+use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
 const VERTEX_STRIDE: u64 = size_of::<MeshVertex>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 
 /// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
 /// few (one per frame in flight) and reuses them, so it should hold a frame's uploads:
-/// constants plus instances and draw records, a few hundred bytes in M0. Bigger frames fall
-/// back to a dedicated buffer per upload.
+/// constants plus the changed instances, and the draw records after a rebuild, a few hundred
+/// bytes in M0. Bigger frames fall back to a dedicated buffer per upload.
 const UPLOAD_CHUNK_SIZE: u64 = 256 * 1024;
 
 /// Multisampling of the main pass. Hull outlines are only a few pixels wide, so they need it.
@@ -73,8 +73,13 @@ pub struct RenderStats {
     /// Draw calls per mesh pass in the last prepared frame (toon and outline each issue this
     /// many; the sky adds one).
     pub draws: u32,
-    /// Instances in the last prepared frame.
+    /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
+    /// Instances the last prepared packet added or changed; each is uploaded.
+    pub changed_instances: u32,
+    /// Times the draw list was rebuilt since the renderer was created: only when instances
+    /// are added or removed, change mesh, or meshes are uploaded.
+    pub draw_list_builds: u32,
     /// Mesh pool bytes in use: vertices, indices and materials.
     pub mesh_pool_bytes: u64,
     /// GPU buffers reallocated to grow, since the renderer was created. Growth copies data and
@@ -82,16 +87,17 @@ pub struct RenderStats {
     pub buffer_growths: u32,
 }
 
-/// Draws [`FrameView`]s.
+/// Draws [`FramePacket`]s.
 ///
-/// Each frame is [`prepare`](Self::prepare)d (draw lists and buffer sizing, CPU only) and then
-/// [`record`](Self::record)ed as passes in the app's [`FrameGraph`], which the app can add its
-/// own passes to (UI, debug, readback) before executing it.
+/// Each frame's packet is [`prepare`](Self::prepare)d (its instance deltas applied to the
+/// persistent scene, CPU only) and then [`record`](Self::record)ed as passes in the app's
+/// [`FrameGraph`], which the app can add its own passes to (UI, debug, readback) before
+/// executing it.
 ///
 /// Per-frame data reaches the GPU through a [`StagingBelt`](wgpu::util::StagingBelt): mapped
 /// staging buffers that are reused across frames, copied from at the start of the frame's
 /// encoder. `Queue::write_buffer` would instead create a new staging buffer for every call,
-/// which dominated the frame's CPU time on Apple GPUs.
+/// which dominated the frame's CPU time on Apple GPUs. Instances upload only when they change.
 #[derive(Debug)]
 pub struct Renderer {
     device: wgpu::Device,
@@ -105,12 +111,10 @@ pub struct Renderer {
     frame_bind_group: wgpu::BindGroup,
     view_uniforms: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
-    instances: GrowableBuffer,
-    /// Draw records, read as instance-step vertex data (vertex slot 1).
-    draws: GrowableBuffer,
     meshes: MeshPool,
+    /// Instances, draw records and the draw list, persistent across frames.
+    scene: GpuScene,
     scene_bind_group: wgpu::BindGroup,
-    draw_list: DrawList,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
@@ -145,7 +149,6 @@ impl Renderer {
         }
 
         let device = gpu.device().clone();
-        let limits = device.limits();
         let layouts = Layouts::new(&device);
         let pipelines = Pipelines::new(&device, &layouts, color_format, samples, gpu.pipeline_cache());
         let uniform = |label, size: usize| {
@@ -177,23 +180,9 @@ impl Renderer {
                 }),
             }],
         });
-        let storage_limit = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
-        let instances = GrowableBuffer::new(
-            &device,
-            "instances",
-            wgpu::BufferUsages::STORAGE,
-            256 * size_of::<InstanceData>() as u64,
-            storage_limit,
-        );
-        let draws = GrowableBuffer::new(
-            &device,
-            "draw records",
-            wgpu::BufferUsages::VERTEX,
-            1024 * DRAW_STRIDE,
-            limits.max_buffer_size,
-        );
         let meshes = MeshPool::new(&device);
-        let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &instances, &meshes);
+        let scene = GpuScene::new(&device);
+        let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &meshes);
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         tracing::info!(target: LOG_TARGET, ?color_format, msaa = samples, "renderer created");
         Ok(Self {
@@ -208,11 +197,9 @@ impl Renderer {
             frame_bind_group,
             view_uniforms,
             view_bind_group,
-            instances,
-            draws,
             meshes,
+            scene,
             scene_bind_group,
-            draw_list: DrawList::default(),
             uploads,
             prepared: None,
             stats: RenderStats::default(),
@@ -224,15 +211,23 @@ impl Renderer {
         let (handle, materials_moved) = self.meshes.upload(&self.device, &self.queue, mesh)?;
         if materials_moved {
             self.scene_bind_group =
-                create_scene_bind_group(&self.device, &self.layouts.scene, &self.instances, &self.meshes);
+                create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.meshes);
         }
+        self.scene.meshes_changed();
         self.update_pool_stats();
         Ok(handle)
     }
 
-    /// The CPU half of a frame: builds the draw list, computes the frame constants and sizes
-    /// the per-frame buffers. Call once per frame, before [`Self::record`], which uploads.
-    pub fn prepare(&mut self, gpu: &GpuContext, frame: &FrameView<'_>) {
+    /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
+    /// (rebuilding the draw list only if the drawn set changed), computes the frame constants
+    /// and sizes the buffers. [`Self::record`] then uploads what changed and draws.
+    ///
+    /// Every packet must be prepared, in order, including frames that draw nothing (no target,
+    /// so no [`Self::record`]): a skipped packet would lose its deltas. Debug builds check the
+    /// packets' frame numbers. A new renderer starts with no instances, so its first packet
+    /// must add every instance; an app that replaces its renderer (after device loss)
+    /// re-extracts everything.
+    pub fn prepare(&mut self, gpu: &GpuContext, packet: &FramePacket) {
         profiling::scope!("Renderer::prepare");
         debug_assert!(
             gpu.device() == &self.device,
@@ -240,25 +235,27 @@ impl Renderer {
         );
         let (device, queue) = (gpu.device(), gpu.queue());
 
-        self.draw_list.build(self.meshes.records(), frame.instances);
-        let list = &self.draw_list;
-        // Per-frame data is rewritten whole, so nothing needs to survive a reallocation.
-        if self.instances.reserve(device, queue, size_of_val(list.instances.as_slice()) as u64, 0) {
+        if self.scene.prepare(device, queue, packet.frame, &packet.instances, self.meshes.records()) {
             self.scene_bind_group =
-                create_scene_bind_group(device, &self.layouts.scene, &self.instances, &self.meshes);
+                create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.meshes);
         }
-        self.draws.reserve(device, queue, size_of_val(list.draws.as_slice()) as u64, 0);
 
-        self.prepared = Some(PreparedFrame { camera: frame.camera, constants: FrameUniforms::new(frame) });
-        self.stats.draws = list.commands.len() as u32;
-        self.stats.instances = list.instances.len() as u32;
+        // Without a main view the frame has nothing to draw.
+        self.prepared = packet
+            .main_view()
+            .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet) });
+        self.stats.draws = self.scene.draw_count();
+        self.stats.instances = self.scene.live_instances();
+        self.stats.changed_instances = self.scene.changed_instances();
+        self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.update_pool_stats();
     }
 
     /// The GPU half of a frame: adds the frame's uploads and the main pass to `graph`, drawing
-    /// into `target`. Record once per [`Self::prepare`]. The renderer stays borrowed until the
-    /// graph has been executed, which submits the uploads and so returns their staging buffers
-    /// for reuse.
+    /// into `target`. Record at most once per [`Self::prepare`], and only after preparing a
+    /// packet with a main view. The renderer stays borrowed until the graph has been executed,
+    /// which submits the uploads and so returns their staging buffers for reuse. Scene changes
+    /// from prepared frames that were never recorded are uploaded by the next recorded one.
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
     /// attachments (MSAA color, depth) are transient graph textures sized from it, so any size
@@ -268,7 +265,7 @@ impl Renderer {
     /// and depth are cleared, resolved and discarded without ever leaving tile memory.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         profiling::scope!("Renderer::record");
-        debug_assert!(self.prepared.is_some(), "record() needs a prepare() first");
+        debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
         let Some(PreparedFrame { camera, constants }) = self.prepared.take() else { return };
         let size = graph.size(target);
         if size.0 == 0 || size.1 == 0 {
@@ -297,14 +294,13 @@ impl Renderer {
             ref frame_bind_group,
             ref view_uniforms,
             ref view_bind_group,
-            ref instances,
-            ref draws,
             ref meshes,
+            ref mut scene,
             ref scene_bind_group,
-            ref draw_list,
             ref mut uploads,
             ..
         } = *self;
+        let (scene_uploads, draw_list, draws) = scene.split_for_record();
 
         // Buffers aren't graph resources yet, so the uploads are a side effect added first:
         // the main pass reads what they copy.
@@ -316,8 +312,7 @@ impl Renderer {
                 view_uniforms,
                 bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
             );
-            upload(uploads, ctx.encoder, instances.buffer(), bytemuck::cast_slice(&draw_list.instances));
-            upload(uploads, ctx.encoder, draws.buffer(), bytemuck::cast_slice(&draw_list.draws));
+            scene_uploads.write(uploads, ctx.encoder);
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
 
@@ -389,7 +384,7 @@ impl Renderer {
 
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
-        self.stats.buffer_growths = self.meshes.growths() + self.instances.growths() + self.draws.growths();
+        self.stats.buffer_growths = self.meshes.growths() + self.scene.growths();
     }
 }
 
@@ -400,22 +395,20 @@ fn upload(
     target: &wgpu::Buffer,
     bytes: &[u8],
 ) {
-    if let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) {
-        belt.write_buffer(encoder, target, 0, size).copy_from_slice(bytes);
-    }
+    buffer::stage(belt, encoder, target, 0, bytes);
 }
 
 fn create_scene_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    instances: &GrowableBuffer,
+    scene: &GpuScene,
     meshes: &MeshPool,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("scene"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: instances.buffer().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: meshes.material_buffer().as_entire_binding() },
         ],
     })

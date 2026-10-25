@@ -3,23 +3,32 @@
 //! exactly what the app draws.
 //!
 //! - **Resources:** `WorldClock` (from `sapphire_ecs`), the [`OrbitCamera`], the slow-motion
-//!   handle, and the [`RenderInstances`] extraction fills.
-//! - **The character entity:** a [`Turntable`], its `EntityClock` and the [`RenderMesh`] it
-//!   draws.
-//! - **Systems:** turntables spin in `FixedCombat`; `Extract` copies the interpolated instances
-//!   out for the renderer.
+//!   handle, and the [`RenderExtract`] packet ring that extraction fills.
+//! - **The character entity:** a [`Turntable`], its `EntityClock`, and the [`RenderMesh`] and
+//!   [`RenderTransform`](extract::RenderTransform) it draws with.
+//! - **Systems:** turntables spin in `FixedCombat`. `Extract` poses them, then writes the
+//!   instances that changed into the frame's packet (see [`crate::extract`]).
+//! - **Each frame's packet** starts with the main view and the scene constants, which
+//!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
+//!
+//! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
+//! schedule that has systems costs an allocation per run plus one per system, and wakes a
+//! worker; an empty one costs nothing. In `Presentation` the pose cost 2 allocations and about
+//! 8 µs more per frame (`--bench`, M5), so it runs at the head of `Extract`, which runs anyway.
+//! It moves to `Presentation` once animation gives that schedule real work (M2).
 //!
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
 use sapphire_assets::mesh::MeshAsset;
 use sapphire_ecs::prelude::*;
-use sapphire_math::{Mat4, Vec3};
+use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{DirectionalLight, FrameView, MeshHandle, MeshInstance, SkyGradient};
+use sapphire_render::{DirectionalLight, FramePacket, MeshHandle, SkyGradient, ViewData};
 use sapphire_time::{ScaleHandle, ScaleSource};
 
 use crate::LOG_TARGET;
+use crate::extract::{self, RenderExtract, RenderMesh};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::turntable::{self, Turntable};
@@ -39,18 +48,9 @@ const SUN: DirectionalLight = DirectionalLight {
     intensity: 1.0,
 };
 
-/// The mesh an entity draws.
-#[derive(Component, Debug)]
-pub(crate) struct RenderMesh(pub MeshHandle);
-
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
-
-/// What `Extract` copied out for the renderer, reused every frame so extraction doesn't
-/// allocate. `FramePacket` replaces it in M1 F3.
-#[derive(Resource, Debug, Default)]
-struct RenderInstances(Vec<MeshInstance>);
 
 pub(crate) struct Scene {
     ecs: Ecs,
@@ -65,10 +65,11 @@ impl Scene {
         let world = ecs.world_mut();
         world.insert_resource(OrbitCamera::framing(bounds));
         world.insert_resource(SlowMotion::default());
-        world.insert_resource(RenderInstances(Vec::with_capacity(1)));
+        world.insert_resource(RenderExtract::default());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
         let character = world.spawn((Turntable::default(), clock)).id();
-        ecs.add_systems(FixedCombat, turntable::spin).add_systems(Extract, extract_instances);
+        ecs.add_systems(FixedCombat, turntable::spin)
+            .add_systems(Extract, (turntable::pose, extract::extract_instances).chain());
         ecs.startup();
         Self { ecs, character }
     }
@@ -108,23 +109,33 @@ impl Scene {
         self.ecs.fixed_step();
     }
 
-    /// Runs presentation and extraction, then returns the renderer's view of the scene,
-    /// `alpha` of the way from the previous fixed step to the latest, for a target with the
-    /// given aspect ratio.
-    pub fn frame_view(&mut self, alpha: f32, aspect: f32) -> FrameView<'_> {
+    /// Runs presentation and extraction, then returns this frame's packet, `alpha` of the way
+    /// from the previous fixed step to the latest, with the main view drawing into a target of
+    /// `target_size`. Call it every frame: on frames that draw nothing, pass `None`; their
+    /// packets have no view but still carry instance deltas, which the renderer must see.
+    pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
+        self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
+            let packet = extract.begin();
+            if let Some(aspect) = drawable_aspect(target_size) {
+                packet.views.push(ViewData { camera: world.resource::<OrbitCamera>().camera_data(aspect) });
+            }
+            let clock = &world.resource::<WorldClock>().0;
+            // Interpolated like everything else drawn this frame.
+            let time =
+                clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
+            packet.sun = SUN;
+            packet.sky = SkyGradient::default();
+            packet.time_seconds = (time % SHADER_TIME_WRAP_SECONDS) as f32;
+        });
         self.ecs.extract();
-        let world = self.ecs.world();
-        let clock = &world.resource::<WorldClock>().0;
-        // Interpolated like everything else drawn this frame.
-        let time = clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
-        FrameView {
-            camera: world.resource::<OrbitCamera>().camera_data(aspect),
-            sun: SUN,
-            instances: &world.resource::<RenderInstances>().0,
-            sky: SkyGradient::default(),
-            time_seconds: (time % SHADER_TIME_WRAP_SECONDS) as f32,
-        }
+        self.ecs.world().resource::<RenderExtract>().packet()
+    }
+
+    /// Makes the next packet add every instance again, changed or not, for a renderer that
+    /// starts empty (after GPU device loss).
+    pub fn resend_instances(&mut self) {
+        self.ecs.world_mut().resource_mut::<RenderExtract>().resend_all();
     }
 
     /// Ends the frame (the ECS `Cleanup` schedule). Call once per frame, after rendering.
@@ -147,19 +158,11 @@ impl Scene {
     }
 }
 
-/// Copies every drawn entity out, interpolated, for the renderer. Runs in `Extract`.
-fn extract_instances(
-    interpolation: Res<'_, Interpolation>,
-    drawn: Query<'_, '_, (&Turntable, &RenderMesh)>,
-    mut instances: ResMut<'_, RenderInstances>,
-) {
-    instances.0.clear();
-    for (table, mesh) in &drawn {
-        instances.0.push(MeshInstance {
-            mesh: mesh.0,
-            transform: Mat4::from_rotation_y(table.angle(interpolation.alpha)),
-        });
-    }
+/// Width over height of a target the main view can draw into: none without a target, or for
+/// an empty one (a minimized window).
+fn drawable_aspect(target_size: Option<(u32, u32)>) -> Option<f32> {
+    let (width, height) = target_size.filter(|&(width, height)| width > 0 && height > 0)?;
+    Some(width as f32 / height as f32)
 }
 
 /// Reads and validates a cooked mesh from the app's content.
@@ -183,12 +186,15 @@ pub(crate) fn load_mesh(platform: &Platform, path: &str) -> Result<MeshAsset, Ap
 
 #[cfg(test)]
 mod tests {
+    use sapphire_render::InstanceId;
     use sapphire_time::TICK_HZ;
 
     use super::*;
 
+    const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
+
     fn scene() -> Scene {
-        Scene::new([[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]])
+        Scene::new(BOUNDS)
     }
 
     fn angle(scene: &Scene) -> f32 {
@@ -222,9 +228,55 @@ mod tests {
                 scene.step();
             });
             allocations += steps.allocations;
-            let _ = scene.frame_view(0.5, 1.0);
+            let _ = scene.frame_packet(0.5, Some((1, 1)));
             scene.end_frame();
         }
         assert_eq!(allocations, 0, "rule R6");
+    }
+
+    #[test]
+    fn the_main_view_needs_a_drawable_target() {
+        assert_eq!(drawable_aspect(Some((1920, 1080))), Some(1920.0 / 1080.0));
+        for size in [None, Some((0, 1080)), Some((1920, 0))] {
+            assert_eq!(drawable_aspect(size), None, "{size:?}");
+        }
+    }
+
+    #[test]
+    fn packets_carry_the_view_and_only_instances_that_moved() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS);
+        let character = InstanceId(scene.character.to_bits());
+        let changed = |packet: &FramePacket| -> Vec<InstanceId> {
+            packet.instances.changed.iter().map(|instance| instance.id).collect()
+        };
+
+        scene.step();
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_eq!(packet.views.len(), 1);
+        assert_eq!(packet.sun, SUN);
+        assert_eq!(changed(packet), [character], "added");
+        let first = packet.instances.changed[0].transform;
+        scene.end_frame();
+
+        // The turntable spins, so it changes every frame, drawn or not.
+        scene.step();
+        let packet = scene.frame_packet(1.0, None);
+        assert!(packet.views.is_empty(), "no target, no view");
+        assert_eq!(changed(packet), [character]);
+        assert_ne!(packet.instances.changed[0].transform, first);
+        scene.end_frame();
+
+        // Frozen by hitstop, it holds still and drops out of the packets.
+        let world = scene.ecs.world_mut();
+        world.get_mut::<EntityClock>(scene.character).expect("clock").0.apply_hitstop(2);
+        scene.step();
+        assert!(scene.frame_packet(1.0, Some((1920, 1080))).instances.is_empty());
+        scene.end_frame();
+
+        // A renderer that starts over gets it again.
+        scene.resend_instances();
+        assert_eq!(changed(scene.frame_packet(1.0, Some((1920, 1080)))), [character]);
+        scene.end_frame();
+        assert!(scene.frame_packet(1.0, Some((1920, 1080))).instances.is_empty());
     }
 }

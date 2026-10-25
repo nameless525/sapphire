@@ -21,7 +21,8 @@ use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    CameraData, DirectionalLight, FrameView, MeshInstance, Msaa, RenderSettings, Renderer, SkyGradient,
+    CameraData, DirectionalLight, FramePacket, InstanceId, MeshInstance, Msaa, RenderSettings, Renderer,
+    SkyGradient, ViewData,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use tracing_subscriber::filter::Targets;
@@ -64,26 +65,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let look_at = Vec3::new(0.0, 0.55, 0.0);
     let fov = fov_degrees.to_radians();
     let dolly = (19f32.to_radians().tan() / (fov * 0.5).tan()).max(0.05);
-    let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
-    let frame = FrameView {
-        camera: CameraData::look_at(
-            look_at + Vec3::new(0.0, 0.8, 4.3) * dolly,
-            look_at,
-            Vec3::Y,
-            fov,
-            WIDTH as f32 / HEIGHT as f32,
-            0.1,
-        ),
+    let camera = CameraData::look_at(
+        look_at + Vec3::new(0.0, 0.8, 4.3) * dolly,
+        look_at,
+        Vec3::Y,
+        fov,
+        WIDTH as f32 / HEIGHT as f32,
+        0.1,
+    );
+    // One frame, so one packet: it adds the scene's only instance.
+    let mut packet = FramePacket {
+        views: vec![ViewData { camera }],
         sun: DirectionalLight {
             direction: Vec3::new(0.7, -0.6, -0.35),
             color: Vec3::new(1.0, 0.97, 0.92),
             intensity: 1.0,
         },
-        instances: &instances,
         sky: SkyGradient::default(),
-        time_seconds: 0.0,
+        ..FramePacket::default()
     };
-    renderer.prepare(&gpu, &frame);
+    packet.instances.changed.push(MeshInstance { id: InstanceId(0), mesh, transform: Mat4::IDENTITY });
+    renderer.prepare(&gpu, &packet);
     let mut graph = FrameGraph::new();
     let target_id = graph.import_texture("target", &target_view);
     renderer.record(&mut graph, target_id);

@@ -1,4 +1,5 @@
-//! The sandbox's simulation: a turntable that spins the model on the fixed 60 Hz step.
+//! The sandbox's simulation: a turntable that spins the model on the fixed 60 Hz step, and
+//! poses it for drawing at the display rate.
 //!
 //! It reads time only from its entity's [`EntityClock`], so world slow motion and local hitstop
 //! compose exactly as they will in combat (spec §4.5).
@@ -6,6 +7,9 @@
 use std::f32::consts::TAU;
 
 use sapphire_ecs::prelude::*;
+use sapphire_math::Mat4;
+
+use crate::extract::RenderTransform;
 
 /// Radians per second of turntable time.
 const SPEED: f32 = 0.35;
@@ -41,6 +45,18 @@ impl Turntable {
 pub(crate) fn spin(mut tables: Query<'_, '_, (&mut Turntable, &EntityClock)>) {
     for (mut table, clock) in &mut tables {
         table.advance(clock.0.last_delta().as_secs_f32());
+    }
+}
+
+/// Poses each turntable's entity between its last two steps. Runs at the head of `Extract`
+/// (see [`crate::scene`] for why not in `Presentation`). A table that holds still (hitstop,
+/// pause) leaves its transform unchanged, so it isn't extracted.
+pub(crate) fn pose(
+    interpolation: Res<'_, Interpolation>,
+    mut tables: Query<'_, '_, (&Turntable, &mut RenderTransform)>,
+) {
+    for (table, mut transform) in &mut tables {
+        transform.set_if_neq(RenderTransform(Mat4::from_rotation_y(table.angle(interpolation.alpha))));
     }
 }
 

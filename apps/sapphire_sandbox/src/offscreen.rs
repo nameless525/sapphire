@@ -100,8 +100,7 @@ impl Stage {
     ) -> Result<(), AppInitError> {
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("offscreen target", view);
-        let (width, height) = graph.size(target);
-        self.renderer.prepare(&self.gpu, &self.scene.frame_view(alpha, width as f32 / height as f32));
+        self.renderer.prepare(&self.gpu, self.scene.frame_packet(alpha, Some(graph.size(target))));
         self.renderer.record(&mut graph, target);
         after(&mut graph, target);
         self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)

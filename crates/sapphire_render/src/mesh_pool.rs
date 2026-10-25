@@ -28,13 +28,15 @@ const MAX_MESH_VERTICES: usize = 1 << 24;
 pub struct MeshHandle(u32);
 
 impl MeshHandle {
-    pub(crate) fn index(self) -> usize {
-        self.0 as usize
+    /// A handle from its raw index (the order meshes were uploaded in), for code that builds
+    /// packets without a renderer, such as extraction tests. Drawing a handle the renderer
+    /// never returned is a logic error: debug builds assert, release builds skip the instance.
+    pub const fn from_raw(index: u32) -> Self {
+        Self(index)
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_index(index: u32) -> Self {
-        Self(index)
+    pub(crate) fn index(self) -> usize {
+        self.0 as usize
     }
 }
 

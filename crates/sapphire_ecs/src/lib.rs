@@ -13,8 +13,9 @@
 //!
 //! Does not own: the frame loop and the fixed-step accumulator (the app drives
 //! `sapphire_time::FixedStepDriver` and calls [`Ecs::fixed_step`] once per step), the
-//! `FramePacket` that extraction fills (M1 F3), or reflection (`sapphire_reflect`; components gain
-//! `ReflectComponent` with the inspector, F5).
+//! `FramePacket` that extraction fills (`sapphire_render` defines it; the app's [`Extract`]
+//! systems fill it), or reflection (`sapphire_reflect`; components gain `ReflectComponent` with
+//! the inspector, F5).
 //!
 //! # Executors
 //!
@@ -27,8 +28,16 @@
 //!
 //! Measured in the sandbox (M1 F1, Apple M5, release): running the seven schedules costs about
 //! 6–8 µs per frame. The fixed step allocates nothing (tested). The multi-threaded executor
-//! allocates once per parallel schedule run, which counts toward the process-wide allocation
-//! budget, not rule R6.
+//! allocates once per parallel schedule run plus once per system it runs (each is a spawned
+//! task), and wakes a worker; a schedule with no systems costs nothing (M1 F3). That counts
+//! toward the process-wide allocation budget, not rule R6.
+//!
+//! # Change detection
+//!
+//! `Changed` and `Added` compare against each system's last run, so they see everything since
+//! then, however many frames that was. `RemovedComponents` keeps a removal only until the
+//! second [`Ecs::cleanup`] after it, so a system that reads it must run every frame;
+//! extraction does (spec §4.6).
 
 use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor, SystemSet};
 use bevy_ecs::system::ScheduleSystem;

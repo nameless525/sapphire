@@ -3,16 +3,22 @@
 //!
 //! # Owns
 //!
-//! - Turning a plain-data [`FrameView`] into pixels. The renderer never sees gameplay or
-//!   world types (rule R4); M1 replaces `FrameView` with the extracted `FramePacket` (§4.6).
-//! - Persistent GPU scene buffers: a mesh pool (shared vertex and index buffers), a material
-//!   buffer indexed by material ID, and per-frame instance and draw-record buffers.
+//! - The extract boundary's data (§4.6): the plain-data [`FramePacket`] and the
+//!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
+//!   (rule R4).
+//! - Turning packets into pixels.
+//! - The persistent GPU scene: a mesh pool (shared vertex and index buffers), a material
+//!   buffer indexed by material ID, and instance and draw-record buffers kept across frames
+//!   and updated from each packet's instance deltas. Only changed instances are uploaded, and
+//!   the draw list is rebuilt only when the drawn set changes.
 //! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
 //! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
 //!   parallel recording and the frame's one submit.
 //!
 //! # Does not own
 //!
+//! - Extraction: the app's systems in the ECS `Extract` schedule fill the packet, using
+//!   change detection so that only changed instances reach it.
 //! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
 //!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
 //!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
@@ -46,7 +52,7 @@
 //! |---|---|---|---|---|
 //! | 0 frame | uniform | vertex, fragment | sun, sky, time | `prepare` |
 //! | 1 view | uniform, dynamic offset | vertex, fragment | matrices, camera, viewport | `record` |
-//! | 2 scene | 0: storage | vertex | instance transforms | `prepare` |
+//! | 2 scene | 0: storage | vertex | instance transforms, by slot | `prepare`, changed instances only |
 //! | 2 scene | 1: storage | vertex, fragment | toon materials | mesh upload |
 //! | 3 | — | — | material textures (M1) | — |
 //!
@@ -61,9 +67,11 @@
 //!
 //! # Later milestones
 //!
-//! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; a
-//!   persistent staging ring in place of `Queue::write_buffer`; persistent instances updated
-//!   from extract deltas; pipeline/material/mesh draw sorting.
+//! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; mesh
+//!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
+//!   pipeline/material/mesh draw sorting. The [`FramePacket`] grows with the systems that
+//!   feed it: skinned instances, morph weights, lights, VFX, post parameters, UI and debug
+//!   draws, plus shadow-cascade and UI-inset views.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
 
@@ -77,7 +85,10 @@ mod renderer;
 mod scene;
 mod shaders;
 
-pub use frame::{CameraData, DirectionalLight, FrameView, MeshInstance, SkyGradient};
+pub use frame::{
+    CameraData, DirectionalLight, FramePacket, FramePacketRing, InstanceDeltas, InstanceId, MeshInstance,
+    SkyGradient, ViewData,
+};
 pub use mesh_pool::MeshHandle;
 pub use renderer::{Msaa, RenderError, RenderSettings, RenderStats, Renderer};
 

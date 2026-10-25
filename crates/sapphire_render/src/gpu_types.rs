@@ -4,7 +4,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};
 
-use crate::{CameraData, FrameView};
+use crate::{CameraData, FramePacket};
 
 /// Per-frame constants (WGSL `FrameUniforms`, group 0).
 #[repr(C)]
@@ -17,12 +17,12 @@ pub(crate) struct FrameUniforms {
     pub sky_zenith: [f32; 4],
     pub sky_horizon: [f32; 4],
     pub sky_ground: [f32; 4],
-    /// x: time in seconds (wrapped by the app, see `FrameView::time_seconds`).
+    /// x: time in seconds (wrapped by the app, see `FramePacket::time_seconds`).
     pub time: [f32; 4],
 }
 
 impl FrameUniforms {
-    pub(crate) fn new(frame: &FrameView<'_>) -> Self {
+    pub(crate) fn new(frame: &FramePacket) -> Self {
         let toward_sun = (-frame.sun.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
             sun_direction: toward_sun.extend(0.0).to_array(),

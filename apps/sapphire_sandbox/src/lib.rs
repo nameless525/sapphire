@@ -1,8 +1,9 @@
 //! Sapphire Sandbox, the engine test bed (milestone M0, spec §10).
 //!
-//! It runs the whole M0 path on every platform: the SDL3 platform layer, the fixed 60 Hz
-//! simulation on the engine clocks, a plain-data [`FrameView`](sapphire_render::FrameView)
-//! and the wgpu toon renderer, drawing the cooked sample mannequin.
+//! It runs the whole engine path on every platform: the SDL3 platform layer, the fixed 60 Hz
+//! simulation on the engine clocks and ECS, plain-data
+//! [`FramePacket`](sapphire_render::FramePacket)s filled by change-detecting extract systems,
+//! and the wgpu toon renderer's persistent scene, drawing the cooked sample mannequin.
 //!
 //! # Controls
 //!
@@ -34,6 +35,7 @@
 mod app;
 mod bench;
 mod capture;
+mod extract;
 mod input;
 mod offscreen;
 mod options;

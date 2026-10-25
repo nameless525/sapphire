@@ -267,6 +267,13 @@ pub struct FramePacket {
 
 - Extraction is a set of systems that run after presentation and write into the packet. They use change detection to copy only what changed.
 - The render world keeps persistent GPU scene buffers and applies the deltas from each packet.
+- **As built (M1 F3, `sapphire_render::FramePacket`):**
+  - The packet holds the frame number, the views (the main camera first), the scene constants (sun, sky gradient, time) and instance deltas: `changed` (a stable `InstanceId` with mesh and transform; additions included) and `removed`. The other fields above arrive with the systems that fill them.
+  - A `FramePacketRing` holds three packets; each keeps its vectors' capacity when reused, so a warm frame allocates nothing for its packet. Reused `Vec`s stand in for the frame arena and `SmallVec`.
+  - The renderer must prepare every packet, in order, or deltas are lost; debug builds check the frame numbers. The sandbox therefore extracts and prepares every frame, drawn or not, and a packet with no view draws nothing. `RemovedComponents` needs this too: it keeps a removal only until the second `Cleanup` after it.
+  - In the sandbox, an entity draws while it has a `RenderMesh`, which requires a `RenderTransform`. `Changed` on either (which includes additions) writes a change, `RemovedComponents` writes a removal, and IDs are entity bits. Removals apply first, so an instance removed and added again in one frame survives; unknown IDs are ignored. Poses are written with `set_if_neq`, so an entity that holds still costs nothing: the spinning turntable is one changed instance per frame, and none during hitstop. A renderer that starts empty (after device loss) is sent every instance.
+  - The multi-threaded executor allocates once per run of a schedule that has systems plus once per system, and wakes a worker. Posing in the otherwise empty `Presentation` measured 2 more allocations and about 8 µs more per frame, so the sandbox poses at the head of `Extract` until animation gives `Presentation` real work.
+  - Cost against M1 F2 (sandbox `--bench 3000`, Apple M5, release): CPU p50 unchanged at about 30 µs per frame, allocations unchanged at 70.1 per frame and 2 KB fewer bytes allocated. Rebuilding the draw list never allocated (its vectors were reused); the saving is the draw-record upload, and it pays for the second `Extract` system.
 
 ---
 
@@ -576,6 +583,11 @@ The big one. It owns everything from `FramePacket` to pixels.
   - v1: CPU frustum, distance and small-object culling, parallel per view (main camera and each shadow cascade).
   - Later, on desktop: GPU Hi-Z occlusion culling plus MDI.
 - **Sorting:** opaque draws by pipeline → material → mesh, with instancing. Transparents back to front per emitter or object.
+- **As built (M1 F3, `sapphire_render::scene`):**
+  - Instances live in slots of the instance buffer, found by `InstanceId` (a hash map with a one-multiply hasher) and reused through a free list. A CPU mirror holds every slot's GPU data. A packet rewrites only the slots it touches, and the uploads pass writes those through the staging belt in contiguous runs.
+  - Draw records name their instance by slot. The draw list is therefore rebuilt, and its records uploaded, only when instances are added or removed, change mesh, or meshes are uploaded; a move costs one 112-byte upload. `RenderStats` counts changed instances and draw-list builds.
+  - A grown instance buffer is filled by a GPU copy of the old one, so instances uploaded earlier aren't sent again.
+  - Draws stay in slot order. Sorting comes with a second opaque pipeline, and costs nothing on frames that only move instances, since the list is rebuilt only when the set changes.
 
 **Skinning and morph targets**
 

@@ -1,4 +1,5 @@
-//! A GPU buffer that grows geometrically.
+//! GPU buffer helpers: a buffer that grows geometrically, and writes staged through the
+//! frame's staging belt.
 
 use sapphire_rhi::wgpu;
 
@@ -72,6 +73,20 @@ impl GrowableBuffer {
         self.buffer = grown;
         self.growths += 1;
         true
+    }
+}
+
+/// Copies `bytes` to `target` at `offset` through the staging belt, as part of `encoder`.
+/// Empty writes are skipped. `offset` and the length must be multiples of 4.
+pub(crate) fn stage(
+    belt: &mut wgpu::util::StagingBelt,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::Buffer,
+    offset: u64,
+    bytes: &[u8],
+) {
+    if let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) {
+        belt.write_buffer(encoder, target, offset, size).copy_from_slice(bytes);
     }
 }
 

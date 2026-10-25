@@ -1,0 +1,214 @@
+//! The simulation's side of the extract boundary (spec §4.6): render proxies as ECS data, and
+//! the `Extract` systems that copy what changed into the frame's [`FramePacket`].
+//!
+//! - **Render proxies:** an entity draws while it has a [`RenderMesh`]. Its [`RenderTransform`]
+//!   (required, identity by default) is where it draws this frame; whatever poses the entity
+//!   writes it, only when it moves.
+//! - **[`RenderExtract`]** holds the packet ring, and whether the next extraction resends
+//!   everything.
+//! - **[`extract_instances`]** writes instance deltas with bevy change detection: `Changed`
+//!   (which includes additions) for added, re-meshed or moved instances, and
+//!   `RemovedComponents` for ones that stopped drawing. An entity that didn't change adds
+//!   nothing to the packet.
+//!
+//! Extraction must run every frame, drawn or not: `RemovedComponents` keeps removals only until
+//! the second `Cleanup` after them, and the renderer must see every packet's deltas.
+
+use sapphire_ecs::prelude::*;
+use sapphire_math::Mat4;
+use sapphire_render::{FramePacket, FramePacketRing, InstanceId, MeshHandle, MeshInstance};
+
+/// The mesh an entity draws. Adding it starts drawing; removing it (or despawning the entity)
+/// stops.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[require(RenderTransform)]
+pub(crate) struct RenderMesh(pub MeshHandle);
+
+/// Where an entity draws this frame: object to world, interpolated between the last two fixed
+/// steps. Written before [`extract_instances`] runs, through `set_if_neq` so an entity that
+/// holds still isn't extracted again.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RenderTransform(pub Mat4);
+
+/// The packets extraction fills, and whether the next one resends everything.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct RenderExtract {
+    packets: FramePacketRing,
+    /// Send every instance on the next extraction, changed or not.
+    resend: bool,
+}
+
+impl RenderExtract {
+    /// Starts the next frame's packet, empty.
+    pub fn begin(&mut self) -> &mut FramePacket {
+        self.packets.begin()
+    }
+
+    /// The packet being extracted (after [`Self::begin`]) or last extracted.
+    pub fn packet(&self) -> &FramePacket {
+        self.packets.current()
+    }
+
+    pub fn packet_mut(&mut self) -> &mut FramePacket {
+        self.packets.current_mut()
+    }
+
+    /// Makes the next extraction send every instance: for a renderer that starts empty, such
+    /// as one rebuilt after GPU device loss.
+    pub fn resend_all(&mut self) {
+        self.resend = true;
+    }
+}
+
+/// The packet's instance ID for an entity: its bits, unique among live entities.
+fn instance_id(entity: Entity) -> InstanceId {
+    InstanceId(entity.to_bits())
+}
+
+/// A render proxy as extraction reads it.
+type Proxy<'a> = (Entity, &'a RenderMesh, &'a RenderTransform);
+
+/// Proxies added since extraction last ran, or whose mesh or transform changed.
+type Touched = Or<(Changed<RenderMesh>, Changed<RenderTransform>)>;
+
+/// Writes this frame's instance deltas. Runs in `Extract`.
+pub(crate) fn extract_instances(
+    mut extract: ResMut<'_, RenderExtract>,
+    changed: Query<'_, '_, Proxy<'_>, Touched>,
+    all: Query<'_, '_, Proxy<'_>>,
+    meshes: Query<'_, '_, (), With<RenderMesh>>,
+    mut removed_meshes: RemovedComponents<'_, '_, RenderMesh>,
+    mut removed_transforms: RemovedComponents<'_, '_, RenderTransform>,
+) {
+    let resend = std::mem::take(&mut extract.resend);
+    let deltas = &mut extract.packet_mut().instances;
+    // An entity that lost only its transform stops drawing too. Despawns remove both
+    // components, so the mesh's removal alone reports them.
+    let lost_transform = removed_transforms.read().filter(|&entity| meshes.contains(entity));
+    deltas.removed.extend(removed_meshes.read().chain(lost_transform).map(instance_id));
+
+    let instance = |(entity, mesh, transform): Proxy<'_>| MeshInstance {
+        id: instance_id(entity),
+        mesh: mesh.0,
+        transform: transform.0,
+    };
+    if resend {
+        deltas.changed.extend(all.iter().map(instance));
+    } else {
+        deltas.changed.extend(changed.iter().map(instance));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sapphire_math::Vec3;
+    use sapphire_render::InstanceDeltas;
+
+    use super::*;
+
+    fn mesh(index: u32) -> RenderMesh {
+        RenderMesh(MeshHandle::from_raw(index))
+    }
+
+    fn at(x: f32) -> RenderTransform {
+        RenderTransform(Mat4::from_translation(Vec3::new(x, 0.0, 0.0)))
+    }
+
+    /// An ECS with just extraction, as the scene runs it each frame.
+    fn ecs() -> Ecs {
+        let mut ecs = Ecs::new();
+        ecs.world_mut().insert_resource(RenderExtract::default());
+        ecs.add_systems(Extract, extract_instances);
+        ecs.startup();
+        ecs
+    }
+
+    /// Runs one frame's extraction and returns its deltas.
+    fn frame(ecs: &mut Ecs) -> InstanceDeltas {
+        ecs.world_mut().resource_mut::<RenderExtract>().begin();
+        ecs.extract();
+        let deltas = ecs.world().resource::<RenderExtract>().packet().instances.clone();
+        ecs.cleanup();
+        deltas
+    }
+
+    /// The changed instances' IDs, sorted.
+    fn ids(deltas: &InstanceDeltas) -> Vec<InstanceId> {
+        sorted(deltas.changed.iter().map(|instance| instance.id))
+    }
+
+    fn sorted(ids: impl IntoIterator<Item = InstanceId>) -> Vec<InstanceId> {
+        let mut ids: Vec<_> = ids.into_iter().collect();
+        ids.sort();
+        ids
+    }
+
+    fn find(deltas: &InstanceDeltas, id: InstanceId) -> MeshInstance {
+        *deltas.changed.iter().find(|instance| instance.id == id).expect("extracted")
+    }
+
+    #[test]
+    fn change_detection_extracts_only_what_changed() {
+        let mut ecs = ecs();
+        let world = ecs.world_mut();
+        let a = world.spawn((mesh(0), at(1.0))).id();
+        let b = world.spawn(mesh(0)).id();
+        let c = world.spawn((mesh(1), at(3.0))).id();
+        // Never drawn: a transform alone is not a render proxy.
+        world.spawn(at(9.0));
+        let [a_id, b_id, c_id] = [a, b, c].map(instance_id);
+
+        let added = frame(&mut ecs);
+        assert_eq!(ids(&added), sorted([a_id, b_id, c_id]));
+        assert_eq!(
+            find(&added, b_id).transform,
+            Mat4::IDENTITY,
+            "the transform is required, identity by default"
+        );
+        assert_eq!(find(&added, c_id).mesh, MeshHandle::from_raw(1));
+        assert!(added.removed.is_empty());
+
+        assert!(frame(&mut ecs).is_empty(), "unchanged entities produce nothing");
+
+        // Moving one entity extracts only it; rewriting an equal value through set_if_neq
+        // doesn't count as a change.
+        ecs.world_mut().get_mut::<RenderTransform>(a).expect("a").set_if_neq(at(2.0));
+        ecs.world_mut().get_mut::<RenderTransform>(c).expect("c").set_if_neq(at(3.0));
+        let moved = frame(&mut ecs);
+        assert_eq!(ids(&moved), [a_id]);
+        assert_eq!(moved.changed[0].transform, at(2.0).0);
+
+        // A new mesh is a change too.
+        ecs.world_mut().entity_mut(c).insert(mesh(2));
+        let remeshed = frame(&mut ecs);
+        assert_eq!(ids(&remeshed), [c_id]);
+        assert_eq!(remeshed.changed[0].mesh, MeshHandle::from_raw(2));
+
+        // Despawning reports one removal; so does losing either proxy component.
+        ecs.world_mut().despawn(b);
+        ecs.world_mut().entity_mut(c).remove::<RenderTransform>();
+        let removed = frame(&mut ecs);
+        assert!(removed.changed.is_empty());
+        assert_eq!(removed.removed, [b_id, c_id]);
+        ecs.world_mut().entity_mut(a).remove::<RenderMesh>();
+        assert_eq!(frame(&mut ecs).removed, [a_id]);
+        assert!(frame(&mut ecs).is_empty(), "removals are reported once");
+
+        // Drawing again is an addition.
+        ecs.world_mut().entity_mut(a).insert(mesh(0));
+        assert_eq!(ids(&frame(&mut ecs)), [a_id]);
+    }
+
+    #[test]
+    fn resend_extracts_every_instance_once() {
+        let mut ecs = ecs();
+        let world = ecs.world_mut();
+        let all: Vec<_> = (0..3).map(|i| instance_id(world.spawn((mesh(0), at(i as f32))).id())).collect();
+        frame(&mut ecs);
+        assert!(frame(&mut ecs).is_empty());
+
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_all();
+        assert_eq!(ids(&frame(&mut ecs)), sorted(all));
+        assert!(frame(&mut ecs).is_empty(), "then back to changes only");
+    }
+}

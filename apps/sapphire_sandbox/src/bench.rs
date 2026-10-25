@@ -1,9 +1,9 @@
 //! `--bench <frames>`: measures the sandbox's per-frame CPU path without a window (see
 //! [`crate::offscreen`]).
 //!
-//! Each frame runs one fixed step, `Renderer::prepare`, and a frame graph with the renderer's
-//! passes, executed against an offscreen target (compile, record, submit), then waits for the
-//! GPU so frames don't queue up.
+//! Each frame runs one fixed step, presentation and extraction into the frame's packet,
+//! `Renderer::prepare`, and a frame graph with the renderer's passes, executed against an
+//! offscreen target (compile, record, submit), then waits for the GPU so frames don't queue up.
 //! After a warm-up it logs CPU time per frame (that span, without the GPU wait) and
 //! allocations per frame (the whole frame, wait included, like the windowed stats). It leaves
 //! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
@@ -78,6 +78,7 @@ pub(crate) fn run(
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),
+        render = ?stage.renderer.stats(),
         "bench",
     );
     if !alloc::is_installed() {

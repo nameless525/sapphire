@@ -2,12 +2,12 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    CameraData, DirectionalLight, FrameView, MeshInstance, Msaa, RenderError, RenderSettings, Renderer,
-    SkyGradient,
+    CameraData, DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance, Msaa, RenderError,
+    RenderSettings, Renderer, SkyGradient, ViewData,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -86,15 +86,13 @@ fn white(outline_px: f32) -> ToonMaterialParams {
     flat([1.0; 3], outline_px)
 }
 
-fn frame<'a>(camera: CameraData, instances: &'a [MeshInstance]) -> FrameView<'a> {
-    FrameView {
-        camera,
-        // Light along the view direction, so everything the camera sees is lit.
-        sun: DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 },
-        instances,
-        sky: SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) },
-        time_seconds: 0.0,
-    }
+/// Fully lit in `rgb`, with no outline.
+fn colored(rgb: [f32; 3]) -> ToonMaterialParams {
+    ToonMaterialParams { base_color: [rgb[0], rgb[1], rgb[2], 1.0], shade_color: [1.0; 4], ..white(0.0) }
+}
+
+fn instance(id: u64, mesh: MeshHandle, transform: Mat4) -> MeshInstance {
+    MeshInstance { id: InstanceId(id), mesh, transform }
 }
 
 /// A camera on +Z looking at the origin, with the unit sphere filling `fraction` of the
@@ -112,10 +110,11 @@ fn framing_camera(fov_degrees: f32, (width, height): (u32, u32), fraction: f32) 
     )
 }
 
-/// A renderer and the graph executor that runs its frames.
+/// A renderer, the graph executor that runs its frames and the packets it draws.
 struct Frames {
     renderer: Renderer,
     graph: GraphExecutor,
+    packets: FramePacketRing,
 }
 
 impl Frames {
@@ -123,18 +122,32 @@ impl Frames {
         Ok(Self {
             renderer: Renderer::new(gpu, format, RenderSettings { msaa })?,
             graph: GraphExecutor::new(),
+            packets: FramePacketRing::new(),
         })
     }
 
-    /// Prepares, records and submits one frame, and returns any validation error it raised.
+    /// Prepares, records and submits one frame seen by `camera`, whose packet adds or changes
+    /// the `changed` instances and removes the `removed` ones. Returns any validation error it
+    /// raised.
     fn render(
         &mut self,
         gpu: &GpuContext,
         view: &wgpu::TextureView,
-        frame: &FrameView<'_>,
+        camera: CameraData,
+        changed: &[MeshInstance],
+        removed: &[u64],
     ) -> Option<wgpu::Error> {
+        let packet = self.packets.begin();
+        packet.views.push(ViewData { camera });
+        // Light along the view direction, so everything the camera sees is lit.
+        packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
+        packet.sky =
+            SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };
+        packet.instances.changed.extend_from_slice(changed);
+        packet.instances.removed.extend(removed.iter().copied().map(InstanceId));
+
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
-        self.renderer.prepare(gpu, frame);
+        self.renderer.prepare(gpu, self.packets.current());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", view);
         self.renderer.record(&mut graph, target);
@@ -195,7 +208,8 @@ fn outline_width_is_independent_of_fov_and_resolution() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
     let mesh = frames.renderer.upload_mesh(&sphere(flat(GREY, 10.0))).expect("upload");
-    let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
+    // Added by the first frame; the scene keeps it for the rest.
+    let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
     for size in [(960, 540), (1920, 1080)] {
         let texture = target(&gpu, FORMAT, size);
         let view = texture.create_view(&Default::default());
@@ -204,7 +218,8 @@ fn outline_width_is_independent_of_fov_and_resolution() {
         for fov in [8.0, 38.0, 90.0] {
             // Filling 60% of the height keeps the camera inside the distance curve's flat range
             // (0.5–25 m) even at 8°.
-            let error = frames.render(&gpu, &view, &frame(framing_camera(fov, size, 0.6), &instances));
+            let error =
+                frames.render(&gpu, &view, framing_camera(fov, size, 0.6), &std::mem::take(&mut add), &[]);
             assert!(error.is_none(), "{error:?}");
             let width = left_outline_width(&read_back(&gpu, &texture), size);
             assert!(
@@ -242,9 +257,9 @@ fn msaa_support_matches_device_validation() {
                     let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
                     let texture = target(&gpu, format, (64, 64));
                     let view = texture.create_view(&Default::default());
-                    let instances = [MeshInstance { mesh: handle, transform: Mat4::IDENTITY }];
-                    let error =
-                        frames.render(&gpu, &view, &frame(framing_camera(38.0, (64, 64), 0.5), &instances));
+                    let instances = [instance(0, handle, Mat4::IDENTITY)];
+                    let camera = framing_camera(38.0, (64, 64), 0.5);
+                    let error = frames.render(&gpu, &view, camera, &instances, &[]);
                     assert!(error.is_none(), "{format:?} x{samples}: {error:?}");
                 }
                 Err(RenderError::NotRenderable(_) | RenderError::UnsupportedMsaa { .. }) => {
@@ -267,11 +282,12 @@ fn internal_targets_follow_the_target_size() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
     let mesh = frames.renderer.upload_mesh(&sphere(white(4.0))).expect("upload");
-    let instances = [MeshInstance { mesh, transform: Mat4::IDENTITY }];
+    let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
     for size in [(480, 270), (481, 270), (17, 1000), (480, 270)] {
         let texture = target(&gpu, FORMAT, size);
         let view = texture.create_view(&Default::default());
-        let error = frames.render(&gpu, &view, &frame(framing_camera(38.0, size, 0.5), &instances));
+        let error =
+            frames.render(&gpu, &view, framing_camera(38.0, size, 0.5), &std::mem::take(&mut add), &[]);
         assert!(error.is_none(), "{size:?}: {error:?}");
     }
     // MSAA color and depth for each of the three sizes; returning to 480×270 reuses its pair.
@@ -284,11 +300,6 @@ fn internal_targets_follow_the_target_size() {
 fn mesh_relative_indices_draw_every_mesh() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
-    let colored = |rgb: [f32; 3]| ToonMaterialParams {
-        base_color: [rgb[0], rgb[1], rgb[2], 1.0],
-        shade_color: [1.0; 4],
-        ..white(0.0)
-    };
     // Several meshes, so the last one starts deep inside the shared vertex buffer.
     for _ in 0..3 {
         frames.renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
@@ -297,8 +308,8 @@ fn mesh_relative_indices_draw_every_mesh() {
     let size = (64, 64);
     let texture = target(&gpu, FORMAT, size);
     let view = texture.create_view(&Default::default());
-    let instances = [MeshInstance { mesh: green, transform: Mat4::IDENTITY }];
-    assert!(frames.render(&gpu, &view, &frame(framing_camera(38.0, size, 0.5), &instances)).is_none());
+    let instances = [instance(0, green, Mat4::IDENTITY)];
+    assert!(frames.render(&gpu, &view, framing_camera(38.0, size, 0.5), &instances, &[]).is_none());
     let center = read_back(&gpu, &texture)[(32 * 64 + 32) as usize];
     assert!(center[1] > 200 && center[0] < 80, "center pixel {center:?} should be the green sphere");
 
@@ -311,4 +322,93 @@ fn mesh_relative_indices_draw_every_mesh() {
             + size_of::<ToonMaterialParams>()) as u64
     };
     assert_eq!(stats.mesh_pool_bytes, 4 * sphere_bytes);
+}
+
+/// A pixel of `rgb`'s hue: one channel high, the others low.
+fn is(pixel: [u8; 4], rgb: [bool; 3]) -> bool {
+    (0..3).all(|c| if rgb[c] { pixel[c] > 200 } else { pixel[c] < 80 })
+}
+
+const RED: [bool; 3] = [true, false, false];
+const GREEN: [bool; 3] = [false, true, false];
+
+#[test]
+#[ignore = "needs a GPU"]
+fn instances_persist_and_update_from_deltas() {
+    let gpu = gpu();
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let red = frames.renderer.upload_mesh(&sphere(colored([1.0, 0.0, 0.0]))).expect("upload");
+    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    // At 60° from 4 m, world x and y of ±1 land 14 pixels from the center: pixel 18 or 46.
+    let camera =
+        CameraData::look_at(Vec3::new(0.0, 0.0, 4.0), Vec3::ZERO, Vec3::Y, 60f32.to_radians(), 1.0, 0.05);
+    let at = |x: f32, y: f32| {
+        Mat4::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, Vec3::new(x, y, 0.0))
+    };
+    let (left, right, up_left) = ((18, 32), (46, 32), (18, 18));
+    let mut frame = |changed: &[MeshInstance], removed: &[u64]| {
+        assert!(frames.render(&gpu, &view, camera, changed, removed).is_none());
+        let pixels = read_back(&gpu, &texture);
+        let stats = frames.renderer.stats();
+        (move |(x, y): (usize, usize)| pixels[y * 64 + x], stats)
+    };
+
+    let (pixel, stats) = frame(&[instance(1, red, at(-1.0, 0.0)), instance(2, green, at(1.0, 0.0))], &[]);
+    assert!(is(pixel(left), RED) && is(pixel(right), GREEN));
+    assert_eq!((stats.instances, stats.draws, stats.changed_instances, stats.draw_list_builds), (2, 2, 2, 1));
+
+    // Nothing changed: both still draw, nothing is rebuilt.
+    let (pixel, stats) = frame(&[], &[]);
+    assert!(is(pixel(left), RED) && is(pixel(right), GREEN));
+    assert_eq!((stats.instances, stats.changed_instances, stats.draw_list_builds), (2, 0, 1));
+
+    // A move uploads one instance and keeps the draw list.
+    let (pixel, stats) = frame(&[instance(1, red, at(-1.0, 1.0))], &[]);
+    assert!(is(pixel(up_left), RED) && !is(pixel(left), RED) && is(pixel(right), GREEN));
+    assert_eq!((stats.changed_instances, stats.draw_list_builds), (1, 1));
+
+    // A removal and an addition each rebuild it; the newcomer reuses the freed slot.
+    let (pixel, stats) = frame(&[], &[2]);
+    assert!(is(pixel(up_left), RED) && !is(pixel(right), GREEN));
+    assert_eq!((stats.instances, stats.draws, stats.draw_list_builds), (1, 1, 2));
+    let (pixel, stats) = frame(&[instance(3, green, at(1.0, 0.0))], &[]);
+    assert!(is(pixel(up_left), RED) && is(pixel(right), GREEN));
+    assert_eq!((stats.instances, stats.draw_list_builds), (2, 3));
+
+    // So does a mesh change.
+    let (pixel, stats) = frame(&[instance(1, green, at(-1.0, 1.0))], &[]);
+    assert!(is(pixel(up_left), GREEN));
+    assert_eq!(stats.draw_list_builds, 4);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn growing_the_instance_buffer_keeps_uploaded_instances() {
+    let gpu = gpu();
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let green = frames.renderer.upload_mesh(&sphere(colored([0.0, 1.0, 0.0]))).expect("upload");
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, size, 0.5);
+    // Zero-scale instances draw nothing; they only fill slots.
+    let hidden =
+        |ids: std::ops::Range<u64>| ids.map(|id| instance(id, green, Mat4::ZERO)).collect::<Vec<_>>();
+
+    let mut first = vec![instance(0, green, Mat4::IDENTITY)];
+    first.extend(hidden(1..200));
+    assert!(frames.render(&gpu, &view, camera, &first, &[]).is_none());
+    let growths = frames.renderer.stats().buffer_growths;
+    // Past the initial 256 slots: the buffer grows while slot 0 has no pending upload.
+    assert!(frames.render(&gpu, &view, camera, &hidden(200..400), &[]).is_none());
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+
+    let stats = frames.renderer.stats();
+    assert!(stats.buffer_growths > growths, "{stats:?}");
+    assert_eq!(stats.instances, 400);
+    let center = read_back(&gpu, &texture)[(32 * 64 + 32) as usize];
+    assert!(is(center, GREEN), "instance 0 survived the growth: center {center:?}");
 }

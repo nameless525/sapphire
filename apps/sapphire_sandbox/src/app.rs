@@ -11,7 +11,7 @@ use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::{MeshHandle, Msaa, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
-    RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
+    RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget,
 };
 use sapphire_time::{FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource};
 
@@ -212,15 +212,23 @@ impl SandboxApp {
         steps
     }
 
-    /// Draws and presents one frame. Returns whether a frame was presented.
+    /// Extracts the frame, then draws and presents it if the surface gave an image. Returns
+    /// whether a frame was presented.
     fn render(&mut self, alpha: f32) -> Result<bool, GraphError> {
         profiling::scope!("render");
-        let Some(surface) = self.surface.as_mut() else { return Ok(false) };
-        let reason = match surface.acquire() {
-            SurfaceAcquire::Frame(frame) => {
-                let (width, height) = frame.size();
-                let view = self.scene.frame_view(alpha, width as f32 / height.max(1) as f32);
-                self.renderer.prepare(&self.gpu, &view);
+        // The frame borrows the surface until the end of this block.
+        let skipped = {
+            let (frame, skipped) = match self.surface.as_mut().map(RenderSurface::acquire) {
+                Some(SurfaceAcquire::Frame(frame)) => (Some(frame), None),
+                Some(SurfaceAcquire::Skip(reason)) => (None, Some(reason)),
+                None => (None, None),
+            };
+            // Every frame is extracted and prepared, drawn or not, so the renderer's persistent
+            // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
+            // drops device-lost errors), and the rebuilt renderer is sent everything.
+            let packet = self.scene.frame_packet(alpha, frame.as_ref().map(SurfaceFrame::size));
+            self.renderer.prepare(&self.gpu, packet);
+            if let Some(frame) = frame {
                 let mut graph = FrameGraph::new();
                 // The renderer sizes its attachments from the frame itself.
                 let target = graph.import_texture("swapchain", frame.view());
@@ -229,8 +237,9 @@ impl SandboxApp {
                 frame.present();
                 return Ok(true);
             }
-            SurfaceAcquire::Skip(reason) => reason,
+            skipped
         };
+        let Some(reason) = skipped else { return Ok(false) };
         self.stats.skipped(reason);
         if reason == SkipReason::Lost {
             // `Lost` is sticky until the surface is rebuilt from a fresh native handle;
@@ -329,6 +338,8 @@ impl SandboxApp {
                 self.gpu = stack.gpu;
                 self.surface = Some(stack.surface);
                 self.scene.set_character_mesh(stack.character);
+                // The new renderer's scene starts empty.
+                self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
             }
             Err(error) => {

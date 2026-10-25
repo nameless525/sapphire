@@ -69,7 +69,7 @@ impl Stage {
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
         let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa })?;
         let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
-        let scene = Scene::new(renderer.upload_mesh(&mesh)?, mesh.bounds);
+        let scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
         Ok(Self { renderer, scene, gpu, _instance: instance })
     }
 

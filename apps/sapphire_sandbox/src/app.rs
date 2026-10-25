@@ -92,7 +92,7 @@ impl App for SandboxApp {
             recovery: SurfaceRecovery::default(),
             gpu_debug: debug,
             msaa: options.msaa,
-            scene: Scene::new(stack.character, stack.character_bounds),
+            scene: Scene::with_character(stack.character, stack.character_bounds),
             input: InputState::default(),
             desktop: info.device_class == DeviceClass::Desktop,
             real: RealClock::new(),
@@ -129,12 +129,16 @@ impl App for SandboxApp {
             }
             Event::MouseButton(button) => self.input.mouse_button(button.button, button.down),
             Event::MouseMotion(motion) => {
-                self.input.mouse_motion(&mut self.scene.camera, motion.dx, motion.dy)
+                self.input.mouse_motion(&mut self.scene.camera_mut(), motion.dx, motion.dy)
             }
-            Event::MouseWheel(wheel) => InputState::mouse_wheel(&mut self.scene.camera, wheel.y),
+            Event::MouseWheel(wheel) => InputState::mouse_wheel(&mut self.scene.camera_mut(), wheel.y),
             Event::Touch(touch) => {
                 let size = self.window.size();
-                self.input.touch(&mut self.scene.camera, touch, [size.width as f32, size.height as f32]);
+                self.input.touch(
+                    &mut self.scene.camera_mut(),
+                    touch,
+                    [size.width as f32, size.height as f32],
+                );
             }
             Event::Gamepad { event, .. } => match *event {
                 GamepadEvent::Axis { axis, value } => self.input.gamepad_axis(axis, value),
@@ -164,8 +168,9 @@ impl App for SandboxApp {
 
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
-        self.input.update(&mut self.scene.camera, dt);
-        self.scene.camera.update(dt);
+        let mut camera = self.scene.camera_mut();
+        self.input.update(&mut camera, dt);
+        camera.update(dt);
         let presented = self.render(steps.alpha);
         if presented {
             self.presented_frames += 1;
@@ -178,6 +183,7 @@ impl App for SandboxApp {
             std::thread::sleep(IDLE_FRAME);
         }
 
+        self.scene.end_frame();
         self.stats.record(frame_time, steps.dropped, presented);
         profiling::finish_frame!();
         self.frame_limit_control().unwrap_or(AppControl::Continue)
@@ -263,7 +269,8 @@ impl SandboxApp {
                     self.surface = None;
                 }
                 if self.background_pause.is_none() {
-                    self.background_pause = self.scene.world.push_scale(ScaleSource::Pause, 0).ok();
+                    self.background_pause =
+                        self.scene.world_clock_mut().0.push_scale(ScaleSource::Pause, 0).ok();
                 }
                 self.save_pipeline_cache();
             }
@@ -274,7 +281,7 @@ impl SandboxApp {
                 self.real.update();
                 self.suspended = false;
                 if let Some(handle) = self.background_pause.take() {
-                    self.scene.world.pop_scale(handle);
+                    self.scene.world_clock_mut().0.pop_scale(handle);
                 }
                 if self.surface.is_none() {
                     self.recovery.reset();
@@ -331,7 +338,7 @@ impl SandboxApp {
                 self.renderer = stack.renderer;
                 self.gpu = stack.gpu;
                 self.surface = Some(stack.surface);
-                self.scene.character = stack.character;
+                self.scene.set_character_mesh(stack.character);
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
             }
             Err(error) => {

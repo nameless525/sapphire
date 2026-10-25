@@ -1,0 +1,19 @@
+[package]
+name = "sapphire_ecs"
+description = "The world database: bevy_ecs with the engine's schedules, run on the engine's task pool."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy_ecs.workspace = true
+sapphire_jobs.workspace = true
+sapphire_time.workspace = true
+
+[dev-dependencies]
+bevy_tasks.workspace = true
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

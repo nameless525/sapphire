@@ -34,6 +34,9 @@ sapphire_crash.workspace = true
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
 sapphire_platform.workspace = true
+sapphire_ecs.workspace = true
+# bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
+bevy_ecs.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_time.workspace = true

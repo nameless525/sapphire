@@ -27,6 +27,7 @@ sapphire_time = { kind = "runtime", layer = 1 }
 sapphire_crash = { kind = "runtime", layer = 1 }
 # L2 services.
 sapphire_assets = { kind = "runtime", layer = 2 }
+sapphire_ecs = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 sapphire_render = { kind = "runtime", layer = 3 }

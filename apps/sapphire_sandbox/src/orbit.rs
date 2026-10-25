@@ -6,6 +6,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
+use sapphire_ecs::prelude::Resource;
 use sapphire_math::{SpringDamper, Vec3};
 use sapphire_render::CameraData;
 
@@ -15,6 +16,7 @@ const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.05;
 /// Seconds for the camera to close half the gap to its goal.
 const HALF_LIFE: f32 = 0.06;
 
+#[derive(Resource)]
 pub(crate) struct OrbitCamera {
     target: Vec3,
     min_distance: f32,

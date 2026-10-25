@@ -48,6 +48,7 @@ pub(crate) fn run(
         stage.scene.step();
         let encoder = stage.encode(&view, aspect, 1.0);
         stage.gpu.queue().submit([encoder.finish()]);
+        stage.scene.end_frame();
         let frame_cpu = stopwatch.lap();
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();

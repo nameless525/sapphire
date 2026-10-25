@@ -445,6 +445,8 @@ Each module below follows the same template:
   - No `Query<&mut Transform>` writes outside the owning system set.
 - **Spawning:** streamed spawns go through a budgeted command queue: at most N entities, or M µs, per frame.
 - **Debug:** use Bevy 0.20's schedule-shuffle seed in CI to flush out ordering bugs.
+- **Allocation (R6):** bevy builds a schedule on its first run, which allocates. `Ecs::startup` builds them all up front, so the fixed step allocates nothing from the first frame on (tested). Input that logs is applied just before the steps, not inside them. Spawning a new archetype mid-step also allocates (the query caches grow), so gameplay spawns will need pre-sized pools.
+- **Derives:** a crate that derives `Component` or `Resource` lists `bevy_ecs` directly as well, because bevy's derive macros find the crate by name. The workspace pins one version.
 
 ### 5.7 `sapphire_time` (L2)
 
@@ -1268,7 +1270,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `bumpalo` / `bump-scope` | 3.20 / 2.4 | `sapphire_core` | std `Allocator` trait from Rust 1.100 |
 | `slotmap` | 1.1 | `sapphire_core` | |
 | `tracing`, `profiling`, `tracy-client`, `puffin` | –, –, 0.18, 0.20 | `sapphire_core` | No default features for `tracing` and `profiling` (no proc macros); `tracy-client` comes through `profiling` |
-| `glam` | 0.34 | `sapphire_math` and up | |
+| `glam` | 0.33 | `sapphire_math` and up | The line `bevy_reflect` 0.20 reflects (`^0.33.2`), so math types reflect directly; moves with Bevy (M1 F1) |
 | `libm`, `rand_pcg` | latest | `sapphire_math` | `libm` **unchecked** |
 | `bevy_ecs`, `bevy_tasks`, `bevy_reflect` | 0.20 | `sapphire_ecs`, `sapphire_jobs`, `sapphire_reflect` | Pin per milestone |
 | `serde`, `ron`, `rkyv`, `postcard` | –, –, 0.8, 1.1 | `sapphire_serialize` | **Never** `bincode` |

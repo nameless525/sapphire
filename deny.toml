@@ -55,7 +55,8 @@ exceptions = [
 ]
 
 [licenses.private]
-# Workspace crates are `publish = false` and carry no license field; skip them.
+# Workspace crates are MIT (LICENSE, `license.workspace = true`) and `publish = false`; the
+# allow-list above governs dependencies, so skip them here.
 ignore = true
 registries = []
 

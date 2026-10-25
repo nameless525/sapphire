@@ -177,3 +177,7 @@ docs/     spec, conventions, ADRs
 - **`cargo xtask run --platform android` says the AVD is locked.** An emulator for `sapphire_api36` is starting or still running without reaching adb. If none is running, delete the lock file the message names.
 
 - **The macOS window logs `skipping frames reason=Occluded`.** The window isn't visible, for example because it opened on another Space. The loop idles at 30 Hz until the window is visible again.
+
+## License
+
+Sapphire is licensed under the [MIT License](LICENSE).

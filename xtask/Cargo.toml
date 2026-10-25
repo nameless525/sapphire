@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Kept deliberately small so `cargo xtask` builds fast: no clap, no cargo_metadata
 # (the few `cargo metadata` fields the layer check needs are deserialized directly).

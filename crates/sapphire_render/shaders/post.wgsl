@@ -12,11 +12,13 @@
 //      composite   scene color                  bloom (half size)      the two grading LUTs
 //
 // Every pass draws one fullscreen triangle and writes every pixel. Bloom levels hold
-// pre-exposed light (exposure × scene), so thresholds don't move when exposure does.
+// pre-exposed light (exposure × scene), so thresholds don't move when exposure does. Sizes are
+// the scene's, which is the target's at render scale 1; only the composite writes the target.
 
 // Mirrors `post::PostUniforms`.
 struct PostUniforms {
-    // x: exposure multiplier; y: bloom intensity; z: LUT blend (0: A alone, 1: B alone).
+    // x: exposure multiplier; y: bloom intensity; z: LUT blend (0: A alone, 1: B alone);
+    // w: 1 when scene color is smaller than the target (render scale below 1).
     composite: vec4<f32>,
     // x: threshold; y: knee width (threshold × knee); z: 1 / (4 × knee width); w: scatter.
     bloom: vec4<f32>,
@@ -142,10 +144,19 @@ fn vignette(uv: vec2<f32>, size: vec2<f32>) -> f32 {
 
 // The fused pass (spec §3.3: bloom, tonemap and LUT in one pass on mobile): exposure, bloom,
 // vignette, then the shaper into the two grading LUTs, which hold the tone curve and grade.
+// Below render scale 1 it is also the upsample to the target.
 @fragment
 fn fs_post(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(texture0));
-    var color = textureLoad(texture0, vec2<i32>(in.position.xy), 0).rgb * post.composite.x;
+    // A uniform branch: at render scale 1 scene color is loaded texel for texel, as it always
+    // was; a smaller scene is filtered up bilinearly at the pixel's position.
+    var scene: vec3<f32>;
+    if post.composite.w > 0.0 {
+        scene = textureSampleLevel(texture0, linear_clamp, in.uv, 0.0).rgb;
+    } else {
+        scene = textureLoad(texture0, vec2<i32>(in.position.xy), 0).rgb;
+    }
+    var color = scene * post.composite.x;
     color += textureSampleLevel(texture1, linear_clamp, in.uv, 0.0).rgb * post.composite.y;
     color *= vignette(in.uv, size);
 

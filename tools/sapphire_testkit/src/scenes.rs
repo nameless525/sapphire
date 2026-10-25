@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 4] {
+pub fn scenes() -> [Scene; 5] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -45,6 +45,12 @@ pub fn scenes() -> [Scene; 4] {
         Scene {
             name: "turntable-lights",
             args: &["--capture-ticks", "90", "--lights"],
+            thresholds: Thresholds::default(),
+        },
+        // The scene at render scale 0.7 (448×252), upsampled by post's final pass (M1 R6).
+        Scene {
+            name: "turntable-render-scale",
+            args: &["--capture-ticks", "90", "--render-scale", "0.7"],
             thresholds: Thresholds::default(),
         },
     ]

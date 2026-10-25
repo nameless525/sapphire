@@ -7,14 +7,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The `Reflect` derives on the quality-tier document find the crate by this name (see
+# sapphire_reflect).
+bevy_reflect.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 profiling.workspace = true
 sapphire_assets.workspace = true
-# The device class (`target::FormFactor`) that render defaults are chosen by.
+# The device class (`target::FormFactor`) quality tiers are selected by, and the `r.*` cvars.
 sapphire_core.workspace = true
 sapphire_jobs.workspace = true
+# The quality-tier table is a versioned RON document (`tiers.ron`).
+sapphire_reflect.workspace = true
 sapphire_rhi.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -15,6 +15,7 @@ use sapphire_debug::{
 use sapphire_platform::{AppInitError, Event, TextInputKind, Timestamp, Window, WindowEvent};
 use sapphire_render::RenderStats;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
+use sapphire_render::quality::Quality;
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::input::SandboxInput;
@@ -37,6 +38,8 @@ pub(crate) struct DevTools {
 pub(crate) struct FrameState<'a> {
     pub window: WindowMetrics,
     pub render: RenderStats,
+    /// The quality tier and render scale, after this frame's [`Quality::render_scale`].
+    pub quality: &'a Quality,
     pub gpu: &'a GpuContext,
     /// The windowed app's input; offscreen modes have none.
     pub input: Option<&'a SandboxInput>,
@@ -59,6 +62,7 @@ impl DevTools {
         let mut cvars = CvarRegistry::new();
         cvars
             .register_all(&crate::cvars::CVARS)
+            .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
             .map_err(AppInitError::msg)?;
         Ok(Self {
@@ -130,14 +134,16 @@ impl DevTools {
     }
 
     /// Builds the overlay's frame, after `Renderer::prepare` and before the frame graph is
-    /// recorded, and sets the executor up for what it shows.
+    /// recorded, and sets the executor up for what it shows and for dynamic resolution, which
+    /// needs GPU timings whether the overlay shows or not.
     pub fn update(&mut self, frame: FrameState<'_>, executor: &mut GraphExecutor) -> OverlayOutput {
-        self.overlay.configure_graph(executor, frame.gpu);
+        self.overlay.configure_graph(executor, frame.gpu, frame.quality.wants_gpu_timing());
         self.overlay.update(&OverlayFrame {
             now: self.now,
             window: frame.window,
             allocations: self.last_frame,
             render: frame.render,
+            quality: Some(frame.quality.stats()),
             graph: executor,
             gpu: frame.gpu,
             input_device: frame.input.and_then(SandboxInput::last_device),

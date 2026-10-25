@@ -3,9 +3,10 @@
 
 use std::num::NonZeroU64;
 
+use bevy_reflect::Reflect;
 use sapphire_assets::mesh::{ArchivedMesh, MeshError, PositionFormat, VertexShading, VertexSurface};
-use sapphire_core::target::FormFactor;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
+use serde::{Deserialize, Serialize};
 
 use crate::buffer;
 use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
@@ -28,7 +29,8 @@ const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 const UPLOAD_CHUNK_SIZE: u64 = 256 * 1024;
 
 /// Multisampling of the main pass. Hull outlines are only a few pixels wide, so they need it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
 pub enum Msaa {
     Off,
     /// Needs device support ([`GpuContext::format_support`]); common on mobile GPUs.
@@ -51,16 +53,20 @@ impl Msaa {
     }
 }
 
-/// Renderer options. M1 grows this into the quality-tier table (spec §5.12).
+/// What a renderer is created with, fixed for its lifetime: the parts of a quality tier that
+/// build pipelines and buffers. Apps take them from the active tier
+/// ([`QualityTier::render_settings`](crate::quality::QualityTier::render_settings)) and make a new
+/// renderer when the tier changes. The render scale is not among them: it can change every frame
+/// ([`Renderer::set_render_scale`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSettings {
     pub msaa: Msaa,
-    /// Bloom's half-size levels: 5 runs from ½ to 1/32 of the target (spec §5.12), and quality
-    /// tiers cut it on mobile. 0 turns bloom off; more than
+    /// Bloom's half-size levels: 5 runs from ½ to 1/32 of the scene (spec §5.12), and quality
+    /// tiers cut it on Mobile-Low. 0 turns bloom off; more than
     /// [`MAX_BLOOM_LEVELS`](crate::MAX_BLOOM_LEVELS) is clamped.
     pub bloom_levels: u32,
-    /// How local lights reach the toon shader: clustered on desktop, per-object lists on
-    /// mobile ([`Self::for_device`]). Either runs on every backend.
+    /// How local lights reach the shading: clustered on desktop tiers, per-object lists on
+    /// mobile ones. Either runs on every backend.
     pub light_path: LightPath,
     /// The most local lights a frame draws once culled to the view; the nearest are kept
     /// (spec §3.4 budgets 64 on desktop and 8 on mobile). 0 turns local lights off; more than
@@ -68,23 +74,27 @@ pub struct RenderSettings {
     pub max_lights: u32,
 }
 
-impl RenderSettings {
-    /// The defaults for a class of device, until quality tiers (R6) choose per device:
-    /// desktops cluster their lights, and phones and tablets use per-object lists with the
-    /// mobile light budget.
-    pub fn for_device(class: FormFactor) -> Self {
-        match class {
-            FormFactor::Desktop => Self::default(),
-            FormFactor::Mobile => Self { light_path: LightPath::PerObject, max_lights: 8, ..Self::default() },
-        }
-    }
-}
-
 impl Default for RenderSettings {
-    /// The desktop defaults.
+    /// The desktop tiers' settings, which every golden image renders with.
     fn default() -> Self {
         Self { msaa: Msaa::default(), bloom_levels: 5, light_path: LightPath::Clustered, max_lights: 64 }
     }
+}
+
+/// The smallest render scale: a quarter of the target's width and height.
+pub const MIN_RENDER_SCALE: f32 = 0.25;
+
+/// The size the scene renders at for a target of `size` at render `scale`: each side rounded to
+/// the nearest pixel, at least 1 and at most the target's. `scale` is clamped to
+/// [`MIN_RENDER_SCALE`]..=1 (1 when it isn't finite), so 1 is exactly the target's size.
+pub fn scaled_size((width, height): (u32, u32), scale: f32) -> (u32, u32) {
+    let scale = clamp_render_scale(scale);
+    let side = |pixels: u32| ((pixels as f32 * scale).round() as u32).clamp(1, pixels.max(1));
+    (side(width), side(height))
+}
+
+fn clamp_render_scale(scale: f32) -> f32 {
+    if scale.is_finite() { scale.clamp(MIN_RENDER_SCALE, 1.0) } else { 1.0 }
 }
 
 /// Errors from renderer setup and mesh uploads.
@@ -127,6 +137,9 @@ pub struct RenderStats {
     pub lut_bakes: u32,
     /// Local lights and their lists in the last prepared frame.
     pub lights: LightStats,
+    /// The size the last recorded frame's scene rendered at: its target's size at the render
+    /// scale ([`scaled_size`]).
+    pub scene_size: (u32, u32),
 }
 
 /// Draws [`FramePacket`]s.
@@ -145,6 +158,8 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     settings: RenderSettings,
+    /// The scene's size as a fraction of the target's, clamped as [`scaled_size`] does.
+    render_scale: f32,
     labels: bool,
     layouts: Layouts,
     pipelines: Pipelines,
@@ -246,6 +261,7 @@ impl Renderer {
             device,
             queue: gpu.queue().clone(),
             settings,
+            render_scale: 1.0,
             labels: gpu.label("").is_some(),
             layouts,
             pipelines,
@@ -335,22 +351,27 @@ impl Renderer {
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
     /// textures (HDR scene color, MSAA color, depth, the bloom chain) are transient graph
-    /// textures sized from it, so any size works, including one that changed since the last
-    /// frame.
+    /// textures sized from it at the render scale ([`Self::set_render_scale`]), so any size
+    /// works, including one that changed since the last frame.
     ///
-    /// The toon, outline and sky draws share one render pass that writes linear HDR scene
+    /// The mesh, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
-    /// without ever leaving tile memory. Post then reads the resolved scene color (see the
-    /// `post` module). On the clustered light path, frames with local lights first bin them in
-    /// a compute pass (see the `lights` module).
+    /// without ever leaving tile memory. Post then reads the resolved scene color and, below
+    /// scale 1, upsamples it to the target in its final pass (see the `post` module). On the
+    /// clustered light path, frames with local lights first bin them in a compute pass (see the
+    /// `lights` module).
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
         let Some(PreparedFrame { camera, constants }) = self.prepared.take() else { return };
-        let size = graph.size(target);
-        if size.0 == 0 || size.1 == 0 {
+        let output = graph.size(target);
+        if output.0 == 0 || output.1 == 0 {
             return;
         }
+        // The scene renders at the render scale; the views, attachments and bloom follow it, and
+        // only post's final pass writes the target's size.
+        let size = scaled_size(output, self.render_scale);
+        self.stats.scene_size = size;
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
         let samples = self.settings.msaa.sample_count();
@@ -392,7 +413,7 @@ impl Renderer {
         } = *self;
         let (scene_uploads, draw_list, draws) = scene.split_for_record();
         let (light_uploads, cluster_pass) = lights.split_for_record();
-        let (post_uniforms, post_buffer) = post.uniforms();
+        let (post_uniforms, post_buffer) = post.uniforms(size != output);
         // A handle, so `post` can be borrowed mutably for its passes below.
         let post_buffer = post_buffer.clone();
 
@@ -509,9 +530,28 @@ impl Renderer {
         post.record(graph, scene_color, target, labels);
     }
 
-    /// Counters from the last [`Self::prepare`] plus pool totals.
+    /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
+    /// size.
     pub fn stats(&self) -> RenderStats {
         self.stats
+    }
+
+    /// Sets the scene's size as a fraction of the target's width and height, from the next
+    /// [`Self::record`]: the hook for quality tiers and dynamic resolution
+    /// ([`Quality::render_scale`](crate::quality::Quality::render_scale)). Clamped to
+    /// [`MIN_RENDER_SCALE`]..=1, and 1 when it isn't finite.
+    ///
+    /// At 1 every frame is exactly as without a render scale. Below it, the scene's targets
+    /// shrink to [`scaled_size`] and post's final pass upsamples to the target bilinearly; the
+    /// pool makes new transients for each new size, so callers should change it in steps
+    /// (dynamic resolution moves in 5% steps).
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.render_scale = clamp_render_scale(scale);
+    }
+
+    /// The render scale the next [`Self::record`] uses.
+    pub fn render_scale(&self) -> f32 {
+        self.render_scale
     }
 
     /// The local lights, for tests that read their buffers back.
@@ -567,4 +607,22 @@ fn create_scene_bind_group(
             wgpu::BindGroupEntry { binding: 1, resource: meshes.material_buffer().as_entire_binding() },
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaled_sizes_round_per_side_and_stay_in_the_target() {
+        assert_eq!(scaled_size((1920, 1080), 1.0), (1920, 1080), "scale 1 is the target's size");
+        assert_eq!(scaled_size((1920, 1080), 0.7), (1344, 756));
+        // Odd sizes round to the nearest pixel, halves away from zero.
+        assert_eq!(scaled_size((641, 361), 0.5), (321, 181));
+        assert_eq!(scaled_size((3, 1), 0.5), (2, 1), "never below one pixel");
+        assert_eq!(scaled_size((1000, 100), 0.1), (250, 25), "clamped to the minimum scale");
+        assert_eq!(scaled_size((640, 360), 1.5), (640, 360), "never above the target");
+        assert_eq!(scaled_size((640, 360), f32::NAN), (640, 360));
+        assert_eq!(scaled_size((0, 0), 0.5), (1, 1));
+    }
 }

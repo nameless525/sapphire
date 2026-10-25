@@ -8,6 +8,7 @@ use sapphire_platform::{
     SurfaceHandle, Window, WindowDesc, WindowEvent,
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
+use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
 use sapphire_render::{MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
@@ -48,7 +49,12 @@ pub struct SandboxApp {
     recovery: SurfaceRecovery,
     /// How the GPU stack is built, kept to rebuild it after device loss.
     gpu_debug: GpuDebug,
-    settings: RenderSettings,
+    /// The surface's format, which the renderer and the overlay draw into.
+    format: wgpu::TextureFormat,
+    /// The quality tier, whose settings the renderer is made with, and the render scale.
+    quality: Quality,
+    /// The command line's overrides of the tier's renderer settings.
+    options: Options,
 
     scene: Scene,
     input: SandboxInput,
@@ -62,6 +68,12 @@ pub struct SandboxApp {
     stats: FrameStats,
     /// The latest frame's CPU time per stage.
     stages: Stages,
+    /// The last iteration's real length if it was steady, else zero: dynamic resolution's
+    /// signal where the GPU has no timings.
+    frame_time: Duration,
+    /// This iteration has presented and rebuilt nothing so far, so its length measures
+    /// rendering alone.
+    steady: bool,
     presented_frames: u64,
     frame_limit: Option<u64>,
 }
@@ -92,16 +104,24 @@ impl App for SandboxApp {
             object_labels: base.object_labels && !(info.is_emulator && info.os == Os::Android),
             ..base
         };
-        let settings = options.render_settings(info.device_class);
-        let stack = create_gpu_stack(platform, &window, debug, settings)?;
+        let device = create_device(platform, &window, debug)?;
+        // The tier comes from the device the GPU stack runs on; the renderer is made for it.
+        let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
+        let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
+        let renderer = create_renderer(
+            platform,
+            &device.gpu,
+            device.format,
+            options.render_settings(quality.render_settings()),
+        )?;
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
-        let mut scene = Scene::with_character(stack.character, stack.character_bounds);
+        let mut scene = Scene::with_character(renderer.character, renderer.character_bounds);
         if options.lights {
             scene.spawn_demo_lights();
         }
         #[cfg(feature = "dev")]
-        let dev = DevTools::new(&stack.gpu, stack.format, options.debug_overlay.as_deref())?;
+        let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -109,14 +129,17 @@ impl App for SandboxApp {
         Ok(Self {
             #[cfg(feature = "dev")]
             dev,
-            renderer: stack.renderer,
-            graph: stack.graph,
-            surface: Some(stack.surface),
-            gpu: stack.gpu,
+            renderer: renderer.renderer,
+            graph: GraphExecutor::new(),
+            surface: Some(device.surface),
+            gpu: device.gpu,
             window,
             recovery: SurfaceRecovery::default(),
             gpu_debug: debug,
-            settings,
+            format: device.format,
+            quality,
+            frame_limit: options.frame_limit,
+            options,
             scene,
             input,
             real: RealClock::new(),
@@ -125,8 +148,9 @@ impl App for SandboxApp {
             suspended: false,
             stats: FrameStats::new(),
             stages: Stages::default(),
+            frame_time: Duration::ZERO,
+            steady: false,
             presented_frames: 0,
-            frame_limit: options.frame_limit,
         })
     }
 
@@ -159,6 +183,8 @@ impl App for SandboxApp {
 
     fn iterate(&mut self, platform: &mut Platform) -> AppControl {
         let frame_time = self.real.update();
+        self.frame_time = if self.steady { frame_time } else { Duration::ZERO };
+        self.steady = true;
         // The previous frame's stages go with its length.
         #[cfg(feature = "dev")]
         self.dev.begin_frame(frame_time, Some(&self.stages));
@@ -171,6 +197,7 @@ impl App for SandboxApp {
         }
         self.stages.input = stopwatch.lap();
         if self.suspended {
+            self.steady = false;
             std::thread::sleep(IDLE_FRAME);
             return self.frame_limit_control().unwrap_or(AppControl::Continue);
         }
@@ -181,7 +208,10 @@ impl App for SandboxApp {
         } else if self.surface.is_none() && self.recovery.due(self.real.elapsed()) {
             self.rebuild_surface();
         }
-        // Recovery is no stage of the frame.
+        if !self.gpu.is_lost() {
+            self.follow_tier(platform);
+        }
+        // Recovery and tier changes are no stage of the frame.
         stopwatch.lap();
 
         let steps = self.simulate(frame_time);
@@ -210,6 +240,7 @@ impl App for SandboxApp {
         } else {
             // Nothing blocked on vsync this frame (occluded, minimized, no surface), so pace
             // the loop here instead of spinning a core.
+            self.steady = false;
             std::thread::sleep(IDLE_FRAME);
         }
 
@@ -282,6 +313,8 @@ impl SandboxApp {
             self.stages.extract = presentation + stopwatch.lap();
             self.renderer.prepare(&self.gpu, packet);
             if let Some(frame) = frame {
+                let timing = FrameTiming::new(&self.graph, self.frame_time);
+                self.renderer.set_render_scale(self.quality.render_scale(frame.size(), &timing));
                 // The overlay's own frame is no stage of the game's; its panel shows its cost.
                 #[cfg(feature = "dev")]
                 let overlay = {
@@ -294,16 +327,21 @@ impl SandboxApp {
                     let state = FrameState {
                         window,
                         render: self.renderer.stats(),
+                        quality: &self.quality,
                         gpu: &self.gpu,
                         input: Some(&self.input),
                         scene: &self.scene,
                     };
+                    // It also keeps GPU timing on while dynamic resolution reads it.
                     let output = self.dev.update(state, &mut self.graph);
                     DevTools::sync_text_input(&self.window, &output);
                     started.elapsed()
                 };
                 #[cfg(not(feature = "dev"))]
-                let overlay = Duration::ZERO;
+                let overlay = {
+                    self.graph.set_gpu_timing(&self.gpu, self.quality.wants_gpu_timing());
+                    Duration::ZERO
+                };
                 let mut graph = FrameGraph::new();
                 // The renderer sizes its attachments from the frame itself.
                 let target = graph.import_texture("swapchain", frame.view());
@@ -376,6 +414,7 @@ impl SandboxApp {
     /// running without one, and [`SurfaceRecovery`] schedules the next attempt.
     fn rebuild_surface(&mut self) {
         self.surface = None;
+        self.steady = false;
         self.recovery.attempted(self.real.elapsed());
         let size = self.window.pixel_size();
         let result = self.window.surface_handle().map_err(|error| error.to_string()).and_then(|handle| {
@@ -408,23 +447,55 @@ impl SandboxApp {
         tracing::warn!(target: LOG_TARGET, "GPU device lost; rebuilding the GPU stack");
         // The old surface has to go before a new one is created for the same native window.
         self.surface = None;
+        self.steady = false;
         self.recovery.attempted(self.real.elapsed());
-        match create_gpu_stack(platform, &self.window, self.gpu_debug, self.settings) {
-            Ok(stack) => {
+        let settings = self.render_settings();
+        let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
+            let renderer = create_renderer(platform, &device.gpu, device.format, settings)?;
+            Ok((device, renderer))
+        });
+        match stack {
+            Ok((device, renderer)) => {
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
-                self.dev.recreate_gpu(&stack.gpu, stack.format);
-                self.renderer = stack.renderer;
-                self.graph = stack.graph;
-                self.gpu = stack.gpu;
-                self.surface = Some(stack.surface);
-                self.scene.set_character_mesh(stack.character);
+                self.dev.recreate_gpu(&device.gpu, device.format);
+                self.renderer = renderer.renderer;
+                self.graph = GraphExecutor::new();
+                self.gpu = device.gpu;
+                self.format = device.format;
+                self.surface = Some(device.surface);
+                self.scene.set_character_mesh(renderer.character);
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
             }
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, retry_in = ?self.recovery.backoff, "GPU stack rebuild failed");
+            }
+        }
+    }
+
+    /// The renderer settings: the quality tier's, with the command line's overrides.
+    fn render_settings(&self) -> RenderSettings {
+        self.options.render_settings(self.quality.render_settings())
+    }
+
+    /// Follows `r.tier`: a new tier gets a new renderer with its settings, on the same device,
+    /// as after device loss. If that fails the old tier and renderer stay.
+    fn follow_tier(&mut self, platform: &Platform) {
+        let Some(previous) = self.quality.update_tier() else { return };
+        self.steady = false;
+        match create_renderer(platform, &self.gpu, self.format, self.render_settings()) {
+            Ok(renderer) => {
+                self.renderer = renderer.renderer;
+                self.scene.set_character_mesh(renderer.character);
+                // The new renderer's scene starts empty.
+                self.scene.resend_instances();
+                tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");
+            }
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %error, tier = %self.quality.active().id, "no renderer for the quality tier; keeping the last one");
+                self.quality.restore(previous);
             }
         }
     }
@@ -492,25 +563,23 @@ impl Default for SurfaceRecovery {
     }
 }
 
-/// Everything that lives on the GPU device: built at startup and again after device loss.
-struct GpuStack {
-    renderer: Renderer,
-    graph: GraphExecutor,
+/// The GPU device and the window's surface: built at startup and again after device loss.
+struct GpuDevice {
     surface: RenderSurface,
     gpu: GpuContext,
     /// The surface's format, which the renderer and the overlay draw into.
-    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     format: wgpu::TextureFormat,
+}
+
+/// A renderer and the character it holds: built with the device, and again for a new quality
+/// tier.
+struct SceneRenderer {
+    renderer: Renderer,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
 }
 
-fn create_gpu_stack(
-    platform: &Platform,
-    window: &Window,
-    debug: GpuDebug,
-    settings: RenderSettings,
-) -> Result<GpuStack, AppInitError> {
+fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Result<GpuDevice, AppInitError> {
     let instance = GpuInstance::new(&GpuInstanceDesc { debug, ..GpuInstanceDesc::default() })?;
     let handle = window.surface_handle()?;
     let target = surface_target(&handle)?;
@@ -528,12 +597,21 @@ fn create_gpu_stack(
     let size = window.pixel_size();
     surface.configure(&gpu, size.width, size.height, PresentPolicy::Fifo)?;
     let format = surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
-    let mut renderer = Renderer::new(&gpu, format, settings)?;
+    Ok(GpuDevice { surface, gpu, format })
+}
 
+/// A renderer drawing into `format` targets with `settings`, holding the character from content.
+fn create_renderer(
+    platform: &Platform,
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    settings: RenderSettings,
+) -> Result<SceneRenderer, AppInitError> {
+    let mut renderer = Renderer::new(gpu, format, settings)?;
     let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
         renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
     })?;
-    Ok(GpuStack { renderer, graph: GraphExecutor::new(), surface, gpu, format, character, character_bounds })
+    Ok(SceneRenderer { renderer, character, character_bounds })
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

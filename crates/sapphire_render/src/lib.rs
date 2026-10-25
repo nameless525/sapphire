@@ -26,15 +26,22 @@
 //!   parallel recording and the frame's one submit.
 //! - Texture uploads ([`texture`], M1 A2): cooked KTX2 textures to sampled GPU textures with
 //!   every mip level, after checking that the device supports their format.
+//! - Quality tiers ([`quality`], M1 R6): the tier table (`tiers.ron`, a versioned RON document
+//!   compiled in), selecting a tier from the device class, [`GpuCaps`](sapphire_rhi::GpuCaps)
+//!   and RAM, the `r.*` overrides, and each frame's render scale with dynamic resolution. The
+//!   scene renders at the render scale ([`Renderer::set_render_scale`]) and post's final pass
+//!   upsamples it to the target (see "Render scale" below).
 //!
 //! # Does not own
 //!
 //! - Extraction: the app's systems in the ECS `Extract` schedule fill the packet, using
 //!   change detection so that only changed instances reach it. Lights are sent whole every
 //!   frame.
-//! - Choosing settings per device: the app passes [`RenderSettings`]
-//!   ([`RenderSettings::for_device`] until the quality tiers of R6). The renderer never reads
-//!   the platform (rule R7).
+//! - Knowing the device: the app gives [`quality`] a device profile (its class and RAM from the
+//!   platform, its GPU from `GpuCaps`) and creates the renderer with the chosen tier's
+//!   [`RenderSettings`]. The renderer never reads the platform (rule R7).
+//! - Measuring frames: the app passes the frame graph's GPU timings and its own frame time to
+//!   dynamic resolution ([`quality::FrameTiming`]), and turns GPU timing on while it runs.
 //! - Devices, surfaces and presentation: `sapphire_rhi` and the app. Each frame the app builds
 //!   a [`graph::FrameGraph`], the renderer adds its passes ([`Renderer::prepare`],
 //!   [`Renderer::record`]), and the app runs it on the [`graph::GraphExecutor`] it keeps.
@@ -117,6 +124,16 @@
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–3 a mesh's streams (above).
 //!
+//! # Render scale
+//!
+//! Every pass before post's final one renders at the scene's size, [`scaled_size`] of the target
+//! at the render scale: the main pass's attachments, the views (whose viewport sizes outline
+//! widths and light-cluster tiles) and the bloom chain. Post's fused pass writes the target and
+//! upsamples bilinearly where the scene is smaller; at scale 1 it loads texel for texel, so
+//! frames are exactly what they were without a render scale. Passes added after the renderer's
+//! (the debug overlay, UI) draw at the target's size. Each new size is one new set of transients
+//! in the frame graph's pool, which is why dynamic resolution moves in steps.
+//!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
 //! and a sampler, 1 the textures the pass reads. The light-cluster pass (`shaders/clusters.wgsl`)
 //! binds its own group 0 (the frame constants, the lights read-only and the cluster lists
@@ -147,6 +164,10 @@
 //!   then draws use LOD0.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
+//! - **Upscaling** (spec §5.12, "Anti-aliasing and upscaling"): below render scale 1 the scene
+//!   is upsampled bilinearly. TAA's own upsampling (R7), a spatial upscaler (an FSR1-style EASU
+//!   and RCAS port, or MetalFX spatial) and DLSS or MetalFX temporal take over from it; the
+//!   quality tiers' render scale and dynamic resolution then drive their input size.
 
 mod buffer;
 mod frame;
@@ -156,6 +177,7 @@ mod lights;
 mod mesh_pool;
 mod pipelines;
 mod post;
+pub mod quality;
 mod renderer;
 mod scene;
 mod shaders;
@@ -168,7 +190,7 @@ pub use frame::{
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use mesh_pool::MeshHandle;
 pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
-pub use renderer::{Msaa, RenderError, RenderSettings, RenderStats, Renderer};
+pub use renderer::{MIN_RENDER_SCALE, Msaa, RenderError, RenderSettings, RenderStats, Renderer, scaled_size};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

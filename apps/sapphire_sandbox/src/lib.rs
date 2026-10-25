@@ -24,17 +24,24 @@
 //! The `dev` feature links `sapphire_debug` (rule R8), all of it behind `dev.rs`: the debug
 //! overlay, which sees platform events before the game's input, applies its time controls
 //! before each fixed step and draws after post, and the cvar registry it edits, holding the
-//! sandbox's look-dev cvars (`cvars.rs`, compiled in every build so they read their defaults).
+//! sandbox's look-dev cvars (`cvars.rs`, compiled in every build so they read their defaults)
+//! and the renderer's quality cvars (`r.tier`, `r.render_scale`, `r.dynamic_resolution`).
 //! Without the feature none of it is compiled.
 //!
 //! # Arguments
 //!
 //! - `--frames N`: exit after N presented frames, for unattended runs; fails if they can't be
 //!   presented in time.
-//! - `--msaa off|2|4|8`: override the MSAA setting.
+//! - `--tier desktop-high|desktop-low|mobile-high|mobile-low`: the player's quality tier
+//!   (`sapphire_render::quality`) instead of the one selected for the device. The `r.tier` cvar
+//!   overrides it in `dev` builds, and a change makes a new renderer.
+//! - `--render-scale <0.25..1>`: the player's base render scale instead of the tier's.
+//! - `--dynamic-resolution`: let dynamic resolution lower the render scale to hold the tier's
+//!   GPU budget (off by default; `r.dynamic_resolution` overrides it).
+//! - `--msaa off|2|4|8`: override the tier's MSAA.
 //! - `--lights`: place three colored local lights around the character.
-//! - `--light-path clustered|per-object`: override how local lights are listed (clustered on
-//!   desktop, per-object on mobile by default).
+//! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
+//!   on desktop tiers, per-object on mobile ones).
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `console`, `cvars`,
 //!   `all`). Offscreen captures draw it too.

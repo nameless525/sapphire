@@ -9,6 +9,7 @@
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 use sapphire_render::Renderer;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
+use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 use crate::LOG_TARGET;
@@ -68,6 +69,8 @@ pub(crate) struct Stage {
     pub renderer: Renderer,
     pub graph: GraphExecutor,
     pub scene: Scene,
+    /// The quality tier the renderer was made for, and each frame's render scale.
+    pub quality: Quality,
     pub gpu: GpuContext,
     _instance: GpuInstance,
 }
@@ -77,7 +80,9 @@ impl Stage {
     pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
-        let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(DeviceClass::Desktop))?;
+        let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
+        let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
+        let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
         let (character, bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
             renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
         })?;
@@ -99,6 +104,7 @@ impl Stage {
             renderer,
             graph: GraphExecutor::new(),
             scene,
+            quality,
             gpu,
             _instance: instance,
         })
@@ -156,6 +162,10 @@ impl Stage {
         #[cfg(feature = "dev")]
         let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
         self.renderer.prepare(&self.gpu, packet);
+        let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
+        self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
+        #[cfg(not(feature = "dev"))]
+        self.graph.set_gpu_timing(&self.gpu, self.quality.wants_gpu_timing());
         #[cfg(feature = "dev")]
         let overlay = {
             let started = sapphire_time::Stopwatch::start();
@@ -167,6 +177,7 @@ impl Stage {
             let state = crate::dev::FrameState {
                 window: sapphire_debug::WindowMetrics::offscreen(width, height, scale),
                 render: self.renderer.stats(),
+                quality: &self.quality,
                 gpu: &self.gpu,
                 input: None,
                 scene: &self.scene,
@@ -188,6 +199,6 @@ impl Stage {
     }
 }
 
-/// The length the overlay is told an offscreen frame takes.
-#[cfg(feature = "dev")]
+/// The length the overlay and dynamic resolution are told an offscreen frame takes: offscreen
+/// frames have no real length, so dynamic resolution follows GPU timings alone.
 const OFFSCREEN_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);

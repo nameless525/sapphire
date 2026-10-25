@@ -7,6 +7,7 @@ use egui::{Align2, Color32, FontId, Id, Order, RichText, Sense, Stroke, Ui, pos2
 use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
+use sapphire_render::quality::{ResolutionSignal, TierSource};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -242,6 +243,9 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
     });
 
     ui.separator();
+    quality(ui, frame);
+
+    ui.separator();
     egui::Grid::new("counters").num_columns(2).show(ui, |ui| {
         let row = |ui: &mut Ui, name: &str, value: String| {
             ui.label(name);
@@ -306,6 +310,57 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Input", device_name(frame.input_device, frame.gamepads));
         let adapter = &frame.gpu.caps().adapter;
         row(ui, "GPU", format!("{} ({})", adapter.name, adapter.backend));
+    });
+}
+
+/// The quality tier, the render scale and dynamic resolution (M1 R6).
+fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
+    egui::Grid::new("quality").num_columns(2).show(ui, |ui| {
+        let row = |ui: &mut Ui, name: &str, value: String| {
+            ui.label(name);
+            ui.monospace(value);
+            ui.end_row();
+        };
+        let Some(quality) = frame.quality else {
+            row(ui, "Quality tier", "none: the app runs no tiers".to_owned());
+            return;
+        };
+        let source = match quality.tier.source {
+            TierSource::Device => "the device's",
+            TierSource::Setting => "the player's",
+            TierSource::Cvar => "r.tier",
+        };
+        row(ui, "Quality tier", format!("{} ({source})", quality.tier.id));
+        if quality.tier.source != TierSource::Device {
+            row(ui, "  device's tier", quality.device_tier.to_string());
+        }
+        let (width, height) = frame.render.scene_size;
+        row(
+            ui,
+            "Render scale",
+            format!("{:.2} of base {:.2}: {width}×{height}", quality.render_scale, quality.base_scale),
+        );
+        let dynamic = quality.dynamic;
+        let state = match (dynamic.enabled, dynamic.signal, dynamic.estimate) {
+            (false, ..) => "off (r.dynamic_resolution)".to_owned(),
+            (true, Some(signal), Some(estimate)) => {
+                let signal = match signal {
+                    ResolutionSignal::GpuTime => "GPU",
+                    ResolutionSignal::FrameTime => "frame",
+                };
+                format!(
+                    "{signal} {} in {}–{}, ×{:.2} (floor {:.2}), {} changes",
+                    format_ms(estimate),
+                    format_ms(dynamic.low),
+                    format_ms(dynamic.high),
+                    dynamic.factor,
+                    dynamic.floor,
+                    dynamic.changes
+                )
+            }
+            (true, ..) => format!("on, waiting for timings; ×{:.2}", dynamic.factor),
+        };
+        row(ui, "Dynamic resolution", state);
     });
 }
 

@@ -10,8 +10,9 @@
 //!   used.
 //! - **Drawing**: egui's meshes as a frame-graph pass after post, over the finished frame, in
 //!   the target's format (sRGB targets get linearized colors, so they show as egui means them).
-//! - **Panels**: stats and budgets (frame time, CPU stages against spec §3.2, allocations,
-//!   `RenderStats`, `GraphStats` and the transient pool, the last-used input device), the
+//! - **Panels**: stats and budgets (frame time, CPU stages against spec §3.2, allocations, the
+//!   quality tier with the render scale and dynamic resolution's state, `RenderStats`,
+//!   `GraphStats` and the transient pool, the last-used input device), the
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
 //!   and time controls.
@@ -23,8 +24,9 @@
 //! - Cvars themselves: [`sapphire_core::cvar`], so runtime crates declare them without depending
 //!   on this crate (the facade of spec §5.20).
 //! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`]. The frame
-//!   graph's report and GPU timings are `sapphire_render::graph`'s; the overlay only turns them
-//!   on while it shows them ([`DebugOverlay::configure_graph`]).
+//!   graph's report and GPU timings are `sapphire_render::graph`'s; the overlay turns them on
+//!   while it shows them, and keeps GPU timing on while the app reads it too
+//!   ([`DebugOverlay::configure_graph`]). Quality tiers are `sapphire_render::quality`'s.
 //! - Text input on the window: the overlay says when it wants it ([`OverlayOutput`]); the app
 //!   owns the window.
 //!
@@ -44,7 +46,8 @@
 //!     overlay.time_controls().before_fixed_step(&mut world_clock);
 //!     simulation.step();
 //! }
-//! overlay.configure_graph(&mut executor, &gpu);
+//! // GPU timing stays on while dynamic resolution reads it, shown or not.
+//! overlay.configure_graph(&mut executor, &gpu, quality.wants_gpu_timing());
 //! let output = overlay.update(&OverlayFrame { .. });
 //! renderer.record(&mut graph, target);
 //! overlay.record(&mut graph, target);

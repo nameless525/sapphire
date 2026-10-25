@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 
-use sapphire_platform::DeviceClass;
-use sapphire_render::{LightPath, Msaa, RenderSettings};
+use sapphire_render::quality::{QualitySettings, TierId};
+use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings};
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
@@ -19,16 +19,24 @@ pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
     name == CAPTURE_FLAG || name == BENCH_FLAG
 }
 
-/// Options parsed from the process arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Options parsed from the process arguments. The default is no options: everything from the
+/// quality tier and the scene.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Options {
     /// Exit after this many presented frames.
     pub frame_limit: Option<u64>,
-    pub msaa: Msaa,
+    /// `--msaa off|2|4|8`: override the quality tier's.
+    pub msaa: Option<Msaa>,
     /// `--lights`: place the demo lights around the character.
     pub lights: bool,
-    /// `--light-path clustered|per-object`: override the device's default.
+    /// `--light-path clustered|per-object`: override the quality tier's.
     pub light_path: Option<LightPath>,
+    /// `--tier <tier>`: the player's quality tier instead of the device's.
+    pub tier: Option<TierId>,
+    /// `--render-scale <0.25..1>`: the player's base render scale instead of the tier's.
+    pub render_scale: Option<f32>,
+    /// `--dynamic-resolution`: let dynamic resolution lower the render scale.
+    pub dynamic_resolution: bool,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -55,27 +63,22 @@ pub(crate) enum OffscreenMode {
     Bench { frames: u32 },
 }
 
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            frame_limit: None,
-            msaa: Msaa::X4,
-            lights: false,
-            light_path: None,
-            offscreen: None,
-            debug_overlay: None,
+impl Options {
+    /// The renderer settings: the quality tier's, with the options' overrides.
+    pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
+        RenderSettings {
+            msaa: self.msaa.unwrap_or(tier.msaa),
+            light_path: self.light_path.unwrap_or(tier.light_path),
+            ..tier
         }
     }
-}
 
-impl Options {
-    /// The renderer settings: the defaults for `class`, with the options' overrides.
-    pub fn render_settings(&self, class: DeviceClass) -> RenderSettings {
-        let defaults = RenderSettings::for_device(class);
-        RenderSettings {
-            msaa: self.msaa,
-            light_path: self.light_path.unwrap_or(defaults.light_path),
-            ..defaults
+    /// The player's quality settings: the command line's, until a settings screen (M3).
+    pub fn quality_settings(&self) -> QualitySettings {
+        QualitySettings {
+            tier: self.tier,
+            render_scale: self.render_scale,
+            dynamic_resolution: self.dynamic_resolution,
         }
     }
 
@@ -98,14 +101,29 @@ impl Options {
             match name {
                 "--frames" => options.frame_limit = Some(number(&value("--frames")?, "--frames")?),
                 "--msaa" => {
-                    options.msaa = match value("--msaa")?.as_str() {
+                    options.msaa = Some(match value("--msaa")?.as_str() {
                         "off" | "1" => Msaa::Off,
                         "2" => Msaa::X2,
                         "4" => Msaa::X4,
                         "8" => Msaa::X8,
                         other => return Err(format!("--msaa expects off, 2, 4 or 8, got {other:?}")),
-                    };
+                    });
                 }
+                "--tier" => {
+                    let raw = value("--tier")?;
+                    options.tier = Some(TierId::from_key(&raw).ok_or_else(|| {
+                        let keys: Vec<&str> = TierId::ALL.iter().map(|tier| tier.key()).collect();
+                        format!("--tier expects one of {}, got {raw:?}", keys.join(", "))
+                    })?);
+                }
+                "--render-scale" => {
+                    let scale: f32 = number(&value("--render-scale")?, "--render-scale")?;
+                    if !(MIN_RENDER_SCALE..=1.0).contains(&scale) {
+                        return Err(format!("--render-scale expects {MIN_RENDER_SCALE} to 1, got {scale}"));
+                    }
+                    options.render_scale = Some(scale);
+                }
+                "--dynamic-resolution" => options.dynamic_resolution = true,
                 "--lights" => options.lights = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
@@ -177,26 +195,46 @@ mod tests {
     #[test]
     fn parses_known_options() {
         let (options, unknown) = parse(&["--frames", "120", "--msaa", "off"]).unwrap();
-        assert_eq!(options, Options { frame_limit: Some(120), msaa: Msaa::Off, ..Options::default() });
+        assert_eq!(options, Options { frame_limit: Some(120), msaa: Some(Msaa::Off), ..Options::default() });
         assert!(unknown.is_empty());
     }
 
     #[test]
-    fn light_options_override_the_device_defaults() {
-        let (options, _) = parse(&["--lights", "--light-path", "per-object", "--msaa", "2"]).unwrap();
+    fn render_options_override_the_tier() {
+        let mobile =
+            RenderSettings { light_path: LightPath::PerObject, max_lights: 8, ..RenderSettings::default() };
+        let (options, _) = parse(&["--lights", "--light-path", "clustered", "--msaa", "2"]).unwrap();
         assert!(options.lights);
-        let settings = options.render_settings(DeviceClass::Desktop);
-        assert_eq!(settings.light_path, LightPath::PerObject);
-        assert_eq!((settings.msaa, settings.max_lights), (Msaa::X2, 64), "the rest stay desktop defaults");
+        let settings = options.render_settings(mobile);
+        assert_eq!((settings.light_path, settings.msaa), (LightPath::Clustered, Msaa::X2));
+        assert_eq!((settings.max_lights, settings.bloom_levels), (8, 5), "the rest stay the tier's");
 
         let defaults = Options::default();
         assert!(!defaults.lights);
-        assert_eq!(defaults.render_settings(DeviceClass::Desktop).light_path, LightPath::Clustered);
-        let mobile = defaults.render_settings(DeviceClass::Mobile);
-        assert_eq!((mobile.light_path, mobile.max_lights), (LightPath::PerObject, 8));
-        let (clustered, _) = parse(&["--light-path=clustered"]).unwrap();
-        assert_eq!(clustered.render_settings(DeviceClass::Mobile).light_path, LightPath::Clustered);
+        assert_eq!(defaults.render_settings(mobile), mobile, "no overrides: the tier's settings");
+        let (per_object, _) = parse(&["--light-path=per-object"]).unwrap();
+        assert_eq!(per_object.render_settings(RenderSettings::default()).light_path, LightPath::PerObject);
         assert!(parse(&["--light-path", "deferred"]).is_err());
+    }
+
+    #[test]
+    fn quality_options_are_the_players_settings() {
+        let (options, _) =
+            parse(&["--tier", "mobile-low", "--render-scale", "0.7", "--dynamic-resolution"]).unwrap();
+        assert_eq!(
+            options.quality_settings(),
+            QualitySettings {
+                tier: Some(TierId::MobileLow),
+                render_scale: Some(0.7),
+                dynamic_resolution: true
+            }
+        );
+        assert_eq!(Options::default().quality_settings(), QualitySettings::default());
+        assert_eq!(parse(&["--tier=Desktop-High"]).unwrap().0.tier, Some(TierId::DesktopHigh));
+        assert!(parse(&["--tier", "ultra"]).unwrap_err().contains("desktop-high"));
+        assert!(parse(&["--render-scale", "0.2"]).is_err(), "below the minimum");
+        assert!(parse(&["--render-scale", "1.5"]).is_err());
+        assert!(parse(&["--render-scale", "NaN"]).is_err());
     }
 
     #[test]
@@ -235,7 +273,7 @@ mod tests {
             options.offscreen,
             Some(Offscreen { mode: OffscreenMode::Bench { frames: 300 }, width: 1920, height: 1080 })
         );
-        assert_eq!(options.msaa, Msaa::X2);
+        assert_eq!(options.msaa, Some(Msaa::X2));
     }
 
     #[test]
@@ -265,7 +303,7 @@ mod tests {
             options.offscreen,
             Some(Offscreen { mode: OffscreenMode::Bench { frames: 60 }, width: 320, height: 200 })
         );
-        assert_eq!(options.msaa, Msaa::Off);
+        assert_eq!(options.msaa, Some(Msaa::Off));
         assert!(unknown.is_empty());
         assert!(
             is_offscreen_flag("--bench=60")

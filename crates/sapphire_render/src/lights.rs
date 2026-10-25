@@ -52,9 +52,11 @@
 pub(crate) mod clusters;
 mod objects;
 
+use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use sapphire_rhi::wgpu;
+use serde::{Deserialize, Serialize};
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::scene::InstanceSlots;
@@ -67,10 +69,10 @@ use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
 /// tests every light against every cluster, and lists hold 16-bit indices.
 pub const MAX_LIGHTS: u32 = 1024;
 
-/// How local lights reach the toon shader (spec §5.12 "Lighting"). Both paths run on every
-/// backend; the app picks one per device class ([`RenderSettings::for_device`]), and quality
-/// tiers (R6) will pick per tier.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How local lights reach the shading (spec §5.12 "Lighting"). Both paths run on every
+/// backend; each quality tier picks one ([`QualityTier::light_path`](crate::quality::QualityTier)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
 pub enum LightPath {
     /// Clustered forward+, the desktop path: a compute pass bins the lights into a 16 × 9 × 24
     /// grid of view-space clusters, and each pixel walks its cluster's list.

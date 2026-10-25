@@ -1,0 +1,103 @@
+// The shipped quality tiers (spec §3.1, §5.12 "Quality tiers"), compiled into the renderer:
+// `sapphire_render::quality::TierTable::shipped`, whose module docs say what reads each knob.
+// Every number is a Proposal until M2 measures the reference devices at thermally throttled
+// clocks (spec §3).
+//
+// - Drawn from today: `resolution`, `antialiasing.msaa`, `bloom_levels`, `light_path` and
+//   `max_lights`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
+// - Read by later packages: `antialiasing.temporal` (R7), `shadows` (R4, C2),
+//   `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines` (C4),
+//   `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
+//
+// Both desktop tiers draw today's frame exactly at 1080p and below (the golden images), so they
+// differ only in what later packages read, and in the internal height above it.
+(
+    type: "sapphire::render::TierTable",
+    version: 1,
+    data: (
+        tiers: [
+            (
+                // RTX 3070 / RX 6700 XT, M2 Pro: 1440p native, or 4K upscaled from 1440 rows.
+                id: DesktopHigh,
+                // A discrete GPU, or Apple silicon (an integrated GPU on Metal), with 16 GB:
+                // §3.1 budgets 10 GB of RAM. RAM can't tell a GTX 1060 machine apart; a device
+                // database will (quality module docs, "Later milestones").
+                select_when: [
+                    (gpus: [Discrete], min_ram_mib: 14000),
+                    (gpus: [Integrated], backends: [Metal], min_ram_mib: 14000),
+                ],
+                frame_rate: 60,
+                gpu_frame_ms: 12.0,
+                resolution: (scale: 1.0, max_height: 1440, dynamic_floor: 0.7),
+                antialiasing: (msaa: X4, temporal: false),
+                bloom_levels: 5,
+                light_path: Clustered,
+                max_lights: 64,
+                shadows: (cascades: 4, resolution: 2048, character_shadow: true),
+                ambient_occlusion: (capsules: true, gtao: true),
+                volumetric_fog: true,
+                screen_space_outlines: true,
+                max_particles: 50000,
+                lod_bias: 0.0,
+            ),
+            (
+                // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck). Every desktop
+                // qualifies, software and paravirtual GPUs included.
+                id: DesktopLow,
+                frame_rate: 60,
+                gpu_frame_ms: 14.0,
+                resolution: (scale: 1.0, max_height: 1080, dynamic_floor: 0.7),
+                antialiasing: (msaa: X4, temporal: false),
+                bloom_levels: 5,
+                light_path: Clustered,
+                max_lights: 64,
+                shadows: (cascades: 4, resolution: 1024, character_shadow: true),
+                ambient_occlusion: (capsules: true, gtao: true),
+                volumetric_fog: true,
+                screen_space_outlines: false,
+                max_particles: 50000,
+                lod_bias: 0.5,
+            ),
+            (
+                // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
+                id: MobileHigh,
+                // 8 GB phones, which Android reports a little under 8 GiB; §3.1 budgets 2.8 GB.
+                select_when: [
+                    (gpus: [Integrated], min_ram_mib: 7000),
+                ],
+                frame_rate: 60,
+                gpu_frame_ms: 13.0,
+                resolution: (scale: 1.0, max_height: 740, dynamic_floor: 0.75),
+                antialiasing: (msaa: X4, temporal: false),
+                bloom_levels: 5,
+                light_path: PerObject,
+                max_lights: 8,
+                shadows: (cascades: 2, resolution: 1024, character_shadow: false),
+                ambient_occlusion: (capsules: true, gtao: true),
+                volumetric_fog: false,
+                screen_space_outlines: false,
+                max_particles: 8000,
+                lod_bias: 0.0,
+            ),
+            (
+                // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
+                // 30 fps. The device floor: every phone qualifies.
+                id: MobileLow,
+                frame_rate: 30,
+                gpu_frame_ms: 26.0,
+                resolution: (scale: 1.0, max_height: 590, dynamic_floor: 0.75),
+                antialiasing: (msaa: X4, temporal: false),
+                // Four levels reach 1/16 of the ~590-row scene.
+                bloom_levels: 4,
+                light_path: PerObject,
+                max_lights: 8,
+                shadows: (cascades: 2, resolution: 1024, character_shadow: false),
+                ambient_occlusion: (capsules: true, gtao: false),
+                volumetric_fog: false,
+                screen_space_outlines: false,
+                max_particles: 8000,
+                lod_bias: 0.5,
+            ),
+        ],
+    ),
+)

@@ -8,6 +8,10 @@
 //! allocations per frame (the whole frame, wait included, like the windowed stats). It leaves
 //! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
 //! repeatable check for changes to the frame path against the budgets of spec §3.
+//!
+//! While the frame graph times passes on the GPU (with `--dynamic-resolution`, or the overlay
+//! shown) it also logs the mean GPU pass span of the frames whose timings came back: the GPU
+//! wait alone is mostly submission latency on a light scene.
 
 use std::time::Duration;
 
@@ -44,6 +48,8 @@ pub(crate) fn run(
     let mut cpu = Vec::with_capacity(frames.min(1 << 20) as usize);
     let mut gpu_wait = Duration::ZERO;
     let (mut allocations, mut bytes) = (0, 0);
+    // GPU pass spans of the measured frames that came back: (newest frame, total, count).
+    let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
@@ -59,24 +65,43 @@ pub(crate) fn run(
             gpu_wait += wait;
             allocations += after.total_allocations - before.total_allocations;
             bytes += after.total_bytes - before.total_bytes;
+            if let Some(timings) = stage.graph.gpu_timings()
+                && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
+            {
+                timed_frame = timings.frame;
+                gpu_span += timings.span();
+                timed += 1;
+            }
         }
     }
 
     cpu.sort_unstable();
     let percentile = |p: usize| cpu[(cpu.len() - 1) * p / 100];
     let micros = |duration: Duration| duration.as_secs_f64() * 1e6;
+    let quality = stage.quality.stats();
+    let (scene_width, scene_height) = stage.renderer.stats().scene_size;
+    let gpu_span = match timed {
+        0 => "untimed".to_owned(),
+        timed => format!("{:.1}", micros(gpu_span / timed)),
+    };
     tracing::info!(
         target: LOG_TARGET,
         frames,
         width,
         height,
-        msaa = options.msaa.sample_count(),
+        tier = quality.tier.id.name(),
+        render_scale = format_args!("{:.3}", quality.render_scale),
+        scene = format_args!("{scene_width}x{scene_height}"),
+        dynamic_resolution = quality.dynamic.enabled,
+        msaa = options.render_settings(stage.quality.render_settings()).msaa.sample_count(),
         lights = options.lights,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),
         cpu_us_max = format_args!("{:.1}", micros(percentile(100))),
         gpu_wait_us_mean = format_args!("{:.1}", micros(gpu_wait / frames)),
+        gpu_span_us_mean = %gpu_span,
+        timed_frames = timed,
         allocs_per_frame = format_args!("{:.1}", allocations as f64 / f64::from(frames)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),

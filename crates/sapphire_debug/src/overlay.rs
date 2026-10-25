@@ -8,6 +8,7 @@ use sapphire_input::DeviceKind;
 use sapphire_platform::{Event, Scancode, Timestamp, TouchEvent, TouchPhase};
 use sapphire_render::RenderStats;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
+use sapphire_render::quality::QualityStats;
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
 
@@ -50,6 +51,8 @@ pub struct OverlayFrame<'a> {
     /// The previous frame's process-wide allocations, overlay included.
     pub allocations: AllocCounts,
     pub render: RenderStats,
+    /// The quality tier, render scale and dynamic resolution, if the app runs tiers.
+    pub quality: Option<QualityStats>,
     /// The executor that ran the previous frame: its stats, report and GPU timings.
     pub graph: &'a GraphExecutor,
     pub gpu: &'a GpuContext,
@@ -221,11 +224,13 @@ impl DebugOverlay {
         &mut self.time
     }
 
-    /// Turns the executor's graph report and GPU timing on while the overlay shows them. Call
-    /// it once per frame before executing the frame graph.
-    pub fn configure_graph(&mut self, executor: &mut GraphExecutor, gpu: &GpuContext) {
+    /// Turns the executor's graph report and GPU timing on while the overlay shows them, and GPU
+    /// timing also while `app_timing` says the app reads it (dynamic resolution,
+    /// `Quality::wants_gpu_timing`), so the two never switch it off under each other. Call it
+    /// once per frame before executing the frame graph, instead of setting GPU timing yourself.
+    pub fn configure_graph(&mut self, executor: &mut GraphExecutor, gpu: &GpuContext, app_timing: bool) {
         executor.set_report(self.visible && self.memory.panels.graph);
-        self.gpu_timing = executor.set_gpu_timing(gpu, self.visible && GPU_TIMING.get());
+        self.gpu_timing = executor.set_gpu_timing(gpu, app_timing || (self.visible && GPU_TIMING.get()));
     }
 
     /// Builds this frame's UI, if shown. Its draw is added by [`Self::record`].

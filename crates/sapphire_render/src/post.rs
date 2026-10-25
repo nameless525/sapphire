@@ -18,6 +18,14 @@
 //! Bloom levels are `Rg11b10Ufloat` where the device renders and filters it (half the
 //! bandwidth of `Rgba16Float`, which is the fallback).
 //!
+//! # Render scale (M1 R6)
+//!
+//! Everything before the fused pass works at the scene's size, so below render scale 1 the
+//! bloom chain shrinks with it. The fused pass alone runs at the target's size: at scale 1 it
+//! loads scene color texel for texel, exactly as before render scales existed; below it, a
+//! uniform branch samples scene color bilinearly at the pixel's position instead, which is the
+//! upsample. Bloom is sampled by position either way.
+//!
 //! # Grading
 //!
 //! The tone curve and grade are baked on the CPU into 32³ LUTs ([`lut`]), only when the
@@ -42,7 +50,12 @@
 //! - **Post v2 (P2):** the wide "diffusion" glow from the lowest bloom levels, gradient
 //!   ("para") layers, lens flares and RCAS sharpening, all in the fused pass; the effect stack
 //!   (P3) after it.
-//! - **Mobile-Low (R6):** start the chain at ¼ size as well as cutting levels.
+//! - **Mobile-Low:** the chain starts at ½ of the scene, and the tier's render scale (M1 R6)
+//!   already puts the scene at about half the output, so the prefilter covers a sixteenth of
+//!   the output's pixels. Starting at ¼ of the scene as well waits for device measurements.
+//! - **A sharper upsample:** below render scale 1 the fused pass upsamples bilinearly. A
+//!   spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial; spec §5.12) or
+//!   TAA's own upsampling (R7) replaces it.
 //! - **Exposure:** fixed per frame from `PostParams` (later, per time-of-day key); eye
 //!   adaptation, if any, is clamped to ±0.5 EV.
 //! - **HDR output:** when HDR surfaces arrive (spec §5.11), a second output transform that
@@ -83,7 +96,8 @@ pub(crate) const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2U
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub(crate) struct PostUniforms {
-    /// x: exposure multiplier; y: bloom intensity; z: LUT blend (0: A alone, 1: B alone).
+    /// x: exposure multiplier; y: bloom intensity; z: LUT blend (0: A alone, 1: B alone);
+    /// w: 1 when scene color is smaller than the target (a render scale below 1), else 0.
     pub composite: [f32; 4],
     /// x: threshold; y: knee width (threshold × knee); z: 1 / (4 × knee width); w: scatter.
     pub bloom: [f32; 4],
@@ -440,9 +454,12 @@ impl PostProcess {
     }
 
     /// The constants for this frame, and the buffer `record`'s caller uploads them to (with the
-    /// frame's other uploads, before any post pass runs).
-    pub(crate) fn uniforms(&self) -> (PostUniforms, &wgpu::Buffer) {
-        (self.uniforms, &self.uniform_buffer)
+    /// frame's other uploads, before any post pass runs). `upsample` says the scene renders
+    /// smaller than the target (a render scale below 1), so the final pass filters it up.
+    pub(crate) fn uniforms(&self, upsample: bool) -> (PostUniforms, &wgpu::Buffer) {
+        let mut uniforms = self.uniforms;
+        uniforms.composite[3] = if upsample { 1.0 } else { 0.0 };
+        (uniforms, &self.uniform_buffer)
     }
 
     /// Grading LUTs baked since creation.

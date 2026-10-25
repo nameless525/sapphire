@@ -2444,6 +2444,7 @@ dependencies = [
 name = "sapphire_render"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "bytemuck",
  "glam",
  "png",
@@ -2453,7 +2454,10 @@ dependencies = [
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_pipeline",
+ "sapphire_reflect",
  "sapphire_rhi",
+ "sapphire_serialize",
+ "serde",
  "thiserror",
  "tracing",
  "tracing-subscriber",

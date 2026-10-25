@@ -536,7 +536,7 @@ Build the "spine" first: platform + core + jobs + time + frame pipeline + reflec
 **Phase 1: data path (months 2–6)**
 5. Asset identity (GUID sidecars), importer → intermediate → per-platform cooker, content-hash cache (local first; shared later), load-in-place runtime formats, async loader with dependency tracking, hot reload.
 6. ECS world: wrap a third-party archetype ECS, or write a focused one. Add the extract → `FrameParams` packet, with a render world that is fed only by extract.
-7. Minimal renderer on a frame graph from the start, even if only a few passes. Character/toon pipeline and GPU-driven work proceed in parallel per the rendering researcher.
+7. Minimal renderer on a frame graph from the start, even if only a few passes. The anime character pipeline and GPU-driven work proceed in parallel per the rendering researcher.
 
 **Phase 2: combat vertical slice (months 4–10)**
 8. Animation runtime: sampling, blending, root motion, sockets. Character controller.

@@ -13,13 +13,13 @@
 M1 turns the M0 bring-up into a real engine data path and a renderer that can carry the look of Wuthering Waves and Zenless Zone Zero.
 
 That look is **not "toon shading."** It is an anime picture in which characters, world, light, atmosphere and post-processing are art-directed together:
-- cel-shaded characters with authored shadow shapes;
+- anime characters with authored shadow shapes;
 - a stylized but physically grounded world;
 - gradients and atmosphere everywhere;
 - one time-of-day key that moves all of it at once;
 - a soft, glowing, non-filmic grade.
 
-M0 drew one toon mannequin. M1 must make the whole frame.
+M0 drew one mannequin with a two-tone light split. M1 must make the whole frame.
 
 ### Exit tests
 
@@ -35,11 +35,11 @@ These pillars are ranked by how much of the look each carries, merged from both 
 | # | Pillar | What it means on screen | Delivered by |
 |---|---|---|---|
 | 1 | **One time-of-day key drives everything** | Sky gradient, fog color, ambient tint, shadow tint, the character light rig and the grading LUT all come from the same art-directed curves. WuWa built its own stylized day cycle rather than physical atmosphere, and curve-fits character brightness across the day. | W1, C2 |
-| 2 | **Cel-shaded characters with authored light response** | Thresholded light shifted by painted bias, with authored shadow colors (ramp rows or per-ID bands) and never a darkened albedo. SDF face shadows, a separate character light rig and stylized GI, depth-offset rim, inverted-hull outlines, hair highlights with eyes over the bangs, layered eyes, matcap metals. | C1–C7 |
+| 2 | **Anime characters with authored light response** | Thresholded light shifted by painted bias, with authored shadow colors (ramp rows or per-ID bands) and never a darkened albedo. SDF face shadows, a separate character light rig and stylized GI, depth-offset rim, inverted-hull outlines, hair highlights with eyes over the bangs, layered eyes, matcap metals. | C1–C7 |
 | 3 | **Gradients and layered atmosphere** | Fog colored by the sky; fog cards; screen-space gradient ("para") layers, as anime compositing does it. | W2, W3, P2 |
 | 4 | **Soft ambient light and tinted shadows** | Low-frequency, art-directed ambient; colored rather than black shadows; layered AO. | W4, W5, R4 |
 | 5 | **Glow and a non-filmic grade** | Bloom plus a wide "diffusion" glow, a character bloom mask, and a custom tone curve baked into LUTs. No ACES look. | R3, P2 |
-| 6 | **Clean, stable edges** | Toon frames have two to three times the edge pixels of realistic ones, so AA matters more. Outlines write velocity under TAA; mobile uses on-tile MSAA. | R7, C4 |
+| 6 | **Clean, stable edges** | Anime frames, with their hard light splits and outlines, have two to three times the edge pixels of realistic ones, so AA matters more. Outlines write velocity under TAA; mobile uses on-tile MSAA. | R7, C4 |
 | 7 | **NPR foliage** | Sphere or hull normals, camera-facing leaf clusters, then billboards and impostors. | W6 |
 | 8 | **Combat screen grammar** | Hit-stop, impact frames, radial blur and cut-ins. M1 builds the `PostParams` effect-stack hooks; M2 authors the effects. | P3 |
 | — | Out of scope | Ray tracing and Lumen-style GI. WuWa and ZZZ treat them as PC extras, and Genshin declined them to protect its art. | — |
@@ -50,7 +50,7 @@ Each decision updates the spec in the same PR as this plan.
 
 | Topic | Decision | Why |
 |---|---|---|
-| **Q6: golden images** | One golden set per backend, compared with `nv-flip` (mean plus percentile thresholds, as wgpu does).<br>- **Linux:** lavapipe from a pinned Mesa build. **Required.**<br>- **Windows:** WARP 1.0.21 from NuGet plus `static-dxc`. **Required.** The DLL is downloaded in CI and never committed.<br>- **macOS:** Metal on `macos-26` ("Apple Paravirtual device"). **Informational** for two flake-free weeks, then required.<br>Images render at 640×360 with fixed time, no jitter and no dithering. Toon edges flip whole pixels, so gate on p95/p99 and an error-pixel budget, never on max, and add intermediate-buffer goldens (band index, SDF result, outline mask). `cargo xtask golden --update` regenerates. | Hosted macOS runners expose Metal, and wgpu runs its own image tests there on every PR. `macos-14` retires on 2026-11-02, hence `macos-26`. |
+| **Q6: golden images** | One golden set per backend, compared with `nv-flip` (mean plus percentile thresholds, as wgpu does).<br>- **Linux:** lavapipe from a pinned Mesa build. **Required.**<br>- **Windows:** WARP 1.0.21 from NuGet plus `static-dxc`. **Required.** The DLL is downloaded in CI and never committed.<br>- **macOS:** Metal on `macos-26` ("Apple Paravirtual device"). **Informational** for two flake-free weeks, then required.<br>Images render at 640×360 with fixed time, no jitter and no dithering. Hard two-tone edges flip whole pixels, so gate on p95/p99 and an error-pixel budget, never on max, and add intermediate-buffer goldens (band index, SDF result, outline mask). `cargo xtask golden --update` regenerates. | Hosted macOS runners expose Metal, and wgpu runs its own image tests there on every PR. `macos-14` retires on 2026-11-02, hence `macos-26`. |
 | **Time of day** | Add a `TodTimeline` / `TodKey` asset contract as the single source for sky, fog, ambient, shadow tint, post and the character rig, evaluated in OkLab. | Pillar 1. |
 | **Ambient** | Replace "L2 SH probes baked per zone" with a per-zone probe grid: sky visibility (SH) plus bounce baked per TOD key. Add relightable reflection probes on desktop and Mobile-High, static on Mobile-Low. | Static probes go wrong as soon as the sun moves. Genshin relights its probes at runtime. |
 | **Mobile AA** | 4× MSAA kept in tile memory through wgpu 30's `TRANSIENT_ATTACHMENT`, with alpha-to-coverage for foliage. Measure on Mali and Adreno. One-pass deferred stays impossible until wgpu gets input attachments (#10148). | Closes the spec's "Verify" item, pending device measurements. Confirms forward+. |
@@ -124,7 +124,7 @@ The spec's §5.12 recipe holds. These packages add what the research found on to
 | C4 | **Outlines v2.** Cooked tangent-space octahedral smoothed normals; width = vertex color × a two-segment depth curve × FOV normalized to 45° × model scale; view-space Z flatten and push-back; color = per-ID outline color blended with albedo × (light + flattened GI); writes velocity. | M | C1, R2 | GPU budget 0.6 ms (D) / 1.5 ms (ML), with an LOD cutoff. |
 | C5 | **Character prepass, rim, hair and eyes over hair.**<br>- A character-only depth and ID prepass on **all tiers**.<br>- Depth-offset rim × Fresnel × N·L gate × region mask, with ZZZ's back-light weighting as an option.<br>- Hair specular: painted band, angel ring, optional Kajiya-Kay.<br>- Hair shadow on the face: hair-depth lookup on D, offset bangs plus stencil on mobile.<br>- Eyes and brows through bangs: 2 stencil bits and a view-angle alpha. | L | C1, R2 | The prepass costs about one extra draw per character and serves rim, hair shadow and eyes. |
 | C6 | **Eyes.** Layered meshes (eye, highlight, eye shadow), a parallax/refraction fake, animated highlights and an eye depth mask. | S | C1, C5 | |
-| C7 | **Materials on top of the toon base.**<br>- Matcap (1–4 channels) and toon specular (Blinn or minimal GGX), gated by masks.<br>- A "reflection add" for metallic > 0.9: probe on all tiers, plus SSR on D later.<br>- Stockings: N·V denier, anisotropic sheen, weave.<br>- Breathing emission and the character bloom mask (feeds P2).<br>- Dithered proximity fade that also fades the outline and kills rim. | M | C1, W5 | Screen-pattern and SDF-reveal effects are M2. |
+| C7 | **Materials on top of the anime character base.**<br>- Matcap (1–4 channels) and stylized specular (Blinn or minimal GGX), gated by masks.<br>- A "reflection add" for metallic > 0.9: probe on all tiers, plus SSR on D later.<br>- Stockings: N·V denier, anisotropic sheen, weave.<br>- Breathing emission and the character bloom mask (feeds P2).<br>- Dithered proximity fade that also fades the outline and kills rim. | M | C1, W5 | Screen-pattern and SDF-reveal effects are M2. |
 
 Community reconstructions of these shaders (HoyoToon) are **GPL-3.0**. They are read to understand the techniques, and no code is taken from them.
 
@@ -180,7 +180,7 @@ The **critical path** is F1 → F2 → A1 → A3/A4 → A8 → A9 → X2 for the
 |---|---|
 | **No physical phone yet.** Exit test 1 and the Mobile-Low budgets need one. | Develop on the emulator and the Simulator. A phone is needed before X2 at the latest (§7). |
 | **Authoring the anime maps takes art time**, and there is no artist on the project. | A7's generators do the heavy lifting. Masks for one face are a Blender bake, and ramps are data. The look-dev character can start from MToon-derived maps and improve. |
-| **Lavapipe and WARP differ from real GPUs** on toon edges. | Per-backend goldens, percentile gates, intermediate-buffer goldens. Real-GPU checks happen on this Mac and on devices. |
+| **Lavapipe and WARP differ from real GPUs** on hard two-tone edges. | Per-backend goldens, percentile gates, intermediate-buffer goldens. Real-GPU checks happen on this Mac and on devices. |
 | **wgpu 31 lands mid-milestone** with fixes we want. | Stay pinned to 30 (§3). Upgrade at the M1→M2 boundary. |
 | **Scope:** M1 is the largest milestone. | Pillars are ranked. If time runs short, W5's reflection probes, W6, C6's extras and P3 slip to M2; W1, C1–C5, R3 and P2 don't. |
 | **Permutation growth** in the character uber-shader. | Static bits are capped at 8, and everything else is a uniform branch (C1). The permutation compile test runs in CI. |

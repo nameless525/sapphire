@@ -403,7 +403,7 @@ Pre-releases: ufbx earlier docs.rs pages describe the bindings as "heavy in prog
 - **Import formats:**
   - glTF 2.0 is the primary interchange (gltf crate). It is stable, and glTF changes slowly.
   - Use FBX via ufbx for animation-heavy Maya/MotionBuilder/mocap data, which is typical for anime action (WW/ZZZ animation pipelines are FBX-centric in Unity/UE). This is an inference about those studios, not verified.
-  - Use VRM types (serde_vrm or vrm-runtime) only to bootstrap test characters and MToon-like toon-shader reference data.
+  - Use VRM types (serde_vrm or vrm-runtime) only to bootstrap test characters and MToon-like shading reference data.
   - Skip MMD/PMX: the Rust support is weak and the licensing of MMD models is problematic for commercial use.
   - Treat USD (openusd) as optional for future DCC interop.
 - **Textures:** use ctt. Target BC7/BC6H/BC5 on PC and consoles (via the ISPC encoder) and ASTC on mobile (via astcenc), stored in KTX2 with zstd supercompression. Basis/UASTC is only worth it if you need one universal file for many GPU families. Its Rust bindings are stale (or use basisu_c_sys).
@@ -417,7 +417,7 @@ Pre-releases: ufbx earlier docs.rs pages describe the bindings as "heavy in prog
 - **Hot reload:** use notify 8.x with notify-debouncer-full, reloading cooked assets by GUID.
 
 ### Gaps
-- No Rust MToon/VRM toon-shader parity evaluation was found. That belongs to the rendering researcher.
+- No Rust MToon/VRM shader parity evaluation was found. That belongs to the rendering researcher.
 - ufbx-rust API completeness (blend shapes, constraints) relative to the C library was not verified.
 - No public benchmarks comparing ctt's encoder quality and speed with Compressonator or NVTT were found.
 - No game-scale VFS crate proven in shipped titles was found. `vfs` is a general crate.

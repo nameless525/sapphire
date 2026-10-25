@@ -22,7 +22,7 @@ bytemuck.workspace = true
 ctt.workspace = true
 getrandom.workspace = true
 glam.workspace = true
-# `extras` exposes per-object custom properties, which is how Blender drives toon parameters.
+# `extras` exposes per-object custom properties, which is how Blender drives character shading parameters.
 # `utils` reads accessors; buffers load in `import::gltf` rather than through `import`, which
 # would also build an image decoder.
 gltf = { workspace = true, features = ["extras", "utils", "names"] }

@@ -21,12 +21,12 @@
 1. **One art-directed TOD "key" drives everything.** Sky gradient, fog color, ambient tint, shadow tint, the character light rig and the grading LUT all come from the same TOD curves.
    - WuWa built its own stylized TOD instead of UE's physical atmosphere. It curve-fits character brightness across the day, and gives every scene its own atmosphere and LUT [P 6].
    - Honkai Impact 3rd keyframes cloud and sky colors over 24 h [S 21]. Blue Protocol blends morning, noon, evening and night post looks in a master post material [S 35].
-   - This is what makes toon characters and a 3D world read as one picture. Cost is about zero, and it works fully on mobile.
+   - This is what makes anime characters and a 3D world read as one picture. Cost is about zero, and it works fully on mobile.
 2. **Gradients and layered atmosphere.** WuWa says its main focus is the "gradient" feel of 2D animation, expressed through lights, fake volumetric fog cards and post materials [P 6].
    - Blue Protocol reproduces anime compositing: "para" gradient overlays, sun shafts, flares, and light washing in from the screen edges [S 35].
    - The tools are distance and height fog colored by the sky, fog cards, and screen-space gradient layers. All are cheap and mobile-safe.
 3. **Soft, low-frequency ambient light and tinted shadows on the world.** Genshin relights its reflection probes at runtime and takes SH ambient from them, and it stacks three AO methods [P 18].
-   - WuWa clamps GI in HSV space and smooths normals so indirect light doesn't break the toon read [P 1].
+   - WuWa clamps GI in HSV space and smooths normals so indirect light doesn't break the cel-shaded read [P 1].
    - Shadows are colored, not black, and have art-directed edges [S 35]. On mobile this means SH probes, capsule AO and analytic tint; GTAO only on high tiers.
 4. **Bloom, glow and a non-filmic tone curve with LUT grading.**
    - Genshin rejected ACES because it didn't suit the art [P 18]. Blue Protocol added a separate "diffusion" glow because engine bloom wasn't enough [S 35].
@@ -72,7 +72,7 @@
 - Deferred on every platform. Kuro gives three reasons: SSR and GTAO, fewer shader variants in an open world (weather, TOD and atmosphere changes), and one pipeline across platforms [P 6].
 - **Mobile:** One Pass Deferred on PLS / framebuffer fetch. It saves about 1.5 GB/s of read/write bandwidth at 60 fps [P 6].
   - Mali PLS has limits: 128 bits of on-chip storage, no alpha blend, one resolvable RT, and depth fetch defeats Mali FPK early-Z [P 6; S 8].
-  - The toon path started as a separate forward pass. It was later folded into One Pass Deferred in a near-rewrite [S 8].
+  - The NPR path started as a separate forward pass. It was later folded into One Pass Deferred in a near-rewrite [S 8].
 - Hybrid materials: characters and foliage are NPR, the rest is PBR [S 8].
 
 **TOD, sky and grading**
@@ -166,7 +166,7 @@
 ### Comparators (primary or near-primary)
 
 - **Blue Protocol** (Bandai Namco, UE4, CEDEC 2020/2021) [S 35]: minimal engine changes plus added passes. Covers environment texture simplification, a distance painterly filter, para and flare compositing, TOD post blending, shadow color by distance, separate "diffusion" glow, and Responsive AA with stencil-protected outlines.
-- **Hi-Fi Rush** (Tango, UE4, GDC 2024) [S 36]: a fully toon-shaded deferred environment. Covers decal "toon lights", CSM plus baked static shadow textures, capsule shadows for NPCs, and non-directional baked GI. 60 fps at native resolution.
+- **Hi-Fi Rush** (Tango, UE4, GDC 2024) [S 36]: a fully cel-shaded deferred environment. Covers decal "toon lights", CSM plus baked static shadow textures, capsule shadows for NPCs, and non-directional baked GI. 60 fps at native resolution.
 - **Neverness to Everness** (Hotta / Perfect World, UE5, Unreal Fest Seoul 2026) [S 37]: a mobile pipeline designed from scratch, not scaled down from PC.
   - The sun is frozen within each of 12 TOD segments so far shadows can be cached.
   - On mobile, near CSM is combined with camera-anchored, tiled, incrementally updated far shadow maps.
@@ -174,7 +174,7 @@
 
 ---
 
-## 2. Environment materials, and keeping the world consistent with toon characters
+## 2. Environment materials, and keeping the world consistent with anime characters
 
 ### What the games do
 
@@ -204,7 +204,7 @@
 - **Specular and roughness:** clamp specular, and remap roughness into a narrow artist range. WuWa clamps roughness to 0–0.3999 for its RT reflection path [P 1].
 - **Painted AO and cavity channel** in the mask texture, multiplied into ambient only.
 - **Distance stylization:** desaturate and shift hue toward the fog/sky color as `f(viewDistance)`. Optionally drop to a lower mip, the equivalent of the painterly distance filter.
-- **Optional toon step for props** that should read like characters (ZZZ-style hero props) [O]: the same remap with `w` close to 0. Lighting goes through the same light lists.
+- **Optional two-tone step for props** that should read like characters (ZZZ-style hero props) [O]: the same remap with `w` close to 0. Lighting goes through the same light lists.
 - **What artists author:** albedo with painted gradients and AO baked in; a mask texture (AO, cavity, spec mask, material ID); per-zone "look" parameters (wrap, shadow tint offset, distance desaturation) referenced from TOD keys.
 - **Forward+ is the right fit [I].** Mixed NPR and PBR in one opaque pass needs no G-buffer bits, which was WuWa's main mobile pain with Mali PLS [S 8]. Weather and wetness become uniforms read by every uber-shader, which addresses WuWa's main reason for choosing deferred [P 6].
 - **Cost:** the same as plain GGX forward. Mobile is fine.
@@ -298,7 +298,7 @@ The spec currently says "L2 SH probes baked per zone". That is static, and it br
 **WuWa**
 - **Billboard trees:** turned to face the light when rendering shadows, not the camera, so tree shadows don't swing as the camera turns [P 6; S 8].
 - **PC RT:** RT shadows plus CSM. Tile classification skips fully shadowed tiles. Billboards, impostors and translucents stay in shadow maps.
-- **Shadow-ray tweaks:** front-face culling for single-sided walls. Characters are excluded from RT shadows via the instance mask and use a dedicated "ToonShadowRay", so ray-traced softness doesn't blur the crisp toon self-shadow [P 1].
+- **Shadow-ray tweaks:** front-face culling for single-sided walls. Characters are excluded from RT shadows via the instance mask and use a dedicated "ToonShadowRay", so ray-traced softness doesn't blur the crisp two-tone self-shadow [P 1].
 - **TOD shadows on all platforms:** "TOD shadows across platforms" was a UFSH2023 topic, but **the cascade and caching details didn't make it into any notes I could find** [P 7]. The video is the only source.
 
 **NTE (2026)** [S 37]
@@ -679,7 +679,7 @@ Spec §4 `PostParams` already lists finish-freeze, halftone, radial blur and CA.
   - Recipe: MSAA color and depth as transient with `StoreOp::Discard`, resolving into a single-sample HDR target. **This closes the spec's "Verify" item**, but measure on a Mali and an Adreno device.
   - MSAA handles inverted-hull outlines and geometric edges cleanly.
   - Use **alpha-to-coverage** for foliage cards.
-  - Shader aliasing still needs analytic AA on toon step edges: `fwidth`-based smoothstep.
+  - Shader aliasing still needs analytic AA on two-tone step edges: `fwidth`-based smoothstep.
 - **Depth for post (fog, SSR, AO) under MSAA:**
   - Keep a cheap 1× depth prepass only where screen-space effects need it, on Mobile-High.
   - Otherwise rely on TBDR hidden-surface removal (Apple HSR, Mali FPK, Adreno LRZ) and skip the prepass.
@@ -701,7 +701,7 @@ Spec §4 `PostParams` already lists finish-freeze, halftone, radial blur and CA.
 
 | Area | WuWa mobile | ZZZ mobile | Genshin mobile | Notes |
 |---|---|---|---|---|
-| Pipeline | One Pass Deferred (PLS / framebuffer fetch); toon path merged in [P 6; S 8] | Unknown | Separate mobile pipeline, mobile primary [P 18] | wgpu can't do one-pass deferred; use forward+ |
+| Pipeline | One Pass Deferred (PLS / framebuffer fetch); NPR path merged in [P 6; S 8] | Unknown | Separate mobile pipeline, mobile primary [P 18] | wgpu can't do one-pass deferred; use forward+ |
 | GI / RT | None. RT is PC only; mobile RT "under evaluation" [P 2] | None (RT only on PS5 Pro and PC) | None | — |
 | AO | GTAO on high [P 6] | "Shading quality" option [C] | Not documented | — |
 | Reflections | SSR from previous frame, medium+ [P 6] | Mirror-reflection option on PC; mobile not documented | Not documented | — |

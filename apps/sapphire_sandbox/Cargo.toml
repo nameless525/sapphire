@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_sandbox"
-description = "Engine sandbox app: the M0 toon character viewer that runs on all five platforms."
+description = "Engine sandbox app: the M0 anime character viewer that runs on all five platforms."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

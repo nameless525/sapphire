@@ -45,7 +45,7 @@ Researched 2026-10-24. Every license and version claim has a source tag `[Sn]`. 
 
 ### 1.1 Characters: summary
 
-| Candidate | License | Public-repo redistribution | Attribution | Toon textures shipped | Verdict |
+| Candidate | License | Public-repo redistribution | Attribution | Anime-shading textures shipped | Verdict |
 |---|---|---|---|---|---|
 | **VRM1_Constraint_Twist_Sample** (pixiv) | VRM Public License 1.0 [S1][S3] | **Yes**: meta `allowRedistribution: true`, `modification: allowModificationRedistribution` [S4] | `creditNotation: unnecessary` [S4] | MToon 1.0: shade-multiply (13 materials), normal (3), outline-width (1), emissive (1). No matcap, rim, shading-shift, ILM or SDF [S4] | **Primary** |
 | **Seed-san** (VirtualCast) | VPL 1.0 [S2][S3] | **Yes**: same flags [S4] | **`creditNotation: required`** [S4] | MToon 1.0 + PBR mix: shade (9), normal (5), shading-shift (1), matcap (2), outline-width (2), emissive (1). Also spring bones, rotation constraints, UV-transform expressions [S4][S5] | **Secondary** (keep the credit file) |
@@ -146,7 +146,7 @@ The sample files also use `KHR_materials_unlit`, `KHR_texture_transform` and `KH
 - UV animation: scroll X/Y in UV units per second and rotation in rad/s, both multiplied by `uvAnimationMaskTexture`. Rotation is applied around (0.5, 0.5) before `KHR_texture_transform`. It affects the base, shade, rim, outline-width, emissive and normal textures, not matcap.
   - Spec oddity: the affected-texture list names `shadingToonyMultiplyTexture`, which is not defined anywhere else in the spec [S24].
 
-**Mapping onto our toon recipe.** This is my proposal, derived from the formulas above.
+**Mapping onto our ramp/ILM/SDF recipe.** This is my proposal, derived from the formulas above.
 
 | MToon parameter | Sapphire equivalent | Notes |
 |---|---|---|
@@ -301,7 +301,7 @@ wgpu's `gpu-test` job runs on `windows-2022`, `macos-14` and `ubuntu-24.04` [S34
 
 **Proposal for Sapphire.** These starting values are mine, extrapolated from the above.
 - **Per-backend goldens:** `golden/<scene>/<pass>.{lavapipe,warp,metal-pv}.png`, each with tight thresholds (mean ≤ ~0.01, p99 gate). Add one loose cross-backend check against the lavapipe image (mean ≤ ~0.05) to catch backend-only bugs.
-- **Toon-specific failure mode:** hard ramp, SDF and outline edges amplify tiny precision differences into whole-pixel band flips along terminators.
+- **Hard-edge failure mode:** hard ramp, SDF and outline edges amplify tiny precision differences into whole-pixel band flips along terminators.
   - Gate on high percentiles (p95/p99) and an error-pixel-count budget, not on max.
   - Add **intermediate-buffer goldens**, such as the shade-band index, the SDF threshold result and outline masks, with exact or near-exact compare where possible.
 - **Determinism:** fixed time (which freezes MToon UV animation and wind), no TAA jitter or a seeded one, fixed exposure, no dithering, small fixed resolution (e.g. 640×360) for CPU rasterizers, and the M0 offscreen `--capture` mode.

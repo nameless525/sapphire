@@ -28,7 +28,7 @@ Every claim carries a source key (list at the end). Each source is one of four k
 3. **The face is its own lighting problem.** An SDF/threshold face-shadow map is driven by the light angle in head space. WuWa adds special vertical-direction maps for top light [GC-WW]. Faces never take shadow-map self-shadowing. Hair shadow on the face is done in screen space or with stencil, nose lines and nose/cheek highlights come from masks, and blush comes from expression maps.
 4. **Inverted-hull outlines with baked smoothed normals.** Width comes from vertex color × a distance curve × FOV normalization, with a Z-offset. Outline color comes per material ID and is lit by the scene light and GI.
 5. **Screen-space rim light from depth differences.** Reconstructions of Genshin, HSR and WuWa use it; the ZZZ reconstruction uses it as a mask on an N·V/back-light "rim glow" [HT-WW-C][HT-ZZZ-C][SRN-Help].
-6. **Material richness on top of the toon base.** Matcap metals, toon Blinn or "minimal GGX" specular gated by masks, stockings and emissive breathing. WuWa adds PBR touches: a normal map that also packs metallic and roughness, and ray-traced reflections on metals added on top of the matcap [TOS][UF25-WW].
+6. **Material richness on top of the cel-shaded base.** Matcap metals, stylized Blinn or "minimal GGX" specular gated by masks, stockings and emissive breathing. WuWa adds PBR touches: a normal map that also packs metallic and roughness, and ray-traced reflections on metals added on top of the matcap [TOS][UF25-WW].
 7. **Hair:** a painted or anisotropic highlight band, plus eyes and brows readable through bangs (stencil).
 8. **Eyes:** layered meshes and materials (eye, highlight, eye shadow), a parallax fake, and animated highlights.
 9. **No self-shadow on characters, but grounding shadows.** WuWa uses per-object shadow maps for the ground and excludes characters from their own ray-traced shadows [UF25-WW]. Hi-Fi Rush gives the player a dedicated shadow-only light [HFR2]. Genshin uses capsule AO [UD21].
@@ -38,7 +38,7 @@ Every claim carries a source key (list at the end). Each source is one of four k
 | | WuWa | ZZZ | Genshin | HSR |
 |---|---|---|---|---|
 | Diffuse | Ramp row per material, blended with a "subsurface" tint (`_RampInt` default 0.3, so mostly tint) | **No ramp texture**: analytic lit / "shallow" / "shadow" bands with per-ID colors plus terminator "SSS/front" tints | 2D ramp: 5 IDs × day/night rows | Warm and cool ramps, 8 IDs |
-| Spec | Thresholded Blinn plus a 4-channel matcap; optional PBR reflection/roughness (`UsePBR`) | URP-style minimal GGX with a toon step, or "HighlightShape" mode on spherized head normals; 5 matcap slots with blend modes | Blinn per ID; metals via spheremap | Per-region Blinn plus matcap |
+| Spec | Thresholded Blinn plus a 4-channel matcap; optional PBR reflection/roughness (`UsePBR`) | URP-style minimal GGX with a hard step, or "HighlightShape" mode on spherized head normals; 5 matcap slots with blend modes | Blinn per ID; metals via spheremap | Per-region Blinn plus matcap |
 | Normal map | XY normal, B = metallic, A = roughness | Lightmap RG = normal, B = diffuse bias | Separate | Separate |
 | Face | SDF in mask alpha; special vertical maps (P) | SDF in LightTex.R, face highlight in .G, AO in .A; nose line | SDF in FaceMap.A | SDF in FaceMap.A; expression map |
 | Rim | Depth-offset, gated by N·L | N·V "RimGlow" × depth mask | Depth-offset | Depth-offset × Fresnel; plus "rim shadow" |
@@ -64,7 +64,7 @@ The shadow color is authored, not computed. [GGX-4G][HT-SR-C][HT-ZZZ-C][HT-WW-C]
 - Guilty Gear Xrd (P/J):
   - Vertex color R is a "weight that makes areas likely to be shadowed", painted high under the jaw and around the neck.
   - ILM.G holds the same weight; at its maximum it acts as a baked shadow.
-  - The toon split is a plain two-tone threshold. The example cutoff is 128.
+  - The light split is a plain two-tone threshold. The example cutoff is 128.
   - Values near the threshold flicker; artists fix this by editing normals and the weights.
   - Source: [GGX-4G].
 - Blue Protocol (J):
@@ -142,11 +142,11 @@ HoyoToon's ZZZ shader shows no ramp texture for body diffuse [HT-ZZZ-C][HT-ZZZ-P
 - **Color grading inside the character shader:** an optional `LUT_2D(_Lut2DTexParam)` runs in the character shader [HT-ZZZ-P]. This may be HoyoToon emulating the game's post LUT, so don't read it as proof that ZZZ grades characters separately.
 - **Engine:** ZZZ is Unity [ZH-ZZZ-ENG]. A 2026 article says it runs on Tuanjie, Unity China's fork [FORO3D]; that is unverified.
 
-### 1.5 Wuthering Waves: a PBR-influenced toon hybrid
+### 1.5 Wuthering Waves: a PBR-influenced anime hybrid
 
 - **Lineage (C, via search excerpt):** a Chinese replicator writes that WuWa's character rendering builds on PGR's "PBR-style NPR". Shadows come from a LUT with N·L range on x and body-part ID on y [ZH-WW-ASE].
 - **What PGR does (C):**
-  - Skin and cloth use two-tone toon lighting; metal and leather use PBR. A mask selects between them [ZH-PGR].
+  - Skin and cloth use two-tone cel lighting; metal and leather use PBR. A mask selects between them [ZH-PGR].
   - A reproduction lists LightMap.R = ramp offset, G = AO, B = "SpecularMask decides PBR use", and a separate PBRMask (R metallic, G smoothness, B specular AO, A PBR-blend factor).
   - It uses a GGX D·F·G specular with Blinn-Phong blended by the mask. [PGR]
 - **WuWa textures** (C; [TOS] marks itself work in progress):
@@ -162,7 +162,7 @@ HoyoToon's ZZZ shader shows no ramp texture for body diffuse [HT-ZZZ-C][HT-ZZZ-P
   - Shadow color: `lerp(subsurfaceColor, rampRow, _RampInt)` with `_RampInt` default **0.3**. Skin uses `_SkinSubsurfaceColor`, default (0.94, 0.60, 0.41), a warm peach. So WuWa skin shadows are mostly a warm tint and only partly the ramp.
   - The ramp row comes from a per-material `_RampPosition` parameter; skin is pinned to row 0.1.
   - Skin and stocking types come from thresholds on the type mask (0.05/0.3/0.5/0.9).
-  - Specular: thresholded Blinn (`pow(N·H, power)`, kept only where ≥ 0.1, and only where the shadow mask ≥ 0.1). There is a separate metal power and a second toon lobe above `_ToonMaxSpecular`. It is tinted by albedo^lerp(0.5, 2, spec), so highlights stay saturated.
+  - Specular: thresholded Blinn (`pow(N·H, power)`, kept only where ≥ 0.1, and only where the shadow mask ≥ 0.1). There is a separate metal power and a second stylized lobe above `_ToonMaxSpecular`. It is tinted by albedo^lerp(0.5, 2, spec), so highlights stay saturated.
   - Metals and gloss: a 4-channel matcap. The spec value picks which of the four channels to use, and lit and shadow intensities are separate (`_MatCapInt`, `_MetalMatCapInt`, `_MetalMatCapBack`).
 - **Primary confirmation of matcap metals and how ray-traced reflections are added (attendee notes of Kuro's UFSH2025 talk)** [UF25-WW]:
   - Character reflections apply to metal surfaces (weapons, accessories).
@@ -177,7 +177,7 @@ HoyoToon's ZZZ shader shows no ramp texture for body diffuse [HT-ZZZ-C][HT-ZZZ-P
   - stylized but present GI on characters (§9);
   - softer, color-graded scene lighting with per-scene LUTs [GR-WW].
 
-  Diffuse is still a hard toon split with authored shadow color.
+  Diffuse is still a hard two-tone split with authored shadow color.
 
 ### 1.6 Other references
 
@@ -199,7 +199,7 @@ One character uber-shader with two diffuse modes, both supported:
 Band mode needs no texture, is cheaper on mobile, and is easier to tune live. Ramp mode gives painterly multi-hue shadows. Shared by both:
 
 - per-ID parameter arrays (5–8 IDs);
-- toon Blinn or minimal-GGX specular gated by a mask;
+- stylized Blinn or minimal-GGX specular gated by a mask;
 - a matcap (1–4 channels);
 - an optional "reflection add" for metallic > 0.9 (SSR or probe on desktop, probe only on mobile).
 
@@ -617,7 +617,7 @@ So ZZZ combines Fresnel shaping with a depth-based silhouette mask.
   - spherical normals for hair and face, and the whole character's normals biased toward the camera, for low-frequency, smooth indirect light;
   - indirect converted to **HSV, with S and V limited** to prevent blow-out;
   - AO multiplied on for layering;
-  - extra color adjustment for skin. The stated reason is that toon shadow areas are not black;
+  - extra color adjustment for skin. The stated reason is that cel-shaded shadow areas are not black;
   - characters need indirect light from scene reflections for an airy look.
 - **Blue Protocol (J):** point, sky and indirect light **ignore normals** (distance or uniform only) to avoid a volumetric look [BP21].
 - **Community emulation (C):**
@@ -652,7 +652,7 @@ Feed it SH probes (spec: L2 per zone) and optionally the nearest reflection prob
   - For RT shadows, an **instance mask** excludes characters when the shading point is a character.
   - Source: [UF25-WW].
 - HoyoToon exposes `_UseSelfShadow` (default on for WuWa body) because Unity shadow maps include the character [HT-WW-S]. Prefer the talk notes.
-- **Blue Protocol (J):** cel-shaded surfaces don't receive self-shadows. Clean results would need high shadow-map resolution, and shadow color already keeps shade areas from going dark. Toon and non-toon objects use separate shadowing with an "offset shadow" method [BP21].
+- **Blue Protocol (J):** cel-shaded surfaces don't receive self-shadows. Clean results would need high shadow-map resolution, and shadow color already keeps shade areas from going dark. Cel-shaded and non-cel-shaded objects use separate shadowing with an "offset shadow" method [BP21].
 - **Hi-Fi Rush (J):**
   - the player gets a **dedicated shadow-only light** with a stylized edge, replacing cascades outdoors;
   - the giant boss gets its own as well;
@@ -777,7 +777,7 @@ Feed it SH probes (spec: L2 per zone) and optionally the nearest reflection prob
 - v3.0 "We Who See the Stars" (2025-12-25): shadow and effects tuning, a Carlotta hair-clipping fix; no character-shader change listed [WW-30].
 - v3.5 (2026-07-10): XeSS 3, DLAA, anisotropic filtering options, mobile frame interpolation; no character-rendering change [WW-35].
 - I found no public evidence of a character-shader overhaul through 3.x. Character packages keep adding special materials (crystal legs) [AUT2].
-- AUTOMATON's May 2026 columns (TA Masahiko Nakamura, who was not on the project) speculate that a Lumen-HW-RT-based system includes a custom toon implementation [AUT1][AUT2].
+- AUTOMATON's May 2026 columns (TA Masahiko Nakamura, who was not on the project) speculate that a Lumen-HW-RT-based system includes a custom cel-shading implementation [AUT1][AUT2].
 
 **ZZZ:**
 

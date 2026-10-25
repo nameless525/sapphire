@@ -2,14 +2,14 @@
 
 Sapphire is a Rust game engine built for a stylized 3D anime action game in the vein of Zenless Zone Zero and Wuthering Waves. It targets **macOS, Windows, Linux, iOS and Android**.
 
-![The M0 sandbox on macOS: a toon-shaded mannequin with inverted-hull outlines](docs/media/m0-macos.png)
+![The M0 sandbox on macOS: a mannequin with anime character shading and inverted-hull outlines](docs/media/m0-macos.png)
 
 **Status: milestone M0 (bring-up).** It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 simulator (Metal) and on the Android 16 emulator (Vulkan). Windows and Linux build and pass their tests in CI but haven't run on hardware yet. The sandbox app runs the whole engine path:
 
 1. SDL3 platform layer.
 2. Fixed 60 Hz simulation on the engine clocks.
 3. Plain-data frame view.
-4. wgpu toon renderer (two-tone shading, rim light, inverted-hull outlines, 4× MSAA, reverse-Z).
+4. wgpu anime renderer (two-tone shading, rim light, inverted-hull outlines, 4× MSAA, reverse-Z).
 5. A cooked sample character.
 
 Crash capture, logging, the job system and the asset pipeline are all in place.
@@ -112,7 +112,7 @@ On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb
 `cargo xtask golden` renders the golden scenes with `--capture` (640×360) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP:
 
 - **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
-- **Gates:** mean and 99th-percentile error, not the maximum, because toon edges flip whole pixels between backends.
+- **Gates:** mean and 99th-percentile error, not the maximum, because hard two-tone edges flip whole pixels between backends.
 - **On failure:** `target/golden/` gets the capture (`.actual.png`) and a FLIP error map (`.diff.png`). CI uploads both.
 - **New scene or intended change:** `cargo xtask golden --update` writes this machine's family. The other families' images come from the failing CI run's artifacts.
 

@@ -1,4 +1,4 @@
-# Anime/Toon Rendering Techniques and Rust GPU Stack for a Custom Anime Action Game Engine (as of Oct 24, 2026)
+# Anime Rendering Techniques and Rust GPU Stack for a Custom Anime Action Game Engine (as of Oct 24, 2026)
 
 Scope note: Part A covers techniques (A1–A7). Part B covers Rust libraries and the recommendation (B1–B6). Crate versions and dates come from the crates.io API, and repo status from the GitHub API, both queried on 2026-10-24. The crates.io "updated" date is the date of the newest version unless noted. HoYoverse (Genshin, HSR, ZZZ) and Kuro (WuWa) have published little official material in English. Most per-game shader detail comes from (a) a few official talks (Unity Dojo/Unite, CEDEC, GDC, UFSH) and (b) community reverse-engineering. The findings below label which is which.
 
@@ -44,12 +44,12 @@ Every shipped title uses the same core recipe: a thresholded N·L ("2-tone") lig
   - N·L is computed in BasePass because the G-buffer cannot hold two normals.
   - Specular is a brightened base color. Hair highlights are custom node graphs.
   - Point, sky, and indirect light ignore normals (distance or uniform only) to avoid unwanted 3D shading.
-  - Toon surfaces do not receive self-shadows from shadow maps. Toon and non-toon objects use separate shadowing with an "offset shadow" method.
+  - Cel-shaded surfaces do not receive self-shadows from shadow maps. Cel-shaded and non-cel-shaded objects use separate shadowing with an "offset shadow" method.
   - Rim light uses Sobel-based edge extraction for uniform thickness.
   - Legs are slightly darkened to ground the character.
 
 **Hi-Fi Rush (Tango, UE4 deferred; GDC 2024, Kosuke Tanaka & Takashi Komada)**
-- Deferred toon renderer at 60 fps native, with customized UE4 passes plus the team's own passes, combined in deferred post-process volumes — [80.lv](https://80.lv/articles/the-making-of-hi-fi-rush-s-3d-toon-rendering-style).
+- Deferred cel-shading renderer at 60 fps native, with customized UE4 passes plus the team's own passes, combined in deferred post-process volumes — [80.lv](https://80.lv/articles/the-making-of-hi-fi-rush-s-3d-toon-rendering-style).
 - Body: thresholded N·L, using step rather than branching. Face: a threshold (height-like) map sampled by comparing the face's horizontal forward against the light's horizontal direction in bone space (normalized by π), flipped for light from the left. Credited to a 2018 Unity talk by miHoYo — [GCORES commentary on the GDC talk](https://www.gcores.com/articles/181912).
 
 **Wuthering Waves (Kuro, heavily customized UE4.26)**
@@ -129,7 +129,7 @@ Shipped anime games mostly use geometry outlines (inverted hull / backface extru
 ## A3. Environment: blending stylized characters with PBR-ish worlds; GI, sky, fog, shadows, AO, water, foliage at open-world scale
 
 ### Takeaway
-The modern pattern is a PBR-based (often deferred) environment pipeline with "stylized" parameter choices: clean, bright, low-noise lighting, artist-driven time of day, probe/SH ambient, and AO volumes plus capsule AO for characters. Toon characters get their own lighting rules on top. Genshin's console talk is the most detailed public reference. WuWa shows the mobile-scalable deferred variant.
+The modern pattern is a PBR-based (often deferred) environment pipeline with "stylized" parameter choices: clean, bright, low-noise lighting, artist-driven time of day, probe/SH ambient, and AO volumes plus capsule AO for characters. Cel-shaded characters get their own lighting rules on top. Genshin's console talk is the most detailed public reference. WuWa shows the mobile-scalable deferred variant.
 
 ### Cited Findings
 **Genshin Impact (Unity Dojo 2021, Zhenzhong Yi, "From Mobile to Console")** — [slides](https://www.docswell.com/s/UnityJapan/KWRPQ5-210617-unity-dojo20211mihoyozhenzhongyi)
@@ -178,7 +178,7 @@ The modern pattern is a PBR-based (often deferred) environment pipeline with "st
 - Planar reflections at low res on mobile.
 
 **Hi-Fi Rush** — [GCORES](https://www.gcores.com/articles/181912)
-- Environment toon look: procedural SDF halftone dots for light and hatching for shadow, anti-aliased with smoothstep. Dot size scales with light intensity.
+- Environment stylization: procedural SDF halftone dots for light and hatching for shadow, anti-aliased with smoothstep. Dot size scales with light intensity.
 - Projection: screen-space UVs for bloom and fog; dominant-axis world projection elsewhere (triplanar rejected).
 - GI: probe GI (SH), AO volume, SSAO, SSR. Shadows: screen-space shadows, baked static shadow maps, capsule shadows, decal lights.
 
@@ -301,7 +301,7 @@ Community replications are useful for Genshin and HSR channel layouts.
   - Hogwarts Legacy, GDC 2024 (UE open world, hundreds of shadow-casting lights) — [GDC schedule](https://schedule.gdconf.com/session/open-world-rendering-techniques-in-hogwarts-legacy/902654).
 
 ### Inferences
-- When building, read the Genshin console deck (environment) and Blue Protocol CEDEC 2021 (toon in deferred plus outline G-buffer) end to end. Together they cover most decisions.
+- When building, read the Genshin console deck (environment) and Blue Protocol CEDEC 2021 (cel shading in deferred plus outline G-buffer) end to end. Together they cover most decisions.
 
 ### Gaps
 - No ZZZ, HSR, or Punishing: Gray Raven official rendering talk was found (searched GDC 2025/2026, Unite, Chinese-language sources). GDC Vault was in maintenance during this session.
@@ -311,11 +311,11 @@ Community replications are useful for Genshin and HSR channel layouts.
 ## A7. Renderer architecture fit: forward+/clustered vs deferred, visibility buffer, GPU-driven, render graph, bindless, permutations/PSO caching
 
 ### Takeaway
-Shipped anime titles are split. UE4-based ones (WuWa, Blue Protocol, Hi-Fi Rush, NetEase) are deferred with toon logic hacked into BasePass and extra G-buffers. Genshin console uses clustered deferred lighting for local lights. HSR-style Unity replications use forward/forward+. For a custom engine, a clustered forward+ renderer with a thin prepass (depth, normal, IDs, velocity) is the best fit for toon characters (MSAA, material variety, transparency, many ramp/ID lookups that don't fit a G-buffer). It needs disciplined permutation management to avoid the variant explosion that pushed Kuro to deferred. Add GPU-driven culling and multi-draw indirect for open-world environment density, and a render graph for transient resources and async-compute scheduling.
+Shipped anime titles are split. UE4-based ones (WuWa, Blue Protocol, Hi-Fi Rush, NetEase) are deferred with cel-shading logic hacked into BasePass and extra G-buffers. Genshin console uses clustered deferred lighting for local lights. HSR-style Unity replications use forward/forward+. For a custom engine, a clustered forward+ renderer with a thin prepass (depth, normal, IDs, velocity) is the best fit for anime characters (MSAA, material variety, transparency, many ramp/ID lookups that don't fit a G-buffer). It needs disciplined permutation management to avoid the variant explosion that pushed Kuro to deferred. Add GPU-driven culling and multi-draw indirect for open-world environment density, and a render graph for transient resources and async-compute scheduling.
 
 ### Cited Findings
 - Kuro picked deferred because forward "can cause shader variants to increase sharply" and deferred eases material, weather, day-night, and atmosphere transitions. Deferred was also chosen for SSR and GTAO — [UE interview (search excerpt)](https://www.unrealengine.com/en-US/developer-interviews/exploring-the-post-apocalyptic-charm-of-asg-open-worlds-in-wuthering-waves); [GCORES](https://www.gcores.com/articles/181970).
-- Blue Protocol: in UE4 deferred, toon shading needed engine edits. N·L was moved into BasePass due to G-buffer capacity, and an extra G-buffer was added for outlines — [GameBusiness.jp](https://www.gamebusiness.jp/article/2021/09/13/19051.html).
+- Blue Protocol: in UE4 deferred, cel shading needed engine edits. N·L was moved into BasePass due to G-buffer capacity, and an extra G-buffer was added for outlines — [GameBusiness.jp](https://www.gamebusiness.jp/article/2021/09/13/19051.html).
 - Genshin console: clustered deferred lighting for local lights (64×64 tiles × 16 slices, 1024 lights) — [Unity Dojo slides](https://www.docswell.com/s/UnityJapan/KWRPQ5-210617-unity-dojo20211mihoyozhenzhongyi).
 - HSR replication uses Forward and Forward+ paths, with MRT for characters — [StarRailNPRShader](https://github.com/stalomeow/StarRailNPRShader); [ecosyste.ms](https://awesome.ecosyste.ms/projects/1135012).
 - GPU-driven rendering (Haar & Aaltonen, SIGGRAPH 2015): the GPU decides what to draw via mesh-cluster culling and occlusion depth, with a single "draw scene" call across viewports — [slides PDF](https://advances.realtimerendering.com/s2015/aaltonenhaar_siggraph2015_combined_final_footer_220dpi.pdf). AC Shadows (GDC 2025) focuses on GPU-driven pipelines for open world — [GDC Vault](https://gdcvault.com/play/1035526/Rendering-Assassin-s-Creed-Shadows).
@@ -331,7 +331,7 @@ Shipped anime titles are split. UE4-based ones (WuWa, Blue Protocol, Hi-Fi Rush,
   2. Depth + normal + material/character ID + velocity prepass.
   3. Async-able compute: light clustering, GTAO, contact shadows, SSR.
   4. Shadow cascades (cached).
-  5. Clustered forward opaque. One environment PBR-ish uber-shader and one character toon uber-shader. Material ID selects ramp rows; static permutations limited to roughly ≤8 per shader family.
+  5. Clustered forward opaque. One environment PBR-ish uber-shader and one anime character uber-shader. Material ID selects ramp rows; static permutations limited to roughly ≤8 per shader family.
   6. Inverted-hull outlines.
   7. Hair, eyes, and transparents (stencil tricks).
   8. Volumetric fog apply.
@@ -343,13 +343,13 @@ Shipped anime titles are split. UE4-based ones (WuWa, Blue Protocol, Hi-Fi Rush,
 - **Visibility buffer / mesh shaders:** defer these. Mesh shaders in wgpu are full on Vulkan and complete on DX12 only as of v30 (see B1). On Metal they were passthrough-only in v28, and mobile support is limited. Anime scenes are rarely triangle-bound the way Nanite-style scenes are.
 - **Mobile:** forward+ is bandwidth-friendly on tilers. Kuro instead built "one-pass deferred" with PLS for mobile. With wgpu you cannot access PLS or framebuffer fetch directly, which favors forward on mobile.
 - **Stutter avoidance:**
-  - Precompute the full pipeline set at load: materials × vertex layouts × pass types. Keep toon permutations few by using dynamic branching on uniform material flags.
+  - Precompute the full pipeline set at load: materials × vertex layouts × pass types. Keep character-shader permutations few by using dynamic branching on uniform material flags.
   - Use wgpu `PipelineCache` on Vulkan/Android and persist it to disk.
   - Never create pipelines lazily mid-combat.
 - **Bindless:** use texture binding arrays for material textures where supported (Vulkan, DX12, Metal) with a fallback bind-group path. Buffer binding arrays on Metal arrived only in wgpu v30 (see B1).
 
 ### Gaps
-- No public numbers comparing forward+ vs deferred for toon specifically. No source on Metal binary-archive PSO caching through wgpu (the `PipelineCache` docs reference Vulkan). No source verifying wgpu mesh-shader status on Metal after v30.
+- No public numbers comparing forward+ vs deferred for anime character shading specifically. No source on Metal binary-archive PSO caching through wgpu (the `PipelineCache` docs reference Vulkan). No source verifying wgpu mesh-shader status on Metal after v30.
 
 ---
 
@@ -540,10 +540,10 @@ The supporting ecosystem is healthy for wgpu users (egui-wgpu, wgpu-profiler, kt
 
 ---
 
-## B4. Existing Rust renderers and toon crates to study
+## B4. Existing Rust renderers and NPR crates to study
 
 ### Takeaway
-Bevy 0.20 is the most relevant living reference: wgpu 30, WESL, Solari, initial mesh shaders, partial bindless, contact shadows, SSR, and render passes as systems. kajiya and rend3 are archived. Fyrox 1.0 and three-d are OpenGL/glow-based, so they are less relevant to a modern GPU-driven design. Rust toon crates are thin: `bevy_mod_outline` is the only actively maintained one.
+Bevy 0.20 is the most relevant living reference: wgpu 30, WESL, Solari, initial mesh shaders, partial bindless, contact shadows, SSR, and render passes as systems. kajiya and rend3 are archived. Fyrox 1.0 and three-d are OpenGL/glow-based, so they are less relevant to a modern GPU-driven design. Rust NPR crates are thin: `bevy_mod_outline` is the only actively maintained one.
 
 ### Cited Findings
 - **Bevy 0.20** (2026-10-08) — [Bevy 0.20](https://bevy.org/news/bevy-0-20/); [crates.io](https://crates.io/crates/bevy):
@@ -561,7 +561,7 @@ Bevy 0.20 is the most relevant living reference: wgpu 30, WESL, Solari, initial 
 - **rend3:** archived, "MAINTENCE MODE". Last crate 0.3.0 (2022-02-12) — [GitHub](https://github.com/BVE-Reborn/rend3).
 - **Fyrox** 1.0.1 (2026-03-28). Graphics through `fyrox-graphics-gl` ("OpenGL-based graphics server", glow 0.17) — [crates.io fyrox](https://crates.io/crates/fyrox); [fyrox-graphics-gl](https://crates.io/crates/fyrox-graphics-gl).
 - **three-d** 0.19.0 (2026-04-17), built on glow/OpenGL/WebGL — [crates.io](https://crates.io/crates/three-d).
-- **Toon crates:**
+- **NPR crates:**
   - `bevy_mod_outline` 0.13.0 (2026-07-09, active; mesh outlining) — [crates.io](https://crates.io/crates/bevy_mod_outline).
   - `bevy_toon_shader` 0.3.0 (2023-12, stale) — [crates.io](https://crates.io/crates/bevy_toon_shader).
   - `bevy_toon_material` 0.1.1 (2025-01, Wind Waker / BotW style, tiny) — [crates.io](https://crates.io/crates/bevy_toon_material).
@@ -570,7 +570,7 @@ Bevy 0.20 is the most relevant living reference: wgpu 30, WESL, Solari, initial 
 
 ### Inferences
 - Study Bevy's `bevy_pbr` clustered forward, prepass, bindless material, GPU preprocessing/culling, and its tonemapping/bloom/SMAA/TAA implementations as wgpu-specific prior art. Study `bevy_mod_outline` for hull and jump-flood outlines on wgpu.
-- No Rust project implements a Genshin-class toon character pipeline. You will be porting techniques from Unity/UE community replications (HoyoToon, StarRailNPRShader, URPSimpleGenshinShaders).
+- No Rust project implements a Genshin-class anime character pipeline. You will be porting techniques from Unity/UE community replications (HoyoToon, StarRailNPRShader, URPSimpleGenshinShaders).
 
 ### Gaps
 - Current status of Bevy's experimental meshlet/virtual geometry feature in 0.20 was not confirmed (the 0.20 notes don't describe it). Whether Bevy 0.20 still ships SMAA, TAA, and bloom unchanged was not re-verified (very likely, but not checked).
@@ -593,7 +593,7 @@ RT is now feasible in Rust: wgpu ray queries, experimental RT pipelines, Metal a
 
 ### Inferences
 - Start with SH probes, relightable reflection probes, AO volumes, capsule AO, and GTAO. This covers the anime look on mobile and console at 60 fps. An optional PC tier could use wgpu ray queries for RT shadows on characters or RT reflections later.
-- Solari is a reference for ReSTIR on wgpu, not something to adopt for toon characters.
+- Solari is a reference for ReSTIR on wgpu, not something to adopt for anime characters.
 
 ### Gaps
 - No performance data for wgpu RT on Apple Silicon or mobile.
@@ -603,7 +603,7 @@ RT is now feasible in Rust: wgpu ray queries, experimental RT pipelines, Metal a
 ## B6. Recommendation: Rust stack and renderer architecture for a 60 fps anime action game (PC, console, mobile; dev on macOS)
 
 ### Takeaway
-Use wgpu 30.x as the GPU layer behind a thin engine RHI trait, with WGSL plus WESL shaders (Slang offline only if needed). Build a custom clustered-forward+ renderer with a depth, normal, ID, and velocity prepass, a hand-written render graph, GPU-driven culling with multi-draw indirect, and texture bindless where available. Implement the toon character pipeline yourself (ramps, ILM/lightmap, SDF face, hull outlines with baked smoothed normals). Use Bevy's renderer and the Genshin, Blue Protocol, and WuWa talks as references. Keep RT optional. Plan console support as a separate NDA-backed backend, because no public Rust path exists.
+Use wgpu 30.x as the GPU layer behind a thin engine RHI trait, with WGSL plus WESL shaders (Slang offline only if needed). Build a custom clustered-forward+ renderer with a depth, normal, ID, and velocity prepass, a hand-written render graph, GPU-driven culling with multi-draw indirect, and texture bindless where available. Implement the anime character pipeline yourself (ramps, ILM/lightmap, SDF face, hull outlines with baked smoothed normals). Use Bevy's renderer and the Genshin, Blue Protocol, and WuWa talks as references. Keep RT optional. Plan console support as a separate NDA-backed backend, because no public Rust path exists.
 
 ### Cited Findings
 - wgpu is the most actively maintained multi-backend option: v30.0.1 (2026-08-22), about quarterly majors, used by Bevy 0.20 (wgpu ^30) and Zed — [crates.io](https://crates.io/crates/wgpu); [bevy_render deps](https://crates.io/crates/bevy_render); [Zed Cargo.toml](https://github.com/zed-industries/zed/blob/main/Cargo.toml).
@@ -642,4 +642,4 @@ Use wgpu 30.x as the GPU layer behind a thin engine RHI trait, with WGSL plus WE
 ### Gaps
 - Console feasibility for Rust/wgpu could not be verified from public sources.
 - No independent 2026 measurement of wgpu overhead in a draw-heavy game scene.
-- Exact maturity of Slang's Metal output for production toon shaders is unknown.
+- Exact maturity of Slang's Metal output for production anime character shaders is unknown.

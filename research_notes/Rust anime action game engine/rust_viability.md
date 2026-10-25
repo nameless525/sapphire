@@ -91,7 +91,7 @@ The best-known critiques, LogLog Games (Apr 2024) and Architect of Ruin (Apr 202
 ## 3. What is the state of Rust engines as of 2026 (Bevy, Fyrox, godot-rust, others), and would starting from Bevy beat writing from scratch?
 
 ### Takeaway
-Bevy is the clear leader: version 0.20 (8 Oct 2026), releases every ~3-5 months, 200-280 contributors per release, and fast rendering progress (GPU-driven rendering, experimental Solari path tracing, mesh shaders, Metal support). It is still pre-1.0 with no editor and is underfunded. Fyrox reached 1.0 in 2026 with a real editor, but it is a very small team with no GI and no iOS or console path. godot-rust (gdext, v0.5.x in 2026) is the pragmatic hybrid. For a solo dev, **using Bevy crates selectively** (ECS, assets, wgpu-based renderer as a reference or base) almost certainly beats writing everything from scratch. Plan to own your toon or NPR renderer, though, as Tiny Glade did.
+Bevy is the clear leader: version 0.20 (8 Oct 2026), releases every ~3-5 months, 200-280 contributors per release, and fast rendering progress (GPU-driven rendering, experimental Solari path tracing, mesh shaders, Metal support). It is still pre-1.0 with no editor and is underfunded. Fyrox reached 1.0 in 2026 with a real editor, but it is a very small team with no GI and no iOS or console path. godot-rust (gdext, v0.5.x in 2026) is the pragmatic hybrid. For a solo dev, **using Bevy crates selectively** (ECS, assets, wgpu-based renderer as a reference or base) almost certainly beats writing everything from scratch. Plan to own your anime or NPR renderer, though, as Tiny Glade did.
 
 ### Cited Findings
 **Bevy versions and cadence (verified from [bevy.org/news](https://bevy.org/news/))**
@@ -113,7 +113,7 @@ Sources: [0.16](https://bevy.org/news/bevy-0-16/), [0.17](https://bevy.org/news/
 - Source: [Bevy's Sixth Birthday](https://bevy.org/news/bevys-sixth-birthday/)
 
 **Bevy ecosystem relevant to anime action**
-- Toon-shading crates lag behind Bevy releases:
+- NPR shading crates lag behind Bevy releases:
   - `bevy_shader_mtoon` (MToon, the VRM anime shader) 0.0.10 targets Bevy 0.13 — [docs.rs](https://docs.rs/bevy_shader_mtoon)
   - `bevy_toon_shader` 0.3.0 targets Bevy 0.12 and is 0% documented — [docs.rs](https://docs.rs/bevy_toon_shader)
   - `bevy_mod_outline` (vertex-extrusion outlines) has had 22 releases — [lib.rs](https://www.lib.rs/crates/bevy_mod_outline)
@@ -138,7 +138,7 @@ Sources: [0.16](https://bevy.org/news/bevy-0-16/), [0.17](https://bevy.org/news/
 
 ### Inferences
 - **Bevy versus from scratch:** Bevy gives a solo dev a production-grade ECS, asset pipeline, glTF loading, skinned animation, PBR/atmosphere/SSR/contact shadows, wgpu portability (Vulkan, Metal, DX12, web) and a texture compressor that targets mobile ASTC. That is easily years of solo work. The costs are churn (a breaking release every 3-5 months, plus waiting for ecosystem crates) and a renderer tuned for PBR, not anime NPR. Tiny Glade's pattern (keep the ECS, fork or replace the renderer, pin a Bevy version) is the most proven Rust path.
-- **Bevy's rendering roadmap aims at photoreal** (Solari path tracing, DLSS, atmosphere). A cel-shaded game needs ramp/toon lighting, outlines, face shadow maps (SDF), rim lights and stylized post-processing. You would write all of these yourself, and Bevy's lead admits its custom-material workflow is currently complex.
+- **Bevy's rendering roadmap aims at photoreal** (Solari path tracing, DLSS, atmosphere). A cel-shaded game needs ramp/two-tone lighting, outlines, face shadow maps (SDF), rim lights and stylized post-processing. You would write all of these yourself, and Bevy's lead admits its custom-material workflow is currently complex.
 - **Fyrox** is a more complete "engine with editor" today, but its funding, its lack of iOS and console paths, and its small team are risks for a long-horizon project.
 - **godot-rust** is the lowest-risk "Rust plus a real editor" option: Godot owns the editor, animation tooling and UI, and Rust handles performance-critical gameplay.
 
@@ -226,7 +226,7 @@ Rust's language advantages (memory safety, fearless multithreading, no GC, LLVM 
 - Unity has the anime-rendering ecosystem (Unity Toon Shader, the Genshin/ZZZ lineage). Unreal has the WuWa lineage and console-ready pipelines. Godot plus gdext lets you keep Rust for gameplay and systems while getting an editor and (via third parties) console ports.
 
 ### Gaps
-- No official Kuro Games technical talk was found (Unreal Fest or GDC) detailing WuWa's toon rendering or mobile tech. The AUTOMATON pieces are speculative.
+- No official Kuro Games technical talk was found (Unreal Fest or GDC) detailing WuWa's anime rendering or mobile tech. The AUTOMATON pieces are speculative.
 - No official HoYoverse talk on ZZZ's rendering was found. The Unity Dojo talk covers Genshin (2021).
 - No ZZZ team-size or budget figures were found. No Kuro team size was found.
 - Did not verify Rust debugger and profiler maturity (Tracy, Superluminal, RenderDoc, Xcode/Instruments on macOS) in this pass.
@@ -235,7 +235,7 @@ Rust's language advantages (memory safety, fearless multithreading, no GC, LLVM 
 ## 6. What can a solo dev or small team realistically achieve with a custom Rust engine, and what should be bought or borrowed versus built?
 
 ### Takeaway
-Realistically: a polished, small-scope, stylized 3D action game (arena or zone-based, a few characters, desktop first) is achievable in Rust over several years if the developer builds on Bevy crates and middleware rather than everything from scratch. A WuWa/ZZZ-scale open-world, live-service, multi-platform game is not a realistic solo target in any language, and Rust widens the gap on tools and consoles. Build what makes the game look distinctive (toon renderer, combat and animation runtime). Borrow everything else.
+Realistically: a polished, small-scope, stylized 3D action game (arena or zone-based, a few characters, desktop first) is achievable in Rust over several years if the developer builds on Bevy crates and middleware rather than everything from scratch. A WuWa/ZZZ-scale open-world, live-service, multi-platform game is not a realistic solo target in any language, and Rust widens the gap on tools and consoles. Build what makes the game look distinctive (anime renderer, combat and animation runtime). Borrow everything else.
 
 ### Cited Findings
 - **Proven small-team ceiling:** two expert engineers shipped Tiny Glade (no combat or characters) by using Bevy's ECS and writing a custom Vulkan renderer. The game began as a weekend side project. — [80.lv](https://80.lv/articles/exclusive-tiny-glade-developers-discuss-bevy-proceduralism-publishers-cozy-games/); [Wikipedia](https://en.wikipedia.org/wiki/Tiny_Glade)
@@ -256,7 +256,7 @@ Realistically: a polished, small-scope, stylized 3D action game (arena or zone-b
 
 ### Inferences
 - **Build:**
-  - the NPR/toon renderer (ramp shading, outlines, SDF face shadows, stylized post-processing);
+  - the anime NPR renderer (ramp shading, outlines, SDF face shadows, stylized post-processing);
   - the combat runtime (hitboxes, hit-stop, cancel windows, input buffering);
   - the animation state machine and blending layer, plus camera, if Bevy's is insufficient;
   - a minimal in-game debug UI (e.g. egui) and live-tuning tools.
@@ -268,7 +268,7 @@ Realistically: a polished, small-scope, stylized 3D action game (arena or zone-b
   - localization (Fluent);
   - console porting (a third-party porting studio later, if ever).
 - **Suggested de-risking path:**
-  1. Use Bevy as-is with a custom toon material and pin the version.
+  1. Use Bevy as-is with a custom anime character material and pin the version.
   2. Prototype one character's combat loop to "feel good" quality within months, testing whether Rust iteration (subsecond hotpatching plus data-driven tuning) is fast enough for you.
   3. Fork or replace only the parts Bevy blocks (Tiny Glade's pattern).
   4. Target desktop (macOS, Windows, Linux) first, then Android/iOS. Treat consoles as a separate, funded, later project.

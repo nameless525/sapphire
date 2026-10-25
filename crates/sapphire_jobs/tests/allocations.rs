@@ -8,16 +8,22 @@ use sapphire_core::alloc::{self, CountingAllocator};
 #[global_allocator]
 static GLOBAL: CountingAllocator<std::alloc::System> = CountingAllocator::new(std::alloc::System);
 
-/// Average process-wide allocations per call of `f` over 100 calls, after a warm-up.
+/// Allocations per call of `f`: the lowest average over 5 batches of 100 calls, after a
+/// warm-up. Counts are process-wide, so anything else that allocates during a batch (a pool
+/// thread waking up on a busy CI runner) only ever adds to it; the lowest batch is the calls'
+/// own cost.
 fn per_call(mut f: impl FnMut()) -> f64 {
     for _ in 0..10 {
         f();
     }
-    let before = alloc::stats().total_allocations;
-    for _ in 0..100 {
-        f();
-    }
-    (alloc::stats().total_allocations - before) as f64 / 100.0
+    let batch = |f: &mut dyn FnMut()| {
+        let before = alloc::stats().total_allocations;
+        for _ in 0..100 {
+            f();
+        }
+        (alloc::stats().total_allocations - before) as f64 / 100.0
+    };
+    (0..5).map(|_| batch(&mut f)).fold(f64::INFINITY, f64::min)
 }
 
 #[test]

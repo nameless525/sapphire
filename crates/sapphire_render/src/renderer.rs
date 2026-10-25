@@ -413,10 +413,10 @@ impl Renderer {
         });
         // Also a side effect: the main pass reads the cluster lists it writes.
         if let Some(cluster_pass) = cluster_pass {
-            graph
-                .add_pass("light clusters")
-                .side_effect()
-                .record(move |ctx| cluster_pass.record(ctx.encoder, view_bind_group, labels));
+            graph.add_pass("light clusters").side_effect().record(move |ctx| {
+                let timestamps = ctx.compute_timestamp_writes();
+                cluster_pass.record(ctx.encoder, view_bind_group, labels, timestamps);
+            });
         }
 
         let mut main = graph.add_pass("main").write(scene_color).write(depth);
@@ -448,6 +448,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
+                timestamp_writes: ctx.timestamp_writes(),
                 ..Default::default()
             });
             pass.set_bind_group(0, frame_bind_group, &[]);

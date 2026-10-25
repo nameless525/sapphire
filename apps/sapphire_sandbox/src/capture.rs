@@ -16,6 +16,10 @@ use sapphire_rhi::{GpuContext, wgpu};
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
 
+/// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its
+/// first frames, and the frame graph's report and GPU timings come back a frame or two late.
+const OVERLAY_WARMUP_FRAMES: u32 = 8;
+
 pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
@@ -24,7 +28,17 @@ pub(crate) fn run(
     height: u32,
 ) -> Result<(), AppInitError> {
     for _ in 0..ticks {
-        stage.scene.step();
+        stage.step();
+    }
+    if stage.overlay_visible() {
+        // Redrawing the same scene state: the capture still shows the scene after `ticks`.
+        let target = stage.target(width, height, wgpu::TextureUsages::empty());
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        for _ in 0..OVERLAY_WARMUP_FRAMES {
+            stage.render(&view, 1.0, |_, _| {})?;
+            stage.scene.end_frame();
+            stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+        }
     }
     let pixels = render(stage, width, height)?;
     write_png(path, width, height, &pixels)?;

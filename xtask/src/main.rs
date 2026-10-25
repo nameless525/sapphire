@@ -31,14 +31,14 @@ Commands:
       target/content/<cook>/ (default cook: desktop). Only assets whose inputs changed
       are cooked (cache: target/content/cache/). Sources without a .meta sidecar get one,
       to commit with them.
-  bundle --platform <platform> [--release] [--exe <path>]
+  bundle --platform <platform> [--release] [--features <list>] [--exe <path>]
       Cook, build and assemble the app for <platform> under target/<platform>/:
         desktop   SapphireSandbox/ with the executable and content/ (any host)
         macos     SapphireSandbox.app, ad-hoc signed
         ios-sim   SapphireSandbox.app for the simulator, ad-hoc signed
         android   SapphireSandbox.apk, debug-signed (Gradle)
-  run --platform <platform> [--release] [--exe <path>] [--dry-run] [--show]
-      [-- <app args>]
+  run --platform <platform> [--release] [--features <list>] [--exe <path>] [--dry-run]
+      [--show] [-- <app args>]
       Cook, build and launch, with the app's output streamed here:
         desktop   runs the build in place with SAPPHIRE_CONTENT_DIR set (any host)
         macos     bundles, then runs the executable inside the .app
@@ -59,6 +59,9 @@ Commands:
 Options:
   --locked       Pass --locked to every cargo command xtask runs, and fail the content
                  cook on a source without a committed .meta sidecar (CI).
+  --features <list>
+                 Build the app with these Cargo features (comma-separated), such as `dev`
+                 for the debug overlay.
   --exe <path>   Use a prebuilt sapphire_sandbox executable instead of building one
                  (desktop, macos and ios-sim).
   --dry-run      Build and bundle, then print the launch commands instead of running them.
@@ -125,8 +128,10 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
 
 fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)> {
     let platform = args.required::<Platform>("--platform")?;
+    let features = args.value::<String>("--features")?.unwrap_or_default();
     let options = Options {
         release: args.flag("--release"),
+        features: features.split(',').map(str::trim).filter(|f| !f.is_empty()).map(str::to_owned).collect(),
         exe: args.value::<PathBuf>("--exe")?,
         ..Options::default()
     };

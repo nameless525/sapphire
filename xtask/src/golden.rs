@@ -17,7 +17,7 @@ pub fn run(update: bool, scene: Option<&str>) -> anyhow::Result<()> {
     let (content, sandbox) = platforms::desktop_build(&App::load(SANDBOX)?, &Options::default())?;
     let env = platforms::host_build_env()?;
     let testkit = workspace::build_binary(
-        &CargoBuild { package: TESTKIT, target: None, release: false, env: &env },
+        &CargoBuild { package: TESTKIT, target: None, release: false, features: &[], env: &env },
         TESTKIT,
     )?;
     let mut command = Command::new(testkit);

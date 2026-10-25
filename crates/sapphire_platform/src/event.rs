@@ -5,6 +5,8 @@
 //! buffering can measure the age of an input precisely rather than rounding it to the
 //! frame it was pumped in.
 
+use std::ffi::CStr;
+use std::fmt;
 use std::time::Duration;
 
 use sdl3_sys::events::{SDL_Event, SDL_EventType};
@@ -53,6 +55,9 @@ pub enum Event {
     Window { timestamp: Timestamp, window: WindowId, event: WindowEvent },
     /// A key was pressed, auto-repeated or released.
     Key(KeyEvent),
+    /// Text was typed or committed by an input method, while the window takes text input
+    /// ([`Window::start_text_input`](crate::Window::start_text_input)).
+    Text(TextEvent),
     /// The mouse moved.
     MouseMotion(MouseMotionEvent),
     /// A mouse button was pressed or released.
@@ -74,6 +79,7 @@ impl Event {
             | Event::Window { timestamp, .. }
             | Event::Gamepad { timestamp, .. } => *timestamp,
             Event::Key(e) => e.timestamp,
+            Event::Text(e) => e.timestamp,
             Event::MouseMotion(e) => e.timestamp,
             Event::MouseButton(e) => e.timestamp,
             Event::MouseWheel(e) => e.timestamp,
@@ -336,6 +342,61 @@ pub struct KeyEvent {
     pub repeat: bool,
 }
 
+/// Typed text, in UTF-8: a character from the keyboard, or a string an input method (IME, the
+/// on-screen keyboard) committed.
+///
+/// Key events still arrive for the keys behind it; use those for shortcuts and editing keys,
+/// and this for the characters to insert. Text longer than [`TextEvent::CAPACITY`] bytes is
+/// delivered as several events, in order, split between characters, so events stay `Copy` and
+/// allocation-free.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextEvent {
+    pub timestamp: Timestamp,
+    pub window: WindowId,
+    len: u8,
+    bytes: [u8; TextEvent::CAPACITY],
+}
+
+impl TextEvent {
+    /// The most UTF-8 bytes one event carries.
+    pub const CAPACITY: usize = 32;
+
+    /// The events that deliver `text`, each holding as many whole characters as fit. The
+    /// platform delivers text this way; tests and input replays use it to synthesize text.
+    pub fn split(timestamp: Timestamp, window: WindowId, text: &str) -> impl Iterator<Item = Self> + '_ {
+        let mut rest = text;
+        std::iter::from_fn(move || {
+            if rest.is_empty() {
+                return None;
+            }
+            let mut end = rest.len().min(Self::CAPACITY);
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (chunk, tail) = rest.split_at(end);
+            rest = tail;
+            let mut bytes = [0; Self::CAPACITY];
+            bytes[..chunk.len()].copy_from_slice(chunk.as_bytes());
+            Some(Self { timestamp, window, len: chunk.len() as u8, bytes })
+        })
+    }
+
+    pub fn text(&self) -> &str {
+        // `split` only stores whole characters of a `str`.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).expect("TextEvent holds whole characters")
+    }
+}
+
+impl fmt::Debug for TextEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TextEvent")
+            .field("timestamp", &self.timestamp)
+            .field("window", &self.window)
+            .field("text", &self.text())
+            .finish()
+    }
+}
+
 /// Mouse movement. Positions are in window coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MouseMotionEvent {
@@ -404,6 +465,11 @@ pub struct MouseWheelEvent {
 pub struct TouchDeviceId(pub(crate) u64);
 
 impl TouchDeviceId {
+    /// A device for synthetic events (tests, input replays). Real ids come from SDL.
+    pub const fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
     /// Whether this is the pen (stylus) rather than a touch screen.
     pub fn is_pen(self) -> bool {
         self.0 == SDL_PEN_TOUCHID.0
@@ -420,6 +486,11 @@ pub struct FingerId {
 }
 
 impl FingerId {
+    /// A finger for synthetic events (tests, input replays). Real ids come from SDL.
+    pub const fn new(device: TouchDeviceId, finger: u64) -> Self {
+        Self { device, finger }
+    }
+
     /// The device this finger is on.
     pub fn device(self) -> TouchDeviceId {
         self.device
@@ -662,10 +733,32 @@ fn window_event(tag: SDL_EventType, data1: i32, data2: i32) -> Option<WindowEven
     })
 }
 
-/// Translates an SDL event, or returns `None` for event kinds the engine doesn't use.
+/// The text of an SDL text-input event, with its timestamp and window; `None` for any other
+/// event. Kept apart from [`translate`] because one SDL event can become several
+/// [`TextEvent`]s.
 ///
-/// Text input and IME events are not forwarded yet; they arrive with their first users, the
-/// dev console and name entry (spec §5.1, §6.6).
+/// IME composition (`SDL_EVENT_TEXT_EDITING`, the text being composed before it is committed)
+/// is not forwarded yet: committed text arrives here either way.
+pub(crate) fn text_input(raw: &SDL_Event) -> Option<(Timestamp, WindowId, std::borrow::Cow<'_, str>)> {
+    // SAFETY: every SDL event variant begins with the common header, so the type is initialized.
+    if SDL_EventType(unsafe { raw.r#type }) != SDL_EventType::TEXT_INPUT {
+        return None;
+    }
+    // SAFETY: the tag says this is a text-input event.
+    let e = unsafe { &raw.text };
+    let text = if e.text.is_null() {
+        std::borrow::Cow::Borrowed("")
+    } else {
+        // SAFETY: SDL hands out a NUL-terminated UTF-8 string that stays valid while the event is
+        // dispatched, which is as long as `raw` is borrowed here. Lossy conversion only guards
+        // against a backend sending invalid UTF-8; it borrows otherwise.
+        unsafe { CStr::from_ptr(e.text) }.to_string_lossy()
+    };
+    Some((Timestamp(e.timestamp), WindowId(e.windowID.0), text))
+}
+
+/// Translates an SDL event, or returns `None` for event kinds the engine doesn't use. Text
+/// input is translated by [`text_input`].
 pub(crate) fn translate(raw: &SDL_Event) -> Option<Event> {
     // SAFETY: every SDL event variant begins with the common header (type, reserved,
     // timestamp), so these two fields are initialized whatever the variant.
@@ -803,7 +896,7 @@ pub(crate) fn translate(raw: &SDL_Event) -> Option<Event> {
 mod tests {
     use sdl3_sys::events::{
         SDL_GamepadAxisEvent, SDL_GamepadButtonEvent, SDL_GamepadDeviceEvent, SDL_KeyboardEvent,
-        SDL_MouseWheelEvent, SDL_TouchFingerEvent, SDL_WindowEvent,
+        SDL_MouseWheelEvent, SDL_TextInputEvent, SDL_TouchFingerEvent, SDL_WindowEvent,
     };
     use sdl3_sys::joystick::SDL_JoystickID;
     use sdl3_sys::keycode::{SDL_KMOD_LCTRL, SDL_KMOD_RSHIFT, SDLK_A, SDLK_UP};
@@ -1032,6 +1125,35 @@ mod tests {
         assert_eq!(axis(SDL_GamepadAxis::LEFTX, i16::MIN), -1.0);
         assert_eq!(axis(SDL_GamepadAxis::LEFTY, i16::MAX), 1.0);
         assert_eq!(axis(SDL_GamepadAxis::RIGHT_TRIGGER, 0), 0.0);
+    }
+
+    #[test]
+    fn text_input_splits_between_characters() {
+        let text = c"héllo, 世界! A longer IME commit than one event holds.";
+        let raw = event_with(|e| {
+            e.text = SDL_TextInputEvent {
+                r#type: SDL_EventType::TEXT_INPUT,
+                timestamp: 77,
+                windowID: SDL_WindowID(2),
+                text: text.as_ptr(),
+                ..Default::default()
+            }
+        });
+        assert_eq!(translate(&raw), None, "text goes through `text_input`");
+        let (timestamp, window, text) = text_input(&raw).expect("a text event");
+        assert_eq!((timestamp, window), (Timestamp::from_nanos(77), WindowId(2)));
+        let chunks: Vec<TextEvent> = TextEvent::split(timestamp, window, &text).collect();
+        assert!(chunks.len() > 1 && chunks.iter().all(|chunk| chunk.text().len() <= TextEvent::CAPACITY));
+        assert_eq!(chunks.iter().map(TextEvent::text).collect::<String>(), text);
+        assert!(chunks.iter().all(|chunk| chunk.timestamp == timestamp && chunk.window == window));
+
+        // A multi-byte character that would straddle the capacity starts the next event.
+        let edge = format!("{}é", "a".repeat(TextEvent::CAPACITY - 1));
+        let lengths: Vec<usize> =
+            TextEvent::split(timestamp, window, &edge).map(|chunk| chunk.text().len()).collect();
+        assert_eq!(lengths, [TextEvent::CAPACITY - 1, 2]);
+        assert_eq!(TextEvent::split(timestamp, window, "").count(), 0);
+        assert_eq!(text_input(&event_with(|e| e.common.r#type = SDL_EventType::KEY_DOWN.0)), None);
     }
 
     #[test]

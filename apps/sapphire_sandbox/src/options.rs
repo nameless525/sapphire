@@ -8,6 +8,9 @@ use sapphire_render::{LightPath, Msaa, RenderSettings};
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
 pub(crate) const BENCH_FLAG: &str = "--bench";
+/// Shows the debug overlay from the start (`dev` builds), with its default panels or those
+/// listed: `--debug-overlay=stats,graph`.
+const DEBUG_OVERLAY_FLAG: &str = "--debug-overlay";
 
 /// Whether `arg` selects an offscreen mode, as `--capture`, `--bench` or their `--flag=value`
 /// forms. `main` checks this before SDL starts, so the windowed app never opens for one.
@@ -28,6 +31,9 @@ pub(crate) struct Options {
     pub light_path: Option<LightPath>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
+    /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
+    /// default ones). Only `dev` builds have it.
+    pub debug_overlay: Option<String>,
 }
 
 /// A mode that renders into an offscreen target, without creating a window or taking focus.
@@ -51,7 +57,14 @@ pub(crate) enum OffscreenMode {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { frame_limit: None, msaa: Msaa::X4, lights: false, light_path: None, offscreen: None }
+        Self {
+            frame_limit: None,
+            msaa: Msaa::X4,
+            lights: false,
+            light_path: None,
+            offscreen: None,
+            debug_overlay: None,
+        }
     }
 }
 
@@ -105,6 +118,8 @@ impl Options {
                         }
                     });
                 }
+                // Its panel list is optional, so it only comes inline: `--debug-overlay=all`.
+                DEBUG_OVERLAY_FLAG => options.debug_overlay = Some(inline.take().unwrap_or_default()),
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
                 "--capture-ticks" => {
@@ -182,6 +197,16 @@ mod tests {
         let (clustered, _) = parse(&["--light-path=clustered"]).unwrap();
         assert_eq!(clustered.render_settings(DeviceClass::Mobile).light_path, LightPath::Clustered);
         assert!(parse(&["--light-path", "deferred"]).is_err());
+    }
+
+    #[test]
+    fn the_debug_overlay_takes_an_optional_inline_panel_list() {
+        let (options, unknown) = parse(&["--debug-overlay", "--frames", "5"]).unwrap();
+        assert_eq!((options.debug_overlay.as_deref(), options.frame_limit), (Some(""), Some(5)));
+        assert!(unknown.is_empty(), "the next argument is not its value");
+        let (options, _) = parse(&["--capture", "a.png", "--debug-overlay=stats,graph"]).unwrap();
+        assert_eq!(options.debug_overlay.as_deref(), Some("stats,graph"));
+        assert_eq!(parse(&[]).unwrap().0.debug_overlay, None);
     }
 
     #[test]

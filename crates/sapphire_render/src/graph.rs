@@ -30,21 +30,41 @@
 //! per pass) and well under a microsecond to build and compile at M0's two passes; recording
 //! the passes is the real work. Parallel recording adds a job scope's allocations.
 //!
+//! # Inspection (M1 F5)
+//!
+//! Both are off by default and cost nothing until turned on, for the debug overlay and,
+//! later, dynamic resolution (spec §5.12, quality tiers):
+//!
+//! - [`GraphExecutor::set_report`] keeps a [`GraphReport`] of the last graph: every pass with
+//!   whether it ran and its command buffer, every texture with its pooled slot and lifetime.
+//!   It reuses its lists, so a steady graph fills it without allocating.
+//! - [`GraphExecutor::set_gpu_timing`] times each running pass with timestamp queries and reads
+//!   them back a frame or two later without waiting ([`GpuTimings`]). Devices that can write
+//!   timestamps between passes time every pass; on Apple GPUs, which sample only at
+//!   render-pass boundaries, a pass is timed when it hands [`PassContext::timestamp_writes`]
+//!   to its render pass (or [`PassContext::compute_timestamp_writes`] to its compute pass). Devices without timestamp queries report it unavailable.
+//!
 //! # Later milestones
 //!
 //! - Buffers as graph resources, once compute skinning (R2) hands buffers between passes.
 //!   Until then, passes that write buffers other passes read (uploads) are side effects that
 //!   come first.
 //! - Textures kept into the next frame (TAA history).
-//! - A per-pass cost hint, so parallel recording splits by work instead of pass count.
+//! - A per-pass cost hint, so parallel recording splits by work instead of pass count. GPU
+//!   timings could seed it.
 
 mod executor;
 mod plan;
+mod report;
+mod timing;
 
 use sapphire_rhi::{TransientDesc, TransientStats, wgpu};
 
 pub use executor::GraphExecutor;
 use plan::{Access, Shape};
+pub use report::{AccessReport, GraphReport, PassReport, TextureReport};
+use timing::PassTimestamps;
+pub use timing::{GpuTimings, PassTime};
 
 /// A texture in a [`FrameGraph`]. Only meaningful in the graph that made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -148,6 +168,8 @@ pub struct PassContext<'a> {
     pub encoder: &'a mut wgpu::CommandEncoder,
     textures: &'a [Option<Resolved<'a>>],
     accesses: &'a [Access],
+    /// This pass's timestamps, while GPU timing writes them through render passes.
+    timestamps: Option<&'a PassTimestamps<'a>>,
 }
 
 /// An imported or pooled texture and its view.
@@ -161,6 +183,19 @@ impl<'a> PassContext<'a> {
     /// The default view: the whole texture, in its own format for transients.
     pub fn view(&self, texture: TextureId) -> &'a wgpu::TextureView {
         self.resolve(texture).1
+    }
+
+    /// The `timestamp_writes` for this pass's render pass, so GPU timing can time it on devices
+    /// that take timestamps only at render-pass boundaries (Apple GPUs; see
+    /// [`GraphExecutor::set_gpu_timing`]). `None` whenever the executor times passes itself or
+    /// timing is off. A pass that begins several render passes passes it to one of them.
+    pub fn timestamp_writes(&self) -> Option<wgpu::RenderPassTimestampWrites<'a>> {
+        self.timestamps.map(PassTimestamps::render_pass_writes)
+    }
+
+    /// [`Self::timestamp_writes`] for a pass whose work is a compute pass.
+    pub fn compute_timestamp_writes(&self) -> Option<wgpu::ComputePassTimestampWrites<'a>> {
+        self.timestamps.map(PassTimestamps::compute_pass_writes)
     }
 
     fn resolve(&self, texture: TextureId) -> Resolved<'a> {

@@ -143,10 +143,17 @@ impl ClusterPass {
     }
 
     /// Bins the frame's lights, viewed through `view` (the main view's bind group).
-    pub(crate) fn record(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::BindGroup, labels: bool) {
+    /// `timestamp_writes` times the pass for the frame graph's GPU timing.
+    pub(crate) fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::BindGroup,
+        labels: bool,
+        timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
+    ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: labels.then_some("light clusters"),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);

@@ -52,7 +52,7 @@ cargo xtask run --platform ios-sim
 cargo xtask run --platform android
 ```
 
-Each command cooks the sample content, builds the sandbox, packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames. `--release` builds optimized, and `--dry-run` builds and packages but prints the launch command instead of running it.
+Each command cooks the sample content, builds the sandbox, packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames. `--release` builds optimized, `--features dev` adds the debug overlay, and `--dry-run` builds and packages but prints the launch command instead of running it.
 
 - **desktop** runs the build in place against `target/content/desktop/` (through `SAPPHIRE_CONTENT_DIR`). Use it to test on Windows and Linux hardware. `cargo xtask bundle --platform desktop` makes a self-contained `target/desktop/SapphireSandbox/` directory (the executable plus `content/`) to copy to another machine.
 - **macos** builds and signs `target/macos/SapphireSandbox.app`, then runs the executable inside it.
@@ -68,8 +68,25 @@ Each command cooks the sample content, builds the sandbox, packages it where the
 | `Space`, gamepad South or a double tap | World slow motion |
 | `H`, gamepad East or a long press | Hitstop |
 | `Esc` (desktop) | Quit |
+| `` ` `` (the key below `Esc`), or hold two fingers still for a second | Show or hide the debug overlay (`dev` builds) |
 
 The bindings are a `sapphire_input` document, [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron).
+
+### Debug overlay
+
+Development builds add the debug overlay (`sapphire_debug`, egui): frame time and CPU stages against the spec's budgets, renderer and frame-graph stats, the frame graph pass by pass with GPU timings, cvars and a console, and time controls (pause, step one tick, speed). Build with the sandbox's `dev` feature; shipping builds leave it out entirely:
+
+```bash
+cargo xtask run --platform macos --features dev
+```
+
+`--debug-overlay` shows it from the first frame, optionally with a list of panels (`stats`, `graph`, `time`, `console`, `cvars` or `all`). It works in offscreen captures too, for checking it without a window:
+
+```bash
+cargo xtask run --platform desktop --features dev -- --capture overlay.png --size 1280x720 --debug-overlay=all
+```
+
+While the overlay shows, input over its windows is its own and the game gets the rest. In the console, `list` shows every cvar, `<name> <value>` sets one and Tab completes names.
 
 ## Checking visuals and performance without a window
 
@@ -134,7 +151,7 @@ cargo xtask bundle --platform android --release
 ## Layout
 
 ```
-crates/   runtime crates (they ship), layered L0–L3, see ADR 0001
+crates/   runtime crates (they ship), layered L0–L3, and dev-only sapphire_debug; see ADR 0001
 apps/     shipping binaries (sapphire_sandbox)
 tools/    never-shipped tools (sapphire_pipeline)
 xtask/    build automation and the layer checker

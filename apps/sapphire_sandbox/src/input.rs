@@ -117,6 +117,16 @@ impl SandboxInput {
     pub fn take_actions(&mut self) -> SimActions {
         std::mem::take(&mut self.queued)
     }
+
+    #[cfg(feature = "dev")]
+    pub fn last_device(&self) -> Option<sapphire_input::DeviceKind> {
+        self.system.last_device()
+    }
+
+    #[cfg(feature = "dev")]
+    pub fn gamepads(&self) -> usize {
+        self.system.gamepads()
+    }
 }
 
 #[cfg(test)]

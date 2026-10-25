@@ -15,6 +15,8 @@ use crate::LOG_TARGET;
 use crate::app::SandboxApp;
 use crate::options::{OffscreenMode, Options};
 use crate::scene::{self, Scene};
+#[cfg(feature = "dev")]
+use crate::stats::Stages;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -57,6 +59,12 @@ impl App for OffscreenApp {
 /// The GPU, renderer and scene an offscreen mode draws with.
 pub(crate) struct Stage {
     // Drop order: everything on the device before the context, the context before the instance.
+    /// The debug overlay, drawn over the frame with `--debug-overlay`, hidden otherwise.
+    #[cfg(feature = "dev")]
+    pub dev: crate::dev::DevTools,
+    /// The last frame's stage times, measured while the overlay shows.
+    #[cfg(feature = "dev")]
+    stages: Option<Stages>,
     pub renderer: Renderer,
     pub graph: GraphExecutor,
     pub scene: Scene,
@@ -77,7 +85,41 @@ impl Stage {
         if options.lights {
             scene.spawn_demo_lights();
         }
-        Ok(Self { renderer, graph: GraphExecutor::new(), scene, gpu, _instance: instance })
+        #[cfg(feature = "dev")]
+        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
+        #[cfg(not(feature = "dev"))]
+        if options.debug_overlay.is_some() {
+            tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
+        }
+        Ok(Self {
+            #[cfg(feature = "dev")]
+            dev,
+            #[cfg(feature = "dev")]
+            stages: None,
+            renderer,
+            graph: GraphExecutor::new(),
+            scene,
+            gpu,
+            _instance: instance,
+        })
+    }
+
+    /// One fixed step, under the overlay's time controls in `dev` builds.
+    pub fn step(&mut self) {
+        #[cfg(feature = "dev")]
+        self.dev.before_fixed_step(&mut self.scene);
+        self.scene.step();
+    }
+
+    /// Whether the overlay draws over the frames (`--debug-overlay` in a `dev` build).
+    #[cfg(feature = "dev")]
+    pub fn overlay_visible(&self) -> bool {
+        self.dev.overlay_visible()
+    }
+
+    #[cfg(not(feature = "dev"))]
+    pub fn overlay_visible(&self) -> bool {
+        false
     }
 
     /// A 2D render target in [`FORMAT`] with `usage` on top of `RENDER_ATTACHMENT`.
@@ -105,9 +147,47 @@ impl Stage {
     ) -> Result<(), AppInitError> {
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("offscreen target", view);
-        self.renderer.prepare(&self.gpu, self.scene.frame_packet(alpha, Some(graph.size(target))));
+        let (width, height) = graph.size(target);
+        // While the overlay shows, it gets the extract and render stages' times (the bench
+        // measures its own way, and fixed steps are run outside this).
+        #[cfg(feature = "dev")]
+        let mut stopwatch = self.dev.overlay_visible().then(sapphire_time::Stopwatch::start);
+        let packet = self.scene.frame_packet(alpha, Some((width, height)));
+        #[cfg(feature = "dev")]
+        let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
+        self.renderer.prepare(&self.gpu, packet);
+        #[cfg(feature = "dev")]
+        let overlay = {
+            let started = sapphire_time::Stopwatch::start();
+            // Offscreen frames have no real length; the overlay is told each is a 60 Hz frame.
+            self.dev.begin_frame(OFFSCREEN_FRAME, self.stages.as_ref());
+            self.dev.advance_offscreen(OFFSCREEN_FRAME);
+            // Drawn as on a display 720 points high, so text stays legible at any size.
+            let scale = (height as f32 / 720.0).max(1.0);
+            let state = crate::dev::FrameState {
+                window: sapphire_debug::WindowMetrics::offscreen(width, height, scale),
+                render: self.renderer.stats(),
+                gpu: &self.gpu,
+                input: None,
+                scene: &self.scene,
+            };
+            self.dev.update(state, &mut self.graph);
+            started.elapsed()
+        };
         self.renderer.record(&mut graph, target);
+        #[cfg(feature = "dev")]
+        self.dev.record(&mut graph, target);
         after(&mut graph, target);
-        self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)
+        self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
+        #[cfg(feature = "dev")]
+        if let Some(mut stopwatch) = stopwatch {
+            let render = stopwatch.lap().saturating_sub(overlay);
+            self.stages = Some(Stages { extract, render, ..Stages::default() });
+        }
+        Ok(())
     }
 }
+
+/// The length the overlay is told an offscreen frame takes.
+#[cfg(feature = "dev")]
+const OFFSCREEN_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);

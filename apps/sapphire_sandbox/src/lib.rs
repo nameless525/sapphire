@@ -17,6 +17,15 @@
 //! | `Space`, gamepad South, double tap | Toggle world slow motion (perfect-dodge style, 0.2×) |
 //! | `H`, gamepad East, long press (0.5 s) | 8-tick hitstop on the turntable |
 //! | `Esc` | Quit (desktop) |
+//! | `` ` ``, a still two-finger hold (1 s) | Show or hide the debug overlay (`dev` builds) |
+//!
+//! # Development builds
+//!
+//! The `dev` feature links `sapphire_debug` (rule R8), all of it behind `dev.rs`: the debug
+//! overlay, which sees platform events before the game's input, applies its time controls
+//! before each fixed step and draws after post, and the cvar registry it edits, holding the
+//! sandbox's look-dev cvars (`cvars.rs`, compiled in every build so they read their defaults).
+//! Without the feature none of it is compiled.
 //!
 //! # Arguments
 //!
@@ -26,6 +35,9 @@
 //! - `--lights`: place three colored local lights around the character.
 //! - `--light-path clustered|per-object`: override how local lights are listed (clustered on
 //!   desktop, per-object on mobile by default).
+//! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
+//!   default panels or a comma-separated list (`stats`, `graph`, `time`, `console`, `cvars`,
+//!   `all`). Offscreen captures draw it too.
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default
@@ -38,6 +50,9 @@
 mod app;
 mod bench;
 mod capture;
+mod cvars;
+#[cfg(feature = "dev")]
+mod dev;
 mod extract;
 mod input;
 mod offscreen;

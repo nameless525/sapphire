@@ -47,7 +47,12 @@ allow = [
 confidence-threshold = 0.93
 # The allow-list is policy, not an inventory of what is in the tree today.
 unused-allowed-license = "allow"
-exceptions = []
+exceptions = [
+    # egui's embedded fonts (Hack, Ubuntu, Noto Emoji), used only by the dev-only debug overlay
+    # (sapphire_debug), which never ships. Both font licenses allow bundling the fonts in any
+    # software, commercial included; they only restrict selling or renaming the fonts themselves.
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+]
 
 [licenses.private]
 # Workspace crates are `publish = false` and carry no license field; skip them.

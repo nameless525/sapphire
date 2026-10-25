@@ -57,7 +57,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     let ndk = Ndk::locate(&sdk)?;
     // Fail now rather than after the native build.
     require_java()?;
-    let library = build_library(app, &ndk, options.release)?;
+    let library = build_library(app, &ndk, options)?;
     let content = content::cook(Cook::Mobile)?;
 
     let variant = if options.release { "release" } else { "debug" };
@@ -339,13 +339,19 @@ fn library_file(app: &App) -> String {
 }
 
 /// Builds the app crate's library as a `cdylib` and returns its path.
-fn build_library(app: &App, ndk: &Ndk, release: bool) -> anyhow::Result<PathBuf> {
+fn build_library(app: &App, ndk: &Ndk, options: &Options) -> anyhow::Result<PathBuf> {
     eprintln!("using NDK {} at {}", ndk.revision, ndk.root.display());
     let env = ndk.cargo_env()?;
     let file = library_file(app);
     // `cargo rustc` adds the cdylib crate type for this build only, so desktop and iOS keep
     // linking the crate as an rlib. The soname names the library for Android's loader.
-    let build = CargoBuild { package: &app.package, target: Some(TARGET), release, env: &env };
+    let build = CargoBuild {
+        package: &app.package,
+        target: Some(TARGET),
+        release: options.release,
+        features: &options.features,
+        env: &env,
+    };
     let mut command = build.command("rustc");
     command.args(["--lib", "--crate-type", "cdylib", "--", "-C"]);
     command.arg(format!("link-arg=-Wl,-soname,{file}"));

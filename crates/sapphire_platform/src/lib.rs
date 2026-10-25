@@ -11,6 +11,9 @@
 //!   elsewhere, kept alive for as long as the surface needs them.
 //! - **Raw input and OS events** as engine-owned [`Event`]s, each with SDL's
 //!   nanosecond [`Timestamp`]. Mapping them to actions is `sapphire_input`'s job.
+//! - **Text input** (M1 F5): [`Window::start_text_input`] turns on [`Event::Text`] (typed and
+//!   input-method text) and the on-screen keyboard on mobile, for a focused text field;
+//!   [`TextInputKind`] says whether the keyboard may capitalize and autocorrect.
 //! - **Content and user storage:** [`ContentFs`] for packaged read-only content
 //!   (including APK assets), [`user_dir`] for settings and saves, and [`cache_dir`] for
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
@@ -20,8 +23,9 @@
 //! # Does not own
 //!
 //! GPU devices and swapchains (`sapphire_rhi`), audio (FMOD, M2), logging setup (the
-//! app wires `tracing` to [`sdl_log`]), and, until their milestones, text input / IME
-//! (M1), haptics, clipboard, the async IO thread, and thermal state (M4).
+//! app wires `tracing` to [`sdl_log`]), and, until their milestones, IME composition text
+//! (shown while composing; committed text already arrives), haptics, clipboard, the async IO
+//! thread, and thermal state (M4).
 //!
 //! # Threading
 //!
@@ -95,10 +99,10 @@ pub use dirs::{cache_dir, user_dir};
 pub use event::{
     Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, GamepadType, KeyEvent, Keycode,
     LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,
-    Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
+    TextEvent, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
 pub use log::sdl_log;
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;
 pub use system::{DeviceClass, Os, SystemInfo};
-pub use window::{Rect, Size, SurfaceHandle, Window, WindowDesc, WindowId};
+pub use window::{Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId};

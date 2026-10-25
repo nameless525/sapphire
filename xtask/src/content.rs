@@ -86,7 +86,7 @@ pub struct Cooked {
 pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     // Release: cooking is the slow part, and the pipeline itself rarely changes.
     let pipeline = workspace::build_binary(
-        &CargoBuild { package: "sapphire_pipeline", target: None, release: true, env: &[] },
+        &CargoBuild { package: "sapphire_pipeline", target: None, release: true, features: &[], env: &[] },
         "sapphire_pipeline",
     )?;
 

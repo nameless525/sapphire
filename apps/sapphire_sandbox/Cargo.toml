@@ -44,10 +44,14 @@ sapphire_time.workspace = true
 png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
+# Dev-only (rule R8): linked only by the `dev` feature.
+sapphire_debug = { workspace = true, optional = true }
 
 [features]
 # Stream profiling zones to the Tracy profiler (spec §5.3).
 tracy = ["profiling/profile-with-tracy"]
+# Development builds: the debug overlay (spec §5.20). Shipping builds leave it off.
+dev = ["dep:sapphire_debug"]
 
 [lints]
 workspace = true

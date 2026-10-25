@@ -23,6 +23,8 @@ use crate::options::Options;
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;
 
+/// With `--debug-overlay` the bench measures the overlay shown; otherwise, in `dev` builds,
+/// its hooks with it hidden.
 pub(crate) fn run(
     platform: &Platform,
     options: &Options,
@@ -45,7 +47,7 @@ pub(crate) fn run(
     for frame in 0..WARMUP_FRAMES + frames {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
-        stage.scene.step();
+        stage.step();
         stage.render(&view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let frame_cpu = stopwatch.lap();

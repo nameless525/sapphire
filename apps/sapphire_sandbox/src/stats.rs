@@ -9,6 +9,31 @@ use crate::LOG_TARGET;
 /// How often a summary line is logged.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
 
+/// One frame's CPU time per stage, as spec §3.2 budgets them. Acquiring and presenting the
+/// swapchain image are left out: they wait for vsync.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Stages {
+    /// The input update (platform events are dispatched before the frame).
+    pub input: Duration,
+    /// The frame's fixed steps.
+    pub simulation: Duration,
+    pub fixed_steps: u32,
+    /// Presentation (the camera) and extraction into the frame packet.
+    pub extract: Duration,
+    /// `Renderer::prepare`, recording the frame graph and its submit.
+    pub render: Duration,
+}
+
+impl Stages {
+    fn add(&mut self, other: &Self) {
+        self.input += other.input;
+        self.simulation += other.simulation;
+        self.fixed_steps += other.fixed_steps;
+        self.extract += other.extract;
+        self.render += other.render;
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct FrameStats {
     window: Duration,
@@ -21,6 +46,8 @@ pub(crate) struct FrameStats {
     /// The latest skip reason, so a run of identical skips logs once.
     last_skip: Option<SkipReason>,
     dropped: Duration,
+    /// Stage times summed over the window.
+    stages: Stages,
     /// Process allocation total at the start of the window.
     allocations_at_start: u64,
 }
@@ -38,7 +65,7 @@ impl FrameStats {
     }
 
     /// Records one frame; logs and resets once per [`REPORT_INTERVAL`].
-    pub fn record(&mut self, frame_time: Duration, dropped: Duration, presented: bool) {
+    pub fn record(&mut self, frame_time: Duration, dropped: Duration, presented: bool, stages: &Stages) {
         if presented {
             self.presented += 1;
             self.last_skip = None;
@@ -47,6 +74,7 @@ impl FrameStats {
         self.frames += 1;
         self.worst = self.worst.max(frame_time);
         self.dropped += dropped;
+        self.stages.add(stages);
         if self.window < REPORT_INTERVAL {
             return;
         }
@@ -55,12 +83,17 @@ impl FrameStats {
         let frames = self.frames.max(1);
         let seconds = self.window.as_secs_f64();
         let average_ms = seconds * 1e3 / f64::from(frames);
+        let stage_ms = |total: Duration| format!("{:.3}", total.as_secs_f64() * 1e3 / f64::from(frames));
         tracing::info!(
             target: LOG_TARGET,
             fps = format_args!("{:.1}", f64::from(self.presented) / seconds),
             loop_hz = format_args!("{:.1}", f64::from(frames) / seconds),
             avg_ms = format_args!("{average_ms:.2}"),
             worst_ms = format_args!("{:.2}", self.worst.as_secs_f64() * 1e3),
+            input_ms = stage_ms(self.stages.input),
+            sim_ms = stage_ms(self.stages.simulation),
+            extract_ms = stage_ms(self.stages.extract),
+            render_ms = stage_ms(self.stages.render),
             skipped = self.skipped,
             sim_dropped_ms = self.dropped.as_millis(),
             allocs_per_frame = (allocations - self.allocations_at_start) / u64::from(frames),

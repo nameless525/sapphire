@@ -70,6 +70,8 @@ pub struct CargoBuild<'a> {
     /// Rust target triple; `None` builds for the host.
     pub target: Option<&'a str>,
     pub release: bool,
+    /// Cargo features to enable on the package, such as an app's `dev`.
+    pub features: &'a [String],
     /// Extra environment for cargo and everything it runs: build scripts, CMake, the linker.
     pub env: &'a [(&'a str, OsString)],
 }
@@ -86,6 +88,9 @@ impl CargoBuild<'_> {
         }
         if self.release {
             command.arg("--release");
+        }
+        if !self.features.is_empty() {
+            command.args(["--features", &self.features.join(",")]);
         }
         command
     }

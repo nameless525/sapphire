@@ -27,7 +27,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, PostParams, SkyGradient, ViewData,
+    DirectionalLight, FramePacket, LightKind, LocalLight, MeshHandle, SkyGradient, ViewData,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 
@@ -179,7 +179,8 @@ impl Scene {
             packet.sun = SUN;
             packet.sky = SkyGradient::default();
             packet.time_seconds = (time % SHADER_TIME_WRAP_SECONDS) as f32;
-            packet.post = PostParams::default();
+            // The look-dev cvars on the default look, until time of day resolves it (W1).
+            packet.post = crate::cvars::post_params();
         });
         self.ecs.extract();
         self.ecs.world().resource::<RenderExtract>().packet()
@@ -200,9 +201,14 @@ impl Scene {
         self.ecs.world_mut().resource_mut()
     }
 
-    /// The world clock, for lifecycle pauses.
+    /// The world clock, for lifecycle pauses and time controls.
     pub fn world_clock_mut(&mut self) -> Mut<'_, WorldClock> {
         self.ecs.world_mut().resource_mut()
+    }
+
+    #[cfg(feature = "dev")]
+    pub fn world_clock(&self) -> &sapphire_time::ScaledClock {
+        &self.ecs.world().resource::<WorldClock>().0
     }
 
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.

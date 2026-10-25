@@ -569,6 +569,7 @@ fn add_fullscreen<'f, const N: usize>(
                     store: wgpu::StoreOp::Store,
                 },
             })],
+            timestamp_writes: ctx.timestamp_writes(),
             ..Default::default()
         });
         pass.set_pipeline(pipeline);

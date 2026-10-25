@@ -176,6 +176,8 @@ pub fn host_build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
 #[derive(Debug, Default)]
 pub struct Options {
     pub release: bool,
+    /// Cargo features to build the app with (`--features dev` for the debug overlay).
+    pub features: Vec<String>,
     /// Use this prebuilt executable instead of building the app.
     pub exe: Option<PathBuf>,
     /// `run --platform ios-sim`: also show the device in Simulator.app.
@@ -219,7 +221,13 @@ fn executable(
             Ok(exe.clone())
         }
         None => workspace::build_binary(
-            &CargoBuild { package: &app.package, target, release: options.release, env },
+            &CargoBuild {
+                package: &app.package,
+                target,
+                release: options.release,
+                features: &options.features,
+                env,
+            },
             &app.package,
         ),
     }

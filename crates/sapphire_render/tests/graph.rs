@@ -28,6 +28,7 @@ fn clear(graph: &mut FrameGraph<'_>, name: &'static str, texture: TextureId, col
                 resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store },
             })],
+            timestamp_writes: ctx.timestamp_writes(),
             ..Default::default()
         });
     });
@@ -109,4 +110,66 @@ fn graphs_cull_share_pooled_textures_and_record_in_parallel() {
     assert_eq!((stats.transients, stats.transient_slots), (7, 2));
     assert_eq!(stats.pool.created, 2, "the second frame reused the first frame's textures");
     assert!(stats.command_buffers > 1, "9 passes record in parallel: {stats:?}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn reports_and_gpu_timings_describe_the_executed_graph() {
+    let gpu = gpu();
+    let target_texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: USAGE,
+        view_formats: &[],
+    });
+    let target_view = target_texture.create_view(&Default::default());
+
+    let mut executor = GraphExecutor::new();
+    assert!(executor.report().is_none() && executor.gpu_timings().is_none(), "both start off");
+    executor.set_report(true);
+    let timing = executor.set_gpu_timing(&gpu, true);
+    assert_eq!(timing, gpu.caps().timestamp_query, "timing is on wherever timestamps are");
+    for _ in 0..8 {
+        let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &target_view);
+        let source = graph.create_texture("source", desc());
+        clear(&mut graph, "clear source", source, wgpu::Color::GREEN);
+        let unused = graph.create_texture("unused", desc());
+        clear(&mut graph, "clear unused", unused, wgpu::Color::RED);
+        copy(&mut graph, "to target", source, target);
+        executor.execute(&gpu, graph).expect("a valid graph");
+        assert!(pollster::block_on(scope.pop()).is_none(), "timestamp queries validate");
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    }
+
+    let report = executor.report().expect("on");
+    let passes: Vec<_> = report.passes.iter().map(|pass| (pass.name, pass.order.is_some())).collect();
+    assert_eq!(passes, [("clear source", true), ("clear unused", false), ("to target", true)]);
+    let source = report.textures.iter().find(|texture| texture.name == "source").expect("source");
+    assert_eq!((source.slot, source.lifetime), (Some(0), Some((0, 1))));
+
+    if !timing {
+        return;
+    }
+    let timings = executor.gpu_timings().expect("frames came back after waiting on the GPU");
+    assert!(timings.frame > 0 && timings.frame <= executor.frames());
+    assert!(timings.passes.iter().any(|pass| pass.name == "clear source"), "{timings:?}");
+    assert!(timings.passes.iter().all(|pass| pass.name != "clear unused"), "culled passes aren't timed");
+    // The copy takes no render pass, so only devices that time between passes see it.
+    assert_eq!(timings.get("to target").is_some(), timings.every_pass, "{timings:?}");
+    let exclusive: std::time::Duration = timings.passes.iter().map(|pass| pass.exclusive).sum();
+    assert!(timings.passes.iter().all(|pass| pass.exclusive <= pass.duration), "{timings:?}");
+    // Up to a nanosecond per pass of rounding from ticks.
+    let rounding = std::time::Duration::from_nanos(timings.passes.len() as u64);
+    assert!(
+        exclusive <= timings.span() + rounding,
+        "exclusive times add up to the span at most: {timings:?}"
+    );
+    executor.set_gpu_timing(&gpu, false);
+    assert!(executor.gpu_timings().is_none(), "turning timing off drops it");
 }

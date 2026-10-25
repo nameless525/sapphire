@@ -32,6 +32,7 @@ use sdl3_sys::init::{SDL_APP_CONTINUE, SDL_APP_FAILURE, SDL_APP_SUCCESS, SDL_App
 use sdl3_sys::main::{SDL_EnterAppMainCallbacks, SDL_RunApp};
 use sdl3_sys::timer::SDL_GetTicksNS;
 
+use crate::event::TextEvent;
 use crate::platform::{Platform, collect_args};
 use crate::{Event, LOG_TARGET, sdl};
 
@@ -446,6 +447,15 @@ impl<A: App> Runtime<A> {
 
 impl<A: App> State<A> {
     fn dispatch(&mut self, raw: &SDL_Event) -> AppControl {
+        if let Some((timestamp, window, text)) = crate::event::text_input(raw) {
+            for chunk in TextEvent::split(timestamp, window, &text) {
+                let control = self.app.event(&mut self.platform, &Event::Text(chunk));
+                if control != AppControl::Continue {
+                    return control;
+                }
+            }
+            return AppControl::Continue;
+        }
         match self.platform.translate_event(raw) {
             Some(event) => self.app.event(&mut self.platform, &event),
             None => AppControl::Continue,

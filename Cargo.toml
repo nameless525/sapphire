@@ -23,6 +23,8 @@ members = [
     # L3 subsystems
     "crates/sapphire_input",
     "crates/sapphire_render",
+    # Dev-only: development builds, through an app's `dev` feature
+    "crates/sapphire_debug",
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
@@ -52,6 +54,7 @@ sapphire_rhi = { path = "crates/sapphire_rhi" }
 sapphire_serialize = { path = "crates/sapphire_serialize" }
 sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
+sapphire_debug = { path = "crates/sapphire_debug" }
 
 # --- Foundation ---
 bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }
@@ -129,6 +132,14 @@ pollster = "1.0"
 png = "0.18"
 # Dev-only: a detached CAMetalLayer lets sapphire_rhi test surfaces without a window.
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
+
+# --- Dev tooling (dev-only crates: never in a shipping build) ---
+# The debug overlay (spec §5.20). `default_fonts` embeds egui's fonts, the overlay's only font
+# source; their licenses are excepted in deny.toml.
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+# Built on wgpu 30, the workspace's. Default features off: they turn on wgpu's default and WebGL
+# backends, which the engine keeps off (spec §2).
+egui-wgpu = { version = "0.37.0", default-features = false }
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_testkit = { path = "tools/sapphire_testkit" }

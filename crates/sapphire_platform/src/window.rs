@@ -12,8 +12,17 @@ use raw_window_handle::{
     WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
 };
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_WasInit};
+use sdl3_sys::keyboard::{
+    SDL_CAPITALIZE_NONE, SDL_CAPITALIZE_SENTENCES, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN,
+    SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, SDL_PROP_TEXTINPUT_TYPE_NUMBER, SDL_SetTextInputArea,
+    SDL_StartTextInput, SDL_StartTextInputWithProperties, SDL_StopTextInput, SDL_TEXTINPUT_TYPE_TEXT,
+    SDL_TextInputActive,
+};
 use sdl3_sys::metal::{SDL_Metal_CreateView, SDL_Metal_DestroyView, SDL_Metal_GetLayer};
-use sdl3_sys::properties::{SDL_GetNumberProperty, SDL_GetPointerProperty, SDL_PropertiesID};
+use sdl3_sys::properties::{
+    SDL_CreateProperties, SDL_DestroyProperties, SDL_GetNumberProperty, SDL_GetPointerProperty,
+    SDL_PropertiesID, SDL_SetBooleanProperty, SDL_SetNumberProperty,
+};
 use sdl3_sys::rect::SDL_Rect;
 use sdl3_sys::video::{
     SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowDisplayScale, SDL_GetWindowID,
@@ -25,11 +34,19 @@ use sdl3_sys::video::{
     SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_METAL, SDL_WINDOW_RESIZABLE, SDL_Window,
 };
 
-use crate::{PlatformError, sdl};
+use crate::{LOG_TARGET, PlatformError, sdl};
 
 /// Identifies a window in [`Event::Window`](crate::Event::Window) and input events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowId(pub(crate) u32);
+
+impl WindowId {
+    /// An id for synthetic events (tests, input replays). Real ids come from SDL and
+    /// [`Window::id`].
+    pub const fn from_raw(id: u32) -> Self {
+        Self(id)
+    }
+}
 
 /// A size in pixels or window coordinates, depending on where it comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -45,6 +62,18 @@ pub struct Rect {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+}
+
+/// What a text field takes, which sets up the on-screen keyboard
+/// ([`Window::start_text_input`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextInputKind {
+    /// Exactly what is typed, with no automatic capitals or corrections: commands, identifiers,
+    /// codes.
+    #[default]
+    Verbatim,
+    /// Sentences, capitalized and autocorrected as the platform does for messages.
+    Prose,
 }
 
 /// How to create the window.
@@ -216,6 +245,74 @@ impl Window {
             _android_window: android_window,
             _owner: Rc::clone(&self.inner),
         })
+    }
+
+    /// Starts sending [`Event::Text`](crate::Event::Text) for this window, for a text field
+    /// that has focus: typed characters and input-method commits. On iOS and Android this also
+    /// shows the on-screen keyboard, set up for `kind`. Off by default, so games get key
+    /// events alone.
+    pub fn start_text_input(&self, kind: TextInputKind) {
+        let (capitalization, autocorrect) = match kind {
+            TextInputKind::Verbatim => (SDL_CAPITALIZE_NONE, false),
+            TextInputKind::Prose => (SDL_CAPITALIZE_SENTENCES, true),
+        };
+        // SAFETY: SDL is initialized; a zero id means the properties couldn't be created.
+        let props = unsafe { SDL_CreateProperties() };
+        let started = if props.0 == 0 {
+            // SAFETY: the window is live and this is the main thread.
+            unsafe { SDL_StartTextInput(self.raw()) }
+        } else {
+            // SAFETY: `props` is live until destroyed below; the names are SDL's static
+            // property constants; the window is live and this is the main thread.
+            unsafe {
+                SDL_SetNumberProperty(
+                    props,
+                    SDL_PROP_TEXTINPUT_TYPE_NUMBER,
+                    SDL_TEXTINPUT_TYPE_TEXT.0.into(),
+                );
+                SDL_SetNumberProperty(
+                    props,
+                    SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER,
+                    capitalization.0.into(),
+                );
+                SDL_SetBooleanProperty(props, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN, autocorrect);
+                let started = SDL_StartTextInputWithProperties(self.raw(), props);
+                SDL_DestroyProperties(props);
+                started
+            }
+        };
+        if !started {
+            tracing::warn!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_StartTextInput failed");
+        }
+    }
+
+    /// Stops text input and hides the on-screen keyboard.
+    pub fn stop_text_input(&self) {
+        // SAFETY: the window is live and this is the main thread.
+        if !unsafe { SDL_StopTextInput(self.raw()) } {
+            tracing::warn!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_StopTextInput failed");
+        }
+    }
+
+    pub fn is_text_input_active(&self) -> bool {
+        // SAFETY: the window is live.
+        unsafe { SDL_TextInputActive(self.raw()) }
+    }
+
+    /// Tells the input method where the focused text field is, in window coordinates, and
+    /// where in it the cursor is (horizontally, from its left edge), so candidate lists and
+    /// the on-screen keyboard keep clear of it.
+    pub fn set_text_input_area(&self, area: Rect, cursor_x: i32) {
+        let rect = SDL_Rect {
+            x: area.x,
+            y: area.y,
+            w: c_int::try_from(area.width).unwrap_or(c_int::MAX),
+            h: c_int::try_from(area.height).unwrap_or(c_int::MAX),
+        };
+        // SAFETY: the window is live and `rect` outlives the call, which copies it.
+        if !unsafe { SDL_SetTextInputArea(self.raw(), &rect, cursor_x) } {
+            tracing::debug!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_SetTextInputArea failed");
+        }
     }
 }
 

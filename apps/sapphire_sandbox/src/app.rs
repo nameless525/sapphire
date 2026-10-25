@@ -11,15 +11,19 @@ use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::{MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
-    RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget,
+    RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget, wgpu,
 };
-use sapphire_time::{FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource};
+use sapphire_time::{
+    FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource, Stopwatch,
+};
 
 use crate::LOG_TARGET;
+#[cfg(feature = "dev")]
+use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::{self, Scene};
-use crate::stats::FrameStats;
+use crate::stats::{FrameStats, Stages};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -33,6 +37,9 @@ const FRAME_LIMIT_MIN_DEADLINE: Duration = Duration::from_secs(10);
 pub struct SandboxApp {
     // Fields drop in declaration order: GPU objects go before the window they present to.
     // Crash capture is process-wide (see `crate::startup`) and outlives the app.
+    /// The debug overlay and its cvars.
+    #[cfg(feature = "dev")]
+    dev: DevTools,
     renderer: Renderer,
     graph: GraphExecutor,
     surface: Option<RenderSurface>,
@@ -53,6 +60,8 @@ pub struct SandboxApp {
     suspended: bool,
 
     stats: FrameStats,
+    /// The latest frame's CPU time per stage.
+    stages: Stages,
     presented_frames: u64,
     frame_limit: Option<u64>,
 }
@@ -91,7 +100,15 @@ impl App for SandboxApp {
         if options.lights {
             scene.spawn_demo_lights();
         }
+        #[cfg(feature = "dev")]
+        let dev = DevTools::new(&stack.gpu, stack.format, options.debug_overlay.as_deref())?;
+        #[cfg(not(feature = "dev"))]
+        if options.debug_overlay.is_some() {
+            tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
+        }
         Ok(Self {
+            #[cfg(feature = "dev")]
+            dev,
             renderer: stack.renderer,
             graph: stack.graph,
             surface: Some(stack.surface),
@@ -107,6 +124,7 @@ impl App for SandboxApp {
             background_pause: None,
             suspended: false,
             stats: FrameStats::new(),
+            stages: Stages::default(),
             presented_frames: 0,
             frame_limit: options.frame_limit,
         })
@@ -114,7 +132,11 @@ impl App for SandboxApp {
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
         // Input queues for the next frame. Losing focus or the foreground releases everything
-        // held, since the releases may never arrive.
+        // held, since the releases may never arrive. With the debug overlay, it sees each event
+        // first and passes on what it doesn't use.
+        #[cfg(feature = "dev")]
+        self.dev.handle_event(event, &mut self.input);
+        #[cfg(not(feature = "dev"))]
         self.input.handle_event(event);
         match event {
             Event::Quit { .. } => return AppControl::Exit,
@@ -137,10 +159,17 @@ impl App for SandboxApp {
 
     fn iterate(&mut self, platform: &mut Platform) -> AppControl {
         let frame_time = self.real.update();
+        // The previous frame's stages go with its length.
+        #[cfg(feature = "dev")]
+        self.dev.begin_frame(frame_time, Some(&self.stages));
+        let mut stopwatch = Stopwatch::start();
         // On the clock event timestamps use, so every trigger is judged on one timeline.
+        #[cfg(feature = "dev")]
+        self.dev.poll(platform.now(), &mut self.input);
         if self.input.update(platform.now()) {
             return AppControl::Exit;
         }
+        self.stages.input = stopwatch.lap();
         if self.suspended {
             std::thread::sleep(IDLE_FRAME);
             return self.frame_limit_control().unwrap_or(AppControl::Continue);
@@ -152,15 +181,20 @@ impl App for SandboxApp {
         } else if self.surface.is_none() && self.recovery.due(self.real.elapsed()) {
             self.rebuild_surface();
         }
+        // Recovery is no stage of the frame.
+        stopwatch.lap();
 
         let steps = self.simulate(frame_time);
+        self.stages.simulation = stopwatch.lap();
+        self.stages.fixed_steps = steps.count;
 
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
         let mut camera = self.scene.camera_mut();
         self.input.drive_camera(&mut camera);
         camera.update(dt);
-        let presented = match self.render(steps.alpha) {
+        let presentation = stopwatch.lap();
+        let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
             Err(error) => {
                 // The graph is built in code, so it would fail the same way every frame.
@@ -180,7 +214,7 @@ impl App for SandboxApp {
         }
 
         self.scene.end_frame();
-        self.stats.record(frame_time, steps.dropped, presented);
+        self.stats.record(frame_time, steps.dropped, presented, &self.stages);
         profiling::finish_frame!();
         self.frame_limit_control().unwrap_or(AppControl::Continue)
     }
@@ -203,8 +237,13 @@ impl SandboxApp {
         self.scene.apply(self.input.take_actions());
 
         let scene = &mut self.scene;
+        #[cfg(feature = "dev")]
+        let dev = &mut self.dev;
         let ((), allocations) = sapphire_core::alloc::count_in_scope(|| {
             for _ in 0..steps.count {
+                // The overlay's pause, step and speed, applied to the step about to run.
+                #[cfg(feature = "dev")]
+                dev.before_fixed_step(scene);
                 scene.step();
             }
         });
@@ -218,8 +257,15 @@ impl SandboxApp {
     }
 
     /// Extracts the frame, then draws and presents it if the surface gave an image. Returns
-    /// whether a frame was presented.
-    fn render(&mut self, alpha: f32) -> Result<bool, GraphError> {
+    /// whether a frame was presented. `stopwatch` times the extract and render stages, which
+    /// `presentation` (already measured) joins; acquiring and presenting wait for vsync and
+    /// count for neither.
+    fn render(
+        &mut self,
+        alpha: f32,
+        stopwatch: &mut Stopwatch,
+        presentation: Duration,
+    ) -> Result<bool, GraphError> {
         profiling::scope!("render");
         // The frame borrows the surface until the end of this block.
         let skipped = {
@@ -228,20 +274,48 @@ impl SandboxApp {
                 Some(SurfaceAcquire::Skip(reason)) => (None, Some(reason)),
                 None => (None, None),
             };
+            stopwatch.lap();
             // Every frame is extracted and prepared, drawn or not, so the renderer's persistent
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             let packet = self.scene.frame_packet(alpha, frame.as_ref().map(SurfaceFrame::size));
+            self.stages.extract = presentation + stopwatch.lap();
             self.renderer.prepare(&self.gpu, packet);
             if let Some(frame) = frame {
+                // The overlay's own frame is no stage of the game's; its panel shows its cost.
+                #[cfg(feature = "dev")]
+                let overlay = {
+                    let started = Stopwatch::start();
+                    let (width, height) = frame.size();
+                    let window = sapphire_debug::WindowMetrics {
+                        pixel_size: sapphire_platform::Size { width, height },
+                        ..sapphire_debug::WindowMetrics::of(&self.window, self.dev.focused())
+                    };
+                    let state = FrameState {
+                        window,
+                        render: self.renderer.stats(),
+                        gpu: &self.gpu,
+                        input: Some(&self.input),
+                        scene: &self.scene,
+                    };
+                    let output = self.dev.update(state, &mut self.graph);
+                    DevTools::sync_text_input(&self.window, &output);
+                    started.elapsed()
+                };
+                #[cfg(not(feature = "dev"))]
+                let overlay = Duration::ZERO;
                 let mut graph = FrameGraph::new();
                 // The renderer sizes its attachments from the frame itself.
                 let target = graph.import_texture("swapchain", frame.view());
                 self.renderer.record(&mut graph, target);
+                #[cfg(feature = "dev")]
+                self.dev.record(&mut graph, target);
                 self.graph.execute(&self.gpu, graph)?;
+                self.stages.render = stopwatch.lap().saturating_sub(overlay);
                 frame.present();
                 return Ok(true);
             }
+            self.stages.render = stopwatch.lap();
             skipped
         };
         let Some(reason) = skipped else { return Ok(false) };
@@ -338,6 +412,8 @@ impl SandboxApp {
         match create_gpu_stack(platform, &self.window, self.gpu_debug, self.settings) {
             Ok(stack) => {
                 // Field order matters even here: the renderer goes before the old context.
+                #[cfg(feature = "dev")]
+                self.dev.recreate_gpu(&stack.gpu, stack.format);
                 self.renderer = stack.renderer;
                 self.graph = stack.graph;
                 self.gpu = stack.gpu;
@@ -422,6 +498,9 @@ struct GpuStack {
     graph: GraphExecutor,
     surface: RenderSurface,
     gpu: GpuContext,
+    /// The surface's format, which the renderer and the overlay draw into.
+    #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+    format: wgpu::TextureFormat,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
 }
@@ -454,7 +533,7 @@ fn create_gpu_stack(
     let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
         renderer.upload_mesh(mesh).map(|handle| (handle, scene::mesh_bounds(mesh)))
     })?;
-    Ok(GpuStack { renderer, graph: GraphExecutor::new(), surface, gpu, character, character_bounds })
+    Ok(GpuStack { renderer, graph: GraphExecutor::new(), surface, gpu, format, character, character_bounds })
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

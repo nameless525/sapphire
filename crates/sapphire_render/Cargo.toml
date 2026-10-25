@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_render"
-description = "Sapphire's renderer. M0: toon character shading, inverted-hull outlines, sky gradient."
+description = "Sapphire's renderer: toon character shading, inverted-hull outlines, sky gradient, HDR bloom and grading."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

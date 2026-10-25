@@ -69,7 +69,7 @@ impl Stage {
     pub fn new(platform: &Platform, msaa: Msaa) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
-        let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa })?;
+        let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa, ..RenderSettings::default() })?;
         let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
         let scene = Scene::with_character(renderer.upload_mesh(&mesh)?, mesh.bounds);
         Ok(Self { renderer, graph: GraphExecutor::new(), scene, gpu, _instance: instance })

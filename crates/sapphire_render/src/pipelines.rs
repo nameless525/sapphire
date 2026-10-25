@@ -13,6 +13,10 @@ use crate::shaders;
 /// the way out with an infinite far plane.
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// The main pass's color: linear HDR light, unclamped, which post tone maps into the target.
+/// Alpha is kept for the character bloom mask (M1 C7).
+pub(crate) const SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// Vertex buffer slot 0: the mesh pool, laid out as `MeshVertex`.
 pub(crate) const MESH_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
     attribute(0, wgpu::VertexFormat::Float32x3, offset_of!(MeshVertex, position)),

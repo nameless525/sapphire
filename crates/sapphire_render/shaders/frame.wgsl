@@ -9,7 +9,8 @@
 //   3  —       reserved for material textures (ramps, ILM masks, face SDF maps) in M1
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
-// colors linear, with the sRGB target encoding on write.
+// colors linear HDR light, unclamped: passes write `Rgba16Float` scene color, which post.wgsl
+// tone maps into the target.
 
 struct FrameUniforms {
     // xyz: unit vector from the surface toward the sun.

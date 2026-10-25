@@ -6,8 +6,9 @@ use glam::{Mat4, Quat, Vec3};
 use sapphire_assets::mesh::{MeshAsset, MeshVertex, Submesh, ToonMaterialParams};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    CameraData, DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance, Msaa, RenderError,
-    RenderSettings, Renderer, SkyGradient, ViewData,
+    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle,
+    MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData,
+    Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -95,6 +96,26 @@ fn instance(id: u64, mesh: MeshHandle, transform: Mat4) -> MeshInstance {
     MeshInstance { id: InstanceId(id), mesh, transform }
 }
 
+/// Post-processing that shows linear values below about 0.98 as they are, as M0 drew them:
+/// a tone curve that is linear from black, a neutral grade, and no bloom or vignette.
+fn passthrough() -> PostParams {
+    PostParams {
+        exposure: 0.0,
+        bloom: BloomParams { intensity: 0.0, ..BloomParams::default() },
+        tone_curve: ToneCurve {
+            linear_start: 0.001,
+            linear_length: 0.99,
+            black_tightness: 1.0,
+            ..ToneCurve::default()
+        },
+        grade_a: ColorGrade::NEUTRAL,
+        grade_b: ColorGrade::NEUTRAL,
+        grade_blend: 0.0,
+        filter_strength: 1.0,
+        vignette: Vignette { intensity: 0.0, ..Vignette::default() },
+    }
+}
+
 /// A camera on +Z looking at the origin, with the unit sphere filling `fraction` of the
 /// image height at any field of view.
 fn framing_camera(fov_degrees: f32, (width, height): (u32, u32), fraction: f32) -> CameraData {
@@ -115,14 +136,32 @@ struct Frames {
     renderer: Renderer,
     graph: GraphExecutor,
     packets: FramePacketRing,
+    /// Copied into every packet: an even grey by default.
+    sky: SkyGradient,
+    /// Copied into every packet: [`passthrough`] by default.
+    post: PostParams,
 }
 
 impl Frames {
     fn new(gpu: &GpuContext, format: wgpu::TextureFormat, msaa: Msaa) -> Result<Self, RenderError> {
+        Self::with_settings(gpu, format, RenderSettings { msaa, ..RenderSettings::default() })
+    }
+
+    fn with_settings(
+        gpu: &GpuContext,
+        format: wgpu::TextureFormat,
+        settings: RenderSettings,
+    ) -> Result<Self, RenderError> {
         Ok(Self {
-            renderer: Renderer::new(gpu, format, RenderSettings { msaa })?,
+            renderer: Renderer::new(gpu, format, settings)?,
             graph: GraphExecutor::new(),
             packets: FramePacketRing::new(),
+            sky: SkyGradient {
+                zenith: Vec3::splat(0.5),
+                horizon: Vec3::splat(0.5),
+                ground: Vec3::splat(0.5),
+            },
+            post: passthrough(),
         })
     }
 
@@ -141,8 +180,8 @@ impl Frames {
         packet.views.push(ViewData { camera });
         // Light along the view direction, so everything the camera sees is lit.
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
-        packet.sky =
-            SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };
+        packet.sky = self.sky;
+        packet.post = self.post;
         packet.instances.changed.extend_from_slice(changed);
         packet.instances.removed.extend(removed.iter().copied().map(InstanceId));
 
@@ -236,6 +275,8 @@ fn outline_width_is_independent_of_fov_and_resolution() {
 fn msaa_support_matches_device_validation() {
     let gpu = gpu();
     let depth = gpu.format_support(wgpu::TextureFormat::Depth32Float);
+    // The main pass multisamples HDR scene color; the target only takes post's output.
+    let scene = gpu.format_support(wgpu::TextureFormat::Rgba16Float);
     let mesh = sphere(white(4.0));
     for format in [
         wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -248,8 +289,8 @@ fn msaa_support_matches_device_validation() {
         for msaa in [Msaa::Off, Msaa::X2, Msaa::X4, Msaa::X8] {
             let samples = msaa.sample_count();
             let supported = color.renderable
-                && color.supports_samples(samples)
-                && (samples == 1 || color.multisample_resolve)
+                && scene.supports_samples(samples)
+                && (samples == 1 || scene.multisample_resolve)
                 && depth.supports_samples(samples);
             match Frames::new(&gpu, format, msaa) {
                 Ok(mut frames) => {
@@ -270,9 +311,9 @@ fn msaa_support_matches_device_validation() {
         }
     }
     // 2× is the case the old adapter-level check got wrong: it must work wherever reported.
-    let rgba = gpu.format_support(FORMAT);
-    if rgba.supports_samples(2) && depth.supports_samples(2) {
-        Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X2 }).expect("2x MSAA");
+    if scene.supports_samples(2) && depth.supports_samples(2) {
+        Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X2, ..RenderSettings::default() })
+            .expect("2x MSAA");
     }
 }
 
@@ -283,6 +324,7 @@ fn internal_targets_follow_the_target_size() {
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
     let mesh = frames.renderer.upload_mesh(&sphere(white(4.0))).expect("upload");
     let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
+    frames.post = PostParams::default();
     for size in [(480, 270), (481, 270), (17, 1000), (480, 270)] {
         let texture = target(&gpu, FORMAT, size);
         let view = texture.create_view(&Default::default());
@@ -290,9 +332,10 @@ fn internal_targets_follow_the_target_size() {
             frames.render(&gpu, &view, framing_camera(38.0, size, 0.5), &std::mem::take(&mut add), &[]);
         assert!(error.is_none(), "{size:?}: {error:?}");
     }
-    // MSAA color and depth for each of the three sizes; returning to 480×270 reuses its pair.
+    // Per size: MSAA color, depth and scene color, plus 9 bloom textures (5 down, 4 up; each up
+    // level overlaps its down level). Returning to 480×270 reuses its set.
     let stats = frames.graph.stats();
-    assert_eq!((stats.transient_slots, stats.pool.created, stats.pool.evicted), (2, 6, 0));
+    assert_eq!((stats.transient_slots, stats.pool.created, stats.pool.evicted), (12, 36, 0));
 }
 
 #[test]
@@ -384,6 +427,79 @@ fn instances_persist_and_update_from_deltas() {
     assert_eq!(stats.draw_list_builds, 4);
 }
 
+/// A red sphere against the default sky at 96×64, for comparing post settings frame by frame.
+struct PostScene {
+    frames: Frames,
+    texture: wgpu::Texture,
+    /// The sphere until the first frame adds it.
+    add: Vec<MeshInstance>,
+}
+
+impl PostScene {
+    const SIZE: (u32, u32) = (96, 64);
+
+    fn new(gpu: &GpuContext) -> Self {
+        let mut frames = Frames::new(gpu, FORMAT, Msaa::default()).expect("renderer");
+        let mesh = frames.renderer.upload_mesh(&sphere(flat([0.9, 0.2, 0.15], 3.0))).expect("upload");
+        frames.sky = SkyGradient::default();
+        Self {
+            frames,
+            texture: target(gpu, FORMAT, Self::SIZE),
+            add: vec![instance(0, mesh, Mat4::IDENTITY)],
+        }
+    }
+
+    /// Renders with `post` and reads the frame back.
+    fn render(&mut self, gpu: &GpuContext, post: PostParams) -> Vec<[u8; 4]> {
+        self.frames.post = post;
+        let view = self.texture.create_view(&Default::default());
+        let camera = framing_camera(38.0, Self::SIZE, 0.6);
+        let error = self.frames.render(gpu, &view, camera, &std::mem::take(&mut self.add), &[]);
+        assert!(error.is_none(), "{error:?}");
+        read_back(gpu, &self.texture)
+    }
+}
+
+/// A grade strong enough to change every pixel of the test scene.
+fn strong_grade(temperature: f32) -> ColorGrade {
+    ColorGrade {
+        temperature,
+        saturation: 1.6,
+        contrast: 1.3,
+        lift: Vec3::splat(0.04),
+        gain: Vec3::new(1.05, 0.95, 1.0),
+        ..ColorGrade::NEUTRAL
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn values_above_one_survive_into_bloom() {
+    let gpu = gpu();
+    let size = (128, 128);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let glow_around = |brightness: f32| {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+        let mesh = frames.renderer.upload_mesh(&sphere(flat([brightness; 3], 0.0))).expect("upload");
+        frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+        // A hard threshold at 1: anything clamped to 1 on the way would add no bloom at all.
+        frames.post.bloom = BloomParams { threshold: 1.0, knee: 0.0, intensity: 1.0, scatter: 0.7 };
+        // A sphere 26 px across on black.
+        let camera = framing_camera(38.0, size, 0.2);
+        let error = frames.render(&gpu, &view, camera, &[instance(0, mesh, Mat4::IDENTITY)], &[]);
+        assert!(error.is_none(), "{error:?}");
+        let pixels = read_back(&gpu, &texture);
+        let at = |x: u32, y: u32| pixels[(y * size.0 + x) as usize];
+        assert!(at(64, 64)[0] > 200, "the sphere itself is bright: {:?}", at(64, 64));
+        // Twice the sphere's radius out, on all four sides.
+        [at(64 + 26, 64), at(64 - 26, 64), at(64, 64 + 26), at(64, 64 - 26)].map(|pixel| pixel[0])
+    };
+    assert_eq!(glow_around(0.9), [0; 4], "below the threshold: no bloom");
+    let halo = glow_around(4.0);
+    assert!(halo.iter().all(|&red| red >= 8), "an HDR spot must glow around itself: {halo:?}");
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn growing_the_instance_buffer_keeps_uploaded_instances() {
@@ -411,4 +527,72 @@ fn growing_the_instance_buffer_keeps_uploaded_instances() {
     assert_eq!(stats.instances, 400);
     let center = read_back(&gpu, &texture)[(32 * 64 + 32) as usize];
     assert!(is(center, GREEN), "instance 0 survived the growth: center {center:?}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn filter_strength_zero_renders_the_neutral_grade() {
+    let gpu = gpu();
+    let mut scene = PostScene::new(&gpu);
+    let mut render = |grade, filter_strength| {
+        scene.render(&gpu, PostParams { grade_a: grade, filter_strength, ..PostParams::default() })
+    };
+    let neutral = render(ColorGrade::NEUTRAL, 1.0);
+    let off = render(strong_grade(0.5), 0.0);
+    let half = render(strong_grade(0.5), 0.5);
+    let full = render(strong_grade(0.5), 1.0);
+    assert!(off == neutral, "strength 0 is exactly the neutral grade");
+    assert!(full != neutral && half != neutral && half != full, "the slider scales the grade");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn blending_two_luts_at_weights_zero_and_one_matches_each_lut_alone() {
+    let gpu = gpu();
+    let mut scene = PostScene::new(&gpu);
+    let (warm, cool) = (strong_grade(0.6), strong_grade(-0.6));
+    let mut render = |grade_a, grade_b, grade_blend| {
+        let pixels =
+            scene.render(&gpu, PostParams { grade_a, grade_b, grade_blend, ..PostParams::default() });
+        (pixels, scene.frames.renderer.stats().lut_bakes)
+    };
+    let (warm_alone, bakes) = render(warm, ColorGrade::NEUTRAL, 0.0);
+    assert_eq!(bakes, 1, "an unused grade B is not baked");
+    let (cool_alone, bakes) = render(cool, ColorGrade::NEUTRAL, 0.0);
+    assert_eq!(bakes, 2);
+    let (at_zero, bakes) = render(warm, cool, 0.0);
+    assert!(at_zero == warm_alone, "weight 0 is LUT A alone");
+    let (at_one, _) = render(warm, cool, 1.0);
+    assert!(at_one == cool_alone, "weight 1 is LUT B alone");
+    let (halfway, after) = render(warm, cool, 0.5);
+    assert!(halfway != warm_alone && halfway != cool_alone && warm_alone != cool_alone);
+    assert_eq!(after, bakes, "both LUTs stayed baked while the blend moved");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn post_runs_at_any_size_bloom_length_and_msaa() {
+    let gpu = gpu();
+    let mesh = sphere(white(4.0));
+    for msaa in [Msaa::Off, Msaa::X4] {
+        for bloom_levels in [0, 1, 5, sapphire_render::MAX_BLOOM_LEVELS] {
+            let settings = RenderSettings { msaa, bloom_levels };
+            let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+            let handle = frames.renderer.upload_mesh(&mesh).expect("upload");
+            frames.post =
+                PostParams { grade_b: strong_grade(0.3), grade_blend: 0.5, ..PostParams::default() };
+            let mut add = vec![instance(0, handle, Mat4::IDENTITY)];
+            for size in [(1, 1), (3, 2), (17, 1000), (641, 359)] {
+                let texture = target(&gpu, FORMAT, size);
+                let view = texture.create_view(&Default::default());
+                let camera = framing_camera(38.0, size, 0.5);
+                let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
+                assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
+                // Uploads, main, the bloom chain (a prefilter, then a down and an up pass per
+                // further level) and the composite.
+                let expected = 3 + if bloom_levels > 0 { 2 * bloom_levels - 1 } else { 0 };
+                assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
+            }
+        }
+    }
 }

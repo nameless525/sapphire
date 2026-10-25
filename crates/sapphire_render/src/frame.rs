@@ -18,7 +18,7 @@
 use glam::camera::rh::{proj::directx, view};
 use glam::{Mat4, Vec3};
 
-use crate::MeshHandle;
+use crate::{MeshHandle, PostParams};
 
 /// Packets in a [`FramePacketRing`]: one extracting, one rendering, one spare.
 const RING_SIZE: usize = 3;
@@ -29,8 +29,8 @@ const RING_SIZE: usize = 3;
 ///
 /// The packet grows with the systems that feed it (spec §4.6): skinned instances with their
 /// palette ranges (R2, A5), morph weights, lights (R5), VFX spawns and emitter parameters,
-/// post-process parameters including gameplay-triggered effects (R3, P3), the UI draw list, and
-/// debug draws (dev builds). Shadow cascades (R4) and UI 3D insets add views after the main
+/// gameplay-triggered post effects in `post` (P3), the UI draw list, and debug draws (dev
+/// builds). Shadow cascades (R4) and UI 3D insets add views after the main
 /// camera, and the time of day (W1) resolves into the scene constants.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
@@ -47,6 +47,8 @@ pub struct FramePacket {
     /// f32 precision in long sessions; shaders may only use it for effects that are periodic
     /// or tolerate the jump at the wrap.
     pub time_seconds: f32,
+    /// Exposure, bloom, tone curve, grade and vignette. Defaults to Sapphire's default look.
+    pub post: PostParams,
     /// Mesh instances added, changed or removed since the previous packet.
     pub instances: InstanceDeltas,
 }
@@ -59,12 +61,13 @@ impl FramePacket {
 
     /// Empties the packet for `frame`, keeping its vectors' capacity.
     fn reset(&mut self, frame: u64) {
-        let Self { frame: number, views, sun, sky, time_seconds, instances } = self;
+        let Self { frame: number, views, sun, sky, time_seconds, post, instances } = self;
         *number = frame;
         views.clear();
         *sun = DirectionalLight::default();
         *sky = SkyGradient::default();
         *time_seconds = 0.0;
+        *post = PostParams::default();
         instances.changed.clear();
         instances.removed.clear();
     }

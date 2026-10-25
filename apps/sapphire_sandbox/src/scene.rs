@@ -24,7 +24,7 @@ use sapphire_assets::mesh::MeshAsset;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{DirectionalLight, FramePacket, MeshHandle, SkyGradient, ViewData};
+use sapphire_render::{DirectionalLight, FramePacket, MeshHandle, PostParams, SkyGradient, ViewData};
 use sapphire_time::{ScaleHandle, ScaleSource};
 
 use crate::LOG_TARGET;
@@ -127,6 +127,7 @@ impl Scene {
             packet.sun = SUN;
             packet.sky = SkyGradient::default();
             packet.time_seconds = (time % SHADER_TIME_WRAP_SECONDS) as f32;
+            packet.post = PostParams::default();
         });
         self.ecs.extract();
         self.ecs.world().resource::<RenderExtract>().packet()

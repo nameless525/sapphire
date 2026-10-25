@@ -444,7 +444,7 @@ fn create_gpu_stack(
     let size = window.pixel_size();
     surface.configure(&gpu, size.width, size.height, PresentPolicy::Fifo)?;
     let format = surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
-    let mut renderer = Renderer::new(&gpu, format, RenderSettings { msaa })?;
+    let mut renderer = Renderer::new(&gpu, format, RenderSettings { msaa, ..RenderSettings::default() })?;
 
     let mesh = scene::load_mesh(platform, scene::CHARACTER_MESH)?;
     let character = renderer.upload_mesh(&mesh)?;

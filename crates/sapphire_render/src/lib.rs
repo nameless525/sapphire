@@ -1,5 +1,5 @@
-//! Sapphire's renderer (spec §5.12). M0: a toon character viewer built on the long-term
-//! structure.
+//! Sapphire's renderer (spec §5.12). A toon character viewer built on the long-term
+//! structure: M0's scene passes, M1's frame graph and HDR post-processing.
 //!
 //! # Owns
 //!
@@ -12,6 +12,9 @@
 //!   and updated from each packet's instance deltas. Only changed instances are uploaded, and
 //!   the draw list is rebuilt only when the drawn set changes.
 //! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
+//! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
+//!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
+//!   [`PostParams`].
 //! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
 //!   parallel recording and the frame's one submit.
 //!
@@ -29,7 +32,8 @@
 //!
 //! - Right-handed world, Y up. Reverse-Z depth with an infinite far plane: depth 1 at the near
 //!   plane, 0 at infinity, cleared to 0 and tested with `Greater` (better float precision).
-//! - Shading is linear; the sRGB target format encodes on write. No HDR or tonemapping in M0.
+//! - Shading is linear HDR light, unclamped, into `Rgba16Float` scene color. Post tone maps
+//!   and grades it into the target, whose sRGB format encodes on write.
 //! - Outline widths (`ToonMaterialParams::params.w`) are pixels at a 1080-pixel-high target.
 //!
 //! # Submission paths
@@ -58,6 +62,9 @@
 //!
 //! Vertex buffers: slot 0 is the mesh pool, slot 1 the draw records.
 //!
+//! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
+//! and a sampler, 1 the textures the pass reads.
+//!
 //! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
 //! (see `sapphire_rhi`): vertex 2, fragment 1. M1 clustered lighting adds a light buffer and
 //! one cluster buffer (grid and index lists packed together) to the fragment stage, which
@@ -81,6 +88,7 @@ mod gpu_types;
 pub mod graph;
 mod mesh_pool;
 mod pipelines;
+mod post;
 mod renderer;
 mod scene;
 mod shaders;
@@ -90,6 +98,7 @@ pub use frame::{
     SkyGradient, ViewData,
 };
 pub use mesh_pool::MeshHandle;
+pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
 pub use renderer::{Msaa, RenderError, RenderSettings, RenderStats, Renderer};
 
 /// Log target for this crate.

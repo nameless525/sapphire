@@ -46,7 +46,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
     let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
-    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X4 })?;
+    let mut renderer =
+        Renderer::new(&gpu, FORMAT, RenderSettings { msaa: Msaa::X4, ..RenderSettings::default() })?;
     let mesh = renderer.upload_mesh(&test_scene())?;
 
     let target = gpu.device().create_texture(&wgpu::TextureDescriptor {

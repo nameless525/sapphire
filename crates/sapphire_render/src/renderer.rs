@@ -1,4 +1,5 @@
-//! The M0 renderer: one render pass with three pipelines (toon, outline, sky).
+//! The renderer: a main pass with three pipelines (toon, outline, sky) into HDR scene color,
+//! then post-processing into the target.
 
 use std::num::NonZeroU64;
 
@@ -9,7 +10,8 @@ use crate::buffer;
 use crate::gpu_types::{DrawData, FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, TextureId};
 use crate::mesh_pool::MeshPool;
-use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines};
+use crate::pipelines::{DEPTH_FORMAT, Layouts, Pipelines, SCENE_COLOR_FORMAT};
+use crate::post::PostProcess;
 use crate::scene::GpuScene;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -47,9 +49,19 @@ impl Msaa {
 }
 
 /// Renderer options. M1 grows this into the quality-tier table (spec §5.12).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSettings {
     pub msaa: Msaa,
+    /// Bloom's half-size levels: 5 runs from ½ to 1/32 of the target (spec §5.12), and quality
+    /// tiers cut it on mobile. 0 turns bloom off; more than
+    /// [`MAX_BLOOM_LEVELS`](crate::MAX_BLOOM_LEVELS) is clamped.
+    pub bloom_levels: u32,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self { msaa: Msaa::default(), bloom_levels: 5 }
+    }
 }
 
 /// Errors from renderer setup and mesh uploads.
@@ -63,6 +75,8 @@ pub enum RenderError {
     MeshPoolFull(&'static str),
     #[error("{0:?} can't be rendered to on this device")]
     NotRenderable(wgpu::TextureFormat),
+    #[error("{0:?} can't be sampled with linear filtering on this device")]
+    NotFilterable(wgpu::TextureFormat),
     #[error("{format:?} does not support {samples}x MSAA on this device")]
     UnsupportedMsaa { format: wgpu::TextureFormat, samples: u32 },
 }
@@ -85,14 +99,17 @@ pub struct RenderStats {
     /// GPU buffers reallocated to grow, since the renderer was created. Growth copies data and
     /// rebuilds bind groups, so it should settle after loading.
     pub buffer_growths: u32,
+    /// Grading LUTs baked since the renderer was created. Bakes happen only when the grade or
+    /// tone curve changes, so this should grow at time-of-day keys and settings changes only.
+    pub lut_bakes: u32,
 }
 
 /// Draws [`FramePacket`]s.
 ///
 /// Each frame's packet is [`prepare`](Self::prepare)d (its instance deltas applied to the
-/// persistent scene, CPU only) and then [`record`](Self::record)ed as passes in the app's
-/// [`FrameGraph`], which the app can add its own passes to (UI, debug, readback) before
-/// executing it.
+/// persistent scene and any changed grading LUT baked, CPU only) and then
+/// [`record`](Self::record)ed as passes in the app's [`FrameGraph`], which the app can add its
+/// own passes to (UI, debug, readback) before executing it.
 ///
 /// Per-frame data reaches the GPU through a [`StagingBelt`](wgpu::util::StagingBelt): mapped
 /// staging buffers that are reused across frames, copied from at the start of the frame's
@@ -102,7 +119,6 @@ pub struct RenderStats {
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    color_format: wgpu::TextureFormat,
     settings: RenderSettings,
     labels: bool,
     layouts: Layouts,
@@ -115,6 +131,7 @@ pub struct Renderer {
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
     scene_bind_group: wgpu::BindGroup,
+    post: PostProcess,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
@@ -128,29 +145,38 @@ struct PreparedFrame {
 }
 
 impl Renderer {
-    /// Creates pipelines for `color_format` (the surface's sRGB view format). Fails if the
-    /// device can't render to that format, or to depth, at the requested sample count.
+    /// Creates pipelines for `color_format`, the target's: the surface's sRGB view format, or
+    /// another format that encodes on write. Fails if the device can't render to it, or can't
+    /// render, filter and resolve HDR scene color (`Rgba16Float`) and depth at the requested
+    /// sample count.
     pub fn new(
         gpu: &GpuContext,
         color_format: wgpu::TextureFormat,
         settings: RenderSettings,
     ) -> Result<Self, RenderError> {
         let samples = settings.msaa.sample_count();
-        let color = gpu.format_support(color_format);
-        if !color.renderable {
+        if !gpu.format_support(color_format).renderable {
             return Err(RenderError::NotRenderable(color_format));
         }
-        if !color.supports_samples(samples) || (samples > 1 && !color.multisample_resolve) {
-            return Err(RenderError::UnsupportedMsaa { format: color_format, samples });
+        let scene = gpu.format_support(SCENE_COLOR_FORMAT);
+        if !scene.renderable {
+            return Err(RenderError::NotRenderable(SCENE_COLOR_FORMAT));
+        }
+        if !scene.filterable {
+            return Err(RenderError::NotFilterable(SCENE_COLOR_FORMAT));
+        }
+        if !scene.supports_samples(samples) || (samples > 1 && !scene.multisample_resolve) {
+            return Err(RenderError::UnsupportedMsaa { format: SCENE_COLOR_FORMAT, samples });
         }
         let depth = gpu.format_support(DEPTH_FORMAT);
         if !depth.renderable || !depth.supports_samples(samples) {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
+        let post = PostProcess::new(gpu, color_format, settings.bloom_levels)?;
 
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);
-        let pipelines = Pipelines::new(&device, &layouts, color_format, samples, gpu.pipeline_cache());
+        let pipelines = Pipelines::new(&device, &layouts, SCENE_COLOR_FORMAT, samples, gpu.pipeline_cache());
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -188,7 +214,6 @@ impl Renderer {
         Ok(Self {
             device,
             queue: gpu.queue().clone(),
-            color_format,
             settings,
             labels: gpu.label("").is_some(),
             layouts,
@@ -200,6 +225,7 @@ impl Renderer {
             meshes,
             scene,
             scene_bind_group,
+            post,
             uploads,
             prepared: None,
             stats: RenderStats::default(),
@@ -219,8 +245,9 @@ impl Renderer {
     }
 
     /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
-    /// (rebuilding the draw list only if the drawn set changed), computes the frame constants
-    /// and sizes the buffers. [`Self::record`] then uploads what changed and draws.
+    /// (rebuilding the draw list only if the drawn set changed), computes the frame constants,
+    /// sizes the buffers and bakes any grading LUT the packet's post parameters changed.
+    /// [`Self::record`] then uploads what changed and draws.
     ///
     /// Every packet must be prepared, in order, including frames that draw nothing (no target,
     /// so no [`Self::record`]): a skipped packet would lose its deltas. Debug builds check the
@@ -244,25 +271,31 @@ impl Renderer {
         self.prepared = packet
             .main_view()
             .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet) });
+        self.post.prepare(queue, &packet.post);
         self.stats.draws = self.scene.draw_count();
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
+        self.stats.lut_bakes = self.post.bakes();
         self.update_pool_stats();
     }
 
-    /// The GPU half of a frame: adds the frame's uploads and the main pass to `graph`, drawing
-    /// into `target`. Record at most once per [`Self::prepare`], and only after preparing a
-    /// packet with a main view. The renderer stays borrowed until the graph has been executed,
-    /// which submits the uploads and so returns their staging buffers for reuse. Scene changes
-    /// from prepared frames that were never recorded are uploaded by the next recorded one.
+    /// The GPU half of a frame: adds the frame's uploads, the main pass and post-processing to
+    /// `graph`, drawing into `target`. Record at most once per [`Self::prepare`], and only
+    /// after preparing a packet with a main view. The renderer stays borrowed until the graph
+    /// has been executed, which submits the uploads and so returns their staging buffers for
+    /// reuse. Scene changes from prepared frames that were never recorded are uploaded by the
+    /// next recorded one.
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
-    /// attachments (MSAA color, depth) are transient graph textures sized from it, so any size
-    /// works, including one that changed since the last frame.
+    /// textures (HDR scene color, MSAA color, depth, the bloom chain) are transient graph
+    /// textures sized from it, so any size works, including one that changed since the last
+    /// frame.
     ///
-    /// The toon, outline and sky draws share one render pass, so on mobile GPUs the MSAA color
-    /// and depth are cleared, resolved and discarded without ever leaving tile memory.
+    /// The toon, outline and sky draws share one render pass that writes linear HDR scene
+    /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
+    /// without ever leaving tile memory. Post then reads the resolved scene color (see the
+    /// `post` module).
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
@@ -281,10 +314,18 @@ impl Renderer {
             sample_count: samples,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
         };
-        // Without MSAA the pass renders straight into the target.
+        // Without MSAA the pass renders straight into scene color.
         let msaa_color =
-            (samples > 1).then(|| graph.create_texture("msaa color", attachment(self.color_format)));
+            (samples > 1).then(|| graph.create_texture("msaa color", attachment(SCENE_COLOR_FORMAT)));
         let depth = graph.create_texture("depth", attachment(DEPTH_FORMAT));
+        let scene_color = graph.create_texture(
+            "scene color",
+            TransientDesc {
+                sample_count: 1,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                ..attachment(SCENE_COLOR_FORMAT)
+            },
+        );
 
         // The uploads need the staging belt exclusively; everything else is shared.
         let Self {
@@ -297,10 +338,14 @@ impl Renderer {
             ref meshes,
             ref mut scene,
             ref scene_bind_group,
+            ref mut post,
             ref mut uploads,
             ..
         } = *self;
         let (scene_uploads, draw_list, draws) = scene.split_for_record();
+        let (post_uniforms, post_buffer) = post.uniforms();
+        // A handle, so `post` can be borrowed mutably for its passes below.
+        let post_buffer = post_buffer.clone();
 
         // Buffers aren't graph resources yet, so the uploads are a side effect added first:
         // the main pass reads what they copy.
@@ -313,17 +358,20 @@ impl Renderer {
                 bytemuck::bytes_of(&ViewUniforms::new(&camera, size)),
             );
             scene_uploads.write(uploads, ctx.encoder);
+            upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
 
-        let mut main = graph.add_pass("main").write(target).write(depth);
+        let mut main = graph.add_pass("main").write(scene_color).write(depth);
         if let Some(msaa_color) = msaa_color {
             main = main.write(msaa_color);
         }
         main.record(move |ctx| {
             let (view, resolve_target, store) = match msaa_color {
-                Some(msaa_color) => (ctx.view(msaa_color), Some(ctx.view(target)), wgpu::StoreOp::Discard),
-                None => (ctx.view(target), None, wgpu::StoreOp::Store),
+                Some(msaa_color) => {
+                    (ctx.view(msaa_color), Some(ctx.view(scene_color)), wgpu::StoreOp::Discard)
+                }
+                None => (ctx.view(scene_color), None, wgpu::StoreOp::Store),
             };
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some("main"),
@@ -375,6 +423,8 @@ impl Renderer {
             pass.set_pipeline(&pipelines.sky);
             pass.draw(0..3, 0..1);
         });
+
+        post.record(graph, scene_color, target, labels);
     }
 
     /// Counters from the last [`Self::prepare`] plus pool totals.

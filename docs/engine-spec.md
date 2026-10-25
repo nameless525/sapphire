@@ -23,6 +23,11 @@ A custom Rust engine for a Zenless Zone Zero–style 3D anime action game, shipp
 - **Party:** three characters with swapping; one is controlled at a time, and the off-field characters keep ticking.
 - **Frame rate:** 60 fps on desktop. On mobile, 30 fps is the baseline and 60 fps the high-tier target.
 - **Mode:** single-player first. Online services such as accounts, gacha and patching come later and are server-authoritative.
+- **Look:** the anime aesthetic of Wuthering Waves and Zenless Zone Zero, not generic toon shading.
+  - Cel-shaded characters with authored light response sit in a stylized but grounded world.
+  - One time-of-day key drives sky, fog, ambient, shadow tint, the character light rig and the grade.
+  - The picture is built from gradients and atmosphere and finished with a glowing, non-filmic grade.
+  - [docs/m1-plan.md](m1-plan.md) §2 ranks the pillars.
 
 ### 1.2 Platforms
 
@@ -282,7 +287,7 @@ pub struct FramePacket {
 | `sapphire_serialize` | L2 | Authored (RON), cooked (rkyv) and save/network (postcard) formats | `serde`, `ron`, `rkyv`, `postcard` | M1 |
 | `sapphire_assets` | L2 | Handles, packs, async loading, residency, hot reload | `zstd`, `lz4_flex`, `memmap2`, `blake3` | M1 |
 | `sapphire_rhi` | L2 | wgpu device and feature tiers, uploads, pools, pipeline cache | `wgpu`, `wgpu-profiler` | M0 |
-| `sapphire_render` | L3 | Frame graph, toon and environment renderers, post, upscaling | `sapphire_rhi`, `wesl`, `naga`, `encase`, `bytemuck` | M1–M3 |
+| `sapphire_render` | L3 | Frame graph, anime character and environment renderers, time of day, post, upscaling | `sapphire_rhi`, `wesl`, `naga`, `encase`, `bytemuck` | M1–M3 |
 | `sapphire_anim` | L3 | Skeletal runtime, anim graph, IK, spring bones, cloth | `ozz-animation-rs` (vendored) | M2 |
 | `sapphire_physics` | L3 | Collision world, queries, character capsules, hit shapes | `rapier3d`, `parry3d` | M2 |
 | `sapphire_audio` | L3 | FMOD Studio integration and cue playback | FMOD (own bindings); `kira` as fallback | M2 |
@@ -561,13 +566,21 @@ The big one. It owns everything from `FramePacket` to pixels.
 - **Sun:** cascaded shadows. Desktop has 4 cascades (far cascades cached and updated in turns); mobile has 2.
 - **Character shadow (desktop):** a separate high-resolution per-character shadow frustum for crisp contact shadows.
 - **Ambient:**
-  - L2 spherical-harmonics probes baked per zone.
+  - A per-zone probe grid: sky visibility as SH plus bounce baked per time-of-day key (static per-zone probes go wrong as soon as the sun moves).
+  - Reflection probes are relit at runtime on desktop and Mobile-High, and static on Mobile-Low (Genshin's approach).
   - Reflection probes: BC6H on desktop; RGBA16F or RGB9E5 at small sizes on mobile.
   - Capsule AO for characters on all tiers; GTAO on desktop.
 
-**Toon character shading**
+**Anime character shading**
 
-One uber-shader family, with at most 8 static permutation bits: skinned, alpha-test, outline, morph, face, hair, eye, transparent.
+One uber-shader family, with at most 8 static permutation bits: skinned, alpha-test, outline, morph, face, hair, eye, transparent. Everything else is a uniform branch. M1's track C ([m1-plan.md](m1-plan.md)) refines what follows:
+
+- **Two diffuse modes:** ramp rows (Genshin, Star Rail, WuWa), or analytic bands with per-ID colors (ZZZ, cheapest on mobile).
+- **Lighting:** cast shadows push pixels into the shadow band. Characters receive only environment casters and never self-shadow; the ground gets a per-character shadow.
+- **Stylized character GI:** spherized, camera-biased normals, plus an HSV clamp.
+- **A character-only depth prepass on every tier** feeds rim light, hair shadow on the face, and eyes over the bangs.
+- **Faces** get a vertical SDF channel for light from above.
+- **Metals** use a matcap, plus a reflection add when metallic > 0.9.
 
 - **Two-tone light split:** N·L is thresholded into light and shadow. Painted ILM / lightmap masks (specular mask, shadow bias, specular threshold, material ID) shift the threshold.
 - **Ramps:**
@@ -595,12 +608,14 @@ One uber-shader family, with at most 8 static permutation bits: skinned, alpha-t
 - **Grass:** instances generated on the GPU on desktop; low-density CPU-placed instances on mobile.
 - **Sky:**
   - A gradient sky plus animated 2D cloud layers, and sun and moon discs.
-  - Everything is driven by artist time-of-day curves, not physical atmosphere.
+  - Everything is driven by artist time-of-day curves, not physical atmosphere: one `TodTimeline` of `TodKey`s, evaluated in OkLab, is the single source for sky, fog, ambient, shadow tint, post and the character light rig.
+- **Fog:** distance and height fog colored by the sky horizon, plus fog cards, on every tier. Volumetric fog is desktop-only and comes later.
 
 **Post-processing**
 
 - **Bloom:** a downsample chain from 1/2 to 1/32 resolution, with an emissive-driven bloom mask.
-- **Tonemapping:** a custom tone curve and grading baked into a 32³ LUT. No ACES look.
+- **Tonemapping:** a custom tone curve and grading baked into a 32³ LUT. No ACES look. Two LUTs can blend (time of day, zones), and a user filter-strength slider scales the grade, as both target games offer.
+- **Anime compositing:** a wide "diffusion" glow on top of bloom, a character bloom mask, 2–4 screen-space gradient ("para") layers and sprite lens flares.
 - **Gameplay-triggered effects:** finish-freeze, halftone, radial blur and chromatic aberration, triggered from `PostParams`.
 - **Desktop only:** depth of field in cutscenes and optional camera motion blur.
 - **Mobile:** bloom composite, LUT, vignette and gameplay effects are fused into one full-screen pass to save bandwidth.
@@ -612,7 +627,7 @@ One uber-shader family, with at most 8 static permutation bits: skinned, alpha-t
 
 **Materials, shaders and PSOs**
 
-- **Source:** WGSL with WESL imports (`wesl` 0.6), validated and reflected with naga. Parameter structs are laid out with `encase` / `bytemuck`; bindings are generated with `wgsl_bindgen`.
+- **Source:** WGSL with WESL imports (`wesl` 0.6), validated and reflected with naga. Parameter structs are laid out with `encase` (through glam's `encase` feature) / `bytemuck`. They are written by hand and checked against naga's reflection in tests. `wgsl_bindgen` is out: it is built on the archived `naga_oil` and can't read WESL imports.
 - **Permutation inventory:** the cooker writes, per pack, the list of `(family, permutation bits, vertex layout, render state)` it needs.
 - **Warm-up:**
   - At boot, compile the global pipelines behind the splash screen.
@@ -648,7 +663,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 **Tests**
 
-- Golden images per pass on lavapipe (Linux), WARP (Windows) and Metal (macOS runner), compared with `nv-flip` tolerances.
+- Golden images per pass on lavapipe (Linux, pinned Mesa), WARP (Windows, pinned NuGet build) and Metal (the hosted macOS runner's paravirtual GPU), one golden set per backend, compared with `nv-flip` mean and percentile thresholds. Toon edges flip whole pixels, so the gates are p95/p99 plus an error-pixel budget, alongside intermediate-buffer goldens (Q6, M1 plan §3).
 - Permutation compile tests: every material compiles on every backend in CI.
 
 ### 5.13 `sapphire_anim` (L3)
@@ -1172,8 +1187,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 | Every PR | Build desktop binaries | macOS, Windows, Linux |
 | Every PR | Compile-only builds for iOS (device and simulator) and Android | macOS (iOS), Linux (Android) |
 | Every PR | Combat replay suite | macOS, Windows, Linux |
-| Every PR | Golden images: lavapipe (Vulkan) and WARP (DX12) | Linux, Windows |
-| Nightly | Golden images on Metal | Self-hosted Mac (**Verify** whether hosted macOS runners expose a usable GPU) |
+| Every PR | Golden images: lavapipe (Vulkan) and WARP (DX12), required; Metal (paravirtual GPU), informational until stable | Linux, Windows, macOS |
 | Nightly | Full cook of both `desktop` and `mobile`; package all 5 platforms | Mixed |
 | Nightly | Device smoke: install, boot, load a zone, 2 minutes of scripted combat, collect frame times and memory | Self-hosted Mac mini with an iPhone and an Android phone attached |
 | Weekly | Thermal soak: 30 minutes of combat on Mobile-Low devices; budget regression report | Same |
@@ -1201,7 +1215,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 | Milestone | Window | Build | Exit test |
 |---|---|---|---|
 | **M0 Bring-up** | Months 0–2 | Workspace, layer rules and CI on 3 OSes. `sapphire_platform` (SDL3 main callbacks) and `sapphire_rhi` (Metal / Vulkan / DX12) on all 5 platforms. Skeletons of `sapphire_core`, `sapphire_math`, `sapphire_jobs` and `sapphire_time`. Tracy, `sapphire_crash`, and iOS Xcode / Android Gradle packaging. A glTF character with a basic toon shader and hull outline. | **The same commit** runs a toon-shaded character at target fps on Mac, Windows, Linux (including Steam Deck), an iPhone and an Android phone. Background → foreground survives on both phones, and a forced crash reaches Sentry from every platform. |
-| **M1 Data path** | Months 2–6 | ECS, reflection and serialization; the `sapphire_assets` runtime. `sapphire_pipeline`: glTF / FBX, `ctt` BC and ASTC, meshopt, packs, content-hash cache, hot reload. Renderer v1: frame graph, compute skinning, forward lighting, shadows, the full toon recipe, outlines, bloom, LUT. `sapphire_input`, `sapphire_debug`, golden-image tests. | Editing a ramp or material parameter shows up on desktop *and* phone without a restart. Golden images pass on 3 backends. |
+| **M1 Data path** | Months 2–6 | ECS, reflection and serialization; the `sapphire_assets` runtime. `sapphire_pipeline`: glTF / FBX, `ctt` BC and ASTC, meshopt, packs, content-hash cache, hot reload. Renderer v1: frame graph, compute skinning, forward lighting, shadows, the anime character recipe (track C), the world look (time of day, sky, fog, ambient probes, stylized environment shader) and the post stack. VRM import and anime map tools, `sapphire_input`, `sapphire_debug`, live link, golden-image tests. The plan is [m1-plan.md](m1-plan.md). | Editing a ramp, material parameter or time-of-day key shows up on desktop *and* phone without a restart. The look-dev scene meets the tier budgets on all 5 platforms. Golden images pass on 3 backends. |
 | **M2 Combat slice** | Months 4–10 | `sapphire_anim` (ozz, inertialization, IK, spring bones), `sapphire_physics`, the combat core, party swap, camera director, one enemy AI, FMOD, VFX v1, touch controls, live link, and the timeline editor v1. | One character against one enemy **feels right** with a gamepad on desktop and with touch on a phone. Replays are deterministic in CI, and Mobile-Low holds 30 fps while thermally throttled. **This is the go/no-go gate.** If tuning still feels slow, take the off-ramp in the report: move gameplay and tools to Godot with gdext, and keep the Rust systems. |
 | **M3 World and tools** | Months 8–18 | Zones and transitions, navigation, sequencer and dialogue, Luau, `sapphire_ui` with the HUD and menus, saves, localization, the editor document model with undo and play-in-editor, and the pipeline (PSO) inventory. | A zone with 3 encounters, a boss authored with no Rust changes, one cutscene, and a full HUD and menus in 2 languages, all on 5 platforms. |
 | **M4 Ship readiness** | Month 12 onward | PSO warm-up, signed chunk manifests and `sapphire_patch`, quality tiers with dynamic resolution and thermal handling, the symbol pipeline, accessibility, and store compliance. | Zero shader hitches in a scripted playthrough. Patches download only changed chunks. Builds pass TestFlight, Play internal testing and Steam review. |
@@ -1227,9 +1241,9 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 | Q2 | ~~Android 16 KB page alignment~~ **Answered in M0:** NDK r28+ defaults already produce 16 KB-aligned `.so` files; the rustflag in `.cargo/config.toml` is belt and braces. | M0 |
 | Q3 | Steam Deck: native Linux build, or the Windows build under Proton? Prefer native. | M0 |
 | Q4 | Which Windows default backend, Vulkan or DX12, based on Intel / AMD / NVIDIA driver testing? | M1 |
-| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). | M1 |
-| Q6 | Do hosted CI runners expose a GPU for Metal golden images? | M1 |
-| Q7 | Does ozz-animation-rs cover offline animation building, or is the C++ ozz tooling needed in the cooker? | Start of M2 |
+| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). | M1 |
+| Q6 | ~~Do hosted CI runners expose a GPU for Metal golden images?~~ **Answered (M1 plan):** yes. GitHub's macOS arm64 runners expose Metal as "Apple Paravirtual device", and wgpu runs its image tests there on every PR (shader validation is broken there; 3 vCPU). Goldens run per PR on lavapipe, WARP and `macos-26` Metal. | M1 |
+| Q7 | Does ozz-animation-rs cover offline animation building, or is the C++ ozz tooling needed in the cooker? **Partly answered (M1 research):** it has no offline tools, so the cooker needs the C++ ozz tooling. It also needs **nightly Rust** (`portable_simd`), which conflicts with the pinned stable toolchain, so the runtime choice is open too. | Start of M2 |
 | Q8 | FMOD license tier and cost; if blocked, the `kira` backend becomes primary. | M2 |
 | Q9 | Device floors (A14 / Snapdragon 865 / 6 GB), measured while thermally throttled. | M2 |
 | Q10 | iOS policy on downloadable scripts and content: legal and App Review guidance. | Before any live-service plan |
@@ -1262,7 +1276,8 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `notify` | 8.2 | `sapphire_assets` (dev), tools | |
 | `wgpu`, `naga` | 30 | `sapphire_rhi`, `sapphire_render` | |
 | `wesl` | 0.6 | `sapphire_render` | `naga_oil` is archived |
-| `encase`, `bytemuck`, `wgsl_bindgen` | 0.13, –, 0.23 | `sapphire_render` | |
+| `encase`, `bytemuck` | 0.13, – | `sapphire_render` | `encase` through glam's `encase` feature; not `wgsl_bindgen` (built on archived `naga_oil`, no WESL) |
+| `vrm-spec` | 0.1 | `sapphire_pipeline` | pixiv's VRM 0.x/1.0 and MToon types, Apache-2.0 (M1 VRM import) |
 | `wgpu-profiler` | 0.28 | `sapphire_rhi` | |
 | `dlss_wgpu` | 6.0 | `sapphire_render` (Windows / Linux) | NVIDIA + Vulkan only |
 | `objc2-metal-fx`, `objc2-foundation` | latest | `sapphire_render`, `sapphire_platform` (Apple) | |

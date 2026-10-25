@@ -893,10 +893,10 @@ mod tests {
         // Mobile-Low's ~590 rows on an iPhone 12 in landscape (2532×1170).
         let mobile_low = table.get(TierId::MobileLow).resolution.base_scale(1170);
         assert!((mobile_low * 1170.0 - 590.0).abs() < 1.0, "{mobile_low}");
-        // Desktop-High: 1440p native, 4K upscaled from 1440 rows.
+        // Desktop tiers render at native height until R7's upscaler (tiers.ron explains why).
         let desktop_high = &table.get(TierId::DesktopHigh).resolution;
-        assert_eq!(desktop_high.base_scale(1440), 1.0);
-        assert!((desktop_high.base_scale(2160) - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(desktop_high.base_scale(2160), 1.0);
+        assert_eq!(table.get(TierId::DesktopLow).resolution.base_scale(2160), 1.0);
         let tiny = Resolution { scale: 1.0, max_height: Some(10), dynamic_floor: 1.0 };
         assert_eq!(tiny.base_scale(1000), MIN_RENDER_SCALE, "never below the minimum");
     }
@@ -1047,7 +1047,7 @@ mod tests {
         let mut quality = quality(QualitySettings::default());
         assert_eq!(quality.active().id, TierId::DesktopHigh);
         assert_eq!(quality.render_scale((1920, 1080), &timing), 1.0);
-        assert_eq!(quality.render_scale((3840, 2160), &timing), 1440.0 / 2160.0, "the tier's height cap");
+        assert_eq!(quality.render_scale((3840, 2160), &timing), 1.0, "native until R7's upscaler");
         assert_eq!(quality.update_tier(), None, "r.tier hasn't changed");
 
         // A tier set through the cvar applies once, and back.

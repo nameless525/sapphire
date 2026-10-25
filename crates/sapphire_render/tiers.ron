@@ -9,15 +9,19 @@
 //   `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines` (C4),
 //   `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
-// Both desktop tiers draw today's frame exactly at 1080p and below (the golden images), so they
-// differ only in what later packages read, and in the internal height above it.
+// Both desktop tiers draw today's frame exactly (the golden images), so they differ only in what
+// later packages read. They render at native height until R7 brings an upscaler: a bilinear
+// upscale would soften the inverted-hull outlines and hard two-tone edges the anime look depends
+// on. R7 restores §3.1's caps with it (Desktop-High 1440 rows, 4K upscaled; Desktop-Low 1080).
+// The mobile tiers keep theirs: phones need the lower internal resolution now.
 (
     type: "sapphire::render::TierTable",
     version: 1,
     data: (
         tiers: [
             (
-                // RTX 3070 / RX 6700 XT, M2 Pro: 1440p native, or 4K upscaled from 1440 rows.
+                // RTX 3070 / RX 6700 XT, M2 Pro: 1440p native, or 4K upscaled from 1440 rows once
+                // R7's upscaler exists; native height until then (see the top of this file).
                 id: DesktopHigh,
                 // A discrete GPU, or Apple silicon (an integrated GPU on Metal), with 16 GB:
                 // §3.1 budgets 10 GB of RAM. RAM can't tell a GTX 1060 machine apart; a device
@@ -28,7 +32,7 @@
                 ],
                 frame_rate: 60,
                 gpu_frame_ms: 12.0,
-                resolution: (scale: 1.0, max_height: 1440, dynamic_floor: 0.7),
+                resolution: (scale: 1.0, dynamic_floor: 0.7),
                 antialiasing: (msaa: X4, temporal: false),
                 bloom_levels: 5,
                 light_path: Clustered,
@@ -46,7 +50,7 @@
                 id: DesktopLow,
                 frame_rate: 60,
                 gpu_frame_ms: 14.0,
-                resolution: (scale: 1.0, max_height: 1080, dynamic_floor: 0.7),
+                resolution: (scale: 1.0, dynamic_floor: 0.7),
                 antialiasing: (msaa: X4, temporal: false),
                 bloom_levels: 5,
                 light_path: Clustered,

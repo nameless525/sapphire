@@ -104,7 +104,7 @@ Each package is one pull request, or a few, into `main`. Size: **S** is a day or
 | R4 | **Shadows:** CSM (4 cascades on D, 2 on mobile) with sun quantization and caching, plus a per-character shadow frustum on D. Billboards and impostors face the light in the shadow pass. | L | R1, R2 | Shadow *tint* comes from W1. |
 | R5 | **Lights:** clustered forward+ on D (a 16×9×24 grid), per-object lists with up to 4 lights on mobile. | M | R1 | |
 | R6 | **Quality tiers:** `tiers.ron` (render scale, cascades, AA, bloom levels, AO, fog, particles, lights) and the dynamic-resolution hook. | S | R1 | |
-| R7 | **AA:** TAA with velocity and a responsive mask on D; transient 4× MSAA on mobile, measured on devices. Upscaler mask plumbing for DLSS, MetalFX and FSR comes later. | M | R2 | |
+| R7 | **AA:** TAA with velocity and a responsive mask on D; transient 4× MSAA on mobile, measured on devices. Upscaler mask plumbing for DLSS, MetalFX and FSR comes later. TAA upsampling restores the desktop tiers' internal-height caps (R6 renders desktop at native height until then). | M | R2 | |
 
 ### Track C: anime characters
 

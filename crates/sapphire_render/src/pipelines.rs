@@ -259,7 +259,7 @@ fn material_layout(device: &wgpu::Device, family: MaterialFamily) -> wgpu::BindG
 }
 
 /// Fixed-function state that differs between passes. Entry points are `vs_<name>` and
-/// `fs_<name>`.
+/// `fs_<name>`, with spaces in `name` as underscores.
 struct PassDesc<'a> {
     name: &'static str,
     module: &'a wgpu::ShaderModule,
@@ -273,7 +273,7 @@ struct PassDesc<'a> {
 /// position attribute.
 #[derive(Debug)]
 pub(crate) struct MeshPipelines {
-    pub toon: wgpu::RenderPipeline,
+    pub character: wgpu::RenderPipeline,
     pub outline: wgpu::RenderPipeline,
     /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`).
     pub scene_prepass: wgpu::RenderPipeline,
@@ -291,7 +291,7 @@ pub(crate) struct Pipelines {
     character_prepass: Option<wgpu::RenderPipeline>,
     pub sky: wgpu::RenderPipeline,
     target: PipelineTarget,
-    toon_module: wgpu::ShaderModule,
+    character_module: wgpu::ShaderModule,
     outline_module: wgpu::ShaderModule,
     prepass_module: wgpu::ShaderModule,
 }
@@ -358,7 +358,7 @@ impl Pipelines {
             character_prepass: None,
             sky,
             target,
-            toon_module: module("toon", shaders::TOON),
+            character_module: module("anime character", shaders::ANIME_CHARACTER),
             outline_module: module("outline", shaders::OUTLINE),
             prepass_module: module("prepass", shaders::PREPASS),
         };
@@ -372,13 +372,13 @@ impl Pipelines {
             return;
         }
         let buffers = MeshPass::Main.buffers(format);
-        let character = &self.target.character_layout;
-        let toon = self.target.build_with(
+        let character_layout = &self.target.character_layout;
+        let character = self.target.build_with(
             device,
-            character,
+            character_layout,
             PassDesc {
-                name: "toon",
-                module: &self.toon_module,
+                name: "anime character",
+                module: &self.character_module,
                 vertex_buffers: &buffers,
                 cull: Some(wgpu::Face::Back),
                 depth_write: true,
@@ -388,7 +388,7 @@ impl Pipelines {
         // Inverted hull: keep only the back faces of the extruded shell.
         let outline = self.target.build_with(
             device,
-            character,
+            character_layout,
             PassDesc {
                 name: "outline",
                 module: &self.outline_module,
@@ -408,7 +408,7 @@ impl Pipelines {
             &MeshPass::ScenePrepass.buffers(format),
             &normals_and_velocity,
         );
-        self.mesh[format_index(format)] = Some(MeshPipelines { toon, outline, scene_prepass });
+        self.mesh[format_index(format)] = Some(MeshPipelines { character, outline, scene_prepass });
     }
 
     /// Builds the character prepass's pipeline unless it exists: for the first skinned or
@@ -502,7 +502,8 @@ impl PipelineTarget {
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })];
-        let (vs, fs) = (format!("vs_{}", pass.name), format!("fs_{}", pass.name));
+        let entry = pass.name.replace(' ', "_");
+        let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(pass.name),
             layout: Some(layout),

@@ -113,7 +113,7 @@ packed!(
     /// The shading normal and the outline normal, each octahedral-encoded as snorm16 × 2
     /// ([`oct_encode`]). 8 bytes, read as two `Snorm16x2`.
     ///
-    /// Both directions are within 0.008° of the source. The toon light split is a hard
+    /// Both directions are within 0.008° of the source. The two-tone light split is a hard
     /// threshold on N·L, so normal error moves the terminator line directly: 8-bit octahedral
     /// (about 1°) makes it wobble across a smooth face. The outline normal sets the hull's
     /// extrusion and must stay as smooth as it was baked; 8 bits would save nothing anyway,

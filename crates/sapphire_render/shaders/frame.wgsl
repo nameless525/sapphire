@@ -3,13 +3,14 @@
 //
 // Bind groups (the budget behind them is in the crate docs):
 //   0  frame   per-frame constants: sun, sky, time and light counts; the local lights (binding
-//              1) and their lists (binding 2) are declared in lights.wgsl and toon.wgsl
+//              1) and their lists (binding 2) are declared in lights.wgsl and
+//              anime_character.wgsl
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
 //              family the pass draws (materials.wgsl)
-//   3  material one material's textures and samplers, per family (toon.wgsl declares the anime
-//              character family's)
+//   3  material one material's textures and samplers, per family (anime_character.wgsl
+//              declares the anime character family's)
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
 // colors linear HDR light, unclamped: passes write `Rgba16Float` scene color, which post.wgsl
@@ -142,7 +143,7 @@ fn safe_normalize2(v: vec2<f32>) -> vec2<f32> {
     return select(vec2<f32>(0.0), v * inverseSqrt(length_squared), length_squared > 1e-12);
 }
 
-// The sky gradient in direction `dir`. Also the toon shader's ambient light.
+// The sky gradient in direction `dir`. Also the anime character shader's ambient light.
 fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     let y = dir.y;
     // A wide pale band above the horizon that deepens toward the zenith.

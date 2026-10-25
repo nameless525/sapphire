@@ -289,9 +289,9 @@ impl Default for DirectionalLight {
     }
 }
 
-/// A point or spot light (spec §5.12 "Lighting"). The toon shader adds it to the sun's light
-/// within the toon model: the same light/shadow split and authored shadow color, in the light's
-/// color (see `toon.wgsl`).
+/// A point or spot light (spec §5.12 "Lighting"). The anime character shader adds it to the
+/// sun's light within the same two-tone model: the same light/shadow split and authored shadow
+/// color, in the light's color (see `anime_character.wgsl`).
 ///
 /// Its brightness is `color × intensity` wherever it is near, fading smoothly to nothing at
 /// `range`, with no inverse-square hot spot: an intensity of 1 lights a surface next to it as
@@ -329,11 +329,12 @@ pub struct MeshInstance {
     pub id: InstanceId,
     pub mesh: MeshHandle,
     /// Object to world. Mirroring (negative determinant) is not supported yet: it flips
-    /// winding, so the toon and outline passes would cull the wrong faces.
+    /// winding, so the anime character and outline passes would cull the wrong faces.
     pub transform: Mat4,
 }
 
-/// A three-stop sky gradient in linear RGB. It also drives the toon shader's ambient term.
+/// A three-stop sky gradient in linear RGB. It also drives the anime character shader's
+/// ambient term.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkyGradient {
     pub zenith: Vec3,

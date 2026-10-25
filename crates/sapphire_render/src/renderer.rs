@@ -148,8 +148,8 @@ pub enum RenderError {
 /// Renderer counters for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
-    /// Draw calls per mesh pass in the last prepared frame (toon and outline each issue this
-    /// many; the sky adds one).
+    /// Draw calls per mesh pass in the last prepared frame (the anime character and outline
+    /// passes each issue this many; the sky adds one).
     pub draws: u32,
     /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
@@ -832,7 +832,7 @@ impl Renderer {
 
 /// The main pass's pipeline for a mesh format: the surface shading, or the outline hull.
 fn main_pipeline(pipelines: &MeshPipelines, outline: bool) -> &wgpu::RenderPipeline {
-    if outline { &pipelines.outline } else { &pipelines.toon }
+    if outline { &pipelines.outline } else { &pipelines.character }
 }
 
 /// Begins a prepass's render pass: `depth` and the `colors` cleared, all stored.

@@ -28,7 +28,7 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(vec![path])
 }
 
-/// A toon material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
+/// A character material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
 /// them; they are stored linear in the file.
 struct Look {
     name: &'static str,
@@ -38,7 +38,7 @@ struct Look {
     /// Outlines are a dark tint of the surface, not black.
     outline: [u8; 3],
     /// `[shadow threshold, softness, rim strength, outline width in pixels at 1080p]`.
-    toon_params: [f32; 4],
+    character_shading: [f32; 4],
 }
 
 const SKIN: Look = Look {
@@ -46,35 +46,35 @@ const SKIN: Look = Look {
     base: [255, 224, 206],
     shade: [236, 170, 168],
     outline: [110, 52, 48],
-    toon_params: [0.1, 0.03, 0.25, 4.1],
+    character_shading: [0.1, 0.03, 0.25, 4.1],
 };
 const OUTFIT: Look = Look {
     name: "Outfit",
     base: [38, 42, 66],
     shade: [150, 140, 200],
     outline: [12, 12, 22],
-    toon_params: [0.0, 0.02, 0.4, 5.5],
+    character_shading: [0.0, 0.02, 0.4, 5.5],
 };
 const HAIR: Look = Look {
     name: "Hair",
     base: [72, 196, 214],
     shade: [110, 120, 210],
     outline: [18, 56, 84],
-    toon_params: [0.05, 0.015, 0.5, 4.8],
+    character_shading: [0.05, 0.015, 0.5, 4.8],
 };
 const ACCENT: Look = Look {
     name: "Accent",
     base: [214, 240, 46],
     shade: [200, 160, 120],
     outline: [64, 60, 10],
-    toon_params: [-0.1, 0.01, 0.3, 5.5],
+    character_shading: [-0.1, 0.01, 0.3, 5.5],
 };
 const PEDESTAL: Look = Look {
     name: "Pedestal",
     base: [118, 122, 134],
     shade: [150, 150, 178],
     outline: [26, 26, 32],
-    toon_params: [0.2, 0.05, 0.1, 6.9],
+    character_shading: [0.2, 0.05, 0.1, 6.9],
 };
 
 /// Every material in the mannequin, in file order.
@@ -93,7 +93,7 @@ impl Look {
             "extras": {
                 "shade_color": srgb8(self.shade[0], self.shade[1], self.shade[2]),
                 "outline_color": srgb8(self.outline[0], self.outline[1], self.outline[2]),
-                "toon_params": self.toon_params,
+                "character_shading": self.character_shading,
             },
         })
     }
@@ -110,14 +110,14 @@ const HAT_HEIGHT: f32 = 0.3;
 
 /// Builds the M0 sample character as a binary glTF (`.glb`).
 ///
-/// A stylized figure that exercises the toon renderer and the importer:
+/// A stylized figure that exercises the anime character renderer and the importer:
 ///
 /// - A sphere head (skin, thinner outline via `COLOR_0` alpha) under a hair cap.
 /// - Capsule torso (flattened by a non-uniform node scale) and legs in the outfit color.
 /// - Capsule arms in skin, the left one a mirror (negative scale) of the right.
 /// - A hard-edged cone hat in the accent color and a hard-edged box pedestal.
 ///
-/// Toon parameters live in material extras, as a Blender export would carry them.
+/// Shading parameters live in material extras, as a Blender export would carry them.
 pub fn mannequin_glb() -> Vec<u8> {
     let mut gltf = GltfWriter::default();
     let [skin, outfit, hair, accent, pedestal] = LOOKS.map(|look| gltf.add_material(look.material()));
@@ -226,7 +226,7 @@ mod tests {
             let material = &slot.unwrap_or_else(|| panic!("material {} missing", look.name)).generated;
             let [r, g, b] = look.base;
             assert_eq!(material.base_color, srgb8(r, g, b), "{}", look.name);
-            let [threshold, softness, rim, outline] = look.toon_params;
+            let [threshold, softness, rim, outline] = look.character_shading;
             assert_eq!(
                 (material.light_split.threshold, material.light_split.softness),
                 (threshold, softness)

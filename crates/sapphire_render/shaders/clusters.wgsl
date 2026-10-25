@@ -3,7 +3,7 @@
 // CPU reference in `src/lights/clusters.rs`, which the GPU tests compare it with.
 //
 // Bind groups: 0 holds the frame constants, the lights and the cluster buffer (written here,
-// read by the toon pass); 1 is the main view.
+// read by the anime character pass); 1 is the main view.
 //
 // Each workgroup walks the lights in batches of one per thread: every thread moves one light
 // into view space and workgroup memory, then every thread tests the whole batch against its

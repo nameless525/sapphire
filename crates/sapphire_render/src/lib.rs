@@ -1,4 +1,4 @@
-//! Sapphire's renderer (spec §5.12). A toon character viewer built on the long-term
+//! Sapphire's renderer (spec §5.12). An anime character viewer built on the long-term
 //! structure: M0's scene passes, M1's frame graph, HDR post-processing and local lights.
 //!
 //! # Owns
@@ -16,16 +16,17 @@
 //!   family's parameter buffer, each block copied as cooked, and their textures in group 3 (see
 //!   "Material buffers" below). [`Renderer::update_material`] rewrites one slot: the path for
 //!   hot reload and live link. The anime character family drives the anime character shader
-//!   (`shaders/toon.wgsl`) and its outlines, which sample its textures through their cooked
-//!   swizzles.
+//!   (`shaders/anime_character.wgsl`) and its outlines, which sample its textures through
+//!   their cooked swizzles.
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
-//! - The toon pipelines: two-tone toon opaque, inverted-hull outline, sky gradient.
+//! - The scene pipelines: two-tone anime character opaque, inverted-hull outline, sky gradient.
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
-//!   view and capped, then listed for the toon shader by clustered forward+ (a 16 × 9 × 24
-//!   grid binned by a compute pass, desktop) or per-object lists (at most 4 per instance,
-//!   chosen on the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths run on
-//!   every backend. The toon shader lights by each local light in the sun's toon model.
+//!   view and capped, then listed for the anime character shader by clustered forward+ (a
+//!   16 × 9 × 24 grid binned by a compute pass, desktop) or per-object lists (at most 4 per
+//!   instance, chosen on the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths
+//!   run on every backend. The anime character shader lights by each local light in the sun's
+//!   two-tone model.
 //! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`].

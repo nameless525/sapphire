@@ -1,6 +1,6 @@
 //! Clustered forward+ (spec §5.12 "Lighting", the desktop path): a compute pass bins the frame's
-//! lights into a grid of view-space clusters, and each toon pixel walks only its cluster's
-//! list.
+//! lights into a grid of view-space clusters, and each anime character pixel walks only its
+//! cluster's list.
 //!
 //! # The grid
 //!
@@ -183,7 +183,7 @@ pub(crate) mod reference {
         slice.min((SLICES - 1) as f32) as u32
     }
 
-    /// View depth from a fragment's reverse-Z depth, as `toon.wgsl` computes it.
+    /// View depth from a fragment's reverse-Z depth, as `anime_character.wgsl` computes it.
     pub(crate) fn view_depth(fragment_z: f32, near: f32) -> f32 {
         near / fragment_z.max(1e-30)
     }

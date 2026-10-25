@@ -14,7 +14,7 @@
 //!   material), holding a generated [`AnimeCharacterMaterial`]: `baseColorFactor` is its base
 //!   color, `alphaMode` and `alphaCutoff` its alpha, and material `extras` may set
 //!   `shade_color` and `outline_color` (region 0's, linear RGB or RGBA, alpha ignored) and
-//!   `toon_params` (`[light-split threshold, softness, rim strength, outline width]`).
+//!   `character_shading` (`[light-split threshold, softness, rim strength, outline width]`).
 //!   Everything else keeps its default. In Blender these are custom properties on the
 //!   material, exported with "Include → Custom Properties". A mesh's sidecar can bind slots to
 //!   material documents instead (see [`sapphire_assets::material`]).
@@ -88,7 +88,7 @@ const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file.
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 3 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 4 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -512,10 +512,9 @@ struct MaterialExtras {
     shade_color: Option<[f32; 4]>,
     #[serde(default, deserialize_with = "linear_rgba")]
     outline_color: Option<[f32; 4]>,
-    /// `[light-split threshold, softness, rim strength, outline width]`: the key M0's Blender
-    /// workflow and the sample mannequin use.
-    #[serde(rename = "toon_params")]
-    shading: Option<[f32; 4]>,
+    /// `[light-split threshold, softness, rim strength, outline width]`, as the sample
+    /// mannequin carries them.
+    character_shading: Option<[f32; 4]>,
 }
 
 /// Accepts RGB (opaque) or RGBA, since Blender color properties can be either.
@@ -1033,7 +1032,7 @@ fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial,
     if let Some(outline_color) = extras.outline_color {
         region.outline_color = rgb(outline_color);
     }
-    if let Some([threshold, softness, rim, outline_width]) = extras.shading {
+    if let Some([threshold, softness, rim, outline_width]) = extras.character_shading {
         generated.light_split.threshold = threshold;
         generated.light_split.softness = softness;
         generated.rim.strength = rim;

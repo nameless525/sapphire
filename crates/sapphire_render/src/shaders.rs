@@ -16,7 +16,7 @@ macro_rules! pass_source {
 }
 
 pub(crate) const SKY: &str = pass_source!("sky.wgsl");
-pub(crate) const TOON: &str = pass_source!("lights.wgsl", "toon.wgsl");
+pub(crate) const ANIME_CHARACTER: &str = pass_source!("lights.wgsl", "anime_character.wgsl");
 pub(crate) const OUTLINE: &str = pass_source!("outline.wgsl");
 /// The light-cluster compute pass.
 pub(crate) const CLUSTERS: &str = pass_source!("lights.wgsl", "clusters.wgsl");
@@ -52,7 +52,7 @@ mod tests {
 
     const PASSES: [(&str, &str, &[&str]); 7] = [
         ("sky", SKY, &["vs_sky", "fs_sky"]),
-        ("toon", TOON, &["vs_toon", "fs_toon"]),
+        ("anime_character", ANIME_CHARACTER, &["vs_anime_character", "fs_anime_character"]),
         ("outline", OUTLINE, &["vs_outline", "fs_outline"]),
         ("post", POST, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
         ("clusters", CLUSTERS, &["cs_clusters"]),
@@ -62,7 +62,7 @@ mod tests {
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
     const MESH_ENTRY_POINTS: [(&str, &str, &str, MeshPass); 4] = [
-        ("toon", TOON, "vs_toon", MeshPass::Main),
+        ("anime_character", ANIME_CHARACTER, "vs_anime_character", MeshPass::Main),
         ("outline", OUTLINE, "vs_outline", MeshPass::Main),
         ("prepass", PREPASS, "vs_character_prepass", MeshPass::CharacterPrepass),
         ("prepass", PREPASS, "vs_scene_prepass", MeshPass::ScenePrepass),
@@ -203,17 +203,17 @@ mod tests {
     #[test]
     fn rust_structs_match_wgsl_layouts() {
         let expected = [
-            ("toon", TOON, "FrameUniforms", size_of::<FrameUniforms>()),
-            ("toon", TOON, "ViewUniforms", size_of::<ViewUniforms>()),
-            ("toon", TOON, "InstanceData", size_of::<InstanceData>()),
-            ("toon", TOON, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
-            ("toon", TOON, "AnimeCharacterRegion", size_of::<AnimeCharacterRegion>()),
+            ("anime_character", ANIME_CHARACTER, "FrameUniforms", size_of::<FrameUniforms>()),
+            ("anime_character", ANIME_CHARACTER, "ViewUniforms", size_of::<ViewUniforms>()),
+            ("anime_character", ANIME_CHARACTER, "InstanceData", size_of::<InstanceData>()),
+            ("anime_character", ANIME_CHARACTER, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
+            ("anime_character", ANIME_CHARACTER, "AnimeCharacterRegion", size_of::<AnimeCharacterRegion>()),
             ("sky", SKY, "EnvironmentParams", size_of::<EnvironmentParams>()),
             ("sky", SKY, "FoliageParams", size_of::<FoliageParams>()),
             ("sky", SKY, "SkyParams", size_of::<SkyParams>()),
             ("sky", SKY, "FogCardParams", size_of::<FogCardParams>()),
             ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
-            ("toon", TOON, "LocalLight", size_of::<GpuLight>()),
+            ("anime_character", ANIME_CHARACTER, "LocalLight", size_of::<GpuLight>()),
             ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
             ("prepass", PREPASS, "InstanceData", size_of::<InstanceData>()),
             ("prepass", PREPASS, "ViewUniforms", size_of::<ViewUniforms>()),
@@ -293,7 +293,7 @@ mod tests {
             ("SkyParams", offsets!(SkyParams { discs, stars, clouds, cirrus, modes, swizzles })),
             ("FogCardParams", offsets!(FogCardParams { color, fade, scroll, modes, swizzles })),
         ];
-        let module = validate("toon", TOON);
+        let module = validate("anime_character", ANIME_CHARACTER);
         for (name, rust) in blocks {
             let (_, ty) = module
                 .types
@@ -326,9 +326,9 @@ mod tests {
     fn wgsl_light_constants_match_rust() {
         use crate::lights::ListMode;
         use crate::lights::clusters::{CLUSTER_COUNT, SLICES, TILES_X, TILES_Y, WORKGROUP_SIZE};
-        let toon = validate("toon", TOON);
+        let character = validate("anime_character", ANIME_CHARACTER);
         let clusters = validate("clusters", CLUSTERS);
-        for module in [&toon, &clusters] {
+        for module in [&character, &clusters] {
             assert_eq!(wgsl_u32(module, "CLUSTER_TILES_X"), TILES_X);
             assert_eq!(wgsl_u32(module, "CLUSTER_TILES_Y"), TILES_Y);
             assert_eq!(wgsl_u32(module, "CLUSTER_SLICES"), SLICES);
@@ -357,7 +357,7 @@ mod tests {
         use crate::pipelines::material_binding;
         type M = AnimeCharacterMaterial;
         type P = AnimeCharacterParams;
-        let character = validate("toon", TOON);
+        let character = validate("anime_character", ANIME_CHARACTER);
         let slots = [
             ("CHARACTER_BASE_COLOR", M::BASE_COLOR),
             ("CHARACTER_CONTROL", M::CONTROL),

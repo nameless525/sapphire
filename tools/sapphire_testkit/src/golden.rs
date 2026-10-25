@@ -4,7 +4,7 @@
 //! CPU rasterizers and GPUs disagree in the last bit, so each family keeps its own goldens.
 //! Comparison uses NVIDIA's FLIP, a perceptual per-pixel error in [0, 1], through `nv-flip`
 //! (as wgpu's own tests do), and gates on the mean and a high percentile rather than the
-//! maximum: toon shading's hard terminators and outlines turn tiny precision differences into
+//! maximum: two-tone shading's hard terminators and outlines turn tiny precision differences into
 //! whole-pixel flips along edges, which a max would always fail on.
 
 use std::fs::File;

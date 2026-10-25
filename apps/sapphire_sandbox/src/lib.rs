@@ -3,7 +3,7 @@
 //! It runs the whole engine path on every platform: the SDL3 platform layer, the fixed 60 Hz
 //! simulation on the engine clocks and ECS, plain-data
 //! [`FramePacket`](sapphire_render::FramePacket)s filled by change-detecting extract systems,
-//! and the wgpu toon renderer's persistent scene, drawing the cooked sample mannequin.
+//! and the wgpu anime renderer's persistent scene, drawing the cooked sample mannequin.
 //!
 //! # Controls
 //!

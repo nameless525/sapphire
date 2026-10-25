@@ -1,6 +1,6 @@
 //! Local lights (spec §5.12 "Lighting", M1 R5): the packet's point and spot lights, culled to
-//! the main view and capped on the CPU, then listed for the toon shader in one of two ways
-//! ([`LightPath`]):
+//! the main view and capped on the CPU, then listed for the anime character shader in one of
+//! two ways ([`LightPath`]):
 //!
 //! - **Clustered forward+ (desktop):** a compute pass bins the lights into a 16 × 9 × 24 grid of
 //!   view-space clusters ([`clusters`]), and each pixel walks its cluster's list.
@@ -8,8 +8,9 @@
 //!   ([`objects`]), and the instance's pixels walk those.
 //!
 //! Both fill one list buffer (group 0, binding 2) in one layout, a count and then 16-bit light
-//! indices, so the toon shader reads either the same way, and both run on every backend. The
-//! path is a [`RenderSettings`] choice made by the app, never a platform one (rule R7).
+//! indices, so the anime character shader reads either the same way, and both run on every
+//! backend. The path is a [`RenderSettings`] choice made by the app, never a platform one
+//! (rule R7).
 //!
 //! # Per frame
 //!
@@ -22,18 +23,18 @@
 //! 4. **List:** the cluster pass, or per-object lists chosen for the instances that changed and,
 //!    when the lights changed, for every instance.
 //!
-//! A frame without lights runs neither: the toon shader skips local lights on a uniform branch,
-//! so it costs nothing beyond the frame constants.
+//! A frame without lights runs neither: the anime character shader skips local lights on a
+//! uniform branch, so it costs nothing beyond the frame constants.
 //!
 //! # Shading
 //!
-//! `shaders/toon.wgsl` lights a pixel by each listed light the way it lights it by the sun: the
-//! same two-tone split of N·L (threshold, ILM bias, softness, one-pixel edge) and the same
-//! authored shadow color, in the light's color and brightness, scaled by its smooth range
-//! window and spot cone. Local lights therefore push the light/shadow split where they reach and
-//! tint both tones, instead of adding a smooth Lambert falloff. Their sum is clamped to a
-//! luminance ceiling so stacked lights tint a character rather than blow it out (the reference
-//! games' `_FilterLight`).
+//! `shaders/anime_character.wgsl` lights a pixel by each listed light the way it lights it by
+//! the sun: the same two-tone split of N·L (threshold, ILM bias, softness, one-pixel edge) and
+//! the same authored shadow color, in the light's color and brightness, scaled by its smooth
+//! range window and spot cone. Local lights therefore push the light/shadow split where they
+//! reach and tint both tones, instead of adding a smooth Lambert falloff. Their sum is clamped
+//! to a luminance ceiling so stacked lights tint a character rather than blow it out (the
+//! reference games' `_FilterLight`).
 //!
 //! # Later milestones
 //!
@@ -160,7 +161,7 @@ impl GpuLight {
     }
 }
 
-/// Rec. 709 luminance of linear RGB (`LUMINANCE` in `toon.wgsl`).
+/// Rec. 709 luminance of linear RGB (`LUMINANCE` in `anime_character.wgsl`).
 pub(crate) fn luminance(rgb: Vec3) -> f32 {
     rgb.dot(Vec3::new(0.2126, 0.7152, 0.0722))
 }

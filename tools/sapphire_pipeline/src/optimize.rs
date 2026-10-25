@@ -6,7 +6,7 @@
 //! 1. **Submeshes merge by material**, so each material is one draw.
 //! 2. **The LOD chain** ([`LodSettings`]): each level simplifies the last one kept, submesh by
 //!    submesh, with meshoptimizer's attribute-aware simplifier. Normals weigh in, because the
-//!    toon light split is a hard threshold on them. Vertices that two submeshes share (a
+//!    two-tone light split is a hard threshold on them. Vertices that two submeshes share (a
 //!    material seam) are locked, so simplifying the submeshes independently can't open cracks
 //!    between them. A level stops at its triangle target or its error budget, whichever comes
 //!    first, and is dropped if it saves less than [`MIN_LOD_REDUCTION`] of the last kept

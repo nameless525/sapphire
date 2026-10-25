@@ -550,7 +550,7 @@ fn quantized_meshes_match_their_f32_reference() {
     };
     let render = |format| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
-        // Light from the upper left, so the toon terminator crosses the sphere.
+        // Light from the upper left, so the two-tone terminator crosses the sphere.
         frames.sun = DirectionalLight {
             direction: Vec3::new(0.6, -0.5, -0.6).normalize(),
             color: Vec3::ONE,
@@ -1190,7 +1190,7 @@ fn middle_row_red(pixels: &[[u8; 4]], (width, height): (u32, u32)) -> Vec<f32> {
 
 #[test]
 #[ignore = "needs a GPU"]
-fn a_local_light_shifts_the_toon_split() {
+fn a_local_light_shifts_the_light_split() {
     let gpu = gpu();
     let size = (160, 160);
     let texture = target(&gpu, FORMAT, size);

@@ -1,6 +1,6 @@
-// Local lights (spec §5.12 "Lighting", M1 R5), shared by the toon pass and the light-cluster
-// pass. `shaders.rs` puts it after frame.wgsl and before the pass's own file. Mirrors
-// `src/lights.rs` and `src/lights/clusters.rs`.
+// Local lights (spec §5.12 "Lighting", M1 R5), shared by the anime character pass and the
+// light-cluster pass. `shaders.rs` puts it after frame.wgsl and before the pass's own file.
+// Mirrors `src/lights.rs` and `src/lights/clusters.rs`.
 //
 // `frame.lights` says what group 0 binding 2 holds this frame:
 //   x  local lights in `lights`
@@ -54,7 +54,7 @@ fn cluster_slice(depth: f32) -> u32 {
 
 // The light's smooth range window: 1 at the light, falling to 0 at its range with zero slope,
 // so a light's reach ends without an edge. There is no inverse-square hot spot: intensity is
-// the light's brightness wherever it is near, as toon lighting wants.
+// the light's brightness wherever it is near, as two-tone lighting wants.
 fn light_window(distance_squared: f32, inverse_range_squared: f32) -> f32 {
     let fade = saturate(1.0 - distance_squared * inverse_range_squared);
     return fade * fade;

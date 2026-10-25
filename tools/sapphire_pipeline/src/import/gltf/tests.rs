@@ -129,7 +129,7 @@ fn maps_materials_and_their_extras() {
         "extras": {
             "shade_color": [0.1, 0.2, 0.3],
             "outline_color": [0.0, 0.0, 0.0, 0.5],
-            "toon_params": [0.2, 0.05, 0.4, 0.006],
+            "character_shading": [0.2, 0.05, 0.4, 0.006],
             "some_other_blender_property": "ignored",
         },
     }));
@@ -198,7 +198,7 @@ fn slot_names_stay_unique_when_names_look_made_up() {
 fn rejects_malformed_material_extras() {
     let mut writer = GltfWriter::default();
     let material =
-        writer.add_material(json!({ "name": "Broken", "extras": { "toon_params": [0.1, 0.2, 0.3] } }));
+        writer.add_material(json!({ "name": "Broken", "extras": { "character_shading": [0.1, 0.2, 0.3] } }));
     let mesh = writer.add_mesh("Mesh", &[(&slanted_triangle(true), Some(material))]);
     let node = writer.add_node(json!({ "mesh": mesh }));
     writer.add_root(node);

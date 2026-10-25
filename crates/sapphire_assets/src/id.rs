@@ -65,6 +65,33 @@ impl AssetId {
         self.0
     }
 
+    /// The ID whose text form is `text`, for constants in code that names an asset by ID
+    /// (`const MANNEQUIN: AssetId = AssetId::from_text("8659a15c-…")`). Panics, at compile time
+    /// in a constant, unless `text` is the canonical spelling; runtime text goes through
+    /// [`FromStr`], which returns an error instead.
+    pub const fn from_text(text: &str) -> Self {
+        let text = text.as_bytes();
+        assert!(text.len() == TEXT_LEN, "an asset ID is 36 characters long");
+        let mut bytes = [0u8; 16];
+        let (mut index, mut digit) = (0, 0);
+        while index < TEXT_LEN {
+            let c = text[index];
+            if index == HYPHENS[0] || index == HYPHENS[1] || index == HYPHENS[2] || index == HYPHENS[3] {
+                assert!(c == b'-', "an asset ID has hyphens after 8, 12, 16 and 20 digits");
+            } else {
+                let value = match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    _ => panic!("an asset ID's digits are lowercase hex"),
+                };
+                bytes[digit / 2] |= if digit % 2 == 0 { value << 4 } else { value };
+                digit += 1;
+            }
+            index += 1;
+        }
+        Self(bytes)
+    }
+
     /// The text form, as ASCII.
     fn to_text(self) -> [u8; TEXT_LEN] {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -185,6 +212,8 @@ mod tests {
     fn text_round_trips_in_byte_order() {
         assert_eq!(id().to_string(), TEXT);
         assert_eq!(TEXT.parse(), Ok(id()));
+        const CONSTANT: AssetId = AssetId::from_text(TEXT);
+        assert_eq!(CONSTANT, id());
         assert_eq!(format!("{:?}", id()), format!("AssetId({TEXT})"));
         for bytes in [[0; 16], [0xff; 16], *b"sapphire assets!"] {
             let id = AssetId::from_bytes(bytes);
@@ -230,6 +259,11 @@ mod tests {
         assert_eq!(parse(wide), Err(Length(35)));
         let wide = "00112233-4455-6677-8899-aabbccddeeéf";
         assert_eq!(parse(wide), Err(Character { index: 34, found: 'é', expected: "a lowercase hex digit" }));
+
+        // Constants take the same spelling only.
+        for bad in [upper.as_str(), shifted, missing, not_hex, "0011"] {
+            assert!(std::panic::catch_unwind(|| AssetId::from_text(bad)).is_err(), "{bad}");
+        }
     }
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]

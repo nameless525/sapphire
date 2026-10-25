@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
@@ -47,6 +48,7 @@ pub(crate) struct FrameState<'a> {
     /// The windowed app's input; offscreen modes have none.
     pub input: Option<&'a SandboxInput>,
     pub scene: &'a Scene,
+    pub assets: AssetStats,
 }
 
 impl DevTools {
@@ -156,6 +158,7 @@ impl DevTools {
             cvars: &self.cvars,
             world_clock: frame.scene.world_clock(),
             time_of_day: Some(frame.scene.time_of_day()),
+            assets: Some(frame.assets),
         })
     }
 

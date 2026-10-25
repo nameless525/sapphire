@@ -103,7 +103,7 @@ const RESERVED_NAMES: [&str; 22] = [
 /// APK assets: relative, `/`-separated, with components of lowercase ASCII letters,
 /// digits, `.`, `_` and `-` that neither end in `.` nor use a Windows reserved name.
 /// That also means a path can never escape the content root.
-fn validate_path(path: &str) -> Result<(), ContentError> {
+pub(crate) fn validate_path(path: &str) -> Result<(), ContentError> {
     let reason = if path.is_empty() {
         Some("path is empty")
     } else if path.starts_with('/') {

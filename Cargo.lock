@@ -1461,6 +1461,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2309,17 +2315,25 @@ name = "sapphire_assets"
 version = "0.1.0"
 dependencies = [
  "bevy_reflect",
+ "blake3",
  "bytemuck",
  "half",
  "ktx2",
+ "lz4_flex",
  "postcard",
+ "profiling",
  "rend",
  "rkyv",
  "ron",
+ "sapphire_core",
+ "sapphire_jobs",
  "sapphire_reflect",
  "sapphire_serialize",
  "serde",
+ "slotmap",
  "thiserror",
+ "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -2353,6 +2367,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "profiling",
+ "sapphire_assets",
  "sapphire_core",
  "sapphire_input",
  "sapphire_math",

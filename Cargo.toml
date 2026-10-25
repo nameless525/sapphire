@@ -112,9 +112,23 @@ half = { version = "2.7.1", default-features = false }
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 
 # --- Assets and content (spec §5.10, §5.27) ---
-# The pipeline's content-cache keys today; pack and download hashes in sapphire_assets later (A4),
-# so it isn't tool-only. Its SIMD kernels build with the C compiler SDL's build already needs.
+# The pipeline's content-cache keys, and the pack format's block, asset and table-of-contents
+# hashes in sapphire_assets (M1 A4). Its SIMD kernels (NEON on phones) build with the C compiler
+# SDL's build already needs.
 blake3 = "1.8.7"
+# Pack blocks compressed for most data (M1 A4): the reference C library, built with cc for every
+# target (the tools already built it, through ctt). Chosen over the pure-Rust `ruzstd` on
+# measurements (M5, one core, 64 KB blocks of cooked meshes and BC7/ASTC textures): it decodes
+# 1.0–1.3 GB/s against ruzstd 0.9's 0.27–0.35 GB/s, so a Mobile-Low zone load would be bound by
+# decoding rather than flash reads, and ruzstd's encoder stops at its fastest level (ratio 0.57
+# against level 19's 0.37 on the mannequin). Blocks are blake3-verified before they are
+# decoded, so corruption never reaches the decoder; hostile packs are ruled out by signed packs
+# (M4), and until then meet libzstd's own checks on malformed frames. No default features: no
+# legacy formats, no dictionary builder.
+zstd = { version = "0.13.3", default-features = false }
+# Pack blocks that must decode fast (M1 A4): pure Rust with no unsafe code (`safe-*`), 4–5.5 GB/s
+# decoding on the M5. Block format only: no frame format, so no xxhash.
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode", "safe-encode"] }
 # KTX2, the cooked texture container (M1 A2): sapphire_assets reads and writes it (the pipeline
 # writes through it). Its only dependency is bitflags; ctt uses the same version.
 ktx2 = "0.5.0"

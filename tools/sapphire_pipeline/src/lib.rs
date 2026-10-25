@@ -33,15 +33,17 @@
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache; a source can cook to sub-assets beside its own (a VRM's
 //!   rig).
-//! - [`cache`]: the cache key over everything that determines a cooked output, and the local
-//!   store of cooked outputs by key.
+//! - [`pack`]: the last stage (M1 A4): a cook's outputs into packs, the files content ships in,
+//!   with the grouping rules and the codec each kind is compressed with.
+//! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
+//!   local store of cooked outputs and pack encodings by key.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer.
 //!
 //! # Does not own
 //!
 //! - The [`AssetId`] type, the cooked formats (`.smesh`, the KTX2 texture profile, `.smat`,
-//!   `.srig`, what the character maps' texels mean) and the material documents and their GPU
-//!   blocks: `sapphire_assets`, shared with the runtime.
+//!   `.srig`, what the character maps' texels mean, `.spack` packs) and the material documents
+//!   and their GPU blocks: `sapphire_assets`, shared with the runtime.
 //! - Simulating spring bones and evaluating constraints and expressions: animation
 //!   (`sapphire_anim`, M2), from the rigs cooked here.
 //! - Baking masks from a character in Blender: a script under `tools/blender/`, described
@@ -52,14 +54,14 @@
 //!
 //! # Cooked files and IDs
 //!
-//! Cooked files mirror their source paths (`samples/mannequin.glb` →
-//! `samples/mannequin.smesh`), and the runtime still loads them by path. Decided in M1 A1:
-//! cooked outputs become addressable by ID with packs (A4), whose table of contents maps each
-//! [`AssetId`] to its data. Until then the pipeline writes no ID-to-path manifest: rule R5
-//! keeps path strings out of the runtime, so A4 would replace it, and the packer is a
-//! pipeline stage that gets each asset's ID and output from the cook in process
-//! ([`cook::CookReport`]). Sub-assets (a VRM's rig beside its mesh, `alicia.srig`) are assets
-//! like any other there, with IDs derived from their source's ([`meta::sub_asset_id`]).
+//! Loose cooked files mirror their source paths (`samples/mannequin.glb` →
+//! `samples/mannequin.smesh`): what tools read, and what hot reload (A8) will watch. The runtime
+//! never sees them. Content ships as packs ([`pack`], M1 A4), whose tables of contents map each
+//! [`AssetId`] to its data, so the runtime addresses assets by ID alone (rule R5). The packer
+//! gets each asset's ID and output from the cook in process ([`cook::CookReport`]), so no
+//! ID-to-path manifest exists anywhere. Sub-assets (a VRM's rig beside its mesh, `alicia.srig`)
+//! are assets like any other there and in packs, with IDs derived from their source's
+//! ([`meta::sub_asset_id`]).
 //!
 //! # Later milestones
 //!
@@ -70,7 +72,8 @@
 //!   (`VRMC_vrm_animation`) with M2's animation.
 //! - Skeletons as assets of their own, shared by meshes and animation clips (ozz archives,
 //!   M2); today each skinned mesh embeds its skeleton, and a VRM's rig indexes its mesh's.
-//! - Packs (A4), a shared cache, and the editor's daemon mode.
+//! - Pack groups per zone, character and encounter once those exist as documents (see
+//!   [`pack`]), a shared cache, and the editor's daemon mode.
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
 
@@ -86,6 +89,7 @@ pub mod material;
 pub mod mesh;
 pub mod meta;
 pub mod optimize;
+pub mod pack;
 pub mod samples;
 #[cfg(test)]
 mod test_util;

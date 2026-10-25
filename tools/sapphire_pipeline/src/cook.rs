@@ -7,8 +7,8 @@
 //!    part of those assets), and resolves their sidecars ([`meta`]), creating missing ones.
 //! 2. Plans each asset's output: its path under the content root, mirrored under the output
 //!    directory with the cooked format's extension (`samples/mannequin.glb` →
-//!    `samples/mannequin.smesh`). The runtime still finds cooked files by these paths; it
-//!    addresses assets by ID once packs land (M1 A4).
+//!    `samples/mannequin.smesh`). Tools read cooked files by these paths; the runtime reads
+//!    packs ([`crate::pack`], the stage after this one) and addresses assets by ID.
 //! 3. Removes stale files from the output directory: cooked files no source produces any
 //!    more, and temporary files from an interrupted run. Other files are left alone.
 //! 4. Keys each asset ([`CacheKey`]) and takes its output from the [`Cache`], or imports,
@@ -126,7 +126,8 @@ pub struct Recipe {
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
-const COOKED_EXTENSIONS: &[&str] = &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION, RIG_EXTENSION];
+pub(crate) const COOKED_EXTENSIONS: &[&str] =
+    &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION, RIG_EXTENSION];
 
 /// An asset a source cooks to besides its own (see the [module docs](self)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,6 +312,8 @@ pub struct CookedAsset {
     pub source: PathBuf,
     pub output: PathBuf,
     pub key: CacheKey,
+    /// blake3 of the cooked file's bytes, as written: what the packer keys its encoding by.
+    pub output_hash: blake3::Hash,
     pub status: CookStatus,
 }
 
@@ -364,7 +367,7 @@ pub fn cook_dir(
     }
     // Before writing, so an output whose name only changed case (on a case-insensitive file
     // system) is replaced rather than removed as stale.
-    let removed = prune(out_root, &outputs)?;
+    let removed = prune(out_root, &|path| outputs.contains_key(path), COOKED_EXTENSIONS)?;
 
     let cache = options.cache.map(Cache::new);
     let mut by_id = HashMap::with_capacity(plan.len());
@@ -457,14 +460,21 @@ fn cook_asset(
         dependencies: &dependencies,
     });
     let current = file_hash(output)?;
-    let done = |status| CookedAsset { id: *id, source: path.clone(), output: output.clone(), key, status };
+    let done = |status, output_hash| CookedAsset {
+        id: *id,
+        source: path.clone(),
+        output: output.clone(),
+        key,
+        output_hash,
+        status,
+    };
 
     let mut cached = None;
     if let Some(cache) = cache
         && let Some(hash) = cache.output_hash(&key)?
     {
         if current == Some(hash) {
-            return Ok(done(CookStatus::UpToDate));
+            return Ok(done(CookStatus::UpToDate, hash));
         }
         cached = cache.get(&key)?;
     }
@@ -478,10 +488,11 @@ fn cook_asset(
             (CookStatus::Cooked, cooked)
         }
     };
-    if current != Some(blake3::hash(&cooked)) {
+    let hash = blake3::hash(&cooked);
+    if current != Some(hash) {
         write_atomically(output, &cooked)?;
     }
-    Ok(done(status))
+    Ok(done(status, hash))
 }
 
 /// Imports, bakes and cooks one source, or the sub-asset `sub_asset` of it: the bytes of its
@@ -705,12 +716,17 @@ fn file_hash(path: &Path) -> Result<Option<blake3::Hash>, CookError> {
     }
 }
 
-/// Removes cooked and temporary files under `out_root` that aren't in `outputs`, then any
-/// directories that leaves empty. Returns the removed files.
-fn prune(out_root: &Path, outputs: &HashMap<PathBuf, PathBuf>) -> Result<Vec<PathBuf>, CookError> {
+/// Removes files under `out_root` with one of `extensions`, or temporary ones, that `keep`
+/// doesn't keep, then any directories that leaves empty. Returns the removed files. The cook
+/// prunes its cooked files and the packer its packs.
+pub(crate) fn prune(
+    out_root: &Path,
+    keep: &dyn Fn(&Path) -> bool,
+    extensions: &[&str],
+) -> Result<Vec<PathBuf>, CookError> {
     let mut removed = Vec::new();
     if out_root.is_dir() {
-        prune_dir(out_root, outputs, &mut removed)?;
+        prune_dir(out_root, keep, extensions, &mut removed)?;
     }
     Ok(removed)
 }
@@ -718,7 +734,8 @@ fn prune(out_root: &Path, outputs: &HashMap<PathBuf, PathBuf>) -> Result<Vec<Pat
 /// [`prune`] for one directory; returns whether it is now empty.
 fn prune_dir(
     dir: &Path,
-    outputs: &HashMap<PathBuf, PathBuf>,
+    keep: &dyn Fn(&Path) -> bool,
+    extensions: &[&str],
     removed: &mut Vec<PathBuf>,
 ) -> Result<bool, CookError> {
     let read_error = |source| CookError::Read { path: dir.to_owned(), source };
@@ -732,12 +749,12 @@ fn prune_dir(
             entry.file_type().map_err(|source| CookError::Read { path: path.clone(), source })?.is_dir();
         let remove_error = |source| CookError::Write { path: path.clone(), source };
         if is_dir {
-            if prune_dir(&path, outputs, removed)? {
+            if prune_dir(&path, keep, extensions, removed)? {
                 fs::remove_dir(&path).map_err(remove_error)?;
             } else {
                 empty = false;
             }
-        } else if is_cooked_or_temporary(&path) && !outputs.contains_key(&path) {
+        } else if has_extension(&path, extensions) && !keep(&path) {
             fs::remove_file(&path).map_err(remove_error)?;
             removed.push(path);
         } else {
@@ -747,14 +764,15 @@ fn prune_dir(
     Ok(empty)
 }
 
-fn is_cooked_or_temporary(path: &Path) -> bool {
+/// Whether `path` is a temporary file or has one of `extensions`.
+fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     let extension = path.extension().and_then(|extension| extension.to_str());
-    extension.is_some_and(|extension| extension == TEMP_EXTENSION || COOKED_EXTENSIONS.contains(&extension))
+    extension.is_some_and(|extension| extension == TEMP_EXTENSION || extensions.contains(&extension))
 }
 
 /// Writes via a temporary sibling and a rename, so a watcher (hot reload, M1) never sees
 /// a half-written file.
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookError> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookError> {
     let write_error = |source| CookError::Write { path: path.to_owned(), source };
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(write_error)?;

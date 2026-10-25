@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use egui::{Align2, Color32, FontId, Id, Order, RichText, Sense, Stroke, Ui, pos2, vec2};
+use sapphire_assets::AssetKind;
 use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
@@ -356,6 +357,65 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Input", device_name(frame.input_device, frame.gamepads));
         let adapter = &frame.gpu.caps().adapter;
         row(ui, "GPU", format!("{} ({})", adapter.name, adapter.backend));
+    });
+
+    ui.separator();
+    assets(ui, frame);
+}
+
+/// The asset server's counters and budgets (M1 A4).
+fn assets(ui: &mut Ui, frame: &OverlayFrame<'_>) {
+    egui::Grid::new("assets").num_columns(2).show(ui, |ui| {
+        let row = |ui: &mut Ui, name: &str, value: String| {
+            ui.label(name);
+            ui.monospace(value);
+            ui.end_row();
+        };
+        let Some(assets) = frame.assets else {
+            row(ui, "Assets", "none: the app runs no asset server".to_owned());
+            return;
+        };
+        row(
+            ui,
+            "Assets",
+            format!(
+                "{} ({} ready, {} loading, {} waiting, {} failed), {} unused, {} pinned",
+                assets.assets,
+                assets.ready,
+                assets.loading,
+                assets.waiting,
+                assets.failed,
+                assets.unused,
+                assets.pinned
+            ),
+        );
+        for kind in AssetKind::ALL {
+            let (resident, budget) = (assets.resident[kind.index()], assets.budgets.resident(kind));
+            let over = if resident > budget { ", over budget" } else { "" };
+            row(
+                ui,
+                &format!("  {kind}s"),
+                format!("{} of {}{over}", format_bytes(resident), format_bytes(budget)),
+            );
+        }
+        let upload = assets.last_upload;
+        row(
+            ui,
+            "Uploads",
+            format!(
+                "{} ({}) of {} a frame, {} queued, {} reads",
+                upload.assets,
+                format_bytes(upload.bytes),
+                format_bytes(assets.budgets.upload_per_frame),
+                upload.pending,
+                assets.reads_in_flight
+            ),
+        );
+        row(
+            ui,
+            "Since start",
+            format!("{} loads, {} unloads, {} failures", assets.loads, assets.unloads, assets.failures),
+        );
     });
 }
 

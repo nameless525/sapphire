@@ -6,6 +6,9 @@
 //! only). Waiting on a scope or a [`join`] runs other tasks on the waiting thread instead of
 //! blocking it.
 //!
+//! [`spawn_async`] runs detached work on the async compute pool: asset decode jobs, which the IO
+//! thread starts as its reads complete (M1 A4).
+//!
 //! Does not own: the IO thread (`sapphire_platform`, spec §4.3). `bevy_tasks`' `IoTaskPool` is
 //! left uninitialized. Named Tracy zones per task and thread priorities arrive with the
 //! profiling integration in M1.
@@ -301,6 +304,16 @@ where
     (result_a.expect("`a` ran on the calling thread"), result_b.expect("scope waits for every spawned task"))
 }
 
+/// Runs `task` on the async compute pool, detached: for work that may finish frames after it
+/// starts and that nothing waits on, such as decoding loaded assets (spec §4.3). `task` reports
+/// its result itself, through a channel say. Allocates per call (see the crate docs).
+///
+/// A panic in `task` unwinds out of it and is caught by the pool, whose worker keeps running;
+/// the panic hook still sees it. A task that must always report back catches its own panics.
+pub fn spawn_async(task: impl FnOnce() + Send + 'static) {
+    system().async_compute.spawn(async move { task() }).detach();
+}
+
 /// Calls `f(start, chunk)` for consecutive chunks of `slice` in parallel, where `start` is the
 /// index of the chunk's first element. Every element is visited exactly once; chunk order is
 /// unspecified. A slice that fits in one chunk runs inline without allocating, as does every
@@ -362,6 +375,19 @@ mod tests {
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     use super::*;
+
+    #[test]
+    fn spawned_tasks_run_detached_and_report_back() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for task in 0..32_u32 {
+            let sender = sender.clone();
+            spawn_async(move || sender.send(task * task).expect("the receiver outlives the tasks"));
+        }
+        drop(sender);
+        let mut results: Vec<u32> = receiver.iter().collect();
+        results.sort_unstable();
+        assert_eq!(results, (0..32).map(|task| task * task).collect::<Vec<_>>());
+    }
 
     #[test]
     fn par_for_each_chunk_visits_every_item_once() {

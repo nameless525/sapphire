@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_assets"
-description = "Runtime asset identity, formats and loading: asset IDs and the cooked mesh and texture formats."
+description = "Runtime asset identity, formats and loading: asset IDs, the cooked mesh, texture, material and pack formats, handles, the load pipeline and residency."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,15 +10,26 @@ license.workspace = true
 [dependencies]
 # Cooked meshes derive `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true
+blake3.workspace = true
 bytemuck.workspace = true
 half.workspace = true
 ktx2.workspace = true
+lz4_flex.workspace = true
+profiling.workspace = true
 rend.workspace = true
 rkyv.workspace = true
+# The form factor the default budgets are chosen by.
+sapphire_core.workspace = true
+# Decode jobs run on the engine's task pool.
+sapphire_jobs.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 serde.workspace = true
+# Generational slots behind handles (spec §5.3).
+slotmap.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 postcard.workspace = true

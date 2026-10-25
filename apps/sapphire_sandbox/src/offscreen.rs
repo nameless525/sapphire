@@ -14,6 +14,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
+use crate::content::Content;
 use crate::options::{OffscreenMode, Options};
 use crate::scene::{self, Scene};
 #[cfg(feature = "dev")]
@@ -67,6 +68,8 @@ pub(crate) struct Stage {
     #[cfg(feature = "dev")]
     stages: Option<Stages>,
     pub renderer: Renderer,
+    /// The asset server and what it uploaded, driven every frame like the windowed app's.
+    pub content: Content,
     pub graph: GraphExecutor,
     pub scene: Scene,
     /// The quality tier the renderer was made for, and each frame's render scale.
@@ -86,9 +89,8 @@ impl Stage {
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
-        let (character, bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
-            scene::upload_character(&mut renderer, mesh)
-        })?;
+        let mut content = Content::new(platform)?;
+        let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
         scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
         if options.lights {
@@ -109,6 +111,7 @@ impl Stage {
             #[cfg(feature = "dev")]
             stages: None,
             renderer,
+            content,
             graph: GraphExecutor::new(),
             scene,
             quality,
@@ -159,6 +162,8 @@ impl Stage {
         alpha: f32,
         after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
     ) -> Result<(), AppInitError> {
+        // Loading runs every frame, as in the windowed app, so the bench measures it.
+        self.content.update(&mut self.renderer, &self.gpu);
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("offscreen target", view);
         let (width, height) = graph.size(target);
@@ -191,6 +196,7 @@ impl Stage {
                 gpu: &self.gpu,
                 input: None,
                 scene: &self.scene,
+                assets: self.content.stats(),
             };
             self.dev.update(state, &mut self.graph);
             started.elapsed()

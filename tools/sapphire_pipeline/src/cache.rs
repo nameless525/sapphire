@@ -21,6 +21,10 @@
 //! directory is the remedy for a forgotten bump. A cooked format's version is in the key, so
 //! bumping one (`Mesh::VERSION`) recooks everything in that format without a stage bump.
 //!
+//! The packer (M1 A4) caches each asset's encoding for packs under [`CacheKey::packed`], over
+//! the cooked bytes' hash, the packer's stage and the codec, and records each pack's hash under
+//! [`CacheKey::pack`], over its assets' IDs and packed keys, in the same store.
+//!
 //! New kinds of asset plug in without changing the key: textures, materials and skinned
 //! meshes each brought an [`ImportSettings`] variant and a [`Recipe`], and a material, which
 //! reads its textures' cooked output, lists each as a [`Dependency::Asset`] (M1 A3). The key's inputs are
@@ -50,6 +54,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_assets::AssetId;
+use sapphire_assets::pack::Codec;
 use serde::Serialize;
 
 use crate::cook::{Cook, Recipe};
@@ -58,6 +63,9 @@ use crate::meta::ImportSettings;
 /// Separates cache keys from every other use of blake3. Changing the key's encoding changes
 /// keys anyway, so this only changes if keys ever need to be told apart from an older scheme.
 const KEY_CONTEXT: &str = "sapphire_pipeline 2026-10-24 content cache key";
+/// Separates the packer's keys from cook keys and from each other.
+const PACKED_CONTEXT: &str = "sapphire_pipeline 2026-10-25 packed asset key";
+const PACK_CONTEXT: &str = "sapphire_pipeline 2026-10-25 pack key";
 
 /// A pipeline stage as cache keys know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -135,8 +143,29 @@ impl CacheKey {
             cook: cook.name(),
             dependencies,
         };
-        let bytes = sapphire_serialize::postcard::to_allocvec(&encoded).expect("key inputs always encode");
-        Self(*blake3::Hasher::new_derive_key(KEY_CONTEXT).update(&bytes).finalize().as_bytes())
+        Self::derive(KEY_CONTEXT, &encoded)
+    }
+
+    /// The key a cooked asset's encoding for packs is cached under (M1 A4, see [`crate::pack`]):
+    /// the blake3 hash of the cooked bytes it encodes, the packer's stage, and the codec and zstd
+    /// level. Keyed by the bytes rather than the cook's key, so an encoding can never outlive the
+    /// bytes it was made from; the asset's ID is left out, so identical cooks share one.
+    pub fn packed(cooked: &blake3::Hash, packer: Stage, codec: Codec, zstd_level: i32) -> Self {
+        Self::derive(PACKED_CONTEXT, &(cooked.as_bytes(), (packer.name, packer.version), codec, zstd_level))
+    }
+
+    /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its
+    /// assets by ID and [`Self::packed`] key, in ID order. Equal keys mean equal pack bytes.
+    pub fn pack(packer: Stage, name: &str, assets: &[(AssetId, CacheKey)]) -> Self {
+        let assets: Vec<(AssetId, [u8; blake3::OUT_LEN])> =
+            assets.iter().map(|(id, key)| (*id, key.0)).collect();
+        Self::derive(PACK_CONTEXT, &((packer.name, packer.version), name, assets))
+    }
+
+    /// blake3 in derive-key mode over `inputs` as postcard encodes them.
+    fn derive(context: &str, inputs: &impl Serialize) -> Self {
+        let bytes = sapphire_serialize::postcard::to_allocvec(inputs).expect("key inputs always encode");
+        Self(*blake3::Hasher::new_derive_key(context).update(&bytes).finalize().as_bytes())
     }
 }
 
@@ -361,6 +390,37 @@ mod tests {
 
         let mut keys: Vec<CacheKey> = variants.iter().map(CacheKey::new).collect();
         keys.push(key);
+        let count = keys.len();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "every input changes the key");
+    }
+
+    #[test]
+    fn packer_keys_change_with_every_input() {
+        let (cooked, packer) = (blake3::hash(b"cooked"), Stage { name: "spack", version: 1 });
+        let key = CacheKey::packed(&cooked, packer, Codec::Zstd, 19);
+        assert_eq!(CacheKey::packed(&cooked, packer, Codec::Zstd, 19), key, "deterministic");
+        let mut keys = vec![
+            key,
+            CacheKey::packed(&blake3::hash(b"recooked"), packer, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, Stage { version: 2, ..packer }, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, Stage { name: "spack2", ..packer }, Codec::Zstd, 19),
+            CacheKey::packed(&cooked, packer, Codec::Lz4, 19),
+            CacheKey::packed(&cooked, packer, Codec::Zstd, 3),
+        ];
+        let (a, b) = (AssetId::from_bytes([1; 16]), AssetId::from_bytes([2; 16]));
+        let other = CacheKey([9; 32]);
+        let pack = CacheKey::pack(packer, "shared", &[(a, key), (b, other)]);
+        assert_eq!(CacheKey::pack(packer, "shared", &[(a, key), (b, other)]), pack);
+        keys.extend([
+            pack,
+            CacheKey::pack(packer, "zone", &[(a, key), (b, other)]),
+            CacheKey::pack(packer, "shared", &[(a, key)]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, key)]),
+            CacheKey::pack(packer, "shared", &[(a, key), (AssetId::from_bytes([3; 16]), other)]),
+            CacheKey::pack(Stage { version: 2, ..packer }, "shared", &[(a, key), (b, other)]),
+        ]);
         let count = keys.len();
         keys.sort();
         keys.dedup();

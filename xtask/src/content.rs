@@ -1,12 +1,17 @@
-//! `cargo xtask content`: makes sure the sample sources exist, then cooks `content/` with
-//! the pipeline binary (spec §5.27, §7.4).
+//! `cargo xtask content`: makes sure the sample sources exist, then cooks and packs `content/`
+//! with the pipeline binary (spec §5.27, §7.4).
+//!
+//! Each cook writes loose cooked files to `target/content/loose/<cook>/` and packs them into
+//! `target/content/<cook>/`, which then holds packs only (`shared.spack`): what apps ship and
+//! desktop runs read (M1 A4).
 //!
 //! Every run runs the pipeline, whose content cache (`target/content/cache/`, shared by both
 //! cooks) makes it incremental: an asset is cooked only when an input its cache key covers
 //! changed (its source bytes, sidecar settings, importer and cooker versions, the cook or
-//! a file it references), an output is written only when its bytes change, and cooked files
-//! whose source is gone are removed. Rebuilding the pipeline recooks nothing, so a change to
-//! an importer or cooker must bump that stage's version (see `sapphire_pipeline::cache`).
+//! a file it references), an asset is compressed for a pack only when its cook changed, an
+//! output or pack is written only when its bytes change, and cooked files whose source is gone
+//! are removed. Rebuilding the pipeline recooks nothing, so a change to an importer, cooker or
+//! the packer must bump that stage's version (see `sapphire_pipeline::cache`).
 //!
 //! With `--locked` (CI), a source without a committed `.meta` sidecar fails the cook instead
 //! of getting a fresh ID that would be thrown away. A lock file per cook keeps concurrent
@@ -63,9 +68,15 @@ impl FromStr for Cook {
     }
 }
 
-/// Where a cook's output goes: `target/content/<cook>/`.
+/// Where a cook's packs go: `target/content/<cook>/`, the content root apps ship.
 pub fn cooked_dir(cook: Cook) -> PathBuf {
     workspace::output_dir().join("content").join(cook.name())
+}
+
+/// Where a cook's loose cooked files go: `target/content/loose/<cook>/`, which tools read and
+/// which never ships.
+fn loose_dir(cook: Cook) -> PathBuf {
+    workspace::output_dir().join("content").join("loose").join(cook.name())
 }
 
 /// The content cache both cooks share: `target/content/cache/`. Keys include the cook.
@@ -107,6 +118,8 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         .arg("--source")
         .arg(&source)
         .arg("--out")
+        .arg(loose_dir(cook))
+        .arg("--packs")
         .arg(&out)
         .args(["--cook", cook.name()])
         .arg("--cache")
@@ -149,6 +162,7 @@ mod tests {
         assert_eq!("mobile".parse::<Cook>().unwrap(), Cook::Mobile);
         assert!("console".parse::<Cook>().is_err());
         assert!(cooked_dir(Cook::Mobile).ends_with("target/content/mobile"));
+        assert!(loose_dir(Cook::Mobile).ends_with("target/content/loose/mobile"));
         assert!(cache_dir().ends_with("target/content/cache"));
     }
 }

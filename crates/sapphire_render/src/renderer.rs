@@ -139,8 +139,8 @@ pub enum RenderError {
     #[error("{0} materials have no shaders yet, so meshes can't draw with them")]
     NotDrawable(MaterialFamily),
     #[error(
-        "material slot {slot:?} names material asset {id}, which only the asset runtime resolves (M1 A4); \
-         upload it with `upload_material`"
+        "material slot {slot:?} names material asset {id}, which wasn't uploaded; the asset server \
+         loads it before the mesh, for `upload_material` and then `upload_slot_materials`"
     )]
     UnresolvedMaterial { slot: String, id: AssetId },
 }
@@ -403,27 +403,39 @@ impl Renderer {
 
     /// Uploads the materials `mesh` embeds, one handle per material slot, for
     /// [`Self::upload_mesh`]. Embedded materials reference no textures (importers make no texture
-    /// assets). A slot bound to a material asset fails with
-    /// [`RenderError::UnresolvedMaterial`]: those load through the asset runtime once packs
-    /// resolve IDs (M1 A4), and are uploaded with [`Self::upload_material`].
+    /// assets). A slot bound to a material asset fails with [`RenderError::UnresolvedMaterial`]:
+    /// [`Self::upload_slot_materials`] resolves those.
     pub fn upload_embedded_materials(
         &mut self,
         mesh: &ArchivedMesh,
+    ) -> Result<Vec<MaterialHandle>, RenderError> {
+        self.upload_slot_materials(mesh, |_| None)
+    }
+
+    /// One material handle per slot of `mesh`, for [`Self::upload_mesh`]: the materials it embeds
+    /// are uploaded, and slots bound to material assets take the handles `assets` gives for their
+    /// IDs (the asset runtime uploads a mesh's materials before the mesh, M1 A4). A slot `assets`
+    /// can't resolve fails with [`RenderError::UnresolvedMaterial`], before anything is uploaded.
+    pub fn upload_slot_materials(
+        &mut self,
+        mesh: &ArchivedMesh,
+        assets: impl Fn(AssetId) -> Option<MaterialHandle>,
     ) -> Result<Vec<MaterialHandle>, RenderError> {
         // Checked first: slots are never freed, so a failure halfway would leak the earlier ones.
         for slot in mesh.materials.iter() {
             match &slot.material {
                 ArchivedSlotMaterial::Embedded(material) => material.validate()?,
-                ArchivedSlotMaterial::Asset(id) => {
+                ArchivedSlotMaterial::Asset(id) if assets(*id).is_none() => {
                     return Err(RenderError::UnresolvedMaterial { slot: slot.name.to_string(), id: *id });
                 }
+                ArchivedSlotMaterial::Asset(_) => {}
             }
         }
         mesh.materials
             .iter()
-            .filter_map(|slot| match &slot.material {
-                ArchivedSlotMaterial::Embedded(material) => Some(self.upload_material(material, |_| None)),
-                ArchivedSlotMaterial::Asset(_) => None,
+            .map(|slot| match &slot.material {
+                ArchivedSlotMaterial::Embedded(material) => self.upload_material(material, |_| None),
+                ArchivedSlotMaterial::Asset(id) => Ok(assets(*id).expect("resolved above")),
             })
             .collect()
     }

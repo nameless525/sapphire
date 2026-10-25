@@ -18,20 +18,29 @@
 //!   (including APK assets), [`user_dir`] for settings and saves, and [`cache_dir`] for
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
 //!   functions work before SDL starts.
+//! - **The IO thread** (M1 A4, [`IoThread`]): positioned reads of content files by priority,
+//!   with cancellation and completion callbacks (spec §4.3). The asset server reads packs
+//!   through it; decoding happens on the job system's workers, not here.
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
 //!
 //! # Does not own
 //!
 //! GPU devices and swapchains (`sapphire_rhi`), audio (FMOD, M2), logging setup (the
-//! app wires `tracing` to [`sdl_log`]), and, until their milestones, IME composition text
-//! (shown while composing; committed text already arrives), haptics, clipboard, the async IO
-//! thread, and thermal state (M4).
+//! app wires `tracing` to [`sdl_log`]), packs and what is in them (`sapphire_assets`), and,
+//! until their milestones, IME composition text (shown while composing; committed text already
+//! arrives), haptics, clipboard, and thermal state (M4).
+//!
+//! # Later milestones
+//!
+//! - Memory-mapping pack files where the OS allows (desktop, iOS, and packs downloaded into
+//!   Android's internal storage, spec §6.4), so raw blocks are read in place; and the IO
+//!   thread's priority above normal, with the job system's thread priorities (spec §5.5).
 //!
 //! # Threading
 //!
 //! SDL runs every callback on the main thread (on Android, SDLActivity's SDL thread),
 //! so [`Platform`], [`Window`] and [`SurfaceHandle`] are `!Send`. [`ContentFs`],
-//! [`ContentFile`] and [`sdl_log`] may be used from any thread. This crate never exposes
+//! [`ContentFile`], [`IoThread`] and [`sdl_log`] may be used from any thread. This crate never exposes
 //! SDL types or raw SDL pointers; the only pointers it hands out are the native surface
 //! handles.
 //!
@@ -85,6 +94,7 @@ mod app;
 mod content;
 mod dirs;
 mod event;
+mod io;
 mod log;
 mod platform;
 mod sdl;
@@ -101,6 +111,7 @@ pub use event::{
     LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,
     TextEvent, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
+pub use io::{ContentReader, IoFile, IoPriority, IoThread, IoTicket, ReadCallback, ReadError};
 pub use log::sdl_log;
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;

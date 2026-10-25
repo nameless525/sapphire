@@ -185,8 +185,8 @@ mod tests {
     fn assembles_both_layouts() {
         let scratch = std::env::temp_dir().join(format!("xtask-bundle-{}", std::process::id()));
         let content = scratch.join("cooked");
-        std::fs::create_dir_all(content.join("samples")).unwrap();
-        std::fs::write(content.join("samples/mannequin.smesh"), "mesh").unwrap();
+        std::fs::create_dir_all(&content).unwrap();
+        std::fs::write(content.join("shared.spack"), "pack").unwrap();
         let exe = scratch.join("exe");
         std::fs::write(&exe, "binary").unwrap();
 
@@ -200,11 +200,11 @@ mod tests {
             assert!(!layout.root.join("stale").exists());
         }
         let app = scratch.join("ios/SapphireSandbox.app");
-        for file in ["Info.plist", "sapphire_sandbox", "content/samples/mannequin.smesh"] {
+        for file in ["Info.plist", "sapphire_sandbox", "content/shared.spack"] {
             assert!(app.join(file).is_file(), "iOS bundle is missing {file}");
         }
         let contents = scratch.join("macos/SapphireSandbox.app/Contents");
-        for file in ["Info.plist", "MacOS/sapphire_sandbox", "Resources/content/samples/mannequin.smesh"] {
+        for file in ["Info.plist", "MacOS/sapphire_sandbox", "Resources/content/shared.spack"] {
             assert!(contents.join(file).is_file(), "macOS bundle is missing {file}");
         }
         workspace::remove_dir_if_exists(&scratch).unwrap();

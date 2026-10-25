@@ -60,9 +60,10 @@
 //!   Proposals). They can't see VRAM, so a GTX 1060 machine with 16 GB of RAM qualifies for
 //!   Desktop-High; a device database keyed by adapter, and a startup benchmark, refine them on
 //!   the reference devices (M2).
-//! - **Applying a tier in place:** a tier change makes a new renderer, which uploads its meshes
-//!   again. Once packs and residency (A4) make that costly, settings that don't rebuild pipelines
-//!   (bloom levels, the light budget) can change in place.
+//! - **Applying a tier in place:** a tier change makes a new renderer, to which the asset server
+//!   uploads every asset again, reading meshes and textures from their packs (M1 A4). Once
+//!   content is large enough for that to show, settings that don't rebuild pipelines (bloom
+//!   levels, the light budget) can change in place.
 //! - **The player's settings** come from a settings screen (M3) and saves (`sapphire_save`)
 //!   instead of the command line, and can change while running.
 //! - **Cheaper timing:** GPU timing costs about 50 µs of CPU and 100 allocations per frame on

@@ -19,6 +19,7 @@ use sapphire_time::{
 };
 
 use crate::LOG_TARGET;
+use crate::content::Content;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
@@ -43,6 +44,8 @@ pub struct SandboxApp {
     #[cfg(feature = "dev")]
     dev: DevTools,
     renderer: Renderer,
+    /// The asset server and what it uploaded to the renderer.
+    content: Content,
     graph: GraphExecutor,
     surface: Option<RenderSurface>,
     gpu: GpuContext,
@@ -109,8 +112,9 @@ impl App for SandboxApp {
         // The tier comes from the device the GPU stack runs on; the renderer is made for it.
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
+        let mut content = Content::new(platform)?;
         let renderer = create_renderer(
-            platform,
+            &mut content,
             &device.gpu,
             device.format,
             options.render_settings(quality.render_settings()),
@@ -136,6 +140,7 @@ impl App for SandboxApp {
             #[cfg(feature = "dev")]
             dev,
             renderer: renderer.renderer,
+            content,
             graph: GraphExecutor::new(),
             surface: Some(device.surface),
             gpu: device.gpu,
@@ -215,9 +220,11 @@ impl App for SandboxApp {
             self.rebuild_surface();
         }
         if !self.gpu.is_lost() {
-            self.follow_tier(platform);
+            self.follow_tier();
+            // Finished reads, unloads and this frame's uploads, within the upload budget.
+            self.content.update(&mut self.renderer, &self.gpu);
         }
-        // Recovery and tier changes are no stage of the frame.
+        // Recovery, tier changes and loading are no stage of the frame.
         stopwatch.lap();
 
         let steps = self.simulate(frame_time);
@@ -338,6 +345,7 @@ impl SandboxApp {
                         gpu: &self.gpu,
                         input: Some(&self.input),
                         scene: &self.scene,
+                        assets: self.content.stats(),
                     };
                     // It also keeps GPU timing on while dynamic resolution reads it.
                     let output = self.dev.update(state, &mut self.graph);
@@ -447,7 +455,7 @@ impl SandboxApp {
     }
 
     /// Rebuilds everything that lived on the lost device (instance, context, surface,
-    /// renderer) and re-uploads the character from content, per the recovery contract on
+    /// renderer) and has the asset server upload every asset to it again, per the recovery contract on
     /// `GpuContext`. On failure the app keeps running without a GPU and [`SurfaceRecovery`]
     /// paces the next attempt.
     fn recover_from_device_loss(&mut self, platform: &Platform) {
@@ -458,8 +466,9 @@ impl SandboxApp {
         self.recovery.attempted(self.real.elapsed());
         let settings = self.render_settings();
         let skinned = self.options.skinned;
+        let content = &mut self.content;
         let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
-            let renderer = create_renderer(platform, &device.gpu, device.format, settings, skinned)?;
+            let renderer = create_renderer(content, &device.gpu, device.format, settings, skinned)?;
             Ok((device, renderer))
         });
         match stack {
@@ -493,11 +502,11 @@ impl SandboxApp {
 
     /// Follows `r.tier`: a new tier gets a new renderer with its settings, on the same device,
     /// as after device loss. If that fails the old tier and renderer stay.
-    fn follow_tier(&mut self, platform: &Platform) {
+    fn follow_tier(&mut self) {
         let Some(previous) = self.quality.update_tier() else { return };
         self.steady = false;
-        match create_renderer(platform, &self.gpu, self.format, self.render_settings(), self.options.skinned)
-        {
+        let settings = self.render_settings();
+        match create_renderer(&mut self.content, &self.gpu, self.format, settings, self.options.skinned) {
             Ok(renderer) => {
                 self.renderer = renderer.renderer;
                 self.scene.set_character_mesh(renderer.character);
@@ -617,21 +626,32 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
     Ok(GpuDevice { surface, gpu, format })
 }
 
-/// A renderer drawing into `format` targets with `settings`, holding the character from content
-/// and, if `skinned`, the skinned stalk.
+/// A renderer drawing into `format` targets with `settings`, holding the character, which
+/// `content` uploads to it from the start, and, if `skinned`, the skinned stalk.
 fn create_renderer(
-    platform: &Platform,
+    content: &mut Content,
     gpu: &GpuContext,
     format: wgpu::TextureFormat,
     settings: RenderSettings,
     skinned: bool,
 ) -> Result<SceneRenderer, AppInitError> {
     let mut renderer = Renderer::new(gpu, format, settings)?;
-    let (character, character_bounds) = scene::load_mesh(platform, scene::CHARACTER_MESH, |mesh| {
-        scene::upload_character(&mut renderer, mesh)
-    })?;
-    let stalk = skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
-    Ok(SceneRenderer { renderer, character, character_bounds, stalk })
+    // A new renderer starts empty, so every asset goes to it again. If it fails, the content goes
+    // back to the renderer the app keeps.
+    let previous = content.renderer_rebuilt();
+    let scene = content.character(&mut renderer, gpu).and_then(|(character, character_bounds)| {
+        let stalk = skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
+        Ok((character, character_bounds, stalk))
+    });
+    match scene {
+        Ok((character, character_bounds, stalk)) => {
+            Ok(SceneRenderer { renderer, character, character_bounds, stalk })
+        }
+        Err(error) => {
+            content.keep_renderer(previous);
+            Err(error)
+        }
+    }
 }
 
 /// The renderer's surface target for a window's surface handle: its `CAMetalLayer` on

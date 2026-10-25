@@ -69,9 +69,11 @@
 //!   order and LODs done by the pipeline; textures as [`sapphire_assets::texture::Texture`] with
 //!   their mip chains, compressed for the device's cook; materials as packed GPU blocks with
 //!   their texture references checked against the textures' classes.
-//! - Resolving asset IDs: the app hands [`Renderer::upload_material`] the textures a material
-//!   names, and [`Renderer::upload_mesh`] a material per mesh slot (the asset runtime, A4,
-//!   takes this over).
+//! - Loading and resolving assets: the asset server (`sapphire_assets`, M1 A4) loads a mesh's
+//!   materials and their textures before the mesh and hands the app each as cooked data, within
+//!   a per-frame upload budget. The app hands [`Renderer::upload_material`] the textures a
+//!   material names and [`Renderer::upload_slot_materials`] the materials a mesh's slots name,
+//!   so the renderer sees cooked data and its own handles, never asset handles (rule R4).
 //!
 //! # Conventions
 //!

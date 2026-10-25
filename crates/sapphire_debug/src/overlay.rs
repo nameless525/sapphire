@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_input::DeviceKind;
@@ -65,6 +66,8 @@ pub struct OverlayFrame<'a> {
     pub world_clock: &'a ScaledClock,
     /// The world's time of day, if the app runs one: the time-of-day panel's.
     pub time_of_day: Option<&'a TimeOfDay>,
+    /// The asset server's counters, if the app runs one.
+    pub assets: Option<AssetStats>,
 }
 
 /// What the app should do for the overlay after [`DebugOverlay::update`].

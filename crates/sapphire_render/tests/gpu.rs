@@ -1593,3 +1593,97 @@ fn textured_materials_sample_through_their_swizzle() {
     let texture = GpuTexture::upload(&gpu, &astc, "mask").unwrap();
     assert_near(center_color(&texture), [0.75, 0.25, 0.0], "ASTC's two channels through `ra01`");
 }
+
+#[test]
+#[ignore = "needs a GPU"]
+fn packed_meshes_draw_with_the_materials_and_textures_their_slots_name() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use sapphire_assets::mesh::SlotMaterial;
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+    use sapphire_assets::texture::{Texture, TextureDesc, TextureFormat};
+    use sapphire_assets::{
+        AssetBudgets, AssetId, AssetKind, AssetServer, Handle, MemoryPackSource, TextureAsset,
+    };
+    use sapphire_render::texture::GpuTexture;
+
+    let gpu = gpu();
+    let size = (64, 64);
+    let target_texture = target(&gpu, FORMAT, size);
+    let view = target_texture.create_view(&Default::default());
+    let [texture_id, material_id, mesh_id] = [1, 2, 3].map(|n| AssetId::from_bytes([n; 16]));
+
+    // A 4×4 texture of linear (0.2, 0.5, 0.8); a material sampling it, lit so its color shows as
+    // it is (see `textured_materials_sample_through_their_swizzle`); a sphere whose one slot names
+    // the material. Packed as the pipeline packs them, dependencies listed.
+    let srgb = |c: f32| {
+        (if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 } * 255.0).round() as u8
+    };
+    let texels = [srgb(0.2), srgb(0.5), srgb(0.8), 255].repeat(16);
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: 4,
+        height: 4,
+        mip_level_count: 1,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let texture = Texture { desc, levels: vec![&texels] }.to_ktx2().unwrap();
+    let document = AnimeCharacterMaterial {
+        base_color: [1.0 / 1.06, 1.0 / 1.06, 1.0 / 1.06, 1.0],
+        base_color_map: Some(texture_id),
+        ..flat([1.0; 3], 0.0)
+    };
+    let material = cooked_with(&document, &[Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()]);
+    let (vertices, indices) = sphere_geometry(Vec3::ZERO, 1.0);
+    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
+    let slots = vec![MaterialSlot { name: "body".into(), material: SlotMaterial::Asset(material_id) }];
+    let mesh = Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+        .to_cooked()
+        .unwrap();
+    let packed = |id, kind: AssetKind, bytes: &[u8], dependencies| {
+        PackAsset::encode(id, kind, Codec::Zstd, bytes, dependencies, 3).unwrap()
+    };
+    let pack = write_pack(vec![
+        packed(texture_id, AssetKind::Texture, &texture, vec![]),
+        packed(material_id, AssetKind::Material, &material, vec![texture_id]),
+        packed(mesh_id, AssetKind::Mesh, &mesh, vec![material_id]),
+    ])
+    .unwrap();
+    let source = Arc::new(MemoryPackSource::new());
+    source.insert("shared", pack);
+    let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
+    server.mount("shared").unwrap();
+
+    // The app's side of uploads: renderer objects by asset ID, each kind through the renderer's
+    // own upload, resolving references through what is already uploaded.
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
+    let mut textures: HashMap<AssetId, GpuTexture> = HashMap::new();
+    let mut materials: HashMap<AssetId, MaterialHandle> = HashMap::new();
+    let mut meshes: HashMap<AssetId, MeshHandle> = HashMap::new();
+    let handle: Handle<Mesh> = server.load(mesh_id).unwrap();
+    server
+        .finish(&handle, |upload| {
+            if let Some(texture) = upload.get::<TextureAsset>() {
+                textures.insert(upload.id(), GpuTexture::upload(&gpu, &texture, "texture")?);
+            } else if let Some(material) = upload.get::<Material>() {
+                let handle = frames.renderer.upload_material(material, |id| textures.get(&id))?;
+                materials.insert(upload.id(), handle);
+            } else if let Some(mesh) = upload.get::<Mesh>() {
+                // Before the mesh's material is known, its slot doesn't resolve.
+                let error = frames.renderer.upload_slot_materials(mesh, |_| None).unwrap_err();
+                assert!(matches!(error, RenderError::UnresolvedMaterial { .. }), "{error}");
+                let slots = frames.renderer.upload_slot_materials(mesh, |id| materials.get(&id).copied())?;
+                assert_eq!(slots, [materials[&material_id]]);
+                meshes.insert(upload.id(), frames.renderer.upload_mesh(mesh, &slots)?);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let instances = [instance(0, meshes[&mesh_id], Mat4::IDENTITY)];
+    let error = frames.render(&gpu, &view, framing_camera(38.0, size, 0.6), &instances, &[]);
+    assert!(error.is_none(), "{error:?}");
+    let center = linear_at(&read_back(&gpu, &target_texture), size, size.0 as usize / 2);
+    assert_near(center, [0.2, 0.5, 0.8], "the packed texture, through the packed material");
+}

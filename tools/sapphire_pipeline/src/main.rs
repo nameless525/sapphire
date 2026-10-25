@@ -13,6 +13,7 @@ use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
+use sapphire_pipeline::pack::{self, PackReport, PackStatus};
 use sapphire_pipeline::samples;
 
 const USAGE: &str = "\
@@ -34,16 +35,19 @@ Usage:
       Generate the map a .facesdf.ron, .ramp.ron or .ilm.ron document describes, with the
       settings of its .meta sidecar if it has one, and write it to OUTPUT as a PNG before
       compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps.
-  sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--cache <DIR>] [--locked]
+  sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
+                         [--cache <DIR>] [--locked]
       Cook every source asset under --source (skipping hidden entries) into mirrored paths
-      under --out, creating missing .meta sidecars next to the sources. Outputs are written
-      only when they change, and stale cooked files under --out are removed.
+      under --out, creating missing .meta sidecars next to the sources, then pack the cooked
+      assets into --packs (shared.spack). Outputs are written only when they change, and
+      stale cooked files under --out, and files no pack claims under --packs, are removed.
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
   --cook <COOK>              Target cook: desktop or mobile.
-  --cache <DIR>              Content cache: reuse the cooked output of any asset whose
-                             inputs are unchanged, and store new ones.
+  --packs <DIR>              Where packs go: the content apps ship.
+  --cache <DIR>              Content cache: reuse the cooked output and pack encoding of
+                             any asset whose inputs are unchanged, and store new ones.
   --locked                   Fail on a source without a sidecar instead of creating one (CI).
   --weld-tolerance <METERS>  Vertices closer than this share one outline normal.
   -h, --help                 Show this message.
@@ -51,11 +55,31 @@ Options:
 
 #[derive(Debug, PartialEq)]
 enum Command {
-    GenSamples { out: PathBuf },
-    CookMesh { input: PathBuf, output: PathBuf, cook: Cook, outline: Option<OutlineSettings> },
-    BakeMap { input: PathBuf, output: PathBuf },
-    ExtractMaterials { source: PathBuf, all: bool },
-    Cook { source: PathBuf, out: PathBuf, cook: Cook, cache: Option<PathBuf>, locked: bool },
+    GenSamples {
+        out: PathBuf,
+    },
+    CookMesh {
+        input: PathBuf,
+        output: PathBuf,
+        cook: Cook,
+        outline: Option<OutlineSettings>,
+    },
+    BakeMap {
+        input: PathBuf,
+        output: PathBuf,
+    },
+    ExtractMaterials {
+        source: PathBuf,
+        all: bool,
+    },
+    Cook {
+        source: PathBuf,
+        out: PathBuf,
+        packs: Option<PathBuf>,
+        cook: Cook,
+        cache: Option<PathBuf>,
+        locked: bool,
+    },
     Help,
     Version,
 }
@@ -127,10 +151,14 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.written.len()
             );
         }
-        Command::Cook { source, out, cook, cache, locked } => {
+        Command::Cook { source, out, packs, cook, cache, locked } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked };
             let report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
+            if let Some(packs) = packs {
+                let packed = pack::pack_cooked(&report, &packs, cache.as_deref())?;
+                print_packs(&packed, cook);
+            }
         }
         Command::Help => println!("{USAGE}"),
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
@@ -198,6 +226,27 @@ fn print_report(report: &CookReport, cook: Cook, source: &Path, out: &Path) {
     );
 }
 
+/// One line per pack, after any stale files removed.
+fn print_packs(report: &PackReport, cook: Cook) {
+    for path in &report.removed {
+        eprintln!("removed stale {}", path.display());
+    }
+    for pack in &report.packs {
+        let how = match pack.status {
+            PackStatus::Packed => "packed",
+            PackStatus::UpToDate => "up to date:",
+        };
+        eprintln!(
+            "{cook}: {how} {} ({} asset(s), {} bytes, {} encoded, {} from cache)",
+            pack.path.display(),
+            pack.assets,
+            pack.bytes,
+            pack.encoded,
+            if pack.status == PackStatus::Packed { pack.assets - pack.encoded } else { 0 },
+        );
+    }
+}
+
 fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
     let mut args: Vec<String> = args.into_iter().collect();
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
@@ -236,6 +285,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
         "cook" => Command::Cook {
             source: options.required("--source")?,
             out: options.required("--out")?,
+            packs: options.value("--packs")?,
             cook: options.required("--cook")?,
             cache: options.value("--cache")?,
             locked: options.flag("--locked"),
@@ -336,17 +386,26 @@ mod tests {
             Command::Cook {
                 source: "content".into(),
                 out: "out".into(),
+                packs: None,
                 cook: Cook::Desktop,
                 cache: None,
                 locked: true,
             }
         );
-        let Command::Cook { cache, locked, .. } =
-            parse(&["cook", "--source=a", "--out=b", "--cook=mobile", "--cache", "target/cache"]).unwrap()
-        else {
+        let Command::Cook { cache, locked, packs, .. } = parse(&[
+            "cook",
+            "--source=a",
+            "--out=b",
+            "--cook=mobile",
+            "--cache",
+            "target/cache",
+            "--packs",
+            "p",
+        ])
+        .unwrap() else {
             panic!("expected cook");
         };
-        assert_eq!((cache, locked), (Some("target/cache".into()), false));
+        assert_eq!((cache, locked, packs), (Some("target/cache".into()), false, Some("p".into())));
         assert_eq!(parse(&["cook", "--help"]).unwrap(), Command::Help);
         assert_eq!(parse(&["-V"]).unwrap(), Command::Version);
     }

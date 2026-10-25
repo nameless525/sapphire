@@ -11,6 +11,7 @@ license.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 profiling.workspace = true
+sapphire_assets.workspace = true
 sapphire_core.workspace = true
 sapphire_input.workspace = true
 sapphire_math.workspace = true

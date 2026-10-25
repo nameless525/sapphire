@@ -12,7 +12,8 @@
 //!   the target's format (sRGB targets get linearized colors, so they show as egui means them).
 //! - **Panels**: stats and budgets (frame time, CPU stages against spec §3.2, allocations, the
 //!   quality tier with the render scale and dynamic resolution's state, `RenderStats`,
-//!   `GraphStats` and the transient pool, the last-used input device), the
+//!   `GraphStats` and the transient pool, the last-used input device, the asset server's
+//!   `AssetStats` against its budgets), the
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
 //!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the

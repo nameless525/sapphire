@@ -66,6 +66,7 @@
 mod app;
 mod bench;
 mod capture;
+mod content;
 mod cvars;
 #[cfg(feature = "dev")]
 mod dev;

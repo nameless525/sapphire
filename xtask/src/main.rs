@@ -28,9 +28,9 @@ Commands:
       Check crate layering against xtask/layers.toml (spec §4.1, rules R1 and R8).
   content [--cook desktop|mobile]
       Generate missing sample sources under content/, then cook content/ into
-      target/content/<cook>/ (default cook: desktop). Only assets whose inputs changed
-      are cooked (cache: target/content/cache/). Sources without a .meta sidecar get one,
-      to commit with them.
+      target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
+      desktop). Only assets whose inputs changed are cooked or compressed again (cache:
+      target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
   bundle --platform <platform> [--release] [--features <list>] [--exe <path>]
       Cook, build and assemble the app for <platform> under target/<platform>/:
         desktop   SapphireSandbox/ with the executable and content/ (any host)

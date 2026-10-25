@@ -21,14 +21,30 @@
 //! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
 //!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
 //!   for animation (M2) to read.
+//! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
+//!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
+//!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it
+//!   is checked ([`AssetKind::references`]) and budgeted.
+//! - Loading ([`AssetServer`], M1 A4): mounting packs, whose tables of contents are the runtime's
+//!   only index from ID to data (rule R5); typed handles, strong ([`Handle`]) and weak
+//!   ([`WeakHandle`]); the load pipeline (IO reads by priority, decode jobs on the job system's
+//!   workers, dependencies first, a GPU upload queue under a per-frame budget); and residency
+//!   (per-kind budgets, LRU eviction of unused assets, pinning). The server's module docs
+//!   describe each stage.
 //!
 //! # Does not own
 //!
-//! - Creating IDs, `.meta` sidecars, import settings and the content cache: the pipeline
-//!   (tools). The runtime never generates an ID, so it never needs entropy.
+//! - Creating IDs, `.meta` sidecars, import settings, the content cache and deciding what goes
+//!   in which pack with which codec: the pipeline (tools). The runtime never generates an ID,
+//!   so it never needs entropy.
 //! - Importing, optimizing and simplifying meshes: the pipeline. [`mesh::Mesh::from_vertices`]
 //!   packs procedural single-LOD meshes and nothing more.
 //! - Data formats in general (RON documents, the rkyv cooked envelope): `sapphire_serialize`.
+//! - Files and the IO thread: `sapphire_platform` (spec §4.3), reached through a
+//!   [`PackSource`] the app provides, so this crate and the tools that use it never link SDL
+//!   (ADR 0001). Threads for decoding: `sapphire_jobs`.
+//! - Uploading: the app's uploader gets each asset as plain cooked data ([`Upload`]) and calls
+//!   the renderer, which never sees handles or the server (rule R4).
 //! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2), which
 //!   also simulates spring bones and evaluates constraints and expressions from a rig.
 //! - Checking that a material's textures exist and suit their slots: the pipeline, which knows
@@ -36,24 +52,32 @@
 //!
 //! # Later milestones
 //!
-//! - **Addressing by ID (M1 A4).** Today the runtime still loads cooked files by path
-//!   (the sandbox reads `samples/mannequin.smesh`). Resolving an [`AssetId`] is the pack
-//!   table of contents' job (`AssetId → offset, size, codec, blake3`), together with
-//!   handles, the IO thread, decode jobs and residency. A1 deliberately adds no interim
-//!   ID-to-path manifest: rule R5 keeps path strings out of the runtime, and A4 would
-//!   replace it. Until then an app can draw only the materials a mesh embeds: a slot bound
-//!   to a material asset ([`mesh::SlotMaterial::Asset`]) loads once IDs resolve.
-//! - Hot reload behind handles (A8): a changed material asset updates its one slot of the
-//!   renderer's material buffer.
-//! - Texture residency per tier budget, and mip streaming later still (spec §5.10): a
-//!   [`texture::Texture`] already exposes each level on its own, smallest last in the list
-//!   and first in the file.
+//! - Hot reload behind handles (A8): a changed asset is decoded again and swapped in place
+//!   behind its handle, as [`AssetServer::reupload_all`] already re-sends assets, and a changed
+//!   material asset updates its one slot of the renderer's material buffer.
+//! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
+//!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
+//! - Memory-mapped packs, so raw blocks are read in place; unmounting packs at zone changes;
+//!   cancelling the reads of assets dropped before they load; pinning by group (party,
+//!   encounter) rather than by handle.
+//! - Texture mip streaming within the upload budget, so a large texture uploads over several
+//!   frames, lowest mips first: a [`texture::Texture`] already exposes each level on its own,
+//!   smallest last in the list and first in the file.
 
 pub mod character_maps;
 mod id;
+mod kind;
 pub mod material;
 pub mod mesh;
+pub mod pack;
 pub mod rig;
+mod server;
 pub mod texture;
 
 pub use id::{AssetId, ParseAssetIdError};
+pub use kind::{AssetError, AssetKind};
+pub use server::{
+    Asset, AssetBudgets, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority, LoadState,
+    MemoryPackSource, MountError, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, UntypedHandle,
+    Upload, UploadError, UploadReport, WeakHandle,
+};

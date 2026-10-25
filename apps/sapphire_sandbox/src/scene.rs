@@ -32,11 +32,10 @@
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
-use sapphire_assets::mesh::{AlignedVec, ArchivedMesh, Mesh};
+use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{FramePacket, LightKind, LocalLight, MeshHandle, RenderError, Renderer, ViewData};
+use sapphire_render::{FramePacket, LightKind, LocalLight, MeshHandle, ViewData};
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
@@ -47,8 +46,6 @@ use crate::orbit::OrbitCamera;
 use crate::skinned::{self, Sway};
 use crate::turntable::{self, Turntable};
 
-/// The cooked sample character, produced by `cargo xtask content`.
-pub(crate) const CHARACTER_MESH: &str = "samples/mannequin.smesh";
 /// World slow motion while toggled, in per-mille (perfect-dodge style, spec §4.5).
 const SLOW_MOTION: u32 = 200;
 /// Fixed steps the hitstop action freezes the turntable for.
@@ -278,56 +275,10 @@ fn drawable_aspect(target_size: Option<(u32, u32)>) -> Option<f32> {
     Some(width as f32 / height as f32)
 }
 
-/// Reads a cooked mesh from the app's content into aligned memory, checks it, and hands it,
-/// read in place, to `use_mesh` (to upload it and take its bounds). The bytes live for the call
-/// only: the renderer copies what it keeps.
-pub(crate) fn load_mesh<R, E>(
-    platform: &Platform,
-    path: &str,
-    use_mesh: impl FnOnce(&ArchivedMesh) -> Result<R, E>,
-) -> Result<R, AppInitError>
-where
-    AppInitError: From<E>,
-{
-    let content = platform.content();
-    let missing = |error: &dyn std::fmt::Display| {
-        AppInitError::msg(format!(
-            "{path}: {error} (content root {:?}; cook it with `cargo xtask content`)",
-            content.root()
-        ))
-    };
-    let mut file = content.open(path).map_err(|error| missing(&error))?;
-    let mut bytes: AlignedVec = AlignedVec::new();
-    bytes.extend_from_reader(&mut file).map_err(|error| missing(&error))?;
-    let mesh = Mesh::read(&bytes)?;
-    let lod0_triangles: u32 = mesh.lods[0].submeshes.iter().map(|s| s.index_count.to_native() / 3).sum();
-    tracing::info!(
-        target: LOG_TARGET,
-        path,
-        vertices = mesh.streams.len(),
-        triangles = lod0_triangles,
-        lods = mesh.lods.len(),
-        skinned = mesh.skin.is_some(),
-        "mesh loaded"
-    );
-    Ok(use_mesh(mesh)?)
-}
-
 /// A mesh's object-space bounds as the scene frames them: `[min, max]`.
 pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
     let bounds = mesh.streams.bounds.to_native();
     [bounds.min, bounds.max]
-}
-
-/// Uploads the character `mesh` with the anime character materials it embeds, and returns it
-/// with its bounds. A material slot its sidecar binds to a material asset fails here: the app
-/// resolves asset IDs once packs exist (M1 A4).
-pub(crate) fn upload_character(
-    renderer: &mut Renderer,
-    mesh: &ArchivedMesh,
-) -> Result<(MeshHandle, [[f32; 3]; 2]), RenderError> {
-    let materials = renderer.upload_embedded_materials(mesh)?;
-    Ok((renderer.upload_mesh(mesh, &materials)?, mesh_bounds(mesh)))
 }
 
 #[cfg(test)]

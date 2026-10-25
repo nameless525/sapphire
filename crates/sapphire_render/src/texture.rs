@@ -10,8 +10,9 @@
 //!
 //! Levels are uploaded as they are, with one `Queue::write_texture` each: textures are
 //! one-off uploads, like meshes. Materials bind them (`materials`, M1 A3), and shaders apply
-//! their [`Swizzle`], which wgpu views can't, from the material's block. A texture pool with
-//! handles, residency and the per-frame upload budget come with the asset runtime (A4).
+//! their [`Swizzle`], which wgpu views can't, from the material's block. Handles, residency and
+//! the per-frame upload budget are the asset server's (`sapphire_assets`, M1 A4): it hands the
+//! app the textures to upload here, and the app drops a [`GpuTexture`] the server unloads.
 
 use sapphire_assets::texture::{AstcBlock, Swizzle, Texture, TextureFormat, TextureFormatError};
 use sapphire_rhi::{FormatSupport, GpuContext, wgpu};

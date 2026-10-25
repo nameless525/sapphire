@@ -38,6 +38,12 @@ android {
         assets.directories += "$gen/assets"
     }
 
+    // Packs compress their own blocks. Stored as they are, the IO thread's reads of a block range
+    // seek straight to it; deflated by the APK, every read would inflate the pack from its start.
+    androidResources {
+        noCompress += "spack"
+    }
+
     buildTypes {
         release {
             // M0 release builds are for profiling on test devices: signed with the debug key,

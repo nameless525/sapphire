@@ -158,7 +158,7 @@ Community reconstructions of these shaders (HoyoToon) are **GPL-3.0**. They are 
 
 | ID | Package | Size | Depends on | Notes |
 |---|---|---|---|---|
-| X1 | **Look-dev scene:** the VRM character with authored maps in a CC0 environment slice, a TOD cycle and full post. Goldens per backend; budgets measured on desktop and, with a phone, on Mobile-Low. | M | most of C, W, P | The visual exit test. |
+| X1 | **Look-dev scene:** the VRM character with authored maps in a CC0 environment slice, a TOD cycle and full post. Goldens per backend; budgets measured on desktop and, with a phone, on Mobile-Low. | M | most of C, W, P | The visual exit test.<br>**Content (2026-10-26):** `content/third_party/`: pixiv's `VRM1_Constraint_Twist_Sample` (VPL 1.0) and Kenney's Fantasy Town Kit 2.0 (CC0), with their provenance. The character is anime as shipped; the town kit is flat-palette, low-poly base geometry, which X1 re-materials, scales and composes into an anime game's town before its frames count as the look. |
 | X2 | **Exit run:** desktop and phone hot reload of ramps, materials and TOD keys; goldens on three backends; spec and README updated; M2 handoff notes. | S | X1, A9 | |
 
 ## 5. Order

@@ -6,8 +6,9 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# Binaries: never normalize, diff or merge. Git LFS (spec §7.1) is deferred until real art
-# lands; the M0 samples are small enough for plain Git.
+# Binaries: never normalize, diff or merge. Git LFS (spec §7.1) is deferred until art outgrows
+# plain Git: the generated samples and M1's third-party look-dev content (about 13 MB) don't,
+# and every CI checkout would spend LFS bandwidth.
 # Source art and media.
 *.png binary
 *.jpg binary
@@ -19,6 +20,7 @@
 *.blend binary
 *.fbx binary
 *.glb binary
+*.vrm binary
 *.bin binary
 *.wav binary
 *.ogg binary
@@ -34,3 +36,9 @@
 *.jar binary
 *.icns binary
 *.ico binary
+
+# Third-party content stays byte for byte as downloaded (content/third_party/README.md); only
+# the project's own provenance notes and sidecars there are normalized.
+content/third_party/** -text
+content/third_party/**/*.md text
+content/third_party/**/*.meta text

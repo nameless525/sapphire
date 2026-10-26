@@ -182,3 +182,5 @@ docs/     spec, conventions, ADRs
 ## License
 
 Sapphire is licensed under the [MIT License](LICENSE).
+
+Third-party content under [content/third_party/](content/third_party/) keeps its own licenses (CC0 and the VRM Public License 1.0); each folder's `SOURCE.md` gives the author, source and terms.

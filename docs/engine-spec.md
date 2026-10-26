@@ -1707,7 +1707,7 @@ engine/
 │  ├─ windows/              # app manifest (DPI awareness), icon, installer config
 │  └─ linux/                # .desktop file, Steam Runtime notes
 ├─ shaders/                 # WGSL / WESL sources
-├─ content/                 # source assets + .meta sidecars (Git LFS)
+├─ content/                 # source assets + .meta sidecars; third_party/ with provenance (Git LFS later)
 ├─ xtask/                   # build automation, layer checker (layers.toml)
 ├─ docs/                    # this spec, ADRs (architecture decision records)
 └─ .github/workflows/

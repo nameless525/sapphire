@@ -1,0 +1,31 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "1f3d7338-8ab2-47ff-9d43-10a82b380744",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.5,
+                        max_error: 0.002,
+                    ),
+                    (
+                        triangle_ratio: 0.25,
+                        max_error: 0.01,
+                    ),
+                    (
+                        triangle_ratio: 0.125,
+                        max_error: 0.03,
+                    ),
+                ],
+                mobile_skip: 1,
+            ),
+            position_format: Unorm16,
+            materials: {},
+        )),
+    ),
+)

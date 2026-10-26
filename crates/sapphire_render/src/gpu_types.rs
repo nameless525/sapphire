@@ -169,8 +169,13 @@ pub(crate) struct InstanceData {
     /// The instance's entry in the frame's character buffer: 0, the world's key light, unless
     /// the frame lists it as a character (see the `characters` module).
     pub character: u32,
+    /// How far its character has faded (M1 C7, 1 − [`CharacterInstance::opacity`]): 0 drawn
+    /// whole. The prepasses' faded pipelines dither by it.
+    ///
+    /// [`CharacterInstance::opacity`]: crate::CharacterInstance::opacity
+    pub fade: f32,
     /// Pads the struct to WGSL's 16-byte storage alignment.
-    pub padding: [u32; 3],
+    pub padding: [u32; 2],
 }
 
 impl InstanceData {

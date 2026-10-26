@@ -67,6 +67,14 @@
 //! - `--swatches`: place three spheres on the character's other side that show the anime
 //!   character shader's diffuse modes over cooked maps (ramp mode, ramp mode with a subsurface
 //!   mix, three bands; M1 C1).
+//! - `--materials`: place the material layer samples on the character's right (M1 C7): spheres
+//!   of lacquer (a crisp highlight), gold (a tinted matcap and the reflection add), leather (a
+//!   multiplied matcap, a GGX highlight) and a suit with breathing light lines, and a leg in a
+//!   thigh-high stocking.
+//! - `--fade <0..1>`: draw the characters at this opacity through the proximity fade's dither
+//!   (M1 C7), which temporal AA resolves into a blend and MSAA covers as a share of samples.
+//! - `--proximity-fade`: fade the characters as the camera comes within half a meter of their
+//!   bodies (M1 C7; `sapphire_world::fade::ProximityFade`'s defaults).
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
@@ -190,6 +198,7 @@ mod extract;
 mod faces;
 mod foliage;
 mod input;
+mod layers;
 #[cfg(feature = "dev")]
 mod link;
 mod lookdev;

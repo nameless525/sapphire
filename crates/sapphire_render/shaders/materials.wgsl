@@ -28,6 +28,17 @@ struct AnimeCharacterRegion {
     outline: vec4<f32>,
 }
 
+// One region's layers (M1 C7; `CharacterLayerRegion`).
+struct CharacterLayerRegion {
+    // rgb: the matcap's tint; a: its channel, -1 none, 0 the color matcap, 1 to 4 R, G, B or A.
+    matcap: vec4<f32>,
+    // x: metallic; y: the reflection's roughness; z: the stockings' weight; w: the matcap's
+    // blend, 0 added, 1 multiplying the albedo.
+    surface: vec4<f32>,
+    // rgb: emission × intensity.
+    emission: vec4<f32>,
+}
+
 struct AnimeCharacterParams {
     // Linear RGBA; multiplies the base color map.
     base_color: vec4<f32>,
@@ -71,6 +82,19 @@ struct AnimeCharacterParams {
     // Per region: x rim strength scale; y rim width scale; z rim where the character overlaps
     // itself.
     rim_regions: array<vec4<f32>, 8>,
+    // The layers (M1 C7): x the highlight's albedo share; y emission's breaths a second (0
+    // steady); z the breath's depth; w how much of the glow blooms as the world's light.
+    layers: vec4<f32>,
+    // Stockings: rgb the fabric's color; a its opacity at the silhouette.
+    stocking_color: vec4<f32>,
+    // x, y: the N·V range from the silhouette to facing; z: the opacity facing the camera; w:
+    // weave cells per UV unit.
+    stocking_shape: vec4<f32>,
+    // rgb: the sheen's color × strength; a: its sharpness.
+    stocking_sheen: vec4<f32>,
+    // x: the weave's strength; y: 1 for fabric along UV v, 0 along u.
+    stocking_weave: vec4<f32>,
+    layer_regions: array<CharacterLayerRegion, 8>,
 }
 
 // Texture slots (`AnimeCharacterMaterial::TEXTURE_SLOTS`).
@@ -88,11 +112,22 @@ const CHARACTER_FLAG_RAMP: u32 = 256u;
 const CHARACTER_FLAG_DEEP_SHADE: u32 = 512u;
 const CHARACTER_FLAG_ALPHA_TEST: u32 = 1024u;
 const CHARACTER_FLAG_TRANSPARENT: u32 = 2048u;
+// The layers (M1 C7), each set when a region turns it on.
+const CHARACTER_FLAG_SPECULAR: u32 = 4096u;
+const CHARACTER_FLAG_MATCAP: u32 = 8192u;
+const CHARACTER_FLAG_REFLECTION: u32 = 16384u;
+const CHARACTER_FLAG_STOCKINGS: u32 = 32768u;
+const CHARACTER_FLAG_EMISSION: u32 = 65536u;
+const CHARACTER_FLAG_LAYERS: u32 = 126976u;
 
 const CHARACTER_SURFACE_BODY: u32 = 0u;
 const CHARACTER_SURFACE_FACE: u32 = 1u;
 const CHARACTER_SURFACE_HAIR: u32 = 2u;
 const CHARACTER_SURFACE_EYE: u32 = 3u;
+
+// Specular models (M1 C7), in `modes.w`'s first byte.
+const CHARACTER_SPECULAR_BLINN: u32 = 0u;
+const CHARACTER_SPECULAR_GGX: u32 = 1u;
 
 // Hair highlight styles, in `modes.w`'s second byte.
 const CHARACTER_HIGHLIGHT_PAINTED_BAND: u32 = 0u;

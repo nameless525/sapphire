@@ -108,6 +108,9 @@ impl Stage {
         if options.swatches {
             scene.spawn_swatches(crate::swatches::upload_swatches(&mut content, &gpu, &mut renderer)?);
         }
+        if options.materials {
+            scene.spawn_layer_samples(crate::layers::upload_samples(&mut content, &gpu, &mut renderer)?);
+        }
         if let Some(layout) = options.faces {
             scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?, layout);
         }

@@ -337,6 +337,7 @@ impl Harness {
             lighting: CharacterLighting::unstyled(self.sun),
             face: CharacterFace::default(),
             body: CharacterBody::default(),
+            opacity: 1.0,
         });
     }
 

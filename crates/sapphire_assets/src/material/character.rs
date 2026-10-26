@@ -2,8 +2,9 @@
 //! pillar 2). The anime character shader (M1 C1's uber-shader) reads its block: ramp and band
 //! diffuse, the control map's regions and bias, each region's share of the character light
 //! rig's stylized GI (M1 C2), the depth-offset rim and its region mask, hair highlights, the
-//! bangs' shadow on a face and eyes through the bangs (M1 C5), the layered eyes (M1 C6), and the
-//! static permutations of its flags.
+//! bangs' shadow on a face and eyes through the bangs (M1 C5), the layered eyes (M1 C6), the
+//! layers on top of the base (M1 C7: stylized specular, the matcap, the reflection add,
+//! stockings and breathing emission), and the static permutations of its flags.
 //!
 //! # Versions
 //!
@@ -24,7 +25,7 @@ use super::common::{
 use super::{MaterialDocument, MaterialError, MaterialFamily, MaterialFlags, TextureSlot, TextureUsage};
 use crate::AssetId;
 use crate::character_maps::ramp::{self, Half};
-use crate::character_maps::{MATERIAL_IDS, MaterialId};
+use crate::character_maps::{MATERIAL_IDS, MaterialId, layer_mask};
 use crate::texture::Swizzle;
 
 /// An anime character material, as a document:
@@ -62,6 +63,12 @@ use crate::texture::Swizzle;
 /// - **Surface:** body, face, hair or eye. Faces, hair and eyes are static permutation bits of
 ///   the anime character shader, each with settings of its own.
 /// - **Rim:** the depth-offset rim ([`Rim`]), which each region scales, widens and masks.
+/// - **Layers** (M1 C7), each off until a region turns it on: a stylized highlight
+///   ([`Specular`], the region's specular color), the matcap ([`Matcap`], the region's
+///   [`RegionMatcap`]), the reflection add (the region's `metallic` above
+///   [`layer_mask::REFLECTS`](crate::character_maps::layer_mask::REFLECTS)), stockings
+///   ([`Stockings`], the region's `stocking`) and breathing emission ([`Emission`], the region's
+///   `emission`). A body's `layer_mask` paints where each shows.
 ///
 /// Colors are linear RGB(A), as glTF factors are. Textures are referenced by [`AssetId`]; see
 /// [`AnimeCharacterMaterial::TEXTURE_SLOTS`] for what each must hold.
@@ -87,11 +94,20 @@ pub struct AnimeCharacterMaterial {
     /// Per-region parameters; at least one, at most [`AnimeCharacterParams::MAX_REGIONS`].
     pub regions: Vec<CharacterRegion>,
     pub rim: Rim,
+    /// The stylized highlight's model (M1 C7); each region sets its color and size.
     pub specular: Specular,
-    /// A spheremap for metals and gloss. Which control map channel gates it is C7's to settle:
-    /// A7's layout has no channel of its own for it (R is the specular mask, B its threshold).
+    /// A spheremap for metals and gloss (M1 C7): each region picks a channel of it, a blend and
+    /// a tint ([`RegionMatcap`]), and the layer mask's R paints where it shows.
     pub matcap: Option<Matcap>,
     pub outline: Outline,
+    /// The layer mask (M1 C7; `character_maps::layer_mask`), linear: R matcap, G metallic, B
+    /// emission, A stocking density, each scaling its region's value. Bodies alone: faces, hair
+    /// and eyes bind their own masks in its slot.
+    pub layer_mask: Option<AssetId>,
+    /// The stockings the regions with a `stocking` weight wear (M1 C7).
+    pub stockings: Stockings,
+    /// How the regions' emission breathes and blooms (M1 C7).
+    pub emission: Emission,
 }
 
 impl Versioned for AnimeCharacterMaterial {
@@ -119,6 +135,9 @@ impl Default for AnimeCharacterMaterial {
             specular: Specular::default(),
             matcap: None,
             outline: Outline::default(),
+            layer_mask: None,
+            stockings: Stockings::default(),
+            emission: Emission::default(),
         }
     }
 }
@@ -599,10 +618,10 @@ pub struct CharacterRegion {
     pub night_ramp_row: Option<u16>,
     /// Ramp mode: the tint the row mixes with (WuWa skin: a warm peach).
     pub subsurface_color: [f32; 3],
-    /// Specular color × intensity, gated by the control map's specular mask (R); black turns it
-    /// off.
+    /// The stylized highlight's color × intensity (M1 C7), gated by the control map's specular
+    /// mask (R) and sized by its threshold (B); black turns it off.
     pub specular_color: [f32; 3],
-    /// Highlight size: the Blinn exponent, or the GGX roughness.
+    /// Highlight size: the Blinn exponent (at least 1), or the GGX roughness (0 to 1).
     pub specular_size: f32,
     /// Tints the rim light.
     pub rim_color: [f32; 3],
@@ -619,6 +638,22 @@ pub struct CharacterRegion {
     pub outline_width: f32,
     /// How the character rig's stylized GI treats this region.
     pub gi: RegionGi,
+    /// The matcap's channel, blend and tint here, where the material has a matcap (M1 C7).
+    pub matcap: RegionMatcap,
+    /// How strongly the region reflects (M1 C7; WuWa's metallic, a reflection strength rather
+    /// than a physical blend toward a conductor): the layer mask's G scales it, and only texels
+    /// above [`layer_mask::REFLECTS`](crate::character_maps::layer_mask::REFLECTS) add the
+    /// reflection, on top of the matcap, which stays the metal's base look. 0 to 1.
+    pub metallic: f32,
+    /// How blurred the reflection is: 0 a mirror, 1 the roughest the renderer keeps (WuWa clamps
+    /// characters' roughness); 0 to 1.
+    pub roughness: f32,
+    /// How much of the material's stockings the region wears, 0 to 1, × the layer mask's A (M1
+    /// C7).
+    pub stocking: f32,
+    /// The region's glow, linear RGB × intensity, × the layer mask's B (M1 C7): unlit, breathing
+    /// as the material's [`Emission`] says. Black for none.
+    pub emission: [f32; 3],
 }
 
 impl Default for CharacterRegion {
@@ -638,6 +673,11 @@ impl Default for CharacterRegion {
             outline_color: [0.08, 0.06, 0.1],
             outline_width: 1.0,
             gi: RegionGi::default(),
+            matcap: RegionMatcap::default(),
+            metallic: 0.0,
+            roughness: 0.3,
+            stocking: 0.0,
+            emission: [0.0; 3],
         }
     }
 }
@@ -709,19 +749,31 @@ impl Rim {
     }
 }
 
-/// The specular highlight's model; each region sets its color and size.
+/// The stylized highlight (M1 C7; spec §5.12 "Anime character shading"): a painted-looking
+/// shape of the key light, not physically based shine. Each region sets its color and size; the
+/// control map's specular mask (R) gates it and its specular threshold (B) sizes it (0.5
+/// neutral, higher larger), and it shows on the lit side alone.
+///
+/// The model shapes N·H (on the shading normal, toward the character's key light), and the shape
+/// is thresholded at `1 − B` into a crisp edge, `softness` wide or a pixel, whichever is wider
+/// (Genshin's `step(1 − B, blinn)`, ZZZ's hard-clamped GGX). Its color is the region's, taking
+/// the albedo by `albedo`: white highlights look plastic, so the reference games tint them by
+/// the surface (WuWa raises the albedo to a power by the highlight).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Specular {
     pub model: SpecularModel,
-    /// Half-width of the highlight's edge.
+    /// Half-width of the highlight's edge, in the shape's units (0 to 1).
     pub softness: f32,
+    /// How much of the surface's albedo the highlight takes: 0 the region's color alone, 1 that
+    /// color × the albedo.
+    pub albedo: f32,
 }
 
 impl Default for Specular {
     fn default() -> Self {
-        Self { model: SpecularModel::Blinn, softness: 0.05 }
+        Self { model: SpecularModel::Blinn, softness: 0.05, albedo: 0.5 }
     }
 }
 
@@ -729,14 +781,44 @@ impl Default for Specular {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub enum SpecularModel {
-    /// Thresholded Blinn-Phong (Genshin, WuWa).
+    /// Thresholded Blinn-Phong (Genshin, WuWa): `N·H^size`, the region's size an exponent.
     #[default]
     Blinn,
-    /// Thresholded minimal GGX (ZZZ).
+    /// Thresholded minimal GGX (ZZZ): the GGX distribution at roughness `size`, normalized to 1
+    /// facing the half vector, so its long tail sets a softer, wider shape than Blinn's.
     Ggx,
 }
 
-/// The matcap.
+impl SpecularModel {
+    /// The smallest GGX roughness a highlight takes: below it the shape is a single point.
+    pub const MIN_GGX_ROUGHNESS: f32 = 0.02;
+
+    /// The highlight's shape at `n_dot_h` for a region's `size`, 0 to 1 and 1 at `n_dot_h` = 1:
+    /// what the specular threshold cuts (`specular_shape` in the anime character shader).
+    pub fn shape(self, n_dot_h: f32, size: f32) -> f32 {
+        let n_dot_h = n_dot_h.clamp(0.0, 1.0);
+        match self {
+            Self::Blinn => n_dot_h.powf(size.max(1.0)),
+            Self::Ggx => {
+                let r2 = size.clamp(Self::MIN_GGX_ROUGHNESS, 1.0).powi(2);
+                let d = n_dot_h * n_dot_h * (r2 - 1.0) + 1.0;
+                (r2 / d).powi(2)
+            }
+        }
+    }
+}
+
+/// The matcap (M1 C7; spec §5.12 "Anime character shading"): a spheremap of painted light,
+/// sampled by the view-space normal, for metals, leather and gloss. It reads as a painted
+/// highlight that turns with the camera, not as a reflection of the scene (the reflection add
+/// is the region's `metallic`, on top of it).
+///
+/// The map holds one color matcap (RGB) or up to four grayscale ones (R, G, B, A: WuWa's
+/// four-channel `_MatCapTex`), and each region picks one and its blend and tint
+/// ([`RegionMatcap`]). In a color texture R, G and B decode from sRGB and A is linear, as any
+/// color texture's alpha; an HDR texture is linear throughout. The layer mask's R paints where it
+/// shows. `strength` and `shadow_strength` scale it on the lit and the shadow side of the key
+/// light's split (MToon's rim lighting mix, WuWa's lit and back matcap intensities).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub struct Matcap {
@@ -757,6 +839,207 @@ impl Matcap {
 
     fn default_shadow_strength() -> f32 {
         0.5
+    }
+}
+
+/// How one region takes the material's matcap (M1 C7).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct RegionMatcap {
+    pub channel: MatcapChannel,
+    pub blend: MatcapBlend,
+    /// Multiplies the matcap: linear RGB, above 1 to brighten.
+    pub color: [f32; 3],
+}
+
+impl Default for RegionMatcap {
+    /// The color matcap, added as light, untinted: MToon's matcap on every region.
+    fn default() -> Self {
+        Self { channel: MatcapChannel::Rgb, blend: MatcapBlend::Add, color: [1.0; 3] }
+    }
+}
+
+/// Which of the matcap's channels a region reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum MatcapChannel {
+    /// None: the region takes no matcap.
+    Off,
+    /// The color matcap.
+    #[default]
+    Rgb,
+    /// One of four grayscale matcaps, tinted by the region's color.
+    R,
+    G,
+    B,
+    A,
+}
+
+impl MatcapChannel {
+    /// The GPU block's code (`CharacterLayerRegion::matcap`'s fourth component): −1 none, 0 the
+    /// color matcap, 1 to 4 the R, G, B or A channel.
+    fn code(self) -> f32 {
+        match self {
+            Self::Off => -1.0,
+            Self::Rgb => 0.0,
+            Self::R => 1.0,
+            Self::G => 2.0,
+            Self::B => 3.0,
+            Self::A => 4.0,
+        }
+    }
+}
+
+/// How a region's matcap meets its surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum MatcapBlend {
+    /// Added as light, in the key light's color and intensity: gloss on leather and hair, a
+    /// metal's painted sheen (WuWa, MToon).
+    #[default]
+    Add,
+    /// Multiplies the albedo, before the light: the metal's shading painted into its color
+    /// (Genshin's metal map), which the light split and GI then light. The lit and shadow
+    /// strengths blend toward it from the plain albedo.
+    Multiply,
+}
+
+/// Stockings and tights (M1 C7; spec §5.12 "Anime character shading"): sheer fabric over the
+/// skin, painted as the reference games paint it (WuWa's and Star Rail's stocking layers) rather
+/// than simulated, and opaque, so it needs no sorting. Regions wear it by their `stocking`
+/// weight, and the layer mask's A paints where it covers.
+///
+/// - **Denier:** fabric hides more of the skin where the view grazes through it, so a leg reads
+///   darker at its silhouette and lighter facing the camera, the skin showing through. The
+///   albedo goes toward `color` by `edge_opacity` at and below the first N·V of `range`, and by
+///   `facing_opacity` at and above the second, smoothly between ([`Stockings::opacity`]).
+/// - **Sheen:** a soft highlight of the key light along the fabric's run (`direction`, the UV
+///   axis the legs are laid out along; meshes carry no tangents), `sin(T, H)^sharpness`, in
+///   `sheen` × the key light, on the lit side and where the fabric covers.
+/// - **Weave:** a fine knit, `weave_scale` cells per UV unit, varying the fabric's opacity by
+///   `weave_strength`, faded to its average where its cells shrink toward a pixel, so it never
+///   shimmers.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct Stockings {
+    /// The fabric's color, linear RGB: what the skin goes toward where it hides it.
+    pub color: [f32; 3],
+    /// How much of the skin the fabric hides at the silhouette, 0 to 1.
+    pub edge_opacity: f32,
+    /// How much it hides facing the camera, 0 to 1: the denier.
+    pub facing_opacity: f32,
+    /// The N·V range from the silhouette's opacity to facing's: ascending, within 0 to 1.
+    pub range: [f32; 2],
+    /// The sheen's color × strength, linear RGB; black for none.
+    pub sheen: [f32; 3],
+    /// The sheen's sharpness: the exponent on `sin(T, H)`, at least 1; higher is narrower.
+    pub sheen_sharpness: f32,
+    pub direction: FabricDirection,
+    /// Weave cells per UV unit; 0 for none.
+    pub weave_scale: f32,
+    /// How much the weave varies the fabric's opacity, 0 to 1.
+    pub weave_strength: f32,
+}
+
+impl Default for Stockings {
+    /// Sheer black tights: mostly opaque at the silhouette, the skin showing through facing the
+    /// camera, a faint cool sheen, no weave.
+    fn default() -> Self {
+        Self {
+            color: [0.012, 0.01, 0.016],
+            edge_opacity: 0.92,
+            facing_opacity: 0.45,
+            range: [0.15, 0.85],
+            sheen: [0.16, 0.16, 0.2],
+            sheen_sharpness: 12.0,
+            direction: FabricDirection::V,
+            weave_scale: 0.0,
+            weave_strength: 0.25,
+        }
+    }
+}
+
+impl Stockings {
+    /// How much of the skin the fabric hides at `n_dot_v`, before the weight, the mask and the
+    /// weave: the denier gradient, a smoothstep across `range` (`stocking_opacity` in the anime
+    /// character shader).
+    pub fn opacity(&self, n_dot_v: f32) -> f32 {
+        let [from, to] = self.range;
+        let t = ((n_dot_v - from) / (to - from).max(1e-4)).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        self.edge_opacity + (self.facing_opacity - self.edge_opacity) * smooth
+    }
+
+    fn validate(&self) -> Result<(), MaterialError> {
+        color("stockings.color", &self.color)?;
+        unit("stockings.edge_opacity", self.edge_opacity)?;
+        unit("stockings.facing_opacity", self.facing_opacity)?;
+        let [from, to] = self.range;
+        if !((0.0..=1.0).contains(&from) && (0.0..=1.0).contains(&to) && from <= to) {
+            return Err(invalid("stockings.range", "must ascend within 0 to 1"));
+        }
+        color("stockings.sheen", &self.sheen)?;
+        if !(self.sheen_sharpness.is_finite() && self.sheen_sharpness >= 1.0) {
+            return Err(invalid("stockings.sheen_sharpness", "must be finite and at least 1"));
+        }
+        non_negative("stockings.weave_scale", self.weave_scale)?;
+        unit("stockings.weave_strength", self.weave_strength)
+    }
+}
+
+/// The UV axis a fabric runs along, which its sheen streaks across.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum FabricDirection {
+    U,
+    /// Along V: legs laid out top to bottom.
+    #[default]
+    V,
+}
+
+/// Emission (M1 C7; spec §5.12 "Anime character shading"): regions glow in their `emission`
+/// color, painted by the layer mask's B, unlit, so accents read the same by day and by night,
+/// and breathe: the glow dims and swells over `period` seconds by `depth`, each instance at a
+/// phase of its own (WuWa's breath light). It feeds the glow: post's bloom takes an emissive
+/// pixel's share of light as the world's rather than as the character's, whose bloom is
+/// restrained (M1 P2's character mask), by `bloom`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct Emission {
+    /// Seconds a breath takes; 0 holds the glow steady.
+    pub period: f32,
+    /// How far the glow dims at the bottom of a breath: 0 steady, 1 out.
+    pub depth: f32,
+    /// How much of the glow blooms as the world's light rather than the character's, 0 to 1.
+    pub bloom: f32,
+}
+
+impl Default for Emission {
+    /// A slow breath, dimming by a third, blooming as the world's light.
+    fn default() -> Self {
+        Self { period: 4.0, depth: 0.35, bloom: 1.0 }
+    }
+}
+
+impl Emission {
+    /// The glow's level, 0 to 1, `seconds` into the frame clock for an instance at `phase`
+    /// radians: full at the top of each breath (`breath` in the anime character
+    /// shader).
+    pub fn level(&self, seconds: f32, phase: f32) -> f32 {
+        if self.period <= 0.0 {
+            return 1.0;
+        }
+        let angle = std::f32::consts::TAU * seconds / self.period + phase;
+        1.0 - self.depth * (0.5 - 0.5 * angle.cos())
+    }
+
+    fn validate(&self) -> Result<(), MaterialError> {
+        non_negative("emission.period", self.period)?;
+        unit("emission.depth", self.depth)?;
+        unit("emission.bloom", self.bloom)
     }
 }
 
@@ -915,10 +1198,10 @@ fn ramp(from: f32, to: f32, x: f32) -> f32 {
 }
 
 /// The anime character family's GPU block (WGSL `AnimeCharacterParams`,
-/// `shaders/materials.wgsl` in `sapphire_render`). 1120 bytes: a 128-byte header, the regions,
+/// `shaders/materials.wgsl` in `sapphire_render`). 1584 bytes: a 128-byte header, the regions,
 /// then outlines v2's settings (M1 C4), then the rim's, the hair shadow's and the
-/// eyes-through-hair settings and the regions' rim settings (M1 C5), each after the last so
-/// every earlier offset holds.
+/// eyes-through-hair settings and the regions' rim settings (M1 C5), then the layers' settings
+/// and the regions' layers (M1 C7), each after the last so every earlier offset holds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct AnimeCharacterParams {
@@ -966,6 +1249,36 @@ pub struct AnimeCharacterParams {
     pub through_hair: [f32; 4],
     /// Per region: x rim strength scale; y rim width scale; z rim on self-overlap; w zero.
     pub rim_regions: [[f32; 4]; AnimeCharacterParams::MAX_REGIONS],
+    /// The layers (M1 C7): x the highlight's albedo share ([`Specular::albedo`]); y emission's
+    /// breaths a second (0 steady); z the breath's depth; w how much of the glow blooms as the
+    /// world's light.
+    pub layers: [f32; 4],
+    /// Stockings ([`Stockings`]): rgb the fabric's color; a its opacity at the silhouette.
+    pub stocking_color: [f32; 4],
+    /// x, y: the N·V range from the silhouette to facing; z: the opacity facing the camera; w:
+    /// weave cells per UV unit.
+    pub stocking_shape: [f32; 4],
+    /// rgb: the sheen's color × strength; a: its sharpness.
+    pub stocking_sheen: [f32; 4],
+    /// x: the weave's strength; y: 1 for fabric along UV v, 0 along u; z, w: zero.
+    pub stocking_weave: [f32; 4],
+    /// Per region: its layers (M1 C7).
+    pub layer_regions: [CharacterLayerRegion; AnimeCharacterParams::MAX_REGIONS],
+}
+
+/// One region's layers in [`AnimeCharacterParams`] (M1 C7; WGSL `CharacterLayerRegion`). 48
+/// bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct CharacterLayerRegion {
+    /// rgb: the matcap's tint ([`RegionMatcap::color`]); a: its channel, −1 none, 0 the color
+    /// matcap, 1 to 4 R, G, B or A.
+    pub matcap: [f32; 4],
+    /// x: metallic; y: the reflection's roughness; z: the stockings' weight; w: the matcap's
+    /// blend, 0 added, 1 multiplying the albedo.
+    pub surface: [f32; 4],
+    /// rgb: emission × intensity; a: zero.
+    pub emission: [f32; 4],
 }
 
 /// One region of [`AnimeCharacterParams`] (WGSL `AnimeCharacterRegion`). 96 bytes.
@@ -997,7 +1310,18 @@ impl GpuBlock for AnimeCharacterParams {
             .flat_map(|r| [r.shade, r.deep_shade, r.subsurface, r.specular, r.rim, r.outline]);
         let outline = [self.outline_curve, self.outline_shape, self.outline_color];
         let c5 = [self.rim, self.hair_shadow, self.through_hair];
-        header.into_iter().chain(regions).chain(outline).chain(c5).chain(self.rim_regions).collect()
+        let c7 =
+            [self.layers, self.stocking_color, self.stocking_shape, self.stocking_sheen, self.stocking_weave];
+        let layer_regions = self.layer_regions.iter().flat_map(|r| [r.matcap, r.surface, r.emission]);
+        header
+            .into_iter()
+            .chain(regions)
+            .chain(outline)
+            .chain(c5)
+            .chain(self.rim_regions)
+            .chain(c7)
+            .chain(layer_regions)
+            .collect()
     }
 
     fn modes(&self) -> [u32; 4] {
@@ -1021,6 +1345,23 @@ impl AnimeCharacterParams {
     pub const FLAG_ALPHA_TEST: u32 = 1 << 10;
     /// Alpha blends.
     pub const FLAG_TRANSPARENT: u32 = 1 << 11;
+    /// The layers (M1 C7), each set when a region turns it on, so the shader skips the rest on
+    /// branches every pixel of a draw takes alike: a region has a highlight color;
+    pub const FLAG_SPECULAR: u32 = 1 << 12;
+    /// the material has a matcap and a region takes it;
+    pub const FLAG_MATCAP: u32 = 1 << 13;
+    /// a region's metallic is above the reflection's threshold;
+    pub const FLAG_REFLECTION: u32 = 1 << 14;
+    /// a region wears the stockings;
+    pub const FLAG_STOCKINGS: u32 = 1 << 15;
+    /// a region glows.
+    pub const FLAG_EMISSION: u32 = 1 << 16;
+    /// Every layer's flag.
+    pub const FLAG_LAYERS: u32 = Self::FLAG_SPECULAR
+        | Self::FLAG_MATCAP
+        | Self::FLAG_REFLECTION
+        | Self::FLAG_STOCKINGS
+        | Self::FLAG_EMISSION;
 
     pub const SURFACE_BODY: u32 = 0;
     pub const SURFACE_FACE: u32 = 1;
@@ -1152,6 +1493,25 @@ impl AnimeCharacterMaterial {
         for (rim, region) in rim_regions.iter_mut().zip(&self.regions) {
             *rim = [region.rim_strength, region.rim_width, region.rim_overlap, 0.0];
         }
+        flags |= self.layer_flags();
+        let mut layer_regions = [CharacterLayerRegion::default(); AnimeCharacterParams::MAX_REGIONS];
+        for (layers, region) in layer_regions.iter_mut().zip(&self.regions) {
+            let blend = match region.matcap.blend {
+                MatcapBlend::Add => 0.0,
+                MatcapBlend::Multiply => 1.0,
+            };
+            *layers = CharacterLayerRegion {
+                matcap: rgb_w(region.matcap.color, region.matcap.channel.code()),
+                surface: [region.metallic, region.roughness, region.stocking, blend],
+                emission: rgb_w(region.emission, 0.0),
+            };
+        }
+        let (stockings, emission) = (&self.stockings, &self.emission);
+        let breaths = if emission.period > 0.0 { emission.period.recip() } else { 0.0 };
+        let along_v = match stockings.direction {
+            FabricDirection::U => 0.0,
+            FabricDirection::V => 1.0,
+        };
         for ((gpu, region), id) in regions.iter_mut().zip(&self.regions).zip(MaterialId::ALL) {
             let row = |row: Option<u16>, half| row.map_or(ramp::row(id, half), u32::from) as f32;
             *gpu = AnimeCharacterRegion {
@@ -1180,7 +1540,41 @@ impl AnimeCharacterMaterial {
             hair_shadow,
             through_hair,
             rim_regions,
+            layers: [self.specular.albedo, breaths, emission.depth, emission.bloom],
+            stocking_color: rgb_w(stockings.color, stockings.edge_opacity),
+            stocking_shape: [
+                stockings.range[0],
+                stockings.range[1],
+                stockings.facing_opacity,
+                stockings.weave_scale,
+            ],
+            stocking_sheen: rgb_w(stockings.sheen, stockings.sheen_sharpness),
+            stocking_weave: [stockings.weave_strength, along_v, 0.0, 0.0],
+            layer_regions,
         }
+    }
+
+    /// The layers' flags (M1 C7, [`AnimeCharacterParams::FLAG_LAYERS`]): each layer a region
+    /// turns on. A layer every region leaves off sets none, so materials from before the layers
+    /// draw exactly as they did.
+    fn layer_flags(&self) -> u32 {
+        let any = |on: &dyn Fn(&CharacterRegion) -> bool| self.regions.iter().any(on);
+        let lit = |rgb: [f32; 3]| rgb.iter().any(|&c| c > 0.0);
+        let matcap = self.matcap.is_some_and(|m| m.strength > 0.0 || m.shadow_strength > 0.0)
+            && any(&|r| r.matcap.channel != MatcapChannel::Off);
+        let stockings = self.stockings.edge_opacity > 0.0
+            || self.stockings.facing_opacity > 0.0
+            || lit(self.stockings.sheen);
+        [
+            (any(&|r| lit(r.specular_color)), AnimeCharacterParams::FLAG_SPECULAR),
+            (matcap, AnimeCharacterParams::FLAG_MATCAP),
+            (any(&|r| r.metallic > layer_mask::REFLECTS), AnimeCharacterParams::FLAG_REFLECTION),
+            (stockings && any(&|r| r.stocking > 0.0), AnimeCharacterParams::FLAG_STOCKINGS),
+            (any(&|r| lit(r.emission)), AnimeCharacterParams::FLAG_EMISSION),
+        ]
+        .into_iter()
+        .filter(|&(on, _)| on)
+        .fold(0, |flags, (_, flag)| flags | flag)
     }
 
     /// Whether it draws anything through the character's hair: a face with a mask (whose B
@@ -1242,14 +1636,28 @@ impl MaterialDocument for AnimeCharacterMaterial {
             non_negative(&field("outline_width"), region.outline_width)?;
             unit(&field("gi.sphere"), region.gi.sphere)?;
             unit(&field("gi.skin"), region.gi.skin)?;
+            color(&field("matcap.color"), &region.matcap.color)?;
+            unit(&field("metallic"), region.metallic)?;
+            unit(&field("roughness"), region.roughness)?;
+            unit(&field("stocking"), region.stocking)?;
+            color(&field("emission"), &region.emission)?;
         }
         self.rim.validate()?;
         non_negative("specular.softness", self.specular.softness)?;
+        unit("specular.albedo", self.specular.albedo)?;
         if let Some(matcap) = &self.matcap {
             non_negative("matcap.strength", matcap.strength)?;
             non_negative("matcap.shadow_strength", matcap.shadow_strength)?;
         }
         self.outline.validate()?;
+        self.stockings.validate()?;
+        self.emission.validate()?;
+        if self.layer_mask.is_some() && self.surface != CharacterSurface::Body {
+            return Err(invalid(
+                "layer_mask",
+                "is for bodies: faces, hair and eyes bind their own masks there",
+            ));
+        }
         match &self.surface {
             CharacterSurface::Body => Ok(()),
             CharacterSurface::Face(face) => {
@@ -1279,7 +1687,7 @@ impl MaterialDocument for AnimeCharacterMaterial {
             DiffuseMode::Bands(_) => None,
         };
         let (face_shadow, surface_mask, expression) = match &self.surface {
-            CharacterSurface::Body => (None, None, None),
+            CharacterSurface::Body => (None, self.layer_mask, None),
             CharacterSurface::Face(face) => (Some(face.shadow_map), face.mask_map, face.expression_map),
             CharacterSurface::Hair(hair) => (None, hair.mask_map, None),
             CharacterSurface::Eye(eye) => (None, eye.mask_map, None),
@@ -1340,6 +1748,9 @@ impl From<v1::AnimeCharacterMaterial> for AnimeCharacterMaterial {
             specular: old.specular,
             matcap: old.matcap,
             outline: old.outline,
+            layer_mask: None,
+            stockings: Stockings::default(),
+            emission: Emission::default(),
         }
     }
 }

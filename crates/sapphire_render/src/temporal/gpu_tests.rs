@@ -162,6 +162,7 @@ impl Frames {
             lighting,
             face: CharacterFace::default(),
             body: CharacterBody::default(),
+            opacity: 1.0,
         }));
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(gpu, self.packets.current());

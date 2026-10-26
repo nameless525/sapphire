@@ -211,7 +211,9 @@
 //!   part, body, face, hair or eye; R the nearest surface's, G the nearest but for hair, which
 //!   hair draws last to leave alone, the **eye depth mask** of M1 C6) of the opaque and
 //!   alpha-tested anime character surfaces of the instances the frame lists as characters
-//!   ([`FramePacket::characters`]), static or deformed, position-only. Its targets are the
+//!   ([`FramePacket::characters`]), static or deformed: opaque ones position-only, alpha-tested
+//!   ones (and fading characters', M1 C7) through a masked pipeline that cuts them out as the
+//!   main pass does (see "Material layers and the proximity fade"). Its targets are the
 //!   renderer's own, persistent and imported into the graph, so it runs every frame with a view,
 //!   and group 0 binds them (bindings 8–10) for the main pass: the rim, the bangs' shadow on
 //!   faces, eyes through hair and the eyes' layers read it (see "Rim, hair and eyes through
@@ -219,7 +221,9 @@
 //!   reactivity (P1's 0.5; [`temporal`]).
 //! - **Scene prepass** ([`SCENE_PREPASS`]): depth, world normals (octahedral, `Rg16Float`) and velocity
 //!   (`Rg16Float`, texture coordinates) of every opaque instance, then of their outline hulls
-//!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest).
+//!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest). The anime
+//!   character family's alpha-tested surfaces and hulls are cut out of it as of the character
+//!   prepass (M1 C7), foliage's cards by foliage's own pipelines (M1 W6).
 //!   Characters move by their skinned positions, static meshes by their instance transform, and
 //!   both by the camera's, never by temporal AA's jitter; a hull moves with its surface's
 //!   vertices, so its depth is the main pass's hull's, and its velocity is its line's, the
@@ -247,7 +251,7 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows and ambient, 224 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient and fades (M1 C7), 240 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
 //! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
@@ -324,13 +328,15 @@
 //! prepass's targets (C5), the ambient uniforms, the probe grid's atlas and brick table, the
 //! reflection cube and GTAO (W5), whose relight packs the grid's data into one storage buffer
 //! under the same floor. Group 3 is the last of the 4 bind groups the floor allows; the
-//! prepasses, which read no material textures, leave it out. The anime character family binds 8
+//! prepasses, which read no material textures, leave it out, but for the masked ones (M1 C7) and
+//! foliage's, which read the base color map for the alpha test. The anime character family binds 8
 //! of the 16 sampled textures and 3 of the 16 samplers a fragment stage gets (trilinear, ramp,
 //! and nearest for material IDs), leaving 8 textures for frame-wide ones: shadows take two (the
 //! cascades and the character atlas) and a comparison sampler (R4), the character prepass two
 //! (its depth and IDs) and a nearest sampler (C5), and W5's ambient the last four (the atlas, the
-//! brick table, the reflection cube and GTAO) and a linear sampler: every sampled texture a
-//! fragment stage gets, and 10 samplers left; the other families bind 1 to 5 (the environment's
+//! brick table, the reflection cube, which C7's reflection add reads too, and GTAO) and a linear
+//! sampler: every sampled texture a fragment stage gets, and 10 samplers left; the other families
+//! bind 1 to 5 (the environment's
 //! pipelines read five textures and two samplers, and the same four storage buffers as the anime
 //! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
@@ -501,6 +507,49 @@
 //!   sparkle (a sharpened sine), on the packet's time (R4), at a phase per instance slot.
 //! - **Fog:** every layer ends in `fogged` with its character's share, as the surface does.
 //!
+//! # Material layers and the proximity fade (M1 C7)
+//!
+//! `shaders/anime_character.wgsl` (its header has the formulas; spec §5.12 "Anime character
+//! shading" and "Proximity fade"):
+//!
+//! - **Layers** over the base shading, each off until a region turns it on, so materials from
+//!   before them draw exactly as they did (but for a matcap they named, which now shades), and
+//!   each a branch on the block's flags
+//!   (`AnimeCharacterParams::FLAG_SPECULAR` and on, `modes.x` bits 12–16), **no permutation
+//!   bit:** the stylized highlight (thresholded Blinn or minimal GGX of N·H on the key light,
+//!   sized by the control map's B and masked by its R, on the lit side, tinted by the albedo);
+//!   the matcap (one color or four grayscale spheremaps by the view-space normal, added in the
+//!   key light or multiplying the albedo, at a lit and a shadow strength); the reflection add
+//!   (above metallic 0.9: W5's reflection cube along the reflected view, the sky at the
+//!   ambient's scale, at the region's roughness's mip, × the albedo, on every tier); stockings (denier by N·V, a sheen along the fabric's UV axis and a weave faded to
+//!   its average before it aliases); and emission, unlit, breathing over a period at a phase per
+//!   instance slot. A body's layer mask (the surface mask slot: R matcap, G metallic, B
+//!   emission, A stocking density) paints where each shows. An emissive pixel's glow share ×
+//!   the material's bloom is written as the world's share of the pixel (scene color alpha), so
+//!   post blooms it as the world's light while the character around it keeps its restrained
+//!   bloom (P2's character mask). With no layer on, the branches cost a few percent of the main
+//!   pass's character pixels, the uber-shader having grown (spec §5.12 has the measurements).
+//! - **The proximity fade** ([`CharacterInstance::opacity`], which `sapphire_world::fade`
+//!   resolves from the camera's distance to the body): a screen-space dither, a 4 × 4 Bayer
+//!   matrix turned by the character's entry and the frame's jitter, that every pass drawing the
+//!   character shares (the `characters` module's docs have the passes): its opaque draws move to
+//!   the alpha-tested variants while it fades, so opaque pipelines never discard; the character
+//!   and scene prepasses and the outline hulls' prepass draw those variants through masked
+//!   pipelines (`prepass.wgsl`, `outline.wgsl`'s `*_masked`), which bind the family's group 3 and
+//!   cut out by the alpha test (the base color's alpha × its map's against the cutoff) and the
+//!   dither as the main pass does, so the rim, the bangs' shadow, eyes through hair, the
+//!   responsive mask and reprojection see the character where it is drawn and alpha-tested
+//!   cards at their drawn shape. Under temporal AA the turning pattern resolves into a blend;
+//!   under MSAA the alpha-tested variants' covered entry points (`fs_*_covered`) write a share
+//!   of each pixel's samples instead, and the single-sampled prepasses keep the pixels where it
+//!   isn't empty. A fading character takes no rim; its shadow stays whole. Only the anime
+//!   character family fades.
+//! - **Cutting pixels out** (the alpha test, the dither): decided early, discarded at the
+//!   fragment stage's one exit after the shading, with only quads cut out whole leaving early
+//!   (`quad_any`): on Metal a pixel discarded while the rest of its quad shades on can still
+//!   write depth and color.
+//! - **Counters:** [`RenderStats::faded_characters`] and [`RenderStats::faded_draws`].
+//!
 //! # The environment shader (M1 W4)
 //!
 //! `shaders/environment.wgsl` is one uber-shader for every environment material: a stylized GGX
@@ -577,9 +626,11 @@
 //!   the main pass rebinds group 2 only when the family changes.
 //! - **The prepasses** draw every family's opaque and alpha-tested surfaces into the scene
 //!   prepass (depth, normals, velocity, which temporal AA reads), foliage through pipelines of
-//!   its own that bind group 3 and cut its cards out; the character prepass draws the anime
-//!   character family's surfaces of the instances the frame lists as characters alone, so a
-//!   skinned prop or an anime-shaded pedestal is never taken for a character.
+//!   its own that bind group 3 and cut its cards out, and the anime character family's
+//!   alpha-tested variants through masked pipelines that do the same (M1 C7); the character
+//!   prepass draws the anime character family's surfaces of the instances the frame lists as
+//!   characters alone, so a skinned prop or an anime-shaded pedestal is never taken for a
+//!   character.
 //!
 //! # Outlines (M1 C4)
 //!
@@ -644,9 +695,9 @@
 //! # Material buffers
 //!
 //! Each material family has a parameter buffer of its own, an array of its block
-//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 1,120 bytes for the anime
-//! character family (944 until the depth-offset rim's per-region settings, M1 C5; 896 until
-//! outlines v2, M1 C4), 80 to 160 for the others. One shared array would pad every slot to the
+//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 1,584 bytes for the anime
+//! character family (1,120 until the material layers, M1 C7; 944 until the depth-offset rim's
+//! per-region settings, M1 C5; 896 until outlines v2, M1 C4), 80 to 160 for the others. One shared array would pad every slot to the
 //! largest block, and a pipeline only reads its own family, so each family's pipelines bind
 //! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. The sky
 //! draws one material at a time and reads its block from the CPU mirror into its frame uniforms
@@ -675,14 +726,10 @@
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
 //!   vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their other consumers (GTAO); cutting alpha-tested surfaces out of the
-//!   character prepass, so a lash or brow card that is a quad of alpha-tested texels (VRoid's
-//!   exports draw lashes and brows as MASK materials) takes the rim, the bangs' shadow and eyes
-//!   through hair at its drawn shape, not at its quad's (M1 C5 draws them solid; the sample
-//!   content and X1's VRM have none); and,
-//!   now that TAA turns MSAA off on desktop, letting the main pass
-//!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
-//!   the prepass to cut alpha-tested surfaces out first.
+//! - **Prepasses:** their other consumers (GTAO); and, now that TAA turns MSAA off on desktop,
+//!   letting the main pass reuse the scene prepass's depth (load it and test `Equal`, skipping
+//!   overdraw), which needs the prepass to cut the environment's alpha-tested surfaces out too
+//!   (the anime character family's are, M1 C7, and foliage's, M1 W6).
 //! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.
@@ -701,9 +748,11 @@
 //!   edges for the environment (desktop).
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
-//! - **The anime character shader** (see above) grows layered eyes (C6) on the eye permutation,
-//!   and specular, matcaps and stockings (C7) over the control map channels it
-//!   already reads. Outlines take their width's region per vertex (the vertex stage reads no
+//! - **The anime character shader** (see above) grows layered eyes (C6) on the eye permutation.
+//!   Its reflection add takes W5's prefiltered reflection cube, at the region's roughness, on
+//!   every tier, and screen-space reflections on the desktop tiers later; VRM's MToon emission
+//!   maps onto the layers' emission; the proximity fade could give fading pixels their own
+//!   responsive weight, so temporal AA settles the dither faster. Outlines take their width's region per vertex (the vertex stage reads no
 //!   textures): a width texture would make group 3 visible to it. Cooked MikkTSpace tangents
 //!   replace the normal map's screen-derivative frame (outline normals need none: their frame is
 //!   derived from the normal), and give Kajiya-Kay a strand direction of the mesh's own.

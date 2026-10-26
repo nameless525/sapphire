@@ -435,7 +435,13 @@ impl Harness {
         let key = DirectionalLight { direction: Vec3::NEG_Y, color: Vec3::ZERO, intensity: 1.0 };
         let lighting = CharacterLighting { gi: CharacterGi::default(), ..CharacterLighting::unstyled(key) };
         self.characters.retain(|character| character.id != id);
-        self.characters.push(CharacterInstance { id, lighting, face: CharacterFace::default(), body });
+        self.characters.push(CharacterInstance {
+            id,
+            lighting,
+            face: CharacterFace::default(),
+            body,
+            opacity: 1.0,
+        });
     }
 
     /// Uploads `grid` in place of the renderer's.

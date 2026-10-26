@@ -365,6 +365,7 @@ impl Harness {
             lighting: CharacterLighting::unstyled(key),
             face: CharacterFace { head: HeadBasis::REST, ..CharacterFace::default() },
             body: CharacterBody::default(),
+            opacity: 1.0,
         });
         id
     }

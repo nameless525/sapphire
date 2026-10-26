@@ -1,6 +1,6 @@
 //! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps, SDF face maps,
-//! the face's masks (M1 C3), the hair mask (M1 C5) and the eye mask (M1 C6), with the eyes'
-//! layered shading that the shader and its tests share.
+//! the face's masks (M1 C3), the hair mask (M1 C5), the eye mask (M1 C6), with the eyes'
+//! layered shading that the shader and its tests share, and the layer mask (M1 C7).
 //!
 //! The maps are ordinary cooked textures ([`texture`](crate::texture)) of the ILM, ramp, SDF
 //! and mask classes. This module fixes their channel and row layouts and the encodings inside
@@ -114,6 +114,17 @@
 //! unbound mask reads as a dome over the material's iris ellipse ([`eye_mask::iris_dome`]), or
 //! with no ellipse as the full depth. [`eye_mask`] also holds the highlights' motion, which the
 //! shader and its tests compute alike.
+//!
+//! # Layer masks
+//!
+//! A body material (M1 C7) may bind a linear mask in its surface mask slot, [`layer_mask`] (the
+//! second data map of the reference games: ZZZ's `_OtherDataTex`, Star Rail's stocking range
+//! map): R where the region's matcap shows, G the region's metallic (which reflects above
+//! [`layer_mask::REFLECTS`]), B where the region glows, A where its stockings cover and how
+//! densely. Each channel scales what the material's region sets, so the mask paints the shapes
+//! and the regions their looks. An unbound mask reads 1 in every channel: the regions' values
+//! alone. Faces, hair and eyes bind their own masks in the slot; their layers take the regions'
+//! values alone.
 
 /// How many material IDs the character maps tell apart: ILM alpha levels, ramp rows per half,
 /// and the per-ID parameter arrays of the anime character shader (C1).
@@ -383,6 +394,26 @@ pub mod eye_mask {
         let wave = 0.5 + 0.5 * (TAU * rate * seconds + phase).sin();
         1.0 + sparkle * wave.powi(SPARKLE_SHARPNESS)
     }
+}
+
+/// The layer mask's channels (M1 C7): what a body material's layers cover, in its surface mask
+/// slot. Linear; each scales its region's value, and an unbound mask reads 1 in every channel.
+pub mod layer_mask {
+    /// R, the matcap: where the region's matcap shows, and how strongly.
+    pub const MATCAP: usize = 0;
+    /// G, metallic: scales the region's metallic, the reflection's strength. A texel reflects
+    /// only above [`REFLECTS`] (WuWa's rule: metallic is how strongly a metal reflects, not a
+    /// physical blend toward a conductor), so a painted gradient below it leaves the matcap the
+    /// whole metal look.
+    pub const METALLIC: usize = 1;
+    /// B, emission: where the region glows, and how strongly.
+    pub const EMISSION: usize = 2;
+    /// A, stocking density: where the region's stockings cover the skin, 0 bare and 1 the full
+    /// fabric (a sheer band fading out at a stocking's top, a lace border painted in).
+    pub const STOCKING: usize = 3;
+
+    /// The metallic above which a texel adds the reflection (the reflection add, M1 C7).
+    pub const REFLECTS: f32 = 0.9;
 }
 
 /// The expression map's channels (M1 C3), each scaled by a weight the frame packet animates

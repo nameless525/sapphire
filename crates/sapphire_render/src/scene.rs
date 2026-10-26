@@ -9,11 +9,15 @@
 //!   instance is uploaded with both, and once more when it comes to rest.
 //! - [`DrawList`] turns the live slots into draw records and draw commands. Draws name their
 //!   instance by slot, so a transform change leaves them as they are: the list is rebuilt only
-//!   when instances are added or removed, change mesh, meshes are uploaded, or a material
-//!   changes permutation.
+//!   when instances are added or removed, change mesh, meshes are uploaded, a material
+//!   changes permutation, or an instance starts or stops fading (M1 C7: a fading instance's
+//!   opaque anime character draws go through the alpha-tested variants, which can discard; see
+//!   the `characters` module).
 //! - [`GpuScene`] owns both, plus the instance and draw-record buffers. `prepare` applies a
-//!   packet and sizes the buffers; the frame's uploads pass then writes the dirty slots, in
-//!   contiguous runs, and the draw records after a rebuild, through the staging belt.
+//!   packet and sizes the instance buffer, and `build_draws`, once the frame's characters have
+//!   given each slot its fade, rebuilds the draw list if it is stale; the frame's uploads pass
+//!   then writes the dirty slots, in contiguous runs, and the draw records after a rebuild,
+//!   through the staging belt.
 //!
 //! The commands are for the CPU-driven submission path, which is portable everywhere: each
 //! draw binds the mesh's vertices and its draw record by buffer offset. The GPU-driven path
@@ -46,7 +50,7 @@ use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
-use crate::pipelines::{Shading, SurfaceVariant, format_index, mesh_draw};
+use crate::pipelines::{Coverage, Shading, SurfaceVariant, format_index, mesh_draw};
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -100,18 +104,16 @@ impl GpuScene {
         }
     }
 
-    /// Applies packet `frame`'s instance deltas, rebuilds the draw list if the drawn set
-    /// changed, and makes room in the buffers. `material` gives a material's family, flags and
-    /// eye layer (`DrawList::build`'s `material_kind` and `layer`). Returns `true` when the
-    /// instance buffer was replaced, so bind groups that reference it must be rebuilt.
+    /// Applies packet `frame`'s instance deltas, marking the draw list stale if the drawn set
+    /// changed, and makes room in the instance buffer. Returns `true` when the instance buffer
+    /// was replaced, so bind groups that reference it must be rebuilt. [`Self::build_draws`]
+    /// follows, once the frame's characters have given their instances their fades.
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         frame: u64,
         deltas: &InstanceDeltas,
-        meshes: &[MeshRecord],
-        material: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags, u32),
     ) -> bool {
         profiling::scope!("GpuScene::prepare");
         debug_assert!(
@@ -127,25 +129,37 @@ impl GpuScene {
         // The old buffer holds every slot uploaded so far: a GPU copy keeps them all without
         // sending them again.
         let uploaded = self.instances.buffer().size();
-        let replaced =
-            self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded);
-        if self.draws_stale {
-            let material_kind = |handle| {
-                let (family, flags, _) = material(handle);
-                (family, flags)
-            };
-            self.draw_list.build(meshes, material_kind, |handle| material(handle).2, &self.slots);
-            // The records are uploaded whole after every rebuild, so nothing needs keeping.
-            self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
-            self.draws_stale = false;
-            self.draws_unsent = true;
-            self.builds += 1;
-        }
-        replaced
+        self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded)
     }
 
-    /// Meshes were uploaded or moved, or a material changed its surface variant: rebuild the draw
-    /// list on the next `prepare`.
+    /// Rebuilds the draw list if the drawn set changed since it was built, and makes room for
+    /// its records. `material` gives a material's family, flags and eye layer
+    /// (`DrawList::build`'s `material_kind` and `layer`). Returns whether it was rebuilt.
+    pub(crate) fn build_draws(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        meshes: &[MeshRecord],
+        material: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags, u32),
+    ) -> bool {
+        if !self.draws_stale {
+            return false;
+        }
+        let material_kind = |handle| {
+            let (family, flags, _) = material(handle);
+            (family, flags)
+        };
+        self.draw_list.build(meshes, material_kind, |handle| material(handle).2, &self.slots);
+        // The records are uploaded whole after every rebuild, so nothing needs keeping.
+        self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
+        self.draws_stale = false;
+        self.draws_unsent = true;
+        self.builds += 1;
+        true
+    }
+
+    /// Meshes were uploaded or moved, a material changed its surface variant, or an instance
+    /// started or stopped fading: rebuild the draw list on the next `build_draws`.
     pub(crate) fn meshes_changed(&mut self) {
         self.draws_stale = true;
     }
@@ -352,6 +366,31 @@ impl InstanceSlots {
         self.data[slot as usize].character
     }
 
+    /// Gives the live instance in `slot` its character's fade (M1 C7; 0 drawn whole), marking it
+    /// for upload if that changed. Returns whether it started or stopped fading, which moves its
+    /// opaque draws between variants. Free slots are left alone.
+    pub(crate) fn set_fade(&mut self, slot: u32, fade: f32) -> bool {
+        let Some(entry) = self.slots.get_mut(slot as usize).filter(|entry| entry.id.is_some()) else {
+            return false;
+        };
+        let data = &mut self.data[slot as usize];
+        if data.fade == fade {
+            return false;
+        }
+        let flipped = (data.fade > 0.0) != (fade > 0.0);
+        data.fade = fade;
+        if !entry.dirty {
+            entry.dirty = true;
+            self.dirty.push(slot);
+        }
+        flipped
+    }
+
+    /// Whether the instance in `slot` fades (M1 C7).
+    pub(crate) fn faded(&self, slot: u32) -> bool {
+        self.data.get(slot as usize).is_some_and(|data| data.fade > 0.0)
+    }
+
     /// Lists every live instance of `mesh` as given a mesh by the next [`Self::apply`].
     pub(crate) fn remesh(&mut self, mesh: MeshHandle) {
         if !self.remeshed.contains(&mesh) {
@@ -513,11 +552,16 @@ pub(crate) struct DrawList {
     pub deformed: [Vec<DeformedDraw>; SurfaceVariant::ALL.len()],
     /// Instances with at least one foliage draw (M1 W6), for the stats.
     pub foliage_instances: u32,
+    /// Anime character draws of fading instances (M1 C7), static and deformed, for the stats:
+    /// their opaque ones are drawn through the alpha-tested variants, which the prepasses draw
+    /// through their masked pipelines.
+    pub faded: u32,
 }
 
 impl DrawList {
     /// Rebuilds the list from the live `slots`, drawing each submesh with the surface variant
-    /// of its material's family and flags (`material_kind`) on its mesh (`pipelines::mesh_draw`).
+    /// of its material's family and flags (`material_kind`) on its mesh (`pipelines::mesh_draw`),
+    /// or for an opaque anime character surface of a fading instance, its alpha-tested variant.
     /// Eye layers then go in their `layer`'s order (M1 C6), and in slot order within a layer.
     pub(crate) fn build(
         &mut self,
@@ -535,6 +579,7 @@ impl DrawList {
             deformed.clear();
         }
         self.foliage_instances = 0;
+        self.faded = 0;
         for (slot, mesh) in slots.live() {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
@@ -543,13 +588,20 @@ impl DrawList {
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             let mut foliage = false;
+            let faded = slots.faded(slot);
             for submesh in &record.lods[0] {
                 let handle = submesh.material.handle;
                 let (family, flags) = material_kind(handle);
                 let drawn = mesh_draw(family, flags, skinned, morphed);
                 debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
-                let Some((variant, outline)) = drawn else { continue };
+                let Some((mut variant, outline)) = drawn else { continue };
                 foliage |= variant.shading == Shading::Foliage;
+                if faded && let Shading::Character(part) = variant.shading {
+                    if variant.coverage == Coverage::Opaque {
+                        variant = SurfaceVariant::character(Coverage::AlphaTest, part);
+                    }
+                    self.faded += 1;
+                }
                 let (variant, material) = (variant.index(), handle);
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {

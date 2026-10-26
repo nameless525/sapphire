@@ -74,7 +74,12 @@ pub struct Scene {
 /// every other scene's, builds and draws nothing, so nothing earlier needs pinning) and pin plain
 /// post, no shadows and AO off, so the frame they draw over changes only with what they show;
 /// the wireframe and overdraw keep fog for its cards.
-pub fn scenes() -> [Scene; 78] {
+/// The material layer scenes (M1 C7) place the layer samples beside the character
+/// (`--materials`; no earlier scene places any, and every layer is off in every earlier material)
+/// and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade scenes
+/// fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post,
+/// AO off, through temporal AA and through MSAA.
+pub fn scenes() -> [Scene; 82] {
     [
         Scene {
             name: "turntable-start",
@@ -1897,6 +1902,94 @@ pub fn scenes() -> [Scene; 78] {
                 "off",
                 "--debug-view",
                 "lights",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with
+        // a crisp highlight; gold, its tinted matcap and highlight, the sky reflected on its
+        // metallic stripes; leather, darker toward its rim, with a soft GGX highlight; a dark suit
+        // with cyan light lines; and a leg in a thigh-high black stocking, sheer facing the
+        // camera, near black at its silhouette, bare above its top.
+        Scene {
+            name: "materials-day",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--materials",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same at 21:00 under the full post look: the light lines' glow blooming as the
+        // world's light, the gold reflecting the night sky, the highlights in the moonlit key.
+        Scene {
+            name: "materials-night",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--materials",
+                "--time-of-day",
+                "21",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The character at half opacity in the courtyard (M1 C7), temporal AA resolving the
+        // proximity fade's dither, which turns through its 16-frame cycle, into a blend with what
+        // lies behind it; its outlines fade with it and it takes no rim.
+        Scene {
+            name: "fade-taa",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--fade",
+                "0.5",
+                "--environment",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Mobile-Low's fade: 4× MSAA, each pixel covering half its samples, so the resolve blends.
+        Scene {
+            name: "fade-mobile",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--fade",
+                "0.5",
+                "--environment",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--tier",
+                "mobile-low",
+                "--ao",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },

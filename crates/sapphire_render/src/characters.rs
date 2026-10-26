@@ -7,15 +7,46 @@
 //!   key light with unstyled GI ([`CharacterLighting::unstyled`]), a face at rest
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
 //!   changes (while the hour runs, the camera moves for a rig whose key or GI depends on it, or a
-//!   head, an expression or a body moves, or the frame's ambient light changes): 224 bytes a
-//!   character. With shadows on, the face pass (M1 R4) writes each entry's `shadow.visibility`
-//!   on the GPU every frame, after the upload; with a probe grid, the character ambient pass
-//!   (M1 W5) writes its `ambient`.
+//!   head, an expression, a body or an opacity changes, or the frame's ambient light changes):
+//!   240 bytes a character. With shadows on, the face pass (M1 R4) writes each entry's
+//!   `shadow.visibility` on the GPU every frame, after the upload; with a probe grid, the
+//!   character ambient pass (M1 W5) writes its `ambient`.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
 //!   uploaded again; one that moves in the list, joins it or leaves it is uploaded once.
 //! - Frames without a main view draw nothing, so they leave every entry as it was.
+//!
+//! # The proximity fade (M1 C7)
+//!
+//! A character listed with an opacity below 1 ([`CharacterInstance::opacity`]) fades: its entry's
+//! [`GpuCharacterFade`] holds how far (1 − the opacity), which the anime character shader and its
+//! outlines read, and so does its instance data (`InstanceData::fade`), which the prepasses'
+//! masked pipelines read in their vertex stage (the character prepass binds no group 0). Every
+//! pass that draws the character keeps the same pixels, by a screen-space dither (`frame.wgsl`):
+//!
+//! - **Its opaque draws move to the alpha-tested variants** of their parts, whose fragment stage
+//!   can discard: the draw list routes them there while the instance fades, so opaque pipelines
+//!   never carry a discard (on tile-based GPUs that would cost every opaque draw its hidden
+//!   surface removal). Alpha-tested materials alpha-test by their flag, so routed opaque ones
+//!   don't. A slot that starts or stops fading rebuilds the draw list once, and the variant's
+//!   pipelines (its outline and eyes through hair too) are built then if no draw had needed them.
+//! - **The prepasses** draw the alpha-tested variants through masked pipelines
+//!   (`prepass.wgsl`), which cut out by the alpha test and the dither as the main pass does: the
+//!   character prepass's depth and IDs (the rim, the bangs' shadow, eyes through hair, temporal
+//!   AA's responsive mask) and the scene prepass's depth and velocity show what lies behind the
+//!   character through its holes, as through an alpha-tested surface's cutouts. Opaque variants
+//!   keep the plain pipelines, which never discard.
+//! - **Under temporal AA** the dither turns every frame with the jitter, which the resolve
+//!   averages into a blend; under MSAA (the phones) the alpha-tested variants write a sample mask
+//!   (`fs_*_covered`): a share of each pixel's samples, the dither rounding between the levels,
+//!   so the resolve blends there too, and the single-sample prepasses keep the pixels where that
+//!   share isn't empty. Without either the pattern holds still.
+//! - **Only the anime character family fades:** a listed instance's environment or foliage
+//!   surfaces (a prop held as part of the character) stay whole.
+//! - **The rim** goes while the character fades: its depth step would find the character's own
+//!   holes. Its shadow stays whole (casters draw it unfaded), and transparent surfaces discard
+//!   whole pixels by the same dither.
 //!
 //! # Per-character data of later packages
 //!
@@ -35,7 +66,7 @@ use sapphire_rhi::wgpu;
 use crate::buffer::{self, GrowableBuffer};
 use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
-use crate::{AmbientLight, CharacterBody, CharacterFace, CharacterLighting, FramePacket};
+use crate::{AmbientLight, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacket};
 
 /// The radius of the sphere around a character's head that the face pass samples the
 /// environment's shadow over (M1 R4), in meters: an anime head's.
@@ -51,6 +82,7 @@ pub(crate) struct GpuCharacter {
     pub face: GpuFace,
     pub shadow: GpuCharacterShadow,
     pub ambient: GpuCharacterAmbient,
+    pub fade: GpuCharacterFade,
 }
 
 /// A character's light rig as the shader reads it (WGSL `CharacterRig`). 80 bytes.
@@ -175,6 +207,14 @@ fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// A character's proximity fade as the shaders read it (WGSL `CharacterFade`, M1 C7). 16 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuCharacterFade {
+    /// x: how far it has faded, 1 − its opacity: 0 drawn whole. yzw: 0.
+    pub amount: [f32; 4],
+}
+
 impl GpuCharacterShadow {
     /// Where the face pass samples for a character with `lighting` and `body`: its rig's head if
     /// it has one, else the top of its body, else nowhere.
@@ -201,12 +241,13 @@ impl GpuFace {
 
 impl GpuCharacter {
     /// The entry of a character lit by `lighting`, with `face` and `body`, under the frame's
-    /// `ambient` light.
+    /// `ambient` light, faded by `fade`.
     fn new(
         lighting: &CharacterLighting,
         face: &CharacterFace,
         body: &CharacterBody,
         ambient: &AmbientLight,
+        fade: f32,
     ) -> Self {
         let CharacterLighting { key, rim, local_light_ceiling, gi } = *lighting;
         let toward_key = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
@@ -231,7 +272,13 @@ impl GpuCharacter {
                 ambient,
                 body.casts().then(|| 0.5 * (body.base + body.top)).or(lighting.gi.head),
             ),
+            fade: GpuCharacterFade { amount: [fade, 0.0, 0.0, 0.0] },
         }
+    }
+
+    /// The entry of `character`, under the frame's `ambient` light.
+    fn of(character: &CharacterInstance, ambient: &AmbientLight) -> Self {
+        Self::new(&character.lighting, &character.face, &character.body, ambient, character.fade())
     }
 }
 
@@ -273,6 +320,8 @@ impl Characters {
     ) -> bool {
         profiling::scope!("Characters::prepare");
         if packet.main_view().is_none() {
+            // Nothing is listed, so no fade changes: the last frame's change was acted on.
+            self.list.fading_changed = false;
             return false;
         }
         self.unsent |= self.list.update(packet, slots, self.capsule_ao);
@@ -298,6 +347,17 @@ impl Characters {
         self.list.lit
     }
 
+    /// Instances the last frame with a view drew faded (M1 C7).
+    pub(crate) fn faded(&self) -> u32 {
+        self.list.faded
+    }
+
+    /// Whether this frame started or stopped fading any instance: the draw list, which draws
+    /// fading instances through other variants, must be rebuilt. Never on a frame without a view.
+    pub(crate) fn fading_changed(&self) -> bool {
+        self.list.fading_changed
+    }
+
     /// Entries the last frame with a view ignored: for instances it doesn't draw, with lighting
     /// or a face that isn't valid, or past the 16,383 entries the character prepass's IDs hold.
     pub(crate) fn ignored(&self) -> u32 {
@@ -315,15 +375,28 @@ impl Characters {
     }
 
     /// Splits the characters between a frame's passes: the uploads pass writes the entries, and
-    /// the character prepass draws the instances with one, by slot (each slot's entry, 0 for
-    /// none; slots past its end have none).
-    pub(crate) fn split_for_record(&mut self) -> (CharacterUpload<'_>, &[u32]) {
+    /// the character prepass draws the instances with an entry, by slot.
+    pub(crate) fn split_for_record(&mut self) -> (CharacterUpload<'_>, CharacterSlots<'_>) {
         let upload = CharacterUpload {
             entries: &self.list.entries,
             unsent: &mut self.unsent,
             buffer: self.buffer.buffer(),
         };
-        (upload, &self.list.next)
+        (upload, CharacterSlots { entries: &self.list.next })
+    }
+}
+
+/// Each instance slot's character this frame, for the passes that pick draws by it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CharacterSlots<'a> {
+    /// Per slot: its entry, 0 for none; slots past the end have none.
+    entries: &'a [u32],
+}
+
+impl CharacterSlots<'_> {
+    /// Whether the instance in `slot` is a character this frame.
+    pub(crate) fn listed(&self, slot: u32) -> bool {
+        self.entries.get(slot as usize).is_some_and(|&entry| entry != 0)
     }
 }
 
@@ -358,17 +431,23 @@ struct CharacterList {
     next: Vec<u32>,
     /// Per entry of the frame being built, its body, for capsule AO between characters.
     bodies: Vec<CharacterBody>,
+    /// Per instance slot: how far its character has faded this frame, 0 for none (M1 C7).
+    fades: Vec<f32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
     lit: u32,
     ignored: u32,
+    /// Instances the last frame drew faded, and whether it started or stopped fading any.
+    faded: u32,
+    fading_changed: bool,
 }
 
 impl CharacterList {
     /// Builds the entries for `packet`: the fallback from its key light, with a face at rest,
     /// then each valid character of an instance in `slots`, in packet order. Points each of
-    /// those instances at its entry, and every instance the last frame listed but this one
-    /// doesn't back at the fallback. With `capsule_ao`, each character's ambient takes what the
-    /// others' bodies leave of it ([`capsule_visibility`]). Returns whether the entries changed.
+    /// those instances at its entry and gives it its fade, and every instance the last frame
+    /// listed but this one doesn't back at the fallback, whole. With `capsule_ao`, each
+    /// character's ambient takes what the others' bodies leave of it ([`capsule_visibility`]).
+    /// Returns whether the entries changed.
     fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots, capsule_ao: bool) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
@@ -376,15 +455,17 @@ impl CharacterList {
         let fallback = CharacterLighting::unstyled(packet.sun);
         let ambient = &packet.ambient;
         let none = CharacterBody::default();
-        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &none, ambient));
+        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &none, ambient, 0.0));
         self.bodies.push(none);
         // Slots are never given back, so the last frame's are all below this.
         self.next.resize(slots.len(), 0);
+        self.fades.resize(slots.len(), 0.0);
         for &slot in &self.listed {
             self.next[slot as usize] = 0;
+            self.fades[slot as usize] = 0.0;
         }
         self.listing.clear();
-        (self.lit, self.ignored) = (0, 0);
+        (self.lit, self.ignored, self.faded, self.fading_changed) = (0, 0, 0, false);
         for character in &packet.characters {
             // An entry past the character prepass's ID bits would alias an earlier character's
             // (or none), so the frame's characters stop there.
@@ -401,12 +482,8 @@ impl CharacterList {
                 self.listing.push(slot);
             }
             self.next[slot as usize] = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
-            self.entries.push(GpuCharacter::new(
-                &character.lighting,
-                &character.face,
-                &character.body,
-                ambient,
-            ));
+            self.fades[slot as usize] = character.fade();
+            self.entries.push(GpuCharacter::of(character, ambient));
             self.bodies.push(character.body);
         }
         if capsule_ao {
@@ -417,11 +494,16 @@ impl CharacterList {
         }
         for &slot in self.listed.iter().chain(&self.listing) {
             slots.set_character(slot, self.next[slot as usize]);
+            self.fading_changed |= slots.set_fade(slot, self.fades[slot as usize]);
         }
+        self.faded = self.listing.iter().filter(|&&slot| self.fades[slot as usize] > 0.0).count() as u32;
         std::mem::swap(&mut self.listed, &mut self.listing);
         self.entries != self.previous
     }
 }
+
+#[cfg(test)]
+mod gpu_tests;
 
 #[cfg(test)]
 mod tests {
@@ -448,6 +530,7 @@ mod tests {
                 lighting: lighting(intensity),
                 face: CharacterFace::default(),
                 body: CharacterBody::default(),
+                opacity: 1.0,
             })
             .collect();
         FramePacket { views: vec![ViewData::new(camera)], characters, ..FramePacket::default() }
@@ -487,14 +570,15 @@ mod tests {
         };
         let none = CharacterBody::default();
         let ambient = AmbientLight::default();
-        let GpuCharacter { rig, face, shadow, .. } =
-            GpuCharacter::new(&lighting, &CharacterFace::default(), &none, &ambient);
+        let GpuCharacter { rig, face, shadow, fade, .. } =
+            GpuCharacter::new(&lighting, &CharacterFace::default(), &none, &ambient, 0.25);
+        assert_eq!(fade.amount, [0.25, 0.0, 0.0, 0.0], "how far it has faded");
         assert_eq!(rig.key_direction, [0.0, 1.0, 0.0, 0.5], "toward the key, unit length; the rim");
         assert_eq!(rig.key_radiance, [2.0, 1.0, 0.5, 1.5]);
         assert_eq!(rig.head, [1.0, 2.0, 3.0, 0.8]);
         assert_eq!(rig.gi, [0.3, 0.6, f32::MAX, 1.0], "no value ceiling is the largest finite one");
         let headless = CharacterLighting { gi: CharacterGi::default(), ..lighting };
-        let headless = GpuCharacter::new(&headless, &CharacterFace::default(), &none, &ambient);
+        let headless = GpuCharacter::new(&headless, &CharacterFace::default(), &none, &ambient, 0.0);
         assert_eq!((headless.rig.head, headless.rig.gi[3]), ([0.0, 0.0, 0.0, 1.0], 0.0), "nothing spherizes");
         assert_eq!(rig.skin_tint, [1.1, 0.9, 0.8, 0.0]);
         assert_eq!(face.forward, [0.0, 0.0, 1.0, 0.0], "a face at rest");
@@ -504,7 +588,7 @@ mod tests {
         assert_eq!(shadow.visibility, [1.0, 0.0, 0.0, 0.0], "lit until the face pass says otherwise");
         assert_eq!(headless.shadow.probe, [0.0; 4]);
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
-        let bodied = GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient);
+        let bodied = GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient, 0.0);
         assert_eq!(bodied.shadow.probe, [0.0, 1.5, 0.0, HEAD_PROBE_RADIUS]);
     }
 
@@ -519,7 +603,7 @@ mod tests {
             expression: FaceExpression { blush: 0.25, gloom: 2.0 },
         };
         let ambient = AmbientLight::default();
-        let packed = GpuCharacter::new(&lighting(1.0), &face, &CharacterBody::default(), &ambient).face;
+        let packed = GpuCharacter::new(&lighting(1.0), &face, &CharacterBody::default(), &ambient, 0.0).face;
         assert_eq!(packed.forward, [1.0, 0.0, 0.0, 0.0], "unit length");
         assert_eq!(packed.up, [0.0, 1.0, 0.0, 0.0], "square to forward");
         assert_eq!(packed.expression, [0.25, 2.0, 0.0, 0.0], "as given: the shader clamps");
@@ -612,7 +696,7 @@ mod tests {
             AmbientLight { sky: Vec3::new(0.4, 0.5, 0.6), ground: Vec3::splat(0.2), intensity: 2.0 };
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
         let entry =
-            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient).ambient;
+            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient, 0.0).ambient;
         // Exactly what the frame's uniforms hold, so `character_ambient_light` is `ambient_light`.
         assert_eq!(entry.sky, (ambient.sky * ambient.intensity).extend(0.0).to_array());
         assert_eq!(entry.ground, (ambient.ground * ambient.intensity).extend(0.0).to_array());
@@ -625,10 +709,10 @@ mod tests {
             ..lighting(1.0)
         };
         let none = CharacterBody::default();
-        let entry = GpuCharacter::new(&headed, &CharacterFace::default(), &none, &ambient).ambient;
+        let entry = GpuCharacter::new(&headed, &CharacterFace::default(), &none, &ambient, 0.0).ambient;
         assert_eq!(entry.probe, [1.0, 1.6, 0.0, 1.0]);
         let entry =
-            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient).ambient;
+            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient, 0.0).ambient;
         assert_eq!(entry.probe, [0.0; 4]);
     }
 

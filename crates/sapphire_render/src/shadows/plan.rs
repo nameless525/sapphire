@@ -474,6 +474,7 @@ mod tests {
             lighting: CharacterLighting::unstyled(DirectionalLight::default()),
             face: CharacterFace::default(),
             body,
+            opacity: 1.0,
         }
     }
 

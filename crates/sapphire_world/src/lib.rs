@@ -9,6 +9,9 @@
 //!   GI characters are lit by (the `LightRigLibrary` document), each character's choice of
 //!   preset, and their resolution under time of day and the camera into the lighting the app
 //!   writes into the frame packet per character.
+//! - **The proximity fade** ([`fade`], M1 C7): how a character fades out as the camera comes
+//!   close to its body, resolved per character into the opacity the app writes into the frame
+//!   packet.
 //! - **Combat's screen effects** ([`screen_effects`], M1 P3): the effect presets (the
 //!   `EffectLibrary` document) and the stack of effects gameplay pushes, each on its own timeline
 //!   and clock, resolved once per frame into the post effects the app writes into the frame
@@ -35,6 +38,7 @@
 //! - Loading timelines and presets from packs (A4): the default day, the default light rig
 //!   presets and the sample effect presets are compiled in for now.
 
+pub mod fade;
 pub mod light_rig;
 pub mod screen_effects;
 pub mod tod;

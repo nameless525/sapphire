@@ -135,8 +135,9 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 10: the optional foliage stream ([`VertexStreams::foliage`], M1 W6), and embedded
-    /// materials of `Material::VERSION` 7 (the foliage block's terminator growth). 9: embedded
+    /// 11: embedded materials of `Material::VERSION` 8 (M1 C7's layers). 10: the optional
+    /// foliage stream ([`VertexStreams::foliage`], M1 W6), and embedded materials of
+    /// `Material::VERSION` 7 (the foliage block's terminator growth). 9: embedded
     /// materials are `Material::VERSION` 6 (M1 C5's rim, hair shadow and eyes-through-hair
     /// settings). 8: embedded materials are `Material::VERSION` 5 (M1 W3's fog card facing). 7: the
     /// outline normal is stored in the tangent frame of the shading normal ([`outline_frame`], M1
@@ -148,13 +149,13 @@ impl Versioned for Mesh {
     /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
     /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
     /// float vertices.
-    const VERSION: u32 = 10;
+    const VERSION: u32 = 11;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 10 && Material::VERSION == 7,
+    Mesh::VERSION == 11 && Material::VERSION == 8,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

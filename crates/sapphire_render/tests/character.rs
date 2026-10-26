@@ -289,6 +289,7 @@ impl Harness {
             lighting,
             face: CharacterFace::default(),
             body: CharacterBody::default(),
+            opacity: 1.0,
         });
     }
 
@@ -862,8 +863,9 @@ fn permutations_choose_pipelines_and_passes() {
         let mesh = harness.mesh(&plain_square(), material);
         harness.add(mesh, Mat4::from_translation(Vec3::new(k as f32 - 1.5, 0.0, -2.0)));
     }
-    // Alpha-tested adds a surface and an outline pipeline; transparent a surface alone.
-    assert_eq!(stats(&harness).character_pipelines, 5);
+    // Alpha-tested adds a surface and an outline pipeline, and the prepasses' four masked ones
+    // (M1 C7; alpha-tested hair's twin among them); transparent a surface alone.
+    assert_eq!(stats(&harness).character_pipelines, 9);
     harness.render();
     let s = stats(&harness);
     assert_eq!((s.draws, s.alpha_tested_draws, s.transparent_draws, s.outline_draws), (4, 1, 1, 2));
@@ -885,7 +887,7 @@ fn permutations_choose_pipelines_and_passes() {
     let s = stats(&harness);
     assert_eq!((s.draws, s.alpha_tested_draws, s.outline_draws), (4, 2, 2));
     assert_eq!(s.draw_list_builds, builds + 1);
-    assert_eq!(s.character_pipelines, 5, "the variant was built already");
+    assert_eq!(s.character_pipelines, 9, "the variant was built already");
 }
 
 #[test]

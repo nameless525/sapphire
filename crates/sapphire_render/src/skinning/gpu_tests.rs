@@ -477,6 +477,7 @@ fn prepass_depth_equals_the_main_pass_depth() {
         lighting: CharacterLighting::unstyled(packet.sun),
         face: CharacterFace::default(),
         body: CharacterBody::default(),
+        opacity: 1.0,
     });
     renderer.prepare(&gpu, packets.current());
 

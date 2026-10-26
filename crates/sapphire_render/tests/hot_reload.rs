@@ -247,7 +247,8 @@ fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
 }
 
 const SKY_RETURN: &str = "return vec4<f32>(fogged_sky(color, dir), 1.0);";
-const CHARACTER_RETURN: &str = "return vec4<f32>(fogged_color, alpha);";
+const CHARACTER_COLOR: &str =
+    "let color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);";
 
 #[test]
 #[ignore = "needs a GPU"]
@@ -279,8 +280,8 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     let swapped = edited(
         &blue_sky,
         ShaderFile::AnimeCharacter,
-        CHARACTER_RETURN,
-        "return vec4<f32>(shaded.color.bgr, alpha);",
+        CHARACTER_COLOR,
+        "let color = vec4<f32>(shaded.color.bgr, alpha);",
     );
     let update = frames.renderer.set_shader_sources(&swapped).expect("a valid edit");
     assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 3 });
@@ -500,8 +501,10 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     }
     let before = frames.render(&gpu);
     let stats = frames.renderer.stats();
-    // Four surfaces, and the opaque and alpha-tested outlines (the face shares the opaque one).
-    assert_eq!((stats.character_pipelines, stats.face_draws, stats.transparent_draws), (6, 1, 1));
+    // Four surfaces, the opaque and alpha-tested outlines (the face shares the opaque one) and
+    // the prepasses' four masked pipelines, for the alpha-tested body (M1 C7; alpha-tested hair's
+    // twin among them).
+    assert_eq!((stats.character_pipelines, stats.face_draws, stats.transparent_draws), (10, 1, 1));
 
     // Comments: each edit rebuilds every pipeline built from its program, and the frame draws
     // as before through them.
@@ -511,23 +514,26 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
         edited
     };
     // The anime character shader rebuilds the outline program too, which lights lines through
-    // its functions (M1 C4): four surfaces, two outlines and the outline prepass.
+    // its functions (M1 C4): four surfaces, two outlines and the outline prepass, plain and
+    // masked.
     let character = comment(&ShaderSources::compiled_in(), ShaderFile::AnimeCharacter);
     let update = frames.renderer.set_shader_sources(&character).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 7 });
+    assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 8 });
     assert_eq!(frames.render(&gpu), before);
     let outline = comment(&character, ShaderFile::Outline);
     let update = frames.renderer.set_shader_sources(&outline).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 3 });
+    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 4 });
     assert_eq!(frames.render(&gpu), before);
     // The shared file: the sky's six, four surfaces, two outlines, the scene and outline
-    // prepasses, the character prepass's two (hair's writes one ID, M1 C6) and the light
-    // clusters' two (and the environment's, fog cards' and foliage's programs, which built no
-    // pipeline, the shadow passes', unbuilt with shadows off, the ambient pass's, unbuilt
-    // without a grid or GTAO, M1 W5, and the debug views', unbuilt while none shows, M1 F5).
+    // prepasses, the character prepass's two (hair's writes one ID, M1 C6), the masked
+    // prepasses' four (the character prepass's two, the scene prepass's and the outline hulls',
+    // M1 C7) and the light clusters' two (and the environment's, fog cards' and foliage's
+    // programs, which built no pipeline, the shadow passes', unbuilt with shadows off, the
+    // ambient pass's, unbuilt without a grid or GTAO, M1 W5, and the debug views', unbuilt while
+    // none shows, M1 F5).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 18 });
+    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 22 });
     assert_eq!(frames.render(&gpu), before);
-    assert_eq!(frames.renderer.stats().character_pipelines, 6, "the same set, rebuilt");
+    assert_eq!(frames.renderer.stats().character_pipelines, 10, "the same set, rebuilt");
 }

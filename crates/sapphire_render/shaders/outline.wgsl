@@ -32,8 +32,9 @@
 // albedo weight (a darker shade of the surface, as anime color lines are), then lit as the
 // surface it outlines is: the character's key light through the material's light split (on the
 // outline normal) and its diffuse mode's shadow color (`shade_tint`, bands or ramp), plus the
-// rig's stylized GI flattened toward the camera (`character_gi` at the view direction), by the
-// material's lighting weight. Lines darken at night and take the light's tint, and go into a
+// rig's stylized GI flattened toward the camera (`character_gi` with the view direction as the
+// line's normal; in regions with a sphere weight, faces' and hair's, that normal turns toward the
+// head sphere's by the weight, as their surfaces' do), by the material's lighting weight. Lines darken at night and take the light's tint, and go into a
 // cast shadow with their surface (M1 R4: `cast_shadow_at`, a face's whole). Local lights don't
 // reach them; outline hulls cast no shadow. Where the material has a control map its material ID picks the region's color per
 // pixel, as on the surface; the width scale is the vertex's region's (the vertex stage reads no
@@ -53,8 +54,13 @@
 // lines fully reactive under temporal AA: a moving line is drawn from the current frame.
 //
 // The alpha-tested permutation discards the hull where the base color map's coverage is below
-// the material's cutoff, so cutouts get no outline across their holes; its prepass doesn't, as
-// the surfaces' doesn't. Transparent materials draw no hull.
+// the material's cutoff, so cutouts get no outline across their holes, and its prepass does too
+// (`vs_outline_prepass_masked`, M1 C7), as the surfaces' masked prepasses do (prepass.wgsl).
+// Transparent materials draw no hull.
+//
+// A fading character's hulls (M1 C7) draw through the alpha-tested permutation and keep the
+// pixels its surfaces keep (the proximity fade's dither, frame.wgsl), under MSAA through
+// `fs_outline_covered`'s sample mask, and in the scene prepass through the masked pipeline.
 
 // The width's reference (`OUTLINE_REFERENCE_*`) and its curve (`outline_curve`) are
 // anime_character.wgsl's, which the depth-offset rim's width follows too (M1 C5).
@@ -187,8 +193,13 @@ fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     return out;
 }
 
-@fragment
-fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
+// A hull pixel (`fs_outline`): its final color and alpha, and whether it is kept.
+struct OutlinePixel {
+    color: vec4<f32>,
+    kept: bool,
+}
+
+fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     let material = in.material;
     let modes = materials[material].modes;
     let swizzles = materials[material].swizzles;
@@ -211,8 +222,19 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     if material_has_texture(modes, CHARACTER_BASE_COLOR) && (PERMUTATION_ALPHA_TEST || style.x > 0.0) {
         base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv);
     }
-    if PERMUTATION_ALPHA_TEST && base.a < materials[material].split.w {
-        discard;
+    // The cutout, of alpha-tested materials: the permutation also draws fading characters' opaque
+    // ones (M1 C7), whose dither it then follows, decided after every derivative. Whole quads
+    // leave here (`quad_any`, frame.wgsl), single pixels at the entry points' one exit
+    // (docs/conventions.md).
+    var kept = true;
+    if PERMUTATION_ALPHA_TEST {
+        let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
+        let fade = character_fade(in.character);
+        let cut = alpha_tested && base.a < materials[material].split.w;
+        kept = !cut && !(fade > 0.0 && faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES));
+        if !quad_any(kept) {
+            discard;
+        }
     }
     var region = in.region;
     if material_has_texture(modes, CHARACTER_CONTROL) {
@@ -242,7 +264,34 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     // Unlit lines are their color exactly, and every line takes the fog its surface does (M1 W3),
     // at the hull.
     let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);
-    return vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
+    // The final color, in one variable at the one exit.
+    let color = vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
+    return OutlinePixel(color, kept);
+}
+
+@fragment
+fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
+    let pixel = outline_pixel(in);
+    // The one exit, where the pixels cut out leave (docs/conventions.md).
+    if !pixel.kept {
+        discard;
+    }
+    return pixel.color;
+}
+
+// The alpha-tested hulls under MSAA (M1 C7): a fading character's lines over the samples its
+// surfaces cover.
+@fragment
+fn fs_outline_covered(in: OutlineVaryings) -> CoveredOutput {
+    let pixel = outline_pixel(in);
+    var out: CoveredOutput;
+    out.color = pixel.color;
+    out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
+    // The one exit, where the pixels cut out leave.
+    if !pixel.kept {
+        discard;
+    }
+    return out;
 }
 
 // The hull in the scene prepass: `ScenePrepassVaryings` (frame.wgsl), and how squarely the
@@ -268,6 +317,11 @@ fn vs_outline_prepass(
     @location(10) previous_position: vec4<f32>,
     draw: DrawRecord,
 ) -> OutlinePrepassVaryings {
+    return outline_prepass_varyings(packed, previous_position, draw);
+}
+
+// `vs_outline_prepass`'s vertex.
+fn outline_prepass_varyings(packed: PackedVertex, previous_position: vec4<f32>, draw: DrawRecord) -> OutlinePrepassVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let width = hull_width(vertex, draw.material, outline_region(vertex, draw.material));
@@ -307,6 +361,11 @@ struct OutlinePrepassTargets {
 // swinging (the same motion everywhere, or the silhouette's own) stays.
 @fragment
 fn fs_outline_prepass(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
+    return outline_prepass_targets(in);
+}
+
+// `fs_outline_prepass`'s targets.
+fn outline_prepass_targets(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
     let current = in.current.xy / in.current.w;
     let previous = in.previous.xy / in.previous.w;
     // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
@@ -324,4 +383,61 @@ fn fs_outline_prepass(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
     // still keeps exactly no velocity.
     let line = velocity - select(vec2<f32>(0.0), sliding, dot(sliding, sliding) > 1e-12);
     return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, 1.0);
+}
+
+// An alpha-tested or fading character's hull in the scene prepass (M1 C7): `OutlinePrepassVaryings`,
+// and what the cut needs.
+struct MaskedOutlinePrepassVaryings {
+    @builtin(position) @invariant clip_position: vec4<f32>,
+    @location(0) world_normal: vec3<f32>,
+    @location(1) current: vec4<f32>,
+    @location(2) previous: vec4<f32>,
+    @location(3) facing: f32,
+    @location(4) reach: f32,
+    @location(5) uv: vec2<f32>,
+    @location(6) @interpolate(flat) material: u32,
+    @location(7) @interpolate(flat) fade: f32,
+    @location(8) @interpolate(flat) character: u32,
+}
+
+@vertex
+fn vs_outline_prepass_masked(
+    packed: PackedVertex,
+    @location(10) previous_position: vec4<f32>,
+    draw: DrawRecord,
+) -> MaskedOutlinePrepassVaryings {
+    let hull = outline_prepass_varyings(packed, previous_position, draw);
+    let instance = instances[draw.instance];
+    var out: MaskedOutlinePrepassVaryings;
+    out.clip_position = hull.clip_position;
+    out.world_normal = hull.world_normal;
+    out.current = hull.current;
+    out.previous = hull.previous;
+    out.facing = hull.facing;
+    out.reach = hull.reach;
+    out.uv = draw.uv_transform.xy + draw.uv_transform.zw * packed.uv;
+    out.material = draw.material;
+    out.fade = instance.fade;
+    out.character = instance.character;
+    return out;
+}
+
+// The hull's targets where its main pass keeps the pixel: the material's alpha test and the
+// character's dither.
+@fragment
+fn fs_outline_prepass_masked(in: MaskedOutlinePrepassVaryings) -> OutlinePrepassTargets {
+    let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let hull = OutlinePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous, in.facing, in.reach);
+    let targets = outline_prepass_targets(hull);
+    let material = in.material;
+    let modes = materials[material].modes;
+    var alpha = materials[material].base_color.a;
+    if material_has_texture(modes, CHARACTER_BASE_COLOR) {
+        alpha *= sample_material(base_color_map, materials[material].swizzles, CHARACTER_BASE_COLOR, uv).a;
+    }
+    let cut = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u && alpha < materials[material].split.w;
+    if cut || faded_out(in.fade, in.clip_position.xy, in.character, FADE_SAMPLES) {
+        discard;
+    }
+    return targets;
 }

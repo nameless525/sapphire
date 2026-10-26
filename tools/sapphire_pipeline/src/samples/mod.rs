@@ -18,12 +18,16 @@
 //!   grass patch, their foliage materials and the cards' maps, for the sandbox's `--foliage`
 //!   (M1 W6);
 //! - the hard-edged outline sample ([`hard_edges`], `hard_edges.glb`): flat-shaded shapes for the
-//!   sandbox's `--hard-edges`, whose hulls must stay closed at every corner (M1 C4).
+//!   sandbox's `--hard-edges`, whose hulls must stay closed at every corner (M1 C4);
+//! - the material layer samples ([`materials`], in `materials/`): lacquer, gold, leather,
+//!   stockings and glowing materials over the anime character shader's layers, with the matcap
+//!   and layer mask they read, for the sandbox's `--materials` (M1 C7).
 
 pub mod environment;
 pub mod face;
 pub mod foliage;
 pub mod hard_edges;
+pub mod materials;
 pub(crate) mod noise;
 mod shapes;
 pub mod sky;
@@ -66,7 +70,11 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
     let mut paths = Vec::new();
-    let nested = face::files()?.into_iter().chain(environment::files()?).chain(foliage::files()?);
+    let nested = face::files()?
+        .into_iter()
+        .chain(environment::files()?)
+        .chain(foliage::files()?)
+        .chain(materials::files()?);
     for (name, bytes) in files.into_iter().chain(nested) {
         let path = dir.join(name);
         std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
@@ -424,9 +432,13 @@ mod tests {
         );
         let foliage: Vec<_> =
             foliage::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        let materials: Vec<_> =
+            materials::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
         let first = names.len() + faces.len();
         assert_eq!(written[first..first + environment.len()], environment, "then the environment's");
-        assert_eq!(written[first + environment.len()..], foliage, "then the foliage's");
+        let first = first + environment.len();
+        assert_eq!(written[first..first + foliage.len()], foliage, "then the foliage's");
+        assert_eq!(written[first + foliage.len()..], materials, "then the material samples'");
         assert!(written.iter().all(|path| path.is_file()));
         assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }

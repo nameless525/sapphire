@@ -185,6 +185,7 @@ impl Stage {
                 lighting: resolved,
                 face: CharacterFace::default(),
                 body: CharacterBody::default(),
+                opacity: 1.0,
             });
             lighting.push(resolved);
         }

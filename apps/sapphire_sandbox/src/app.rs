@@ -32,7 +32,7 @@ use crate::scene::{LookDev, Scene};
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{lookdev, rims, skinned, stage, swatches};
+use crate::{layers, lookdev, rims, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -147,6 +147,9 @@ impl App for SandboxApp {
         }
         if let Some(meshes) = renderer.swatches {
             scene.spawn_swatches(meshes);
+        }
+        if let Some(meshes) = renderer.layer_samples {
+            scene.spawn_layer_samples(meshes);
         }
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head, options.faces.unwrap_or_default());
@@ -667,6 +670,8 @@ struct SceneRenderer {
     stalk: Option<MeshHandle>,
     /// The shader swatches, with `--swatches`.
     swatches: Option<[MeshHandle; SWATCHES]>,
+    /// The material layer samples, with `--materials`.
+    layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
     /// The rim rig's figure and backdrop, with `--rim-rig`.
@@ -699,6 +704,9 @@ impl Scene {
         }
         if let Some(meshes) = renderer.swatches {
             self.set_swatch_meshes(meshes);
+        }
+        if let Some(meshes) = renderer.layer_samples {
+            self.set_layer_sample_meshes(meshes);
         }
         if let Some(head) = renderer.face_head {
             self.set_face_mesh(head);
@@ -756,6 +764,7 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 struct SceneMeshes {
     stalk: Option<MeshHandle>,
     swatches: Option<[MeshHandle; SWATCHES]>,
+    layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
     face_head: Option<MeshHandle>,
     rim_rig: Option<RimRigMeshes>,
     courtyard: Option<MeshHandle>,
@@ -769,9 +778,9 @@ struct SceneMeshes {
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
-/// the shader swatches, whose materials `content` uploads too, the face test head, the rim rig,
-/// the courtyard, its fog cards, arcade and probe grid, the plants, the hard-edged outline sample,
-/// the stage and the look-dev town.
+/// the shader swatches and the material layer samples, whose materials `content` uploads too,
+/// the face test head, the rim rig, the courtyard, its fog cards, arcade and probe grid, the
+/// plants, the hard-edged outline sample, the stage and the look-dev town.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -787,6 +796,8 @@ fn create_renderer(
         let stalk = options.skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
         let swatches =
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
+        let layer_samples =
+            options.materials.then(|| layers::upload_samples(content, gpu, &mut renderer)).transpose()?;
         let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
         let rim_rig = match options.rim_rig {
             Some(_) => {
@@ -818,6 +829,7 @@ fn create_renderer(
         let meshes = SceneMeshes {
             stalk,
             swatches,
+            layer_samples,
             face_head,
             rim_rig,
             courtyard,
@@ -835,6 +847,7 @@ fn create_renderer(
             let SceneMeshes {
                 stalk,
                 swatches,
+                layer_samples,
                 face_head,
                 rim_rig,
                 courtyard,
@@ -851,6 +864,7 @@ fn create_renderer(
                 character_bounds,
                 stalk,
                 swatches,
+                layer_samples,
                 face_head,
                 rim_rig,
                 courtyard,

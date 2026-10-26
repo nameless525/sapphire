@@ -403,7 +403,13 @@ impl Harness {
         let mut lighting = CharacterLighting::unstyled(self.sun);
         lighting.gi = CharacterGi { head, ..CharacterGi::default() };
         self.characters.retain(|character| character.id != id);
-        self.characters.push(CharacterInstance { id, lighting, face: CharacterFace::default(), body });
+        self.characters.push(CharacterInstance {
+            id,
+            lighting,
+            face: CharacterFace::default(),
+            body,
+            opacity: 1.0,
+        });
     }
 
     /// Prepares, records and submits one frame and reads the target back. Fails on any

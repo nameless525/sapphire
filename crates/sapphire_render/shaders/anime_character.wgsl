@@ -157,6 +157,42 @@
 // day's share of it (`fog_share`) and anything else drawn in this family the world's. The rim and
 // the hair's highlight are lit inside it, and eyes through hair end in it too, at the eye's own
 // position with its character's share (M1 C5), as the surface under them does.
+//
+// The layers (M1 C7) go on top of the base, each a branch on the block's flags
+// (`CHARACTER_FLAG_SPECULAR` and the four after it) that every pixel of a draw takes alike, set
+// only where a region turns the layer on, so materials without them shade exactly as before. A
+// body's layer mask (`character_maps::layer_mask`, in the surface mask slot; 1 where unbound)
+// paints them: R the matcap, G metallic, B emission, A the stockings' density. Faces, hair and
+// eyes, whose masks that slot holds, take their regions' values alone.
+// - **Stockings** (`stocking_opacity`), first, since they change the albedo everything after
+//   reads: the fabric's color over the skin by its opacity, denser at the silhouette than facing
+//   the camera (N·V through the material's range), times the region's weight and the mask's A,
+//   varied by a fine weave faded to its average before its cells reach a pixel. A sheen of the
+//   key light runs along the fabric (`stocking_sheen`: sin(T, H) to the sharpness, T the UV axis
+//   the legs are laid out along), on the lit side.
+// - **Matcap** (`matcap_sample`): the material's matcap at the view-space normal, the region's
+//   channel (the color matcap or one of four grayscale ones) × its tint, × the mask's R and the
+//   strength on the lit or the shadow side of the split. Added in the key light's color, or
+//   multiplying the albedo.
+// - **Stylized specular** (`character_specular`): the region's highlight, Blinn or minimal GGX on
+//   N·H toward the key light (`specular_shape`), cut at 1 − the control map's B (0.5 without
+//   one) with the material's softness or a pixel, × the control map's R (1 without one), on the
+//   lit side, in the region's color tinted by the albedo as the material says.
+// - **The reflection add** (`reflection_add`): where metallic (the region's × the mask's G) is
+//   above `layer_mask::REFLECTS`, the sky's light along the reflected view ray × the albedo:
+//   W5's reflection cube (ambient.wgsl), the sky at the ambient's scale, so it dims with the
+//   ambient at night, at the mip of the region's roughness. The ambient pass prefilters it while
+//   a reflective material draws, with a probe grid or without (`sapphire_render::ambient`).
+// - **Emission** (`breath`): the region's glow × the mask's B, unlit, breathing over the
+//   material's period at a phase per instance slot. Its share of the pixel's light, × the
+//   material's bloom, is written as the world's share of the pixel (post's character mask, M1
+//   P2), so the glow blooms as the world does while the character around it keeps its own.
+//
+// The proximity fade (M1 C7; `CharacterFade` and the dither in frame.wgsl): a fading character's
+// opaque draws go through the alpha-tested variants, which, with the transparent ones, discard
+// the pixels its dither leaves out (`faded_out`); under MSAA the alpha-tested variants' covered
+// entry points write the dither's sample mask instead. Its outlines and eyes through hair keep
+// the same pixels, and it takes no rim, whose depth step would read the character's own holes.
 
 // The control map's shadow bias (`character_maps::ilm`): neutral, and the values at and beyond
 // which a point stays lit or in shadow whatever the light.
@@ -206,6 +242,25 @@ override PERMUTATION_TRANSPARENT: bool = false;
 override PERMUTATION_FACE: bool = false;
 override PERMUTATION_HAIR: bool = false;
 override PERMUTATION_EYE: bool = false;
+// The main pass's samples a pixel, for the proximity fade's dither (M1 C7; `faded_out` in
+// frame.wgsl): set under MSAA on the alpha-tested variants' covered entry points, which cover a
+// share of them, and on the outline hulls' masked prepass (outline.wgsl), which keeps the pixels
+// where that share isn't empty; 1 for every other pipeline, which keeps or discards whole pixels.
+override FADE_SAMPLES: u32 = 1u;
+
+// The layers (M1 C7). The reflection add's gate: from `layer_mask::REFLECTS` up, over this much
+// more metallic, so a mask's filtered edge doesn't alias.
+const REFLECTS: f32 = 0.9;
+const REFLECTS_EDGE: f32 = 0.02;
+// The matcap's coordinates: the view-space normal's xy over this radius around the map's center,
+// a little inside its edge, so filtering never wraps across it.
+const MATCAP_RADIUS: f32 = 0.49;
+// The weave shows while its cells span more than 1 / x pixels, and is gone by 1 / y.
+const WEAVE_FADE: vec2<f32> = vec2<f32>(0.25, 0.5);
+// Instance slots step the breath's phase by the golden ratio's fraction of a turn.
+const BREATH_PHASE_STEP: f32 = 0.618034;
+// `SpecularModel::MIN_GGX_ROUGHNESS`.
+const MIN_GGX_ROUGHNESS: f32 = 0.02;
 
 // The frame's light lists: a list per cluster or per instance slot (see lights.wgsl).
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
@@ -314,8 +369,8 @@ struct CharacterSurface {
     view_dir: vec3<f32>,
     // The vertex color's ambient occlusion.
     occlusion: f32,
-    // The control map's channels: R specular mask, G shadow bias, B specular threshold (C7
-    // reads the specular ones).
+    // The control map's channels: R specular mask, G shadow bias, B specular threshold (the
+    // stylized specular reads the specular ones, M1 C7).
     specular_mask: f32,
     shadow_bias: f32,
     specular_threshold: f32,
@@ -749,6 +804,160 @@ fn local_lighting(
     return (surface.albedo * lit + surface.shade * shaded + rims) * held;
 }
 
+// --- The layers (M1 C7; see the top of this file).
+
+// The direction the fabric runs at a point: the way UV v grows across the surface (`along_v`), or
+// u, from the screen derivatives as `strand_direction` finds v's, made perpendicular to `normal`.
+fn fabric_direction(
+    normal: vec3<f32>,
+    position_dx: vec3<f32>,
+    position_dy: vec3<f32>,
+    uv: MaterialUv,
+    along_v: bool,
+) -> vec3<f32> {
+    let determinant = uv.dx.x * uv.dy.y - uv.dy.x * uv.dx.y;
+    let v = position_dy * uv.dx.x - position_dx * uv.dy.x;
+    let u = position_dx * uv.dy.y - position_dy * uv.dx.y;
+    let along = select(u, v, along_v) * select(-1.0, 1.0, determinant >= 0.0);
+    return safe_normalize(along - normal * dot(normal, along));
+}
+
+// The stockings' opacity over the skin (`Stockings::opacity`, then the weave) at a point whose
+// N·V is `n_dot_v`, for a region and mask wearing `weight` of them.
+fn stocking_opacity(material: u32, weight: f32, n_dot_v: f32, uv: MaterialUv) -> f32 {
+    let edge = materials[material].stocking_color.a;
+    let shape = materials[material].stocking_shape;
+    let strength = materials[material].stocking_weave.x;
+    let facing = smoothstep(shape.x, max(shape.y, shape.x + 1e-4), n_dot_v);
+    var opacity = mix(edge, shape.z, facing);
+    // The weave: knit cells shifting the opacity around its average, faded to it before a cell
+    // shrinks to two pixels.
+    let cells = uv.uv * shape.w;
+    let per_pixel = max(length(uv.dx), length(uv.dy)) * shape.w;
+    let knit = sin(2.0 * PI * cells.x) * sin(2.0 * PI * cells.y);
+    let shows = 1.0 - smoothstep(WEAVE_FADE.x, WEAVE_FADE.y, per_pixel);
+    opacity *= 1.0 + strength * knit * shows;
+    return saturate(opacity * weight);
+}
+
+// The stockings' sheen: the key light along the fabric's run, sin(T, H) to the material's
+// sharpness, in its color, where the fabric covers `opacity` of the point and the split is `lit`.
+fn stocking_sheen(
+    material: u32,
+    surface: CharacterSurface,
+    direction: vec3<f32>,
+    key_direction: vec3<f32>,
+    key_radiance: vec3<f32>,
+    lit: f32,
+    opacity: f32,
+) -> vec3<f32> {
+    let sheen = materials[material].stocking_sheen;
+    let h = safe_normalize(key_direction + surface.view_dir);
+    let t_dot_h = dot(direction, h);
+    let across = sqrt(saturate(1.0 - t_dot_h * t_dot_h));
+    return sheen.rgb * key_radiance * (pow(across, max(sheen.a, 1.0)) * lit * opacity);
+}
+
+// The region's matcap (`RegionMatcap`): the matcap's channel it picks (the color matcap, or one
+// of four grayscale ones) at `uv`, × its tint; black for none.
+fn matcap_sample(material: u32, region: u32, swizzles: vec4<u32>, uv: MaterialUv) -> vec3<f32> {
+    let pick = materials[material].layer_regions[region].matcap;
+    let sampled = sample_material(matcap_map, swizzles, CHARACTER_MATCAP, uv);
+    let channel = i32(round(pick.a));
+    let gray = vec3<f32>(sampled[clamp(channel - 1, 0, 3)]);
+    let value = select(gray, sampled.rgb, channel == 0);
+    return select(value * pick.rgb, vec3<f32>(0.0), channel < 0);
+}
+
+// The highlight's shape (`SpecularModel::shape`) at `n_dot_h` for a region's `size`, and its
+// slope: x the shape, 0 to 1 and 1 facing the half vector; y its derivative by N·H.
+fn specular_shape(model: u32, n_dot_h: f32, size: f32) -> vec2<f32> {
+    let x = saturate(n_dot_h);
+    let r2 = clamp(size, MIN_GGX_ROUGHNESS, 1.0) * clamp(size, MIN_GGX_ROUGHNESS, 1.0);
+    let d = x * x * (r2 - 1.0) + 1.0;
+    let ggx = (r2 / d) * (r2 / d);
+    let exponent = max(size, 1.0);
+    let blinn = pow(x, exponent);
+    let shape = select(blinn, ggx, model == CHARACTER_SPECULAR_GGX);
+    let slope = select(exponent * blinn / max(x, 1e-4), ggx * 4.0 * x * (1.0 - r2) / d, model == CHARACTER_SPECULAR_GGX);
+    return vec2<f32>(shape, slope);
+}
+
+// The stylized highlight (`Specular`): the region's shape of N·H cut at 1 − the specular
+// threshold, its edge the material's softness or a pixel (the footprint's N·H change across
+// it), × the specular mask, on the lit side, in the region's color tinted by the albedo.
+fn character_specular(
+    material: u32,
+    surface: CharacterSurface,
+    footprint: LayerFootprint,
+    lit: f32,
+    key_radiance: vec3<f32>,
+) -> vec3<f32> {
+    let region = surface.region.specular;
+    let shape = specular_shape(materials[material].modes.w & 0xffu, footprint.n_dot_h, region.a);
+    let width = max(materials[material].terms.y, 0.5 * abs(shape.y) * footprint.n_dot_h_width);
+    let highlight = light_step(1.0 - surface.specular_threshold, width, shape.x) * surface.specular_mask * lit;
+    let tint = mix(vec3<f32>(1.0), surface.albedo, materials[material].layers.x);
+    return region.rgb * tint * key_radiance * highlight;
+}
+
+// The reflection add at a point `metallic` reflects, `roughness` blurred: the sky's light along
+// the reflected view ray from W5's reflection cube, at the ambient's scale (mip 0 is the sky cube
+// scaled as the ambient's sky, each rougher mip filtered from it), × the albedo and vertex AO;
+// nothing at or below `layer_mask::REFLECTS`.
+fn reflection_add(surface: CharacterSurface, metallic: f32, roughness: f32) -> vec3<f32> {
+    let gate = smoothstep(REFLECTS, REFLECTS + REFLECTS_EDGE, metallic);
+    let direction = reflect(-surface.view_dir, surface.normal);
+    let mip = roughness * ambient.atlas_texel.w;
+    let sky = textureSampleLevel(reflection_cube, ambient_sampler, direction, mip).rgb;
+    return sky * surface.albedo * (surface.occlusion * gate);
+}
+
+// How bright a material's emission is now (`Emission::level`): 1 at the top of a breath, 1 − the
+// depth at its bottom, at a phase per instance slot; 1 for a steady glow.
+fn breath(material: u32, instance: u32) -> f32 {
+    let layers = materials[material].layers;
+    let phase = 2.0 * PI * fract(f32(instance) * BREATH_PHASE_STEP);
+    let wave = 0.5 - 0.5 * cos(2.0 * PI * layers.y * frame.time.x + phase);
+    return select(1.0, 1.0 - layers.z * wave, layers.y > 0.0);
+}
+
+// How far a character has faded (`CharacterFade`): 0 for whole, and for instances that aren't
+// characters.
+fn character_fade(character: u32) -> f32 {
+    return characters[character].fade.amount.x;
+}
+
+// What the highlight and the matcap read (M1 C7): N·H toward the key light and its change
+// across a pixel, for the highlight's edge, and the matcap's coordinates, from the view-space
+// normal, with their footprint.
+struct LayerFootprint {
+    n_dot_h: f32,
+    n_dot_h_width: f32,
+    matcap: MaterialUv,
+}
+
+// The layers' footprint where the surface's normal is `normal`, seen along `view_dir` and lit
+// along `key_direction`. Only materials with a highlight or a matcap take it, so the rest pay
+// nothing for it. That branch is on the material, which a draw shares, so it is uniform in every
+// 2 × 2 quad and the derivatives stay well defined in it: the diagnostic filter lets the
+// validator accept control flow it can't prove uniform (as `through_hair`'s does).
+@diagnostic(off, derivative_uniformity)
+fn layer_footprint(normal: vec3<f32>, view_dir: vec3<f32>, key_direction: vec3<f32>) -> LayerFootprint {
+    let n_dot_h = dot(normal, safe_normalize(key_direction + view_dir));
+    let view_normal = (view.view_from_world * vec4<f32>(normal, 0.0)).xy;
+    let coords = vec2<f32>(0.5) + MATCAP_RADIUS * vec2<f32>(view_normal.x, -view_normal.y);
+    let dx = dpdx(vec3<f32>(n_dot_h, coords));
+    let dy = dpdy(vec3<f32>(n_dot_h, coords));
+    return LayerFootprint(n_dot_h, abs(dx.x) + abs(dy.x), MaterialUv(coords, dx.yz, dy.yz));
+}
+
+// The sample mask the proximity fade's dither covers at `pixel` (FADE_SAMPLES of them).
+fn fade_mask(fade: f32, pixel: vec2<f32>, character: u32) -> u32 {
+    let threshold = fade_threshold(pixel, character);
+    return fade_sample_mask(fade_coverage(fade, threshold, FADE_SAMPLES), threshold, FADE_SAMPLES);
+}
+
 // A shaded surface pixel, for the surface and the eyes-through-hair entry points.
 struct ShadedCharacter {
     color: vec3<f32>,
@@ -757,10 +966,17 @@ struct ShadedCharacter {
     // What of it draws through the character's hair: a face's always-lit mask (B: eyes, brows),
     // a whole eye.
     through_hair: f32,
+    // The emission's share of the color's luminance × the material's bloom (M1 C7): what of the
+    // pixel blooms as the world's light. 0 without emission.
+    glow: f32,
+    // Whether the pixel stays (M1 C7): false where the alpha test or the proximity fade cuts it
+    // out, which the entry points discard at their one exit. Always true in opaque variants.
+    kept: bool,
 }
 
-// Shades an anime character surface pixel (see the top of this file). Discards it below an
-// alpha-tested material's cutoff.
+// Shades an anime character surface pixel (see the top of this file). Quads cut out whole
+// (below an alpha-tested material's cutoff, or faded out) leave here; the pixel that stays says
+// whether it is kept.
 fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     let material = in.material;
     let modes = materials[material].modes;
@@ -791,7 +1007,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     surface.view_dir = safe_normalize(view.position.xyz - in.world_position);
     surface.occlusion = in.occlusion;
     var region = in.vertex_material_id;
-    surface.specular_mask = 0.0;
+    // Without a control map the highlight shows wherever its region's color says (M1 C7).
+    surface.specular_mask = 1.0;
     surface.shadow_bias = SHADOW_BIAS_NEUTRAL;
     surface.specular_threshold = 0.5;
     if material_has_texture(modes, CHARACTER_CONTROL) {
@@ -917,16 +1134,89 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         derivatives.position_dx = position_dx;
         derivatives.position_dy = position_dy;
     }
-    if PERMUTATION_ALPHA_TEST && base.a < materials[material].split.w {
-        discard;
+    // The pixels cut out (M1 C7): by the alpha test, of alpha-tested materials (the variant also
+    // draws fading characters' opaque ones), and by the proximity fade's dither, decided after
+    // every derivative above. Whole quads leave here (`quad_any`, frame.wgsl), since the layers
+    // and the lighting follow; single pixels at the entry points' one exit
+    // (docs/conventions.md).
+    var kept = true;
+    let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
+    if PERMUTATION_ALPHA_TEST && alpha_tested {
+        kept = base.a >= materials[material].split.w;
+    }
+    var fade = 0.0;
+    if PERMUTATION_ALPHA_TEST || PERMUTATION_TRANSPARENT {
+        fade = character_fade(in.character);
+        kept = kept && !(fade > 0.0 && faded_out(fade, in.clip_position.xy, in.character, FADE_SAMPLES));
+        if !quad_any(kept) {
+            discard;
+        }
+    }
+
+    // The layers (M1 C7), where the block's flags say a region turns them on: the stockings and a
+    // matcap that multiplies change the albedo, before anything reads it; the highlight, an added
+    // matcap, the stockings' sheen, the reflection add and the glow add light. All of it is taken
+    // here, in one branch on the flags that materials without layers skip, and the light is added
+    // below with the rest, so only the sum and the glow's luminance stay live through the
+    // lighting.
+    let layer_flags = modes.x & CHARACTER_FLAG_LAYERS;
+    var layer_light = vec3<f32>(0.0);
+    var glow = 0.0;
+    if layer_flags != 0u {
+        var layer_mask = vec4<f32>(1.0);
+        let body = !PERMUTATION_FACE && !PERMUTATION_HAIR && !PERMUTATION_EYE;
+        if body && material_has_texture(modes, CHARACTER_SURFACE_MASK) {
+            layer_mask = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, uv);
+        }
+        if (layer_flags & CHARACTER_FLAG_STOCKINGS) != 0u {
+            let weight = materials[material].layer_regions[region].surface.z * layer_mask.a;
+            let n_dot_v = saturate(dot(surface.normal, surface.view_dir));
+            let stockings = stocking_opacity(material, weight, n_dot_v, uv);
+            surface.albedo = mix(surface.albedo, materials[material].stocking_color.rgb, stockings);
+            let along_v = materials[material].stocking_weave.y > 0.5;
+            let direction = fabric_direction(surface.normal, position_dx, position_dy, uv, along_v);
+            layer_light += stocking_sheen(material, surface, direction, key_direction, key_radiance, lit, stockings);
+        }
+        var footprint: LayerFootprint;
+        if (layer_flags & (CHARACTER_FLAG_SPECULAR | CHARACTER_FLAG_MATCAP)) != 0u {
+            footprint = layer_footprint(surface.normal, surface.view_dir, key_direction);
+        }
+        if (layer_flags & CHARACTER_FLAG_MATCAP) != 0u && material_has_texture(modes, CHARACTER_MATCAP) {
+            // The lit side's strength or the shadow side's, by the split, where the mask's R says;
+            // an added matcap in the key light's color.
+            let terms = materials[material].terms;
+            let strength = mix(terms.w, terms.z, lit) * layer_mask.r;
+            let sampled = matcap_sample(material, region, swizzles, footprint.matcap);
+            if materials[material].layer_regions[region].surface.w > 0.5 {
+                surface.albedo *= mix(vec3<f32>(1.0), sampled, saturate(strength));
+            } else {
+                layer_light += sampled * strength * key_radiance;
+            }
+        }
+        // The light that reads the albedo, after both have changed it.
+        if (layer_flags & CHARACTER_FLAG_SPECULAR) != 0u {
+            layer_light += character_specular(material, surface, footprint, lit, key_radiance);
+        }
+        if (layer_flags & CHARACTER_FLAG_REFLECTION) != 0u {
+            let reflects = materials[material].layer_regions[region].surface;
+            layer_light += reflection_add(surface, reflects.x * layer_mask.g, reflects.y);
+        }
+        if (layer_flags & CHARACTER_FLAG_EMISSION) != 0u {
+            let emission = materials[material].layer_regions[region].emission.rgb;
+            let emitted = emission * (layer_mask.b * breath(material, in.instance));
+            layer_light += emitted;
+            glow = dot(emitted, LUMINANCE);
+        }
     }
 
     // The depth-offset rim (M1 C5): characters' bodies, faces and hair, opaque or alpha-tested.
+    // A fading character takes none (M1 C7).
     var rim: CharacterRim;
     rim.settings = materials[material].rim;
     rim.tint = mix(surface.albedo, vec3<f32>(1.0), 0.5) * surface.region.rim.rgb
         * (materials[material].edges.y * rig.key_direction.w);
-    if !PERMUTATION_EYE && !PERMUTATION_TRANSPARENT && in.character != 0u && materials[material].edges.y > 0.0 {
+    if !PERMUTATION_EYE && !PERMUTATION_TRANSPARENT && in.character != 0u && materials[material].edges.y > 0.0
+        && fade == 0.0 {
         let pixel = in.clip_position.xy;
         rim.mask = rim_mask(surface, material, region, in.character, pixel, in.world_position, fresnel_width);
     }
@@ -934,7 +1224,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     surface.shade = surface.albedo * shade_tint(surface, material, x, width);
     let diffuse = mix(surface.shade, surface.albedo, lit) * key_radiance;
     let ambient = surface.albedo * character_gi(surface, rig, characters[in.character].ambient, in.world_position);
-    var color = diffuse + ambient + rim_light(rim, key_direction, surface.view_dir, lit) * key_radiance;
+    // The layers' light first: zero without them, which leaves the sum as it was.
+    var color = layer_light + diffuse + ambient + rim_light(rim, key_direction, surface.view_dir, lit) * key_radiance;
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = light_list(in.clip_position, in.instance);
@@ -972,26 +1263,69 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     shaded.alpha = base.a;
     // An eye's layers draw through by their coverage (M1 C6).
     shaded.through_hair = select(always_lit, select(1.0, base.a, PERMUTATION_TRANSPARENT), PERMUTATION_EYE);
+    shaded.glow = 0.0;
+    if (layer_flags & CHARACTER_FLAG_EMISSION) != 0u {
+        let share = glow / max(dot(color, LUMINANCE), 1e-6);
+        shaded.glow = saturate(materials[material].layers.w * share);
+    }
+    shaded.kept = kept;
     return shaded;
 }
 
-@fragment
-fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
+// A surface pixel (`fs_anime_character`): its final color and alpha, and whether it is kept.
+struct CharacterPixel {
+    color: vec4<f32>,
+    kept: bool,
+}
+
+fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
     let shaded = shade_character(in);
     // Alpha is the world's share of the pixel, post's character mask (M1 P2): opaque passes write
     // 0 for characters (instances the frame lists, which read a light rig of their own) and 1
     // for everything else, as every other pass does; transparent ones blend by their coverage,
-    // keeping the mask under them.
-    let world = select(1.0, 0.0, in.character != 0u);
+    // keeping the mask under them. A character's glow is the world's light (M1 C7).
+    let world = select(1.0, shaded.glow, in.character != 0u);
     var alpha = select(world, shaded.alpha, PERMUTATION_TRANSPARENT);
     if PERMUTATION_EYE && PERMUTATION_TRANSPARENT {
         // An eye's layers blend only over the character's own eye (M1 C6).
         alpha *= eye_mask(in.character, in.clip_position.xy);
     }
     // The final color, with the frame's fog over it (M1 W3): characters take their share of it,
-    // so they stay readable where the world melts into the sky.
-    let fogged_color = fogged(shaded.color, in.world_position, fog_share(in.character));
-    return vec4<f32>(fogged_color, alpha);
+    // so they stay readable where the world melts into the sky. One variable, at the one exit.
+    let color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);
+    return CharacterPixel(color, shaded.kept);
+}
+
+@fragment
+fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
+    let pixel = character_pixel(in);
+    // The one exit, where the pixels cut out leave (docs/conventions.md).
+    if !pixel.kept {
+        discard;
+    }
+    return pixel.color;
+}
+
+// A covered entry point's output (M1 C7): the color, and the proximity fade's sample mask.
+struct CoveredOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(sample_mask) mask: u32,
+}
+
+// The alpha-tested variants' surfaces under MSAA (M1 C7): a fading character covers its share of
+// each pixel's samples, as its dither says, rather than whole pixels.
+@fragment
+fn fs_anime_character_covered(in: CharacterVaryings) -> CoveredOutput {
+    let pixel = character_pixel(in);
+    var out: CoveredOutput;
+    out.color = pixel.color;
+    out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
+    // The one exit, where the pixels cut out leave: the alpha test's, and those the dither
+    // covers no sample of.
+    if !pixel.kept {
+        discard;
+    }
+    return out;
 }
 
 struct ThroughHairOutput {
@@ -1008,13 +1342,12 @@ struct ThroughHairOutput {
 //
 // Writing the depth turns early depth testing off, so every fragment of a face runs this; most
 // lie under no hair. The cheap test (the prepass's ID and depth, the fades) comes first, and
-// only 2 × 2 quads with a pixel that passes it shade. The quad's answer is the same in its four
-// pixels (from fine derivatives of the pass/fail value, which give its neighbors' in the quad),
-// so the shading's derivatives stay well defined inside the branch: the diagnostic filter lets
-// the validator accept control flow it can't prove uniform, but which is uniform per quad.
+// only 2 × 2 quads with a pixel that passes it shade: the others leave whole (`quad_any`, whose
+// answer is the same in a quad's four pixels), so the shading's derivatives stay well defined
+// after it. The diagnostic filter lets the validator accept control flow it can't prove
+// uniform, but which is uniform per quad. Single pixels leave at the entry points' one exit.
 @diagnostic(off, derivative_uniformity)
-@fragment
-fn fs_through_hair(in: CharacterVaryings) -> ThroughHairOutput {
+fn through_hair(in: CharacterVaryings) -> ThroughHairPixel {
     let through = materials[in.material].through_hair;
     let pixel = vec2<i32>(floor(in.clip_position.xy));
     let hair_depth = textureLoad(character_depth, pixel, 0);
@@ -1035,23 +1368,55 @@ fn fs_through_hair(in: CharacterVaryings) -> ThroughHairOutput {
     let yaw = 1.0 - saturate((1.0 - dot(level, forward)) / max(1.0 - through.y, 1e-4));
     let pitch = 1.0 - saturate((1.0 - dot(upright, forward)) / max(1.0 - through.z, 1e-4));
     let fade = through.x * min(yaw, pitch);
-    let passes = select(0.0, 1.0, under_hair && fade > 0.0);
-    // Its quad's other pixels from it and its fine derivatives: any of the four passes.
-    let across = dpdxFine(passes);
-    let down = dpdyFine(passes);
-    let quad_passes = passes + abs(across) + abs(down) + abs(dpdyFine(across)) > 0.0;
-    var color = vec3<f32>(0.0);
-    var alpha = 0.0;
-    if quad_passes {
-        let shaded = shade_character(in);
-        color = fogged(shaded.color, in.world_position, fog_share(in.character));
-        alpha = fade * shaded.through_hair;
-    }
-    if passes == 0.0 || alpha <= 0.0 {
+    let passes = under_hair && fade > 0.0;
+    if !quad_any(passes) {
         discard;
     }
-    var out: ThroughHairOutput;
-    out.color = vec4<f32>(color, alpha);
-    out.depth = min(hair_depth * THROUGH_HAIR_DEPTH_NUDGE, 1.0);
+    let shaded = shade_character(in);
+    // The final color, at the one exit.
+    let alpha = fade * shaded.through_hair;
+    var drawn: ThroughHairPixel;
+    drawn.out.color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);
+    drawn.out.depth = min(hair_depth * THROUGH_HAIR_DEPTH_NUDGE, 1.0);
+    drawn.kept = passes && shaded.kept && alpha > 0.0;
+    return drawn;
+}
+
+// An eye-through-hair pixel, and whether it is kept.
+struct ThroughHairPixel {
+    out: ThroughHairOutput,
+    kept: bool,
+}
+
+@fragment
+fn fs_through_hair(in: CharacterVaryings) -> ThroughHairOutput {
+    let pixel = through_hair(in);
+    // The one exit, where the pixels cut out leave (docs/conventions.md).
+    if !pixel.kept {
+        discard;
+    }
+    return pixel.out;
+}
+
+// `ThroughHairOutput` with the proximity fade's sample mask (M1 C7).
+struct CoveredThroughHairOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+    @builtin(sample_mask) mask: u32,
+}
+
+// Eyes through hair of the alpha-tested variants under MSAA (M1 C7): over the samples the
+// character's surfaces cover there.
+@fragment
+fn fs_through_hair_covered(in: CharacterVaryings) -> CoveredThroughHairOutput {
+    let pixel = through_hair(in);
+    var out: CoveredThroughHairOutput;
+    out.color = pixel.out.color;
+    out.depth = pixel.out.depth;
+    out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
+    // The one exit, where the pixels cut out leave.
+    if !pixel.kept {
+        discard;
+    }
     return out;
 }

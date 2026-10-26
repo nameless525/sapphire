@@ -206,6 +206,7 @@ impl Harness {
                     lighting,
                     face,
                     body: CharacterBody::default(),
+                    opacity: 1.0,
                 });
             }
             fill(packet);

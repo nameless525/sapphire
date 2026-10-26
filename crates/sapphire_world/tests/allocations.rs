@@ -60,7 +60,13 @@ fn ticking_and_resolving_allocate_nothing() {
                     Vec3::new(id as f32, 1.6, 0.0),
                     0.25,
                 );
-                packet.characters.push(CharacterInstance { id: InstanceId(id), lighting, face, body });
+                packet.characters.push(CharacterInstance {
+                    id: InstanceId(id),
+                    lighting,
+                    face,
+                    body,
+                    opacity: 1.0,
+                });
             }
         }
     });

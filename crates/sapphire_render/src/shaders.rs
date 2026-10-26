@@ -207,10 +207,10 @@ impl Program {
         use ShaderFile as F;
         match self {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
-            Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
+            Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::AnimeCharacter],
             Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Environment],
             Self::FogCard => &[F::Frame, F::Materials, F::FogCard],
-            Self::Outline => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter, F::Outline],
+            Self::Outline => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::AnimeCharacter, F::Outline],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
@@ -387,8 +387,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use sapphire_assets::material::{
-        AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, EnvironmentParams, FogCardParams,
-        FoliageParams, SkyParams,
+        AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, CharacterLayerRegion,
+        EnvironmentParams, FogCardParams, FoliageParams, SkyParams,
     };
     use sapphire_assets::mesh::PositionFormat;
     use sapphire_rhi::wgpu::{self, naga};
@@ -397,7 +397,9 @@ mod tests {
     use crate::ambient::{
         AmbientUniforms, GpuAmbientCapsule, GtaoUniforms, PrefilterUniforms, RelightUniforms,
     };
-    use crate::characters::{GpuCharacter, GpuCharacterAmbient, GpuCharacterShadow, GpuFace, GpuRig};
+    use crate::characters::{
+        GpuCharacter, GpuCharacterAmbient, GpuCharacterFade, GpuCharacterShadow, GpuFace, GpuRig,
+    };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
@@ -414,15 +416,42 @@ mod tests {
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
-            &["vs_anime_character", "fs_anime_character", "vs_through_hair", "fs_through_hair"],
+            &[
+                "vs_anime_character",
+                "fs_anime_character",
+                "fs_anime_character_covered",
+                "vs_through_hair",
+                "fs_through_hair",
+                "fs_through_hair_covered",
+            ],
         ),
         (Program::Environment, &["vs_environment", "fs_environment"]),
         (Program::FogCard, &["vs_fog_card", "fs_fog_card"]),
-        (Program::Outline, &["vs_outline", "fs_outline", "vs_outline_prepass", "fs_outline_prepass"]),
+        (
+            Program::Outline,
+            &[
+                "vs_outline",
+                "fs_outline",
+                "fs_outline_covered",
+                "vs_outline_prepass",
+                "fs_outline_prepass",
+                "vs_outline_prepass_masked",
+                "fs_outline_prepass_masked",
+            ],
+        ),
         (Program::Clusters, &["cs_cluster_lights", "cs_clusters"]),
         (
             Program::Prepass,
-            &["vs_character_prepass", "fs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"],
+            &[
+                "vs_character_prepass",
+                "fs_character_prepass",
+                "vs_scene_prepass",
+                "fs_scene_prepass",
+                "vs_character_prepass_masked",
+                "fs_character_prepass_masked",
+                "vs_scene_prepass_masked",
+                "fs_scene_prepass_masked",
+            ],
         ),
         (Program::Skinning, &["cs_skinning"]),
         (
@@ -480,15 +509,18 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 12] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 15] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::AnimeCharacter, "vs_through_hair", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
         (Program::FogCard, "vs_fog_card", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
         (Program::Outline, "vs_outline_prepass", MeshPass::OutlinePrepass),
+        (Program::Outline, "vs_outline_prepass_masked", MeshPass::MaskedOutlinePrepass),
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
+        (Program::Prepass, "vs_character_prepass_masked", MeshPass::MaskedCharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
+        (Program::Prepass, "vs_scene_prepass_masked", MeshPass::MaskedScenePrepass),
         (Program::Shadows, "vs_shadow_caster", MeshPass::Shadow),
         (Program::Foliage, "vs_foliage", MeshPass::Foliage),
         (Program::Foliage, "vs_foliage_prepass", MeshPass::FoliagePrepass),
@@ -512,6 +544,8 @@ mod tests {
             include_str!("../shaders/materials.wgsl"),
             "\n",
             include_str!("../shaders/lights.wgsl"),
+            "\n",
+            include_str!("../shaders/ambient.wgsl"),
             "\n",
             include_str!("../shaders/anime_character.wgsl")
         );
@@ -710,6 +744,8 @@ mod tests {
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
+            (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
+            (Program::AnimeCharacter, "CharacterLayerRegion", size_of::<CharacterLayerRegion>()),
             (Program::AnimeCharacter, "ShadowUniforms", size_of::<ShadowUniforms>()),
             (Program::AnimeCharacter, "ShadowCascade", size_of::<GpuCascade>()),
             (Program::AnimeCharacter, "CharacterShadowMap", size_of::<GpuCharacterMap>()),
@@ -796,12 +832,19 @@ mod tests {
                     hair_shadow,
                     through_hair,
                     rim_regions,
+                    layers,
+                    stocking_color,
+                    stocking_shape,
+                    stocking_sheen,
+                    stocking_weave,
+                    layer_regions,
                 }),
             ),
             (
                 "AnimeCharacterRegion",
                 offsets!(AnimeCharacterRegion { shade, deep_shade, subsurface, specular, rim, outline }),
             ),
+            ("CharacterLayerRegion", offsets!(CharacterLayerRegion { matcap, surface, emission })),
             (
                 "EnvironmentParams",
                 offsets!(EnvironmentParams {
@@ -883,10 +926,12 @@ mod tests {
                     normal_from_object,
                     previous_world_from_object,
                     character,
+                    fade,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade })),
             ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
+            ("CharacterFade", offsets!(GpuCharacterFade { amount })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
             ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),
@@ -1019,6 +1064,14 @@ mod tests {
             ("CHARACTER_FLAG_DEEP_SHADE", P::FLAG_DEEP_SHADE),
             ("CHARACTER_FLAG_ALPHA_TEST", P::FLAG_ALPHA_TEST),
             ("CHARACTER_FLAG_TRANSPARENT", P::FLAG_TRANSPARENT),
+            ("CHARACTER_FLAG_SPECULAR", P::FLAG_SPECULAR),
+            ("CHARACTER_FLAG_MATCAP", P::FLAG_MATCAP),
+            ("CHARACTER_FLAG_REFLECTION", P::FLAG_REFLECTION),
+            ("CHARACTER_FLAG_STOCKINGS", P::FLAG_STOCKINGS),
+            ("CHARACTER_FLAG_EMISSION", P::FLAG_EMISSION),
+            ("CHARACTER_FLAG_LAYERS", P::FLAG_LAYERS),
+            ("CHARACTER_SPECULAR_BLINN", P::SPECULAR_BLINN),
+            ("CHARACTER_SPECULAR_GGX", P::SPECULAR_GGX),
             ("CHARACTER_SURFACE_BODY", P::SURFACE_BODY),
             ("CHARACTER_SURFACE_FACE", P::SURFACE_FACE),
             ("CHARACTER_SURFACE_HAIR", P::SURFACE_HAIR),
@@ -1693,6 +1746,25 @@ mod tests {
                 naga::back::pipeline_constants::process_overrides(&cards, &info, stage, &constants)
                     .unwrap_or_else(|error| {
                         panic!("fog_card.wgsl {} ({depth_fade}): {error}", entry_point.name)
+                    });
+            }
+        }
+        // The masked prepasses, under MSAA or not (M1 C7).
+        let prepass = validate(Program::Prepass);
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&prepass)
+        .expect("validated above");
+        for samples in [1.0, 4.0] {
+            let constants: naga::back::PipelineConstants =
+                [(override_constant::FADE_SAMPLES.to_owned(), samples)].into_iter().collect();
+            for entry_point in &prepass.entry_points {
+                let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                naga::back::pipeline_constants::process_overrides(&prepass, &info, stage, &constants)
+                    .unwrap_or_else(|error| {
+                        panic!("prepass.wgsl {} ({samples}x): {error}", entry_point.name)
                     });
             }
         }

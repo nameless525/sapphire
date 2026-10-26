@@ -12,7 +12,9 @@
 //!
 //! With `--swatches` it loads the shader swatches' three materials too, by the IDs in
 //! [`swatches::MATERIALS`], each with the maps it names ([`Content::swatch_materials`]); the
-//! spheres they draw on are procedural. With `--faces` it loads the face test head
+//! spheres they draw on are procedural. With `--materials` it loads the material layer samples'
+//! five materials (M1 C7), by the IDs in [`layers::MATERIALS`], with the matcap and layer mask
+//! they name ([`Content::layer_materials`]). With `--faces` it loads the face test head
 //! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
 //! SDF face map, a face mask and an expression map: all of it cooked content
 //! ([`Content::face_head`]). With `--hard-edges` it loads the hard-edged outline sample
@@ -88,6 +90,7 @@ use crate::LOG_TARGET;
 use crate::environment;
 use crate::faces;
 use crate::foliage::{self, FoliageMeshes};
+use crate::layers;
 use crate::lookdev::{self, Plant, TownMeshes};
 use crate::outlines;
 use crate::scene;
@@ -281,6 +284,8 @@ pub(crate) struct Content {
     character: Handle<Mesh>,
     /// The shader swatches' materials, once asked for (`--swatches`).
     swatches: Vec<Handle<Material>>,
+    /// The material layer samples' materials, once asked for (`--materials`).
+    layer_samples: Vec<Handle<Material>>,
     /// The face test head, once asked for (`--faces`).
     face_head: Option<Handle<Mesh>>,
     /// The courtyard, once asked for (`--environment`).
@@ -340,6 +345,7 @@ impl Content {
             character_id,
             character,
             swatches: Vec::new(),
+            layer_samples: Vec::new(),
             face_head: None,
             courtyard: None,
             fog_cards: Vec::new(),
@@ -418,23 +424,53 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<[MaterialHandle; SWATCHES], AppInitError> {
+        let mut kept = std::mem::take(&mut self.swatches);
+        let materials = self.materials(swatches::MATERIALS, &mut kept, renderer, gpu, "swatch");
+        self.swatches = kept;
+        materials
+    }
+
+    /// Loads the material layer samples' materials (M1 C7), with the textures they name, until
+    /// they are on `renderer`, and returns their handles in [`layers::MATERIALS`] order: the load
+    /// screen of `--materials`. They stay loaded from then on.
+    pub fn layer_materials(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<[MaterialHandle; layers::SAMPLES], AppInitError> {
+        let mut kept = std::mem::take(&mut self.layer_samples);
+        let materials = self.materials(layers::MATERIALS, &mut kept, renderer, gpu, "material sample");
+        self.layer_samples = kept;
+        materials
+    }
+
+    /// Loads the materials `ids`, with the textures they name, until they are on `renderer`,
+    /// keeping their handles in `kept`, and returns the renderer's handles in order. `what` names
+    /// them in the error.
+    fn materials<const N: usize>(
+        &mut self,
+        ids: [AssetId; N],
+        kept: &mut Vec<Handle<Material>>,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        what: &str,
+    ) -> Result<[MaterialHandle; N], AppInitError> {
         // Asking again tries materials that failed before, as the character does.
-        self.swatches = swatches::MATERIALS
+        *kept = ids
             .iter()
             .map(|&id| self.server.load_with(id, LoadPriority::Critical))
             .collect::<Result<_, _>>()
             .map_err(AppInitError::msg)?;
         let mut loaded = Ok(());
-        for handle in &self.swatches {
+        for handle in kept.iter() {
             let assets = &mut self.gpu;
             loaded = loaded.and(self.server.finish(handle, |upload| assets.upload(upload, renderer, gpu)));
         }
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
-        loaded.map_err(|error| AppInitError::msg(format!("the swatch materials didn't load: {error}")))?;
-        Ok(swatches::MATERIALS
-            .map(|id| self.gpu.materials.get(&id).expect("a ready material was uploaded here").object))
+        loaded.map_err(|error| AppInitError::msg(format!("the {what} materials didn't load: {error}")))?;
+        Ok(ids.map(|id| self.gpu.materials.get(&id).expect("a ready material was uploaded here").object))
     }
 
     /// Loads until the face test head is on `renderer`, with its materials and the maps they

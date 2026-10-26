@@ -393,6 +393,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 prepass.draws, prepass.hair_shadow_characters, prepass.through_hair_draws, prepass.eye_layer_draws
             ),
         );
+        row(
+            ui,
+            "Fading characters",
+            format!("{} ({} draws through the dither)", render.faded_characters, render.faded_draws),
+        );
         row(ui, "Character pipelines", render.character_pipelines.to_string());
         row(ui, "Environment pipelines", render.environment_pipelines.to_string());
         row(ui, "Foliage pipelines", render.foliage_pipelines.to_string());

@@ -695,9 +695,9 @@ impl Default for CharacterLight {
 }
 
 /// One character's data for a frame: the character light rig that lights the instance `id`
-/// (M1 C2), the character's face (M1 C3) and its body, which its shadow is cast from (M1 R4). A
-/// character drawn as several instances (body, face, hair, a weapon) lists each, with the same
-/// lighting, face and body.
+/// (M1 C2), the character's face (M1 C3), its body, which its shadow is cast from (M1 R4), and
+/// how much of it draws (M1 C7). A character drawn as several instances (body, face, hair, a
+/// weapon) lists each, with the same lighting, face, body and opacity.
 ///
 /// Being listed is what makes an instance a character for shadows too: it never casts into the
 /// world's shadow cascades and receives only them (environment casters), so a character never
@@ -709,12 +709,26 @@ pub struct CharacterInstance {
     pub lighting: CharacterLighting,
     pub face: CharacterFace,
     pub body: CharacterBody,
+    /// How much of the character draws (M1 C7, spec §5.12 "Proximity fade"): 1 whole, 0 none,
+    /// clamped to that range. Below 1 a screen-space dither keeps that share of its pixels in
+    /// every pass that draws it (surfaces, outlines, eyes through hair, the prepasses), which
+    /// temporal AA resolves into a blend and MSAA into a share of each pixel's samples, and the
+    /// character takes no rim. The world resolves it from the camera's distance to the body
+    /// (`sapphire_world::ProximityFade`), so the camera never clips into a character. Its shadow
+    /// stays whole.
+    pub opacity: f32,
 }
 
 impl CharacterInstance {
-    /// Whether the renderer can draw by it: its lighting, its face and its body are all valid.
+    /// Whether the renderer can draw by it: its lighting, its face and its body are all valid,
+    /// and its opacity is a number.
     pub fn is_valid(&self) -> bool {
-        self.lighting.is_valid() && self.face.is_valid() && self.body.is_valid()
+        self.lighting.is_valid() && self.face.is_valid() && self.body.is_valid() && !self.opacity.is_nan()
+    }
+
+    /// How far it has faded: 1 − its opacity, within 0 to 1.
+    pub fn fade(&self) -> f32 {
+        1.0 - self.opacity.clamp(0.0, 1.0)
     }
 }
 
@@ -973,7 +987,7 @@ mod tests {
             ..CharacterFace::default()
         };
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.25);
-        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face, body });
+        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face, body, opacity: 1.0 });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -1073,6 +1087,7 @@ mod tests {
             lighting,
             face: broken[0],
             body: CharacterBody::default(),
+            opacity: 1.0,
         };
         assert!(!character.is_valid(), "a broken face makes the entry invalid");
         assert!(CharacterInstance { face: strong, ..character }.is_valid());
@@ -1094,7 +1109,9 @@ mod tests {
         let lighting = CharacterLighting::unstyled(DirectionalLight::default());
         let face = CharacterFace::default();
         let broken = CharacterBody { radius: -1.0, ..body };
-        assert!(!CharacterInstance { id: InstanceId(0), lighting, face, body: broken }.is_valid());
+        assert!(
+            !CharacterInstance { id: InstanceId(0), lighting, face, body: broken, opacity: 1.0 }.is_valid()
+        );
         let moved = body.transformed(Mat4::from_scale_rotation_translation(
             Vec3::splat(2.0),
             Quat::IDENTITY,

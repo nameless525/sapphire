@@ -38,8 +38,8 @@ use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES, MeshPass,
-    MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
-    SurfaceVariant, VELOCITY_FORMAT,
+    NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant,
+    VELOCITY_FORMAT,
 };
 use crate::post::{self, PostEffectSettings, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
@@ -268,8 +268,9 @@ pub struct RenderStats {
     /// Outline hulls the last prepared frame didn't draw: their instances were past their
     /// materials' LOD cutoff (M1 C4, `OutlineCurve::cutoff`).
     pub outlines_culled: u32,
-    /// Anime character pipelines built (surface and outline variants, across position
-    /// formats): each static permutation's are built when the first draw needs them.
+    /// Anime character pipelines built (surface and outline variants, eyes through hair and the
+    /// prepasses' masked pipelines, across position formats): each static permutation's are
+    /// built when the first draw needs them.
     pub character_pipelines: u32,
     /// Environment pipelines built (surface variants across position formats), likewise.
     pub environment_pipelines: u32,
@@ -281,8 +282,8 @@ pub struct RenderStats {
     /// Instances the last prepared packet added or changed; each is uploaded.
     pub changed_instances: u32,
     /// Times the draw list was rebuilt since the renderer was created: only when instances
-    /// are added or removed, change mesh, meshes are uploaded, or a material edit changes its
-    /// static permutation.
+    /// are added or removed, change mesh, meshes are uploaded, a material edit changes its
+    /// static permutation, or a character starts or stops fading (M1 C7).
     pub draw_list_builds: u32,
     /// Mesh pool bytes in use: vertices (with skin and morph data) and indices.
     pub mesh_pool_bytes: u64,
@@ -307,6 +308,12 @@ pub struct RenderStats {
     /// Entries of [`FramePacket::characters`] that frame ignored: for instances it doesn't draw,
     /// or with lighting or a face that isn't valid.
     pub ignored_characters: u32,
+    /// Of [`Self::characters`], those that frame drew faded (M1 C7,
+    /// [`CharacterInstance::opacity`](crate::CharacterInstance::opacity) below 1).
+    pub faded_characters: u32,
+    /// Their anime character draws, their opaque ones moved to the alpha-tested variants, which
+    /// the prepasses draw through their masked pipelines.
+    pub faded_draws: u32,
     /// The character prepass's draws, and what reads it: faces with the bangs' shadow, eyes
     /// through hair (M1 C5).
     pub character_prepass: CharacterPrepassStats,
@@ -1112,16 +1119,7 @@ impl Renderer {
         );
         let (device, queue) = (gpu.device(), gpu.queue());
 
-        let materials = &self.materials;
-        let material = |handle: MaterialHandle| {
-            materials
-                .record(handle)
-                .map_or((MaterialFamily::AnimeCharacter, MaterialFlags::empty(), 0), |r| {
-                    (r.family, r.flags, r.layer)
-                })
-        };
-        if self.scene.prepare(device, queue, packet.frame, &packet.instances, self.meshes.records(), material)
-        {
+        if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
             self.scene_bind_groups = create_scene_bind_groups(
                 device,
                 &self.layouts,
@@ -1140,6 +1138,23 @@ impl Renderer {
         if characters_replaced {
             self.shadows.set_character_buffer(device, self.characters.buffer());
             self.ambient.set_character_buffer(self.characters.buffer());
+        }
+        // The draw list follows the characters' fades (M1 C7): a fading instance's opaque anime
+        // character draws go through the alpha-tested variants.
+        if self.characters.fading_changed() {
+            self.scene.meshes_changed();
+        }
+        let materials = &self.materials;
+        let material = |handle: MaterialHandle| {
+            materials
+                .record(handle)
+                .map_or((MaterialFamily::AnimeCharacter, MaterialFlags::empty(), 0), |r| {
+                    (r.family, r.flags, r.layer)
+                })
+        };
+        if self.scene.build_draws(device, queue, self.meshes.records(), material) {
+            // Edited shaders are checked here too: a variant first drawn now builds from them.
+            self.checked_build(Self::prepare_drawn_pipelines);
         }
         if lists_replaced || characters_replaced {
             self.rebuild_frame_bind_group();
@@ -1221,6 +1236,8 @@ impl Renderer {
         self.stats.lights = self.lights.stats();
         self.stats.characters = self.characters.lit();
         self.stats.ignored_characters = self.characters.ignored();
+        self.stats.faded_characters = self.characters.faded();
+        self.stats.faded_draws = self.scene.draw_list().faded;
         let characters = &self.characters;
         self.stats.character_prepass = CharacterPrepassStats::count(
             self.scene.draw_list(),
@@ -1424,7 +1441,7 @@ impl Renderer {
         let ambient = ambient.split_for_record(sky_cube.as_ref().map_or(0..0, |cube| cube.faces()));
         let ambient_upload = ambient.upload;
         let (light_uploads, cluster_pass) = lights.split_for_record();
-        let (character_uploads, character_entries) = characters.split_for_record();
+        let (character_uploads, character_slots) = characters.split_for_record();
         let skinning_frame = skinning.frame();
         let mesh_draws = MeshDraws {
             meshes,
@@ -1534,45 +1551,31 @@ impl Renderer {
                 pass.set_bind_group(1, view_bind_group, &[0]);
                 pass.set_bind_group(2, &scene_bind_groups[0], &[]);
                 pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                let listed =
-                    |slot: u32| character_entries.get(slot as usize).is_some_and(|&entry| entry != 0);
-                let prepass = MeshPass::CharacterPrepass;
                 // Every part but hair, then hair, which writes the nearest surface's ID alone, so
                 // the other ID keeps the nearest surface that isn't hair: the eye depth mask (M1
-                // C6).
-                for hair in [false, true] {
-                    let variants = SurfaceVariant::CHARACTER_DEPTH_WRITING
-                        .into_iter()
-                        .filter(move |variant| (variant.shading == Shading::Character(Part::Hair)) == hair);
+                // C6). Each the opaque surfaces through the plain pipeline, then the alpha-tested
+                // ones (fading characters' among them, which the draw list moves there) through
+                // the masked one (M1 C7), cut out as the main pass cuts them.
+                let listed = |slot: u32| character_slots.listed(slot);
+                let set = DrawSet::Surfaces;
+                for prepass in 0..4 {
                     for format in PositionFormat::ALL {
                         let Some(mesh) = pipelines.mesh(format) else { continue };
-                        if variants.clone().any(|variant| mesh_draws.has_static(format, variant)) {
-                            pass.set_pipeline(mesh.character_prepass_of(hair));
-                            for variant in variants.clone() {
-                                mesh_draws.draw_static_where(
-                                    &mut pass,
-                                    prepass,
-                                    format,
-                                    variant,
-                                    DrawSet::Surfaces,
-                                    listed,
-                                );
+                        let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
+                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_static_where(&mut pass, kind, format, variant, set, listed);
                             }
                         }
                     }
-                    let deformed = pipelines.mesh(PositionFormat::Float32);
-                    if let Some(mesh) = deformed
-                        && variants.clone().any(|variant| mesh_draws.has_deformed(variant))
-                    {
-                        pass.set_pipeline(mesh.character_prepass_of(hair));
-                        for variant in variants.clone() {
-                            mesh_draws.draw_deformed_where(
-                                &mut pass,
-                                prepass,
-                                variant,
-                                DrawSet::Surfaces,
-                                listed,
-                            );
+                    if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+                        let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
+                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_deformed_where(&mut pass, kind, variant, set, listed);
+                            }
                         }
                     }
                 }
@@ -1589,29 +1592,30 @@ impl Renderer {
                 let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
                 bind(&mut pass);
                 // Opaque and alpha-tested surfaces of every family but foliage, through one
-                // pipeline per format: the prepass doesn't cut their alpha-tested ones out yet
-                // (crate docs, "Later milestones"). Transparent surfaces write no depth.
-                let prepass = MeshPass::ScenePrepass;
+                // pipeline per format, but the alpha-tested anime character surfaces (fading
+                // characters' among them), which draw through the masked one (M1 C7), cut out
+                // as the main pass cuts them. The environment's alpha-tested surfaces aren't cut
+                // out yet (crate docs, "Later milestones"). Transparent surfaces write no depth.
+                let set = DrawSet::Surfaces;
                 for format in PositionFormat::ALL {
-                    if !SurfaceVariant::SHARED_DEPTH
-                        .iter()
-                        .any(|&variant| mesh_draws.has_static(format, variant))
-                    {
-                        continue;
-                    }
-                    let pipelines =
-                        pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-                    pass.set_pipeline(&pipelines.scene_prepass);
-                    for variant in SurfaceVariant::SHARED_DEPTH {
-                        mesh_draws.draw_static(&mut pass, prepass, format, variant, DrawSet::Surfaces);
+                    let Some(mesh) = pipelines.mesh(format) else { continue };
+                    for (pipeline, kind, variants) in mesh.scene_prepasses() {
+                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_static(&mut pass, kind, format, variant, set);
+                            }
+                        }
                     }
                 }
-                if SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
-                    let pipelines =
-                        pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
-                    pass.set_pipeline(&pipelines.scene_prepass);
-                    for variant in SurfaceVariant::SHARED_DEPTH {
-                        mesh_draws.draw_deformed(&mut pass, prepass, variant, DrawSet::Surfaces);
+                if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+                    for (pipeline, kind, variants) in mesh.scene_prepasses() {
+                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_deformed(&mut pass, kind, variant, set);
+                            }
+                        }
                     }
                 }
                 // Foliage (M1 W6) through its own pipelines per coverage, on its scene group (the
@@ -1641,29 +1645,29 @@ impl Renderer {
                 }
                 // Then the outline hulls, after every surface as in the main pass and with the
                 // same depths, writing their own velocity (M1 C4): temporal AA reprojects a line
-                // by its own motion. Every outlined variant shares one pipeline per format.
-                let hulls = MeshPass::OutlinePrepass;
+                // by its own motion. The opaque variants share one pipeline per format, the
+                // alpha-tested ones the masked one (M1 C7), which keeps the pixels their main pass
+                // keeps.
+                let set = DrawSet::Outlines;
                 for format in PositionFormat::ALL {
-                    let Some(pipeline) = pipelines.mesh(format).and_then(MeshPipelines::outline_prepass)
-                    else {
-                        continue;
-                    };
-                    if SurfaceVariant::OUTLINED.iter().any(|&variant| mesh_draws.has_static(format, variant))
-                    {
-                        pass.set_pipeline(pipeline);
-                        for variant in SurfaceVariant::OUTLINED {
-                            mesh_draws.draw_static(&mut pass, hulls, format, variant, DrawSet::Outlines);
+                    let Some(mesh) = pipelines.mesh(format) else { continue };
+                    for (pipeline, kind, variants) in mesh.outline_prepasses() {
+                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_static(&mut pass, kind, format, variant, set);
+                            }
                         }
                     }
                 }
-                let deformed_hulls =
-                    pipelines.mesh(PositionFormat::Float32).and_then(MeshPipelines::outline_prepass);
-                if let Some(pipeline) = deformed_hulls
-                    && SurfaceVariant::OUTLINED.iter().any(|&variant| mesh_draws.has_deformed(variant))
-                {
-                    pass.set_pipeline(pipeline);
-                    for variant in SurfaceVariant::OUTLINED {
-                        mesh_draws.draw_deformed(&mut pass, hulls, variant, DrawSet::Outlines);
+                if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+                    for (pipeline, kind, variants) in mesh.outline_prepasses() {
+                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                            for &variant in variants {
+                                mesh_draws.draw_deformed(&mut pass, kind, variant, set);
+                            }
+                        }
                     }
                 }
             });
@@ -1778,6 +1782,42 @@ impl Renderer {
             views.record(graph, frame);
         }
         Some(targets)
+    }
+
+    /// Builds the pipelines the rebuilt draw list needs that no upload has (M1 C7): a fading
+    /// character's opaque draws move to alpha-tested variants, with their outlines, eyes through
+    /// hair and the prepasses' masked pipelines. Building here, on the calling thread, can hitch
+    /// once, as a material edit into a new variant does.
+    fn prepare_drawn_pipelines(&mut self) {
+        let list = self.scene.draw_list();
+        for (format_slot, format) in PositionFormat::ALL.into_iter().enumerate() {
+            let deformed = format == PositionFormat::Float32;
+            if self.pipelines.mesh(format).is_none() {
+                continue;
+            }
+            for variant in SurfaceVariant::ALL {
+                let commands = &list.commands[format_slot][variant.index()];
+                let drawn = !commands.is_empty() || (deformed && !list.deformed[variant.index()].is_empty());
+                let built = self.pipelines.mesh(format).is_some_and(|mesh| mesh.surface(variant).is_some());
+                if drawn && !built {
+                    self.pipelines.prepare_variant(&self.device, format, variant);
+                }
+                if drawn && variant.through_hair_index().is_some() {
+                    let materials = &self.materials;
+                    let through = |material: MaterialHandle| {
+                        materials
+                            .record(material)
+                            .is_some_and(|r| r.flags.contains(MaterialFlags::THROUGH_HAIR))
+                    };
+                    let through_hair = commands.iter().any(|command| through(command.material))
+                        || (deformed
+                            && list.deformed[variant.index()].iter().any(|draw| through(draw.material)));
+                    if through_hair {
+                        self.pipelines.prepare_through_hair(&self.device, format, variant);
+                    }
+                }
+            }
+        }
     }
 
     /// The main pass's depth, a transient, and how it is stored: kept in tile memory and
@@ -2198,7 +2238,8 @@ fn create_frame_bind_group(
 
 /// Group 2 per [`MESH_FAMILIES`] entry, for that family's pipelines: the instances and the
 /// family's materials, for fog cards the stand-in for the depth they fade against (frames that
-/// read the prepass's bind a group of their own, `fog::CardGroupCache`), and for foliage the wind.
+/// read the prepass's bind a group of their own, `fog::CardGroupCache`), for foliage the wind, and
+/// for anime characters the sky cube (M1 C7).
 /// The shared prepass and caster pipelines bind the
 /// anime character family's.
 fn create_scene_bind_groups(

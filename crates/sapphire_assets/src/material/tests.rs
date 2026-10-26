@@ -1,6 +1,7 @@
 use sapphire_serialize::{from_ron, to_ron};
 
 use super::*;
+use crate::character_maps::layer_mask;
 use crate::texture::Component;
 
 const TEXTURE: &str = "7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d";
@@ -248,7 +249,7 @@ fn cooked_materials_that_break_the_format_are_rejected() {
         let error = Material::read(&material.to_cooked().unwrap()).unwrap_err();
         assert!(expected(&error), "{error}");
     };
-    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 1121, .. }));
+    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 1585, .. }));
     check(
         |m| m.family = MaterialFamily::Sky,
         |e| matches!(e, MaterialError::ParamsSize { expected: 96, .. }),
@@ -297,7 +298,7 @@ fn swizzles_pack_two_slots_to_a_word() {
 #[test]
 fn gpu_blocks_have_their_documented_sizes() {
     let sizes = MaterialFamily::ALL.map(MaterialFamily::params_size);
-    assert_eq!(sizes, [1120, 144, 160, 96, 80]);
+    assert_eq!(sizes, [1584, 144, 160, 96, 80]);
     assert!(sizes.iter().all(|size| size % 16 == 0), "WGSL storage arrays stride by 16");
     assert_eq!(size_of::<AnimeCharacterRegion>(), 96);
     for family in MaterialFamily::ALL {
@@ -315,7 +316,11 @@ fn the_anime_character_block_carries_every_field() {
         | 1 << AnimeCharacterMaterial::RAMP
         | 1 << AnimeCharacterMaterial::SURFACE_MASK
         | 1 << AnimeCharacterMaterial::MATCAP;
-    let flags = bound | AnimeCharacterParams::FLAG_RAMP | AnimeCharacterParams::FLAG_ALPHA_TEST;
+    // The matcap's regions take it as MToon does by default: its layer is on (M1 C7).
+    let flags = bound
+        | AnimeCharacterParams::FLAG_RAMP
+        | AnimeCharacterParams::FLAG_ALPHA_TEST
+        | AnimeCharacterParams::FLAG_MATCAP;
     assert_eq!(
         params.modes,
         [flags, 2, AnimeCharacterParams::SURFACE_HAIR, AnimeCharacterParams::HIGHLIGHT_ANGEL_RING << 8]
@@ -614,4 +619,197 @@ fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
         edited(|e| e.layer = EyeLayer::Highlight(HighlightMotion { sparkle: -1.0, ..Default::default() }))
             .starts_with("surface.layer.sparkle")
     );
+}
+
+/// A body material wearing every layer (M1 C7): a layer mask, a highlight, a tinted grayscale
+/// matcap channel multiplying the albedo, a reflective region, stockings with a weave, and a
+/// breathing glow.
+fn layered() -> AnimeCharacterMaterial {
+    let metal_matcap =
+        RegionMatcap { channel: MatcapChannel::G, blend: MatcapBlend::Multiply, color: [1.5, 1.2, 0.8] };
+    AnimeCharacterMaterial {
+        layer_mask: Some(id(TEXTURE)),
+        matcap: Some(Matcap { map: id(RAMP), strength: 1.2, shadow_strength: 0.4 }),
+        specular: Specular { model: SpecularModel::Ggx, softness: 0.02, albedo: 0.75 },
+        regions: vec![
+            CharacterRegion {
+                specular_color: [0.5, 0.4, 0.3],
+                specular_size: 0.25,
+                matcap: metal_matcap,
+                metallic: 0.95,
+                roughness: 0.2,
+                ..CharacterRegion::default()
+            },
+            CharacterRegion {
+                matcap: RegionMatcap { channel: MatcapChannel::Off, ..RegionMatcap::default() },
+                stocking: 0.8,
+                emission: [2.0, 0.5, 0.25],
+                ..CharacterRegion::default()
+            },
+        ],
+        stockings: Stockings {
+            color: [0.02, 0.01, 0.03],
+            edge_opacity: 0.9,
+            facing_opacity: 0.3,
+            range: [0.2, 0.7],
+            sheen: [0.3, 0.3, 0.35],
+            sheen_sharpness: 6.0,
+            direction: FabricDirection::U,
+            weave_scale: 400.0,
+            weave_strength: 0.4,
+        },
+        emission: Emission { period: 2.5, depth: 0.5, bloom: 0.75 },
+        ..AnimeCharacterMaterial::default()
+    }
+}
+
+#[test]
+fn layers_pack_after_the_rim_settings_and_set_their_flags() {
+    let document = layered();
+    let swizzles = vec![Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let material = Material::from_document(&document, &swizzles).unwrap();
+    let params: AnimeCharacterParams = bytemuck::pod_read_unaligned(&material.params);
+    // A body binds the layer mask in the surface mask slot.
+    let bound = 1 << AnimeCharacterMaterial::SURFACE_MASK | 1 << AnimeCharacterMaterial::MATCAP;
+    assert_eq!(material.textures[AnimeCharacterMaterial::SURFACE_MASK].texture, Some(id(TEXTURE)));
+    assert_eq!(params.modes[0], bound | AnimeCharacterParams::FLAG_LAYERS);
+    assert_eq!(params.modes[3], AnimeCharacterParams::SPECULAR_GGX);
+    assert_eq!(params.terms[1], 0.02, "the highlight's softness");
+    assert_eq!(params.layers, [0.75, 0.4, 0.5, 0.75], "albedo share, breaths a second, depth, bloom");
+    assert_eq!(params.stocking_color, [0.02, 0.01, 0.03, 0.9]);
+    assert_eq!(params.stocking_shape, [0.2, 0.7, 0.3, 400.0]);
+    assert_eq!(params.stocking_sheen, [0.3, 0.3, 0.35, 6.0]);
+    assert_eq!(params.stocking_weave, [0.4, 0.0, 0.0, 0.0], "fabric along u");
+    let [metal, legs] = [params.layer_regions[0], params.layer_regions[1]];
+    assert_eq!(metal.matcap, [1.5, 1.2, 0.8, 2.0], "channel G");
+    assert_eq!(metal.surface, [0.95, 0.2, 0.0, 1.0], "metallic, roughness, no stockings, multiplying");
+    assert_eq!(legs.matcap[3], -1.0, "no matcap");
+    assert_eq!(legs.surface, [0.0, 0.3, 0.8, 0.0]);
+    assert_eq!(legs.emission, [2.0, 0.5, 0.25, 0.0]);
+    assert_eq!(params.layer_regions[2], CharacterLayerRegion::default(), "unused regions stay zero");
+    assert_eq!(params.regions[0].specular, [0.5, 0.4, 0.3, 0.25]);
+    // They follow C5's settings, so every earlier offset holds.
+    let rim_regions = 128 + 8 * 96 + 6 * 16;
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layers), rim_regions + 8 * 16);
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layer_regions), rim_regions + 8 * 16 + 5 * 16);
+    assert_eq!(size_of::<CharacterLayerRegion>(), 48);
+    assert_eq!(material.material_flags(), MaterialFlags::OUTLINE, "no permutation bit");
+}
+
+#[test]
+fn each_layer_turns_on_alone_and_none_by_default() {
+    let flags = |document: &AnimeCharacterMaterial| {
+        document.gpu_params(&[Swizzle::IDENTITY; 8]).modes[0] & AnimeCharacterParams::FLAG_LAYERS
+    };
+    let with_region = |region: CharacterRegion| AnimeCharacterMaterial {
+        regions: vec![region],
+        ..AnimeCharacterMaterial::default()
+    };
+    // Materials from before the layers set none of their flags, whatever their stockings and
+    // emission settings say, until a region takes them.
+    assert_eq!(flags(&AnimeCharacterMaterial::default()), 0);
+    let mut stockings = AnimeCharacterMaterial::default();
+    stockings.stockings.weave_scale = 300.0;
+    assert_eq!(flags(&stockings), 0);
+    let region = CharacterRegion::default();
+    let turned_on = [
+        (CharacterRegion { specular_color: [0.1; 3], ..region }, AnimeCharacterParams::FLAG_SPECULAR),
+        (CharacterRegion { metallic: 0.91, ..region }, AnimeCharacterParams::FLAG_REFLECTION),
+        (CharacterRegion { stocking: 0.1, ..region }, AnimeCharacterParams::FLAG_STOCKINGS),
+        (CharacterRegion { emission: [0.0, 0.0, 0.5], ..region }, AnimeCharacterParams::FLAG_EMISSION),
+    ];
+    for (region, flag) in turned_on {
+        assert_eq!(flags(&with_region(region)), flag, "{region:?}");
+    }
+    // Metallic at the threshold doesn't reflect: only texels above it do.
+    let at = with_region(CharacterRegion { metallic: layer_mask::REFLECTS, ..region });
+    assert_eq!(flags(&at), 0);
+    // The matcap needs a map, some strength and a region that takes it.
+    let matcap = Matcap { map: id(TEXTURE), strength: 1.0, shadow_strength: 0.0 };
+    let with = AnimeCharacterMaterial { matcap: Some(matcap), ..AnimeCharacterMaterial::default() };
+    assert_eq!(flags(&with), AnimeCharacterParams::FLAG_MATCAP);
+    let dark = AnimeCharacterMaterial { matcap: Some(Matcap { strength: 0.0, ..matcap }), ..with.clone() };
+    assert_eq!(flags(&dark), 0);
+    let off_region = CharacterRegion {
+        matcap: RegionMatcap { channel: MatcapChannel::Off, ..RegionMatcap::default() },
+        ..region
+    };
+    let off = AnimeCharacterMaterial { regions: vec![off_region], ..with };
+    assert_eq!(flags(&off), 0);
+}
+
+#[test]
+fn layers_validate_their_ranges() {
+    let invalid = |edit: fn(&mut AnimeCharacterMaterial)| {
+        let mut document = layered();
+        edit(&mut document);
+        document.validate().unwrap_err().to_string()
+    };
+    assert!(layered().validate().is_ok());
+    assert!(invalid(|m| m.specular.albedo = 1.5).starts_with("specular.albedo"));
+    assert!(invalid(|m| m.regions[0].metallic = -0.1).starts_with("regions[0].metallic"));
+    assert!(invalid(|m| m.regions[0].roughness = 2.0).starts_with("regions[0].roughness"));
+    assert!(invalid(|m| m.regions[1].stocking = f32::NAN).starts_with("regions[1].stocking"));
+    assert!(invalid(|m| m.regions[1].emission = [-1.0, 0.0, 0.0]).starts_with("regions[1].emission"));
+    assert!(
+        invalid(|m| m.regions[0].matcap.color = [f32::INFINITY; 3]).starts_with("regions[0].matcap.color")
+    );
+    assert!(invalid(|m| m.stockings.range = [0.8, 0.2]).starts_with("stockings.range"));
+    assert!(invalid(|m| m.stockings.facing_opacity = 1.5).starts_with("stockings.facing_opacity"));
+    assert!(invalid(|m| m.stockings.sheen_sharpness = 0.5).starts_with("stockings.sheen_sharpness"));
+    assert!(invalid(|m| m.stockings.weave_scale = -1.0).starts_with("stockings.weave_scale"));
+    assert!(invalid(|m| m.emission.depth = 2.0).starts_with("emission.depth"));
+    assert!(invalid(|m| m.emission.period = -1.0).starts_with("emission.period"));
+    assert!(invalid(|m| m.emission.bloom = 1.5).starts_with("emission.bloom"));
+    // Faces, hair and eyes bind their own masks in the layer mask's slot.
+    let face =
+        |m: &mut AnimeCharacterMaterial| m.surface = CharacterSurface::Face(FaceShading::new(id(RAMP)));
+    assert!(invalid(face).starts_with("layer_mask"));
+}
+
+#[test]
+fn layer_references_match_their_shapes() {
+    // Both highlight models peak at 1 facing the half vector and fall off monotonically, GGX's
+    // tail longer than a Blinn lobe of about its width.
+    for (model, size) in [(SpecularModel::Blinn, 64.0), (SpecularModel::Ggx, 0.2)] {
+        assert!((model.shape(1.0, size) - 1.0).abs() < 1e-6, "{model:?}");
+        let samples: Vec<f32> = (0..=20).map(|i| model.shape(1.0 - i as f32 * 0.05, size)).collect();
+        assert!(samples.windows(2).all(|pair| pair[1] <= pair[0]), "{model:?}: {samples:?}");
+    }
+    assert!(SpecularModel::Ggx.shape(0.8, 0.2) > SpecularModel::Blinn.shape(0.8, 64.0));
+    let floor = SpecularModel::MIN_GGX_ROUGHNESS;
+    assert_eq!(SpecularModel::Ggx.shape(0.9, 0.0), SpecularModel::Ggx.shape(0.9, floor));
+    // The denier: the edge's opacity at and below the range, facing's at and above it.
+    let stockings =
+        Stockings { edge_opacity: 0.9, facing_opacity: 0.3, range: [0.2, 0.7], ..Stockings::default() };
+    assert_eq!(stockings.opacity(0.0), 0.9);
+    assert_eq!(stockings.opacity(1.0), 0.3);
+    assert!((stockings.opacity(0.45) - 0.6).abs() < 1e-6, "halfway");
+    // A breath: full at its top, dimmed by the depth half a period later, steady without one.
+    let emission = Emission { period: 4.0, depth: 0.4, bloom: 1.0 };
+    assert!((emission.level(0.0, 0.0) - 1.0).abs() < 1e-6);
+    assert!((emission.level(2.0, 0.0) - 0.6).abs() < 1e-6);
+    let shifted = emission.level(1.0, std::f32::consts::PI);
+    assert!((shifted - emission.level(3.0, 0.0)).abs() < 1e-6, "the phase");
+    assert_eq!(Emission { period: 0.0, ..emission }.level(1.7, 0.3), 1.0);
+}
+
+/// Documents from before the layers (M1 C7) load unchanged and draw as they did: no layer flag,
+/// and a body's surface mask slot unbound.
+#[test]
+fn documents_from_before_the_layers_take_none() {
+    let text = r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 2, data: (
+        regions: [(shade_color: (0.8, 0.4, 0.4), specular_color: (0.0, 0.0, 0.0), specular_size: 32.0)],
+        specular: (model: Blinn, softness: 0.05),
+        matcap: None,
+    ))"#;
+    let AnyMaterialDocument::AnimeCharacter(material) = AnyMaterialDocument::from_ron(text).unwrap() else {
+        panic!("an anime character material");
+    };
+    assert_eq!(material.layer_mask, None);
+    assert_eq!((material.stockings, material.emission), (Stockings::default(), Emission::default()));
+    assert_eq!(material.regions[0].matcap, RegionMatcap::default());
+    let params = material.gpu_params(&[Swizzle::IDENTITY; 8]);
+    assert_eq!(params.modes[0] & AnimeCharacterParams::FLAG_LAYERS, 0);
+    assert_eq!(material.textures()[AnimeCharacterMaterial::SURFACE_MASK], None);
 }

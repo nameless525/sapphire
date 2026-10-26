@@ -5,7 +5,7 @@
 //!
 //! | Family | Document | GPU block | Texture slots | Shaders |
 //! |---|---|---|---|---|
-//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 1120 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader, its outlines and its eyes through hair (C1 grows it) |
+//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 1584 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader, its outlines and its eyes through hair (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | the foliage shader (M1 W6), on static meshes with a foliage stream |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
@@ -97,10 +97,11 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub use self::character::{
-    AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterRegion,
-    CharacterSurface, DiffuseMode, EyeLayer, EyeShading, FaceShading, HairHighlight, HairShading, HairShadow,
-    HighlightMotion, HighlightStyle, IrisShape, LightSplit, Matcap, Outline, OutlineCurve, RampDiffuse,
-    RegionGi, Rim, Specular, SpecularModel, ThroughHair,
+    AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterLayerRegion,
+    CharacterRegion, CharacterSurface, DiffuseMode, Emission, EyeLayer, EyeShading, FabricDirection,
+    FaceShading, HairHighlight, HairShading, HairShadow, HighlightMotion, HighlightStyle, IrisShape,
+    LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline, OutlineCurve, RampDiffuse, RegionGi,
+    RegionMatcap, Rim, Specular, SpecularModel, Stockings, ThroughHair,
 };
 pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};
 use self::common::{GpuBlock, bound_bits, pack_swizzles};
@@ -331,7 +332,10 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 7: the foliage family's block packs its terminator's growth per meter (M1 W6), its canopy
+    /// 8: the anime character family's layers (M1 C7): five vectors of stockings, emission and
+    /// specular settings and three vectors per region after the regions' rim settings, the
+    /// layers' flags in `modes.x`, and a body's layer mask in the surface mask slot. 7: the
+    /// foliage family's block packs its terminator's growth per meter (M1 W6), its canopy
     /// occlusion moving to the root color's fourth component. 6: the anime character family's
     /// depth-offset rim, per-region rim settings, hair shadow and eyes-through-hair settings, four
     /// more vectors and a rim vector per region after the outline's, its rim width now pixels, and
@@ -345,7 +349,7 @@ impl Versioned for Material {
     /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
     /// generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 7;
+    const VERSION: u32 = 8;
 }
 
 /// What one texture slot binds.
@@ -523,6 +527,11 @@ impl ArchivedMaterial {
 
 /// A document of any family, as read from a `.material.ron` source.
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a document is read one at a time, when a source cooks or reloads, and lives briefly; \
+              boxing the anime character family's (larger since its layers, M1 C7) buys nothing"
+)]
 pub enum AnyMaterialDocument {
     AnimeCharacter(AnimeCharacterMaterial),
     Environment(EnvironmentMaterial),

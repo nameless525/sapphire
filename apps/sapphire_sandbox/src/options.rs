@@ -10,7 +10,7 @@ use crate::faces::FaceLayout;
 use crate::foliage::{DEFAULT_WIND, FoliageView};
 use crate::lookdev::{self, Shot};
 use crate::rims::RimLayout;
-use crate::scene::{self, Scene};
+use crate::scene::{self, Fade, Scene};
 use crate::stage::StageLayout;
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
@@ -68,6 +68,13 @@ pub(crate) struct Options {
     pub character_rig: Option<String>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
+    /// `--materials`: place the material layer samples on the character's right (M1 C7).
+    pub materials: bool,
+    /// `--fade <0..1>`: draw the characters at this opacity, through the proximity fade's
+    /// dither (M1 C7).
+    pub fade: Option<f32>,
+    /// `--proximity-fade`: fade the characters as the camera nears their bodies (M1 C7).
+    pub proximity_fade: bool,
     /// `--faces [--face-layout <layout>]`: show the face look-dev rig instead of the character,
     /// in this layout (`lights` without `--face-layout`; the layouts are `FaceLayout::NAMES`:
     /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze and blink).
@@ -250,6 +257,7 @@ impl Options {
         scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
+        scene.set_fade(self.fade());
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }
@@ -276,6 +284,16 @@ impl Options {
             scene.push_effect(preset, *at)?;
         }
         Ok(())
+    }
+
+    /// How the characters fade: at `--fade`'s opacity, by `--proximity-fade`'s default
+    /// distances, or not at all.
+    pub fn fade(&self) -> Fade {
+        match (self.fade, self.proximity_fade) {
+            (Some(opacity), _) => Fade::Fixed(opacity),
+            (None, true) => Fade::Proximity(Default::default()),
+            (None, false) => Fade::Off,
+        }
     }
 
     /// The scene's wind: `--foliage`'s breeze at `--wind`'s strength, if either is set.
@@ -432,6 +450,15 @@ impl Options {
                 }
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
+                "--materials" => options.materials = true,
+                "--fade" => {
+                    let opacity: f32 = number(&value("--fade")?, "--fade")?;
+                    if !(0.0..=1.0).contains(&opacity) {
+                        return Err(format!("--fade expects an opacity from 0 to 1, got {opacity}"));
+                    }
+                    options.fade = Some(opacity);
+                }
+                "--proximity-fade" => options.proximity_fade = true,
                 "--faces" => faces = true,
                 "--face-layout" => {
                     let raw = value("--face-layout")?;
@@ -572,6 +599,9 @@ impl Options {
             (false, Some(_)) => return Err("--face-layout needs --faces".to_owned()),
             (false, None) => None,
         };
+        if options.fade.is_some() && options.proximity_fade {
+            return Err("--fade and --proximity-fade are exclusive: each sets the opacity".to_owned());
+        }
         if options.faces.is_some() && options.rim_rig.is_some() {
             return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
         }
@@ -830,6 +860,19 @@ mod tests {
         assert!(parse(&["--view", "120"]).is_err());
         assert!(parse(&["--view", "0,90"]).is_err(), "the orbit camera stops short of straight up");
         assert!(parse(&["--view", "inf,0"]).is_err());
+    }
+
+    #[test]
+    fn material_and_fade_options_place_the_samples_and_fade_the_characters() {
+        let (options, unknown) = parse(&["--materials", "--fade", "0.25"]).unwrap();
+        assert!(unknown.is_empty());
+        assert!(options.materials && !Options::default().materials);
+        assert_eq!(options.fade(), Fade::Fixed(0.25));
+        assert_eq!(parse(&["--proximity-fade"]).unwrap().0.fade(), Fade::Proximity(Default::default()));
+        assert_eq!(Options::default().fade(), Fade::Off);
+        assert!(parse(&["--fade", "1.5"]).is_err());
+        assert!(parse(&["--fade", "NaN"]).is_err());
+        assert!(parse(&["--fade", "0.5", "--proximity-fade"]).is_err(), "exclusive");
     }
 
     #[test]

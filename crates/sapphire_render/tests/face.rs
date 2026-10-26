@@ -328,6 +328,7 @@ impl Harness {
             lighting,
             face: CharacterFace { head, expression },
             body: CharacterBody::default(),
+            opacity: 1.0,
         });
     }
 

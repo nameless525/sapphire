@@ -92,6 +92,13 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/foliage/grass.material.ron",
     "samples/foliage/leaves.png",
     "samples/foliage/grass.png",
+    "samples/materials/matcap.png",
+    "samples/materials/layers.png",
+    "samples/materials/lacquer.material.ron",
+    "samples/materials/gold.material.ron",
+    "samples/materials/leather.material.ron",
+    "samples/materials/stockings.material.ron",
+    "samples/materials/glow.material.ron",
 ];
 
 /// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps, its

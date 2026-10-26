@@ -106,6 +106,9 @@ struct InstanceData {
     // The instance's entry in `characters`: 0, the world's key light, unless the frame lists
     // it as a character.
     character: u32,
+    // How far its character has faded (M1 C7; `CharacterFade`): 0 drawn whole. The prepasses'
+    // faded pipelines read it in the vertex stage, which their fragments dither by.
+    fade: f32,
 }
 
 // A character's light rig (M1 C2), resolved on the CPU for this frame
@@ -167,13 +170,22 @@ struct CharacterAmbient {
     probe: vec4<f32>,
 }
 
+// A character's proximity fade (M1 C7, `sapphire_render::CharacterInstance::opacity`).
+struct CharacterFade {
+    // x: how far it has faded, 1 − its opacity: 0 drawn whole (entry 0's, which instances that
+    // aren't characters read), 1 gone. yzw: 0.
+    amount: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
-// own here: the light rig (C2), the face (C3), the shadow (R4) and the ambient light (W5).
+// own here: the light rig (C2), the face (C3), the shadow (R4), the ambient light (W5) and the
+// fade (C7).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
     shadow: CharacterShadow,
     ambient: CharacterAmbient,
+    fade: CharacterFade,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -225,6 +237,63 @@ fn distance_at_depth(depth: f32) -> f32 {
 // How far in front of the main view's camera `position` (world space) is.
 fn view_distance(position: vec3<f32>) -> f32 {
     return -(view.view_from_world * vec4<f32>(position, 1.0)).z;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The proximity fade (M1 C7; the `characters` module has the design): a fading character covers
+// a share of its pixels, 1 − its fade, picked by a screen-space dither that every pass drawing it
+// shares, so its surfaces, outlines, eyes through hair and its depth, IDs and velocity in the
+// prepasses all keep the same pixels. The pattern is a 4 × 4 Bayer matrix, its thresholds turned
+// per character (so two fading characters keep different pixels) and per frame under temporal AA
+// by the jitter, which then averages the pattern into a blend; without the jitter it holds still.
+// Under MSAA a pixel covers a run of its samples instead: as many as its share, the dither
+// rounding between levels.
+
+// The thresholds' turn per character entry: the golden ratio's fraction.
+const FADE_ENTRY_STEP: f32 = 0.618034;
+
+// The 4 × 4 Bayer matrix at `pixel`: 0 to 15, each value once in every 4 × 4 block.
+fn bayer4(pixel: vec2<u32>) -> u32 {
+    let x = pixel.x;
+    let y = pixel.y;
+    let fine = (((x ^ y) & 1u) << 1u) | (y & 1u);
+    let coarse = ((((x >> 1u) ^ (y >> 1u)) & 1u) << 1u) | ((y >> 1u) & 1u);
+    return fine * 4u + coarse;
+}
+
+// The fade's threshold at framebuffer position `pixel` for character entry `character`, in
+// [0, 1): sixteen evenly spaced values in every 4 × 4 block, turned by the entry and this frame's
+// jitter (zero without temporal AA).
+fn fade_threshold(pixel: vec2<f32>, character: u32) -> f32 {
+    let bayer = f32(bayer4(vec2<u32>(floor(pixel)) & vec2<u32>(3u)));
+    let turn = fract(view.jitter.x) + fract(f32(character) * FADE_ENTRY_STEP);
+    return fract((bayer + 0.5) / 16.0 + turn);
+}
+
+// How many of a pixel's `samples` a character faded by `fade` covers there, at `threshold`: its
+// share of them, rounded by the threshold, so all of them at no fade and none fully faded. With
+// one sample, the pixel is covered where the threshold is at least the fade.
+fn fade_coverage(fade: f32, threshold: f32, samples: u32) -> u32 {
+    let count = f32(samples);
+    return u32(clamp(floor((1.0 - fade) * count + threshold), 0.0, count));
+}
+
+// The sample mask of `covered` of `samples` (at most 8): a run of them, wrapping, starting where
+// the threshold says, so neighboring pixels cover different samples.
+fn fade_sample_mask(covered: u32, threshold: f32, samples: u32) -> u32 {
+    let all = (1u << samples) - 1u;
+    let run = (1u << covered) - 1u;
+    let start = min(u32(fract(threshold * 4.0) * f32(samples)), samples - 1u);
+    return ((run << start) | (run >> (samples - start))) & all;
+}
+
+// Whether the proximity fade's dither leaves the pixel at `pixel` out of character `character`
+// faded by `fade`: none of the main pass's `samples` there covered. Every pass that cuts a fading
+// character out asks this with the main pass's sample count (each program's `FADE_SAMPLES`), so
+// a single-sampled prepass keeps the pixels where the main pass covers any sample and the passes
+// agree on the character's pixels.
+fn faded_out(fade: f32, pixel: vec2<f32>, character: u32, samples: u32) -> bool {
+    return fade_coverage(fade, fade_threshold(pixel, character), samples) == 0u;
 }
 
 // What the scene prepass's vertex stages pass on (prepass.wgsl, and the outline hull's in

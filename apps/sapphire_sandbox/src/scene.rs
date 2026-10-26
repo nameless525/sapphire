@@ -18,6 +18,9 @@
 //! - **The shader swatches** (`--swatches`): three spheres in a column on the character's other
 //!   side, static, each with a [`RenderMesh`] and its placement ([`Scene::spawn_swatches`],
 //!   [`crate::swatches`]).
+//! - **The material layer samples** (`--materials`, M1 C7): four spheres in a column on the
+//!   character's right and a leg beyond them, static, each with a [`RenderMesh`] and its
+//!   placement ([`Scene::spawn_layer_samples`], [`crate::layers`]).
 //! - **The face rig** (`--faces`, `--face-layout`): rows of the face test head well beside the
 //!   character, static, each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which
 //!   the camera frames instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
@@ -67,8 +70,10 @@
 //!   into the packet's characters (M1 C2), with its face (M1 C3) and its body (M1 R4): the
 //!   turntable's head turning with it and its body a capsule from its feet to its head, each rim
 //!   rig figure's key turned to its angles, and each face rig head lit from its own angles (or by
-//!   its GI alone, in the GI layouts), its body a sphere around it. Both run there rather than as
-//!   `Extract` systems, which would cost an allocation a frame each.
+//!   its GI alone, in the GI layouts), its body a sphere around it. The characters other than the
+//!   face rig's heads take the scene's fade (M1 C7, [`Fade`]): whole, a fixed opacity (`--fade`),
+//!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`). Both
+//!   run there rather than as `Extract` systems, which would cost an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -88,6 +93,7 @@ use sapphire_render::{
     MaterialHandle, MeshHandle, SkyLayers, ViewData, Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
+use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
 use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
@@ -98,6 +104,7 @@ use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, R
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::input::SimActions;
+use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
@@ -183,6 +190,29 @@ pub(crate) struct LookDev {
     pub figure: Figure,
 }
 
+/// How the scene's characters fade (M1 C7; [`CharacterInstance::opacity`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum Fade {
+    /// Whole.
+    #[default]
+    Off,
+    /// At this opacity, 0 to 1 (`--fade`).
+    Fixed(f32),
+    /// By the camera's distance to each body (`--proximity-fade`).
+    Proximity(ProximityFade),
+}
+
+impl Fade {
+    /// The opacity of a character with `body` seen from `camera`.
+    fn opacity(self, camera: Vec3, body: &CharacterBody) -> f32 {
+        match self {
+            Self::Off => 1.0,
+            Self::Fixed(opacity) => opacity,
+            Self::Proximity(fade) => fade.opacity(camera, body),
+        }
+    }
+}
+
 pub(crate) struct Scene {
     ecs: Ecs,
     character: Entity,
@@ -190,6 +220,8 @@ pub(crate) struct Scene {
     stalk: Option<Entity>,
     /// The shader swatches, with `--swatches`.
     swatches: Option<[Entity; SWATCHES]>,
+    /// The material layer samples, with `--materials`.
+    layer_samples: Option<[Entity; SAMPLES]>,
     /// The face rig's heads, with `--faces`, and their layout.
     faces: Vec<Entity>,
     face_layout: FaceLayout,
@@ -245,6 +277,8 @@ pub(crate) struct Scene {
     plain_post: bool,
     /// The player's sharpening instead of the cvar's (`--sharpening`).
     sharpening: Option<f32>,
+    /// How the characters fade (`--fade`, `--proximity-fade`).
+    fade: Fade,
 }
 
 impl Scene {
@@ -296,6 +330,7 @@ impl Scene {
             character,
             stalk,
             swatches: None,
+            layer_samples: None,
             faces: Vec::new(),
             face_layout: FaceLayout::default(),
             rim_figures: Vec::new(),
@@ -325,6 +360,7 @@ impl Scene {
             fog: true,
             plain_post: false,
             sharpening: None,
+            fade: Fade::Off,
         }
     }
 
@@ -449,6 +485,11 @@ impl Scene {
         self.sharpening = amount;
     }
 
+    /// Fades the characters (but the face rig's heads) as `fade` says (M1 C7).
+    pub fn set_fade(&mut self, fade: Fade) {
+        self.fade = fade;
+    }
+
     /// Pushes the screen effect preset called `name` onto the effect stack (M1 P3): playing from
     /// its start, or held `at` seconds into it, which shows that frame of it however long the
     /// scene runs (`--post-effect <preset>@<seconds>`, for captures and benches). Fails with the
@@ -515,6 +556,28 @@ impl Scene {
     pub fn set_swatch_meshes(&mut self, meshes: [MeshHandle; SWATCHES]) {
         debug_assert!(self.swatches.is_some(), "no swatches were spawned");
         for (entity, mesh) in self.swatches.into_iter().flatten().zip(meshes) {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the material layer samples (`--materials`, M1 C7) on the character's right,
+    /// drawing `meshes` in [`layers::MATERIALS`] order. They never move, so they are extracted
+    /// once.
+    pub fn spawn_layer_samples(&mut self, meshes: [MeshHandle; SAMPLES]) {
+        let bounds = self.bounds;
+        let world = self.ecs.world_mut();
+        let mut index = 0;
+        self.layer_samples = Some(meshes.map(|mesh| {
+            let place = RenderTransform(layers::placement(bounds, index));
+            index += 1;
+            world.spawn((RenderMesh(mesh), place)).id()
+        }));
+    }
+
+    /// Sets the meshes the material layer samples draw again: after GPU device loss.
+    pub fn set_layer_sample_meshes(&mut self, meshes: [MeshHandle; SAMPLES]) {
+        debug_assert!(self.layer_samples.is_some(), "no material samples were spawned");
+        for (entity, mesh) in self.layer_samples.into_iter().flatten().zip(meshes) {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
         }
     }
@@ -894,7 +957,8 @@ impl Scene {
         }
         self.ecs.extract();
         let figure = self.figure;
-        let (characters, heads, face_layout) = (&mut self.characters, &mut self.heads, self.face_layout);
+        let (characters, heads, face_layout, fade) =
+            (&mut self.characters, &mut self.heads, self.face_layout, self.fade);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.packet_mut();
             // The rigs are resolved for the camera; without one nothing draws.
@@ -920,11 +984,13 @@ impl Scene {
                     figure.body_radius,
                 )
                 .transformed(transform.0);
+                let opacity = fade.opacity(camera.position, &body);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
                     lighting,
                     face,
                     body,
+                    opacity,
                 });
             }
             // The face rig's heads, in the default preset turned to each head's angles, or by its
@@ -940,6 +1006,7 @@ impl Scene {
                     lighting,
                     face,
                     body,
+                    opacity: 1.0,
                 });
             }
         });

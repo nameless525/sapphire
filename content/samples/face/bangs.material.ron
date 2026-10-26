@@ -43,6 +43,15 @@
                     sphere: 1.0,
                     skin: 0.0,
                 ),
+                matcap: (
+                    channel: Rgb,
+                    blend: Add,
+                    color: (1.0, 1.0, 1.0),
+                ),
+                metallic: 0.0,
+                roughness: 0.3,
+                stocking: 0.0,
+                emission: (0.0, 0.0, 0.0),
             ),
         ],
         rim: (
@@ -56,6 +65,7 @@
         specular: (
             model: Blinn,
             softness: 0.05,
+            albedo: 0.5,
         ),
         matcap: None,
         outline: (
@@ -71,6 +81,23 @@
             flatten: 0.1,
             albedo: 0.0,
             lighting: 1.0,
+        ),
+        layer_mask: None,
+        stockings: (
+            color: (0.012, 0.01, 0.016),
+            edge_opacity: 0.92,
+            facing_opacity: 0.45,
+            range: (0.15, 0.85),
+            sheen: (0.16, 0.16, 0.2),
+            sheen_sharpness: 12.0,
+            direction: V,
+            weave_scale: 0.0,
+            weave_strength: 0.25,
+        ),
+        emission: (
+            period: 4.0,
+            depth: 0.35,
+            bloom: 1.0,
         ),
     ),
 )

@@ -67,8 +67,10 @@ pub struct Scene {
 /// night character light fix leaves as they were (17:30 and 10:00), and pin what the face scenes
 /// pin, so they show the GI alone: each of its steps (the sphere and the camera bias on the GI's
 /// normals, the HSV clamp's saturation and value, the skin tint, the occlusion) fails one of them
-/// when broken.
-pub fn scenes() -> [Scene; 65] {
+/// when broken. The eye scenes (M1 C6) pin what the rim and hair scenes pin, AO off among it, so
+/// they show the eye layers alone, but for the highlight's, which draws post's glow and bloom
+/// over its glint.
+pub fn scenes() -> [Scene; 71] {
     [
         Scene {
             name: "turntable-start",
@@ -1581,6 +1583,140 @@ pub fn scenes() -> [Scene; 65] {
                 "gi-clamped",
                 "--time-of-day",
                 "10",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Anime eyes close up and front on (M1 C6): the eye, its shadow, the iris and the highlights,
+        // with the highlights at the low of their glint.
+        Scene {
+            name: "eyes-front",
+            args: &[
+                "--capture-ticks",
+                "180",
+                "--faces",
+                "--face-layout",
+                "eyes",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same turned three-quarter, the iris shifting behind the cornea.
+        Scene {
+            name: "eyes-three-quarter",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "eyes-turned",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Gaze morphs left, ahead and right, then up and down, carrying the iris and highlights.
+        Scene {
+            name: "eyes-gaze",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "gaze",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The highlights at the height of their glint, under post's glow and character bloom.
+        Scene {
+            name: "eyes-highlight",
+            args: &[
+                "--capture-ticks",
+                "105",
+                "--faces",
+                "--face-layout",
+                "eyes",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Lids half and fully closed, the layers going with the eye under them.
+        Scene {
+            name: "eyes-lids",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "blink",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The front close-up on Mobile-Low.
+        Scene {
+            name: "eyes-mobile",
+            args: &[
+                "--capture-ticks",
+                "180",
+                "--faces",
+                "--face-layout",
+                "eyes",
+                "--tier",
+                "mobile-low",
                 "--plain-post",
                 "--plain-sky",
                 "--aa",

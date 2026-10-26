@@ -24,6 +24,10 @@
 //! binds to environment materials, which name a terminator band and a painted ground map
 //! ([`Content::courtyard`]).
 //!
+//! With `--stage` it keeps a copy of the character's mesh, from which the stage derives the
+//! character without its pedestal ([`Content::keep_character_mesh`]): the server keeps no mesh's
+//! bytes once uploaded.
+//!
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
 //! reading meshes and textures from the pack again.
@@ -139,6 +143,9 @@ struct GpuAssets {
     materials: HashMap<AssetId, Held<MaterialHandle>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
+    /// A copy of the character's mesh as last uploaded, while one is wanted.
+    character_mesh: Option<Mesh>,
+    keep_character: bool,
 }
 
 impl GpuAssets {
@@ -175,6 +182,9 @@ impl GpuAssets {
                 }
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
+            if id == CHARACTER && self.keep_character {
+                self.character_mesh = Some(mesh.to_mesh()?);
+            }
             let materials = &self.materials;
             let resolve = |material| materials.get(&material).map(|held| held.object);
             let bounds = scene::mesh_bounds(mesh);
@@ -318,6 +328,17 @@ impl Content {
         Ok((mesh, bounds))
     }
 
+    /// Keeps a copy of the character's mesh from its next upload on, for meshes derived from it
+    /// (the stage's figure and pedestal). Call before [`Self::character`].
+    pub fn keep_character_mesh(&mut self) {
+        self.gpu.keep_character = true;
+    }
+
+    /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.
+    pub fn character_mesh(&self) -> Option<&Mesh> {
+        self.gpu.character_mesh.as_ref()
+    }
+
     /// Loads the shader swatches' materials, with the textures they name, until they are on
     /// `renderer`, and returns their handles, top to bottom: the load screen of `--swatches`.
     /// They stay loaded from then on.
@@ -437,7 +458,10 @@ impl Content {
     /// if the new renderer is given up.
     pub fn renderer_rebuilt(&mut self) -> RendererAssets {
         self.server.reupload_all();
-        RendererAssets(std::mem::take(&mut self.gpu))
+        let keep_character = self.gpu.keep_character;
+        let previous = std::mem::take(&mut self.gpu);
+        self.gpu.keep_character = keep_character;
+        RendererAssets(previous)
     }
 
     /// Goes back to the renderer whose objects `previous` holds, after a new one failed. Every

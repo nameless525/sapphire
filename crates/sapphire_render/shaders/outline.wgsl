@@ -33,8 +33,9 @@
 // surface it outlines is: the character's key light through the material's light split (on the
 // outline normal) and its diffuse mode's shadow color (`shade_tint`, bands or ramp), plus the
 // rig's stylized GI flattened toward the camera (`character_gi` at the view direction), by the
-// material's lighting weight. Lines darken at night and take the light's tint. Local lights don't
-// reach them. Where the material has a control map its material ID picks the region's color per
+// material's lighting weight. Lines darken at night and take the light's tint, and go into a
+// cast shadow with their surface (M1 R4: `cast_shadow_at`, a face's whole). Local lights don't
+// reach them; outline hulls cast no shadow. Where the material has a control map its material ID picks the region's color per
 // pixel, as on the surface; the width scale is the vertex's region's (the vertex stage reads no
 // textures). Alpha is the character's, post's character mask (M1 P2): 0 on a character's line,
 // as on the character it outlines, so the line belongs to the character's bloom, and 1 on an
@@ -214,7 +215,13 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     // Derivatives first, in uniform control flow: the base color map is sampled on a branch.
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let rig = characters[in.character].rig;
-    let x = split_input(dot(safe_normalize(in.world_normal), rig.key_direction.xyz), in.occlusion, SHADOW_BIAS_NEUTRAL);
+    // A cast shadow (M1 R4) joins the occlusion as on the surface, so a line goes into the shadow
+    // tone with it: a face's whole (the face pass's), any other surface's at the hull. Both are
+    // computed and one selected, without a branch around the lookups (as for WARP below).
+    let face = materials[material].modes.z == CHARACTER_SURFACE_FACE;
+    let at_hull = cast_shadow_at(in.world_position, in.world_normal, in.character);
+    let shadow = select(at_hull, face_shadow(in.character), face);
+    let x = split_input(dot(safe_normalize(in.world_normal), rig.key_direction.xyz), in.occlusion * shadow, SHADOW_BIAS_NEUTRAL);
     let split = materials[material].split.xy;
     let width = max(split.y, 0.5 * fwidth(x));
 

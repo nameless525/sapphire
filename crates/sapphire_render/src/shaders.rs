@@ -3,7 +3,8 @@
 //! `materials.wgsl` (the material families' blocks, which the passes' material bindings name)
 //! followed by the files it uses, its own last, joined by newlines; M1 replaces the
 //! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
-//! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone.
+//! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone. The shadow
+//! passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like a scene pass.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -50,10 +51,12 @@ pub enum ShaderFile {
     Post,
     /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
     Temporal,
+    /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
+    Shadows,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -66,6 +69,7 @@ impl ShaderFile {
         Self::Skinning,
         Self::Post,
         Self::Temporal,
+        Self::Shadows,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -83,6 +87,7 @@ impl ShaderFile {
             Self::Skinning => "skinning.wgsl",
             Self::Post => "post.wgsl",
             Self::Temporal => "temporal.wgsl",
+            Self::Shadows => "shadows.wgsl",
         }
     }
 
@@ -106,6 +111,7 @@ impl ShaderFile {
             Self::Skinning => include_str!("../shaders/skinning.wgsl"),
             Self::Post => include_str!("../shaders/post.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
+            Self::Shadows => include_str!("../shaders/shadows.wgsl"),
         }
     }
 
@@ -132,10 +138,11 @@ pub(crate) enum Program {
     Skinning,
     Post,
     Temporal,
+    Shadows,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -145,6 +152,7 @@ impl Program {
         Self::Skinning,
         Self::Post,
         Self::Temporal,
+        Self::Shadows,
     ];
 
     /// Its files, in order.
@@ -160,6 +168,7 @@ impl Program {
             Self::Skinning => &[F::Skinning],
             Self::Post => &[F::Post],
             Self::Temporal => &[F::Temporal],
+            Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
         }
     }
 
@@ -175,6 +184,7 @@ impl Program {
             Self::Skinning => "skinning",
             Self::Post => "post",
             Self::Temporal => "temporal",
+            Self::Shadows => "shadows",
         }
     }
 
@@ -321,7 +331,7 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
-    use crate::characters::{GpuCharacter, GpuFace, GpuRig};
+    use crate::characters::{GpuCharacter, GpuCharacterShadow, GpuFace, GpuRig};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
@@ -329,9 +339,10 @@ mod tests {
         previous_position_attributes,
     };
     use crate::post::PostUniforms;
+    use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 9] = [
+    const PASSES: [(Program, &[&str]); 10] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
         (Program::Environment, &["vs_environment", "fs_environment"]),
@@ -352,16 +363,18 @@ mod tests {
             ],
         ),
         (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),
+        (Program::Shadows, &["vs_shadow_caster", "cs_face_shadow"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 6] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 7] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
         (Program::Outline, "vs_outline_prepass", MeshPass::OutlinePrepass),
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
+        (Program::Shadows, "vs_shadow_caster", MeshPass::Shadow),
     ];
 
     /// The compiled-in `program`, checked as the renderer checks sources.
@@ -574,6 +587,14 @@ mod tests {
             (Program::AnimeCharacter, "CharacterData", size_of::<GpuCharacter>()),
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
+            (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
+            (Program::AnimeCharacter, "ShadowUniforms", size_of::<ShadowUniforms>()),
+            (Program::AnimeCharacter, "ShadowCascade", size_of::<GpuCascade>()),
+            (Program::AnimeCharacter, "CharacterShadowMap", size_of::<GpuCharacterMap>()),
+            (Program::AnimeCharacter, "ShadowCapsule", size_of::<GpuCapsule>()),
+            (Program::Shadows, "CharacterData", size_of::<GpuCharacter>()),
+            (Program::Shadows, "ShadowUniforms", size_of::<ShadowUniforms>()),
+            (Program::Shadows, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Clusters, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::Environment, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::Environment, "ViewUniforms", size_of::<ViewUniforms>()),
@@ -711,9 +732,27 @@ mod tests {
                     character,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
+            ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),
+            (
+                "ShadowUniforms",
+                offsets!(ShadowUniforms {
+                    light_x,
+                    light_y,
+                    light_z,
+                    counts,
+                    camera,
+                    atlas,
+                    cascades,
+                    characters,
+                    capsules
+                }),
+            ),
+            ("ShadowCascade", offsets!(GpuCascade { area, depth })),
+            ("CharacterShadowMap", offsets!(GpuCharacterMap { area, depth, tile })),
+            ("ShadowCapsule", offsets!(GpuCapsule { base, top })),
         ];
         let module = validate(Program::AnimeCharacter);
         for (name, rust) in structs {
@@ -863,9 +902,17 @@ mod tests {
         }
         let overrides: Vec<&str> =
             environment.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
+        // `frame.wgsl`'s shadow constants (M1 R4), which its receivers read, then its own.
+        let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
         assert_eq!(
             overrides,
-            ["PERMUTATION_ALPHA_TEST", "PERMUTATION_TRANSPARENT", crate::environment::SPECULAR_CONSTANT]
+            [
+                shadows[0],
+                shadows[1],
+                "PERMUTATION_ALPHA_TEST",
+                "PERMUTATION_TRANSPARENT",
+                crate::environment::SPECULAR_CONSTANT
+            ]
         );
         // Group 3: the texture slots at their own indices, then the samplers it reads; group 2
         // binding 1 is the environment family's buffer.
@@ -1156,12 +1203,23 @@ mod tests {
     fn every_permutation_specializes_and_validates() {
         use crate::EnvironmentSpecular;
         use crate::pipelines::{Coverage, Shading, SurfaceVariant, override_constant};
+        use crate::shadows::{ShadowFilter, ShadowSettings};
         type Constants = Vec<(&'static str, f64)>;
+        // Every surface variant without shadows, and with them under either filter (M1 R4).
+        let shadows = [None, Some(ShadowFilter::Tent3), Some(ShadowFilter::Tent5)].map(|filter| {
+            filter.map(|filter| ShadowSettings { filter, ..ShadowSettings::default() }.constants())
+        });
         let surfaces = |environment: bool| -> Vec<(String, Constants)> {
             SurfaceVariant::ALL
                 .iter()
                 .filter(|variant| (variant.shading == Shading::Environment) == environment)
-                .map(|variant| (format!("{variant:?}"), variant.constants().to_vec()))
+                .flat_map(|variant| {
+                    shadows.iter().map(move |shadows| {
+                        let constants =
+                            variant.constants().iter().chain(shadows.iter().flatten()).copied().collect();
+                        (format!("{variant:?} {shadows:?}"), constants)
+                    })
+                })
                 .collect()
         };
         // The environment's variants under every tier's specular model.
@@ -1177,9 +1235,16 @@ mod tests {
                 })
             })
             .collect();
+        // Lit lines receive shadows too: each coverage without them and under either filter.
         let outlines: Vec<(String, Constants)> = Coverage::DEPTH_WRITING
             .iter()
-            .map(|coverage| (format!("{coverage:?}"), coverage.constants().to_vec()))
+            .flat_map(|coverage| {
+                shadows.iter().map(move |shadows| {
+                    let constants =
+                        coverage.constants().iter().chain(shadows.iter().flatten()).copied().collect();
+                    (format!("{coverage:?} {shadows:?}"), constants)
+                })
+            })
             .collect();
         let passes = [
             (Program::AnimeCharacter, surfaces(false)),
@@ -1220,6 +1285,42 @@ mod tests {
                 character.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),
                 "{constant}"
             );
+        }
+    }
+
+    /// The shadow passes' numbers as the shaders and the `shadows` module both state them, and
+    /// the shadow program's entry points specialized as their pipelines are.
+    #[test]
+    fn wgsl_shadow_constants_match_rust() {
+        use crate::shadows::{
+            FACE_WORKGROUP, MAX_CAPSULES, MAX_CASCADES, MAX_CHARACTER_MAPS, override_constant,
+        };
+        let character = validate(Program::AnimeCharacter);
+        let shadows = validate(Program::Shadows);
+        for module in [&character, &shadows] {
+            assert_eq!(wgsl_u32(module, "MAX_SHADOW_CASCADES") as usize, MAX_CASCADES);
+            assert_eq!(wgsl_u32(module, "MAX_CHARACTER_SHADOW_MAPS") as usize, MAX_CHARACTER_MAPS);
+            assert_eq!(wgsl_u32(module, "MAX_SHADOW_CAPSULES") as usize, MAX_CAPSULES);
+            for constant in [override_constant::SHADOWS, override_constant::TENT] {
+                assert!(
+                    module.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),
+                    "{constant}"
+                );
+            }
+        }
+        assert_eq!(wgsl_u32(&shadows, "FACE_SHADOW_WORKGROUP"), FACE_WORKGROUP);
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&shadows)
+        .expect("validated above");
+        let on: naga::back::PipelineConstants =
+            [(override_constant::SHADOWS.to_owned(), 1.0)].into_iter().collect();
+        for entry_point in &shadows.entry_points {
+            let stage = Some((entry_point.stage, entry_point.name.as_str()));
+            naga::back::pipeline_constants::process_overrides(&shadows, &info, stage, &on)
+                .unwrap_or_else(|error| panic!("shadows.wgsl {}: {error}", entry_point.name));
         }
     }
 }

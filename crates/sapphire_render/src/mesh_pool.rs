@@ -55,6 +55,7 @@ use sapphire_assets::mesh::{
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
+use crate::bounds::Sphere;
 use crate::buffer::{GrowableBuffer, RangeAllocator};
 use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
@@ -125,6 +126,10 @@ pub(crate) struct MeshRecord {
     pub placement: Placement,
     /// Per material slot: the material it draws with, and whether the mesh embeds it.
     pub slots: Vec<SlotRecord>,
+    /// The sphere around its cooked bounds, in object space: per-object light lists and shadow
+    /// casters' culling place it by each instance's transform. A skinned or morphed mesh's is
+    /// its bind pose's.
+    pub bounds: Sphere,
 }
 
 /// A mesh's material slot.
@@ -476,6 +481,10 @@ impl MeshPool {
                     embedded: matches!(slot.material, ArchivedSlotMaterial::Embedded(_)),
                 })
                 .collect(),
+            bounds: {
+                let bounds = streams.bounds.to_native();
+                Sphere::around([bounds.min, bounds.max])
+            },
         };
         Ok((record, moves))
     }

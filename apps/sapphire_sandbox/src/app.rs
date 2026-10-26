@@ -25,9 +25,10 @@ use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::Scene;
+use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{skinned, swatches};
+use crate::{skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -114,6 +115,9 @@ impl App for SandboxApp {
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut content = Content::new(platform)?;
+        if options.stage.is_some() {
+            content.keep_character_mesh();
+        }
         let renderer = create_renderer(
             &mut content,
             &device.gpu,
@@ -152,6 +156,10 @@ impl App for SandboxApp {
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
+        // The stage after the hour, which places its pillars.
+        if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
+            scene.spawn_stage(layout, meshes);
+        }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &content)?;
         #[cfg(not(feature = "dev"))]
@@ -635,6 +643,8 @@ struct SceneRenderer {
     courtyard: Option<MeshHandle>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<MeshHandle>,
+    /// The stage's floor and pillar, with `--stage`.
+    stage: Option<StageMeshes>,
     /// The zone's sky material.
     sky: MaterialHandle,
 }
@@ -659,6 +669,9 @@ impl Scene {
         self.set_outline_row_mesh(renderer.character);
         if let Some(mesh) = renderer.hard_edges {
             self.set_hard_edges_mesh(mesh);
+        }
+        if let Some(meshes) = renderer.stage {
+            self.set_stage_meshes(meshes);
         }
     }
 }
@@ -686,8 +699,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
-/// the shader swatches, whose materials `content` uploads too, the face test head and the
-/// courtyard.
+/// the shader swatches, whose materials `content` uploads too, the face test head, the
+/// courtyard, the hard-edged outline sample and the stage.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -706,11 +719,20 @@ fn create_renderer(
         let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
+        let stage = match options.stage {
+            Some(_) => {
+                let figure = content
+                    .character_mesh()
+                    .ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+                Some(stage::upload_stage(&mut renderer, figure)?)
+            }
+            None => None,
+        };
         let sky = content.sky_material(&mut renderer, gpu)?;
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, sky))
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, stage, sky))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, sky)) => {
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, stage, sky)) => {
             Ok(SceneRenderer {
                 renderer,
                 character,
@@ -720,6 +742,7 @@ fn create_renderer(
                 face_head,
                 courtyard,
                 hard_edges,
+                stage,
                 sky,
             })
         }

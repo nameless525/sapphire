@@ -81,6 +81,13 @@ const ROW_SPACING: f32 = 0.38;
 /// Half the head's width and height, in meters, for framing.
 const HEAD_HALF_EXTENTS: (f32, f32) = (0.14, 0.16);
 
+/// The rig's center beside a character whose object-space bounds are `bounds`, and half its
+/// height: what the stage (`--stage`) shades it to.
+pub(crate) fn rig_center(bounds: [[f32; 3]; 2]) -> (Vec3, f32) {
+    let half_height = 0.5 * (ROWS.len() as f32 - 1.0) * ROW_SPACING + HEAD_HALF_EXTENTS.1;
+    (center(bounds), half_height)
+}
+
 /// Where the rig stands beside a character whose object-space bounds are `bounds`: well to its
 /// left, at head height, so the camera framing the rig leaves the character out.
 fn center(bounds: [[f32; 3]; 2]) -> Vec3 {

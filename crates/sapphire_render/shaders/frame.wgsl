@@ -5,7 +5,7 @@
 //   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor,
 //              ambient light, the shadow tint and the weather; the local lights (binding 1) and
 //              their lists (binding 2) are declared in lights.wgsl and the passes that read
-//              them, the characters (binding 3) below
+//              them, the characters (binding 3) and the shadows (bindings 4–7) below
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
@@ -116,11 +116,24 @@ struct CharacterFace {
     expression: vec4<f32>,
 }
 
+// A character's shadow (M1 R4): where the environment's shadow over its face is sampled, and
+// what was found there.
+struct CharacterShadow {
+    // xyz: the head's center, world space; w: the radius of the sphere around it the face pass
+    // samples (0: none, so the face is lit).
+    probe: vec4<f32>,
+    // x: the world key light's visibility over that sphere past environment casters, which the
+    // face pass (shadows.wgsl) writes every frame shadows are on and the face permutation takes
+    // as occlusion; 1 otherwise. yzw: 0.
+    visibility: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
-// own here: the light rig (C2) and the face (C3).
+// own here: the light rig (C2), the face (C3) and the shadow (R4).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
+    shadow: CharacterShadow,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -346,4 +359,298 @@ fn mapped_normal(
     let xy = sampled * 2.0 - 1.0;
     let z = sqrt(saturate(1.0 - dot(xy, xy)));
     return safe_normalize((tangent * xy.x - bitangent * xy.y) * scale + normal * z);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shadows (M1 R4, `sapphire_render::shadows`): the world key light's cascades, which hold
+// environment casters alone, and each character's own shadow, a tile of the character atlas
+// (desktop) or its capsule. Receivers call one of two functions:
+// - `shadow_visibility()`: environment surfaces, which take the cascades and every character's
+//   own shadow;
+// - `cascade_visibility()`: character surfaces, which take the cascades alone, so a character
+//   never shadows itself.
+// Both return the key light's visibility, 1 lit and 0 shadowed, a smooth field (a tent filter)
+// for the receiver's light split or terminator to threshold into a clean edge. Shadows are
+// colored, never black: the receivers tint them (environment.wgsl keeps `frame.shadow_tint`
+// there; characters go into their authored shade tones).
+// Everything is a branch on `SHADOWS`, a pipeline constant, so pipelines without shadows compile
+// to what they were before.
+
+struct ShadowCascade {
+    // xy: the square's center in light space; z: texture coordinates per meter; w: one texel in
+    // meters.
+    area: vec4<f32>,
+    // xy: reverse-Z depth of light-space z, z × x + y; z: texels across; w: 0.
+    depth: vec4<f32>,
+}
+
+struct CharacterShadowMap {
+    // As ShadowCascade's.
+    area: vec4<f32>,
+    // xy: as ShadowCascade's; z: the light-space z where its reach ends; w: 1 / the length it
+    // fades out over before that.
+    depth: vec4<f32>,
+    // xy: the tile's corner in the atlas's texture coordinates; zw: its size in them.
+    tile: vec4<f32>,
+}
+
+struct ShadowCapsule {
+    // xyz: the body's base; w: its radius.
+    base: vec4<f32>,
+    // xyz: its top.
+    top: vec4<f32>,
+}
+
+const MAX_SHADOW_CASCADES: u32 = 4u;
+const MAX_CHARACTER_SHADOW_MAPS: u32 = 8u;
+const MAX_SHADOW_CAPSULES: u32 = 16u;
+
+struct ShadowUniforms {
+    // Light space's axes in the world: x, y, and z toward the key light as shadows are cast.
+    light_x: vec4<f32>,
+    light_y: vec4<f32>,
+    light_z: vec4<f32>,
+    // x: cascades; y: character maps; z: capsules; w: character entries (the face pass's).
+    counts: vec4<u32>,
+    // xyz: the main camera's position; w: how far the cascades reach from it.
+    camera: vec4<f32>,
+    // xy: one texel of the character atlas in its texture coordinates; z: a tile's texels across.
+    atlas: vec4<f32>,
+    cascades: array<ShadowCascade, MAX_SHADOW_CASCADES>,
+    characters: array<CharacterShadowMap, MAX_CHARACTER_SHADOW_MAPS>,
+    capsules: array<ShadowCapsule, MAX_SHADOW_CAPSULES>,
+}
+
+@group(0) @binding(4) var<uniform> shadows: ShadowUniforms;
+// The cascades, layers of one reverse-Z depth array (1 toward the light, 0 cleared).
+@group(0) @binding(5) var shadow_cascades: texture_depth_2d_array;
+// The characters' maps, tiles of one atlas.
+@group(0) @binding(6) var character_shadows: texture_depth_2d;
+// Linear, comparing with greater-equal: a receiver at or nearer the light than the nearest
+// caster is lit.
+@group(0) @binding(7) var shadow_sampler: sampler_comparison;
+
+// Shadows are on (`shadows::override_constant`).
+override SHADOWS: bool = false;
+// The tent filter's width in texels: 5 on desktop, 3 on phones (`ShadowFilter`).
+override SHADOW_TENT: u32 = 5u;
+
+// Receivers' bias (`shadows` module docs): the point moves off the surface along its normal by
+// SHADOW_NORMAL_OFFSET texels, plus half the tent's width × sin θ where the light grazes it, then
+// toward the light by SHADOW_DEPTH_BIAS texels.
+const SHADOW_NORMAL_OFFSET: f32 = 0.5;
+const SHADOW_DEPTH_BIAS: f32 = 0.25;
+// Texels a lookup's center keeps from its map's edge, so the filter stays inside: half the tent
+// and the bilinear footprint, with room to spare.
+const SHADOW_EDGE_TEXELS: f32 = 3.5;
+// The outer share of a cascade, by its half-width, that blends into the next.
+const SHADOW_CASCADE_BLEND: f32 = 0.1;
+// Shadows fade out from this share of their distance to all of it.
+const SHADOW_FADE_START: f32 = 0.9;
+// A capsule's shadow edge: soft by this share of its radius at contact, widening by this much
+// per meter away from it (a 1.7° light), and gone this far from it.
+const CAPSULE_SOFTNESS: f32 = 0.35;
+const CAPSULE_SPREAD: f32 = 0.03;
+const CAPSULE_REACH: f32 = 8.0;
+
+// `p` in light space.
+fn light_space(p: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(p, shadows.light_x.xyz), dot(p, shadows.light_y.xyz), dot(p, shadows.light_z.xyz));
+}
+
+// The tent filter's taps (Castaño 2013's optimized PCF) around texel coordinate `texel` (texel
+// centers at .5): up to three per axis, each a bilinear compare tap at `base + offset`, weighted.
+// Lookups divide by the weights' sum as they add them, so a point every tap lights is exactly 1
+// and one every tap shadows exactly 0.
+struct ShadowTent {
+    base: vec2<f32>,
+    u: vec3<f32>,
+    v: vec3<f32>,
+    weight_u: vec3<f32>,
+    weight_v: vec3<f32>,
+    taps: u32,
+}
+
+fn shadow_tent(texel: vec2<f32>) -> ShadowTent {
+    let center = floor(texel + 0.5);
+    let s = texel + 0.5 - center;
+    var tent: ShadowTent;
+    tent.base = center - 0.5;
+    if SHADOW_TENT == 3u {
+        tent.taps = 2u;
+        tent.weight_u = vec3<f32>(3.0 - 2.0 * s.x, 1.0 + 2.0 * s.x, 0.0);
+        tent.weight_v = vec3<f32>(3.0 - 2.0 * s.y, 1.0 + 2.0 * s.y, 0.0);
+        tent.u = vec3<f32>((2.0 - s.x) / tent.weight_u.x - 1.0, s.x / tent.weight_u.y + 1.0, 0.0);
+        tent.v = vec3<f32>((2.0 - s.y) / tent.weight_v.x - 1.0, s.y / tent.weight_v.y + 1.0, 0.0);
+    } else {
+        tent.taps = 3u;
+        tent.weight_u = vec3<f32>(4.0 - 3.0 * s.x, 7.0, 1.0 + 3.0 * s.x);
+        tent.weight_v = vec3<f32>(4.0 - 3.0 * s.y, 7.0, 1.0 + 3.0 * s.y);
+        tent.u = vec3<f32>((3.0 - 2.0 * s.x) / tent.weight_u.x - 2.0, (3.0 + s.x) / 7.0, s.x / tent.weight_u.z + 2.0);
+        tent.v = vec3<f32>((3.0 - 2.0 * s.y) / tent.weight_v.x - 2.0, (3.0 + s.y) / 7.0, s.y / tent.weight_v.z + 2.0);
+    }
+    return tent;
+}
+
+// How far a lookup moves off its surface, in texels: SHADOW_NORMAL_OFFSET plus half the tent where
+// the light grazes the surface. `slope` is sin θ of the light's angle to the normal.
+fn shadow_offset_texels(slope: f32) -> f32 {
+    return SHADOW_NORMAL_OFFSET + 0.5 * f32(SHADOW_TENT) * slope;
+}
+
+// Cascade `index`'s filtered visibility at light-space point `p` on a surface with light-space
+// normal `n` (`slope`: sin θ to the light), and where the lookup lies: x the visibility, y its
+// distance from the square's center as a share of the reach the filter allows (above 1: outside).
+fn cascade_lookup(index: u32, p: vec3<f32>, n: vec3<f32>, slope: f32) -> vec2<f32> {
+    let cascade = shadows.cascades[index];
+    let texel = cascade.area.w;
+    let at = p + n * (texel * shadow_offset_texels(slope));
+    // Texture v runs down; light space's y up.
+    let uv = vec2<f32>(0.5, 0.5) + (at.xy - cascade.area.xy) * cascade.area.z * vec2<f32>(1.0, -1.0);
+    let size = cascade.depth.z;
+    let reach = 0.5 - SHADOW_EDGE_TEXELS / size;
+    let edge = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) / reach;
+    if edge > 1.0 {
+        return vec2<f32>(1.0, edge);
+    }
+    let depth = saturate((at.z + texel * SHADOW_DEPTH_BIAS) * cascade.depth.x + cascade.depth.y);
+    let tent = shadow_tent(uv * size);
+    var sum = 0.0;
+    var weights = 0.0;
+    for (var j = 0u; j < tent.taps; j++) {
+        for (var i = 0u; i < tent.taps; i++) {
+            let coords = (tent.base + vec2<f32>(tent.u[i], tent.v[j])) / size;
+            let lit = textureSampleCompareLevel(shadow_cascades, shadow_sampler, coords, index, depth);
+            let weight = tent.weight_u[i] * tent.weight_v[j];
+            sum += weight * lit;
+            weights += weight;
+        }
+    }
+    return vec2<f32>(sum / weights, edge);
+}
+
+// The key light's visibility at `position` past the cascades' casters, which are environment
+// casters alone: what character surfaces receive (anime_character.wgsl's `cast_shadow`), and part
+// of what environment surfaces do. `normal` is the surface's geometric normal, unit length.
+fn cascade_visibility(position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if !SHADOWS {
+        return 1.0;
+    }
+    let count = min(shadows.counts.x, MAX_SHADOW_CASCADES);
+    let reach = shadows.camera.w;
+    let fade = smoothstep(reach * SHADOW_FADE_START, reach, distance(position, shadows.camera.xyz));
+    if count == 0u || fade >= 1.0 {
+        return 1.0;
+    }
+    let n_dot_l = dot(normal, shadows.light_z.xyz);
+    let slope = sqrt(saturate(1.0 - n_dot_l * n_dot_l));
+    let p = light_space(position);
+    let n = light_space(normal);
+    // The first cascade that holds the point, whose outer tenth blends into the next.
+    for (var index = 0u; index < count; index++) {
+        let lookup = cascade_lookup(index, p, n, slope);
+        if lookup.y > 1.0 {
+            continue;
+        }
+        var visibility = lookup.x;
+        let blend = smoothstep(1.0 - SHADOW_CASCADE_BLEND, 1.0, lookup.y);
+        if blend > 0.0 && index + 1u < count {
+            let next = cascade_lookup(index + 1u, p, n, slope);
+            if next.y <= 1.0 {
+                visibility = mix(visibility, next.x, blend);
+            }
+        }
+        return mix(visibility, 1.0, fade);
+    }
+    return 1.0;
+}
+
+// The key light's visibility at light-space `p` past the characters' own maps (desktop).
+fn character_map_visibility(p: vec3<f32>, n: vec3<f32>, slope: f32) -> f32 {
+    var visibility = 1.0;
+    let count = min(shadows.counts.y, MAX_CHARACTER_SHADOW_MAPS);
+    let size = shadows.atlas.z;
+    for (var index = 0u; index < count; index++) {
+        let map = shadows.characters[index];
+        let texel = map.area.w;
+        let at = p + n * (texel * shadow_offset_texels(slope));
+        let uv = vec2<f32>(0.5, 0.5) + (at.xy - map.area.xy) * map.area.z * vec2<f32>(1.0, -1.0);
+        // Its reach ends `depth.z` away from the light, fading out before.
+        let fade = saturate((at.z - map.depth.z) * map.depth.w);
+        if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || fade <= 0.0 {
+            continue;
+        }
+        // Kept inside the tile, whose padding the character never reaches: the filter never reads
+        // another character's tile.
+        let inside = clamp(uv, vec2<f32>(SHADOW_EDGE_TEXELS / size), vec2<f32>(1.0 - SHADOW_EDGE_TEXELS / size));
+        let atlas_uv = map.tile.xy + inside * map.tile.zw;
+        let depth = saturate((at.z + texel * SHADOW_DEPTH_BIAS) * map.depth.x + map.depth.y);
+        let tent = shadow_tent(atlas_uv / shadows.atlas.xy);
+        var sum = 0.0;
+        var weights = 0.0;
+        for (var j = 0u; j < tent.taps; j++) {
+            for (var i = 0u; i < tent.taps; i++) {
+                let coords = (tent.base + vec2<f32>(tent.u[i], tent.v[j])) * shadows.atlas.xy;
+                let lit = textureSampleCompareLevel(character_shadows, shadow_sampler, coords, depth);
+                let weight = tent.weight_u[i] * tent.weight_v[j];
+                sum += weight * lit;
+                weights += weight;
+            }
+        }
+        visibility *= mix(1.0, sum / weights, fade);
+    }
+    return visibility;
+}
+
+// The key light's visibility at `position` past the characters' capsules: where the light's ray
+// from the point passes closest to a capsule's axis, its shadow, soft by the radius and the
+// distance.
+fn capsule_visibility(position: vec3<f32>) -> f32 {
+    var visibility = 1.0;
+    let l = shadows.light_z.xyz;
+    let count = min(shadows.counts.z, MAX_SHADOW_CAPSULES);
+    for (var index = 0u; index < count; index++) {
+        let capsule = shadows.capsules[index];
+        let a = capsule.base.xyz;
+        let radius = capsule.base.w;
+        let axis = capsule.top.xyz - a;
+        let w = position - a;
+        // The closest approach of the ray position + t·l (t ≥ 0) and the segment a + u·axis.
+        let e = dot(axis, axis);
+        let along = dot(l, axis);
+        let c = dot(l, w);
+        let f = dot(axis, w);
+        let denominator = e - along * along;
+        var u = select(0.0, (f - c * along) / denominator, denominator > 1e-8);
+        u = saturate(u);
+        let t = max(u * along - c, 0.0);
+        u = select(0.0, saturate((f + t * along) / e), e > 1e-8);
+        let d = length(w + t * l - u * axis);
+        if t <= 0.0 {
+            continue;
+        }
+        let soft = radius * CAPSULE_SOFTNESS + t * CAPSULE_SPREAD;
+        let occlusion = 1.0 - smoothstep(radius - soft, radius + soft, d);
+        let fade = 1.0 - smoothstep(0.75 * CAPSULE_REACH, CAPSULE_REACH, t);
+        visibility *= 1.0 - occlusion * fade;
+    }
+    return visibility;
+}
+
+// The key light's visibility at `position` on an environment surface whose geometric normal is
+// `normal` (unit): past the cascades' casters and every character's own shadow.
+fn shadow_visibility(position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if !SHADOWS {
+        return 1.0;
+    }
+    var visibility = cascade_visibility(position, normal);
+    let n_dot_l = dot(normal, shadows.light_z.xyz);
+    let slope = sqrt(saturate(1.0 - n_dot_l * n_dot_l));
+    if shadows.counts.y > 0u {
+        visibility *= character_map_visibility(light_space(position), light_space(normal), slope);
+    }
+    if shadows.counts.z > 0u {
+        visibility *= capsule_visibility(position);
+    }
+    return visibility;
 }

@@ -21,21 +21,22 @@
 //! - **Antialiasing** ([`Antialiasing`], M1 R7): temporal AA with MSAA off on the desktop tiers,
 //!   whose resolve also upsamples to the output; 4× MSAA kept in tile memory on phones.
 //! - **MSAA and temporal AA, bloom levels, the light path, the light budget, the sky** (its
-//!   cube's size and update rate, and the cirrus layer, M1 W2) **and the environment shader's
-//!   specular model** (M1 W4): [`QualityTier::render_settings`], which a renderer is created
-//!   with.
+//!   cube's size and update rate, and the cirrus layer, M1 W2), **the environment shader's
+//!   specular model** (M1 W4) **and the shadows** (cascades, their resolution, distance and
+//!   caching, the characters' maps or capsules and the filter, M1 R4):
+//!   [`QualityTier::render_settings`], which a renderer is created with. The player's settings
+//!   can turn the shadows off ([`QualitySettings::shadows`]).
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
 //! One more knob is a cvar rather than a tier's: `r.outline_distance`, a scale on every
 //! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
 //! the sandbox's `--outline-distance`). Every tier draws the same lines today, within its budget.
 //!
-//! Plain data until their packages read them: shadow cascades, their resolution and the
-//! per-character shadow (R4, C2), capsule AO and GTAO (W5), volumetric fog (after W3's distance and
-//! height fog, which every tier has), screen-space environment outlines (the desktop option beside
-//! C4's character hulls, which no M1 package builds), the particle cap (`sapphire_vfx`, M2) and
-//! the LOD bias (LOD selection, with culling). The frame rate is also what frame pacing (§6.2, F7)
-//! will hold.
+//! Plain data until their packages read them: capsule AO and GTAO (W5), volumetric fog (after W3's
+//! distance and height fog, which every tier has), screen-space environment outlines (the desktop
+//! option beside C4's character hulls, which no M1 package builds), the particle cap
+//! (`sapphire_vfx`, M2) and the LOD bias (LOD selection, with culling). The frame rate is also
+//! what frame pacing (§6.2, F7) will hold.
 //!
 //! # Choosing a tier
 //!
@@ -96,7 +97,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     EnvironmentSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
-    RenderSettings, SkySettings, scaled_size,
+    RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -104,9 +105,6 @@ pub use dynamic::{
 
 /// The shipped table (see the module docs).
 const SHIPPED: &str = include_str!("../tiers.ron");
-
-/// The most shadow cascades a tier may ask for (spec §5.12: 4 on desktop, 2 on mobile).
-pub const MAX_SHADOW_CASCADES: u32 = 4;
 
 /// The quality tiers of spec §3.1. They order lowest first within each class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Reflect)]
@@ -192,8 +190,9 @@ pub struct QualityTier {
     pub light_path: LightPath,
     /// The most local lights a frame draws ([`RenderSettings::max_lights`]; §3.4).
     pub max_lights: u32,
-    /// Read by cascaded shadows (R4) and the character shadow (C2).
-    pub shadows: Shadows,
+    /// The key light's shadows: cascades and characters' own shadows (M1 R4,
+    /// [`RenderSettings::shadows`]).
+    pub shadows: ShadowSettings,
     /// Read by ambient occlusion (W5).
     pub ambient_occlusion: AmbientOcclusion,
     /// Volumetric fog, on top of the distance and height fog every tier has (W3; volumetric fog
@@ -253,18 +252,6 @@ pub struct Antialiasing {
     /// Temporal AA and upsampling with velocity and a responsive mask (M1 R7,
     /// [`RenderSettings::temporal`]): the desktop tiers.
     pub temporal: bool,
-}
-
-/// Sun shadows (R4) and the desktop character shadow (C2).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[type_path = "sapphire::render"]
-pub struct Shadows {
-    /// Cascades, 1..=[`MAX_SHADOW_CASCADES`]: 4 on desktop, 2 on mobile (§3.3).
-    pub cascades: u32,
-    /// Each cascade's map size in texels, a power of two in 256..=8192.
-    pub resolution: u32,
-    /// A separate high-resolution shadow frustum per character (desktop).
-    pub character_shadow: bool,
 }
 
 /// Ambient occlusion (W5).
@@ -386,6 +373,7 @@ impl QualityTier {
             max_lights: self.max_lights,
             sky: self.sky,
             environment: self.environment,
+            shadows: Some(self.shadows),
         }
     }
 
@@ -432,12 +420,8 @@ impl QualityTier {
         if self.max_lights > MAX_LIGHTS {
             return invalid("max_lights", "must be at most 1024");
         }
-        if !(1..=MAX_SHADOW_CASCADES).contains(&self.shadows.cascades) {
-            return invalid("shadows.cascades", "must be within 1..=4");
-        }
-        let texels = self.shadows.resolution;
-        if !(texels.is_power_of_two() && (256..=8192).contains(&texels)) {
-            return invalid("shadows.resolution", "must be a power of two in 256..=8192");
+        if let Err((field, problem)) = self.shadows.validate() {
+            return invalid(field, problem);
         }
         if !(-4.0..=4.0).contains(&self.lod_bias) {
             return invalid("lod_bias", "must be within -4..=4");
@@ -693,6 +677,9 @@ pub struct QualitySettings {
     pub render_scale: Option<f32>,
     /// Let dynamic resolution lower the scale. Off by default.
     pub dynamic_resolution: bool,
+    /// Shadows: the tier's (`Auto`, the default, or `On`), or none (`Off`), which draws no shadow
+    /// maps at all.
+    pub shadows: Switch,
 }
 
 /// Where the active tier came from, in precedence order (lowest first).
@@ -796,9 +783,10 @@ impl Quality {
         &self.table
     }
 
-    /// What a renderer for the active tier is created with.
+    /// What a renderer for the active tier is created with, under the player's settings.
     pub fn render_settings(&self) -> RenderSettings {
-        self.tier().render_settings()
+        let tier = self.tier().render_settings();
+        RenderSettings { shadows: tier.shadows.filter(|_| self.settings.shadows.resolve(true)), ..tier }
     }
 
     /// Follows `r.tier`. When it changed since the last call to a choice that selects another
@@ -920,7 +908,9 @@ mod tests {
         let table = TierTable::shipped();
         for id in [TierId::DesktopHigh, TierId::DesktopLow] {
             let tier = table.get(id);
-            let expected = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+            let shadows = Some(tier.shadows);
+            let expected =
+                RenderSettings { msaa: Msaa::Off, temporal: true, shadows, ..RenderSettings::default() };
             assert_eq!(tier.render_settings(), expected, "{id}");
             assert_eq!(tier.resolution.base_scale(360), 1.0, "{id}");
             assert_eq!(tier.resolution.base_scale(1080), 1.0, "{id}: the bench's size");
@@ -975,7 +965,7 @@ mod tests {
     #[test]
     fn bad_values_are_rejected() {
         use TierId::*;
-        let cases: [BadValue; 13] = [
+        let cases: [BadValue; 17] = [
             (DesktopHigh, "resolution.scale", |tier| tier.resolution.scale = 0.0),
             (DesktopHigh, "resolution.scale", |tier| tier.resolution.scale = 1.5),
             (DesktopLow, "resolution.scale", |tier| tier.resolution.scale = f32::NAN),
@@ -988,6 +978,10 @@ mod tests {
             (DesktopHigh, "max_lights", |tier| tier.max_lights = 2000),
             (MobileHigh, "shadows.cascades", |tier| tier.shadows.cascades = 5),
             (MobileHigh, "shadows.resolution", |tier| tier.shadows.resolution = 1000),
+            (DesktopLow, "shadows.distance", |tier| tier.shadows.distance = 0),
+            (DesktopHigh, "shadows.cached_cascades", |tier| tier.shadows.cached_cascades = 4),
+            (MobileLow, "shadows.cached_cascades", |tier| tier.shadows.cached_cascades = 2),
+            (DesktopHigh, "shadows.character_resolution", |tier| tier.shadows.character_resolution = 100),
             (DesktopLow, "lod_bias", |tier| tier.lod_bias = f32::INFINITY),
         ];
         for (id, field, edit) in cases {
@@ -1107,10 +1101,15 @@ mod tests {
             tier: Some(TierId::MobileLow),
             render_scale: Some(0.7),
             dynamic_resolution: false,
+            shadows: Switch::Auto,
         });
         assert_eq!(player.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
         assert_eq!(player.render_scale((1920, 1080), &timing), 0.7);
         assert!(!player.wants_gpu_timing());
+        let mobile_low = player.tier().shadows;
+        assert_eq!(player.render_settings().shadows, Some(mobile_low), "the tier's shadows");
+        let unshadowed = quality(QualitySettings { shadows: Switch::Off, ..QualitySettings::default() });
+        assert_eq!(unshadowed.render_settings().shadows, None, "the player turned them off");
 
         let mut quality = quality(QualitySettings::default());
         assert_eq!(quality.active().id, TierId::DesktopHigh);

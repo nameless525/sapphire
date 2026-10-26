@@ -44,6 +44,10 @@
 //!   [`CharacterInstance`]s, one entry per character in a per-frame buffer that the anime
 //!   character shader finds through the instance (see "The anime character shader" and "Faces"
 //!   below).
+//! - Shadows ([`shadows`], M1 R4): the world key light's cascaded shadow maps, stable and partly
+//!   cached, each character's own shadow (a map on desktop, its body's capsule on phones), the
+//!   receivers every surface shader calls, and the pass that brings the environment's shadow to
+//!   faces whole (see "Shadows" below).
 //! - Post-processing ([`post`], M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`]; and in the same fused pass (M1 P2) anime compositing's layers: the
@@ -215,7 +219,10 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs and faces, 128 bytes each | the uploads pass, when they changed |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces and shadows, 160 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow |
+//! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
+//! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
+//! | 0 frame | 7: comparison sampler | fragment | shadow lookups | — |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot: a scene group per family meshes draw with, each its own layout | the uploads pass, changed slots only |
@@ -229,7 +236,8 @@
 //!
 //! The view group's buffer holds every view at a stride of the device's uniform offset
 //! alignment: the main view (offset 0, written every frame), then the sky cube's six faces
-//! (written once). The sky's pipelines bind groups 0 and 1 as the scene's, their own group 2 (the
+//! (written once), then the shadows' views, every cascade and then every character map (written
+//! in the frames that draw them). The sky's pipelines bind groups 0 and 1 as the scene's, their own group 2 (the
 //! frame's `SkyUniforms`, one uniform at binding 2, past the scene group's bindings
 //! `frame.wgsl` declares) and the sky family's group 3 (five texture slots and the trilinear
 //! sampler), so the sky reads no storage buffer beyond group 0's.
@@ -260,13 +268,14 @@
 //! skinning pass (sources, frame data, outputs). That leaves none in the fragment stage, two in
 //! the vertex stage and one in the skinning pass. The fragment stage's last went to per-character
 //! data (M1 C2) because every later per-character need joins it rather than taking a binding:
-//! faces' head basis and expressions (C3, beside the rig), the per-character shadow's matrices
+//! faces' head basis and expressions (C3, beside the rig), the environment's shadow over the face
 //! (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
-//! uniforms or textures (shadow cascades, probes). Group 3 is the last of the 4 bind groups the
+//! uniforms or textures: the shadows' uniforms, cascades and character atlas (R4), probes. Group 3 is the last of the 4 bind groups the
 //! floor allows; the prepasses, which read no material textures, leave it out. The anime
 //! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
-//! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones
-//! (shadow cascades, probes, the sky cube); the other families bind 1 to 5 (the environment's
+//! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones:
+//! shadows take two (the cascades and the character atlas) and a comparison sampler (R4), which
+//! leaves 6 (probes, the sky cube); the other families bind 1 to 5 (the environment's
 //! pipelines read five textures and two samplers, and the same four storage buffers as the anime
 //! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
@@ -313,12 +322,14 @@
 //! - **The vertex contract** is `sapphire_assets::mesh`'s: vertex color R ambient occlusion, G
 //!   outline-width scale, B outline Z-offset scale, and a flags byte whose low bits are the
 //!   vertex's material ID.
-//! - **Cast shadows** enter through one function, `cast_shadow`, which R4's cascades fill; it
-//!   returns 1 (lit) until then. Its contract with the light rig: it returns how much of the
-//!   world's key light (the sun or the moon) reaches the point past environment casters alone,
-//!   never the character's own geometry (characters don't self-shadow), however the rig turns
-//!   the character's key; the split takes it as it takes vertex AO. The face permutation never
-//!   calls it (see "Faces").
+//! - **Cast shadows** enter through one function, `cast_shadow`. Its contract with the light rig:
+//!   it returns how much of the world's key light (the sun or the moon) reaches the point past
+//!   environment casters alone, never the character's own geometry (characters don't
+//!   self-shadow), however the rig turns the character's key; the split takes it as it takes
+//!   vertex AO. R4 fills it with `cascade_visibility()` (`frame.wgsl`), since the cascades hold
+//!   environment casters alone; an instance drawn with this family that isn't a character (a
+//!   prop, the sandbox's pedestal) takes `shadow_visibility()`, as environment surfaces do. The
+//!   face permutation never calls it (see "Faces").
 //!
 //! # Faces (M1 C3)
 //!
@@ -344,9 +355,11 @@
 //!   head turns from the camera (the face mask); blush and gloom scaled per character (the
 //!   expression map).
 //! - **No cast shadow:** shadow maps are too coarse and unstable at face scale, so the face
-//!   permutation doesn't call `cast_shadow`, and R4 adds no shadow-map reads to it. An
-//!   environment shadow reaches a face whole, per character: a value in the character's entry
-//!   that the face takes as occlusion (R4), never shadow-map texels on it.
+//!   permutation doesn't call `cast_shadow` and reads no shadow map. An environment shadow
+//!   reaches a face whole, per character (R4): the face pass samples the cascades over a sphere
+//!   around the head once a frame and writes the result into the character's entry
+//!   (`CharacterData::shadow`), which the face takes as occlusion of its split, with its
+//!   always-lit eyes and brows; never shadow-map texels on it.
 //!
 //! # The environment shader (M1 W4)
 //!
@@ -370,10 +383,10 @@
 //! - **Distance desaturation** greys the albedo with view distance, keeping the light's hue;
 //!   **emission** adds HDR light.
 //! - **Local lights** come from the same lists the anime character shader walks.
-//! - **Cast shadows** enter through one function, `cast_shadow`, which returns 1 (lit) until R4
-//!   fills it: the key light's visibility past every caster its maps hold (the environment's and
-//!   the characters'), plus the per-character ground shadow (desktop) and capsules (mobile). It
-//!   joins the terminator's input, so shadows take its remap, tint and band.
+//! - **Cast shadows** enter through one function, `cast_shadow`, which R4 fills with
+//!   `shadow_visibility()` (`frame.wgsl`): the key light's visibility past the cascades (the
+//!   environment's casters) and every character's own shadow (its map on desktop, its capsule on
+//!   phones). It joins the terminator's input, so shadows take its remap, tint and band.
 //! - **Wetness:** the frame carries the weather's wetness and puddles ([`Weather`]) to the GPU for
 //!   the wet surface model that comes with weather; no shader reads them yet.
 //! - **Outlines:** the environment draws no inverted hull in M1 (decision): its edges are the
@@ -381,6 +394,25 @@
 //!   characters use the anime character family.
 //! - **The final color** is produced in one place at the end of the fragment shader, where fog
 //!   (W3) joins it.
+//!
+//! # Shadows (M1 R4)
+//!
+//! The [`shadows`] module has the design; in short:
+//!
+//! - **Who casts and receives:** the frame's character list classifies. Environment instances
+//!   cast into the cascades and receive everything; characters cast only their own shadow (a
+//!   tile of the character atlas on desktop, their [`CharacterBody`]'s capsule on phones) and
+//!   receive the cascades alone, so they never shadow themselves.
+//! - **The cascades:** 4 on desktop and 2 on phones ([`ShadowSettings`] per tier), fit to
+//!   spheres around the view's slices and snapped to texels under a quantized key light, the far
+//!   ones cached and drawn in turns; a tent PCF that receivers' splits and terminators threshold.
+//! - **Passes:** side effects before the main pass (each cascade drawn, the character atlas, the
+//!   face pass), never jittered; [`RenderSettings::shadows`] `None` draws none and compiles the
+//!   shaders as they were. [`ShadowStats`] in [`RenderStats::shadows`] count them.
+//! - **Mesh bounds** live in the mesh records (the cooked bounds as a sphere), which the
+//!   per-object light lists, the outlines' LOD cutoff and the casters' culling read.
+//! - **Outlines:** lit lines receive the cast shadow as their surface does (a face's line the
+//!   face pass's whole value); hulls cast none.
 //!
 //! # Material families on meshes (M1 W4)
 //!
@@ -486,7 +518,8 @@
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
 //!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
 //!   M1 W4). The [`FramePacket`] grows with the systems that
-//!   feed it: VFX, UI and debug draws, plus shadow-cascade and UI-inset views.
+//!   feed it: VFX, UI and debug draws, plus UI-inset views (shadow views are the renderer's own,
+//!   derived from the key light).
 //! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
@@ -497,8 +530,7 @@
 //!   the prepass to cut alpha-tested surfaces out first.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
 //!   layers (VFX lights kept off faces), a rim from the strongest local light (C5), local-light
-//!   shadows, and two-level culling for hundreds of lights. Mesh bounds move from the
-//!   per-object light lists into the mesh records once CPU culling needs them too.
+//!   shadows, and two-level culling for hundreds of lights.
 //! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
 //!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
 //!   then draws use LOD0.
@@ -513,22 +545,24 @@
 //!   their family's buffer (in a scene group of their own, as the environment's do: join
 //!   `pipelines::MESH_FAMILIES` and `Shading`) and group 3. The sky (W2) reads its one material's
 //!   block on the CPU instead (see "The sky").
-//! - **The environment shader** (see above): shadows (R4) fill `cast_shadow`; fog (W3) joins its
-//!   final color; reflection probes and the sky cube's prefiltered mips (W5) replace the
+//! - **The environment shader** (see above): fog (W3) joins its final color; reflection probes and the sky cube's prefiltered mips (W5) replace the
 //!   hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
 //!   edges for the environment (desktop); foliage (W6) shares its terminator and wrap.
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
 //! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
 //!   permutation bits, and specular, matcaps and stockings (C7) over the control map channels it
-//!   already reads. Shadows (R4) fill `cast_shadow`. Outlines take their width's region per
-//!   vertex (the vertex stage reads no textures): a width texture would make group 3 visible to
-//!   it. Cooked MikkTSpace tangents replace the normal map's screen-derivative frame (outline
-//!   normals need none: their frame is derived from the normal).
+//!   already reads. Outlines take their width's region per vertex (the vertex stage reads no
+//!   textures): a width texture would make group 3 visible to it. Cooked MikkTSpace tangents
+//!   replace the normal map's screen-derivative frame (outline normals need none: their frame is
+//!   derived from the normal).
 //! - **Faces** (see above): hair shadow on the face and eyes over the bangs (C5); light layers,
 //!   so local lights split on faces by the face map or not at all (today they split on the
-//!   face's normals, as on the body); a face-SDF threshold debug view (F5's views); environment
-//!   shadow reaching a face whole, per character (R4).
+//!   face's normals, as on the body); a face-SDF threshold debug view (F5's views).
+//! - **Shadows** (see the [`shadows`] module's later milestones): alpha-tested casters cut out,
+//!   characters shadowing each other, a static far term past the cascades, cheaper receivers (a
+//!   smaller far tent or a desktop shadow mask), clearing only the atlas tiles drawn, cloud
+//!   shadows and local-light shadows, and GPU culling of casters.
 //! - **Permutations' remaining passes:** the prepasses cut alpha-tested materials out (a variant
 //!   binding group 3) once something reads them; transparent surfaces sort back to front with
 //!   draw sorting; alpha-to-coverage for alpha-tested surfaces under MSAA.
@@ -538,6 +572,7 @@
 //!   replace the concatenation.
 
 mod bind_cache;
+mod bounds;
 mod buffer;
 mod characters;
 mod draw;
@@ -555,6 +590,7 @@ pub mod quality;
 mod renderer;
 mod scene;
 mod shaders;
+pub mod shadows;
 mod skinning;
 mod sky;
 pub mod temporal;
@@ -562,10 +598,10 @@ pub mod texture;
 
 pub use environment::{EnvironmentSettings, EnvironmentSpecular};
 pub use frame::{
-    AmbientLight, CameraData, Celestial, CharacterFace, CharacterGi, CharacterInstance, CharacterLight,
-    CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer, FramePacket,
-    FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance,
-    PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
+    AmbientLight, CameraData, Celestial, CharacterBody, CharacterFace, CharacterGi, CharacterInstance,
+    CharacterLight, CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer,
+    FramePacket, FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight,
+    MeshInstance, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
@@ -579,6 +615,7 @@ pub use renderer::{
     scaled_size,
 };
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
+pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 pub use temporal::{HistoryReset, TemporalStats};

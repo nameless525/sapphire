@@ -57,6 +57,11 @@ impl BudgetTier {
         self.pick(0.7, 2.5)
     }
 
+    /// Shadows (§3.3's row): 4 cascades on desktop, 2 on phones.
+    pub fn shadows(self) -> Duration {
+        self.pick(2.0, 3.0)
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {

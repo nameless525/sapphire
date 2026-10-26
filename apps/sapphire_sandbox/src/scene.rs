@@ -27,6 +27,9 @@
 //!   outline cutoff, each a character with the default light rig; and **the hard-edged sample**
 //!   (`--hard-edges`), which the camera frames instead of the character
 //!   ([`Scene::spawn_outline_row`], [`Scene::spawn_hard_edges`], [`crate::outlines`]).
+//! - **The stage** (`--stage`): a floor at the character's feet and a pillar beside it, static
+//!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_stage`],
+//!   [`crate::stage`]).
 //! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
@@ -40,9 +43,10 @@
 //!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient or `--plain-post`'s post without
 //!   its compositing layers (M1 P2), if set. After `Extract` has posed and extracted the instances, it resolves each
 //!   character's light rig for the frame's camera into the packet's characters (M1 C2), with its
-//!   face (M1 C3): the turntable's head turning with it, and each face rig head lit from its own
-//!   angles. Both run there rather than as `Extract` systems, which would cost an allocation a
-//!   frame each.
+//!   face (M1 C3) and its body (M1 R4): the turntable's head turning with it and its body a
+//!   capsule from its feet to its head, and each face rig head lit from its own angles, its body a
+//!   sphere around it. Both run there rather than as `Extract` systems, which would cost an
+//!   allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -57,8 +61,8 @@ use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::{
-    CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight, MaterialHandle,
-    MeshHandle, SkyLayers, ViewData,
+    CharacterBody, CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight,
+    MaterialHandle, MeshHandle, SkyLayers, ViewData,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
@@ -72,6 +76,7 @@ use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
 use crate::skinned::{self, Sway};
+use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
 
@@ -87,6 +92,13 @@ pub(crate) const DEFAULT_TIME_OF_DAY: f32 = 10.0;
 /// its 0.2 m pedestal (`sapphire_pipeline`'s samples): face and hair GI turn toward a sphere
 /// around it, and the light rig's limits are judged around it.
 const CHARACTER_HEAD: Vec3 = Vec3::new(0.0, 1.67, 0.0);
+/// The sample mannequin's feet, in its own space: the top of its pedestal.
+const CHARACTER_FEET: Vec3 = Vec3::new(0.0, 0.2, 0.0);
+/// The radius of the mannequin's body capsule (M1 R4): its torso's, which its shadow is cast
+/// from, from its feet to its head.
+const CHARACTER_BODY_RADIUS: f32 = 0.24;
+/// The radius of a face rig head's body: a sphere around the head.
+const HEAD_BODY_RADIUS: f32 = 0.16;
 
 /// The characters the light rig lights: instances drawn with a [`CharacterLightRig`].
 type Characters =
@@ -114,6 +126,8 @@ pub(crate) struct Scene {
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<Entity>,
+    /// The stage's pieces, with `--stage`.
+    stage: Vec<(Entity, Piece)>,
     /// The character's object-space bounds, which demo lights, swatches and the face rig are
     /// placed around.
     bounds: [[f32; 3]; 2],
@@ -179,6 +193,7 @@ impl Scene {
             courtyard: None,
             outline_row: None,
             hard_edges: None,
+            stage: Vec::new(),
             bounds,
             characters,
             heads,
@@ -345,6 +360,53 @@ impl Scene {
             Some(heads.map(|(rig, place)| world.spawn((rig, RenderMesh(mesh), RenderTransform(place))).id()));
     }
 
+    /// Builds the stage (`--stage`) around the subject, the face rig with `--faces` or else the
+    /// character, drawing `meshes`: the character without its pedestal, which stands on the
+    /// floor of its own, and with [`StageLayout::Pillar`] a pillar placed for the key light at the
+    /// scene's hour.
+    /// Call after the hour is set. The pieces never move, so they are extracted once.
+    pub fn spawn_stage(&mut self, layout: StageLayout, meshes: StageMeshes) {
+        self.set_character_mesh(meshes.figure);
+        let floor = self.bounds[0][1];
+        let subject = match self.faces {
+            // Every head's shadow from far enough to stay out of the rig's view.
+            Some(_) => {
+                let (center, half_height) = faces::rig_center(self.bounds);
+                Subject {
+                    base: Vec3::new(center.x, floor, center.z),
+                    shade_height: center.y + half_height + 0.1,
+                    pillar_distance: 4.5,
+                    pillar_width: 0.3,
+                }
+            }
+            // From the feet to the chest, so the shadow's edge crosses the body.
+            None => Subject {
+                base: Vec3::new(0.0, floor, 0.0),
+                shade_height: CHARACTER_FEET.y + 0.65 * (CHARACTER_HEAD.y - CHARACTER_FEET.y),
+                pillar_distance: 2.2,
+                pillar_width: 0.5,
+            },
+        };
+        let mut packet = FramePacket::default();
+        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
+        let world = self.ecs.world_mut();
+        let pedestal = meshes.pedestal.is_some();
+        for (piece, place) in stage::placements(layout, &subject, pedestal, -packet.sun.direction) {
+            let entity = world.spawn((RenderMesh(meshes.get(piece)), RenderTransform(place))).id();
+            self.stage.push((entity, piece));
+        }
+    }
+
+    /// Sets the meshes the stage draws again, the character's figure among them: after GPU device
+    /// loss.
+    pub fn set_stage_meshes(&mut self, meshes: StageMeshes) {
+        self.set_character_mesh(meshes.figure);
+        for &(entity, piece) in &self.stage {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.get(piece)));
+        }
+    }
+
     /// Sets the mesh the face rig's heads draw again: after GPU device loss.
     pub fn set_face_mesh(&mut self, mesh: MeshHandle) {
         debug_assert!(self.faces.is_some(), "no face rig was spawned");
@@ -484,10 +546,17 @@ impl Scene {
                     up: transform.0.transform_vector3(Vec3::Y),
                 };
                 let face = CharacterFace { head: pose, ..CharacterFace::default() };
+                let body = CharacterBody::capsule(
+                    CHARACTER_FEET + Vec3::new(0.0, CHARACTER_BODY_RADIUS, 0.0),
+                    CHARACTER_HEAD,
+                    CHARACTER_BODY_RADIUS,
+                )
+                .transformed(transform.0);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
                     lighting,
                     face,
+                    body,
                 });
             }
             // The face rig's heads, in the default preset turned to each head's angles.
@@ -496,10 +565,12 @@ impl Scene {
                 let center = transform.0.transform_point3(Vec3::ZERO);
                 let lighting = frame.character_lighting(preset, &camera, center);
                 let (lighting, face) = faces::character(rig, transform.0, lighting);
+                let body = CharacterBody::capsule(center, center, HEAD_BODY_RADIUS);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
                     lighting,
                     face,
+                    body,
                 });
             }
         });

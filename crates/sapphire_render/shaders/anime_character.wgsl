@@ -205,14 +205,39 @@ fn bias_locks(lit: f32, bias: f32) -> f32 {
 
 // The world key light (the sun or the moon) reaching the point past cast shadows: 1 lit, 0
 // shadowed. It scales the light split's input as vertex occlusion does, so a cast shadow pushes
-// the point into the authored shadow tones instead of darkening them. Shadows (R4) fill it from
-// the cascades, which hold environment casters only: characters never self-shadow, and the
-// rig's key direction, which may differ from the sun's, shades but never casts. Until then
-// nothing casts. The face permutation never calls it: a face's shadow is its SDF map's alone,
-// so R4 adds no shadow-map reads to faces; an environment shadow reaches a face whole, per
-// character (a value in its entry that the face takes as occlusion).
+// the point into the authored shadow tones instead of darkening them. Characters (an entry of
+// their own) take the cascades alone, which hold environment casters only (M1 R4): a character
+// never self-shadows, and the rig's key direction, which may differ from the sun's, shades but
+// never casts. Every other instance drawn with this shader is environment, and takes the
+// characters' own shadows too (`shadow_visibility` in frame.wgsl). The face permutation never
+// calls it: a face's shadow is its SDF map's alone, and an environment shadow reaches a face
+// whole, per character (`face_shadow`).
 fn cast_shadow(in: CharacterVaryings) -> f32 {
-    return 1.0;
+    return cast_shadow_at(in.world_position, in.world_normal, in.character);
+}
+
+// `cast_shadow` at `position`, on a surface whose geometric normal is `normal` (any length), of an
+// instance whose character entry is `character`: the outline shader's lit lines take it too
+// (outline.wgsl), so a line goes into a cast shadow with its surface.
+fn cast_shadow_at(position: vec3<f32>, normal: vec3<f32>, character: u32) -> f32 {
+    if !SHADOWS {
+        return 1.0;
+    }
+    let n = safe_normalize(normal);
+    if character != 0u {
+        return cascade_visibility(position, n);
+    }
+    return shadow_visibility(position, n);
+}
+
+// The world key light reaching character `character`'s face past environment casters, sampled
+// once a frame over a sphere around its head (the face pass, shadows.wgsl): a face takes it whole,
+// as occlusion of its light split, never shadow-map texels on it. 1 without shadows.
+fn face_shadow(character: u32) -> f32 {
+    if !SHADOWS {
+        return 1.0;
+    }
+    return saturate(characters[character].shadow.visibility.x);
 }
 
 // How far the face map lights the point for a light toward `toward_light`, in threshold units
@@ -480,10 +505,15 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     var x: f32;
     var softness = surface.split.y;
     var face_lit_margin = 0.0;
+    // The environment's shadow over a face, whole (1 for the body, which takes `cast_shadow`).
+    var face_visibility = 1.0;
     if PERMUTATION_FACE {
-        // The face map alone shadows a face: no cast shadow.
+        // The face map shadows a face; an environment shadow reaches it whole, as occlusion of
+        // the split, never shadow-map texels on it.
         face_lit_margin = face_margin(face, key_direction, swizzles, uv);
-        x = split_input(face_n_dot_l(face_lit_margin, surface.split.x), surface.occlusion, surface.shadow_bias);
+        face_visibility = face_shadow(in.character);
+        let face_occlusion = surface.occlusion * face_visibility;
+        x = split_input(face_n_dot_l(face_lit_margin, surface.split.x), face_occlusion, surface.shadow_bias);
         softness = face_softness(materials[material].surface.x, surface.split.x);
     } else {
         let n_dot_l = dot(surface.normal, key_direction);
@@ -492,7 +522,9 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     let width = max(softness, 0.5 * fwidth(x));
     var lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
     if PERMUTATION_FACE {
-        lit = max(lit, always_lit);
+        // Always-lit eyes and brows hold against the face map, but go into a cast shadow with
+        // the rest of the face.
+        lit = max(lit, always_lit * face_visibility);
     }
     let rim = rim_light(surface, key_radiance, rig.key_direction.w, lit);
     // Taken here for the local lights: after the alpha test below, a discarded pixel's

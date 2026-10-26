@@ -37,31 +37,71 @@ pub struct Scene {
 /// pin post as it was, `--plain-post` (no diffusion glow, character bloom, gradient layers, lens
 /// flare or vignette tint), which the post scenes show; the environment's (M1 W4) among them, which
 /// draw the world as the desktop tiers do, under the whole sky and temporal AA. The outline scenes
-/// (M1 C4) pin all three, so they show the lines alone.
-pub fn scenes() -> [Scene; 26] {
+/// (M1 C4) pin all three, so they show the lines alone. Those from before shadows (M1 R4), the
+/// post and outline scenes included, pin them off (`--shadows off`, the player's quality setting),
+/// so they stay pixel-identical too. The shadow scenes pin their tier, whose shadows they show
+/// (the golden runners select Desktop-Low by device), and plain post, so they show shadows alone.
+pub fn scenes() -> [Scene; 32] {
     [
         Scene {
             name: "turntable-start",
-            args: &["--capture-ticks", "0", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "0",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         Scene {
             name: "turntable",
-            args: &["--capture-ticks", "90", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Without MSAA or TAA every outline and terminator edge is a hard pixel step, the case
         // most sensitive to precision differences.
         Scene {
             name: "turntable-msaa-off",
-            args: &["--capture-ticks", "90", "--plain-post", "--aa", "off", "--plain-sky"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--aa",
+                "off",
+                "--plain-sky",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Three colored local lights through the clustered path (M1 R5): their splits on the
         // head and arm, and a spot's pool on the pedestal.
         Scene {
             name: "turntable-lights",
-            args: &["--capture-ticks", "90", "--plain-post", "--lights", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--lights",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // The scene at render scale 0.7 (448×252), upsampled by post's final pass (M1 R6).
@@ -76,6 +116,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--plain-sky",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -84,7 +126,17 @@ pub fn scenes() -> [Scene; 26] {
         // with shading and outline.
         Scene {
             name: "turntable-skinned",
-            args: &["--capture-ticks", "90", "--plain-post", "--skinned", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--skinned",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Sunset from the default day (M1 W1), between its golden-hour and sunset keys: a low
@@ -101,6 +153,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--plain-sky",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -110,7 +164,17 @@ pub fn scenes() -> [Scene; 26] {
         // material IDs.
         Scene {
             name: "turntable-swatches",
-            args: &["--capture-ticks", "90", "--plain-post", "--swatches", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--swatches",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Night from the default day (M1 C2), halfway from dusk to midnight: the character lit by
@@ -128,6 +192,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--plain-sky",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -137,7 +203,17 @@ pub fn scenes() -> [Scene; 26] {
         // light, light from above and to the side, a blush, and a gloom with a blush.
         Scene {
             name: "faces",
-            args: &["--capture-ticks", "90", "--plain-post", "--faces", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--faces",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // The sky by day (M1 W2), looking up past the character toward the morning sun: its
@@ -155,6 +231,8 @@ pub fn scenes() -> [Scene; 26] {
                 "99,-22",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -173,6 +251,8 @@ pub fn scenes() -> [Scene; 26] {
                 "-100,-6",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -190,6 +270,8 @@ pub fn scenes() -> [Scene; 26] {
                 "112,-20",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -207,6 +289,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--capture-frames",
                 "32",
                 "--plain-sky",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -227,6 +311,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--capture-step",
                 "1",
                 "--plain-sky",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -245,6 +331,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--capture-frames",
                 "32",
                 "--plain-sky",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -264,6 +352,8 @@ pub fn scenes() -> [Scene; 26] {
                 "taa",
                 "--capture-frames",
                 "32",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -282,6 +372,8 @@ pub fn scenes() -> [Scene; 26] {
                 "taa",
                 "--capture-frames",
                 "32",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -302,6 +394,8 @@ pub fn scenes() -> [Scene; 26] {
                 "taa",
                 "--capture-frames",
                 "32",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -311,7 +405,18 @@ pub fn scenes() -> [Scene; 26] {
         // own bloom is held back (the character mask).
         Scene {
             name: "post-day",
-            args: &["--capture-ticks", "90", "--time-of-day", "10", "--aa", "taa", "--capture-frames", "32"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--time-of-day",
+                "10",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Sunset through Mobile-Low's fused pass (4× MSAA, four bloom levels): a warm, dreamy
@@ -319,7 +424,16 @@ pub fn scenes() -> [Scene; 26] {
         // violet shade below, the character crisp in front of it.
         Scene {
             name: "post-sunset",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--tier", "mobile-low"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--time-of-day",
+                "18.5",
+                "--tier",
+                "mobile-low",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // The lens flare: the sunset sun in view beside the character, its warm ring and streak,
@@ -327,7 +441,18 @@ pub fn scenes() -> [Scene; 26] {
         // around the sun.
         Scene {
             name: "post-flare",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--time-of-day",
+                "18.5",
+                "--view",
+                "-100,-6",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // Outline width over distance (M1 C4): more of the character from 4 m to 90 m behind it,
@@ -335,7 +460,17 @@ pub fn scenes() -> [Scene; 26] {
         // their width in the world far away, and are gone on the last, past the LOD cutoff.
         Scene {
             name: "outlines-distance",
-            args: &["--capture-ticks", "90", "--outline-row", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--outline-row",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // The same row through a 20° lens from farther away, the character framed as before:
@@ -352,6 +487,8 @@ pub fn scenes() -> [Scene; 26] {
                 "--plain-sky",
                 "--aa",
                 "msaa",
+                "--shadows",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },
@@ -359,7 +496,17 @@ pub fn scenes() -> [Scene; 26] {
         // smoothed outline normals keep each corner's hull closed.
         Scene {
             name: "outlines-hard-edges",
-            args: &["--capture-ticks", "90", "--hard-edges", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--hard-edges",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+            ],
             thresholds: Thresholds::default(),
         },
         // A close-up of the character turning at 3 rad/s under temporal AA (M1 C4): its hulls
@@ -380,6 +527,134 @@ pub fn scenes() -> [Scene; 26] {
                 "--capture-step",
                 "1",
                 "--plain-post",
+                "--plain-sky",
+                "--shadows",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Shadows (M1 R4): the character on the stage's pedestal, split off as environment, on
+        // Desktop-High at 10:00. Its own map's contact shadow falls on the pedestal around its
+        // feet and its shadow runs on across the floor, the pedestal casts its own through the
+        // cascades, and the figure shades without a mark of its own shadow: characters never
+        // shadow themselves. Converged under temporal AA.
+        Scene {
+            name: "shadows-contact",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--stage",
+                "floor",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A pillar between the sun and the character: its shadow covers the pedestal and the
+        // character from the feet to the chest, a clean edge across the body in the character's
+        // authored shade tones, with no acne on the pillar, the floor or the figure.
+        Scene {
+            name: "shadows-pillar",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--stage",
+                "pillar",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The face rig (M1 C3) in a pillar's shadow: the faces it covers go into their authored
+        // shadow tones whole, eyes and brows with them, while the lit ones keep their face-map
+        // shadows; no shadow-map texels on any face.
+        Scene {
+            name: "shadows-faces",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--faces",
+                "--stage",
+                "pillar",
+                "--time-of-day",
+                "14",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The courtyard (W4) by day with shadows: the colonnade, the wall and the boulders cast
+        // through the cascades onto the ground and each other, the character's own map casts on
+        // the ground beyond its pedestal, and in every shadow the ground keeps time of day's
+        // tint of the sun through the environment shader's terminator.
+        Scene {
+            name: "shadows-courtyard",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--environment",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Toward sunset (18:00) in the courtyard: the low sun from the right draws the pillars' and
+        // the lanterns' shadows long across the ground into the far cascades, tinted, their edges
+        // clean and still. (By 18:30 the wall's shadow already covers the colonnade.)
+        Scene {
+            name: "shadows-sunset",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--environment",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Mobile-Low's shadows: two cascades, the 3 × 3 filter and 4× MSAA, and the character's
+        // capsule instead of a map of its own, a soft blob around its feet on the pedestal running
+        // on across the floor.
+        Scene {
+            name: "shadows-capsule",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--stage",
+                "floor",
+                "--tier",
+                "mobile-low",
                 "--plain-sky",
             ],
             thresholds: Thresholds::default(),

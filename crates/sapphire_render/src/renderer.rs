@@ -1,7 +1,8 @@
-//! The renderer: compute skinning, the prepasses, the sky cube's face, a main pass into HDR
-//! scene color (anime character and environment surfaces per surface variant, the characters'
-//! outlines, the sky, then transparent surfaces), lit by each character's light rig (or, for the
-//! world, the sun) and the frame's local lights, then post-processing into the target.
+//! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, a main
+//! pass into HDR scene color (anime character and environment surfaces per surface variant, the
+//! characters' outlines, the sky, then transparent surfaces), lit by each character's light rig
+//! (or, for the world, the sun) under the frame's shadows and local lights, then post-processing
+//! into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -32,11 +33,15 @@ use crate::pipelines::{
 use crate::post::{self, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
+use crate::shadows::{ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalPipelines, TemporalStats};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
+
+/// The first shadow view in the view buffer: after the main view and the sky cube's faces.
+const FIRST_SHADOW_VIEW: u32 = 1 + sky::CUBE_FACES;
 
 /// Size of each staging buffer the per-frame uploads are written through. The belt keeps a
 /// few (one per frame in flight) and reuses them, so it should hold a frame's uploads:
@@ -98,12 +103,16 @@ pub struct RenderSettings {
     pub sky: SkySettings,
     /// The environment shader's specular model (see the `environment` module).
     pub environment: EnvironmentSettings,
+    /// The key light's shadows (M1 R4, the [`shadows`](crate::shadows) module): its cascades
+    /// and each character's own shadow. `None` draws none: no maps, no passes, and shaders
+    /// compiled as they were without shadows.
+    pub shadows: Option<ShadowSettings>,
 }
 
 impl Default for RenderSettings {
-    /// The desktop tiers' settings with 4× MSAA instead of temporal AA: what the golden scenes
-    /// from before M1 R7 pin (`--aa msaa`) and most GPU tests draw with, since a single frame
-    /// shows them completely.
+    /// The desktop tiers' settings with 4× MSAA instead of temporal AA, and without shadows: what
+    /// the golden scenes from before M1 R7 pin (`--aa msaa`, and `--shadows off` since M1 R4) and
+    /// most GPU tests draw with, since a single frame shows them completely.
     fn default() -> Self {
         Self {
             msaa: Msaa::default(),
@@ -113,6 +122,7 @@ impl Default for RenderSettings {
             max_lights: 64,
             sky: SkySettings::default(),
             environment: EnvironmentSettings::default(),
+            shadows: None,
         }
     }
 }
@@ -249,6 +259,9 @@ pub struct RenderStats {
     pub temporal: TemporalStats,
     /// The compositing layers post drew (M1 P2).
     pub post: PostStats,
+    /// The shadows' cascades, character maps, capsules and caster draws; all zero when they are
+    /// off.
+    pub shadows: ShadowStats,
 }
 
 /// What [`Renderer::set_shader_sources`] rebuilt.
@@ -337,6 +350,8 @@ pub struct Renderer {
     lights: Lights,
     /// The frame's characters and their light rigs.
     characters: Characters,
+    /// The key light's shadow maps, their passes and each frame's plan.
+    shadows: Shadows,
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
@@ -418,6 +433,7 @@ impl Renderer {
             settings.environment,
             gpu.pipeline_cache(),
             &shaders,
+            settings.shadows.as_ref(),
         );
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
@@ -429,10 +445,13 @@ impl Renderer {
         };
         let frame_uniforms = uniform("frame uniforms", size_of::<FrameUniforms>());
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
-        // the main camera, then the sky cube's faces. Shadow cascades (R4) join them.
+        // the main camera, then the sky cube's faces, then the shadow cascades and character
+        // maps (M1 R4).
         let view_stride = (size_of::<ViewUniforms>() as u32)
             .next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
-        let view_uniforms = uniform("view uniforms", (view_stride * (1 + sky::CUBE_FACES)) as usize);
+        let mut shadows = Shadows::new(&device, &layouts, settings.shadows, gpu.pipeline_cache(), &shaders);
+        let views = FIRST_SHADOW_VIEW + shadows.views();
+        let view_uniforms = uniform("view uniforms", (view_stride * views) as usize);
         for face in 0..sky::CUBE_FACES {
             let camera = cube_face_camera(face as usize);
             let size = (settings.sky.cube_size, settings.sky.cube_size);
@@ -445,8 +464,9 @@ impl Renderer {
         let lights =
             Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache(), &shaders);
         let characters = Characters::new(&device);
+        shadows.set_character_buffer(&device, characters.buffer());
         let frame_bind_group =
-            create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights, &characters);
+            create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights, &characters, &shadows);
         let view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &layouts.view,
@@ -475,6 +495,7 @@ impl Renderer {
             light_path = ?settings.light_path,
             max_lights = settings.max_lights,
             environment_specular = ?settings.environment.specular,
+            shadows = ?settings.shadows,
             "renderer created"
         );
         Ok(Self {
@@ -494,6 +515,7 @@ impl Renderer {
             sky,
             lights,
             characters,
+            shadows,
             meshes,
             materials,
             scene,
@@ -629,9 +651,6 @@ impl Renderer {
         let materials = self.submesh_materials(materials)?;
         let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
         self.prepare_mesh(handle, &materials, moves);
-        let bounds = mesh.streams.bounds.to_native();
-        self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
-        self.outlines.mesh_uploaded(handle, [bounds.min, bounds.max]);
         self.scene.meshes_changed();
         self.update_pool_stats();
         Ok(handle)
@@ -717,9 +736,7 @@ impl Renderer {
             }
         }
         self.prepare_mesh(handle, &materials, moves);
-        let bounds = mesh.streams.bounds.to_native();
-        self.lights.mesh_replaced(handle, [bounds.min, bounds.max]);
-        self.outlines.mesh_uploaded(handle, [bounds.min, bounds.max]);
+        self.lights.mesh_replaced();
         self.scene.mesh_replaced(handle);
         self.update_pool_stats();
         Ok(())
@@ -741,8 +758,8 @@ impl Renderer {
     }
 
     /// Builds what mesh `handle`, just placed in the pool with `materials`, draws with: the
-    /// pipelines of its position format and its materials' permutations, and for a skinned or
-    /// morphed mesh the skinning and character prepass pipelines.
+    /// pipelines of its position format and its materials' permutations, its format's shadow
+    /// caster, and for a skinned or morphed mesh the skinning and character prepass pipelines.
     fn prepare_mesh(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
         self.checked_build(|renderer| renderer.build_mesh_pipelines(handle, materials, moves));
     }
@@ -752,6 +769,7 @@ impl Renderer {
         let record = &self.meshes.records()[handle.index()];
         let format = record.draw_format();
         self.pipelines.prepare_format(&self.device, format);
+        self.shadows.prepare_format(&self.device, format, &self.shaders);
         for material in materials {
             let variant = self
                 .materials
@@ -822,6 +840,11 @@ impl Renderer {
             .then(|| self.skinning.rebuilt_pipeline(device, cache, sources))
             .flatten();
         pipelines += u32::from(clusters.is_some()) + u32::from(skinning.is_some());
+        let shadows = changed
+            .contains(&Program::Shadows)
+            .then(|| self.shadows.rebuilt_pipelines(device, sources))
+            .flatten();
+        pipelines += shadows.as_ref().map_or(0, |shadows| shadows.count());
         let error = scope_error(internal.pop()).or(scope_error(validation.pop()));
         if let Some(error) = error {
             let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
@@ -844,6 +867,9 @@ impl Renderer {
         }
         if let Some(skinning) = skinning {
             self.skinning.set_pipeline(skinning);
+        }
+        if let Some(shadows) = shadows {
+            self.shadows.set_pipelines(shadows);
         }
         self.shaders = sources.clone();
         self.edited_shaders = !sources.is_compiled_in();
@@ -922,8 +948,12 @@ impl Renderer {
         }
         self.materials.prepare();
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
-        let lists_replaced = self.lights.prepare(device, queue, packet, self.scene.slots());
+        let lists_replaced =
+            self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
+        if characters_replaced {
+            self.shadows.set_character_buffer(device, self.characters.buffer());
+        }
         if lists_replaced || characters_replaced {
             self.frame_bind_group = create_frame_bind_group(
                 device,
@@ -931,8 +961,17 @@ impl Renderer {
                 &self.frame_uniforms,
                 &self.lights,
                 &self.characters,
+                &self.shadows,
             );
         }
+        let entries = self.characters.entries();
+        self.shadows.prepare(
+            packet,
+            self.scene.slots(),
+            self.meshes.records(),
+            self.scene.draw_list(),
+            entries,
+        );
 
         // Without a main view the frame has nothing to draw. A cut in a frame that was prepared
         // but never recorded still applies to the next one recorded.
@@ -947,7 +986,8 @@ impl Renderer {
             let materials = &self.materials;
             let params = |slot| materials.anime_character(slot);
             let (list, slots) = (self.scene.draw_list(), self.scene.slots());
-            self.outlines.prepare(&view.camera, self.outline_distance, list, slots, params);
+            let meshes = self.meshes.records();
+            self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
         }
         self.sky.prepare(packet, &self.materials);
         // The lens flare follows the sun's disc as the main view sees it.
@@ -979,6 +1019,7 @@ impl Renderer {
         self.stats.characters = self.characters.lit();
         self.stats.ignored_characters = self.characters.ignored();
         self.stats.skinning = self.skinning.stats();
+        self.stats.shadows = self.shadows.stats();
         self.stats.material_uploads = self.materials.pending();
         self.update_pool_stats();
     }
@@ -1083,6 +1124,7 @@ impl Renderer {
             ref mut sky,
             ref mut lights,
             ref mut characters,
+            ref shadows,
             ref meshes,
             ref mut materials,
             ref mut scene,
@@ -1161,6 +1203,7 @@ impl Renderer {
             if let Some((uniforms, buffer)) = &temporal_upload {
                 upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
             }
+            shadows.upload(uploads, ctx.encoder, view_uniforms, FIRST_SHADOW_VIEW, view_stride);
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
         // Also side effects: the passes after read the buffers they write.
@@ -1184,6 +1227,17 @@ impl Renderer {
                 cube.record(ctx.encoder, frame_bind_group, view_bind_group, offset, labels, timestamps);
             });
         }
+        // The shadow maps (M1 R4): persistent too, so side effects before the main pass. Their
+        // casters bind the anime character family's scene group, as the prepasses do.
+        shadows.record(
+            graph,
+            mesh_draws,
+            view_bind_group,
+            &scene_bind_groups[0],
+            FIRST_SHADOW_VIEW,
+            view_stride,
+            labels,
+        );
         // Group 2 starts as the anime character family's, which the prepasses bind for every
         // family's draws (they read no material); the main pass binds each family's in turn.
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
@@ -1574,7 +1628,9 @@ fn create_frame_bind_group(
     frame_uniforms: &wgpu::Buffer,
     lights: &Lights,
     characters: &Characters,
+    shadows: &Shadows,
 ) -> wgpu::BindGroup {
+    let [shadow_uniforms, cascades, atlas, sampler] = shadows.frame_entries();
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
         layout,
@@ -1583,6 +1639,10 @@ fn create_frame_bind_group(
             wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 3, resource: characters.buffer().as_entire_binding() },
+            shadow_uniforms,
+            cascades,
+            atlas,
+            sampler,
         ],
     })
 }

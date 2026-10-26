@@ -5,7 +5,7 @@
 //! depth × `tan(fov_y / 2) / tan(22.5°)`, where a model looks as large as through a 45° lens. Past
 //! its material's cutoff (`OutlineCurve::cutoff`) a hull would be all but invisible and still cost
 //! its vertices and its depth test, so the frame skips the draw. The test is per draw, on the
-//! instance's bounding sphere (the mesh's cooked bounds, transformed): a hull is dropped once the
+//! instance's bounding sphere (its mesh record's, transformed): a hull is dropped once the
 //! sphere's nearest point is past the cutoff, so a large instance straddling it keeps its hull,
 //! whose width the shader fades to nothing over the cutoff's last quarter anyway. Nothing pops.
 //!
@@ -14,12 +14,11 @@
 //! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop, and skinned
 //!   instances' bounds come from their joints rather than the bind pose.
 
-use glam::Vec3;
 use sapphire_assets::material::AnimeCharacterParams;
 
-use crate::lights::Sphere;
+use crate::CameraData;
+use crate::mesh_pool::MeshRecord;
 use crate::scene::{DrawList, InstanceSlots};
-use crate::{CameraData, MeshHandle};
 
 /// tan(22.5°): effective distances are normalized to a 45° vertical field of view
 /// (`OUTLINE_REFERENCE_TAN_HALF_FOV` in `outline.wgsl`).
@@ -37,33 +36,23 @@ pub(crate) struct OutlineCounts {
 /// Which draws' hulls a frame draws.
 #[derive(Debug, Default)]
 pub(crate) struct OutlineCull {
-    /// Object-space bounding sphere per mesh, by handle index.
-    meshes: Vec<Sphere>,
     /// Per draw record (`DrawList::draws`): whether the frame draws its hull, if it has one.
     visible: Vec<bool>,
     counts: OutlineCounts,
 }
 
 impl OutlineCull {
-    /// Records `mesh`'s object-space bounds, `[min, max]`, uploaded or replaced.
-    pub(crate) fn mesh_uploaded(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
-        let index = mesh.index();
-        if self.meshes.len() <= index {
-            self.meshes.resize(index + 1, Sphere { center: Vec3::ZERO, radius: 0.0 });
-        }
-        self.meshes[index] = Sphere::around(bounds);
-    }
-
     /// Decides, for `camera`, which of `list`'s hulls draw: those whose instance's bounding
-    /// sphere comes within its material's cutoff, read from the anime character block in
-    /// `params(material slot)`, times `scale` (`Renderer::set_outline_distance`). Allocates
-    /// nothing once the draw list stops growing.
+    /// sphere (from `meshes`, the pool's records) comes within its material's cutoff, read from
+    /// the anime character block in `params(material slot)`, times `scale`
+    /// (`Renderer::set_outline_distance`). Allocates nothing once the draw list stops growing.
     pub(crate) fn prepare(
         &mut self,
         camera: &CameraData,
         scale: f32,
         list: &DrawList,
         slots: &InstanceSlots,
+        meshes: &[MeshRecord],
         params: impl Fn(u32) -> Option<AnimeCharacterParams>,
     ) {
         profiling::scope!("OutlineCull::prepare");
@@ -71,10 +60,10 @@ impl OutlineCull {
         let effective = 1.0 / (camera.proj.y_axis.y.abs().max(1e-6) * REFERENCE_TAN_HALF_FOV);
         self.visible.clear();
         for draw in &list.draws {
-            let sphere = slots.mesh(draw.instance).and_then(|mesh| self.meshes.get(mesh.index()));
+            let record = slots.mesh(draw.instance).and_then(|mesh| meshes.get(mesh.index()));
             let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
-            let visible = sphere.is_some_and(|sphere| {
-                let sphere = sphere.transformed(slots.transform(draw.instance));
+            let visible = record.zip(slots.transform(draw.instance)).is_some_and(|(record, transform)| {
+                let sphere = record.bounds.transformed(transform);
                 let gap = (sphere.center.distance(camera.position) - sphere.radius).max(0.0);
                 gap * effective < cutoff
             });

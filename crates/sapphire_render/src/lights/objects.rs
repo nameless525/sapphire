@@ -15,12 +15,14 @@
 //!
 //! The list buffer holds one list per instance slot in the cluster lists' layout at capacity 4:
 //! a count, then four 16-bit light indices in two words. Bounding spheres come from the meshes'
-//! cooked bounds, kept here per mesh until meshes carry them for culling.
+//! cooked bounds, which their records in the mesh pool carry (M1 R4 moved them there, for
+//! shadow casters' culling too).
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
 use super::{GpuLight, luminance};
+use crate::bounds::Sphere;
 use crate::scene::InstanceSlots;
 use crate::{MeshHandle, MeshInstance};
 
@@ -57,32 +59,6 @@ impl ObjectLightList {
         (0..self.count as usize)
             .map(|position| (self.indices[position / 2] >> (16 * (position % 2))) & 0xffff)
             .collect()
-    }
-}
-
-/// A bounding sphere.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Sphere {
-    pub center: Vec3,
-    pub radius: f32,
-}
-
-impl Sphere {
-    /// The sphere around an object-space box (`[min, max]`, as meshes are cooked with).
-    pub(crate) fn around([min, max]: [[f32; 3]; 2]) -> Self {
-        let (min, max) = (Vec3::from(min), Vec3::from(max));
-        Self { center: (min + max) * 0.5, radius: (max - min).length() * 0.5 }
-    }
-
-    /// This sphere after `transform`, grown by its largest scale so it still holds the mesh.
-    pub(crate) fn transformed(self, transform: Mat4) -> Self {
-        let scale = transform
-            .x_axis
-            .truncate()
-            .length()
-            .max(transform.y_axis.truncate().length())
-            .max(transform.z_axis.truncate().length());
-        Self { center: transform.transform_point3(self.center), radius: self.radius * scale }
     }
 }
 
@@ -138,11 +114,9 @@ pub(crate) fn choose(lights: &[GpuLight], sphere: &Sphere) -> ObjectLightList {
     ObjectLightList::new(&chosen[..len])
 }
 
-/// Every instance slot's list and the bounding spheres they are chosen with.
+/// Every instance slot's list.
 #[derive(Debug, Default)]
 pub(crate) struct ObjectLists {
-    /// Object-space bounding sphere per mesh, by handle index.
-    meshes: Vec<Sphere>,
     /// Per instance slot: the list the GPU holds, or will after the next upload.
     lists: Vec<ObjectLightList>,
     /// Per slot: listed in `dirty`.
@@ -156,14 +130,6 @@ pub(crate) struct ObjectLists {
 }
 
 impl ObjectLists {
-    pub(crate) fn mesh_uploaded(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
-        let index = mesh.index();
-        if self.meshes.len() <= index {
-            self.meshes.resize(index + 1, Sphere { center: Vec3::ZERO, radius: 0.0 });
-        }
-        self.meshes[index] = Sphere::around(bounds);
-    }
-
     /// Makes the next update choose every instance's list, as after a frame whose lights it
     /// never saw.
     pub(crate) fn invalidate(&mut self) {
@@ -177,13 +143,15 @@ impl ObjectLists {
 
     /// Chooses lists from `lights`: every live instance's if the lights changed since the last
     /// update (or it was invalidated), otherwise only the `changed` instances' (the packet's
-    /// additions and changes, already applied to `slots`).
+    /// additions and changes, already applied to `slots`). `bounds` gives each mesh's
+    /// object-space bounding sphere.
     pub(crate) fn update(
         &mut self,
         lights: &[GpuLight],
         lights_changed: bool,
         slots: &InstanceSlots,
         changed: &[MeshInstance],
+        bounds: impl Fn(MeshHandle) -> Option<Sphere>,
     ) {
         profiling::scope!("ObjectLists::update");
         self.lists.resize(slots.len(), ObjectLightList::default());
@@ -191,20 +159,19 @@ impl ObjectLists {
         self.chosen = 0;
         if std::mem::take(&mut self.stale) || lights_changed {
             for (slot, mesh, transform) in slots.live_transforms() {
-                self.choose(lights, slot, mesh, transform);
+                self.choose(lights, slot, bounds(mesh), transform);
             }
         } else {
             for instance in changed {
                 if let Some(slot) = slots.slot(instance.id) {
-                    self.choose(lights, slot, instance.mesh, instance.transform);
+                    self.choose(lights, slot, bounds(instance.mesh), instance.transform);
                 }
             }
         }
     }
 
-    fn choose(&mut self, lights: &[GpuLight], slot: u32, mesh: MeshHandle, transform: Mat4) {
-        let sphere = self.meshes.get(mesh.index());
-        debug_assert!(sphere.is_some(), "{mesh:?} was not uploaded to this renderer");
+    fn choose(&mut self, lights: &[GpuLight], slot: u32, sphere: Option<Sphere>, transform: Mat4) {
+        debug_assert!(sphere.is_some(), "a mesh that was not uploaded to this renderer");
         let Some(sphere) = sphere else { return };
         self.chosen += 1;
         let list = choose(lights, &sphere.transformed(transform));
@@ -352,20 +319,6 @@ mod tests {
         assert_eq!(LIST_BYTES, 12);
     }
 
-    #[test]
-    fn spheres_follow_their_instances() {
-        let sphere = Sphere::around([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
-        assert_eq!(sphere.center, Vec3::Y);
-        assert!((sphere.radius - 3f32.sqrt()).abs() < 1e-6);
-        let moved = sphere.transformed(Mat4::from_scale_rotation_translation(
-            Vec3::new(1.0, 3.0, 1.0),
-            glam::Quat::from_rotation_y(1.0),
-            Vec3::new(5.0, 0.0, 0.0),
-        ));
-        assert!((moved.center - Vec3::new(5.0, 3.0, 0.0)).length() < 1e-5);
-        assert!((moved.radius - 3.0 * 3f32.sqrt()).abs() < 1e-5, "the largest scale");
-    }
-
     fn instance(id: u64, x: f32) -> MeshInstance {
         MeshInstance {
             id: InstanceId(id),
@@ -388,13 +341,13 @@ mod tests {
     #[test]
     fn updates_choose_only_what_changed() {
         let mut lists = ObjectLists::default();
-        lists.mesh_uploaded(MeshHandle::from_raw(0), [[-0.5; 3], [0.5; 3]]);
+        let bounds = |mesh: MeshHandle| (mesh.index() == 0).then(|| Sphere::around([[-0.5; 3], [0.5; 3]]));
         let mut slots = InstanceSlots::default();
         let three = [instance(1, 0.0), instance(2, 10.0), instance(3, 20.0)];
         apply(&mut slots, &three);
         let lights = [point(Vec3::new(0.0, 1.0, 0.0), 1.0, 2.0), point(Vec3::new(20.0, 1.0, 0.0), 1.0, 2.0)];
 
-        lists.update(&lights, true, &slots, &three);
+        lists.update(&lights, true, &slots, &three, bounds);
         assert_eq!(lists.chosen(), 3, "new lights: every instance");
         assert_eq!(lists.lists[0].lights(), [0]);
         assert_eq!(lists.lists[1].lights(), Vec::<u32>::new());
@@ -405,19 +358,19 @@ mod tests {
         // Same lights: only the instance that moved is chosen again.
         let moved = [instance(2, 0.5)];
         apply(&mut slots, &moved);
-        lists.update(&lights, false, &slots, &moved);
+        lists.update(&lights, false, &slots, &moved, bounds);
         assert_eq!(lists.chosen(), 1);
         assert_eq!(lists.lists[1].lights(), [0]);
         assert_eq!(flushed(&mut lists), [(1, 1)]);
 
         // Unchanged lists aren't uploaded again.
-        lists.update(&lights, true, &slots, &[]);
+        lists.update(&lights, true, &slots, &[], bounds);
         assert_eq!(lists.chosen(), 3);
         assert_eq!(flushed(&mut lists), []);
 
         // After a frame without a view, everything is chosen again.
         lists.invalidate();
-        lists.update(&lights, false, &slots, &[]);
+        lists.update(&lights, false, &slots, &[], bounds);
         assert_eq!(lists.chosen(), 3);
     }
 }

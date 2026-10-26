@@ -21,7 +21,7 @@ use super::layers::{DEFAULT_LENS, FlareKind};
 use crate::graph::{FrameGraph, GraphExecutor};
 use crate::quality::{TierId, TierTable};
 use crate::{
-    AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterFace, CharacterInstance,
+    AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, Diffusion, DirectionalLight, FramePacket, FramePacketRing, GradientBlend,
     GradientLayer, GradientShape, InstanceId, LensFlare, MAX_GRADIENT_LAYERS, MeshHandle, MeshInstance, Msaa,
     PostParams, RenderSettings, Renderer, ShaderFile, ShaderSources, SkyDisc, SkyGradient, ToneCurve,
@@ -198,7 +198,13 @@ impl Harness {
             packet.instances.changed.append(&mut self.pending);
             for &id in &self.characters {
                 let lighting = CharacterLighting::unstyled(SUN);
-                packet.characters.push(CharacterInstance { id, lighting, face: CharacterFace::default() });
+                let face = CharacterFace::default();
+                packet.characters.push(CharacterInstance {
+                    id,
+                    lighting,
+                    face,
+                    body: CharacterBody::default(),
+                });
             }
             fill(packet);
             let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);

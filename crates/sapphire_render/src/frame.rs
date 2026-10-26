@@ -83,9 +83,9 @@ pub struct FramePacket {
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
     /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
-    /// by the environment shader (W4) on the shadow side of its terminator and in cast shadow,
-    /// times each material's own tint, and by shadows (R4). Characters in cast shadow take their
-    /// materials' authored shade colors instead (C1).
+    /// by the environment shader (W4) on the shadow side of its terminator and in cast shadow
+    /// (R4's, which enter its terminator), times each material's own tint. Characters in cast
+    /// shadow take their materials' authored shade colors instead (C1).
     pub shadow_tint: Vec3,
     /// The weather's wetness inputs. The default is dry.
     pub weather: Weather,
@@ -641,19 +641,81 @@ impl Default for CharacterLight {
 }
 
 /// One character's data for a frame: the character light rig that lights the instance `id`
-/// (M1 C2) and the character's face (M1 C3). A character drawn as several instances (body,
-/// face, hair, a weapon) lists each, with the same lighting and face.
+/// (M1 C2), the character's face (M1 C3) and its body, which its shadow is cast from (M1 R4). A
+/// character drawn as several instances (body, face, hair, a weapon) lists each, with the same
+/// lighting, face and body.
+///
+/// Being listed is what makes an instance a character for shadows too: it never casts into the
+/// world's shadow cascades and receives only them (environment casters), so a character never
+/// shadows itself; its own shadow on the ground and the environment comes from its body (see
+/// [`CharacterBody`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterInstance {
     pub id: InstanceId,
     pub lighting: CharacterLighting,
     pub face: CharacterFace,
+    pub body: CharacterBody,
 }
 
 impl CharacterInstance {
-    /// Whether the renderer can draw by it: its lighting and its face are both valid.
+    /// Whether the renderer can draw by it: its lighting, its face and its body are all valid.
     pub fn is_valid(&self) -> bool {
-        self.lighting.is_valid() && self.face.is_valid()
+        self.lighting.is_valid() && self.face.is_valid() && self.body.is_valid()
+    }
+}
+
+/// A character's body this frame, as a capsule in world space: every point within `radius` of
+/// the segment from `base` (its feet) to `top` (its head). Its shadow on the ground and the
+/// environment is cast from it (M1 R4, spec §5.12 "Lighting"):
+///
+/// - **On desktop** each character near the camera draws a shadow map of its own, a
+///   high-resolution frustum from the key light around its body and its instances' bounds, which
+///   environment surfaces receive: crisp contact shadows under its feet. Its own instances never
+///   receive it.
+/// - **On phones,** and for characters past the desktop's maps, the capsule itself casts a soft
+///   shadow onto environment surfaces.
+///
+/// The instances listed with equal bodies are one character, which casts one shadow; a character
+/// drawn as several instances lists the same body with each. Capsule AO (W5) will read the body
+/// too. A body of radius 0 (the default) casts no shadow of a character's own: the character
+/// still receives the world's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CharacterBody {
+    pub base: Vec3,
+    pub top: Vec3,
+    pub radius: f32,
+}
+
+impl CharacterBody {
+    /// A capsule from `base` to `top`, `radius` thick.
+    pub fn capsule(base: Vec3, top: Vec3, radius: f32) -> Self {
+        Self { base, top, radius }
+    }
+
+    /// Whether the renderer can draw by it: finite, with a radius of 0 or more.
+    pub fn is_valid(&self) -> bool {
+        self.base.is_finite() && self.top.is_finite() && self.radius.is_finite() && self.radius >= 0.0
+    }
+
+    /// Whether it casts a shadow: a radius above 0.
+    pub fn casts(&self) -> bool {
+        self.radius > 0.0
+    }
+
+    /// The body moved by `transform`: its ends placed, its radius grown by the transform's
+    /// largest scale.
+    pub fn transformed(&self, transform: Mat4) -> Self {
+        let scale = transform
+            .x_axis
+            .truncate()
+            .length()
+            .max(transform.y_axis.truncate().length())
+            .max(transform.z_axis.truncate().length());
+        Self {
+            base: transform.transform_point3(self.base),
+            top: transform.transform_point3(self.top),
+            radius: self.radius * scale,
+        }
     }
 }
 
@@ -855,7 +917,8 @@ mod tests {
             expression: FaceExpression { blush: 0.5, gloom: 0.0 },
             ..CharacterFace::default()
         };
-        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face });
+        let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.25);
+        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face, body });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -950,9 +1013,39 @@ mod tests {
         };
         assert!(strong.is_valid());
         let lighting = CharacterLighting::unstyled(DirectionalLight::default());
-        let character = CharacterInstance { id: InstanceId(0), lighting, face: broken[0] };
+        let character = CharacterInstance {
+            id: InstanceId(0),
+            lighting,
+            face: broken[0],
+            body: CharacterBody::default(),
+        };
         assert!(!character.is_valid(), "a broken face makes the entry invalid");
         assert!(CharacterInstance { face: strong, ..character }.is_valid());
+    }
+
+    #[test]
+    fn bodies_are_valid_when_finite_and_cast_with_a_radius() {
+        let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        assert!(body.is_valid() && body.casts());
+        assert!(CharacterBody::default().is_valid(), "no shadow of its own, but valid");
+        assert!(!CharacterBody::default().casts());
+        for broken in [
+            CharacterBody { radius: -0.1, ..body },
+            CharacterBody { radius: f32::NAN, ..body },
+            CharacterBody { top: Vec3::splat(f32::INFINITY), ..body },
+        ] {
+            assert!(!broken.is_valid(), "{broken:?}");
+        }
+        let lighting = CharacterLighting::unstyled(DirectionalLight::default());
+        let face = CharacterFace::default();
+        let broken = CharacterBody { radius: -1.0, ..body };
+        assert!(!CharacterInstance { id: InstanceId(0), lighting, face, body: broken }.is_valid());
+        let moved = body.transformed(Mat4::from_scale_rotation_translation(
+            Vec3::splat(2.0),
+            Quat::IDENTITY,
+            Vec3::X,
+        ));
+        assert_eq!(moved, CharacterBody::capsule(Vec3::X, Vec3::new(1.0, 2.0, 0.0), 0.6));
     }
 
     #[test]

@@ -20,7 +20,9 @@
 //! the prepasses, temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post (its bloom
 //! chain, its fused composite with the compositing layers, and the two together against §3.3's
 //! "Bloom + tonemap + LUT", 0.7 ms on Desktop-Low and 2.5 ms on Mobile-Low), the skinning pass
-//! (`--skinned`), the sky cube's face pass and the whole frame.
+//! (`--skinned`), the sky cube's face pass, the shadow passes (the cascades drawn, the character
+//! maps and the face pass, against spec §3.3's 2 ms on desktop and 3 ms on phones) and the whole
+//! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 
@@ -28,7 +30,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{post, temporal};
+use sapphire_render::{post, shadows, temporal};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -116,6 +118,8 @@ pub(crate) fn run(
         dynamic_resolution = quality.dynamic.enabled,
         msaa = settings.msaa.sample_count(),
         taa = settings.temporal,
+        shadows = settings.shadows.is_some(),
+        stage = ?options.stage,
         lights = options.lights,
         skinned = options.skinned,
         faces = options.faces,
@@ -153,7 +157,8 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     // Sums of (exclusive, duration) per group of passes, and the frames it ran in.
     type Sums = (Duration, Duration, u32);
     let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
-    let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa) = (zero, zero, zero, zero, zero);
+    let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut shadow) =
+        (zero, zero, zero, zero, zero, zero);
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -173,12 +178,13 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
         // runs are its inputs, timed apart; post's composite runs at the output's size either way,
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
-        let groups: [(&[&str], &mut Sums); 5] = [
+        let groups: [(&[&str], &mut Sums); 6] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&["main"], &mut main),
             (&["character prepass", "scene prepass"], &mut prepasses),
             (&temporal::PASSES, &mut taa),
+            (&shadows::PASSES, &mut shadow),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -226,6 +232,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_sky_cube_us = format_args!("{:.1}", micros(sky_cube.0, sky_cube.2)),
         gpu_sky_cube_duration_us = format_args!("{:.1}", micros(sky_cube.1, sky_cube.2)),
         sky_cube_frames = sky_cube.2,
+        gpu_shadows_us = format_args!("{:.1}", micros(shadow.0, shadow.2)),
+        gpu_shadows_duration_us = format_args!("{:.1}", micros(shadow.1, shadow.2)),
+        shadow_frames = shadow.2,
         "bench gpu",
     );
     Ok(())

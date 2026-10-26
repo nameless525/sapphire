@@ -476,9 +476,7 @@ impl Mesh {
 
     /// [`Self::read`], then a copy out of the archive, for tools and tests.
     pub fn from_cooked(bytes: &[u8]) -> Result<Self, MeshError> {
-        let archived = Self::read(bytes)?;
-        rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)
-            .map_err(|error| MeshError::Cooked(error.into()))
+        Self::read(bytes)?.to_mesh()
     }
 }
 
@@ -486,6 +484,12 @@ impl ArchivedMesh {
     /// The index list of every LOD as the GPU reads it: little-endian u32.
     pub fn index_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(self.indices.as_slice())
+    }
+
+    /// A copy out of the archive, for tools, tests and meshes derived at runtime (the sandbox's
+    /// stage splits a mesh by material slot).
+    pub fn to_mesh(&self) -> Result<Mesh, MeshError> {
+        rkyv::deserialize::<Mesh, rkyv::rancor::Error>(self).map_err(|error| MeshError::Cooked(error.into()))
     }
 }
 

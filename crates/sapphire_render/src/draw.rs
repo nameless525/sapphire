@@ -8,7 +8,8 @@
 //! one binding. Passes that shade bind each draw's material (group 3) the same way: only when
 //! it changes. Draws come in groups of one surface variant (the draw list's), each drawn
 //! through its own pipeline; outline hulls are drawn for the draws that have one and are within
-//! their material's LOD cutoff this frame (`outlines`).
+//! their material's LOD cutoff this frame (`outlines`), and the shadow passes draw only the
+//! instances that cast into the map they draw (`*_where`).
 
 use std::ops::Range;
 
@@ -91,11 +92,26 @@ impl MeshDraws<'_> {
         variant: SurfaceVariant,
         set: DrawSet,
     ) {
+        self.draw_static_where(pass, kind, format, variant, set, |_| true);
+    }
+
+    /// Draws `set` of the static meshes in `format` of `variant` whose instance slot `instance`
+    /// takes, with the streams `kind` reads, through the pipeline already set. The index buffer
+    /// must be bound.
+    pub(crate) fn draw_static_where(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        format: PositionFormat,
+        variant: SurfaceVariant,
+        set: DrawSet,
+        instance: impl Fn(u32) -> bool,
+    ) {
         let slab = self.meshes.slab(format);
         let mut bound_first_vertex = None;
         let mut bound_material = None;
         for command in &self.list.commands[format_index(format)][variant.index()] {
-            if !self.includes(set, command.draw_id, command.outline) {
+            if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
                 continue;
             }
             self.bind_material(pass, kind, command.material, &mut bound_material);
@@ -128,11 +144,25 @@ impl MeshDraws<'_> {
         variant: SurfaceVariant,
         set: DrawSet,
     ) {
+        self.draw_deformed_where(pass, kind, variant, set, |_| true);
+    }
+
+    /// Draws `set` of the skinned or morphed instances of `variant` whose instance slot
+    /// `instance` takes, with the streams `kind` reads, through the f32 pipeline already set. The
+    /// index buffer must be bound.
+    pub(crate) fn draw_deformed_where(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        variant: SurfaceVariant,
+        set: DrawSet,
+        instance: impl Fn(u32) -> bool,
+    ) {
         let outputs_buffer = self.skinned.buffer();
         let mut bound_slot = None;
         let mut bound_material = None;
         for command in &self.list.deformed[variant.index()] {
-            if !self.includes(set, command.draw_id, command.outline) {
+            if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
                 continue;
             }
             if bound_slot != Some(command.slot) {

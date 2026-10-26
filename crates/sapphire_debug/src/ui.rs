@@ -9,7 +9,7 @@ use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{post, temporal};
+use sapphire_render::{post, shadows, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -272,6 +272,12 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 let post =
                     post::PASSES.iter().filter_map(|name| timings.get(name)).map(|pass| pass.exclusive);
                 budget_row(ui, "  Bloom + tonemap + LUT", post.sum(), tier.post());
+                // The shadow passes (M1 R4): the cascades drawn, the character maps and the face
+                // pass, what each added to the frame.
+                if frame.render.shadows.enabled {
+                    let passes = shadows::PASSES.iter().filter_map(|name| timings.get(name));
+                    budget_row(ui, "  Shadows", passes.map(|pass| pass.exclusive).sum(), tier.shadows());
+                }
             }
             None => {
                 ui.label("GPU frame");
@@ -394,6 +400,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             "Character rigs",
             format!("{} characters lit, {} ignored", render.characters, render.ignored_characters),
         );
+        row(ui, "Shadows", shadow_text(&render.shadows));
         let graph = frame.graph.stats();
         row(
             ui,
@@ -578,6 +585,30 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
 }
 
 /// The sky's layers drawn this frame and its cube (M1 W2).
+/// The shadows' counters (M1 R4) on one line.
+fn shadow_text(shadows: &sapphire_render::ShadowStats) -> String {
+    if !shadows.enabled {
+        return "off".to_owned();
+    }
+    format!(
+        "{} cascades of {}² ({} drawn, {} cached), {} character maps, {} capsules{}, {} caster draws ({} culled), {} light steps",
+        shadows.cascades,
+        shadows.resolution,
+        shadows.cascades_drawn,
+        shadows.cascades_cached,
+        shadows.character_maps,
+        shadows.capsules,
+        if shadows.uncast_characters > 0 {
+            format!(", {} uncast", shadows.uncast_characters)
+        } else {
+            String::new()
+        },
+        shadows.caster_draws,
+        shadows.culled_draws,
+        shadows.light_steps,
+    )
+}
+
 fn sky_text(sky: &sapphire_render::SkyStats) -> String {
     let layers: Vec<&str> = [(sky.stars, "stars"), (sky.clouds, "clouds"), (sky.cirrus, "cirrus")]
         .into_iter()

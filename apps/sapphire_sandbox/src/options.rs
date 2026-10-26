@@ -3,10 +3,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use sapphire_render::quality::{QualitySettings, TierId};
+use sapphire_render::quality::{QualitySettings, Switch, TierId};
 use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings};
 
 use crate::scene::{self, Scene};
+use crate::stage::StageLayout;
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
@@ -43,6 +44,10 @@ pub(crate) struct Options {
     pub render_scale: Option<f32>,
     /// `--dynamic-resolution`: let dynamic resolution lower the render scale.
     pub dynamic_resolution: bool,
+    /// `--shadows on|off`: the player's shadow setting; the tier's without it.
+    pub shadows: Option<Switch>,
+    /// `--stage floor|pillar`: a floor under the character, and a pillar shadowing it.
+    pub stage: Option<StageLayout>,
     /// `--skinned`: place the skinned stalk beside the character.
     pub skinned: bool,
     /// `--time-of-day <hours>`: the hour the scene starts at, `0 ≤ hours < 24`, instead of the
@@ -245,6 +250,7 @@ impl Options {
             tier: self.tier,
             render_scale: self.render_scale,
             dynamic_resolution: self.dynamic_resolution,
+            shadows: self.shadows.unwrap_or_default(),
         }
     }
 
@@ -299,6 +305,20 @@ impl Options {
                     options.render_scale = Some(scale);
                 }
                 "--dynamic-resolution" => options.dynamic_resolution = true,
+                "--shadows" => {
+                    options.shadows = Some(match value("--shadows")?.as_str() {
+                        "on" => Switch::On,
+                        "off" => Switch::Off,
+                        other => return Err(format!("--shadows expects on or off, got {other:?}")),
+                    });
+                }
+                "--stage" => {
+                    let raw = value("--stage")?;
+                    options.stage = Some(
+                        StageLayout::from_name(&raw)
+                            .ok_or_else(|| format!("--stage expects floor or pillar, got {raw:?}"))?,
+                    );
+                }
                 "--lights" => options.lights = true,
                 "--skinned" => options.skinned = true,
                 "--time-of-day" => {
@@ -511,9 +531,17 @@ mod tests {
             QualitySettings {
                 tier: Some(TierId::MobileLow),
                 render_scale: Some(0.7),
-                dynamic_resolution: true
+                dynamic_resolution: true,
+                shadows: Switch::Auto,
             }
         );
+        let (off, _) = parse(&["--shadows", "off"]).unwrap();
+        assert_eq!(off.quality_settings().shadows, Switch::Off, "a real quality setting");
+        assert_eq!(parse(&["--shadows=on"]).unwrap().0.shadows, Some(Switch::On));
+        assert!(parse(&["--shadows", "soft"]).is_err());
+        let (staged, _) = parse(&["--stage", "pillar"]).unwrap();
+        assert_eq!(staged.stage, Some(StageLayout::Pillar));
+        assert!(parse(&["--stage", "arena"]).is_err());
         assert_eq!(Options::default().quality_settings(), QualitySettings::default());
         assert_eq!(parse(&["--tier=Desktop-High"]).unwrap().0.tier, Some(TierId::DesktopHigh));
         assert!(parse(&["--tier", "ultra"]).unwrap_err().contains("desktop-high"));

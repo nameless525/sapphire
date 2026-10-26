@@ -62,11 +62,11 @@ use sapphire_rhi::wgpu;
 use serde::{Deserialize, Serialize};
 
 use crate::buffer::{self, GrowableBuffer};
+use crate::mesh_pool::MeshRecord;
 use crate::scene::InstanceSlots;
 use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
 use clusters::ClusterPass;
-pub(crate) use objects::Sphere;
 use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
 
 /// The most local lights any frame can draw, whatever
@@ -295,11 +295,6 @@ impl Lights {
         }
     }
 
-    /// Notes a mesh's object-space bounds, which per-object lists are chosen with.
-    pub(crate) fn mesh_uploaded(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
-        self.objects.mesh_uploaded(mesh, bounds);
-    }
-
     /// The cluster pass's pipeline built from `sources` instead, if the clustered path runs, for
     /// [`Self::set_cluster_pipeline`] (shader hot reload).
     pub(crate) fn rebuilt_cluster_pipeline(
@@ -318,21 +313,21 @@ impl Lights {
 
     /// A mesh was replaced in place, with new bounds: every per-object list is chosen again on
     /// the next frame (a rare event, so its instances aren't looked for).
-    pub(crate) fn mesh_replaced(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
-        self.objects.mesh_uploaded(mesh, bounds);
+    pub(crate) fn mesh_replaced(&mut self) {
         self.objects.invalidate();
     }
 
     /// Culls, caps and packs the packet's lights for its main view, and on the per-object
     /// path chooses the lists that need it (`slots` already has the packet's instance deltas
-    /// applied). Returns `true` when the list buffer was replaced, so bind groups that use it
-    /// must be rebuilt.
+    /// applied), with the bounds of `meshes`. Returns `true` when the list buffer was replaced,
+    /// so bind groups that use it must be rebuilt.
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         packet: &FramePacket,
         slots: &InstanceSlots,
+        meshes: &[MeshRecord],
     ) -> bool {
         profiling::scope!("Lights::prepare");
         self.bin = false;
@@ -361,7 +356,8 @@ impl Lights {
                 // The old buffer holds every list uploaded so far: a GPU copy keeps them.
                 let uploaded = self.lists.buffer().size();
                 replaced = self.lists.reserve(device, queue, slots.len() as u64 * LIST_BYTES, uploaded);
-                self.objects.update(&self.packed, changed, slots, &packet.instances.changed);
+                let bounds = |mesh: MeshHandle| meshes.get(mesh.index()).map(|record| record.bounds);
+                self.objects.update(&self.packed, changed, slots, &packet.instances.changed, bounds);
                 ListMode::Objects
             }
         };

@@ -19,7 +19,7 @@ use sapphire_assets::texture::Swizzle;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    AmbientLight, BloomParams, CameraData, CharacterFace, CharacterInstance, CharacterLight,
+    AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLight,
     CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance,
     PostParams, RenderSettings, Renderer, ToneCurve, ViewData, Vignette,
 };
@@ -183,6 +183,7 @@ impl Stage {
                 id,
                 lighting: resolved,
                 face: CharacterFace::default(),
+                body: CharacterBody::default(),
             });
             lighting.push(resolved);
         }

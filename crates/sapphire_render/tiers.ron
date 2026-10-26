@@ -4,8 +4,8 @@
 // clocks (spec §3).
 //
 // - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`,
-//   `sky` and `environment`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's
-//   targets.
+//   `sky`, `environment` and `shadows`, plus `frame_rate` and `gpu_frame_ms` as dynamic
+//   resolution's targets.
 // - `sky` (M1 W2): the sky cube's size and frames between face updates, and the cirrus layer.
 //   Both desktop tiers draw the same sky, so golden images match on every desktop GPU.
 // - `environment` (M1 W4): the environment shader's specular model. Desktop tiers take the full
@@ -13,9 +13,18 @@
 //   cheaper GGX that folds visibility and Fresnel into one term; Mobile-Low none, where the world
 //   reads by its painted diffuse (terminator, wrap, shadow tint, band, desaturation and emission
 //   run on every tier). Both desktop tiers draw the same, as with the sky.
-// - Read by later packages: `shadows` (R4, C2), `ambient_occlusion` (W5), `volumetric_fog`,
-//   `screen_space_outlines` (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD
-//   selection).
+// - Read by later packages: `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines`
+//   (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
+//
+// Shadows (M1 R4, look pillar 4; `sapphire_render::shadows`): spec §3.3 budgets 2 ms for 4
+// cascades on desktop and 3 ms for 2 on phones. The far half of the cascades is cached, drawn in
+// turns (the far two alternate on desktop; the far one every other frame on phones), which spends
+// the budget where the camera is. Desktop characters near the camera draw maps of their own for
+// crisp contact shadows (8 at most, `character_resolution` each); phones cast every character's
+// capsule instead, which costs no pass. The filter is a 5 × 5 tent on desktop and 3 × 3 on
+// phones, whose lower cascade resolution already softens it. Distances end where the anime look
+// still reads a shadow's shape at each tier's resolution; past them a baked far term will take
+// over (shadows module docs, "Later milestones").
 //
 // Antialiasing (M1 R7, look pillar 6): desktop tiers resolve with temporal AA and MSAA off.
 // TAA's jittered history resolves edges inside a surface (painted shadow-bias steps, the
@@ -52,7 +61,15 @@
                 bloom_levels: 5,
                 light_path: Clustered,
                 max_lights: 64,
-                shadows: (cascades: 4, resolution: 2048, character_shadow: true),
+                shadows: (
+                    cascades: 4,
+                    resolution: 2048,
+                    distance: 120,
+                    cached_cascades: 2,
+                    character_shadow: true,
+                    character_resolution: 1024,
+                    filter: Tent5,
+                ),
                 ambient_occlusion: (capsules: true, gtao: true),
                 volumetric_fog: true,
                 screen_space_outlines: true,
@@ -73,7 +90,15 @@
                 bloom_levels: 5,
                 light_path: Clustered,
                 max_lights: 64,
-                shadows: (cascades: 4, resolution: 1024, character_shadow: true),
+                shadows: (
+                    cascades: 4,
+                    resolution: 1024,
+                    distance: 100,
+                    cached_cascades: 2,
+                    character_shadow: true,
+                    character_resolution: 512,
+                    filter: Tent5,
+                ),
                 ambient_occlusion: (capsules: true, gtao: true),
                 volumetric_fog: true,
                 screen_space_outlines: false,
@@ -96,7 +121,14 @@
                 bloom_levels: 5,
                 light_path: PerObject,
                 max_lights: 8,
-                shadows: (cascades: 2, resolution: 1024, character_shadow: false),
+                shadows: (
+                    cascades: 2,
+                    resolution: 1024,
+                    distance: 50,
+                    cached_cascades: 1,
+                    character_shadow: false,
+                    filter: Tent3,
+                ),
                 ambient_occlusion: (capsules: true, gtao: true),
                 volumetric_fog: false,
                 screen_space_outlines: false,
@@ -117,7 +149,14 @@
                 bloom_levels: 4,
                 light_path: PerObject,
                 max_lights: 8,
-                shadows: (cascades: 2, resolution: 1024, character_shadow: false),
+                shadows: (
+                    cascades: 2,
+                    resolution: 1024,
+                    distance: 40,
+                    cached_cascades: 1,
+                    character_shadow: false,
+                    filter: Tent3,
+                ),
                 ambient_occlusion: (capsules: true, gtao: false),
                 volumetric_fog: false,
                 screen_space_outlines: false,

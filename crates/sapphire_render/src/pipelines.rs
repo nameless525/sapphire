@@ -15,6 +15,7 @@ use crate::environment::{self, EnvironmentSettings};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shaders::{self, Program, ShaderSources};
+use crate::shadows::{ShadowSettings, ShadowUniforms};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
 /// the way out with an infinite far plane.
@@ -130,12 +131,14 @@ pub(crate) enum MeshPass {
     /// The outline hulls in the scene prepass (M1 C4): every stream, the surface stream for the
     /// width's vertex color and the previous positions for velocity.
     OutlinePrepass,
+    /// Positions only: the shadow casters (M1 R4).
+    Shadow,
 }
 
 impl MeshPass {
     /// The streams the pass binds besides the draw record and positions.
     pub(crate) fn reads_shading(self) -> bool {
-        self != Self::CharacterPrepass
+        !matches!(self, Self::CharacterPrepass | Self::Shadow)
     }
 
     pub(crate) fn reads_surface(self) -> bool {
@@ -466,7 +469,8 @@ pub(crate) mod override_constant {
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
 #[derive(Debug)]
 pub(crate) struct Layouts {
-    /// Group 0: frame constants, local lights and their lists, and the characters' light rigs.
+    /// Group 0: frame constants, local lights and their lists, the characters' entries, and the
+    /// shadows' uniforms, maps and comparison sampler (M1 R4).
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
@@ -496,6 +500,16 @@ impl Layouts {
         let layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries })
         };
+        let depth = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: S::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        };
         Self {
             frame: layout(
                 "frame",
@@ -504,6 +518,15 @@ impl Layouts {
                     buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
                     buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
                     buffer(3, S::FRAGMENT, storage, false, size_of::<GpuCharacter>()),
+                    buffer(4, S::FRAGMENT, uniform, false, size_of::<ShadowUniforms>()),
+                    depth(5, wgpu::TextureViewDimension::D2Array),
+                    depth(6, wgpu::TextureViewDimension::D2),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: S::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
                 ],
             ),
             view: layout(
@@ -681,9 +704,12 @@ impl MeshModules {
             Program::Environment => &mut self.environment,
             Program::Outline => &mut self.outline,
             Program::Prepass => &mut self.prepass,
-            Program::Sky | Program::Clusters | Program::Skinning | Program::Post | Program::Temporal => {
-                unreachable!("not a mesh program")
-            }
+            Program::Sky
+            | Program::Clusters
+            | Program::Skinning
+            | Program::Post
+            | Program::Temporal
+            | Program::Shadows => unreachable!("not a mesh program"),
         }
     }
 
@@ -709,9 +735,17 @@ struct PipelineTarget {
     /// The environment shader's tier settings: its specular model.
     environment: EnvironmentSettings,
     cache: Option<wgpu::PipelineCache>,
+    /// The receivers' shadow constants (`frame.wgsl`'s `SHADOWS` and `SHADOW_TENT`), which every
+    /// surface and outline takes with its permutation's; none with shadows off, which keeps the
+    /// shaders as they were without them.
+    shadows: Option<[(&'static str, f64); 2]>,
 }
 
 impl Pipelines {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the device's targets and the tier's shader settings, each read once"
+    )]
     pub(crate) fn new(
         device: &wgpu::Device,
         layouts: &Layouts,
@@ -720,6 +754,7 @@ impl Pipelines {
         environment: EnvironmentSettings,
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
+        shadows: Option<&ShadowSettings>,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
@@ -746,6 +781,7 @@ impl Pipelines {
             sample_count,
             environment,
             cache: cache.cloned(),
+            shadows: shadows.map(ShadowSettings::constants),
         };
         let modules = MeshModules {
             character: shaders::module(device, Program::AnimeCharacter, sources),
@@ -908,7 +944,9 @@ fn build_surface(
 ) -> wgpu::RenderPipeline {
     let transparent = variant.coverage == Coverage::Transparent;
     let (module, _) = modules.surface(variant.shading);
+    // The permutation's constants, then the shadows' (M1 R4).
     let mut constants = variant.constants().to_vec();
+    constants.extend(target.shadows.iter().flatten());
     let name = match variant.shading {
         Shading::Character(_) => "anime character",
         Shading::Environment => {
@@ -942,6 +980,9 @@ fn build_outline(
     format: PositionFormat,
     coverage: Coverage,
 ) -> wgpu::RenderPipeline {
+    // The coverage's constants, then the shadows' (M1 R4): lit lines receive them.
+    let mut constants = coverage.constants().to_vec();
+    constants.extend(target.shadows.iter().flatten());
     // Inverted hull: keep only the back faces of the extruded shell.
     target.build_with(
         device,
@@ -954,7 +995,7 @@ fn build_outline(
             depth_write: true,
             depth_compare: wgpu::CompareFunction::Greater,
             blend: None,
-            constants: coverage.constants(),
+            constants: &constants,
         },
     )
 }

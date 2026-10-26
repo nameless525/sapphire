@@ -52,6 +52,9 @@
 //!   desktop tiers, 4× MSAA on mobile ones; M1 R7): `msaa` is the tier's sample count or 4×,
 //!   `taa` turns MSAA off. For comparisons and golden images.
 //! - `--msaa off|2|4|8`: override the sample count the tier or `--aa` gives.
+//! - `--shadows on|off`: the player's shadow setting (M1 R4); the tier's shadows without it. Off
+//!   draws no shadow maps and compiles the shaders as they were before shadows, which the golden
+//!   scenes from before them pin.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
@@ -74,6 +77,9 @@
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
+//! - `--stage floor|pillar`: stand the character on a floor, with its pedestal split off as
+//!   environment, and with `pillar` a stone pillar toward the key light whose shadow crosses the
+//!   character, or the face rig with `--faces` (M1 R4's shadow scenes).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
@@ -145,6 +151,7 @@ mod outlines;
 mod reload;
 mod scene;
 mod skinned;
+mod stage;
 mod stats;
 mod swatches;
 mod turntable;

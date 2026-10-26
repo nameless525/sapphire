@@ -177,13 +177,12 @@ fn sample_material(map: texture_2d<f32>, swizzles: vec4<u32>, slot: u32, uv: Mat
 // shadowed, in between in a penumbra. It scales the terminator's input as ambient occlusion
 // scales the characters' light split (`occluded`), so a cast shadow pushes the point onto the
 // shadow side of the same terminator: the same remap, its width growing with distance, the same
-// tinted keep, and no specular highlight. Shadows (R4) fill it: the environment receives every
-// caster the key light's shadow maps hold (the environment's own and the characters'), plus the
-// per-character ground shadow on desktop and capsule shadows on mobile, sampled at the
-// varyings' world position (offset along `world_normal` against acne) or, with a screen-space
-// shadow mask, at `clip_position`. Until then nothing casts.
+// tinted keep, and no specular highlight. Shadows (R4, frame.wgsl's `shadow_visibility`): the
+// environment receives every caster in the key light's cascades, which hold the environment's,
+// and every character's own shadow (its map on desktop, its capsule on phones), sampled at the
+// varyings' world position, offset along `world_normal` against acne. 1 with shadows off.
 fn cast_shadow(in: EnvironmentVaryings) -> f32 {
-    return 1.0;
+    return shadow_visibility(in.world_position, safe_normalize(in.world_normal));
 }
 
 // The lit side's falloff toward a light at `n_dot_l`: Lambert's wrapped by `wrap`, 0 at

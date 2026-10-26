@@ -384,13 +384,6 @@ impl InstanceSlots {
         self.slots.get(slot as usize).filter(|entry| entry.id.is_some()).map(|entry| entry.mesh)
     }
 
-    /// The current transform of the instance in `slot` (identity for a slot never used).
-    pub(crate) fn transform(&self, slot: u32) -> Mat4 {
-        self.data
-            .get(slot as usize)
-            .map_or(Mat4::IDENTITY, |data| Mat4::from_cols_array_2d(&data.world_from_object))
-    }
-
     /// Slots the last [`Self::apply`] freed.
     pub(crate) fn freed(&self) -> &[u32] {
         &self.freed
@@ -400,6 +393,14 @@ impl InstanceSlots {
     /// changed meshes.
     pub(crate) fn meshed(&self) -> &[u32] {
         &self.meshed
+    }
+
+    /// The transform of the live instance in `slot`.
+    pub(crate) fn transform(&self, slot: u32) -> Option<Mat4> {
+        self.slots
+            .get(slot as usize)
+            .filter(|entry| entry.id.is_some())
+            .map(|_| Mat4::from_cols_array_2d(&self.data[slot as usize].world_from_object))
     }
 
     /// Live slots with their meshes and transforms, in slot order.
@@ -467,6 +468,8 @@ impl Hasher for IdHasher {
 pub(crate) struct DrawCommand {
     pub indices: Range<u32>,
     pub first_vertex: u32,
+    /// The instance's slot: passes that draw some instances and not others (shadows) pick by it.
+    pub slot: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
     /// It draws an outline hull too ([`Permutation::outlined`]).
@@ -545,6 +548,7 @@ impl DrawList {
                         self.commands[format_index(*format)][variant].push(DrawCommand {
                             indices,
                             first_vertex,
+                            slot,
                             draw_id,
                             material,
                             outline,
@@ -590,6 +594,7 @@ mod tests {
 
     use super::*;
     use crate::MeshInstance;
+    use crate::bounds::Sphere;
     use crate::gpu_types::Dequantize;
     use crate::mesh_pool::{DeformSource, Placement, SubmeshDraw, SubmeshMaterial};
 
@@ -804,6 +809,7 @@ mod tests {
             lod_vertices: Vec::new(),
             placement: Placement::default(),
             slots: Vec::new(),
+            bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
         };
         let meshes = [
             MeshRecord {
@@ -884,19 +890,21 @@ mod tests {
         let [unorm16, unorm16_face, _, unorm16_alpha_test, _, _, unorm16_transparent, _, _] =
             unorm16_variants;
         let [float32, _, _, _, _, _, float32_transparent, _, _] = float32_variants;
-        let command = |indices, first_vertex, draw_id, slot: u32, outline| DrawCommand {
+        // Each names its instance's slot and its material (by material slot).
+        let command = |indices, first_vertex, instance, draw_id, slot: u32, outline| DrawCommand {
             indices,
             first_vertex,
+            slot: instance,
             draw_id,
             material: MaterialHandle(slot + 10),
             outline,
         };
-        assert_eq!(unorm16[..], [command(0..6, 0, 2, 0, true)]);
-        assert_eq!(unorm16_face[..], [command(9..12, 24, 0, 1, true)], "a face of its own");
-        assert_eq!(unorm16_alpha_test[..], [command(12..24, 24, 1, 2, true)]);
+        assert_eq!(unorm16[..], [command(0..6, 0, 2, 2, 0, true)]);
+        assert_eq!(unorm16_face[..], [command(9..12, 24, 1, 0, 1, true)], "a face of its own");
+        assert_eq!(unorm16_alpha_test[..], [command(12..24, 24, 1, 1, 2, true)]);
         assert!(unorm16_transparent.is_empty());
         assert!(float32.is_empty());
-        assert_eq!(float32_transparent[..], [command(24..27, 0, 3, 3, false)], "transparent: no outline");
+        assert_eq!(float32_transparent[..], [command(24..27, 0, 3, 3, 3, false)], "transparent: no outline");
         let [deformed_opaque, ..] = &list.deformed;
         let material = MaterialHandle(14);
         assert_eq!(
@@ -928,6 +936,7 @@ mod tests {
                 lod_vertices: vec![8],
                 placement: Placement::default(),
                 slots: Vec::new(),
+                bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
             },
             MeshRecord {
                 streams: MeshStreams::Deformable(DeformSource::default()),
@@ -936,6 +945,7 @@ mod tests {
                 lod_vertices: vec![4],
                 placement: Placement::default(),
                 slots: Vec::new(),
+                bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
             },
         ];
         // Handles 10 and 12 are anime character materials (12 a face), 11, 13 and 14 environment

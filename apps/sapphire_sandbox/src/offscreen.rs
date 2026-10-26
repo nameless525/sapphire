@@ -90,6 +90,9 @@ impl Stage {
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
         let mut content = Content::new(platform)?;
+        if options.stage.is_some() {
+            content.keep_character_mesh();
+        }
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
         scene.set_sky_material(content.sky_material(&mut renderer, &gpu)?);
@@ -120,6 +123,12 @@ impl Stage {
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
+        // The stage after the hour, which places its pillars.
+        if let Some(layout) = options.stage {
+            let character =
+                content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+            scene.spawn_stage(layout, crate::stage::upload_stage(&mut renderer, character)?);
+        }
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &content)?;
         #[cfg(not(feature = "dev"))]

@@ -51,6 +51,12 @@ impl BudgetTier {
         self.pick(0.8, 1.0)
     }
 
+    /// Bloom, tonemap and LUT (§3.3's row): post's passes, one fused pass and its bloom chain on
+    /// phones, the compositing layers included (M1 P2).
+    pub fn post(self) -> Duration {
+        self.pick(0.7, 2.5)
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {
@@ -198,6 +204,7 @@ mod tests {
         assert_eq!(mobile.stage(CpuStage::Extract, 2), ms(1.2));
         assert_eq!((mobile.game_side(), mobile.gpu_frame()), (ms(13.6), ms(23.5)));
         assert_eq!((desktop.taa_upscaling(), mobile.taa_upscaling()), (ms(0.8), ms(1.0)));
+        assert_eq!((desktop.post(), mobile.post()), (ms(0.7), ms(2.5)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));
         assert_eq!(BudgetTier::CURRENT == mobile, FormFactor::CURRENT == FormFactor::Mobile);
     }

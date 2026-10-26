@@ -9,7 +9,7 @@ use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::temporal;
+use sapphire_render::{post, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -268,6 +268,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                         .map(|pass| pass.exclusive);
                     budget_row(ui, "  TAA / upsampling", taa.sum(), tier.taa_upscaling());
                 }
+                // Post's passes (the bloom chain and the fused pass, M1 P2).
+                let post =
+                    post::PASSES.iter().filter_map(|name| timings.get(name)).map(|pass| pass.exclusive);
+                budget_row(ui, "  Bloom + tonemap + LUT", post.sum(), tier.post());
             }
             None => {
                 ui.label("GPU frame");
@@ -337,6 +341,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         };
         row(ui, "Skinning", skinned);
         row(ui, "Sky", sky_text(&render.sky));
+        row(ui, "Post layers", post_text(&render.post));
         let taa = &render.temporal;
         let taa = if taa.enabled {
             let ((input_w, input_h), (output_w, output_h)) = (taa.input_size, taa.output_size);
@@ -580,6 +585,33 @@ fn sky_text(sky: &sapphire_render::SkyStats) -> String {
     let layers = if layers.is_empty() { "gradient and discs".to_owned() } else { layers.join(", ") };
     let face = sky.last_face.map_or_else(|| "none".to_owned(), |face| face.to_string());
     format!("{layers}; cube {}², face {face} ({} drawn)", sky.cube_size, sky.cube_faces)
+}
+
+/// The compositing layers post drew this frame (M1 P2).
+fn post_text(post: &sapphire_render::PostStats) -> String {
+    let gradients = match post.gradient_layers {
+        0 => None,
+        1 => Some("1 gradient".to_owned()),
+        n => Some(format!("{n} gradients")),
+    };
+    let layers: Vec<String> = [
+        (post.diffusion, "diffusion"),
+        (post.character_bloom, "character bloom"),
+        (post.lens_flare, "lens flare"),
+        (post.vignette_tint, "vignette tint"),
+        (post.sharpening, "sharpening"),
+    ]
+    .into_iter()
+    .filter(|&(drawn, _)| drawn)
+    .map(|(_, name)| name.to_owned())
+    .chain(gradients)
+    .collect();
+    let bloom = if post.bloom_chain { "bloom chain" } else { "no bloom chain" };
+    if layers.is_empty() {
+        format!("none (plain); {bloom}")
+    } else {
+        format!("{}; {bloom}", layers.join(", "))
+    }
 }
 
 fn budget_row(ui: &mut Ui, name: &str, used: Duration, budget: Duration) {

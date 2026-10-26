@@ -78,6 +78,11 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--plain-post`: draw post as it was before its compositing layers (`PostParams::plain`: no
+//!   diffusion glow, character bloom, gradient layers, lens flare, vignette tint or sharpening),
+//!   which the golden scenes from before them pin (M1 P2).
+//! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
+//!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't

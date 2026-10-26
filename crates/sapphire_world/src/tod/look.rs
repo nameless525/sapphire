@@ -5,21 +5,22 @@ use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
 use sapphire_math::{Quat, Vec3};
 use sapphire_render::{
-    AmbientLight, BloomParams, Celestial, CharacterGi, CharacterLight, CharacterLighting, CloudLight,
-    ColorGrade, DirectionalLight, Fog, FogLayer, FramePacket, HeightFog, PostParams, SkyDisc, SkyGradient,
-    SkyLayers, Vignette,
+    AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
+    CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, FramePacket, GradientLayer,
+    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, PostParams, SkyDisc, SkyGradient, SkyLayers,
+    Vignette,
 };
 
 use super::key::{
-    AmbientKey, BloomKey, CelestialKey, CharacterKey, CloudsKey, DiscKey, FogKey, FogLayerKey, GradeKey,
-    HeightFogKey, SkyKey, TodKey, VignetteKey,
+    AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
+    FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, SkyKey, TodKey, VignetteKey,
 };
 use super::timeline::DAY_HOURS;
 
 /// The look at one moment, every group resolved: what time of day hands the frame packet.
 ///
-/// [`Self::default`] is the renderer's defaults, which a complete timeline overwrites whole,
-/// sky layers included if it sets them (a timeline without them draws none).
+/// [`Self::default`] is the renderer's defaults, which a complete timeline overwrites whole, sky
+/// and post layers included if it sets them (a timeline without them draws none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TodLook {
     /// The sun itself; see [`Self::key_light`] for the light that shades the scene.
@@ -43,6 +44,11 @@ pub struct TodLook {
     pub grades: GradeMix,
     pub bloom: BloomParams,
     pub vignette: Vignette,
+    /// Post's compositing layers (M1 P2).
+    pub diffusion: Diffusion,
+    pub character_bloom: CharacterBloom,
+    pub gradients: [GradientLayer; MAX_GRADIENT_LAYERS],
+    pub lens_flare: LensFlare,
 }
 
 impl Default for TodLook {
@@ -68,6 +74,10 @@ impl Default for TodLook {
             grades: GradeMix::single(post.grade_a),
             bloom: post.bloom,
             vignette: post.vignette,
+            diffusion: post.diffusion,
+            character_bloom: post.character_bloom,
+            gradients: post.gradients,
+            lens_flare: post.lens_flare,
         }
     }
 }
@@ -106,9 +116,9 @@ impl TodLook {
         }
     }
 
-    /// Post-processing for this look: exposure, bloom, the two grades and their blend, and the
-    /// vignette, with the default tone curve and full filter strength (the player's setting is
-    /// the app's to apply).
+    /// Post-processing for this look: exposure, bloom, the two grades and their blend, the
+    /// vignette and the compositing layers, with the default tone curve, full filter strength and
+    /// no sharpening (the player's settings are the app's to apply).
     pub fn post(&self) -> PostParams {
         let (grade_a, grade_b, grade_blend) = self.grades.lut_pair();
         PostParams {
@@ -118,6 +128,10 @@ impl TodLook {
             grade_b,
             grade_blend,
             vignette: self.vignette,
+            diffusion: self.diffusion,
+            character_bloom: self.character_bloom,
+            gradients: self.gradients,
+            lens_flare: self.lens_flare,
             ..PostParams::default()
         }
     }
@@ -174,6 +188,11 @@ impl TodLook {
         group(&mut self.moon_disc, from_discs.map(|d| &d.moon), to_discs.map(|d| &d.moon), segment, weight);
         group(&mut self.stars, from.stars.as_ref(), to.stars.as_ref(), segment, weight);
         group(&mut self.clouds, from.clouds.as_ref(), to.clouds.as_ref(), segment, weight);
+        group(&mut self.diffusion, from.diffusion.as_ref(), to.diffusion.as_ref(), segment, weight);
+        let (from_bloom, to_bloom) = (from.character_bloom.as_ref(), to.character_bloom.as_ref());
+        group(&mut self.character_bloom, from_bloom, to_bloom, segment, weight);
+        group(&mut self.gradients, from.gradients.as_ref(), to.gradients.as_ref(), segment, weight);
+        group(&mut self.lens_flare, from.lens_flare.as_ref(), to.lens_flare.as_ref(), segment, weight);
     }
 }
 
@@ -415,7 +434,82 @@ impl Mix for BloomParams {
 
 impl Mix for Vignette {
     fn mix(&self, other: &Self, t: f32) -> Self {
-        Self { intensity: lerp(self.intensity, other.intensity, t), start: lerp(self.start, other.start, t) }
+        Self {
+            intensity: lerp(self.intensity, other.intensity, t),
+            start: lerp(self.start, other.start, t),
+            color: mix_color(self.color, other.color, t),
+        }
+    }
+}
+
+/// [`mix_oklab`], except that a color blended with itself stays exactly that color (OkLab's
+/// round trip isn't exact): a layer that keeps its color between keys keeps it bit for bit.
+fn mix_color(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+    if a == b { a } else { mix_oklab(a, b, t) }
+}
+
+impl Mix for Diffusion {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            intensity: lerp(self.intensity, other.intensity, t),
+            threshold: lerp(self.threshold, other.threshold, t),
+            color: mix_color(self.color, other.color, t),
+        }
+    }
+}
+
+impl Mix for CharacterBloom {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            threshold: lerp(self.threshold, other.threshold, t),
+            strength: lerp(self.strength, other.strength, t),
+        }
+    }
+}
+
+impl Mix for LensFlare {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            intensity: lerp(self.intensity, other.intensity, t),
+            color: mix_color(self.color, other.color, t),
+        }
+    }
+}
+
+/// Gradient layers blend slot by slot ([`GradientKey`] says how).
+impl Mix for [GradientLayer; MAX_GRADIENT_LAYERS] {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        std::array::from_fn(|slot| mix_gradient(&self[slot], &other[slot], t))
+    }
+}
+
+/// One slot of [`GradientLayer`]s blended: shape, color and numbers while the two layers have
+/// the same kind of shape and blend mode; otherwise the one fades out by halfway and the other in
+/// after it, so the slot passes through nothing rather than jumping. An empty slot (no opacity)
+/// takes the other layer's shape, color and mode, so that layer fades in or out alone.
+fn mix_gradient(a: &GradientLayer, b: &GradientLayer, t: f32) -> GradientLayer {
+    let a = if a.opacity > 0.0 { *a } else { GradientLayer { opacity: 0.0, ..*b } };
+    let b = if b.opacity > 0.0 { *b } else { GradientLayer { opacity: 0.0, ..a } };
+    let shape = match (a.shape, b.shape) {
+        (GradientShape::Linear { edge: from }, GradientShape::Linear { edge: to }) => {
+            Some(GradientShape::Linear { edge: lerp(from, to, t) })
+        }
+        (GradientShape::Radial { center: from }, GradientShape::Radial { center: to }) => {
+            Some(GradientShape::Radial { center: from.lerp(to, t) })
+        }
+        _ => None,
+    };
+    match shape {
+        Some(shape) if a.blend == b.blend => GradientLayer {
+            shape,
+            blend: a.blend,
+            color: mix_color(a.color, b.color, t),
+            opacity: lerp(a.opacity, b.opacity, t),
+            start: lerp(a.start, b.start, t),
+            end: lerp(a.end, b.end, t),
+        },
+        _ if t < 0.5 => GradientLayer { opacity: a.opacity * (1.0 - 2.0 * t), ..a },
+        _ => GradientLayer { opacity: b.opacity * (2.0 * t - 1.0), ..b },
     }
 }
 
@@ -491,6 +585,10 @@ impl Mix for TodLook {
             grades: self.grades.mix(&other.grades, t),
             bloom: self.bloom.mix(&other.bloom, t),
             vignette: self.vignette.mix(&other.vignette, t),
+            diffusion: self.diffusion.mix(&other.diffusion, t),
+            character_bloom: self.character_bloom.mix(&other.character_bloom, t),
+            gradients: self.gradients.mix(&other.gradients, t),
+            lens_flare: self.lens_flare.mix(&other.lens_flare, t),
         }
     }
 }
@@ -612,6 +710,43 @@ impl Resolve for VignetteKey {
     type Value = Vignette;
 
     fn resolve(&self) -> Vignette {
+        (*self).into()
+    }
+}
+
+impl Resolve for DiffusionKey {
+    type Value = Diffusion;
+
+    fn resolve(&self) -> Diffusion {
+        (*self).into()
+    }
+}
+
+impl Resolve for CharacterBloomKey {
+    type Value = CharacterBloom;
+
+    fn resolve(&self) -> CharacterBloom {
+        (*self).into()
+    }
+}
+
+/// A key's gradient layers, in order, the slots past them empty.
+impl Resolve for Vec<GradientKey> {
+    type Value = [GradientLayer; MAX_GRADIENT_LAYERS];
+
+    fn resolve(&self) -> [GradientLayer; MAX_GRADIENT_LAYERS] {
+        let mut layers = [GradientLayer::NONE; MAX_GRADIENT_LAYERS];
+        for (slot, key) in layers.iter_mut().zip(self) {
+            *slot = (*key).into();
+        }
+        layers
+    }
+}
+
+impl Resolve for LensFlareKey {
+    type Value = LensFlare;
+
+    fn resolve(&self) -> LensFlare {
         (*self).into()
     }
 }

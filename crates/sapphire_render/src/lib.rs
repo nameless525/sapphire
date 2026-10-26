@@ -7,9 +7,9 @@
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
 //!   resolved scene constants (key light, sky gradient and layers, the sun, moon and celestial
-//!   sphere, ambient, shadow tint, day/night factor and post, and the fog its later package
-//!   reads), and the character light rig (`sapphire_world::light_rig`, M1 C2) only as each
-//!   character's resolved [`CharacterLighting`].
+//!   sphere, ambient, shadow tint, day/night factor and post with its compositing layers, and
+//!   the fog its later package reads), and the character light rig (`sapphire_world::light_rig`,
+//!   M1 C2) only as each character's resolved [`CharacterLighting`].
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
 //!   material buffers, and instance and draw-record buffers kept across frames and updated from
@@ -44,9 +44,11 @@
 //!   [`CharacterInstance`]s, one entry per character in a per-frame buffer that the anime
 //!   character shader finds through the instance (see "The anime character shader" and "Faces"
 //!   below).
-//! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
+//! - Post-processing ([`post`], M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
-//!   [`PostParams`].
+//!   [`PostParams`]; and in the same fused pass (M1 P2) anime compositing's layers: the
+//!   diffusion glow, characters' own bloom (a mask in scene color's alpha), gradient ("para")
+//!   layers, lens flares from the sun, a tinted vignette and the player's sharpening.
 //! - Compute skinning and morph targets (`skinning`, M1 R2): every instance of a skinned or
 //!   morphed mesh draws from output streams of its own, which one dispatch a frame writes from
 //!   the packet's poses ([`SkinnedInstance`]); see "Skinned and morphed meshes" below.
@@ -238,7 +240,10 @@
 //! | 2 | storage, read-write | every deformed instance's outputs: positions twice and normals | the skinning pass |
 //!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
-//! and a sampler, 1 the textures the pass reads. Temporal AA's two passes do the same
+//! and a sampler, 1 the textures the pass reads (at most five: the fused pass's input, bloom,
+//! the two LUTs and the diffusion glow's level; its input, the constants and the sampler are
+//! visible to its vertex shader too, which measures the lens flare's visibility, M1 P2) and no
+//! storage buffer. Temporal AA's two passes do the same
 //! (`shaders/temporal.wgsl`, two samplers): the resolve, a compute pass, reads seven textures,
 //! writes the history as a storage texture and binds no storage buffer. The view
 //! group's uniforms carry the jitter (appended in M1 R7: the unjittered `clip_from_world` and
@@ -512,7 +517,7 @@ mod lights;
 mod materials;
 mod mesh_pool;
 mod pipelines;
-mod post;
+pub mod post;
 pub mod quality;
 mod renderer;
 mod scene;
@@ -532,7 +537,10 @@ pub use frame::{
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;
-pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
+pub use post::{
+    BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
+    LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS, PostParams, PostStats, ToneCurve, Vignette,
+};
 pub use renderer::{
     MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, ShaderUpdate,
     scaled_size,

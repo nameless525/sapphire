@@ -559,7 +559,7 @@ struct PassDesc<'a> {
 }
 
 /// Transparent surfaces: blended by coverage, keeping the scene color's alpha, which opaque
-/// surfaces set (the character bloom mask, C7).
+/// surfaces set (post's character mask, M1 P2: the world's share of the pixel).
 const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::SrcAlpha,

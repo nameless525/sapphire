@@ -17,8 +17,10 @@
 //!
 //! Then, where the device has timestamp queries, it runs [`TIMED_FRAMES`] more frames with the
 //! frame graph's GPU timing on and logs the mean GPU time of the main pass (the sky draws in it),
-//! the prepasses, temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post's
-//! composite, the skinning pass (`--skinned`), the sky cube's face pass and the whole frame.
+//! the prepasses, temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post (its bloom
+//! chain, its fused composite with the compositing layers, and the two together against §3.3's
+//! "Bloom + tonemap + LUT", 0.7 ms on Desktop-Low and 2.5 ms on Mobile-Low), the skinning pass
+//! (`--skinned`), the sky cube's face pass and the whole frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 
@@ -26,7 +28,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::temporal;
+use sapphire_render::{post, temporal};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -136,13 +138,13 @@ pub(crate) fn run(
     if !alloc::is_installed() {
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
-    gpu_times(&mut stage, &view)
+    gpu_times(&mut stage, &view, settings.bloom_levels)
 }
 
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's
 /// `exclusive` time (what it added to the frame; see `sapphire_render::graph::PassTime`) and its
-/// start-to-end `duration`, and the frame's span.
-fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitError> {
+/// start-to-end `duration`, and the frame's span. `bloom_levels` is the renderer's.
+fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> Result<(), AppInitError> {
     if !stage.gpu.caps().timestamp_query {
         tracing::info!(target: LOG_TARGET, "no timestamp queries on this device: GPU times not measured");
         return Ok(());
@@ -151,8 +153,11 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
     // Sums of (exclusive, duration) per group of passes, and the frames it ran in.
     type Sums = (Duration, Duration, u32);
     let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
-    let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut post) =
-        (zero, zero, zero, zero, zero, zero);
+    let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa) = (zero, zero, zero, zero, zero);
+    // Post's passes are summed only over frames whose timings hold every one of them and the
+    // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
+    // invalid, and a missing pass leaves its time in the next one's exclusive time.
+    let (mut bloom, mut composite, mut post_total) = (zero, zero, zero);
     let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
     for _ in 0..TIMED_FRAMES {
         stage.step();
@@ -166,14 +171,14 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         timed += 1;
         span += timings.span();
         // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
-        // runs are its inputs, timed apart; post's composite runs at the output's size either way.
-        let groups: [(&[&str], &mut Sums); 6] = [
+        // runs are its inputs, timed apart; post's composite runs at the output's size either way,
+        // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
+        let groups: [(&[&str], &mut Sums); 5] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&["main"], &mut main),
             (&["character prepass", "scene prepass"], &mut prepasses),
             (&temporal::PASSES, &mut taa),
-            (&["post"], &mut post),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -183,6 +188,21 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
                 ran = true;
             }
             sums.2 += u32::from(ran);
+        }
+        let chain = stage.renderer.stats().post.bloom_chain;
+        let post_passes = || post::frame_passes(bloom_levels, chain);
+        if timings.get("main").is_some() && post_passes().all(|name| timings.get(name).is_some()) {
+            for name in post_passes() {
+                let pass = timings.get(name).expect("checked above");
+                let sums = if name == post::COMPOSITE_PASS { &mut composite } else { &mut bloom };
+                sums.0 += pass.exclusive;
+                sums.1 += pass.duration;
+                post_total.0 += pass.exclusive;
+                post_total.1 += pass.duration;
+            }
+            for sums in [&mut bloom, &mut composite, &mut post_total] {
+                sums.2 += 1;
+            }
         }
     }
     let micros = |total: Duration, count: u32| total.as_secs_f64() * 1e6 / f64::from(count.max(1));
@@ -196,7 +216,10 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         gpu_taa_us = format_args!("{:.1}", micros(taa.0, taa.2)),
         gpu_taa_duration_us = format_args!("{:.1}", micros(taa.1, taa.2)),
         taa_frames = taa.2,
-        gpu_post_us = format_args!("{:.1}", micros(post.0, post.2)),
+        gpu_post_us = format_args!("{:.1}", micros(composite.0, composite.2)),
+        gpu_bloom_us = format_args!("{:.1}", micros(bloom.0, bloom.2)),
+        gpu_post_total_us = format_args!("{:.1}", micros(post_total.0, post_total.2)),
+        post_frames = post_total.2,
         gpu_skinning_us = format_args!("{:.1}", micros(skinning.0, skinning.2)),
         gpu_skinning_duration_us = format_args!("{:.1}", micros(skinning.1, skinning.2)),
         skinning_frames = skinning.2,

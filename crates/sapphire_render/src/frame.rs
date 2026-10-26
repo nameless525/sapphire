@@ -102,7 +102,10 @@ pub struct FramePacket {
     /// needs, in `f64`, so motion keeps its precision in long sessions and never jumps. Shaders
     /// get it wrapped to an hour (the frame uniforms' `time`), for periodic effects.
     pub time_seconds: f64,
-    /// Exposure, bloom, tone curve, grade and vignette. Defaults to Sapphire's default look.
+    /// Exposure, bloom, tone curve, grade and vignette, and the compositing layers over them
+    /// (M1 P2: the diffusion glow, characters' bloom, gradient layers, the lens flare, the
+    /// vignette's tint and the player's sharpening). Defaults to Sapphire's default look, without
+    /// the layers.
     pub post: PostParams,
     /// Point and spot lights. When more are visible than the renderer's
     /// [`RenderSettings::max_lights`](crate::RenderSettings::max_lights) allows, it keeps the

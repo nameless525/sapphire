@@ -2,7 +2,10 @@
 
 use bevy_reflect::Reflect;
 use sapphire_math::Ease;
-use sapphire_render::{BloomParams, ColorGrade, Vignette};
+use sapphire_render::{
+    BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
+    LensFlare, MAX_GRADIENT_LAYERS, Vignette,
+};
 use serde::{Deserialize, Serialize};
 
 /// A linear RGB color (or, for a direction, a vector), authored as `(r, g, b)`.
@@ -66,6 +69,19 @@ pub struct TodKey {
     /// The clouds' light and cover (M1 W2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clouds: Option<CloudsKey>,
+    /// The diffusion glow over bloom (M1 P2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<DiffusionKey>,
+    /// How characters bloom, relative to the world (M1 P2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_bloom: Option<CharacterBloomKey>,
+    /// Screen-space gradient ("para") layers over the graded frame, at most four, composited in
+    /// order (M1 P2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradients: Option<Vec<GradientKey>>,
+    /// The lens flare from the sun (M1 P2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lens_flare: Option<LensFlareKey>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -327,18 +343,180 @@ impl From<BloomKey> for BloomParams {
 pub struct VignetteKey {
     pub intensity: f32,
     pub start: f32,
+    /// Linear RGB the corners go toward (M1 P2): black, the default, darkens them.
+    #[serde(skip_serializing_if = "is_black")]
+    pub color: Rgb,
+}
+
+fn is_black(color: &Rgb) -> bool {
+    *color == [0.0; 3]
 }
 
 impl Default for VignetteKey {
     fn default() -> Self {
-        let Vignette { intensity, start } = Vignette::default();
-        Self { intensity, start }
+        let Vignette { intensity, start, color } = Vignette::default();
+        Self { intensity, start, color: color.to_array() }
     }
 }
 
 impl From<VignetteKey> for Vignette {
     fn from(key: VignetteKey) -> Self {
-        Self { intensity: key.intensity, start: key.start }
+        Self { intensity: key.intensity, start: key.start, color: key.color.into() }
+    }
+}
+
+/// The diffusion glow at a key ([`Diffusion`]): a wide, soft glow screened over the graded frame.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct DiffusionKey {
+    /// How fast the glow builds with the light under it: 0 turns it off.
+    pub intensity: f32,
+    /// Light (after exposure) where the glow starts: it fades in from half this to one and a
+    /// half times this.
+    #[serde(default)]
+    pub threshold: f32,
+    /// Linear RGB the glow builds toward over the brightest light.
+    #[serde(default = "white")]
+    pub color: Rgb,
+}
+
+fn white() -> Rgb {
+    [1.0; 3]
+}
+
+impl From<DiffusionKey> for Diffusion {
+    fn from(key: DiffusionKey) -> Self {
+        Self { intensity: key.intensity, threshold: key.threshold, color: key.color.into() }
+    }
+}
+
+/// How characters bloom at a key ([`CharacterBloom`]): their threshold and strength as multiples
+/// of the world's bloom. Fields left out are 1, as the world's.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(default, deny_unknown_fields)]
+pub struct CharacterBloomKey {
+    /// The world's threshold times this: above 1, faces need brighter light to bloom.
+    pub threshold: f32,
+    /// The world's intensity times this: 0, characters add nothing to bloom.
+    pub strength: f32,
+}
+
+impl Default for CharacterBloomKey {
+    fn default() -> Self {
+        let CharacterBloom { threshold, strength } = CharacterBloom::NEUTRAL;
+        Self { threshold, strength }
+    }
+}
+
+impl From<CharacterBloomKey> for CharacterBloom {
+    fn from(key: CharacterBloomKey) -> Self {
+        Self { threshold: key.threshold, strength: key.strength }
+    }
+}
+
+/// One gradient ("para") layer at a key ([`GradientLayer`]): a tint ramped across the frame,
+/// from full opacity at `start` to nothing at `end`, in a blend mode.
+///
+/// Between keys a layer blends with the one in the same place in the next key's list: colors in
+/// OkLab, the rest linearly, while their shape and blend mode match. Where they differ, the one
+/// fades out by halfway and the other in after it, so the picture never jumps; a layer only one
+/// of the keys has fades from or to no opacity.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct GradientKey {
+    pub shape: GradientShapeKey,
+    #[serde(default)]
+    pub blend: GradientBlendKey,
+    /// Linear RGB.
+    pub color: Rgb,
+    /// 0 to 1.
+    #[serde(default = "one")]
+    pub opacity: f32,
+    /// Where the layer is at full opacity, in its shape's positions.
+    #[serde(default)]
+    pub start: f32,
+    /// Where it has faded out.
+    #[serde(default = "one")]
+    pub end: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+/// Where a gradient layer ramps ([`GradientShape`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+pub enum GradientShapeKey {
+    /// Straight across the frame from the side `edge` degrees clockwise from the top (0 the top,
+    /// 90 the right, 180 the bottom), positions 0 there to 1 at the opposite side.
+    Linear { edge: f32 },
+    /// Round around `center` (0, 0 the top left of the frame, 1, 1 its bottom right), positions
+    /// in half the frame's diagonal.
+    Radial { center: [f32; 2] },
+}
+
+/// A gradient layer's blend mode ([`GradientBlend`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+pub enum GradientBlendKey {
+    #[default]
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    SoftLight,
+    Add,
+}
+
+impl From<GradientBlendKey> for GradientBlend {
+    fn from(key: GradientBlendKey) -> Self {
+        match key {
+            GradientBlendKey::Normal => Self::Normal,
+            GradientBlendKey::Multiply => Self::Multiply,
+            GradientBlendKey::Screen => Self::Screen,
+            GradientBlendKey::Overlay => Self::Overlay,
+            GradientBlendKey::SoftLight => Self::SoftLight,
+            GradientBlendKey::Add => Self::Add,
+        }
+    }
+}
+
+impl From<GradientKey> for GradientLayer {
+    fn from(key: GradientKey) -> Self {
+        let shape = match key.shape {
+            GradientShapeKey::Linear { edge } => GradientShape::Linear { edge: edge.to_radians() },
+            GradientShapeKey::Radial { center } => GradientShape::Radial { center: center.into() },
+        };
+        Self {
+            shape,
+            blend: key.blend.into(),
+            color: key.color.into(),
+            opacity: key.opacity,
+            start: key.start,
+            end: key.end,
+        }
+    }
+}
+
+/// The lens flare at a key ([`LensFlare`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct LensFlareKey {
+    /// Light added before the tone curve: 0 turns it off.
+    pub intensity: f32,
+    /// Linear RGB tinting every element.
+    #[serde(default = "white")]
+    pub color: Rgb,
+}
+
+impl From<LensFlareKey> for LensFlare {
+    fn from(key: LensFlareKey) -> Self {
+        Self { intensity: key.intensity, color: key.color.into() }
     }
 }
 
@@ -360,10 +538,14 @@ pub enum TodGroup {
     Discs,
     Stars,
     Clouds,
+    Diffusion,
+    CharacterBloom,
+    Gradients,
+    LensFlare,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 19] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -379,12 +561,22 @@ impl TodGroup {
         Self::Discs,
         Self::Stars,
         Self::Clouds,
+        Self::Diffusion,
+        Self::CharacterBloom,
+        Self::Gradients,
+        Self::LensFlare,
     ];
 
     /// The sky's layers over its gradient (M1 W2): optional even in the base timeline, where a
     /// group left out draws nothing ([`sapphire_render::SkyLayers::default`]), so timelines
     /// written before them draw the sky as they did.
     pub const SKY_LAYERS: [Self; 3] = [Self::Discs, Self::Stars, Self::Clouds];
+
+    /// Post's compositing layers (M1 P2): optional even in the base timeline, where a group left
+    /// out draws nothing (characters bloom as the world does), so timelines written before them
+    /// draw post as they did ([`sapphire_render::PostParams::plain`]).
+    pub const POST_LAYERS: [Self; 4] =
+        [Self::Diffusion, Self::CharacterBloom, Self::Gradients, Self::LensFlare];
 
     /// The group's field name in a key.
     pub fn name(self) -> &'static str {
@@ -404,11 +596,15 @@ impl TodGroup {
             Self::Discs => "discs",
             Self::Stars => "stars",
             Self::Clouds => "clouds",
+            Self::Diffusion => "diffusion",
+            Self::CharacterBloom => "character_bloom",
+            Self::Gradients => "gradients",
+            Self::LensFlare => "lens_flare",
         }
     }
 
-    fn bit(self) -> u16 {
-        1 << self as u16
+    fn bit(self) -> u32 {
+        1 << self as u32
     }
 }
 
@@ -420,18 +616,23 @@ impl std::fmt::Display for TodGroup {
 
 /// A set of [`TodGroup`]s.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct TodGroups(u16);
+pub struct TodGroups(u32);
 
 impl TodGroups {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self((1 << TodGroup::ALL.len()) - 1);
     /// What the base timeline must set: every group but the sky's layers
-    /// ([`TodGroup::SKY_LAYERS`]).
+    /// ([`TodGroup::SKY_LAYERS`]) and post's ([`TodGroup::POST_LAYERS`]).
     pub const REQUIRED: Self = {
         let mut bits = Self::ALL.0;
         let mut index = 0;
         while index < TodGroup::SKY_LAYERS.len() {
-            bits &= !(1 << TodGroup::SKY_LAYERS[index] as u16);
+            bits &= !(1 << TodGroup::SKY_LAYERS[index] as u32);
+            index += 1;
+        }
+        let mut index = 0;
+        while index < TodGroup::POST_LAYERS.len() {
+            bits &= !(1 << TodGroup::POST_LAYERS[index] as u32);
             index += 1;
         }
         Self(bits)
@@ -495,6 +696,10 @@ impl TodKey {
             (TodGroup::Discs, self.discs.is_some()),
             (TodGroup::Stars, self.stars.is_some()),
             (TodGroup::Clouds, self.clouds.is_some()),
+            (TodGroup::Diffusion, self.diffusion.is_some()),
+            (TodGroup::CharacterBloom, self.character_bloom.is_some()),
+            (TodGroup::Gradients, self.gradients.is_some()),
+            (TodGroup::LensFlare, self.lens_flare.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -573,6 +778,7 @@ impl TodKey {
         if let Some(vignette) = &self.vignette {
             within(vignette.intensity, 0.0, 1.0, "vignette.intensity", "must be within 0..=1")?;
             within(vignette.start, 0.0, 0.99, "vignette.start", "must be within 0..=0.99")?;
+            color(vignette.color, "vignette.color")?;
         }
         if let Some(discs) = &self.discs {
             disc(
@@ -593,6 +799,27 @@ impl TodKey {
             color(clouds.rim, "clouds.rim")?;
             within(clouds.coverage, 0.0, 1.0, "clouds.coverage", "must be within 0..=1")?;
             within(clouds.cirrus, 0.0, 1.0, "clouds.cirrus", "must be within 0..=1")?;
+        }
+        if let Some(diffusion) = &self.diffusion {
+            non_negative(diffusion.intensity, "diffusion.intensity")?;
+            non_negative(diffusion.threshold, "diffusion.threshold")?;
+            color(diffusion.color, "diffusion.color")?;
+        }
+        if let Some(character) = &self.character_bloom {
+            non_negative(character.threshold, "character_bloom.threshold")?;
+            non_negative(character.strength, "character_bloom.strength")?;
+        }
+        if let Some(gradients) = &self.gradients {
+            if gradients.len() > MAX_GRADIENT_LAYERS {
+                return Err(("gradients", "can have at most 4 layers"));
+            }
+            for layer in gradients {
+                gradient(layer)?;
+            }
+        }
+        if let Some(flare) = &self.lens_flare {
+            non_negative(flare.intensity, "lens_flare.intensity")?;
+            color(flare.color, "lens_flare.color")?;
         }
         Ok(())
     }
@@ -620,6 +847,21 @@ fn disc(
     non_negative(key.intensity, intensity)?;
     color(key.glow, glow)?;
     within(key.glow_size, 0.0, 180.0, glow_size, "must be within 0..=180 degrees")
+}
+
+fn gradient(layer: &GradientKey) -> Check {
+    match layer.shape {
+        GradientShapeKey::Linear { edge } => finite(edge, "gradients.shape.edge")?,
+        GradientShapeKey::Radial { center } => {
+            if !center.iter().all(|v| v.is_finite()) {
+                return Err(("gradients.shape.center", "must be finite"));
+            }
+        }
+    }
+    color(layer.color, "gradients.color")?;
+    within(layer.opacity, 0.0, 1.0, "gradients.opacity", "must be within 0..=1")?;
+    finite(layer.start, "gradients.start")?;
+    finite(layer.end, "gradients.end")
 }
 
 fn color(rgb: Rgb, field: &'static str) -> Check {

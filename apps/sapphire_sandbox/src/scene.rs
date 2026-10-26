@@ -31,9 +31,10 @@
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
-//!   probe, and writes them; the player's filter strength (`post.filter_strength`) goes on top,
-//!   then the zone's sky material, and `--cloud-cover`'s coverage or `--plain-sky`'s bare
-//!   gradient, if set. After `Extract` has posed and extracted the instances, it resolves each
+//!   probe, and writes them; the player's filter strength and sharpening (`post.filter_strength`,
+//!   `post.sharpening` or `--sharpening`) go on top, then the zone's sky material, and
+//!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient or `--plain-post`'s post without
+//!   its compositing layers (M1 P2), if set. After `Extract` has posed and extracted the instances, it resolves each
 //!   character's light rig for the frame's camera into the packet's characters (M1 C2), with its
 //!   face (M1 C3): the turntable's head turning with it, and each face rig head lit from its own
 //!   angles. Both run there rather than as `Extract` systems, which would cost an allocation a
@@ -116,6 +117,10 @@ pub(crate) struct Scene {
     cloud_cover: Option<f32>,
     /// The sky's gradient alone (`--plain-sky`).
     plain_sky: bool,
+    /// Post without its compositing layers (`--plain-post`).
+    plain_post: bool,
+    /// The player's sharpening instead of the cvar's (`--sharpening`).
+    sharpening: Option<f32>,
 }
 
 impl Scene {
@@ -169,6 +174,8 @@ impl Scene {
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
+            plain_post: false,
+            sharpening: None,
         }
     }
 
@@ -273,6 +280,20 @@ impl Scene {
         self.plain_sky = plain;
     }
 
+    /// Draws post as it was before its compositing layers (M1 P2): no diffusion glow, character
+    /// bloom, gradient layers, lens flare, vignette tint or sharpening, whatever time of day and
+    /// the player's settings give. For scenes about something else, as `--plain-sky` is for the
+    /// sky.
+    pub fn set_plain_post(&mut self, plain: bool) {
+        self.plain_post = plain;
+    }
+
+    /// Sharpens by `amount` (0 to 1) instead of the `post.sharpening` cvar, or by the cvar again
+    /// with `None`.
+    pub fn set_sharpening(&mut self, amount: Option<f32>) {
+        self.sharpening = amount;
+    }
+
     /// Replaces the character light rig presets (hot reload, `dev` builds). Characters keep their
     /// preset IDs; one past the new presets' end is lit with their default.
     #[cfg(feature = "dev")]
@@ -373,6 +394,7 @@ impl Scene {
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
+        let (plain_post, sharpening) = (self.plain_post, self.sharpening);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             let camera = world.resource::<OrbitCamera>();
@@ -386,6 +408,7 @@ impl Scene {
                 clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
             world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
             packet.post.filter_strength = crate::cvars::filter_strength();
+            packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
             packet.sky_material = sky_material;
             if let Some(cover) = cloud_cover {
                 packet.sky_layers.clouds.coverage = cover;
@@ -393,6 +416,9 @@ impl Scene {
             }
             if plain_sky {
                 packet.sky_layers = SkyLayers::default();
+            }
+            if plain_post {
+                packet.post = packet.post.plain();
             }
         });
         self.ecs.extract();
@@ -685,6 +711,23 @@ mod tests {
     }
 
     #[test]
+    fn plain_post_drops_the_compositing_layers_and_sharpening_reaches_the_packet() {
+        let mut scene = scene();
+        scene.set_day(18.5, None);
+        let layered = scene.frame_packet(1.0, Some((1920, 1080))).post;
+        assert!(layered.diffusion.intensity > 0.0, "the default day's sunset glows");
+        assert_eq!(layered.sharpening, 0.0, "off by default");
+        scene.end_frame();
+        scene.set_sharpening(Some(0.5));
+        assert_eq!(scene.frame_packet(1.0, Some((1920, 1080))).post.sharpening, 0.5);
+        scene.end_frame();
+        scene.set_plain_post(true);
+        let plain = scene.frame_packet(1.0, Some((1920, 1080))).post;
+        assert_eq!(plain, layered.plain(), "time of day's post without the layers");
+        scene.end_frame();
+    }
+
+    #[test]
     fn the_face_rig_lists_each_head_lit_from_its_own_angles() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         scene.spawn_face_rig(MeshHandle::from_raw(1));
@@ -734,10 +777,12 @@ mod tests {
         scene.step();
         let packet = scene.frame_packet(1.0, Some((1920, 1080)));
         assert_eq!(packet.views.len(), 1);
-        // At the default hour, time of day draws the sandbox's look from before it existed.
+        // At the default hour, time of day draws the sandbox's look from before it existed, with
+        // post's compositing layers on top.
         assert_eq!(packet.sun, SUN);
         assert_eq!(packet.sky, sapphire_render::SkyGradient::default());
-        assert_eq!(packet.post, sapphire_render::PostParams::default());
+        assert_eq!(packet.post.plain(), sapphire_render::PostParams::default());
+        assert_ne!(packet.post, packet.post.plain(), "the default day's compositing layers");
         assert!(packet.lights.is_empty(), "no demo lights unless asked for");
         assert_eq!(changed(packet), [character], "added");
         let first = packet.instances.changed[0].transform;

@@ -155,6 +155,7 @@ fn passthrough() -> PostParams {
         grade_blend: 0.0,
         filter_strength: 1.0,
         vignette: Vignette { intensity: 0.0, ..Vignette::default() },
+        ..PostParams::default()
     }
 }
 

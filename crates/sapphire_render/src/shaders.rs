@@ -339,7 +339,18 @@ mod tests {
         (Program::Clusters, &["cs_clusters"]),
         (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
         (Program::Skinning, &["cs_skinning"]),
-        (Program::Post, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
+        (
+            Program::Post,
+            &[
+                "vs_fullscreen",
+                "fs_bloom_prefilter",
+                "fs_bloom_down",
+                "fs_bloom_up",
+                "fs_post",
+                "vs_composite",
+                "fs_composite",
+            ],
+        ),
         (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),
     ];
 
@@ -970,6 +981,95 @@ mod tests {
                 let stage = Some((entry_point.stage, entry_point.name.as_str()));
                 naga::back::pipeline_constants::process_overrides(&sky, &info, stage, &constants)
                     .unwrap_or_else(|error| panic!("sky.wgsl {bits:03b} {}: {error}", entry_point.name));
+            }
+        }
+    }
+
+    /// Post's constants are written by the CPU every frame, so every field must sit where the
+    /// WGSL struct reads it, the compositing layers' structs included; their enumerations are
+    /// the WGSL constants', and every variant of the three overridable constants specializes.
+    #[test]
+    fn wgsl_post_matches_rust() {
+        use crate::post::layers::{BlendKind, FLARE_ELEMENTS, FlareKind, GpuFlareElement, GpuGradient};
+        use crate::post::{CHARACTERS_CONSTANT, LAYERS_CONSTANT, MAX_GRADIENT_LAYERS, SHARPEN_CONSTANT};
+        let post = validate(Program::Post);
+        let fields = |name: &str| -> Vec<(String, usize)> {
+            let (_, ty) = post
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no WGSL struct {name}"));
+            let naga::TypeInner::Struct { members, .. } = &ty.inner else { panic!("{name} is a struct") };
+            members
+                .iter()
+                .map(|member| (member.name.clone().unwrap_or_default(), member.offset as usize))
+                .collect()
+        };
+        let owned = |fields: Vec<(&str, usize)>| -> Vec<(String, usize)> {
+            fields.into_iter().map(|(name, offset)| (name.to_owned(), offset)).collect()
+        };
+        let uniforms = offsets!(PostUniforms {
+            composite,
+            bloom,
+            lut,
+            vignette,
+            vignette_color,
+            character_bloom,
+            diffusion,
+            diffusion_threshold,
+            frame,
+            flare_sun,
+            flare,
+            counts,
+            gradients,
+            flare_elements,
+        });
+        assert_eq!(fields("PostUniforms"), owned(uniforms), "PostUniforms: WGSL vs Rust fields");
+        assert_eq!(
+            fields("GradientLayer"),
+            owned(offsets!(GpuGradient { color, geometry, mode, scale, offset }))
+        );
+        assert_eq!(fields("FlareElement"), owned(offsets!(GpuFlareElement { shape, color, reach })));
+        assert_eq!(wgsl_u32(&post, "MAX_GRADIENT_LAYERS") as usize, MAX_GRADIENT_LAYERS);
+        assert_eq!(wgsl_u32(&post, "FLARE_ELEMENTS") as usize, FLARE_ELEMENTS);
+        let kinds = [
+            ("FLARE_DISC", FlareKind::Disc),
+            ("FLARE_RING", FlareKind::Ring),
+            ("FLARE_HEXAGON", FlareKind::Hexagon),
+            ("FLARE_STREAK", FlareKind::Streak),
+        ];
+        for (name, kind) in kinds {
+            assert_eq!(wgsl_u32(&post, name), kind as u32, "{name}");
+        }
+        let blends = [
+            ("BLEND_AFFINE", BlendKind::Affine),
+            ("BLEND_OVERLAY", BlendKind::Overlay),
+            ("BLEND_SOFT_LIGHT", BlendKind::SoftLight),
+        ];
+        for (name, kind) in blends {
+            assert_eq!(wgsl_u32(&post, name), kind as u32, "{name}");
+        }
+        assert_eq!((wgsl_u32(&post, "GRADIENT_LINEAR"), wgsl_u32(&post, "GRADIENT_RADIAL")), (0, 1));
+        let names = [LAYERS_CONSTANT, SHARPEN_CONSTANT, CHARACTERS_CONSTANT];
+        for name in names {
+            assert!(post.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
+        }
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&post)
+        .expect("validated above");
+        for bits in 0..8u32 {
+            let constants: naga::back::PipelineConstants = names
+                .iter()
+                .zip(0..)
+                .map(|(name, bit)| (name.to_string(), f64::from(bits >> bit & 1)))
+                .collect();
+            for entry_point in &post.entry_points {
+                let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                naga::back::pipeline_constants::process_overrides(&post, &info, stage, &constants)
+                    .unwrap_or_else(|error| panic!("post.wgsl {bits:03b} {}: {error}", entry_point.name));
             }
         }
     }

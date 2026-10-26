@@ -4,7 +4,10 @@ use std::sync::Arc;
 
 use sapphire_math::Vec3;
 use sapphire_math::color::linear_srgb_to_oklab;
-use sapphire_render::{ColorGrade, DirectionalLight, FramePacket, PostParams, SkyGradient, SkyLayers};
+use sapphire_render::{
+    CharacterBloom, ColorGrade, DirectionalLight, FramePacket, GradientBlend, GradientLayer, GradientShape,
+    PostParams, SkyGradient, SkyLayers,
+};
 use sapphire_serialize::DocumentError;
 use sapphire_time::{ScaleSource, ScaledClock};
 
@@ -41,13 +44,14 @@ fn the_default_day_reproduces_the_default_look_exactly() {
     let look = day.evaluate(DAY);
     assert_eq!(look.key_light(), DAY_SUN, "the moon is dark at 10:00");
     assert_eq!(look.sky, SkyGradient::default());
-    assert_eq!(look.post(), PostParams::default());
+    // Post as R3 and W1 drew it; the compositing layers (M1 P2) come on top.
+    assert_eq!(look.post().plain(), PostParams::default());
     // Through the whole resolve, as the app runs it.
     let (_, mut tod) = time_of_day(DAY);
     let mut packet = FramePacket::default();
     tod.resolve(Vec3::new(1.0, 2.0, 3.0), 0.6).write(&mut packet);
     assert_eq!(
-        (packet.sun, packet.sky, packet.post),
+        (packet.sun, packet.sky, packet.post.plain()),
         (DAY_SUN, SkyGradient::default(), PostParams::default())
     );
     assert_eq!(packet.day_night, 0.0);
@@ -574,4 +578,199 @@ fn the_stars_turn_with_the_hour_about_the_sky_pole() {
     let day = TodTimeline::default_day().evaluate(DAY);
     assert_eq!(day.stars, 0.0, "none by day");
     assert!(day.sun_disc.intensity > 1.0 && day.clouds.coverage > 0.0, "a bright sun and clouds by day");
+}
+
+#[test]
+fn timelines_without_post_layers_load_and_draw_post_as_before() {
+    let old = TodTimeline::from_ron(TIMELINE_BEFORE_SKY_LAYERS).expect("an older document loads");
+    assert!(old.is_complete(), "it can still be the base timeline");
+    for group in TodGroup::POST_LAYERS {
+        assert!(!old.groups().contains(group) && !TodGroups::REQUIRED.contains(group), "{group}");
+    }
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(old, clock, 6.0).expect("a complete base");
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.post, packet.post.plain(), "no compositing layers: post as before");
+    assert_eq!(packet.post.vignette.intensity, 0.2, "its own keys still draw");
+    // The default day sets every layer at every key.
+    let day = TodTimeline::default_day();
+    for group in TodGroup::POST_LAYERS {
+        assert!(day.groups().contains(group), "{group}");
+    }
+    for hours in [0.0, 6.5, 10.0, 18.75] {
+        let post = day.evaluate(hours).post();
+        assert!(post.diffusion.intensity > 0.0, "{hours}: a glow");
+        assert_ne!(post.character_bloom, CharacterBloom::NEUTRAL, "{hours}: faces kept from blowing out");
+        assert_eq!(post.gradients.iter().filter(|layer| layer.opacity > 0.0).count(), 3, "{hours}");
+    }
+    assert!(day.evaluate(18.75).post().lens_flare.intensity > 0.0, "a flare at sunset");
+    assert_eq!(day.evaluate(0.0).post().lens_flare.intensity, 0.0, "none at midnight");
+    assert_ne!(day.evaluate(0.0).post().vignette.color, Vec3::ZERO, "a tinted vignette at night");
+}
+
+/// A key with every compositing layer (M1 P2) set.
+fn post_layers(time: f32) -> TodKey {
+    TodKey {
+        vignette: Some(VignetteKey { intensity: 0.3, start: 0.4, color: [0.05, 0.02, 0.15] }),
+        diffusion: Some(DiffusionKey { intensity: 1.5, threshold: 0.2, color: [1.0, 0.7, 0.5] }),
+        character_bloom: Some(CharacterBloomKey { threshold: 1.5, strength: 0.4 }),
+        gradients: Some(vec![
+            GradientKey {
+                shape: GradientShapeKey::Linear { edge: 0.0 },
+                blend: GradientBlendKey::Multiply,
+                color: [0.6, 0.5, 0.9],
+                opacity: 0.4,
+                start: 0.0,
+                end: 0.5,
+            },
+            GradientKey {
+                shape: GradientShapeKey::Radial { center: [0.5, 0.4] },
+                blend: GradientBlendKey::SoftLight,
+                color: [1.0, 0.8, 0.6],
+                opacity: 0.2,
+                start: 0.0,
+                end: 0.9,
+            },
+        ]),
+        lens_flare: Some(LensFlareKey { intensity: 1.2, color: [1.0, 0.6, 0.4] }),
+        ..key(time)
+    }
+}
+
+#[test]
+fn post_layer_groups_round_trip_and_are_checked() {
+    let timeline = TodTimeline::new(vec![post_layers(3.0)]).expect("valid");
+    let text = timeline.to_ron().expect("write");
+    for group in
+        ["diffusion:", "character_bloom:", "gradients:", "Linear(", "Radial(", "SoftLight", "lens_flare:"]
+    {
+        assert!(text.contains(group), "{group}: {text}");
+    }
+    assert_eq!(TodTimeline::from_ron(&text).expect("read"), timeline);
+    let look = timeline.evaluate(3.0);
+    assert_eq!(look.gradients[0].shape, GradientShape::Linear { edge: 0.0 });
+    assert_eq!(look.gradients[1].blend, GradientBlend::SoftLight);
+    assert_eq!(look.gradients[2], GradientLayer::NONE, "slots past the key's layers are empty");
+    assert_eq!(look.vignette.color, Vec3::new(0.05, 0.02, 0.15));
+    // Left-out fields default: a white glow and flare, a normal, opaque layer over the whole
+    // frame, characters as the world, and a black vignette.
+    let partial = TodTimeline::from_ron(
+        r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0,
+            diffusion: (intensity: 1.0), character_bloom: (strength: 0.5),
+            gradients: [(shape: Linear(edge: 90.0), color: (1.0, 0.5, 0.0))],
+            lens_flare: (intensity: 0.5), vignette: (intensity: 0.1))]))"#,
+    )
+    .expect("valid");
+    let look = partial.evaluate(1.0);
+    assert_eq!((look.diffusion.color, look.diffusion.threshold), (Vec3::ONE, 0.0));
+    assert_eq!(look.character_bloom, CharacterBloom { threshold: 1.0, strength: 0.5 });
+    let layer = look.gradients[0];
+    assert_eq!((layer.blend, layer.opacity, layer.start, layer.end), (GradientBlend::Normal, 1.0, 0.0, 1.0));
+    let GradientShape::Linear { edge } = layer.shape else { panic!("linear") };
+    assert!((edge - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "edges authored in degrees arrive in radians");
+    assert_eq!((look.lens_flare.color, look.vignette.color), (Vec3::ONE, Vec3::ZERO));
+    // Values out of range name their field; typos and unknown shapes are errors.
+    let invalid = |groups: &str| {
+        let text = format!(
+            r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0, {groups})]))"#
+        );
+        TodTimeline::from_ron(&text).expect_err(groups).to_string()
+    };
+    assert!(invalid("diffusion: (intensity: -1.0)").contains("diffusion.intensity"));
+    assert!(invalid("diffusion: (intensity: 1.0, color: (1.0, -1.0, 1.0))").contains("diffusion.color"));
+    assert!(invalid("character_bloom: (threshold: -0.5)").contains("character_bloom.threshold"));
+    let opacity = "gradients: [(shape: Linear(edge: 0.0), color: (1.0, 1.0, 1.0), opacity: 1.5)]";
+    assert!(invalid(opacity).contains("gradients.opacity"));
+    let layer = "(shape: Radial(center: (0.5, 0.5)), color: (1.0, 1.0, 1.0))";
+    let five = format!("gradients: [{layer}, {layer}, {layer}, {layer}, {layer}]");
+    assert!(invalid(&five).contains("at most 4"));
+    assert!(invalid("lens_flare: (intensity: 1.0, color: (1.0, 1.0, -0.1))").contains("lens_flare.color"));
+    assert!(invalid("vignette: (color: (-1.0, 0.0, 0.0))").contains("vignette.color"));
+    let typo = "gradients: [(shape: Linear(edge: 0.0), colour: (1.0, 1.0, 1.0))]";
+    assert!(invalid(typo).contains("colour"), "typos are errors");
+    assert!(!invalid("gradients: [(shape: Diagonal, color: (1.0, 1.0, 1.0))]").is_empty());
+    // Every key of a timeline sets the same groups, the new ones too.
+    let mixed = TodTimeline::new(vec![post_layers(1.0), key(2.0)]);
+    assert!(matches!(mixed, Err(TodError::MixedGroups { .. })), "{mixed:?}");
+}
+
+#[test]
+fn post_layers_blend_in_oklab_and_gradient_layers_slot_by_slot() {
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let warm = post_layers(6.0);
+    let mut cool = post_layers(12.0);
+    cool.diffusion = Some(DiffusionKey { intensity: 0.5, threshold: 0.4, color: [0.3, 0.4, 1.0] });
+    cool.vignette = Some(VignetteKey { color: [0.0; 3], ..VignetteKey::default() });
+    let gradients = cool.gradients.as_mut().expect("set");
+    // The first layer changes only its color and opacity; the second its blend mode; a third
+    // appears.
+    gradients[0].color = [0.2, 0.3, 0.9];
+    gradients[0].opacity = 0.8;
+    gradients[1].blend = GradientBlendKey::Screen;
+    gradients.push(GradientKey {
+        shape: GradientShapeKey::Linear { edge: 180.0 },
+        blend: GradientBlendKey::Add,
+        color: [1.0, 0.5, 0.2],
+        opacity: 0.6,
+        start: 0.0,
+        end: 0.3,
+    });
+    let timeline = TodTimeline::new(vec![warm, cool]).expect("valid");
+    let at = |hours: f32| timeline.evaluate(hours);
+    let middle = at(9.0);
+    let expected = lab(Vec3::new(1.0, 0.7, 0.5)).lerp(lab(Vec3::new(0.3, 0.4, 1.0)), 0.5);
+    assert!(lab(middle.diffusion.color).abs_diff_eq(expected, 1e-4), "glow colors in OkLab");
+    assert!((middle.diffusion.intensity - 1.0).abs() < 1e-6, "numbers linearly");
+    assert!(lab(middle.vignette.color).abs_diff_eq(lab(Vec3::new(0.05, 0.02, 0.15)) * 0.5, 1e-4));
+    // A layer whose shape and mode match blends.
+    let first = middle.gradients[0];
+    let expected = lab(Vec3::new(0.6, 0.5, 0.9)).lerp(lab(Vec3::new(0.2, 0.3, 0.9)), 0.5);
+    assert!(lab(first.color).abs_diff_eq(expected, 1e-4) && (first.opacity - 0.6).abs() < 1e-6);
+    // One whose mode changes fades out by halfway, then the other fades in: never a jump.
+    let second = |hours: f32| at(hours).gradients[1];
+    assert_eq!(second(7.5).blend, GradientBlend::SoftLight);
+    assert!((second(7.5).opacity - 0.1).abs() < 1e-6, "{:?}", second(7.5));
+    assert!(second(9.0).opacity.abs() < 1e-6, "nothing at the switch");
+    assert_eq!(second(10.5).blend, GradientBlend::Screen);
+    assert!((second(10.5).opacity - 0.1).abs() < 1e-6);
+    // A layer only the later key has fades in from nothing, in its own color all along.
+    let third = |hours: f32| at(hours).gradients[2];
+    assert_eq!(third(6.0), GradientLayer::NONE, "exact on the key");
+    assert_eq!(third(7.5).color, Vec3::new(1.0, 0.5, 0.2));
+    assert!((third(7.5).opacity - 0.15).abs() < 1e-6 && third(7.5).blend == GradientBlend::Add);
+    let later = TodTimeline::new(vec![timeline.keys()[1].clone()]).expect("valid");
+    assert_eq!(at(12.0).post(), later.evaluate(12.0).post(), "exact on the other key");
+}
+
+#[test]
+fn zones_and_cutscenes_override_the_post_layers() {
+    let (_, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    // A misty zone: a stronger glow, the base's gradients and flare kept.
+    let mist = TodKey {
+        diffusion: Some(DiffusionKey { intensity: 3.0, threshold: 0.0, color: [0.9, 0.95, 1.0] }),
+        ..key(0.0)
+    };
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 10.0 };
+    let zone_id = tod.add_volume(TodVolume::new(shape, zone(mist)));
+    let inside = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(inside.look.diffusion.intensity, 3.0);
+    assert_eq!((inside.look.gradients, inside.look.lens_flare), (base.look.gradients, base.look.lens_flare));
+    tod.remove_volume(zone_id);
+    // A shot with gradient layers of its own, eased in and out like its other values.
+    let shot_key = post_layers(0.0);
+    let shot_gradients = TodTimeline::new(vec![shot_key.clone()]).expect("valid").evaluate(0.0).gradients;
+    let keys = vec![TodKey { gradients: shot_key.gradients, ..key(0.0) }];
+    let shot = TodCutscene::new(4.0, 1.0, 1.0, None, keys, None).expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(2.0);
+    let held = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(held.look.gradients, shot_gradients, "fully in: the shot's layers");
+    assert_eq!(held.look.diffusion, base.look.diffusion, "groups the shot doesn't set stay the world's");
+    tod.seek_cutscene(0.5);
+    let easing = tod.resolve(Vec3::ZERO, 0.0).look.gradients;
+    assert!(easing != shot_gradients && easing != base.look.gradients, "easing in");
+    tod.stop_cutscene();
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.gradients, base.look.gradients);
 }

@@ -1,17 +1,20 @@
 //! Time of day (M1 W1; look pillar 1, M1 plan §2): one set of art-directed keys drives the sky
 //! gradient and its layers (the sun's and moon's discs and glows, the stars, the clouds; M1 W2),
 //! the sun and moon, the key light, ambient light, fog, the shadow tint, the character rig's key
-//! light, the day/night ramp blend and post-processing's exposure, bloom, grade and vignette, so
-//! characters and world change together and read as one picture. As in Wuthering Waves, it is a
-//! stylized day, not a physical atmosphere.
+//! light, the day/night ramp blend and post-processing's exposure, bloom, grade and vignette, and
+//! its compositing layers (the diffusion glow, characters' bloom, gradient layers and the lens
+//! flare; M1 P2), so characters and world change together and read as one picture. As in
+//! Wuthering Waves, it is a stylized day, not a physical atmosphere.
 //!
 //! # Data
 //!
 //! - **[`TodTimeline`]** (a `TodTimeline` RON document): [`TodKey`]s at hours of the day, each
 //!   setting groups of values ([`TodGroup`]: sun, moon, sky, ambient, fog, shadow tint,
-//!   character, day/night, exposure, grade, bloom, vignette, and the sky's layers: discs, stars
-//!   and clouds). The base timeline sets them all but the sky's layers, which are optional: a
-//!   timeline without them, as every timeline before them was, draws the gradient alone.
+//!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars and
+//!   clouds, and post's layers: diffusion, character bloom, gradients and lens flare). The base
+//!   timeline sets them all but the sky's and post's layers, which are optional: a timeline
+//!   without them, as every timeline before them was, draws the sky's gradient alone and post as
+//!   it was ([`sapphire_render::PostParams::plain`]).
 //!   [`TodTimeline::default_day`] is the shipped one, compiled in until packs (A4) carry
 //!   timelines as content.
 //! - **[`TodVolume`]**: a zone's override, a timeline that sets every group or only some, blended
@@ -29,6 +32,10 @@
 //! A time on a key, or a volume at full weight, reproduces the key's values bit for bit. Grades
 //! are the exception: a grade is baked into a LUT, so neighboring keys' grades blend as post's
 //! two LUTs ([`GradeMix`]) instead of field by field, and each key's grade is baked once.
+//! Gradient layers (M1 P2) blend slot by slot: a layer with the same kind of shape and blend mode
+//! as the one in its place blends field by field; one that differs fades out by halfway and the
+//! other in after it, and a layer only one side has fades from or to no opacity
+//! ([`GradientKey`]), so the picture never jumps.
 //!
 //! The key light the scene is shaded by is resolved from the sun and moon
 //! ([`TodLook::key_light`]): whichever shines, and through twilight both, its direction turning
@@ -55,7 +62,7 @@
 //! # Consumers
 //!
 //! The packet's sky (its gradient and layers, the bodies and the celestial sphere's turn, W2), key
-//! light, ambient light and post-processing are drawn today, the ambient through the character
+//! light, ambient light and post-processing with its compositing layers (P2) are drawn today, the ambient through the character
 //! light rig's GI (C2), as is the character key light, which reaches characters through their
 //! rigs ([`TodFrame::character_lighting`], [`crate::light_rig`]). The day/night factor is C1's ramp
 //! blend (the frame uniforms' `day_night`). The rest is carried for the packages that read it: fog
@@ -101,8 +108,9 @@ mod tests;
 pub use clock::TodClock;
 pub use cutscene::{ShotTime, TodCutscene};
 pub use key::{
-    AmbientKey, BloomKey, CelestialKey, CharacterKey, CloudsKey, DiscKey, DiscsKey, FogKey, FogLayerKey,
-    GradeKey, HeightFogKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
+    AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
+    DiscsKey, FogKey, FogLayerKey, GradeKey, GradientBlendKey, GradientKey, GradientShapeKey, HeightFogKey,
+    LensFlareKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
 };
 pub use look::{GradeMix, TodLook, celestial_sphere};
 pub use time_of_day::{ShotRig, TimeOfDay, TodFrame, TodStats, tick_time_of_day};
@@ -122,7 +130,10 @@ pub enum TodError {
     MixedGroups { key: usize, found: TodGroups, expected: TodGroups },
     #[error("key {key}: `{field}` {problem}")]
     Invalid { key: usize, field: &'static str, problem: &'static str },
-    #[error("the base timeline must set every group but the sky's layers, and its keys have no `{0}`")]
+    #[error(
+        "the base timeline must set every group but the sky's and post's optional layers, and its keys \
+         have no `{0}`"
+    )]
     Incomplete(TodGroup),
     #[error("cutscene: `{field}` {problem}")]
     Cutscene { field: &'static str, problem: &'static str },

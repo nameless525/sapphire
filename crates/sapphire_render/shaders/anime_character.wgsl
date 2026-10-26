@@ -529,7 +529,10 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
         let line = smoothstep(edge - nose_line_width, edge + nose_line_width, nose_line);
         color = mix(color, surface.region.outline.rgb, line);
     }
-    // Opaque passes keep alpha 1 for the character bloom mask (C7); transparent ones blend by
-    // their coverage.
-    return vec4<f32>(color, select(1.0, base.a, PERMUTATION_TRANSPARENT));
+    // Alpha is the world's share of the pixel, post's character mask (M1 P2): opaque passes write
+    // 0 for characters (instances the frame lists, which read a light rig of their own) and 1
+    // for everything else, as every other pass does; transparent ones blend by their coverage,
+    // keeping the mask under them.
+    let world = select(1.0, 0.0, in.character != 0u);
+    return vec4<f32>(color, select(world, base.a, PERMUTATION_TRANSPARENT));
 }

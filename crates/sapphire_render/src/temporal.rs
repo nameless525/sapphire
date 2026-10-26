@@ -75,8 +75,11 @@
 //!   drawn into the mask for external upscalers, or composite after the resolve.
 //! - **Transparent surfaces and particles** write the responsive mask (or FSR's
 //!   transparency-and-composition mask) as they draw, since they write no velocity.
-//! - **The character bloom mask** (P2) in scene color's alpha: the history's alpha holds the
-//!   accumulation weight, so the mask needs a channel of its own through the resolve.
+//! - **The character mask through the resolve:** post (M1 P2) reads its character mask, scene
+//!   color's alpha, from the scene color before the resolve, at the scene's size and jittered,
+//!   since the history's alpha holds the accumulation weight. An effect that needs the mask
+//!   sharp at the output's size (P3's) would carry it through the resolve in a channel of its
+//!   own.
 //! - **Thin features in still scenes:** where a jitter phase's samples all miss a line's end,
 //!   its clip box closes on the background and the pixel flickers once a cycle; FSR 2's locks
 //!   protect such pixels.

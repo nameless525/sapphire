@@ -33,38 +33,49 @@ pub struct Scene {
 /// sky's gradient alone, `--plain-sky` (no discs, glows, stars or clouds), so they stay
 /// pixel-identical to their goldens: they are about the character, and the sky has scenes of its
 /// own. Those from before temporal AA (M1 R7) pin 4× MSAA (`--aa msaa`), which the desktop tiers
-/// drew with until then, for the same reason. The environment's (M1 W4) draw the world as the
-/// desktop tiers do, under the whole sky and temporal AA.
-pub fn scenes() -> [Scene; 19] {
+/// drew with until then, for the same reason. Those from before post's compositing layers (M1 P2)
+/// pin post as it was, `--plain-post` (no diffusion glow, character bloom, gradient layers, lens
+/// flare or vignette tint), which the post scenes show; the environment's (M1 W4) among them, which
+/// draw the world as the desktop tiers do, under the whole sky and temporal AA.
+pub fn scenes() -> [Scene; 22] {
     [
         Scene {
             name: "turntable-start",
-            args: &["--capture-ticks", "0", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "0", "--plain-post", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         Scene {
             name: "turntable",
-            args: &["--capture-ticks", "90", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "90", "--plain-post", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Without MSAA or TAA every outline and terminator edge is a hard pixel step, the case
         // most sensitive to precision differences.
         Scene {
             name: "turntable-msaa-off",
-            args: &["--capture-ticks", "90", "--aa", "off", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--plain-post", "--aa", "off", "--plain-sky"],
             thresholds: Thresholds::default(),
         },
         // Three colored local lights through the clustered path (M1 R5): their splits on the
         // head and arm, and a spot's pool on the pedestal.
         Scene {
             name: "turntable-lights",
-            args: &["--capture-ticks", "90", "--lights", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "90", "--plain-post", "--lights", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The scene at render scale 0.7 (448×252), upsampled by post's final pass (M1 R6).
         Scene {
             name: "turntable-render-scale",
-            args: &["--capture-ticks", "90", "--render-scale", "0.7", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--render-scale",
+                "0.7",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // The procedural stalk beside the character (M1 R2): compute skinning bends it and its
@@ -72,7 +83,7 @@ pub fn scenes() -> [Scene; 19] {
         // with shading and outline.
         Scene {
             name: "turntable-skinned",
-            args: &["--capture-ticks", "90", "--skinned", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "90", "--plain-post", "--skinned", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Sunset from the default day (M1 W1), between its golden-hour and sunset keys: a low
@@ -80,7 +91,16 @@ pub fn scenes() -> [Scene; 19] {
         // post's two grading LUTs blended (80% toward sunset's).
         Scene {
             name: "turntable-sunset",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--time-of-day",
+                "18.5",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // The anime character shader swatches beside the character (M1 C1): ramp mode over the
@@ -89,7 +109,7 @@ pub fn scenes() -> [Scene; 19] {
         // material IDs.
         Scene {
             name: "turntable-swatches",
-            args: &["--capture-ticks", "90", "--swatches", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "90", "--plain-post", "--swatches", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Night from the default day (M1 C2), halfway from dusk to midnight: the character lit by
@@ -98,7 +118,16 @@ pub fn scenes() -> [Scene; 19] {
         // the night sky and two blended grading LUTs.
         Scene {
             name: "turntable-night",
-            args: &["--capture-ticks", "90", "--time-of-day", "22", "--plain-sky", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--time-of-day",
+                "22",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // The face look-dev rig (M1 C3): the cooked face test head in two rows, each lit by the
@@ -107,7 +136,7 @@ pub fn scenes() -> [Scene; 19] {
         // light, light from above and to the side, a blush, and a gloom with a blush.
         Scene {
             name: "faces",
-            args: &["--capture-ticks", "90", "--faces", "--plain-sky", "--aa", "msaa"],
+            args: &["--capture-ticks", "90", "--plain-post", "--faces", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The sky by day (M1 W2), looking up past the character toward the morning sun: its
@@ -115,7 +144,17 @@ pub fn scenes() -> [Scene; 19] {
         // horizon, two-tone (white tops over lavender shade) with a rim, at 9:00's coverage.
         Scene {
             name: "sky-day",
-            args: &["--capture-ticks", "90", "--time-of-day", "9", "--view", "99,-22", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--time-of-day",
+                "9",
+                "--view",
+                "99,-22",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // Sunset (M1 W2): the sun low in a gap of the card clouds, its glow spread along the
@@ -123,14 +162,34 @@ pub fn scenes() -> [Scene; 19] {
         // catching the color.
         Scene {
             name: "sky-sunset",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--time-of-day",
+                "18.5",
+                "--view",
+                "-100,-6",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // Night (M1 W2): the moon's disc and halo, procedural stars and the Milky Way on the
         // turning celestial sphere, and dark clouds with moonlit rims.
         Scene {
             name: "sky-night",
-            args: &["--capture-ticks", "90", "--time-of-day", "21", "--view", "112,-20", "--aa", "msaa"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--time-of-day",
+                "21",
+                "--view",
+                "112,-20",
+                "--aa",
+                "msaa",
+            ],
             thresholds: Thresholds::default(),
         },
         // Temporal AA (M1 R7), the desktop tiers' antialiasing: the turntable held still while
@@ -138,7 +197,16 @@ pub fn scenes() -> [Scene; 19] {
         // draws them.
         Scene {
             name: "turntable-taa",
-            args: &["--capture-ticks", "90", "--aa", "taa", "--capture-frames", "32", "--plain-sky"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--plain-sky",
+            ],
             thresholds: Thresholds::default(),
         },
         // The turntable spinning at 3 rad/s, about 8 times its usual speed, for the 32 frames up
@@ -148,6 +216,7 @@ pub fn scenes() -> [Scene; 19] {
             args: &[
                 "--capture-ticks",
                 "90",
+                "--plain-post",
                 "--aa",
                 "taa",
                 "--spin",
@@ -167,6 +236,7 @@ pub fn scenes() -> [Scene; 19] {
             args: &[
                 "--capture-ticks",
                 "90",
+                "--plain-post",
                 "--aa",
                 "taa",
                 "--render-scale",
@@ -184,7 +254,16 @@ pub fn scenes() -> [Scene; 19] {
         // distance, and the character reading on top.
         Scene {
             name: "environment-day",
-            args: &["--capture-ticks", "90", "--environment", "--aa", "taa", "--capture-frames", "32"],
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--environment",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
             thresholds: Thresholds::default(),
         },
         // Sunset (18:30): the low orange sun from the right warms every lit face, the shadow
@@ -194,6 +273,7 @@ pub fn scenes() -> [Scene; 19] {
             args: &[
                 "--capture-ticks",
                 "90",
+                "--plain-post",
                 "--environment",
                 "--time-of-day",
                 "18.5",
@@ -212,6 +292,7 @@ pub fn scenes() -> [Scene; 19] {
             args: &[
                 "--capture-ticks",
                 "90",
+                "--plain-post",
                 "--environment",
                 "--time-of-day",
                 "22",
@@ -221,6 +302,31 @@ pub fn scenes() -> [Scene; 19] {
                 "--capture-frames",
                 "32",
             ],
+            thresholds: Thresholds::default(),
+        },
+        // Post's compositing layers by day (M1 P2), through temporal AA as the desktop tiers draw:
+        // the diffusion glow softening the clouds, the top of the frame deepened toward the sky's
+        // blue, the ground's shade toward the bottom, a soft pool of light on the character, whose
+        // own bloom is held back (the character mask).
+        Scene {
+            name: "post-day",
+            args: &["--capture-ticks", "90", "--time-of-day", "10", "--aa", "taa", "--capture-frames", "32"],
+            thresholds: Thresholds::default(),
+        },
+        // Sunset through Mobile-Low's fused pass (4× MSAA, four bloom levels): a warm, dreamy
+        // glow over the clouds and along the horizon, violet from above, the ground in a deep
+        // violet shade below, the character crisp in front of it.
+        Scene {
+            name: "post-sunset",
+            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--tier", "mobile-low"],
+            thresholds: Thresholds::default(),
+        },
+        // The lens flare: the sunset sun in view beside the character, its warm ring and streak,
+        // colored ghosts down the axis through the middle of the frame, and the diffusion glow
+        // around the sun.
+        Scene {
+            name: "post-flare",
+            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
     ]

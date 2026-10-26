@@ -65,6 +65,11 @@ pub(crate) struct Options {
     pub cloud_cover: Option<f32>,
     /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
     pub plain_sky: bool,
+    /// `--plain-post`: post as it was before its compositing layers (M1 P2), with no diffusion
+    /// glow, character bloom, gradient layers, lens flare, vignette tint or sharpening.
+    pub plain_post: bool,
+    /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
+    pub sharpening: Option<f32>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
     pub view: Option<(f32, f32)>,
@@ -173,11 +178,13 @@ pub(crate) enum Antialiasing {
 
 impl Options {
     /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover, the
-    /// camera's starting view and the turntable's speed.
+    /// sky's and post's layers, sharpening, the camera's starting view and the turntable's speed.
     pub fn apply_to(&self, scene: &mut Scene) {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
+        scene.set_plain_post(self.plain_post);
+        scene.set_sharpening(self.sharpening);
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }
@@ -295,6 +302,14 @@ impl Options {
                 }
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--plain-sky" => options.plain_sky = true,
+                "--plain-post" => options.plain_post = true,
+                "--sharpening" => {
+                    let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
+                    if !(0.0..=1.0).contains(&amount) {
+                        return Err(format!("--sharpening expects 0 to 1, got {amount}"));
+                    }
+                    options.sharpening = Some(amount);
+                }
                 "--no-hot-reload" => options.no_hot_reload = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {
@@ -500,6 +515,17 @@ mod tests {
         assert!(parse(&["--view", "120"]).is_err());
         assert!(parse(&["--view", "0,90"]).is_err(), "the orbit camera stops short of straight up");
         assert!(parse(&["--view", "inf,0"]).is_err());
+    }
+
+    #[test]
+    fn post_options_drop_the_layers_and_set_sharpening() {
+        let (options, unknown) = parse(&["--plain-post", "--sharpening", "0.4"]).unwrap();
+        assert!(unknown.is_empty());
+        assert!(options.plain_post && !Options::default().plain_post);
+        assert_eq!(options.sharpening, Some(0.4));
+        assert_eq!(parse(&[]).unwrap().0.sharpening, None);
+        assert!(parse(&["--sharpening", "1.5"]).is_err());
+        assert!(parse(&["--sharpening", "NaN"]).is_err());
     }
 
     #[test]

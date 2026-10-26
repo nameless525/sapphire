@@ -112,6 +112,7 @@ fn passthrough() -> PostParams {
         grade_blend: 0.0,
         filter_strength: 1.0,
         vignette: Vignette { intensity: 0.0, ..Vignette::default() },
+        ..PostParams::default()
     }
 }
 
@@ -246,7 +247,7 @@ fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
 }
 
 const SKY_RETURN: &str = "return vec4<f32>(color, 1.0);";
-const CHARACTER_RETURN: &str = "return vec4<f32>(color, select(1.0, base.a, PERMUTATION_TRANSPARENT));";
+const CHARACTER_RETURN: &str = "return vec4<f32>(color, select(world, base.a, PERMUTATION_TRANSPARENT));";
 
 #[test]
 #[ignore = "needs a GPU"]
@@ -277,7 +278,7 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
         &blue_sky,
         ShaderFile::AnimeCharacter,
         CHARACTER_RETURN,
-        "return vec4<f32>(color.bgr, select(1.0, base.a, PERMUTATION_TRANSPARENT));",
+        "return vec4<f32>(color.bgr, select(world, base.a, PERMUTATION_TRANSPARENT));",
     );
     let update = frames.renderer.set_shader_sources(&swapped).expect("a valid edit");
     assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 1 });

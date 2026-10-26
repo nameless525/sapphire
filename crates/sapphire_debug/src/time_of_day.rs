@@ -20,8 +20,9 @@
 //! - **Resolved values:** the key light and where it comes from, the sun and moon, the sky and its
 //!   layers (the discs and their glows, star brightness, the clouds' tones and coverage; M1 W2),
 //!   ambient, fog, shadow tint, character light, day/night factor and post-processing (with the
-//!   grades post's two LUTs blend), zone volumes and the cutscene, each character's resolved
-//!   light rig, and the resolve's own CPU time against its 0.05 ms budget.
+//!   grades post's two LUTs blend, and the compositing layers: the diffusion glow, characters'
+//!   bloom, gradient layers and the lens flare, M1 P2), zone volumes and the cutscene, each
+//!   character's resolved light rig, and the resolve's own CPU time against its 0.05 ms budget.
 
 use std::sync::LazyLock;
 
@@ -487,6 +488,17 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
         ui.monospace(format!(
             "exposure {:+.2}, bloom {:.2} over {:.2}, vignette {:.2}",
             post.exposure, post.bloom.intensity, post.bloom.threshold, post.vignette.intensity
+        ));
+        ui.end_row();
+        ui.label("Compositing");
+        let gradients = post.gradients.iter().filter(|layer| layer.opacity > 0.0).count();
+        ui.monospace(format!(
+            "diffusion {:.2} over {:.2}, characters' bloom ×{:.2} at ×{:.2}, {gradients} gradients, flare {:.2}",
+            post.diffusion.intensity,
+            post.diffusion.threshold,
+            post.character_bloom.threshold,
+            post.character_bloom.strength,
+            post.lens_flare.intensity
         ));
         ui.end_row();
         ui.label("Grade");

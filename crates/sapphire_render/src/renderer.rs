@@ -28,7 +28,7 @@ use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, NORMALS_FORMAT, Part, Pipelines,
     SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
-use crate::post::PostProcess;
+use crate::post::{self, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::skinning::{Skinning, SkinningStats};
@@ -242,6 +242,8 @@ pub struct RenderStats {
     pub shader_rebuilds: u32,
     /// Temporal AA's jitter, sizes and history resets; all zero when it is off.
     pub temporal: TemporalStats,
+    /// The compositing layers post drew (M1 P2).
+    pub post: PostStats,
 }
 
 /// What [`Renderer::set_shader_sources`] rebuilt.
@@ -785,7 +787,7 @@ impl Renderer {
         let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(device, sources));
         pipelines += if sky.is_some() { SkyPipelines::COUNT } else { 0 };
         let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
-        pipelines += if post.is_some() { 4 } else { 0 };
+        pipelines += if post.is_some() { post::Pipelines::COUNT } else { 0 };
         let temporal = changed
             .contains(&Program::Temporal)
             .then(|| self.temporal.as_ref().map(|temporal| temporal.rebuilt_pipelines(sources)))
@@ -922,7 +924,10 @@ impl Renderer {
             constants: FrameUniforms::new(packet, lights),
         });
         self.sky.prepare(packet, &self.materials);
-        self.post.prepare(queue, &packet.post);
+        // The lens flare follows the sun's disc as the main view sees it.
+        let camera = packet.main_view().map(|view| view.camera);
+        let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
+        self.post.prepare(queue, &packet.post, camera.as_ref(), sun);
         let counts = self.scene.draw_counts();
         let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {
             SurfaceVariant::ALL
@@ -942,6 +947,7 @@ impl Renderer {
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
+        self.stats.post = self.post.stats();
         self.stats.lights = self.lights.stats();
         self.stats.characters = self.characters.lit();
         self.stats.ignored_characters = self.characters.ignored();
@@ -1099,7 +1105,7 @@ impl Renderer {
             materials: material_records,
         };
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
-        let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output);
+        let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
         // Handles, so `post` and `temporal` can be borrowed mutably for their passes below.
         let post_buffer = post_buffer.clone();
         let temporal_upload = temporal.as_ref().map(|(_, passes)| {
@@ -1305,7 +1311,7 @@ impl Renderer {
             }
             _ => scene_color,
         };
-        post.record(graph, resolved, target, labels);
+        post.record(graph, resolved, scene_color, target, labels);
         Some(targets)
     }
 

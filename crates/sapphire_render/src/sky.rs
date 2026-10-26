@@ -45,6 +45,8 @@
 //!   sky's pipelines), reading the material's block from the material buffer's CPU mirror. Cloud
 //!   drift is reduced there in `f64` from the packet's unwrapped time, so it never jumps; the
 //!   GPU copy of the sky family's buffer goes unread.
+//! - **Post's lens flare** (M1 P2) takes the sun's disc as the frame draws it from there
+//!   (`Sky::sun_disc`: its direction, angular radius and radiance), to find it on screen.
 //!
 //! # The sky cube
 //!
@@ -629,6 +631,17 @@ impl Sky {
             material,
         });
         (uniforms, &self.uniforms, draw, cube)
+    }
+
+    /// The sun's disc as the prepared frame draws it, for post's lens flare: `None` before the
+    /// first `prepare`.
+    pub(crate) fn sun_disc(&self) -> Option<crate::post::SunDisc> {
+        let SkyUniforms { sun, sun_disc, .. } = self.prepared.as_ref()?.uniforms;
+        Some(crate::post::SunDisc {
+            toward: Vec3::new(sun[0], sun[1], sun[2]),
+            angular_radius: sun[3],
+            radiance: Vec3::new(sun_disc[0], sun_disc[1], sun_disc[2]),
+        })
     }
 
     /// The sky cube, for the probes and reflections that read it (see the module docs).

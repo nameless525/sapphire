@@ -33,9 +33,15 @@
 //! the handles the scene draws with stay valid. A texture is uploaded anew and the materials
 //! that bind it come again to be rebound; a material rewrites its slot; a mesh replaces its
 //! streams under its handle.
+//!
+//! In `dev` builds the server reads packs through live link's source (M1 A9,
+//! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
+//! platform's; a pushed pack is remounted the same way ([`Content::apply_pack`]).
 
 use std::collections::HashMap;
 use std::io;
+#[cfg(feature = "dev")]
+use std::sync::Arc;
 
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
@@ -46,6 +52,10 @@ use sapphire_assets::{
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
+#[cfg(feature = "dev")]
+use sapphire_livelink::protocol::PackOutcome;
+#[cfg(feature = "dev")]
+use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_platform::{AppInitError, IoFile, IoPriority, IoThread, Platform, ReadError};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
@@ -217,6 +227,10 @@ pub(crate) struct Content {
     /// The sky material, once asked for.
     sky: Option<Handle<Material>>,
     server: AssetServer,
+    /// What the server reads through in `dev` builds: packs pushed over live link, over the
+    /// platform's.
+    #[cfg(feature = "dev")]
+    live_packs: Arc<LivePacks>,
 }
 
 impl Content {
@@ -233,7 +247,13 @@ impl Content {
         };
         let io = IoThread::start(content.clone()).map_err(|error| missing(&error))?;
         let budgets = AssetBudgets::for_form_factor(platform.system_info().device_class);
-        let mut server = AssetServer::new(PlatformPacks(io), budgets);
+        let packs = PlatformPacks(io);
+        #[cfg(feature = "dev")]
+        let live_packs = Arc::new(LivePacks::new(packs));
+        #[cfg(feature = "dev")]
+        let mut server = AssetServer::new(live_packs.clone(), budgets);
+        #[cfg(not(feature = "dev"))]
+        let mut server = AssetServer::new(packs, budgets);
         server.mount(PACK).map_err(|error| missing(&error))?;
         let character = server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
@@ -245,6 +265,8 @@ impl Content {
             courtyard: None,
             sky: None,
             server,
+            #[cfg(feature = "dev")]
+            live_packs,
         })
     }
 
@@ -418,6 +440,21 @@ impl Content {
     #[cfg(feature = "dev")]
     pub fn take_changes(&mut self) -> Vec<AssetChange> {
         self.server.take_changes()
+    }
+
+    /// The pack source the server reads through, which live link's connections plan pushes
+    /// against (`dev` builds).
+    #[cfg(feature = "dev")]
+    pub fn live_packs(&self) -> Arc<LivePacks> {
+        self.live_packs.clone()
+    }
+
+    /// Serves a pack pushed over live link from now on, and remounts it if it is mounted: what
+    /// changed reaches the renderer through [`Self::update`], as a hot reload does. A pack the
+    /// server refuses is served no more.
+    #[cfg(feature = "dev")]
+    pub fn apply_pack(&mut self, pack: PushedPack) -> Result<PackOutcome, MountError> {
+        pack.apply(&self.live_packs, &mut self.server)
     }
 
     /// The asset server's counters (rule R9).

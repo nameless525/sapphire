@@ -15,7 +15,7 @@ use sapphire_time::{NORMAL_SPEED, ScaledClock};
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
 use crate::console::{Completion, Console, LineKind};
 use crate::history::{FrameTimes, HISTORY};
-use crate::overlay::{HotReloadStatus, OverlayCost, OverlayFrame};
+use crate::overlay::{HotReloadStatus, LiveLinkStatus, OverlayCost, OverlayFrame};
 use crate::time::{SPEEDS, TimeControls};
 use crate::time_of_day::{self, TodControls, TodPanel};
 use crate::{GPU_TIMING, route};
@@ -416,6 +416,31 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
     if let Some(status) = frame.hot_reload {
         ui.separator();
         hot_reload(ui, frame, &status);
+    }
+    if let Some(status) = frame.live_link {
+        ui.separator();
+        live_link(ui, &status);
+    }
+}
+
+/// Live link's state and its last refusals (M1 A9).
+fn live_link(ui: &mut Ui, status: &LiveLinkStatus<'_>) {
+    egui::Grid::new("live link").num_columns(2).show(ui, |ui| {
+        ui.label("Live link");
+        ui.monospace(status.state);
+        ui.end_row();
+        ui.label("Pushes");
+        ui.monospace(format!(
+            "{} applied, {} refused, {} received, {} connected",
+            status.applied,
+            status.refused,
+            format_bytes(status.received),
+            status.connections
+        ));
+        ui.end_row();
+    });
+    for error in status.errors {
+        ui.label(RichText::new(error).monospace().color(OVER));
     }
 }
 

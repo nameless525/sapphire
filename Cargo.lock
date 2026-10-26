@@ -2528,6 +2528,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_livelink"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "postcard",
+ "sapphire_assets",
+ "sapphire_core",
+ "sapphire_hot_reload",
+ "sapphire_jobs",
+ "sapphire_serialize",
+ "sapphire_world",
+ "serde",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "sapphire_math"
 version = "0.1.0"
 dependencies = [
@@ -2634,8 +2651,10 @@ dependencies = [
  "sapphire_hot_reload",
  "sapphire_input",
  "sapphire_jobs",
+ "sapphire_livelink",
  "sapphire_math",
  "sapphire_platform",
+ "sapphire_reflect",
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_time",

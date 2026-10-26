@@ -16,7 +16,7 @@
 //!   temporal AA's sizes, jitter and history resets,
 //!   `GraphStats` and the transient pool, the last-used input device, the asset server's
 //!   `AssetStats` against its budgets, hot reload's state and the errors of its last change,
-//!   M1 A8), the
+//!   M1 A8, and live link's, M1 A9), the
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
 //!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the
@@ -108,7 +108,8 @@ pub use budget::{BudgetTier, CpuStage, CpuStages, budget_use, format_bytes, form
 pub use history::{FrameSummary, FrameTimes, HISTORY};
 pub use input::WindowMetrics;
 pub use overlay::{
-    DebugOverlay, HotReloadStatus, OverlayConfig, OverlayCost, OverlayFrame, OverlayOutput, TextInputArea,
+    DebugOverlay, HotReloadStatus, LiveLinkStatus, OverlayConfig, OverlayCost, OverlayFrame, OverlayOutput,
+    TextInputArea,
 };
 pub use time::{SPEEDS, TimeControls};
 pub use time_of_day::TodControls;

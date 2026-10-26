@@ -39,7 +39,8 @@
 //!   when a texture they bind is replaced; [`AssetServer::generation`] and
 //!   [`AssetServer::take_changes`] tell CPU systems what changed. A new version that fails keeps
 //!   the old one. The triggers are elsewhere: the desktop's file watching
-//!   (`sapphire_hot_reload`, dev builds) and live link (A9), which pushes packs.
+//!   (`sapphire_hot_reload`, dev builds) and live link (`sapphire_livelink`, M1 A9), which serves
+//!   pushed packs through a [`PackSource`] of its own and remounts them.
 //!
 //! # Does not own
 //!
@@ -62,11 +63,10 @@
 //!
 //! # Later milestones
 //!
-//! - Overlay mounts for live link (A9): a pushed pack of the changed assets alone, whose entries
-//!   take over those of the packs mounted under it, so a device needn't receive the whole shared
-//!   pack for one material. Assets moving from one mounted pack to another (group packs, M2):
-//!   today the pack they left reports them removed, and the other's remount doesn't take them
-//!   over.
+//! - Assets moving from one mounted pack to another (group packs, M2): today the pack they left
+//!   reports them removed, and the other's remount doesn't take them over. (Live link needed no
+//!   overlay mounts to push only what changed: its source serves the new pack whole, assembled on
+//!   the device from the changed assets it received and the rest of the pack it had.)
 //! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
 //!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
 //! - Memory-mapped packs, so raw blocks are read in place; unmounting packs at zone changes;

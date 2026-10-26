@@ -33,6 +33,12 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
+      Any socket, loopback included: development builds' live link listens on one (spec §5.29).
+      A normal permission, granted at install. Store builds (M4) will need it for online services.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
       No cloud backup yet. Device-to-device transfers ignore allowBackup on Android 12+, so
       the rules spell out what moves: the user directory only, never caches or crash dumps.
     -->

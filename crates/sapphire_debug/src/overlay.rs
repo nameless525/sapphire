@@ -73,6 +73,8 @@ pub struct OverlayFrame<'a> {
     pub assets: Option<AssetStats>,
     /// Hot reload, if the app runs it.
     pub hot_reload: Option<HotReloadStatus<'a>>,
+    /// Live link, if the app runs it.
+    pub live_link: Option<LiveLinkStatus<'a>>,
 }
 
 /// What hot reload (M1 A8) did, for the stats panel. Reloaded assets are counted in
@@ -87,6 +89,21 @@ pub struct HotReloadStatus<'a> {
     pub documents: u32,
     /// What failed in the last change: shaders that don't compile, assets whose new version
     /// didn't load. Each keeps what it had.
+    pub errors: &'a [String],
+}
+
+/// Live link's state (M1 A9), for the stats panel.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveLinkStatus<'a> {
+    /// Where it listens or dials, or why it is off.
+    pub state: &'a str,
+    /// Tools connected now.
+    pub connections: u32,
+    /// Pushes applied and refused, and pack bytes received.
+    pub applied: u32,
+    pub refused: u32,
+    pub received: u64,
+    /// The last refusals; each push refused kept what it would have replaced.
     pub errors: &'a [String],
 }
 

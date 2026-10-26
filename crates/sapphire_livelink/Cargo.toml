@@ -1,0 +1,42 @@
+[package]
+name = "sapphire_livelink"
+description = "Live link for development builds: a dev build listens on TCP and applies cooked packs, documents, shaders and cvars pushed from the desktop, which this crate's tool sends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The desktop half: `cargo xtask link` builds and runs it (spec §5.29).
+[[bin]]
+name = "sapphire_livelink"
+path = "src/main.rs"
+
+[dependencies]
+# Packs: the source pushed packs are served from, and their tables of contents.
+sapphire_assets.workspace = true
+# Cvars pushed by name.
+sapphire_core.workspace = true
+# Large reads of pushed bytes are copied on the engine's workers.
+sapphire_jobs.workspace = true
+# Pushed documents name their type in their envelope.
+sapphire_serialize.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# The tool's: error reporting, and A8's file watcher and the engine's source paths for `watch`.
+anyhow.workspace = true
+sapphire_hot_reload.workspace = true
+
+# The tool watches files on desktops, through the watcher's `notify` backend (rule R8: the feature
+# selects the backend). Device builds, which link only the library, build no file watching.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+sapphire_hot_reload = { workspace = true, features = ["notify"] }
+
+[dev-dependencies]
+# Loopback tests push a time-of-day timeline, as the sandbox does.
+sapphire_world.workspace = true
+
+[lints]
+workspace = true

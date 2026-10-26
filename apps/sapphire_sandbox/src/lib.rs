@@ -23,16 +23,19 @@
 //!
 //! # Development builds
 //!
-//! The `dev` feature links `sapphire_debug` and `sapphire_hot_reload` (rule R8), all of it
-//! behind `dev.rs`: the debug overlay, which sees platform events before the game's input,
-//! applies its time and time-of-day controls before each fixed step and draws after post; the
-//! cvar registry it edits, holding the sandbox's cvars (`cvars.rs`, compiled in every build so
-//! they read their defaults) and the renderer's quality cvars (`r.tier`, `r.render_scale`,
-//! `r.dynamic_resolution`); and hot reload (`reload.rs`, M1 A8), on by default on desktop:
-//! rewritten packs in the content root are remounted and their changed assets replaced in
-//! place, edited WGSL rebuilds the renderer's pipelines, an edited `default_day.ron` replaces
+//! The `dev` feature links `sapphire_debug`, `sapphire_hot_reload` and `sapphire_livelink` (rule
+//! R8), all of it behind `dev.rs`: the debug overlay, which sees platform events before the
+//! game's input, applies its time and time-of-day controls before each fixed step and draws after
+//! post; the cvar registry it edits, holding the sandbox's cvars (`cvars.rs`, compiled in every
+//! build so they read their defaults) and the renderer's quality cvars (`r.tier`,
+//! `r.render_scale`, `r.dynamic_resolution`); hot reload (`reload.rs`, M1 A8), on by default on
+//! desktop: rewritten packs in the content root are remounted and their changed assets replaced
+//! in place, edited WGSL rebuilds the renderer's pipelines, an edited `default_day.ron` replaces
 //! time of day's timeline and an edited `default_light_rigs.ron` the character light rig
-//! presets, all without a restart.
+//! presets, all without a restart; and live link (`link.rs`, M1 A9), on by default on every
+//! platform, listening on the loopback interface (127.0.0.1:7811): `cargo xtask link` pushes
+//! the same edits from the desktop (packs, sending only the assets that changed; the two
+//! documents; WGSL sources) and sets cvars, on a phone as on the desktop.
 //! Without the feature none of it is compiled.
 //!
 //! # Arguments
@@ -79,6 +82,10 @@
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't
 //!   change it.
+//! - `--live-link off|<addr>|listen=<addr>|connect=<addr>` (`dev` builds): how live link takes
+//!   connections instead of listening on 127.0.0.1:7811: listening at another address (one
+//!   beyond loopback, such as `0.0.0.0:7811`, takes pushes from the network: an opt-in, logged as
+//!   a warning), dialing a tool listening at `<addr>` (behind `adb reverse`), or not at all.
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
 //!   `cvars`, `all`). Offscreen captures draw it too.
@@ -111,6 +118,8 @@ mod environment;
 mod extract;
 mod faces;
 mod input;
+#[cfg(feature = "dev")]
+mod link;
 mod offscreen;
 mod options;
 mod orbit;

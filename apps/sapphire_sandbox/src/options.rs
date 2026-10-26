@@ -1,5 +1,6 @@
 //! Command-line options.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use sapphire_render::quality::{QualitySettings, TierId};
@@ -76,6 +77,42 @@ pub(crate) struct Options {
     pub debug_overlay: Option<String>,
     /// `--no-hot-reload`: watch no files. Only `dev` builds watch any.
     pub no_hot_reload: bool,
+    /// `--live-link <mode>`: how live link takes connections, instead of listening on the
+    /// loopback interface. Only `dev` builds have it.
+    pub live_link: Option<LiveLinkOption>,
+}
+
+/// How live link takes connections (`--live-link`), in `dev` builds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveLinkOption {
+    /// `off`.
+    Off,
+    /// `<addr>` or `listen=<addr>`: listen there. An address beyond loopback (`0.0.0.0:7811`)
+    /// opts into taking pushes from the network.
+    Listen(SocketAddr),
+    /// `connect=<addr>`: dial a tool listening there (behind `adb reverse`).
+    Connect(SocketAddr),
+}
+
+impl std::str::FromStr for LiveLinkOption {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let address = |text: &str| {
+            text.parse().map_err(|_| {
+                format!(
+                    "--live-link expects off, <addr>, listen=<addr> or connect=<addr> with an address and port \
+                     such as 127.0.0.1:7811, got {text:?}"
+                )
+            })
+        };
+        match text.split_once('=') {
+            _ if text == "off" => Ok(Self::Off),
+            Some(("listen", rest)) => address(rest).map(Self::Listen),
+            Some(("connect", rest)) => address(rest).map(Self::Connect),
+            _ => address(text).map(Self::Listen),
+        }
+    }
 }
 
 /// A mode that renders into an offscreen target, without creating a window or taking focus.
@@ -259,6 +296,7 @@ impl Options {
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--plain-sky" => options.plain_sky = true,
                 "--no-hot-reload" => options.no_hot_reload = true,
+                "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {
                     let speed: f32 = number(&value("--spin")?, "--spin")?;
                     if !speed.is_finite() {
@@ -469,6 +507,28 @@ mod tests {
         assert!(!parse(&[]).unwrap().0.no_hot_reload);
         let (options, unknown) = parse(&["--no-hot-reload", "--bench", "10"]).unwrap();
         assert!(options.no_hot_reload && unknown.is_empty());
+    }
+
+    #[test]
+    fn live_link_listens_dials_or_is_off() {
+        assert_eq!(parse(&[]).unwrap().0.live_link, None, "the default: loopback");
+        let live_link = |arg: &str| parse(&["--live-link", arg]).map(|(options, _)| options.live_link);
+        assert_eq!(live_link("off"), Ok(Some(LiveLinkOption::Off)));
+        let lan: SocketAddr = "0.0.0.0:7811".parse().unwrap();
+        assert_eq!(live_link("0.0.0.0:7811"), Ok(Some(LiveLinkOption::Listen(lan))));
+        assert_eq!(live_link("listen=0.0.0.0:7811"), Ok(Some(LiveLinkOption::Listen(lan))));
+        let host: SocketAddr = "127.0.0.1:7811".parse().unwrap();
+        assert_eq!(live_link("connect=127.0.0.1:7811"), Ok(Some(LiveLinkOption::Connect(host))));
+        assert_eq!(
+            parse(&["--live-link=connect=[::1]:7811"]).unwrap().0.live_link,
+            Some(LiveLinkOption::Connect("[::1]:7811".parse().unwrap()))
+        );
+        assert!(
+            live_link("localhost:7811").unwrap_err().contains("127.0.0.1:7811"),
+            "an address, not a name"
+        );
+        assert!(live_link("connect=7811").is_err());
+        assert!(live_link("dial=127.0.0.1:7811").is_err());
     }
 
     #[test]

@@ -28,6 +28,7 @@ members = [
     # Dev-only: development builds, through an app's `dev` feature
     "crates/sapphire_debug",
     "crates/sapphire_hot_reload",
+    "crates/sapphire_livelink",
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
@@ -62,6 +63,7 @@ sapphire_world = { path = "crates/sapphire_world" }
 sapphire_debug = { path = "crates/sapphire_debug" }
 # Its default `notify` feature is for its own tests: apps turn it on per target.
 sapphire_hot_reload = { path = "crates/sapphire_hot_reload", default-features = false }
+sapphire_livelink = { path = "crates/sapphire_livelink" }
 
 # --- Foundation ---
 bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }

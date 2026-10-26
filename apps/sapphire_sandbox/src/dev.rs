@@ -1,10 +1,11 @@
 //! Development tools, in `dev` builds only (rule R8): the debug overlay and the cvar registry it
-//! edits (spec §5.20), and hot reload (spec §5.10, M1 A8; `reload.rs`).
+//! edits (spec §5.20), hot reload (spec §5.10, M1 A8; `reload.rs`) and live link (spec §5.29, M1
+//! A9; `link.rs`).
 //!
 //! Everything the windowed app and the offscreen modes do for them is here, so they hold one
 //! `dev` field and make a few calls, all compiled away without the feature. Hidden, the overlay
-//! costs a frame-time store per frame and a comparison per fixed step; idle, hot reload one empty
-//! channel read per frame.
+//! costs a frame-time store per frame and a comparison per fixed step; idle, hot reload and live
+//! link one empty channel read per frame each.
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,7 +16,7 @@ use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
     CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels, WindowMetrics,
 };
-use sapphire_platform::{AppInitError, Event, TextInputKind, Timestamp, Window, WindowEvent};
+use sapphire_platform::{AppInitError, Event, Platform, TextInputKind, Timestamp, Window, WindowEvent};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::Quality;
 use sapphire_render::{RenderStats, Renderer};
@@ -23,6 +24,8 @@ use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::content::Content;
 use crate::input::SandboxInput;
+use crate::link::{Link, LinkFrame};
+use crate::options::Options;
 use crate::reload::Reload;
 use crate::scene::Scene;
 use crate::stats::Stages;
@@ -31,6 +34,10 @@ pub(crate) struct DevTools {
     overlay: DebugOverlay,
     cvars: CvarRegistry,
     reload: Reload,
+    link: Link,
+    /// Frames begun, and the last one's length, for live link's status.
+    frames: u64,
+    frame_time: Duration,
     /// Process-wide allocation totals when the current frame began.
     allocations_at: AllocCounts,
     /// The previous frame's allocations.
@@ -58,15 +65,17 @@ pub(crate) struct FrameState<'a> {
 
 impl DevTools {
     /// The overlay, drawing into `format` targets, shown from the start if `--debug-overlay`
-    /// asked for it (with its panel list), and hot reload of the packs in `content_root` and the
-    /// engine's sources, unless `--no-hot-reload` turned it off.
+    /// asked for it (with its panel list); hot reload of the packs in the platform's content
+    /// root and the engine's sources, unless `--no-hot-reload` turned it off; and live link,
+    /// serving pushed packs through `content`'s source, as `--live-link` says.
     pub fn new(
         gpu: &GpuContext,
         format: wgpu::TextureFormat,
-        show: Option<&str>,
-        hot_reload: bool,
-        content_root: &Path,
+        options: &Options,
+        platform: &Platform,
+        content: &Content,
     ) -> Result<Self, AppInitError> {
+        let show = options.debug_overlay.as_deref();
         let panels = match show {
             None | Some("") => Panels::default(),
             Some(list) => Panels::parse(list).map_err(AppInitError::msg)?,
@@ -78,10 +87,14 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
             .map_err(AppInitError::msg)?;
+        let content_root = Path::new(platform.content().root());
         Ok(Self {
             overlay: DebugOverlay::new(gpu, format, config),
             cvars,
-            reload: Reload::start(hot_reload, content_root),
+            reload: Reload::start(!options.no_hot_reload, content_root),
+            link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
+            frames: 0,
+            frame_time: Duration::ZERO,
             allocations_at: process_allocations(),
             last_frame: AllocCounts::default(),
             now: Timestamp::default(),
@@ -94,9 +107,22 @@ impl DevTools {
         self.overlay.recreate_gpu(gpu, format);
     }
 
-    /// Applies what hot reload found changed, before the frame's loading: once a frame.
+    /// Applies what hot reload found changed and what live link received, before the frame's
+    /// loading: once a frame.
     pub fn reload(&mut self, content: &mut Content, renderer: &mut Renderer, scene: &mut Scene) {
-        self.reload.update(content, renderer, scene);
+        // Taken once for both: hot reload lists failed reloads, live link answers pushes with them.
+        let changes = content.take_changes();
+        self.reload.update(&changes, content, renderer, scene);
+        let frame = LinkFrame {
+            content,
+            renderer,
+            scene,
+            cvars: &self.cvars,
+            reload: &mut self.reload,
+            frame: self.frames,
+            frame_time: self.frame_time,
+        };
+        self.link.update(&changes, frame);
     }
 
     /// A new renderer (a tier change, device loss) builds the shaders hot reload gave the last.
@@ -136,6 +162,8 @@ impl DevTools {
 
     /// Starts a frame of real length `frame_time` (and the CPU stages measured for it).
     pub fn begin_frame(&mut self, frame_time: Duration, stages: Option<&Stages>) {
+        self.frames += 1;
+        self.frame_time = frame_time;
         let now = process_allocations();
         self.last_frame = AllocCounts {
             allocations: now.allocations - self.allocations_at.allocations,
@@ -180,6 +208,7 @@ impl DevTools {
             characters: frame.scene.characters(),
             assets: Some(frame.assets),
             hot_reload: Some(self.reload.status()),
+            live_link: Some(self.link.status()),
         })
     }
 

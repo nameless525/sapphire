@@ -3,12 +3,14 @@
 //! Owns layer checking, content cooking, and building, bundling and launching the apps
 //! per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
 //! as a process, and golden-image tests (`golden`), which compare sandbox captures with
-//! per-backend references. `package` (store artifacts) and `replay` come later.
+//! per-backend references; live link's desktop tool (`link`) runs as a process too.
+//! `package` (store artifacts) and `replay` come later.
 
 mod cli;
 mod content;
 mod golden;
 mod layers;
+mod link;
 mod platforms;
 mod workspace;
 
@@ -53,6 +55,20 @@ Commands:
       Failures leave .actual.png and .diff.png files under target/golden/. A scene with
       no golden for this backend family fails in CI and is skipped locally. --update
       writes this family's goldens instead.
+  link <command> [options]
+      Live link (spec §5.29): build the desktop tool and run it against a running dev build
+      (`--features dev`), with this workspace's cooked content:
+        status               the device's app, cook, frame time, assets and their generations
+        cvar <name> <value>  set a cvar
+        push [<file>...]     push packs (only the assets the device lacks are sent), RON
+                             documents and WGSL sources; with no files, the packs of the
+                             device's cook in target/content/<cook>/
+        watch                push what changes: packs after `cargo xtask content --cook
+                             <cook>`, the renderer's WGSL sources, the default day and the
+                             light rig presets
+      --addr <host:port> is the device (default 127.0.0.1:7811: desktop, the iOS Simulator,
+      `iproxy` and `adb forward`); --listen <host:port> waits for a device that dials, behind
+      `adb reverse` (the app's `--live-link connect=<addr>`).
   help
       Show this message.
 
@@ -112,6 +128,7 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             let app_args = args.finish(true)?;
             platforms::run(platform, &App::load(SANDBOX)?, &options, &app_args)
         }
+        "link" => link::run(args.rest()),
         "golden" => {
             let update = args.flag("--update");
             let scene = args.value::<String>("--scene")?;

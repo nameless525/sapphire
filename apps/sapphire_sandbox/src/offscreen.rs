@@ -115,13 +115,7 @@ impl Stage {
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
-        let dev = crate::dev::DevTools::new(
-            &gpu,
-            FORMAT,
-            options.debug_overlay.as_deref(),
-            !options.no_hot_reload,
-            std::path::Path::new(platform.content().root()),
-        )?;
+        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &content)?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");

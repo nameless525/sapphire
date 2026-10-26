@@ -60,6 +60,17 @@ impl Args {
         self.value(name)?.with_context(|| format!("missing required option {name}"))
     }
 
+    /// Every argument left, with what followed `--` after a `--` of its own: for commands that
+    /// pass their arguments on as they are.
+    pub fn rest(self) -> Vec<String> {
+        let mut rest = self.args;
+        if let Some(passthrough) = self.passthrough {
+            rest.push("--".to_owned());
+            rest.extend(passthrough);
+        }
+        rest
+    }
+
     /// Fails on leftover arguments; returns what followed `--`.
     pub fn finish(self, allow_passthrough: bool) -> anyhow::Result<Vec<String>> {
         if let Some(unexpected) = self.args.first() {
@@ -120,5 +131,12 @@ mod tests {
         let mut a = args("run -- --fullscreen 1");
         a.command();
         assert_eq!(a.finish(true).unwrap(), ["--fullscreen", "1"]);
+    }
+
+    #[test]
+    fn passes_the_rest_on_as_it_is() {
+        let mut a = args("link push --addr 127.0.0.1:7811 a.spack -- b.ron");
+        assert_eq!(a.command().as_deref(), Some("link"));
+        assert_eq!(a.rest(), ["push", "--addr", "127.0.0.1:7811", "a.spack", "--", "b.ron"]);
     }
 }

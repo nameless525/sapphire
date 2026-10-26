@@ -61,11 +61,12 @@ impl<S: PackSource + ?Sized> PackSource for Arc<S> {
     }
 }
 
-/// Packs held in memory, read on the calling thread: tests, tools, and packs a live-link session
-/// pushes to a device.
+/// Packs held in memory, read on the calling thread: tests and tools.
 ///
 /// Replacing a pack ([`Self::insert`]) and remounting it ([`AssetServer::remount`]) reloads what
-/// changed, as a rewritten pack file does on desktop: the path live link (A9) takes.
+/// changed, as a rewritten pack file does on desktop. Live link (M1 A9) takes the same path with
+/// a source of its own (`sapphire_livelink::LivePacks`), which serves a pushed pack over the app's
+/// files, so a push holds and sends only the assets that changed.
 ///
 /// [`AssetServer::remount`]: super::AssetServer::remount
 #[derive(Debug, Default)]

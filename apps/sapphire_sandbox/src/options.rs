@@ -68,8 +68,9 @@ pub(crate) struct Options {
     pub character_rig: Option<String>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
-    /// `--faces [--face-layout lights|hair|highlights|turn|gi|gi-clamped]`: show the face look-dev
-    /// rig instead of the character, in this layout (`lights` without `--face-layout`).
+    /// `--faces [--face-layout <layout>]`: show the face look-dev rig instead of the character,
+    /// in this layout (`lights` without `--face-layout`; the layouts are `FaceLayout::NAMES`:
+    /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze and blink).
     pub faces: Option<FaceLayout>,
     /// `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character (M1 C5).
     pub rim_rig: Option<RimLayout>,
@@ -419,9 +420,7 @@ impl Options {
                 "--face-layout" => {
                     let raw = value("--face-layout")?;
                     face_layout = Some(FaceLayout::from_name(&raw).ok_or_else(|| {
-                        format!(
-                            "--face-layout expects lights, hair, highlights, turn, gi or gi-clamped, got {raw:?}"
-                        )
+                        format!("--face-layout expects one of {}, got {raw:?}", FaceLayout::NAMES.join(", "))
                     })?);
                 }
                 "--rim-rig" => {

@@ -15,12 +15,7 @@
                 distance: 0.03,
                 strength: 1.0,
             ),
-            through_hair: Some((
-                opacity: 0.5,
-                fade_yaw: 70.0,
-                fade_pitch: 45.0,
-                distance: 0.15,
-            )),
+            through_hair: None,
         )),
         base_color: (1.0, 1.0, 1.0, 1.0),
         base_color_map: Some("475593e0-710a-47ae-8e4a-bbf06c182b5c"),

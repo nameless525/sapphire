@@ -40,9 +40,17 @@
 //!   - `gi-clamped` (M1 C2): the same heads, their GI clamped hard ([`CLAMPED_GI`]): saturation
 //!     held to 0.2 and value to 0.3, which greys their color and flattens their sky sides before
 //!     the skin tint warms the face again.
+//!   - The eyes' layouts (M1 C6), framed close on the eyes' line under a key from the front, a
+//!     little above and to the side, with the heads closer together: `eyes`, one head facing
+//!     the camera; `eyes-turned`, one turned to three-quarter; `gaze`, a row looking toward the
+//!     image's left, ahead and to its right, then one up and one down; `blink`, lids half
+//!     closed and closed.
+//! - **Lids and gaze** (M1 C6): each head is posed by the head's morph targets
+//!   (`samples::face::MORPH_TARGETS`) from its rig's blink and look ([`FaceRig::morph_weights`]),
+//!   a [`RenderPose`] of its own.
 //!
-//! The heads never move, so their instances are extracted once; their characters are listed
-//! every frame, as every character's are.
+//! The heads never move, so their instances and poses are extracted once; their characters are
+//! listed every frame, as every character's are.
 //!
 //! [`Content::face_head`]: crate::content::Content::face_head
 //! [`Scene::frame_packet`]: crate::scene::Scene::frame_packet
@@ -52,6 +60,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat3, Mat4, Quat, Vec3};
 use sapphire_render::{CharacterFace, CharacterLighting, FaceExpression, HeadBasis};
 
+use crate::extract::RenderPose;
 use crate::orbit::OrbitCamera;
 
 /// The face test head, by its sidecar's ID (`content/samples/face/face_head.glb.meta`, the
@@ -63,7 +72,8 @@ pub(crate) const HEAD: AssetId = AssetId::from_text("cff436cc-9604-4a9f-8d3a-3bc
 /// its pose: where the camera lies in head space, in degrees, `turn` around the head toward its
 /// right (the head turned toward its left; negative the other way) and `nod` above its level
 /// (the head nodding down; negative up). The eyes' fade through the bangs measures the same two
-/// angles.
+/// angles. Then its eyes (M1 C6): how far closed its lids are, 0 to 1, and where it looks, each
+/// axis -1 to 1: toward the head's left (+X; the image's right, facing the camera) and up.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FaceRig {
     pub yaw: f32,
@@ -71,6 +81,8 @@ pub(crate) struct FaceRig {
     pub expression: FaceExpression,
     pub turn: f32,
     pub nod: f32,
+    pub blink: f32,
+    pub look: (f32, f32),
 }
 
 impl FaceRig {
@@ -87,16 +99,51 @@ impl FaceRig {
     fn pose(&self) -> Quat {
         Quat::from_rotation_x(self.nod.to_radians()) * Quat::from_rotation_y(self.turn.to_radians())
     }
+
+    /// The head's morph weights for its blink and look (M1 C6), by the head's targets
+    /// (`samples::face::MORPH_TARGETS`): the lids half closed, then the rest of the way, which
+    /// apply one after the other; then the gaze toward the head's left, right, up and down.
+    pub fn morph_weights(&self) -> [f32; MORPH_TARGETS] {
+        let (blink, (x, y)) = (self.blink.clamp(0.0, 1.0), self.look);
+        [
+            (2.0 * blink).min(1.0),
+            (2.0 * blink - 1.0).max(0.0),
+            x.clamp(0.0, 1.0),
+            (-x).clamp(0.0, 1.0),
+            y.clamp(0.0, 1.0),
+            (-y).clamp(0.0, 1.0),
+        ]
+    }
+
+    /// The head's pose for the renderer: no joints, its morph weights.
+    pub fn render_pose(&self) -> RenderPose {
+        RenderPose { palette: Vec::new(), morph_weights: self.morph_weights().to_vec() }
+    }
 }
+
+/// The head's morph targets (`samples::face::MORPH_TARGETS`, M1 C6).
+const MORPH_TARGETS: usize = 6;
 
 /// A head facing the camera, lit from `yaw` and `elevation`, with an expression.
 const fn rig(yaw: f32, elevation: f32, blush: f32, gloom: f32) -> FaceRig {
-    FaceRig { yaw, elevation, expression: FaceExpression { blush, gloom }, turn: 0.0, nod: 0.0 }
+    let expression = FaceExpression { blush, gloom };
+    FaceRig { yaw, elevation, expression, turn: 0.0, nod: 0.0, blink: 0.0, look: (0.0, 0.0) }
 }
 
 /// A head turned and nodding from the camera, lit from `yaw` and `elevation` in its own space.
 const fn posed(turn: f32, nod: f32, yaw: f32, elevation: f32) -> FaceRig {
-    FaceRig { yaw, elevation, expression: FaceExpression { blush: 0.0, gloom: 0.0 }, turn, nod }
+    let expression = FaceExpression { blush: 0.0, gloom: 0.0 };
+    FaceRig { yaw, elevation, expression, turn, nod, blink: 0.0, look: (0.0, 0.0) }
+}
+
+/// The eyes' key light (M1 C6), in head space: from the front, a little above and to the head's
+/// right, as a portrait's.
+const EYE_KEY: (f32, f32) = (30.0, 25.0);
+
+/// A head for the eyes' layouts (M1 C6): turned `turn` degrees, under [`EYE_KEY`], its lids
+/// `blink` closed and looking along `look`.
+const fn eyes(turn: f32, blink: f32, look: (f32, f32)) -> FaceRig {
+    FaceRig { blink, look, ..posed(turn, 0.0, EYE_KEY.0, EYE_KEY.1) }
 }
 
 /// A head of the GI layouts (M1 C2), turned and nodding from the camera, with a gloom: their key
@@ -144,12 +191,30 @@ pub(crate) enum FaceLayout {
     Turn,
     Gi,
     GiClamped,
+    Eyes,
+    EyesTurned,
+    Gaze,
+    Blink,
 }
 
 impl FaceLayout {
     #[cfg(test)]
-    pub const ALL: [Self; 6] =
-        [Self::Lights, Self::Hair, Self::Highlights, Self::Turn, Self::Gi, Self::GiClamped];
+    pub const ALL: [Self; 10] = [
+        Self::Lights,
+        Self::Hair,
+        Self::Highlights,
+        Self::Turn,
+        Self::Gi,
+        Self::GiClamped,
+        Self::Eyes,
+        Self::EyesTurned,
+        Self::Gaze,
+        Self::Blink,
+    ];
+
+    /// The names `--face-layout` takes, in [`Self::ALL`]'s order.
+    pub const NAMES: [&str; 10] =
+        ["lights", "hair", "highlights", "turn", "gi", "gi-clamped", "eyes", "eyes-turned", "gaze", "blink"];
 
     /// The layout `--face-layout` names.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -160,6 +225,10 @@ impl FaceLayout {
             "turn" => Some(Self::Turn),
             "gi" => Some(Self::Gi),
             "gi-clamped" => Some(Self::GiClamped),
+            "eyes" => Some(Self::Eyes),
+            "eyes-turned" => Some(Self::EyesTurned),
+            "gaze" => Some(Self::Gaze),
+            "blink" => Some(Self::Blink),
             _ => None,
         }
     }
@@ -172,6 +241,10 @@ impl FaceLayout {
             Self::Highlights => &HIGHLIGHTS,
             Self::Turn => &TURN,
             Self::Gi | Self::GiClamped => &GI,
+            Self::Eyes => &EYES,
+            Self::EyesTurned => &EYES_TURNED,
+            Self::Gaze => &GAZE,
+            Self::Blink => &BLINK,
         }
     }
 
@@ -179,9 +252,20 @@ impl FaceLayout {
     pub fn light(self) -> HeadLight {
         match self {
             Self::Lights | Self::Hair | Self::Highlights | Self::Turn => HeadLight::Key,
+            Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink => HeadLight::Key,
             Self::Gi => HeadLight::Gi { ceilings: None },
             Self::GiClamped => HeadLight::Gi { ceilings: Some(CLAMPED_GI) },
         }
+    }
+
+    /// Whether the camera frames the eyes' line close (M1 C6) rather than whole heads.
+    fn frames_eyes(self) -> bool {
+        matches!(self, Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink)
+    }
+
+    /// Meters between neighbors in a row, and between rows: closer for the eyes' layouts.
+    fn spacing(self) -> (f32, f32) {
+        if self.frames_eyes() { (0.3, 0.32) } else { (SPACING, ROW_SPACING) }
     }
 
     /// Heads in the layout.
@@ -249,16 +333,39 @@ const GI: [&[FaceRig]; 2] = [
         gi_head(40.0, -20.0, 0.0),
     ],
 ];
+// The eyes' layouts (M1 C6).
+const EYES: [&[FaceRig]; 1] = [&[eyes(0.0, 0.0, (0.0, 0.0))]];
+const EYES_TURNED: [&[FaceRig]; 1] = [&[eyes(35.0, 0.0, (0.0, 0.0))]];
+const GAZE: [&[FaceRig]; 2] = [
+    &[eyes(0.0, 0.0, (-1.0, 0.0)), eyes(0.0, 0.0, (0.0, 0.0)), eyes(0.0, 0.0, (1.0, 0.0))],
+    &[eyes(0.0, 0.0, (0.0, 1.0)), eyes(0.0, 0.0, (0.0, -1.0))],
+];
+const BLINK: [&[FaceRig]; 1] = [&[eyes(0.0, 0.5, (0.0, 0.0)), eyes(0.0, 1.0, (0.0, 0.0))]];
 
 /// Meters between neighbors in a row, and between rows.
 const SPACING: f32 = 0.34;
 const ROW_SPACING: f32 = 0.38;
 /// Half the head's width and height, in meters, for framing.
 const HEAD_HALF_EXTENTS: (f32, f32) = (0.14, 0.16);
+/// The eyes' layouts' framing (M1 C6): half the width and height around each head's eyes, in
+/// meters, and where the eyes lie in the head's model: their line's height and how far in front
+/// of its center.
+const EYE_HALF_EXTENTS: (f32, f32) = (0.13, 0.073);
+const EYE_LINE: f32 = -0.012;
+const EYE_DEPTH: f32 = 0.11;
+
+/// Half the width and height of `layout`'s rows, in meters: of whole heads, or of the eyes'
+/// line.
+fn half_extents(layout: FaceLayout) -> (f32, f32) {
+    let (spacing, row_spacing) = layout.spacing();
+    let widest = layout.rows().iter().map(|row| row.len()).max().unwrap_or(1) as f32;
+    let head = if layout.frames_eyes() { EYE_HALF_EXTENTS } else { HEAD_HALF_EXTENTS };
+    (0.5 * (widest - 1.0) * spacing + head.0, 0.5 * (layout.rows().len() as f32 - 1.0) * row_spacing + head.1)
+}
 
 /// Half the height of `layout`'s rows, in meters.
 fn half_height(layout: FaceLayout) -> f32 {
-    0.5 * (layout.rows().len() as f32 - 1.0) * ROW_SPACING + HEAD_HALF_EXTENTS.1
+    half_extents(layout).1
 }
 
 /// The rig's center beside a character whose object-space bounds are `bounds`, and half its
@@ -275,11 +382,17 @@ fn center(bounds: [[f32; 3]; 2]) -> Vec3 {
     Vec3::new(min.x - 1.6 * height, min.y + 0.55 * height, (min.z + max.z) * 0.5)
 }
 
-/// The camera framing the rig in `layout`.
+/// The camera framing the rig in `layout`: whole heads, or for the eyes' layouts (M1 C6) their
+/// eyes' line, as near as the heads' eyes lie.
 pub(crate) fn camera(bounds: [[f32; 3]; 2], layout: FaceLayout) -> OrbitCamera {
-    let widest = layout.rows().iter().map(|row| row.len()).max().unwrap_or(1) as f32;
-    let half_width = 0.5 * (widest - 1.0) * SPACING + HEAD_HALF_EXTENTS.0;
-    OrbitCamera::fitting(center(bounds), (half_width, half_height(layout)))
+    let extents = half_extents(layout);
+    let camera = OrbitCamera::fitting(center(bounds), extents);
+    if !layout.frames_eyes() {
+        return camera;
+    }
+    let view = camera.facing_rotation();
+    let eyes = center(bounds) + view * Vec3::new(0.0, EYE_LINE, EYE_DEPTH);
+    OrbitCamera::fitting(eyes, extents)
 }
 
 /// Every head's rig and placement in `layout`, in its rows' order: rows across the camera's view,
@@ -290,11 +403,12 @@ pub(crate) fn heads(bounds: [[f32; 3]; 2], layout: FaceLayout, camera: &OrbitCam
     let view = camera.facing_rotation();
     let (right, up) = (view * Vec3::X, view * Vec3::Y);
     let rows = layout.rows();
+    let (spacing, row_spacing) = layout.spacing();
     let mut heads = Vec::with_capacity(layout.heads());
     for (row, rigs) in rows.iter().enumerate() {
-        let y = (0.5 * (rows.len() as f32 - 1.0) - row as f32) * ROW_SPACING;
+        let y = (0.5 * (rows.len() as f32 - 1.0) - row as f32) * row_spacing;
         for (column, &rig) in rigs.iter().enumerate() {
-            let x = (column as f32 - 0.5 * (rigs.len() as f32 - 1.0)) * SPACING;
+            let x = (column as f32 - 0.5 * (rigs.len() as f32 - 1.0)) * spacing;
             let at = center(bounds) + right * x + up * y;
             let forward = (camera.eye() - at).normalize();
             // A line through the head projects level when it lies in the plane of the line of
@@ -441,11 +555,49 @@ mod tests {
 
     #[test]
     fn layouts_are_named_as_the_command_line_spells_them() {
-        let names = ["lights", "hair", "highlights", "turn", "gi", "gi-clamped"];
-        for (name, layout) in names.into_iter().zip(FaceLayout::ALL) {
+        for (name, layout) in FaceLayout::NAMES.into_iter().zip(FaceLayout::ALL) {
             assert_eq!(FaceLayout::from_name(name), Some(layout));
         }
         assert_eq!(FaceLayout::from_name("bangs"), None);
         assert_eq!(FaceLayout::default(), FaceLayout::Lights, "C3's rig, as `--faces` alone draws it");
+    }
+
+    #[test]
+    fn rigs_pose_their_lids_and_gaze_through_the_heads_morph_targets() {
+        let weights = |blink, look| FaceRig { blink, look, ..rig(0.0, 0.0, 0.0, 0.0) }.morph_weights();
+        assert_eq!(weights(0.0, (0.0, 0.0)), [0.0; 6], "at rest");
+        assert_eq!(weights(0.5, (0.0, 0.0)), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], "half closed: the first step");
+        assert_eq!(weights(1.0, (0.0, 0.0)), [1.0, 1.0, 0.0, 0.0, 0.0, 0.0], "closed: both steps");
+        assert_eq!(weights(0.75, (0.0, 0.0)), [1.0, 0.5, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(weights(0.0, (1.0, -0.5)), [0.0, 0.0, 1.0, 0.0, 0.0, 0.5], "toward the head's left, down");
+        assert_eq!(weights(0.0, (-1.0, 1.0)), [0.0, 0.0, 0.0, 1.0, 1.0, 0.0]);
+        let pose = rig(0.0, 0.0, 0.0, 0.0).render_pose();
+        assert!(pose.palette.is_empty(), "the head has no joints");
+        // Only the eyes' layouts move the eyes.
+        for layout in FaceLayout::ALL {
+            let moved =
+                layout.rows().iter().flat_map(|row| row.iter()).any(|rig| rig.morph_weights() != [0.0; 6]);
+            assert_eq!(moved, matches!(layout, FaceLayout::Gaze | FaceLayout::Blink), "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn the_eyes_layouts_frame_the_eyes_line_close() {
+        for layout in [FaceLayout::Eyes, FaceLayout::EyesTurned, FaceLayout::Gaze, FaceLayout::Blink] {
+            let camera = camera(BOUNDS, layout);
+            let heads = heads(BOUNDS, layout, &camera);
+            for (_, transform) in &heads {
+                let eyes = transform.transform_point3(Vec3::new(0.0, EYE_LINE, EYE_DEPTH));
+                let distance = camera.eye().distance(eyes);
+                assert!(distance > 0.15 && distance < 1.0, "{layout:?}: {distance} m from the eyes");
+            }
+        }
+        // A single head facing the camera: its eyes' line is what the camera looks at.
+        let camera = camera(BOUNDS, FaceLayout::Eyes);
+        let (_, transform) = heads(BOUNDS, FaceLayout::Eyes, &camera)[0];
+        let eyes = transform.transform_point3(Vec3::new(0.0, EYE_LINE, EYE_DEPTH));
+        let toward = (eyes - camera.eye()).normalize();
+        let ahead = camera.facing_rotation() * Vec3::NEG_Z;
+        assert!(toward.dot(ahead) > 0.999, "near the middle of the view: {toward} {ahead}");
     }
 }

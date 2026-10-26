@@ -274,14 +274,21 @@ impl Scene {
         });
         ecs.add_systems(FixedFirst, (tick_time_of_day, tick_screen_effects).after(SimSet::Clocks))
             .add_systems(FixedCombat, turntable::spin)
+            // Poses: the stalk's, and the face rig's heads' lids and gaze (M1 C6).
             .add_systems(
                 Extract,
-                (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
+                (
+                    turntable::pose,
+                    extract::extract_instances,
+                    extract::extract_lights,
+                    extract::extract_poses,
+                )
+                    .chain(),
             );
         if skinned {
             ecs.add_systems(FixedCombat, skinned::sway).add_systems(
                 Extract,
-                (skinned::pose, extract::extract_poses).chain().after(extract::extract_lights),
+                skinned::pose.after(extract::extract_lights).before(extract::extract_poses),
             );
         }
         ecs.startup();
@@ -517,8 +524,9 @@ impl Scene {
     }
 
     /// Places the face look-dev rig (`--faces`) in `layout` well beside the character, its heads
-    /// drawing `mesh`, and frames it with the camera instead of the character. The heads never
-    /// move, so they are extracted once.
+    /// drawing `mesh` posed by their rigs' lids and gaze (M1 C6), and frames it with the camera
+    /// instead of the character. The heads never move, so they and their poses are extracted
+    /// once.
     pub fn spawn_face_rig(&mut self, mesh: MeshHandle, layout: FaceLayout) {
         let camera = faces::camera(self.bounds, layout);
         let heads = faces::heads(self.bounds, layout, &camera);
@@ -527,7 +535,9 @@ impl Scene {
         self.face_layout = layout;
         self.faces = heads
             .into_iter()
-            .map(|(rig, place)| world.spawn((rig, RenderMesh(mesh), RenderTransform(place))).id())
+            .map(|(rig, place)| {
+                world.spawn((rig, RenderMesh(mesh), RenderTransform(place), rig.render_pose())).id()
+            })
             .collect();
     }
 

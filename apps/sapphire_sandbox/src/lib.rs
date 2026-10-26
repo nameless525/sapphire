@@ -69,13 +69,15 @@
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
-//! - `--face-layout lights|hair|highlights|turn|gi|gi-clamped` (with `--faces`): the face rig's
-//!   heads (M1 C5): the lights above (the default); keys around the front and above, for the
-//!   bangs' shadow on the face; heads nodding under one key, for the hair's highlights; heads
-//!   turning and nodding from the camera, for the eyes and brows through the bangs. Then the GI
-//!   layouts (M1 C2): heads turned and nodding every way, two in gloom, lit by the default light
-//!   rig preset's stylized GI alone, the key light off and the GI raised four-fold (`gi`), or
-//!   the same with its HSV clamp's ceilings pulled down into the GI's range (`gi-clamped`).
+//! - `--face-layout lights|hair|highlights|turn|gi|gi-clamped|eyes|eyes-turned|gaze|blink` (with
+//!   `--faces`): the face rig's heads (M1 C5): the lights above (the default); keys around the
+//!   front and above, for the bangs' shadow on the face; heads nodding under one key, for the
+//!   hair's highlights; heads turning and nodding from the camera, for the eyes and brows through
+//!   the bangs. Then the GI layouts (M1 C2): heads turned and nodding every way, two in gloom, lit
+//!   by the default light rig preset's stylized GI alone, the key light off and the GI raised
+//!   four-fold (`gi`), or the same with its HSV clamp's ceilings pulled down into the GI's range
+//!   (`gi-clamped`). Then the eyes' layouts (M1 C6), framed close on the eyes: one head facing the
+//!   camera, one turned to three-quarter, heads looking around, and lids half closed and closed.
 //! - `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character: a row of it
 //!   before dark and bright panels, each figure lit from its own angle around it, from the front
 //!   round to behind (`angles`) or from behind at several heights (`backlit`; M1 C5).

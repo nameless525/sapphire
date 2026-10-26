@@ -3,8 +3,10 @@
     version: 2,
     data: (
         surface: Eye((
+            layer: Eye,
             mask_map: None,
             parallax: 0.0,
+            iris: None,
             through_hair: Some((
                 opacity: 0.7,
                 fade_yaw: 70.0,

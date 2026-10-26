@@ -454,7 +454,8 @@ pub struct HighlightMotion {
     /// The drift's rate, in cycles a second.
     pub drift_rate: f32,
     /// How much brighter the highlight glints at the peak of each sparkle: 0 none, 1 twice as
-    /// bright (`character_maps::eye_mask::highlight_sparkle`).
+    /// bright (`character_maps::eye_mask::highlight_sparkle`). Its coverage scales with it, so
+    /// a soft edge swells: a highlight tone mapping already holds at white still glints.
     pub sparkle: f32,
     /// Sparkles a second.
     pub sparkle_rate: f32,

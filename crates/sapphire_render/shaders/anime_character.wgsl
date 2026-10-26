@@ -139,8 +139,9 @@
 //   the surface by the gradients of u and v from screen derivatives, as `mapped_normal` finds
 //   them. The pupil shifts against the limbal ring as the view turns.
 // - Highlights live (`highlight_drift`, `highlight_sparkle`): each drifts along a Lissajous curve
-//   across the model's front in the vertex stage and glints brighter in a short pulse, both on
-//   the frame's clock (R4: the packet's time), at a phase per instance slot.
+//   across the model's front in the vertex stage and glints in a short pulse, brighter and its
+//   coverage with it, so its soft edge swells; both on the frame's clock (R4: the packet's
+//   time), at a phase per instance slot.
 //
 // Eyes through hair (M1 C5; `fs_through_hair`): faces and eyes whose material says so draw again
 // after the outlines, where the character prepass's ID is the character's own hair, its second ID
@@ -960,8 +961,11 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         color = mix(color, surface.region.outline.rgb, line);
     }
     if PERMUTATION_EYE && PERMUTATION_TRANSPARENT {
-        // A highlight glints (M1 C6).
-        color *= highlight_sparkle(material, in.instance);
+        // A highlight glints (M1 C6): brighter, and its soft edge fills out, so a white one that
+        // tone mapping already holds at white still swells.
+        let sparkle = highlight_sparkle(material, in.instance);
+        color *= sparkle;
+        base.a = saturate(base.a * sparkle);
     }
     var shaded: ShadedCharacter;
     shaded.color = color;

@@ -105,8 +105,8 @@ impl GltfWriter {
         self.meshes.len() - 1
     }
 
-    /// Sets a top-level field of mesh `mesh`, such as `weights` or `extras`.
-    #[cfg(test)]
+    /// Sets a top-level field of mesh `mesh`, such as `weights` or `extras` (the face sample's
+    /// morph target names, M1 C6).
     pub fn set_mesh_field(&mut self, mesh: usize, key: &str, value: Value) {
         self.meshes[mesh][key] = value;
     }

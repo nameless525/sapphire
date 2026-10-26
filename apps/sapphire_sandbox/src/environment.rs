@@ -46,17 +46,17 @@ pub(crate) const FOG_CARDS: [AssetId; 2] = [
     AssetId::from_text("4b217f2d-6046-4760-a4ee-cadc08d243ae"),
     AssetId::from_text("046a80c3-c224-44ec-bacf-36e1ccf62f63"),
 ];
-const MIST: usize = 0;
-const HAZE: usize = 1;
+pub(crate) const MIST: usize = 0;
+pub(crate) const HAZE: usize = 1;
 
-/// A fog card in the courtyard: which of [`FOG_CARDS`] it draws, its center and its width and
-/// height in meters, and its turn about the up axis in radians (a mist sheet's; haze turns toward
-/// the camera itself).
-struct CardPlace {
-    mesh: usize,
-    center: [f32; 3],
-    size: [f32; 2],
-    yaw: f32,
+/// A fog card in a scene: which of [`FOG_CARDS`] it draws, its center and its width and height in
+/// meters, and its turn about the up axis in radians (a mist sheet's; haze turns toward the camera
+/// itself).
+pub(crate) struct CardPlace {
+    pub mesh: usize,
+    pub center: [f32; 3],
+    pub size: [f32; 2],
+    pub yaw: f32,
 }
 
 /// The courtyard's fog cards: mist sheets from 30 m out to the foot of the hills, and haze
@@ -73,7 +73,13 @@ const CARDS: [CardPlace; 7] = [
 
 /// The courtyard's fog cards: each one's mesh, an index into [`FOG_CARDS`], and its transform.
 pub(crate) fn fog_cards() -> impl Iterator<Item = (usize, Mat4)> {
-    CARDS.iter().map(|card| {
+    place_cards(&CARDS)
+}
+
+/// Each of `cards`' mesh, an index into [`FOG_CARDS`], and its transform: a unit card scaled to
+/// its size, turned and moved to its center.
+pub(crate) fn place_cards(cards: &'static [CardPlace]) -> impl Iterator<Item = (usize, Mat4)> {
+    cards.iter().map(|card| {
         let scale = Vec3::new(card.size[0], card.size[1], 1.0);
         let transform = Mat4::from_scale_rotation_translation(
             scale,

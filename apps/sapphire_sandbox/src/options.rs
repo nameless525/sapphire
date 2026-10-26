@@ -8,6 +8,7 @@ use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
 
 use crate::faces::FaceLayout;
 use crate::foliage::{DEFAULT_WIND, FoliageView};
+use crate::lookdev::{self, Shot};
 use crate::rims::RimLayout;
 use crate::scene::{self, Scene};
 use crate::stage::StageLayout;
@@ -84,6 +85,12 @@ pub(crate) struct Options {
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
+    /// `--look-dev wide|hero|sky`: the look-dev town (M1 X1) with the VRM character standing in
+    /// it, seen from that shot. A scene of its own rather than a `--stage` layout: it replaces the
+    /// character and the ground the other scenes put under it, so it excludes `--stage`,
+    /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
+    /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
+    pub look_dev: Option<Shot>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -269,6 +276,22 @@ impl Options {
             .then(|| Wind { strength: self.wind.unwrap_or(DEFAULT_WIND.strength), ..DEFAULT_WIND })
     }
 
+    /// The character the scene draws: the look-dev VRM with `--look-dev`, the mannequin
+    /// otherwise.
+    pub fn character(&self) -> sapphire_assets::AssetId {
+        match self.look_dev {
+            Some(_) => lookdev::CHARACTER,
+            None => crate::content::CHARACTER,
+        }
+    }
+
+    /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
+    /// the character from it without its pedestal, and the look-dev stage derives its held pose
+    /// from it.
+    pub fn keeps_character_mesh(&self) -> bool {
+        self.stage.is_some() || self.rim_rig.is_some() || self.look_dev.is_some()
+    }
+
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
     /// over `--aa`'s sample count.
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
@@ -424,6 +447,13 @@ impl Options {
                     options.wind = Some(strength);
                 }
                 "--probes" => (options.probes, options.environment) = (true, true),
+                "--look-dev" => {
+                    let raw = value("--look-dev")?;
+                    options.look_dev = Some(Shot::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<&str> = Shot::ALL.iter().map(|shot| shot.name()).collect();
+                        format!("--look-dev expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -519,6 +549,21 @@ impl Options {
         };
         if options.faces.is_some() && options.rim_rig.is_some() {
             return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
+        }
+        if options.look_dev.is_some()
+            && (options.stage.is_some()
+                || options.environment
+                || options.foliage.is_some()
+                || options.outline_row
+                || options.faces.is_some()
+                || options.rim_rig.is_some()
+                || options.hard_edges)
+        {
+            return Err(
+                "--look-dev is a scene of its own: drop --stage, --environment, --probes, --foliage, \
+                 --outline-row, --faces, --rim-rig and --hard-edges"
+                    .to_owned(),
+            );
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         let mode = match (capture, bench) {
@@ -698,6 +743,27 @@ mod tests {
         );
         assert_eq!(parse(&[]).unwrap().0.character_rig, None);
         assert!(parse(&["--character-rig"]).is_err(), "needs a name");
+    }
+
+    #[test]
+    fn look_dev_takes_a_shot_and_its_own_character() {
+        let (options, _) = parse(&["--look-dev", "hero"]).unwrap();
+        assert_eq!(options.look_dev, Some(Shot::Hero));
+        assert_eq!(options.character(), lookdev::CHARACTER);
+        assert!(options.keeps_character_mesh());
+        assert_eq!(parse(&["--look-dev=wide"]).unwrap().0.look_dev, Some(Shot::Wide));
+        assert!(parse(&["--look-dev", "close"]).unwrap_err().contains("wide, hero, sky"));
+        assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());
+        assert!(parse(&["--environment", "--look-dev", "sky"]).is_err());
+        assert!(parse(&["--look-dev", "wide", "--outline-row"]).is_err());
+        assert!(parse(&["--faces", "--look-dev", "hero"]).is_err());
+        assert!(parse(&["--look-dev", "hero", "--rim-rig", "angles"]).is_err());
+        assert!(parse(&["--look-dev", "wide", "--hard-edges"]).is_err());
+        let foliage = parse(&["--look-dev", "wide", "--foliage", "grove"]).unwrap_err();
+        assert!(foliage.contains("--foliage"), "{foliage}");
+        let defaults = Options::default();
+        assert_eq!(defaults.character(), crate::content::CHARACTER);
+        assert!(!defaults.keeps_character_mesh());
     }
 
     #[test]

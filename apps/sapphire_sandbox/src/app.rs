@@ -27,11 +27,11 @@ use crate::foliage::FoliageMeshes;
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
-use crate::scene::Scene;
+use crate::scene::{LookDev, Scene};
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{rims, skinned, stage, swatches};
+use crate::{lookdev, rims, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -120,12 +120,11 @@ impl App for SandboxApp {
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it.
         platform.set_frame_rate(quality.frame_rate());
-        let mut content = Content::new(platform)?;
-        // The stage and the rim rig draw the character without its pedestal.
-        if options.stage.is_some() || options.rim_rig.is_some() {
+        let mut content = Content::new(platform, options.character())?;
+        if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
-        let renderer = create_renderer(
+        let mut renderer = create_renderer(
             &mut content,
             &device.gpu,
             device.format,
@@ -156,9 +155,9 @@ impl App for SandboxApp {
         }
         if let Some(courtyard) = renderer.courtyard {
             scene.spawn_environment(courtyard);
-        }
-        if let Some(meshes) = renderer.fog_cards {
-            scene.spawn_fog_cards(meshes);
+            if let Some(meshes) = renderer.fog_cards {
+                scene.spawn_fog_cards(meshes);
+            }
         }
         if let (Some(view), Some(meshes)) = (options.foliage, renderer.foliage) {
             scene.spawn_foliage(view, meshes);
@@ -171,6 +170,10 @@ impl App for SandboxApp {
         }
         if let Some(mesh) = renderer.hard_edges {
             scene.spawn_hard_edges(mesh);
+        }
+        if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
+            let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
+            scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -668,7 +671,7 @@ struct SceneRenderer {
     rim_rig: Option<RimRigMeshes>,
     /// The courtyard, with `--environment`.
     courtyard: Option<MeshHandle>,
-    /// The courtyard's fog cards, with `--environment` and fog.
+    /// The fog cards, with `--environment` or `--look-dev`, and fog.
     fog_cards: Option<[MeshHandle; FOG_CARDS.len()]>,
     /// The plants, with `--foliage`.
     foliage: Option<FoliageMeshes>,
@@ -676,6 +679,8 @@ struct SceneRenderer {
     arcade: Option<MeshHandle>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<MeshHandle>,
+    /// The look-dev town, with `--look-dev`.
+    town: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StageMeshes>,
     /// The zone's sky material.
@@ -718,6 +723,9 @@ impl Scene {
         if let Some(meshes) = renderer.stage {
             self.set_stage_meshes(meshes);
         }
+        if let Some(town) = renderer.town {
+            self.set_town_mesh(town);
+        }
     }
 }
 
@@ -753,14 +761,15 @@ struct SceneMeshes {
     foliage: Option<FoliageMeshes>,
     arcade: Option<MeshHandle>,
     hard_edges: Option<MeshHandle>,
+    town: Option<MeshHandle>,
     stage: Option<StageMeshes>,
 }
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
 /// the shader swatches, whose materials `content` uploads too, the face test head, the rim rig,
-/// the courtyard, its fog cards, arcade and probe grid, the plants, the hard-edged outline sample
-/// and the stage.
+/// the courtyard, its fog cards, arcade and probe grid, the plants, the hard-edged outline sample,
+/// the stage and the look-dev town.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -787,12 +796,13 @@ fn create_renderer(
             None => None,
         };
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
-        let fog_cards = (options.environment && !options.fog_off)
+        let fog_cards = ((options.environment || options.look_dev.is_some()) && !options.fog_off)
             .then(|| content.fog_cards(&mut renderer, gpu))
             .transpose()?;
         let foliage = options.foliage.map(|_| content.foliage(&mut renderer, gpu)).transpose()?;
         let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
+        let town = options.look_dev.map(|_| content.town(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {
                 let figure = content
@@ -813,6 +823,7 @@ fn create_renderer(
             foliage,
             arcade,
             hard_edges,
+            town,
             stage,
         };
         Ok((character, character_bounds, meshes, sky))
@@ -829,6 +840,7 @@ fn create_renderer(
                 foliage,
                 arcade,
                 hard_edges,
+                town,
                 stage,
             } = meshes;
             Ok(SceneRenderer {
@@ -844,6 +856,7 @@ fn create_renderer(
                 foliage,
                 arcade,
                 hard_edges,
+                town,
                 stage,
                 sky,
             })

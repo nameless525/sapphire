@@ -16,7 +16,7 @@ use crate::LOG_TARGET;
 use crate::app::SandboxApp;
 use crate::content::Content;
 use crate::options::{OffscreenMode, Options};
-use crate::scene::Scene;
+use crate::scene::{LookDev, Scene};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 
@@ -89,9 +89,8 @@ impl Stage {
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
-        let mut content = Content::new(platform)?;
-        // The stage and the rim rig draw the character without its pedestal.
-        if options.stage.is_some() || options.rim_rig.is_some() {
+        let mut content = Content::new(platform, options.character())?;
+        if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
@@ -135,6 +134,12 @@ impl Stage {
         }
         if options.hard_edges {
             scene.spawn_hard_edges(content.hard_edges(&mut renderer, &gpu)?);
+        }
+        if let Some(shot) = options.look_dev {
+            let town = content.town(&mut renderer, &gpu)?;
+            let fog_cards = (!options.fog_off).then(|| content.fog_cards(&mut renderer, &gpu)).transpose()?;
+            let (pose, figure) = crate::lookdev::hold(&mut content, &mut renderer, &gpu)?;
+            scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.

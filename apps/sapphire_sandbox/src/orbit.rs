@@ -66,6 +66,24 @@ impl OrbitCamera {
         camera
     }
 
+    /// An authored shot: looking at `target` from `yaw` and `pitch` radians at `distance` meters,
+    /// through a lens `fov_y` radians high. Zoom ranges from a third to four times the distance.
+    pub fn shot(target: Vec3, yaw: f32, pitch: f32, distance: f32, fov_y: f32) -> Self {
+        let pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        Self {
+            target,
+            fov_y,
+            min_distance: distance / 3.0,
+            max_distance: distance * 4.0,
+            goal_yaw: yaw,
+            goal_pitch: pitch,
+            goal_distance: distance,
+            yaw: SpringDamper::new(yaw, HALF_LIFE),
+            pitch: SpringDamper::new(pitch, HALF_LIFE),
+            distance: SpringDamper::new(distance, HALF_LIFE),
+        }
+    }
+
     /// The same camera `factor` times farther from its target, at once and as its zoom's limit
     /// too: a wider shot of the same subject.
     pub fn pulled_back(mut self, factor: f32) -> Self {

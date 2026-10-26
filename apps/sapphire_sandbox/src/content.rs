@@ -2,7 +2,8 @@
 //! what the asset server loads from it, uploaded to the renderer.
 //!
 //! Assets are named by ID only (rule R5): the character is [`CHARACTER`], the mannequin's ID
-//! from its sidecar (`content/samples/mannequin.glb.meta`). The asset server loads it with the
+//! from its sidecar (`content/samples/mannequin.glb.meta`), or the one the scene asks for
+//! (`--look-dev`'s VRM, [`lookdev::CHARACTER`]). The asset server loads it with the
 //! materials its slots name and their textures, dependencies first, and hands each to
 //! [`GpuAssets`], which uploads it with the renderer's own calls and keeps the renderer's handles
 //! by asset ID: a material's textures and a mesh's materials resolve through what is already
@@ -32,9 +33,13 @@
 //! of: a new version replaces it there, and the scene takes its key hours ([`Content::probes`],
 //! [`Content::probe_hours`]).
 //!
-//! With `--stage` it keeps a copy of the character's mesh, from which the stage derives the
-//! character without its pedestal ([`Content::keep_character_mesh`]): the server keeps no mesh's
-//! bytes once uploaded.
+//! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
+//! binds to the town's environment materials ([`Content::town`]), the courtyard's fog cards, and
+//! the character's rig ([`lookdev::RIG`], [`Content::rig`]), which stays on the CPU.
+//!
+//! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
+//! derives the character without its pedestal and the look-dev stage its held pose
+//! ([`Content::keep_character_mesh`]): the server keeps no mesh's bytes once uploaded.
 //!
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
@@ -60,6 +65,7 @@ use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack;
 use sapphire_assets::probes::ProbeGrid;
+use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadPriority, PackFile, PackSource,
     ReadDone, TextureAsset, Unloaded, Upload, UploadError,
@@ -80,6 +86,7 @@ use crate::LOG_TARGET;
 use crate::environment;
 use crate::faces;
 use crate::foliage::{self, FoliageMeshes};
+use crate::lookdev;
 use crate::outlines;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
@@ -147,12 +154,13 @@ struct GpuMesh {
 }
 
 /// What the renderer holds of loaded assets, by asset ID.
-#[derive(Default)]
 struct GpuAssets {
     textures: HashMap<AssetId, Held<GpuTexture>>,
     materials: HashMap<AssetId, Held<MaterialHandle>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
+    /// The character's ID, whose mesh [`Self::character_mesh`] copies.
+    character: AssetId,
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
@@ -161,6 +169,19 @@ struct GpuAssets {
 }
 
 impl GpuAssets {
+    /// Nothing uploaded yet, for `character`, whose mesh is copied while one is wanted.
+    fn new(character: AssetId, keep_character: bool) -> Self {
+        Self {
+            textures: HashMap::new(),
+            materials: HashMap::new(),
+            meshes: HashMap::new(),
+            character,
+            character_mesh: None,
+            keep_character,
+            probe_grid: None,
+        }
+    }
+
     /// Uploads one asset the server hands over, resolving its references through what is
     /// already uploaded (the server uploads dependencies first). An asset this renderer already
     /// holds for the same slot at the same generation is kept as it is: the server re-sends
@@ -194,7 +215,7 @@ impl GpuAssets {
                 }
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
-            if id == CHARACTER && self.keep_character {
+            if id == self.character && self.keep_character {
                 self.character_mesh = Some(mesh.to_mesh()?);
             }
             let materials = &self.materials;
@@ -253,6 +274,8 @@ pub(crate) struct RendererAssets(GpuAssets);
 pub(crate) struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
     gpu: GpuAssets,
+    /// The character's ID: the mannequin's unless the scene asked for another.
+    character_id: AssetId,
     character: Handle<Mesh>,
     /// The shader swatches' materials, once asked for (`--swatches`).
     swatches: Vec<Handle<Material>>,
@@ -268,6 +291,10 @@ pub(crate) struct Content {
     hard_edges: Option<Handle<Mesh>>,
     /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
+    /// The look-dev town, once asked for (`--look-dev`).
+    town: Option<Handle<Mesh>>,
+    /// A character rig, once asked for (`--look-dev`'s).
+    rig: Option<Handle<CharacterRig>>,
     /// The sky material, once asked for.
     sky: Option<Handle<Material>>,
     server: AssetServer,
@@ -279,8 +306,9 @@ pub(crate) struct Content {
 
 impl Content {
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
-    /// the character, within the budgets of the device's class.
-    pub fn new(platform: &Platform) -> Result<Self, AppInitError> {
+    /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
+    /// within the budgets of the device's class.
+    pub fn new(platform: &Platform, character: AssetId) -> Result<Self, AppInitError> {
         let stopwatch = Stopwatch::start();
         let content = platform.content();
         let missing = |error: &dyn std::fmt::Display| {
@@ -299,10 +327,12 @@ impl Content {
         #[cfg(not(feature = "dev"))]
         let mut server = AssetServer::new(packs, budgets);
         server.mount(PACK).map_err(|error| missing(&error))?;
-        let character = server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let character_id = character;
+        let character = server.load_with(character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
         Ok(Self {
-            gpu: GpuAssets::default(),
+            gpu: GpuAssets::new(character_id, false),
+            character_id,
             character,
             swatches: Vec::new(),
             face_head: None,
@@ -311,6 +341,8 @@ impl Content {
             foliage: Vec::new(),
             hard_edges: None,
             probes: None,
+            town: None,
+            rig: None,
             sky: None,
             server,
             #[cfg(feature = "dev")]
@@ -339,7 +371,7 @@ impl Content {
         let stopwatch = Stopwatch::start();
         // Asking again tries a character that failed before (a read or upload that failed once).
         self.character =
-            self.server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
+            self.server.load_with(self.character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&self.character, |upload| assets.upload(upload, renderer, gpu));
         // Unloads during the wait free only the copies they name: newer uploads have new slots.
@@ -348,11 +380,11 @@ impl Content {
         }
         loaded.map_err(|error| AppInitError::msg(format!("the character didn't load: {error}")))?;
         let GpuMesh { handle: mesh, bounds } =
-            self.gpu.meshes.get(&CHARACTER).expect("a ready mesh was uploaded here").object;
+            self.gpu.meshes.get(&self.character_id).expect("a ready mesh was uploaded here").object;
         let stats = self.server.stats();
         tracing::info!(
             target: LOG_TARGET,
-            id = %CHARACTER,
+            id = %self.character_id,
             elapsed = ?stopwatch.elapsed(),
             assets = stats.assets,
             resident = ?stats.resident,
@@ -552,6 +584,46 @@ impl Content {
         Ok(self.gpu.meshes.get(&outlines::HARD_EDGES).expect("a ready mesh was uploaded here").object.handle)
     }
 
+    /// Loads until the look-dev town is on `renderer`, with its environment materials and the
+    /// maps they name, and returns its mesh: the load screen of `--look-dev`. It stays loaded from
+    /// then on.
+    pub fn town(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<MeshHandle, AppInitError> {
+        // Asking again tries a town that failed before, as the character does.
+        let town = self.server.load_with(lookdev::TOWN, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&town, |upload| assets.upload(upload, renderer, gpu));
+        self.town = Some(town);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the look-dev town didn't load: {error}")))?;
+        Ok(self.gpu.meshes.get(&lookdev::TOWN).expect("a ready mesh was uploaded here").object.handle)
+    }
+
+    /// Loads the character rig `id` until it is resident: CPU data, which nothing uploads
+    /// ([`Self::rig`] reads it). It stays loaded from then on.
+    pub fn load_rig(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        // Asking again tries a rig that failed before, as the character does.
+        let rig = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&rig, |upload| assets.upload(upload, renderer, gpu));
+        self.rig = Some(rig);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))
+    }
+
+    /// The rig [`Self::load_rig`] loaded.
+    pub fn rig(&self) -> Option<&ArchivedCharacterRig> {
+        self.rig.as_ref().and_then(|rig| self.server.get(rig))
+    }
+
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
     /// handle: the sky's part of the load screen. It stays loaded from then on.
     pub fn sky_material(
@@ -576,9 +648,8 @@ impl Content {
     /// if the new renderer is given up.
     pub fn renderer_rebuilt(&mut self) -> RendererAssets {
         self.server.reupload_all();
-        let keep_character = self.gpu.keep_character;
-        let previous = std::mem::take(&mut self.gpu);
-        self.gpu.keep_character = keep_character;
+        let fresh = GpuAssets::new(self.gpu.character, self.gpu.keep_character);
+        let previous = std::mem::replace(&mut self.gpu, fresh);
         RendererAssets(previous)
     }
 

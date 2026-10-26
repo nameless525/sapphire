@@ -89,6 +89,15 @@
 //!   along it), lit by the ambient probe grid the cooker baked for both (M1 W5) in place of the
 //!   ambient hemisphere, seen through a longer lens turned to the arcade. Implies
 //!   `--environment`.
+//! - `--look-dev wide|hero|sky`: the look-dev town (M1 X1, `lookdev.rs`): pixiv's VRM sample in
+//!   place of the mannequin, held standing in a town square of the Fantasy Town Kit re-materialed
+//!   in the environment family, with its fog cards and lamps, every landed feature on, seen from
+//!   an authored shot: `wide` across the square, `hero` a three-quarter shot of the character,
+//!   `sky` low and looking up past her. A scene of its own, not a `--stage` layout: it replaces
+//!   the character and the ground under it, so `--stage`, `--environment`, `--probes`,
+//!   `--foliage`, `--outline-row`, `--faces`, `--rim-rig` and `--hard-edges` can't join it.
+//!   `--time-of-day` and `--day-length` run its day; `--view`, `--fov` and `--zoom` adjust the
+//!   shot. The golden scenes `lookdev-town-day` and `lookdev-town-hero` show it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -173,10 +182,12 @@ mod foliage;
 mod input;
 #[cfg(feature = "dev")]
 mod link;
+mod lookdev;
 mod offscreen;
 mod options;
 mod orbit;
 mod outlines;
+mod pose;
 #[cfg(feature = "dev")]
 mod reload;
 mod rims;

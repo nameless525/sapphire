@@ -60,7 +60,10 @@ pub struct Scene {
 /// `ambient-capsule`) changed with the night character light fix, which retuned the default day's
 /// night character key; `night-character` draws a character at night under the whole look, which
 /// no scene did before, with ambient occlusion off and no probe grid like every scene but W5's.
-pub fn scenes() -> [Scene; 61] {
+/// The look-dev scenes (M1 X1) pin Desktop-High, the tier whose look they judge, and ambient
+/// occlusion off, as every scene but W5's: every other landed feature draws in them, as a game
+/// would.
+pub fn scenes() -> [Scene; 63] {
     [
         Scene {
             name: "turntable-start",
@@ -1486,6 +1489,47 @@ pub fn scenes() -> [Scene; 61] {
                 "desktop-high",
                 "--aa",
                 "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The look-dev town (M1 X1) at midday, the wide shot across the square: the town in its
+        // environment materials under the whole sky, fog and fog cards, shadows, post's layers
+        // and the character's outlines, the VRM character standing in the square.
+        Scene {
+            name: "lookdev-town-day",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The hero shot at golden hour: the character in three-quarter view with her SDF face map
+        // and outlines, the market behind her in the warm haze.
+        Scene {
+            name: "lookdev-town-hero",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
                 "--capture-frames",
                 "32",
             ],

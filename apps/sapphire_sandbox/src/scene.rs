@@ -42,6 +42,12 @@
 //! - **The stage** (`--stage`): a floor at the character's feet and a pillar beside it, static
 //!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_stage`],
 //!   [`crate::stage`]).
+//! - **The look-dev stage** (`--look-dev`): the town, one static entity, its fog cards and its
+//!   lamps (each a [`RenderLight`] whose intensity [`Scene::frame_packet`] sets from time of
+//!   day's night before extraction), around the VRM character held in a pose: a
+//!   [`RenderPose`] written once, which `Extract` sends while it is new, and the
+//!   [`Figure`] it makes, where the light rig finds the character's head, body and face
+//!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]).
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
@@ -76,7 +82,7 @@
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
-use sapphire_math::{Mat4, Vec3};
+use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, Fog, FramePacket, HeadBasis, LightKind, LocalLight,
     MaterialHandle, MeshHandle, SkyLayers, ViewData, Wind,
@@ -88,10 +94,11 @@ use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::environment;
-use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransform};
+use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::input::SimActions;
+use crate::lookdev::{self, Shot};
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
@@ -108,15 +115,6 @@ const HITSTOP_TICKS: u16 = 8;
 /// key, which is exactly the look the sandbox drew before time of day, so golden images that
 /// don't choose a time are unchanged.
 pub(crate) const DEFAULT_TIME_OF_DAY: f32 = 10.0;
-/// The sample mannequin's head, in its own space: the center of its head sphere, 1.47 m above
-/// its 0.2 m pedestal (`sapphire_pipeline`'s samples): face and hair GI turn toward a sphere
-/// around it, and the light rig's limits are judged around it.
-const CHARACTER_HEAD: Vec3 = Vec3::new(0.0, 1.67, 0.0);
-/// The sample mannequin's feet, in its own space: the top of its pedestal.
-const CHARACTER_FEET: Vec3 = Vec3::new(0.0, 0.2, 0.0);
-/// The radius of the mannequin's body capsule (M1 R4): its torso's, which its shadow is cast
-/// from, from its feet to its head.
-const CHARACTER_BODY_RADIUS: f32 = 0.24;
 /// The radius of a face rig head's body: a sphere around the head.
 const HEAD_BODY_RADIUS: f32 = 0.16;
 
@@ -139,6 +137,51 @@ type ScreenEffects = SystemState<(ResMut<'static, EffectStack>, Res<'static, Eff
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
+
+/// Where the character's light rig finds its head and body, in the character's own space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Figure {
+    /// The middle of the head: face and hair GI turn toward a sphere around it, and the light
+    /// rig's limits are judged around it.
+    pub head: Vec3,
+    /// Where it stands.
+    pub feet: Vec3,
+    /// The radius of its body capsule (M1 R4), from its feet to its head: its torso's, which its
+    /// shadow is cast from.
+    pub body_radius: f32,
+    /// How its head is turned from facing +Z upright: its face's basis (M1 C3).
+    pub face: Quat,
+}
+
+impl Figure {
+    /// The sample mannequin (`sapphire_pipeline`'s samples): its head sphere 1.47 m above its
+    /// 0.2 m pedestal, its torso's radius, its head turning with it.
+    pub const MANNEQUIN: Self = Self {
+        head: Vec3::new(0.0, 1.67, 0.0),
+        feet: Vec3::new(0.0, 0.2, 0.0),
+        body_radius: 0.24,
+        face: Quat::IDENTITY,
+    };
+}
+
+/// A lantern's light in the look-dev town, lit by night: its [`RenderLight`]'s intensity is this
+/// times time of day's `day_night` (see [`crate::lookdev`]).
+#[derive(Component, Debug)]
+struct Lamp {
+    intensity: f32,
+}
+
+/// The look-dev town's lamps, whose intensities follow the night.
+type Lamps = QueryState<(&'static Lamp, &'static mut RenderLight)>;
+
+/// What the look-dev stage (`--look-dev`) draws: the town, its fog cards where frames draw fog,
+/// and the character's held pose and the figure it makes.
+pub(crate) struct LookDev {
+    pub town: MeshHandle,
+    pub fog_cards: Option<[MeshHandle; environment::FOG_CARDS.len()]>,
+    pub pose: RenderPose,
+    pub figure: Figure,
+}
 
 pub(crate) struct Scene {
     ecs: Ecs,
@@ -173,6 +216,12 @@ pub(crate) struct Scene {
     hard_edges: Option<Entity>,
     /// The stage's pieces, with `--stage`.
     stage: Vec<(Entity, Piece)>,
+    /// The look-dev town, with `--look-dev`.
+    town: Option<Entity>,
+    /// Where the character's light rig finds its head and body.
+    figure: Figure,
+    /// Whether `Extract` writes poses: with `--skinned` or a posed character.
+    poses: bool,
     /// The character's object-space bounds, which demo lights, swatches and the face rig are
     /// placed around.
     bounds: [[f32; 3]; 2],
@@ -181,6 +230,7 @@ pub(crate) struct Scene {
     heads: FaceHeads,
     /// Made once, like the queries: [`Self::with_screen_effects`] runs inside fixed steps.
     screen_effects: ScreenEffects,
+    lamps: Lamps,
     /// The zone's sky material on the current renderer, once loaded.
     sky_material: Option<MaterialHandle>,
     /// Both cloud layers' coverage instead of time of day's (`--cloud-cover`).
@@ -214,7 +264,8 @@ impl Scene {
         world.insert_resource(EffectStack::new(effects_clock));
         world.insert_resource(EffectLibrary::default_effects());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
-        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        let figure = Figure::MANNEQUIN;
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: figure.head };
         let character = world.spawn((Turntable::default(), clock, rig)).id();
         let stalk = skinned.then(|| {
             let clock = world.resource_mut::<WorldClock>().new_entity_clock();
@@ -237,6 +288,7 @@ impl Scene {
         let characters = ecs.world_mut().query_filtered();
         let heads = ecs.world_mut().query_filtered();
         let screen_effects = SystemState::new(ecs.world_mut());
+        let lamps = ecs.world_mut().query();
         Self {
             ecs,
             character,
@@ -256,10 +308,14 @@ impl Scene {
             outline_row: None,
             hard_edges: None,
             stage: Vec::new(),
+            town: None,
+            figure,
+            poses: skinned,
             bounds,
             characters,
             heads,
             screen_effects,
+            lamps,
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
@@ -485,7 +541,7 @@ impl Scene {
         let panels = rims::panels(self.bounds, &camera);
         let world = self.ecs.world_mut();
         world.insert_resource(camera);
-        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: self.figure.head };
         let figure = RenderMesh(meshes.figure);
         self.rim_figures = figures
             .into_iter()
@@ -532,7 +588,7 @@ impl Scene {
             // From the feet to the chest, so the shadow's edge crosses the body.
             true => Subject {
                 base: Vec3::new(0.0, floor, 0.0),
-                shade_height: CHARACTER_FEET.y + 0.65 * (CHARACTER_HEAD.y - CHARACTER_FEET.y),
+                shade_height: self.figure.feet.y + 0.65 * (self.figure.head.y - self.figure.feet.y),
                 pillar_distance: 2.2,
                 pillar_width: 0.5,
             },
@@ -660,6 +716,46 @@ impl Scene {
         }
     }
 
+    /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town around the
+    /// character, its fog cards and lamps, the character held in `look.pose` (its turntable
+    /// stopped, its light rig finding its head and body by `look.figure`) and the `shot`'s
+    /// camera. The town and its cards never move, so they are extracted once.
+    pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
+        self.figure = look.figure;
+        if !self.poses {
+            self.ecs.add_systems(Extract, extract::extract_poses.after(extract::extract_lights));
+            self.poses = true;
+        }
+        let world = self.ecs.world_mut();
+        world.insert_resource(shot.camera());
+        let mut character = world.entity_mut(self.character);
+        character.insert(look.pose);
+        if let Some(mut turntable) = character.get_mut::<Turntable>() {
+            turntable.speed = 0.0;
+        }
+        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
+            rig.head = look.figure.head;
+        }
+        self.town = Some(world.spawn((RenderMesh(look.town), RenderTransform(Mat4::IDENTITY))).id());
+        for light in lookdev::lamps() {
+            world.spawn((Lamp { intensity: light.intensity }, RenderLight(light)));
+        }
+        if let Some(meshes) = look.fog_cards {
+            self.fog_cards = environment::place_cards(&lookdev::CARDS)
+                .map(|(mesh, place)| {
+                    (world.spawn((RenderMesh(meshes[mesh]), RenderTransform(place))).id(), mesh)
+                })
+                .collect();
+        }
+    }
+
+    /// Sets the mesh the look-dev town draws again: after GPU device loss.
+    pub fn set_town_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(town) = self.town {
+            self.ecs.world_mut().entity_mut(town).insert(RenderMesh(mesh));
+        }
+    }
+
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -667,7 +763,7 @@ impl Scene {
         let places = outlines::row(self.bounds);
         let world = self.ecs.world_mut();
         world.insert_resource(outlines::row_camera(self.bounds));
-        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: self.figure.head };
         self.outline_row =
             Some(places.map(|place| world.spawn((RenderMesh(mesh), RenderTransform(place), rig)).id()));
     }
@@ -767,7 +863,13 @@ impl Scene {
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = world.resource_mut::<EffectStack>().resolve(alpha);
         });
+        // Lamps by night, before extraction writes the lights.
+        let day_night = self.ecs.world().resource::<TimeOfDay>().frame().look.day_night;
+        for (lamp, mut light) in self.lamps.iter_mut(self.ecs.world_mut()) {
+            light.0.intensity = lamp.intensity * day_night;
+        }
         self.ecs.extract();
+        let figure = self.figure;
         let (characters, heads) = (&mut self.characters, &mut self.heads);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.packet_mut();
@@ -782,16 +884,16 @@ impl Scene {
                 if let Some(key) = key {
                     lighting.key.direction = -key.toward(camera.position, head);
                 }
-                // The model's head turns with it: no head joint of its own yet.
+                // The head turns with the model, and by the figure's held pose.
                 let pose = HeadBasis {
-                    forward: transform.0.transform_vector3(Vec3::Z),
-                    up: transform.0.transform_vector3(Vec3::Y),
+                    forward: transform.0.transform_vector3(figure.face * Vec3::Z),
+                    up: transform.0.transform_vector3(figure.face * Vec3::Y),
                 };
                 let face = CharacterFace { head: pose, ..CharacterFace::default() };
                 let body = CharacterBody::capsule(
-                    CHARACTER_FEET + Vec3::new(0.0, CHARACTER_BODY_RADIUS, 0.0),
-                    CHARACTER_HEAD,
-                    CHARACTER_BODY_RADIUS,
+                    figure.feet + Vec3::new(0.0, figure.body_radius, 0.0),
+                    figure.head,
+                    figure.body_radius,
                 )
                 .transformed(transform.0);
                 packet.characters.push(CharacterInstance {
@@ -1029,6 +1131,40 @@ mod tests {
     }
 
     #[test]
+    fn the_look_dev_stage_holds_the_pose_and_lights_its_lamps_by_night() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let lifted = sapphire_math::Affine3A::from_translation(Vec3::Y);
+        let pose = RenderPose { palette: vec![lifted; 2], morph_weights: vec![0.5] };
+        let figure = Figure {
+            head: Vec3::new(0.0, 1.45, 0.0),
+            feet: Vec3::ZERO,
+            body_radius: 0.16,
+            face: Quat::IDENTITY,
+        };
+        let look = LookDev { town: MeshHandle::from_raw(1), fog_cards: None, pose: pose.clone(), figure };
+        scene.spawn_look_dev(Shot::Hero, look);
+        let character = InstanceId(scene.character.to_bits());
+        let frame = |scene: &mut Scene, hours: f32| {
+            scene.set_day(hours, None);
+            scene.step();
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let lamps: f32 = packet.lights.iter().map(|light| light.intensity).sum();
+            let posed: Vec<_> = packet.skinned.iter().map(|skinned| skinned.id).collect();
+            let head = packet.characters[0].lighting.gi.head;
+            scene.end_frame();
+            (lamps, posed, head)
+        };
+        let (noon, posed, head) = frame(&mut scene, 13.0);
+        assert_eq!(noon, 0.0, "lamps are out by day");
+        assert_eq!(posed, [character], "the held pose, sent once");
+        assert_eq!(head, Some(figure.head), "the rig finds the figure's head");
+        let (midnight, posed, _) = frame(&mut scene, 0.0);
+        let full = lookdev::LAMP_INTENSITY * lookdev::LAMPS.len() as f32;
+        assert!((midnight - full).abs() < 1e-3, "lamps at full by night: {midnight}");
+        assert!(posed.is_empty(), "a held pose isn't sent again");
+    }
+
+    #[test]
     fn time_of_day_runs_on_the_world_clock() {
         let mut scene = scene();
         scene.set_day(18.0, Some(24.0));
@@ -1058,7 +1194,7 @@ mod tests {
         // At the default hour the gameplay preset's key is the sun the sandbox always drew with,
         // in time of day's character key, which equals it at 10:00.
         assert_eq!(lit.lighting.key, SUN);
-        assert_eq!(lit.lighting.gi.head, Some(CHARACTER_HEAD), "on the turntable's axis");
+        assert_eq!(lit.lighting.gi.head, Some(Figure::MANNEQUIN.head), "on the turntable's axis");
         let rigs = LightRigLibrary::default_rigs();
         assert_eq!(lit.lighting.gi.camera_bias, rigs.rig(LightRigId::DEFAULT).gi.camera_bias);
         scene.end_frame();

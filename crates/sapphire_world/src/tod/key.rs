@@ -260,7 +260,10 @@ pub struct HeightFogKey {
 }
 
 /// The character rig's key light at a key: its color and brightness, curved through the day
-/// apart from the world's.
+/// apart from the world's light but fitted to it, as Wuthering Waves fits character brightness
+/// to its environment (the default day keeps it the key light's own by day and a little
+/// brighter at night). Exposure lifts it with the world's light, so a night key set well above
+/// the moon's brings characters back to their noon brightness.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(deny_unknown_fields)]

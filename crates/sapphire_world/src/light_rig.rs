@@ -12,8 +12,9 @@
 //!   straight above, and an azimuth limit around the camera's side, past which a key from
 //!   behind folds back toward the camera, so they always keep a lit side.
 //!   Its color and brightness scale time of day's character key, which curves through the day
-//!   apart from the world's light. Its GI settings flatten and clamp the ambient light
-//!   characters take; it also scales the rim and caps the local lights.
+//!   apart from the world's light but fitted to it (a little brighter at night). Its GI settings
+//!   flatten and clamp the ambient light characters take; it also scales the rim and caps the
+//!   local lights.
 //! - **[`LightRigLibrary`]** (a `LightRigLibrary` document, schema 1): named presets, the first
 //!   the default. [`LightRigLibrary::default_rigs`] is the shipped one, compiled in until packs
 //!   carry it as content: `gameplay` and `portrait`.

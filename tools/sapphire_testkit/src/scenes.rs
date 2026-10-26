@@ -55,8 +55,12 @@ pub struct Scene {
 /// player's quality setting), and none of them loads a probe grid, so the ambient hemisphere
 /// lights them all as before. The ambient scenes (W5) pin their tier, plain post and no fog, so
 /// they show the probe grid and ambient occlusion with the tier's shadows; the grid is the
-/// desktop cook's, which the runner loads on every backend.
-pub fn scenes() -> [Scene; 60] {
+/// desktop cook's, which the runner loads on every backend. The night scenes with characters
+/// (`turntable-night`, `sky-night`, `environment-night`, `fog-night`, `ambient-night` and
+/// `ambient-capsule`) changed with the night character light fix, which retuned the default day's
+/// night character key; `night-character` draws a character at night under the whole look, which
+/// no scene did before, with ambient occlusion off and no probe grid like every scene but W5's.
+pub fn scenes() -> [Scene; 61] {
     [
         Scene {
             name: "turntable-start",
@@ -1457,6 +1461,33 @@ pub fn scenes() -> [Scene; 60] {
                 "32",
                 "--capture-step",
                 "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A character at night under the whole look (the night character light fix): the
+        // courtyard at 23:00, nearer the mannequin, with the moon's shadows, the fog and post's
+        // layers. Its key is time of day's character key, a little brighter than the moon (about
+        // 1.25 times in luminance at this hour), so the mannequin reads a step above the pillars
+        // and the wall in a cool, dim light, clearly at night, where a key set apart from the
+        // world's kept it at its noon brightness.
+        Scene {
+            name: "night-character",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--environment",
+                "--time-of-day",
+                "23",
+                "--ao",
+                "off",
+                "--zoom",
+                "0.6",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

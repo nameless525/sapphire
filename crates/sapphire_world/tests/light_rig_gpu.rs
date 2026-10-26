@@ -16,6 +16,7 @@ use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::texture::Swizzle;
+use sapphire_math::color::luminance;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
@@ -390,11 +391,13 @@ fn the_key_takes_time_of_days_character_light_not_the_worlds() {
             curve.color * curve.intensity
         );
     }
-    // At midnight the character's key is brighter than the moon that lights the world.
+    // At midnight the character's key is a little brighter than the moon that lights the world
+    // (in luminance, about 1.25 times: the default day's night lift).
     tod.clock_mut().set_hours(0.0);
     let frame = *tod.resolve(Vec3::ZERO, 0.0);
     let drawn = stage.render(&frame, &[gameplay]);
     let moon = frame.look.key_light();
-    let lit = drawn.at(Vec3::new(0.0, 0.5, 0.866));
-    assert!(lit[2] > ALBEDO * moon.color.z * moon.intensity * 1.5, "{lit:?} vs the moon's {moon:?}");
+    let lit = luminance(Vec3::from(drawn.at(Vec3::new(0.0, 0.5, 0.866))));
+    let moonlit = ALBEDO * luminance(moon.color) * moon.intensity;
+    assert!(lit > moonlit * 1.15, "{lit} vs {moonlit} lit by the moon {moon:?}");
 }

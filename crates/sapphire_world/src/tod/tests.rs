@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use sapphire_math::Vec3;
-use sapphire_math::color::linear_srgb_to_oklab;
+use sapphire_math::color::{linear_srgb_to_oklab, luminance};
 use sapphire_render::{
     CharacterBloom, ColorGrade, DirectionalLight, FramePacket, GradientBlend, GradientLayer, GradientShape,
     PostParams, SkyGradient, SkyLayers,
@@ -186,6 +186,37 @@ fn the_default_day_never_lights_from_below() {
     for minute in 0..24 * 60 {
         let key = day.evaluate(minute as f32 / 60.0).key_light();
         assert!(key.intensity == 0.0 || key.direction.y < 0.0, "{minute} min: {key:?} travels upward");
+    }
+}
+
+/// The default day's character key against the world's key light, as the screen shows them
+/// (luminance, exposed): the same light by day, never dimmer, and at night a little brighter,
+/// so characters read, yet well below their noon brightness, so they read as night. A night key
+/// set apart from the world's light kept characters at 80–100% of noon once exposure lifted the
+/// night, while the world dropped to a quarter to a half.
+#[test]
+fn the_default_days_characters_stay_a_little_brighter_than_the_world_at_night() {
+    let day = TodTimeline::default_day();
+    let shown =
+        |look: &TodLook, color: Vec3, intensity: f32| luminance(color) * intensity * look.exposure.exp2();
+    let noon = day.evaluate(13.0);
+    let noon_character = shown(&noon, noon.character_light.color, noon.character_light.intensity);
+    for quarter in 0..24 * 4 {
+        let hours = quarter as f32 / 4.0;
+        let look = day.evaluate(hours);
+        let key = look.key_light();
+        let character = shown(&look, look.character_light.color, look.character_light.intensity);
+        let lift = character / shown(&look, key.color, key.intensity);
+        assert!(lift >= 0.999, "{hours}: characters are never lit below the world ({lift})");
+        if (10.0..=14.0).contains(&hours) {
+            assert!((lift - 1.0).abs() < 1e-4, "{hours}: by day the same light ({lift})");
+        }
+        // From dusk (20:00) through the blue hour (5:00).
+        if hours >= 20.0 || hours <= 5.0 {
+            assert!((1.2..=1.6).contains(&lift), "{hours}: a little brighter than the world ({lift})");
+            let share = character / noon_character;
+            assert!(share <= 0.7, "{hours}: at night, at most 70% of noon's brightness ({share})");
+        }
     }
 }
 

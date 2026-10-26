@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use sapphire_math::Vec3;
+use sapphire_math::color::luminance;
 use sapphire_render::{CameraData, CharacterGi, CharacterLight, CharacterLighting, DirectionalLight};
 use sapphire_serialize::DocumentError;
 use sapphire_time::ScaledClock;
@@ -230,12 +231,15 @@ fn the_key_takes_time_of_days_character_curve() {
         assert_eq!(key.color, curve.color * Vec3::new(1.0, 0.5, 0.25), "{hours}");
         assert_eq!(key.intensity, curve.intensity * 2.0, "{hours}");
     }
-    // At midnight characters get a brighter key of their own than the moon gives the world.
+    // At midnight characters get a key of their own a little brighter than the moon gives the
+    // world (in luminance, about 1.25 times: the default day's night lift, `tod`'s tests).
     tod.clock_mut().set_hours(0.0);
     let frame = *tod.resolve(Vec3::ZERO, 0.0);
     let key = frame.character_lighting(&gameplay(), &camera, Vec3::Y).key;
     let moon = frame.look.key_light();
-    assert!(key.intensity > moon.intensity * 1.5, "{} vs the moon's {}", key.intensity, moon.intensity);
+    let (character, moonlight) =
+        (luminance(key.color) * key.intensity, luminance(moon.color) * moon.intensity);
+    assert!(character > moonlight * 1.15, "{character} vs the moon's {moonlight}");
 }
 
 #[test]

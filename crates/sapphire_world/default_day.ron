@@ -23,9 +23,16 @@
 // - A body lights the scene only from above the horizon, so each one's intensity reaches 0 at
 //   the key where it reaches the horizon (the sun at 5:00 and 20:00, the moon at 18:45), and
 //   stays 0 below it.
-// - Characters get a key light of their own, brighter than the world's at night so they read
-//   (WuWa fits character brightness across the day); C2 draws it. Until then they are lit by
-//   the world's key light.
+// - Characters get a key light of their own (`character`; C2 draws it) that follows the world's
+//   key light through the day, as WuWa fits character brightness to its environment: the same
+//   light by day, and a little brighter from golden hour to sunrise, so characters read. In
+//   luminance it is about 1.5 times the key light at sunset, dusk and the blue hour, where the
+//   world is darkest and its low moon only grazes it, and 1.25 times under the high midnight moon,
+//   where the night is brightest. Exposure lifts characters and world alike, so that ratio is what
+//   the screen shows: at night characters take a cool key at a third (dusk, the blue hour) to two
+//   thirds (midnight) of their noon brightness, a step above the world. Retune it with the sun,
+//   the moon and exposure: a night key set apart from the world's light keeps characters at their
+//   noon brightness once exposure lifts the night, while the world drops to under half.
 // - The sky's layers (M1 W2): `discs` are the sun's and moon's discs and glows, apart from the
 //   light the bodies give, so a setting sun's disc fades on the horizon after its light, and the
 //   moon shows pale as it rises at sunset. Glows are wide and warm at sunrise and sunset and
@@ -66,7 +73,7 @@
                     characters: 0.4,
                 ),
                 shadow_tint: (0.22, 0.26, 0.5),
-                character: (color: (0.66, 0.74, 1.0), intensity: 0.8),
+                character: (color: (0.66, 0.74, 1.0), intensity: 0.5),
                 day_night: 1.0,
                 exposure: 0.7,
                 grade: (temperature: -0.2, contrast: 1.05, saturation: 1.05, lift: (0.0, 0.01, 0.035)),
@@ -104,7 +111,7 @@
                     characters: 0.4,
                 ),
                 shadow_tint: (0.3, 0.3, 0.55),
-                character: (color: (0.72, 0.76, 1.0), intensity: 0.75),
+                character: (color: (0.72, 0.76, 1.0), intensity: 0.3),
                 day_night: 0.9,
                 exposure: 0.5,
                 grade: (temperature: -0.15, tint: 0.04, contrast: 1.05, saturation: 1.1, lift: (0.005, 0.01, 0.035)),
@@ -336,7 +343,7 @@
                     characters: 0.4,
                 ),
                 shadow_tint: (0.25, 0.25, 0.5),
-                character: (color: (0.75, 0.72, 1.0), intensity: 0.75),
+                character: (color: (0.75, 0.72, 1.0), intensity: 0.32),
                 day_night: 0.85,
                 exposure: 0.45,
                 grade: (temperature: -0.1, tint: 0.1, contrast: 1.04, saturation: 1.1, lift: (0.01, 0.01, 0.035)),

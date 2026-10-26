@@ -116,23 +116,30 @@ jobs:
   # Golden images (spec §9 gate 3, M1 plan Q6): sandbox captures compared with per-backend
   # references in tests/golden by `cargo xtask golden`. Each runner renders with a pinned CPU or
   # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
+  #
+  # The CPU rasterizers split their scenes across runners (`--shard <index>/<count>`, every
+  # count-th scene), each shard building the sandbox on its own: WARP takes from a few seconds
+  # to minutes a scene (W5's ambient scenes about 3.5 minutes each, scenes with local lights
+  # over a minute), about 55 minutes in all at W5, and the slowest job sets how soon a change
+  # can land. Add shards as scenes are added, keeping each job well inside its time limit.
   golden:
-    name: Golden images (${{ matrix.family }})
+    name: Golden images (${{ matrix.family }} ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan }
-          - { os: windows-2025, family: dx12-warp, backend: dx12 }
-          - { os: macos-26, family: metal, backend: metal }
+          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 1, shards: 2 }
+          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 2, shards: 2 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 1, shards: 4 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 2, shards: 4 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 3, shards: 4 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 4, shards: 4 }
+          - { os: macos-26, family: metal, backend: metal, shard: 1, shards: 1 }
     runs-on: ${{ matrix.os }}
     # Metal on the hosted runner's paravirtual GPU is informational until it has run clean
     # for two weeks; wgpu itself still tests on macos-14 (M1 plan §3).
     continue-on-error: ${{ matrix.family == 'metal' }}
-    # WARP renders on the CPU: W5's ambient scenes (GTAO and the probe grid's compute every
-    # frame) take about 3.5 minutes each there, which put the job past 45 minutes. Splitting the
-    # scenes across runners is the lasting fix.
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       SAPPHIRE_GPU_BACKEND: ${{ matrix.backend }}
       # Validation slows CPU rasterizers, and Metal's is broken on the paravirtual device.
@@ -179,7 +186,7 @@ jobs:
           tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
           Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
       - name: Golden images
-        run: cargo --locked xtask --locked golden
+        run: cargo --locked xtask --locked golden --shard ${{ matrix.shard }}/${{ matrix.shards }}
       # When a scene fails, what explains a crash goes up with the captures: the sandbox's
       # minidumps (its crash capture writes them under the platform's cache directory) with the
       # Windows executable's debug info, and the first scene re-run with the backend's validation
@@ -212,7 +219,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: golden-${{ matrix.family }}
+          name: golden-${{ matrix.family }}-${{ matrix.shard }}of${{ matrix.shards }}
           path: target/golden/
           if-no-files-found: ignore
           retention-days: 7

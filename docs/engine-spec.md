@@ -1993,7 +1993,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 | `cargo xtask run --platform desktop\|ios-sim\|ios\|android` | Builds, cooks, deploys and launches, with live link enabled |
 | `cargo xtask package <platform> --profile shipping` | Produces store-ready artifacts and uploads symbols |
 | `cargo xtask replay <file\|dir>` | Runs headless combat replays |
-| `cargo xtask golden [--update]` | Runs golden-image render tests |
+| `cargo xtask golden [--update] [--scene <name> \| --shard <i>/<n>]` | Runs golden-image render tests; CI splits the CPU rasterizers' scenes across runners with `--shard` |
 | `cargo xtask link status\|cvar\|push\|watch` | Live link's desktop tool (§5.29): reads a running dev build's state, sets cvars, pushes packs (only what changed), documents and WGSL sources, or watches and pushes them as they change |
 
 ---

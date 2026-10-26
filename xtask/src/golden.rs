@@ -1,4 +1,5 @@
-//! `cargo xtask golden [--update] [--scene <name>]`: golden-image tests (spec §9 gate 3).
+//! `cargo xtask golden [--update] [--scene <name> | --shard <index>/<count>]`: golden-image tests
+//! (spec §9 gate 3).
 //!
 //! Cooks the desktop content, builds the sandbox and `sapphire_testkit` for the host, then
 //! runs `sapphire_testkit golden`, which owns the scenes and the comparison
@@ -12,7 +13,7 @@ use crate::workspace::{self, CargoBuild};
 
 const TESTKIT: &str = "sapphire_testkit";
 
-pub fn run(update: bool, scene: Option<&str>) -> anyhow::Result<()> {
+pub fn run(update: bool, scene: Option<&str>, shard: Option<&str>) -> anyhow::Result<()> {
     // Held while the sandbox runs, so no other xtask run recooks the content under it.
     let (content, sandbox) = platforms::desktop_build(&App::load(SANDBOX)?, &Options::default())?;
     let env = platforms::host_build_env()?;
@@ -36,6 +37,9 @@ pub fn run(update: bool, scene: Option<&str>) -> anyhow::Result<()> {
     }
     if let Some(scene) = scene {
         command.args(["--scene", scene]);
+    }
+    if let Some(shard) = shard {
+        command.args(["--shard", shard]);
     }
     workspace::run(&mut command)
 }

@@ -1481,18 +1481,78 @@ pub struct Paths {
     pub out: PathBuf,
 }
 
+/// Which scenes a run renders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection<'a> {
+    All,
+    /// One scene, by name.
+    Scene(&'a str),
+    /// One of several slices of the list, so CI can split a backend's scenes across runners.
+    Shard(Shard),
+}
+
+/// Slice `index` of `count` (from 1): every `count`-th scene, starting at position `index - 1`.
+/// Neighbouring scenes often share a feature and its cost on a CPU rasterizer (W5's six ambient
+/// scenes take minutes each on WARP), so dealing them out in turn keeps the slices' times close,
+/// where cutting the list into runs would give one slice all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shard {
+    pub index: usize,
+    pub count: usize,
+}
+
+impl Shard {
+    fn holds(self, position: usize) -> bool {
+        position % self.count == self.index - 1
+    }
+}
+
+impl std::str::FromStr for Shard {
+    type Err = String;
+
+    /// Parses `<index>/<count>`, such as `2/4`.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let invalid = || format!("invalid shard {text:?}: expected <index>/<count> from 1, such as 2/4");
+        let (index, count) = text.split_once('/').ok_or_else(invalid)?;
+        let index = index.parse::<usize>().map_err(|_| invalid())?;
+        let count = count.parse::<usize>().map_err(|_| invalid())?;
+        if index == 0 || index > count {
+            return Err(invalid());
+        }
+        Ok(Shard { index, count })
+    }
+}
+
 /// Runs the selected scenes and returns one message per failure (empty: all passed).
-pub fn run(paths: &Paths, mode: Mode, only: Option<&str>) -> Result<Vec<String>, String> {
+pub fn run(paths: &Paths, mode: Mode, selection: Selection<'_>) -> Result<Vec<String>, String> {
     let scenes = scenes();
-    let selected: Vec<&Scene> =
-        scenes.iter().filter(|scene| only.is_none_or(|name| name == scene.name)).collect();
-    if selected.is_empty() {
-        let names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
-        return Err(format!(
-            "no golden scene named {:?}; scenes: {}",
-            only.unwrap_or_default(),
-            names.join(", ")
-        ));
+    let selected: Vec<&Scene> = scenes
+        .iter()
+        .enumerate()
+        .filter(|&(position, scene)| match selection {
+            Selection::All => true,
+            Selection::Scene(name) => name == scene.name,
+            Selection::Shard(shard) => shard.holds(position),
+        })
+        .map(|(_, scene)| scene)
+        .collect();
+    match selection {
+        Selection::Scene(name) if selected.is_empty() => {
+            let names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
+            return Err(format!("no golden scene named {name:?}; scenes: {}", names.join(", ")));
+        }
+        Selection::Shard(shard) if selected.is_empty() => {
+            return Err(format!(
+                "shard {}/{} holds none of the {} scenes",
+                shard.index,
+                shard.count,
+                scenes.len()
+            ));
+        }
+        Selection::Shard(shard) => {
+            eprintln!("shard {}/{}: {} of {} scenes", shard.index, shard.count, selected.len(), scenes.len());
+        }
+        _ => {}
     }
     let io = |what: &str, path: &Path, error: std::io::Error| format!("{what} {}: {error}", path.display());
     if paths.out.exists() {
@@ -1595,6 +1655,35 @@ mod tests {
     }
 
     #[test]
+    fn shards_parse_from_one() {
+        assert_eq!("2/4".parse(), Ok(Shard { index: 2, count: 4 }));
+        assert_eq!("1/1".parse(), Ok(Shard { index: 1, count: 1 }));
+        for invalid in ["0/4", "5/4", "1/0", "2", "a/4", "2/b", "", "/", "-1/4"] {
+            assert!(invalid.parse::<Shard>().is_err(), "{invalid:?} parsed");
+        }
+    }
+
+    #[test]
+    fn shards_deal_out_every_scene_once_and_evenly() {
+        let total = scenes().len();
+        for count in 1..=6 {
+            let mut taken = vec![0; total];
+            let mut sizes = Vec::new();
+            for index in 1..=count {
+                let shard = Shard { index, count };
+                let held: Vec<usize> = (0..total).filter(|&position| shard.holds(position)).collect();
+                held.iter().for_each(|&position| taken[position] += 1);
+                sizes.push(held.len());
+            }
+            assert!(taken.iter().all(|&times| times == 1), "{count} shards");
+            assert!(
+                sizes.iter().max().unwrap() - sizes.iter().min().unwrap() <= 1,
+                "{count} shards: {sizes:?}"
+            );
+        }
+    }
+
+    #[test]
     fn only_the_ambient_scenes_take_ambient_occlusion_and_a_grid() {
         // Every scene from before M1 W5 pins AO off and loads no grid, so it draws as it did; the
         // ambient scenes pin fog off instead.
@@ -1622,13 +1711,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_scenes() {
+    fn rejects_unknown_scenes_and_empty_shards() {
         let paths = Paths {
             sandbox: PathBuf::from("unused"),
             content: PathBuf::from("unused"),
             goldens: PathBuf::from("unused"),
             out: PathBuf::from("unused"),
         };
-        assert!(run(&paths, Mode::Compare, Some("no-such-scene")).unwrap_err().contains("turntable"));
+        assert!(
+            run(&paths, Mode::Compare, Selection::Scene("no-such-scene")).unwrap_err().contains("turntable")
+        );
+        let past_the_end = Shard { index: 999, count: 999 };
+        assert!(
+            run(&paths, Mode::Compare, Selection::Shard(past_the_end)).unwrap_err().contains("holds none")
+        );
     }
 }

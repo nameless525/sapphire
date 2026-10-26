@@ -49,12 +49,13 @@ Commands:
         android   bundles, uses the connected device or boots the sapphire_api36
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
-  golden [--update] [--scene <name>]
+  golden [--update] [--scene <name> | --shard <index>/<count>]
       Render the golden scenes with the sandbox's offscreen capture (640x360, no window)
       and compare them with tests/golden/<scene>.<backend family>.png using FLIP.
       Failures leave .actual.png and .diff.png files under target/golden/. A scene with
       no golden for this backend family fails in CI and is skipped locally. --update
-      writes this family's goldens instead.
+      writes this family's goldens instead. --shard renders every <count>-th scene from
+      the <index>-th (from 1); CI splits the slow backends' scenes across runners with it.
   link <command> [options]
       Live link (spec §5.29): build the desktop tool and run it against a running dev build
       (`--features dev`), with this workspace's cooked content:
@@ -132,8 +133,9 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
         "golden" => {
             let update = args.flag("--update");
             let scene = args.value::<String>("--scene")?;
+            let shard = args.value::<String>("--shard")?;
             args.finish(false)?;
-            golden::run(update, scene.as_deref())
+            golden::run(update, scene.as_deref(), shard.as_deref())
         }
         "help" | "--help" | "-h" => {
             eprintln!("{USAGE}");

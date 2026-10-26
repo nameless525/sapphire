@@ -20,6 +20,7 @@ use sapphire_livelink::protocol::{DeviceStatus, Preamble, ReplyBody};
 use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
 };
+use sapphire_time::Stopwatch;
 use sapphire_world::tod::TodTimeline;
 
 const TEXTURE: AssetId = AssetId::from_bytes([1; 16]);
@@ -403,20 +404,33 @@ fn a_device_can_dial_the_tool() {
 #[test]
 fn a_dialing_device_waits_between_dials() {
     // Behind `adb reverse` with no tool on the desktop, adbd takes every dial and closes it at
-    // once: the device must not spin.
+    // once: the device must not spin, and must keep dialing.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
     let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
     let link = LiveLink::start(LinkMode::Connect(address), packs).unwrap();
-    let mut dials = 0;
-    for _ in 0..250 {
-        if let Ok((stream, _)) = listener.accept() {
-            dials += 1;
-            drop(stream);
+    // The time from closing each dial to the next. The device waits once it sees the close, so
+    // however late this thread takes a dial, the next can't come sooner than the wait.
+    let (mut since_close, mut gaps) = (None::<Stopwatch>, Vec::new());
+    let deadline = Stopwatch::start();
+    while gaps.len() < 3 && deadline.elapsed() < Duration::from_secs(60) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                gaps.extend(since_close.as_ref().map(Stopwatch::elapsed));
+                drop(stream);
+                since_close = Some(Stopwatch::start());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("{error}"),
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     drop(link);
-    assert!((1..=4).contains(&dials), "about one dial a second in 2.5 s, not {dials}");
+    assert_eq!(gaps.len(), 3, "the device dials again after each close, within a minute: {gaps:?}");
+    assert!(
+        gaps.iter().all(|gap| *gap >= Duration::from_millis(950)),
+        "the device waits a second between dials: {gaps:?}"
+    );
 }

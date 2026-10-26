@@ -35,6 +35,8 @@ sapphire_hot_reload.workspace = true
 sapphire_hot_reload = { workspace = true, features = ["notify"] }
 
 [dev-dependencies]
+# Loopback tests time the dial loop's waits.
+sapphire_time.workspace = true
 # Loopback tests push a time-of-day timeline, as the sandbox does.
 sapphire_world.workspace = true
 

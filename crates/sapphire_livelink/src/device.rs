@@ -6,7 +6,7 @@ use std::fmt;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -159,6 +159,8 @@ pub struct LiveLink {
     pushes: Receiver<Push>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    /// Dropped to wake a dialing thread between dials.
+    wake: Option<Sender<()>>,
 }
 
 impl fmt::Debug for LiveLink {
@@ -177,6 +179,7 @@ impl LiveLink {
         let (sender, pushes) = mpsc::sync_channel(PUSH_QUEUE);
         let shared = Arc::new(Shared::default());
         let context = Context { shared: shared.clone(), packs, pushes: sender };
+        let mut wake = None;
         let (address, thread) = match mode {
             LinkMode::Listen(address) => {
                 let listener = TcpListener::bind(address)?;
@@ -187,9 +190,11 @@ impl LiveLink {
                 (address, thread)
             }
             LinkMode::Connect(address) => {
+                let (sender, woken) = mpsc::channel();
+                wake = Some(sender);
                 let thread = thread::Builder::new()
                     .name("sapphire-live-link".into())
-                    .spawn(move || dial(address, &context))?;
+                    .spawn(move || dial(address, &context, &woken))?;
                 (address, thread)
             }
         };
@@ -202,7 +207,7 @@ impl LiveLink {
             LinkMode::Listen(_) => tracing::info!(target: LOG_TARGET, %address, "live link listening"),
             LinkMode::Connect(_) => tracing::info!(target: LOG_TARGET, %address, "live link dialing"),
         }
-        Ok(Self { mode, address, pushes, shared, thread: Some(thread) })
+        Ok(Self { mode, address, pushes, shared, thread: Some(thread), wake })
     }
 
     pub fn mode(&self) -> LinkMode {
@@ -253,7 +258,7 @@ impl Drop for LiveLink {
                     .is_ok()
             }
             LinkMode::Connect(_) => {
-                thread.thread().unpark();
+                drop(self.wake.take());
                 true
             }
         };
@@ -320,8 +325,9 @@ fn accept(mut listener: TcpListener, address: SocketAddr, context: &Context) {
     }
 }
 
-/// Dials `address` and serves the connection, again whenever it drops, until the link closes.
-fn dial(address: SocketAddr, context: &Context) {
+/// Dials `address` and serves the connection, again whenever it drops, until the link closes,
+/// which drops the sender of `wake`.
+fn dial(address: SocketAddr, context: &Context, wake: &Receiver<()>) {
     while !context.shared.closing.load(Ordering::Relaxed) {
         // The handshake waits as long as the tool takes to accept: a dialed connection sits in
         // its backlog until then.
@@ -330,7 +336,11 @@ fn dial(address: SocketAddr, context: &Context) {
         }
         // Whether the tool wasn't there or the connection ended, wait: behind `adb reverse` every
         // dial connects at once, to adbd, which closes it when no tool listens on the desktop.
-        thread::park_timeout(RETRY);
+        // A channel's timeout is the whole of it, where a thread's park may end early.
+        match wake.recv_timeout(RETRY) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+        }
     }
 }
 

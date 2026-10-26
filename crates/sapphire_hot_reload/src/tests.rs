@@ -1,5 +1,13 @@
 //! Watching real directories: these wait for the platform's file events, for at most a few
-//! seconds each.
+//! seconds each (longer on a loaded machine, whose sleeps run long).
+//!
+//! They check what holds however the machine is loaded: a pause in the writes, or in the
+//! delivery of their events, as long as the debounce time may end a burst; and FSEvents may
+//! report files written just before a watch began, in its first batches or folded into a later
+//! one. So bursts are checked to coalesce, not to be reported exactly once, and each change to be
+//! reported, not to be reported alone.
+
+use sapphire_time::Stopwatch;
 
 use super::*;
 
@@ -31,14 +39,33 @@ const TICK: Duration = Duration::from_millis(20);
 
 /// Polls until something changed, for at most five seconds.
 fn next(reload: &mut HotReload) -> Changes {
+    next_where(reload, |_| true)
+}
+
+/// Polls until a change `wanted` takes comes, for at most five seconds, skipping others.
+fn next_where(reload: &mut HotReload, wanted: impl Fn(&Changes) -> bool) -> Changes {
     for _ in 0..250 {
         let changes = reload.poll();
-        if !changes.is_empty() {
+        if !changes.is_empty() && wanted(&changes) {
             return changes;
         }
         std::thread::sleep(TICK);
     }
-    panic!("nothing changed in five seconds");
+    panic!("no such change in five seconds");
+}
+
+/// Polls until every pack in `expected` was reported, for at most five seconds, and returns
+/// every pack reported meanwhile: others may come too, the expected ones must.
+fn packs_reported(reload: &mut HotReload, expected: &[&str]) -> Vec<String> {
+    let mut packs = Vec::new();
+    for _ in 0..250 {
+        packs.extend(reload.poll().packs);
+        if expected.iter().all(|pack| packs.iter().any(|reported| reported == pack)) {
+            return packs;
+        }
+        std::thread::sleep(TICK);
+    }
+    panic!("{expected:?} weren't reported in five seconds; {packs:?} were");
 }
 
 /// Polls for `wait`, and returns everything that changed in that time.
@@ -63,23 +90,38 @@ fn write_atomically(path: &Path, bytes: &[u8]) {
 }
 
 #[test]
-fn a_burst_of_writes_is_one_change() {
+fn a_burst_of_writes_is_coalesced() {
+    const WRITES: u8 = 30;
     let content = TempDir::new("burst");
     let pack = content.join("shared.spack");
     std::fs::write(&pack, b"0").unwrap();
     let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
     reload.watch_packs(&content.0).unwrap();
-    // Thirty writes over about half a second, more than three debounce times, but never quiet
-    // for one.
-    for n in 0..30u8 {
+    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
+    // Thirty writes over about half a second, more than three debounce times, never quiet for one
+    // unless the machine pauses this thread; each such pause may end a burst.
+    let (mut since_write, mut pauses) = (Stopwatch::start(), 0);
+    for n in 0..WRITES {
         write_atomically(&pack, &[n]);
+        if since_write.lap() >= TEST_DEBOUNCE && n > 0 {
+            pauses += 1;
+        }
         std::thread::sleep(Duration::from_millis(15));
     }
-    let first = next(&mut reload);
-    assert_eq!(first.packs, ["shared"]);
-    let rest = gather(&mut reload, 4 * TEST_DEBOUNCE);
-    assert!(rest.is_empty(), "the burst was reported once: then {rest:?}");
-    assert!(reload.poll().is_empty());
+    let mut reports = vec![next(&mut reload)];
+    reports.extend(gather(&mut reload, 4 * TEST_DEBOUNCE));
+    assert!(
+        reports.iter().all(|changes| changes.packs == ["shared"] && changes.errors.is_empty()),
+        "{reports:?}"
+    );
+    // Once on an idle machine; a report per write would be thirty. A loaded machine may also stall
+    // delivering the events, which this thread can't see: a few times at most in half a second.
+    let most = 1 + pauses + usize::from(WRITES / 10);
+    assert!(
+        reports.len() <= most,
+        "{WRITES} writes with {pauses} pauses were reported {} times, more than {most}: {reports:?}",
+        reports.len()
+    );
 }
 
 #[test]
@@ -100,7 +142,8 @@ fn packs_shaders_and_documents_are_reported_as_what_they_are() {
     let document = reload.watch_document(&day).unwrap();
     let other_document = reload.watch_document(&rigs).unwrap();
     assert_ne!(document, other_document);
-    assert!(reload.poll().is_empty());
+    // The files just written may be reported once the watch begins.
+    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
 
     // A pack lands; the temporary file it was written to is no pack.
     write_atomically(&content.join("shared.spack"), b"pack");
@@ -151,19 +194,18 @@ fn removed_and_renamed_files_are_changes() {
     let mut reload = HotReload::new(TEST_DEBOUNCE).expect("a file-watching backend");
     reload.watch_packs(&content.0).unwrap();
     reload.watch_shaders(&shaders.0).unwrap();
+    let _ = gather(&mut reload, 4 * TEST_DEBOUNCE);
 
     // A removed pack is a pack to remount: the remount fails, and the asset server keeps it.
     std::fs::remove_file(content.join("shared.spack")).unwrap();
-    assert_eq!(next(&mut reload).packs, ["shared"]);
+    packs_reported(&mut reload, &["shared"]);
     // A rename changes both names.
     std::fs::rename(content.join("zone.spack"), content.join("district.spack")).unwrap();
-    let mut packs = next(&mut reload).packs;
-    packs.sort();
-    assert_eq!(packs, ["district", "zone"]);
+    packs_reported(&mut reload, &["district", "zone"]);
 
     // A removed shader keeps the text it had, and says why.
     std::fs::remove_file(shaders.join("outline.wgsl")).unwrap();
-    let changes = next(&mut reload);
+    let changes = next_where(&mut reload, |changes| changes.shaders.is_some());
     let sources = changes.shaders.expect("shader sources");
     assert_eq!(sources.get(ShaderFile::Outline), ShaderFile::Outline.compiled_in());
     assert!(changes.errors.iter().any(|error| error.contains("outline.wgsl")), "{:?}", changes.errors);

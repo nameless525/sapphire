@@ -27,6 +27,8 @@ default = ["notify"]
 notify = ["dep:notify"]
 
 [dev-dependencies]
+# Tests time the pauses in a burst of writes.
+sapphire_time.workspace = true
 # The compiled-in documents that `sources::default_day` and `sources::default_light_rigs` are
 # checked against.
 sapphire_world.workspace = true

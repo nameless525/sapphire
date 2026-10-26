@@ -3,10 +3,16 @@
 // Every number is a Proposal until M2 measures the reference devices at thermally throttled
 // clocks (spec §3).
 //
-// - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`
-//   and `sky`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
+// - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`,
+//   `sky` and `environment`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's
+//   targets.
 // - `sky` (M1 W2): the sky cube's size and frames between face updates, and the cirrus layer.
 //   Both desktop tiers draw the same sky, so golden images match on every desktop GPU.
+// - `environment` (M1 W4): the environment shader's specular model. Desktop tiers take the full
+//   GGX (distribution, height-correlated Smith visibility, Schlick Fresnel); Mobile-High a
+//   cheaper GGX that folds visibility and Fresnel into one term; Mobile-Low none, where the world
+//   reads by its painted diffuse (terminator, wrap, shadow tint, band, desaturation and emission
+//   run on every tier). Both desktop tiers draw the same, as with the sky.
 // - Read by later packages: `shadows` (R4, C2), `ambient_occlusion` (W5), `volumetric_fog`,
 //   `screen_space_outlines` (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD
 //   selection).
@@ -53,6 +59,7 @@
                 max_particles: 50000,
                 lod_bias: 0.0,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
+                environment: (specular: Full),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -73,6 +80,7 @@
                 max_particles: 50000,
                 lod_bias: 0.5,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
+                environment: (specular: Full),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -95,6 +103,7 @@
                 max_particles: 8000,
                 lod_bias: 0.0,
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
+                environment: (specular: Approximate),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -117,6 +126,9 @@
                 // A face every other frame is a full cube every 0.4 s at 30 fps; the card clouds
                 // carry the look without the cirrus layer.
                 sky: (cube_size: 64, cube_interval: 2, cirrus: false),
+                // The world's highlights go first: a 30 fps phone spends its budget on the
+                // characters and the frame's atmosphere.
+                environment: (specular: Off),
             ),
         ],
     ),

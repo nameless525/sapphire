@@ -1,6 +1,6 @@
 //! WGSL sources: the renderer's shader files, embedded at build time ([`ShaderFile`]), and the
 //! programs it builds from them (`Program`). Each scene pass's program is `frame.wgsl` and
-//! `materials.wgsl` (the material families' blocks, which frame.wgsl's material binding names)
+//! `materials.wgsl` (the material families' blocks, which the passes' material bindings name)
 //! followed by the files it uses, its own last, joined by newlines; M1 replaces the
 //! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
 //! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone.
@@ -37,6 +37,8 @@ pub enum ShaderFile {
     Lights,
     Sky,
     AnimeCharacter,
+    /// The environment shader (M1 W4).
+    Environment,
     Outline,
     /// The light-cluster compute pass.
     Clusters,
@@ -51,12 +53,13 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
         Self::Sky,
         Self::AnimeCharacter,
+        Self::Environment,
         Self::Outline,
         Self::Clusters,
         Self::Prepass,
@@ -73,6 +76,7 @@ impl ShaderFile {
             Self::Lights => "lights.wgsl",
             Self::Sky => "sky.wgsl",
             Self::AnimeCharacter => "anime_character.wgsl",
+            Self::Environment => "environment.wgsl",
             Self::Outline => "outline.wgsl",
             Self::Clusters => "clusters.wgsl",
             Self::Prepass => "prepass.wgsl",
@@ -95,6 +99,7 @@ impl ShaderFile {
             Self::Lights => include_str!("../shaders/lights.wgsl"),
             Self::Sky => include_str!("../shaders/sky.wgsl"),
             Self::AnimeCharacter => include_str!("../shaders/anime_character.wgsl"),
+            Self::Environment => include_str!("../shaders/environment.wgsl"),
             Self::Outline => include_str!("../shaders/outline.wgsl"),
             Self::Clusters => include_str!("../shaders/clusters.wgsl"),
             Self::Prepass => include_str!("../shaders/prepass.wgsl"),
@@ -120,6 +125,7 @@ impl fmt::Display for ShaderFile {
 pub(crate) enum Program {
     Sky,
     AnimeCharacter,
+    Environment,
     Outline,
     Clusters,
     Prepass,
@@ -129,9 +135,10 @@ pub(crate) enum Program {
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Sky,
         Self::AnimeCharacter,
+        Self::Environment,
         Self::Outline,
         Self::Clusters,
         Self::Prepass,
@@ -146,6 +153,7 @@ impl Program {
         match self {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
             Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
+            Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Environment],
             Self::Outline => &[F::Frame, F::Materials, F::Outline],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
@@ -160,6 +168,7 @@ impl Program {
         match self {
             Self::Sky => "sky",
             Self::AnimeCharacter => "anime character",
+            Self::Environment => "environment",
             Self::Outline => "outline",
             Self::Clusters => "light clusters",
             Self::Prepass => "prepass",
@@ -171,7 +180,7 @@ impl Program {
 
     /// Whether the mesh pipelines (`pipelines::Pipelines`) are built from it.
     pub(crate) const fn is_mesh(self) -> bool {
-        matches!(self, Self::AnimeCharacter | Self::Outline | Self::Prepass)
+        matches!(self, Self::AnimeCharacter | Self::Environment | Self::Outline | Self::Prepass)
     }
 }
 
@@ -322,9 +331,10 @@ mod tests {
     use crate::post::PostUniforms;
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 8] = [
+    const PASSES: [(Program, &[&str]); 9] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
+        (Program::Environment, &["vs_environment", "fs_environment"]),
         (Program::Outline, &["vs_outline", "fs_outline"]),
         (Program::Clusters, &["cs_clusters"]),
         (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
@@ -334,8 +344,9 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 4] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 5] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
+        (Program::Environment, "vs_environment", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
@@ -551,6 +562,11 @@ mod tests {
             (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::Clusters, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Environment, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Environment, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Environment, "InstanceData", size_of::<InstanceData>()),
+            (Program::Environment, "EnvironmentParams", size_of::<EnvironmentParams>()),
+            (Program::Environment, "LocalLight", size_of::<GpuLight>()),
             (Program::Prepass, "InstanceData", size_of::<InstanceData>()),
             (Program::Prepass, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Temporal, "TemporalUniforms", size_of::<TemporalUniforms>()),
@@ -665,6 +681,8 @@ mod tests {
                     day_night,
                     ambient_sky,
                     ambient_ground,
+                    shadow_tint,
+                    weather,
                 }),
             ),
             (
@@ -790,6 +808,79 @@ mod tests {
         expected.insert(material_binding::RAMP_SAMPLER, "ramp_sampler".into());
         expected.insert(material_binding::ID_SAMPLER, "material_id_sampler".into());
         assert_eq!(bindings, expected);
+    }
+
+    /// The environment shader's numbers, as `sapphire_assets` and the renderer state them: texture
+    /// slots, flags and group 3 bindings, its material binding, and the specular models' values.
+    #[test]
+    fn wgsl_environment_matches_rust() {
+        use sapphire_assets::material::EnvironmentMaterial;
+
+        use crate::EnvironmentSpecular;
+        use crate::pipelines::material_binding;
+        type M = EnvironmentMaterial;
+        let environment = validate(Program::Environment);
+        let slots = [
+            ("ENVIRONMENT_BASE_COLOR", M::BASE_COLOR),
+            ("ENVIRONMENT_NORMAL", M::NORMAL),
+            ("ENVIRONMENT_MASK", M::MASK),
+            ("ENVIRONMENT_TERMINATOR_BAND", M::TERMINATOR_BAND),
+            ("ENVIRONMENT_EMISSION", M::EMISSION),
+        ];
+        assert_eq!(slots.len(), M::TEXTURE_SLOTS.len());
+        for (name, slot) in slots {
+            assert_eq!(wgsl_u32(&environment, name) as usize, slot, "{name}");
+        }
+        assert_eq!(wgsl_u32(&environment, "ENVIRONMENT_FLAG_ALPHA_TEST"), EnvironmentParams::FLAG_ALPHA_TEST);
+        assert_eq!(
+            wgsl_u32(&environment, "ENVIRONMENT_FLAG_TRANSPARENT"),
+            EnvironmentParams::FLAG_TRANSPARENT
+        );
+        let models = [
+            ("ENVIRONMENT_SPECULAR_OFF", EnvironmentSpecular::Off),
+            ("ENVIRONMENT_SPECULAR_APPROXIMATE", EnvironmentSpecular::Approximate),
+            ("ENVIRONMENT_SPECULAR_FULL", EnvironmentSpecular::Full),
+        ];
+        for (name, model) in models {
+            assert_eq!(f64::from(wgsl_u32(&environment, name)), model.constant(), "{name}");
+        }
+        let overrides: Vec<&str> =
+            environment.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
+        assert_eq!(
+            overrides,
+            ["PERMUTATION_ALPHA_TEST", "PERMUTATION_TRANSPARENT", crate::environment::SPECULAR_CONSTANT]
+        );
+        // Group 3: the texture slots at their own indices, then the samplers it reads; group 2
+        // binding 1 is the environment family's buffer.
+        let bindings: BTreeMap<u32, String> = environment
+            .global_variables
+            .iter()
+            .filter_map(|(_, global)| {
+                let binding = global.binding.as_ref().filter(|binding| binding.group == 3)?;
+                Some((binding.binding, global.name.clone().unwrap_or_default()))
+            })
+            .collect();
+        let mut expected: BTreeMap<u32, String> = M::TEXTURE_SLOTS
+            .iter()
+            .zip(0..)
+            .map(|(slot, binding)| (binding, format!("{}_map", slot.name)))
+            .collect();
+        expected.insert(material_binding::SAMPLER, "material_sampler".into());
+        expected.insert(material_binding::RAMP_SAMPLER, "ramp_sampler".into());
+        assert_eq!(bindings, expected);
+        // frame.wgsl declares the anime character family's at the same binding; the environment's
+        // entry points read only their own.
+        let (_, buffer) = environment
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some("environment_materials"))
+            .expect("declared");
+        let binding = buffer.binding.as_ref().expect("bound");
+        assert_eq!((binding.group, binding.binding), (2, 1));
+        let naga::TypeInner::Array { base, .. } = environment.types[buffer.ty].inner else {
+            panic!("an array of blocks")
+        };
+        assert_eq!(environment.types[base].name.as_deref(), Some("EnvironmentParams"));
     }
 
     /// The sky's uniform block is written by the CPU every frame, so every field must sit where
@@ -920,15 +1011,38 @@ mod tests {
     /// pipeline compiles (the GPU tests build them on the device too).
     #[test]
     fn every_permutation_specializes_and_validates() {
-        use crate::pipelines::{Coverage, SurfaceVariant, override_constant};
-        type Constants = &'static [(&'static str, f64)];
-        let surfaces: Vec<(String, Constants)> =
-            SurfaceVariant::ALL.iter().map(|variant| (format!("{variant:?}"), variant.constants())).collect();
+        use crate::EnvironmentSpecular;
+        use crate::pipelines::{Coverage, Shading, SurfaceVariant, override_constant};
+        type Constants = Vec<(&'static str, f64)>;
+        let surfaces = |environment: bool| -> Vec<(String, Constants)> {
+            SurfaceVariant::ALL
+                .iter()
+                .filter(|variant| (variant.shading == Shading::Environment) == environment)
+                .map(|variant| (format!("{variant:?}"), variant.constants().to_vec()))
+                .collect()
+        };
+        // The environment's variants under every tier's specular model.
+        let specular =
+            [EnvironmentSpecular::Off, EnvironmentSpecular::Approximate, EnvironmentSpecular::Full];
+        let environment: Vec<(String, Constants)> = surfaces(true)
+            .into_iter()
+            .flat_map(|(name, constants)| {
+                specular.map(|model| {
+                    let mut constants = constants.clone();
+                    constants.push((crate::environment::SPECULAR_CONSTANT, model.constant()));
+                    (format!("{name} {model:?}"), constants)
+                })
+            })
+            .collect();
         let outlines: Vec<(String, Constants)> = Coverage::DEPTH_WRITING
             .iter()
-            .map(|coverage| (format!("{coverage:?}"), coverage.constants()))
+            .map(|coverage| (format!("{coverage:?}"), coverage.constants().to_vec()))
             .collect();
-        let passes = [(Program::AnimeCharacter, surfaces), (Program::Outline, outlines)];
+        let passes = [
+            (Program::AnimeCharacter, surfaces(false)),
+            (Program::Environment, environment),
+            (Program::Outline, outlines),
+        ];
         for (program, variants) in passes {
             let name = program.name();
             let module = validate(program);

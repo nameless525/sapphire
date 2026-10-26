@@ -21,12 +21,13 @@
 //! `first_instance` instead (see the crate docs).
 //!
 //! Draws of static meshes are grouped by position format, whose pipelines and stream slab
-//! differ, and within a format by surface variant ([`SurfaceVariant`], the material's static
-//! permutation), each its own pipeline; within a group they come in slot order. Draws of skinned
-//! or morphed meshes form groups of their own, per variant: each instance draws from its own
-//! skinning outputs (f32 positions), so they bind by instance slot rather than by mesh. Each
-//! draw record carries its mesh's dequantization, so the vertex shaders decode any mesh without
-//! another binding. Grouping is all the sorting the draws get. Sorting by material and mesh
+//! differ, and within a format by surface variant ([`SurfaceVariant`]: the material's family and
+//! its static permutation), each its own pipeline, so draws sort by pipeline (§5.12) whatever
+//! order their instances and submeshes come in, and families mix freely within a mesh; within a
+//! group they come in slot order. Draws of skinned or morphed meshes form groups of their own,
+//! per variant: each instance draws from its own skinning outputs (f32 positions), so they bind
+//! by instance slot rather than by mesh. Each draw record carries its mesh's dequantization, so
+//! the vertex shaders decode any mesh without another binding. Sorting by material and mesh
 //! within a group (§5.12) will cost nothing on frames that only move instances, since the list
 //! is rebuilt only when the set changes; sorting transparent draws back to front depends on
 //! where things are, so it will run every frame that has them.
@@ -37,14 +38,14 @@ use std::ops::Range;
 
 use bytemuck::Zeroable;
 use glam::Mat4;
-use sapphire_assets::material::MaterialFlags;
+use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
-use crate::pipelines::{Permutation, SurfaceVariant, format_index};
+use crate::pipelines::{SurfaceVariant, format_index, mesh_draw};
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -108,7 +109,7 @@ impl GpuScene {
         frame: u64,
         deltas: &InstanceDeltas,
         meshes: &[MeshRecord],
-        material_flags: impl Fn(MaterialHandle) -> MaterialFlags,
+        material_kind: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags),
     ) -> bool {
         profiling::scope!("GpuScene::prepare");
         debug_assert!(
@@ -127,7 +128,7 @@ impl GpuScene {
         let replaced =
             self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded);
         if self.draws_stale {
-            self.draw_list.build(meshes, material_flags, &self.slots);
+            self.draw_list.build(meshes, material_kind, &self.slots);
             // The records are uploaded whole after every rebuild, so nothing needs keeping.
             self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
             self.draws_stale = false;
@@ -137,8 +138,8 @@ impl GpuScene {
         replaced
     }
 
-    /// Meshes were uploaded or moved, or a material changed permutation: rebuild the draw list
-    /// on the next `prepare`.
+    /// Meshes were uploaded or moved, or a material changed its surface variant: rebuild the draw
+    /// list on the next `prepare`.
     pub(crate) fn meshes_changed(&mut self) {
         self.draws_stale = true;
     }
@@ -494,12 +495,12 @@ pub(crate) struct DrawList {
 }
 
 impl DrawList {
-    /// Rebuilds the list from the live `slots`, drawing each submesh with the permutation of
-    /// its material's flags (`material_flags`) on its mesh.
+    /// Rebuilds the list from the live `slots`, drawing each submesh with the surface variant
+    /// of its material's family and flags (`material_kind`) on its mesh (`pipelines::mesh_draw`).
     pub(crate) fn build(
         &mut self,
         meshes: &[MeshRecord],
-        material_flags: impl Fn(MaterialHandle) -> MaterialFlags,
+        material_kind: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags),
         slots: &InstanceSlots,
     ) {
         profiling::scope!("DrawList::build");
@@ -518,6 +519,12 @@ impl DrawList {
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             for submesh in &record.lods[0] {
+                let handle = submesh.material.handle;
+                let (family, flags) = material_kind(handle);
+                let drawn = mesh_draw(family, flags, skinned, morphed);
+                debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
+                let Some((variant, outline)) = drawn else { continue };
+                let (variant, material) = (variant.index(), handle);
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {
                     instance: slot,
@@ -525,9 +532,6 @@ impl DrawList {
                     dequantize: record.dequantize,
                 });
                 let indices = submesh.first_index..submesh.first_index + submesh.index_count;
-                let material = submesh.material.handle;
-                let permutation = Permutation::new(material_flags(material), skinned, morphed);
-                let (variant, outline) = (permutation.surface().index(), permutation.outlined());
                 match &record.streams {
                     MeshStreams::Slab { format, first_vertex } => {
                         let first_vertex = *first_vertex;
@@ -841,13 +845,16 @@ mod tests {
         slots.apply(&deltas(&instances, &[]));
         slots.apply(&deltas(&[], &[1]));
         // Handle 12 (slot 2) is alpha-tested, 13 transparent with an outline it won't draw, 14
-        // has no outline, and 11 is a face.
-        let flags = |handle: MaterialHandle| match handle.0 {
-            11 => MaterialFlags::FACE | MaterialFlags::OUTLINE,
-            12 => MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
-            13 => MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE,
-            14 => MaterialFlags::empty(),
-            _ => MaterialFlags::OUTLINE,
+        // has no outline, and 11 is a face; all are anime character materials.
+        let flags = |handle: MaterialHandle| {
+            let flags = match handle.0 {
+                11 => MaterialFlags::FACE | MaterialFlags::OUTLINE,
+                12 => MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
+                13 => MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE,
+                14 => MaterialFlags::empty(),
+                _ => MaterialFlags::OUTLINE,
+            };
+            (MaterialFamily::AnimeCharacter, flags)
         };
         let mut list = DrawList::default();
         list.build(&meshes, flags, &slots);
@@ -867,8 +874,9 @@ mod tests {
         );
         // Grouped by format, then by surface variant, in slot order within each group.
         let [unorm16_variants, float32_variants] = &list.commands;
-        let [unorm16, unorm16_face, unorm16_alpha_test, _, unorm16_transparent, _] = unorm16_variants;
-        let [float32, _, _, _, float32_transparent, _] = float32_variants;
+        let [unorm16, unorm16_face, _, unorm16_alpha_test, _, _, unorm16_transparent, _, _] =
+            unorm16_variants;
+        let [float32, _, _, _, _, _, float32_transparent, _, _] = float32_variants;
         let command = |indices, first_vertex, draw_id, slot: u32, outline| DrawCommand {
             indices,
             first_vertex,
@@ -889,13 +897,95 @@ mod tests {
             [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
         );
         let lens = SurfaceVariant::ALL.map(|variant| list.len(variant));
-        assert_eq!((lens, list.outlines()), ([2, 1, 1, 0, 1, 0], 3));
+        assert_eq!((lens, list.outlines()), ([2, 1, 0, 1, 0, 0, 1, 0, 0], 3));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
         list.build(&meshes, flags, &slots);
         assert_eq!(list.draws.len(), 3);
-        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 1, 0, 1, 0]);
+        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 0, 1, 0, 0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn families_mix_in_a_mesh_and_draws_group_by_pipeline() {
+        use crate::pipelines::{Coverage, Part};
+        let identity = Dequantize { position_scale: [1.0; 3], ..Dequantize::default() };
+        let submesh =
+            |first_index, slot| SubmeshDraw { first_index, index_count: 3, material: material(slot) };
+        // One mesh whose submeshes alternate between the families, and a second, skinned one.
+        let meshes = [
+            MeshRecord {
+                streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 8 },
+                dequantize: identity,
+                lods: vec![vec![submesh(0, 0), submesh(3, 1), submesh(6, 2), submesh(9, 3), submesh(12, 4)]],
+                lod_vertices: vec![8],
+                placement: Placement::default(),
+                slots: Vec::new(),
+            },
+            MeshRecord {
+                streams: MeshStreams::Deformable(DeformSource::default()),
+                dequantize: identity,
+                lods: vec![vec![submesh(15, 1), submesh(18, 0)]],
+                lod_vertices: vec![4],
+                placement: Placement::default(),
+                slots: Vec::new(),
+            },
+        ];
+        // Handles 10 and 12 are anime character materials (12 a face), 11, 13 and 14 environment
+        // ones: opaque, alpha-tested, and transparent asking for an outline it never draws.
+        let kind = |handle: MaterialHandle| match handle.0 {
+            10 => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
+            12 => (MaterialFamily::AnimeCharacter, MaterialFlags::FACE | MaterialFlags::OUTLINE),
+            11 => (MaterialFamily::Environment, MaterialFlags::empty()),
+            13 => (MaterialFamily::Environment, MaterialFlags::ALPHA_TEST),
+            _ => (MaterialFamily::Environment, MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE),
+        };
+        let mut slots = InstanceSlots::default();
+        slots.apply(&deltas(&[instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 1.0)], &[]));
+        let mut list = DrawList::default();
+        list.build(&meshes, kind, &slots);
+
+        // Each variant is a pipeline: its draws gather from every instance and submesh, in slot
+        // order, whatever order the submeshes alternate in.
+        let static_draws = |variant: SurfaceVariant| -> Vec<(u32, MaterialHandle, bool)> {
+            list.commands[format_index(PositionFormat::Unorm16)][variant.index()]
+                .iter()
+                .map(|command| (command.indices.start, command.material, command.outline))
+                .collect()
+        };
+        let (character, environment) = (MaterialHandle(10), MaterialHandle(11));
+        assert_eq!(
+            static_draws(SurfaceVariant::character(Coverage::Opaque, Part::Body)),
+            [(0, character, true), (0, character, true)]
+        );
+        assert_eq!(
+            static_draws(SurfaceVariant::character(Coverage::Opaque, Part::Face)),
+            [(6, MaterialHandle(12), true), (6, MaterialHandle(12), true)]
+        );
+        assert_eq!(
+            static_draws(SurfaceVariant::environment(Coverage::Opaque)),
+            [(3, environment, false), (3, environment, false)],
+            "the environment draws no hull"
+        );
+        assert_eq!(
+            static_draws(SurfaceVariant::environment(Coverage::AlphaTest)),
+            [(9, MaterialHandle(13), false), (9, MaterialHandle(13), false)]
+        );
+        assert_eq!(
+            static_draws(SurfaceVariant::environment(Coverage::Transparent)),
+            [(12, MaterialHandle(14), false), (12, MaterialHandle(14), false)],
+            "transparent and environment: no outline either way"
+        );
+        // The skinned instance's two families land in their variants' deformed groups.
+        let deformed = |variant: SurfaceVariant| -> Vec<u32> {
+            list.deformed[variant.index()].iter().map(|draw| draw.indices.start).collect()
+        };
+        assert_eq!(deformed(SurfaceVariant::environment(Coverage::Opaque)), [15]);
+        assert_eq!(deformed(SurfaceVariant::OPAQUE), [18]);
+        assert_eq!(list.draws.len(), 12, "every submesh of every instance");
+        assert_eq!(list.outlines(), 5, "the anime character draws' hulls alone");
+        let instances: Vec<u32> = list.draws.iter().map(|draw| draw.instance).collect();
+        assert_eq!(instances, [0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2], "records follow the slots");
     }
 
     #[test]

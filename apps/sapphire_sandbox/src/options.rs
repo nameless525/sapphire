@@ -56,6 +56,9 @@ pub(crate) struct Options {
     pub swatches: bool,
     /// `--faces`: show the face look-dev rig instead of the character.
     pub faces: bool,
+    /// `--environment`: place the character in the courtyard, the environment shader's test
+    /// scene.
+    pub environment: bool,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -245,6 +248,7 @@ impl Options {
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
                 "--faces" => options.faces = true,
+                "--environment" => options.environment = true,
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -437,6 +441,13 @@ mod tests {
         );
         assert_eq!(parse(&[]).unwrap().0.character_rig, None);
         assert!(parse(&["--character-rig"]).is_err(), "needs a name");
+    }
+
+    #[test]
+    fn the_environment_is_off_unless_asked_for() {
+        assert!(!parse(&[]).unwrap().0.environment);
+        let (options, unknown) = parse(&["--environment", "--time-of-day", "18.5"]).unwrap();
+        assert!(options.environment && unknown.is_empty());
     }
 
     #[test]

@@ -20,6 +20,9 @@
 //! - **The face rig** (`--faces`): rows of the face test head well beside the character, static,
 //!   each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which the camera frames
 //!   instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
+//! - **The courtyard** (`--environment`): the environment shader's test scene around the
+//!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
+//!   to show it ([`Scene::spawn_environment`], [`crate::environment`]).
 //! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
@@ -47,7 +50,7 @@
 
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
-use sapphire_math::Vec3;
+use sapphire_math::{Mat4, Vec3};
 use sapphire_render::{
     CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight, MaterialHandle,
     MeshHandle, SkyLayers, ViewData,
@@ -57,6 +60,7 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
 use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
 use crate::LOG_TARGET;
+use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransform};
 use crate::faces::{self, FaceRig, HEADS};
 use crate::input::SimActions;
@@ -98,6 +102,8 @@ pub(crate) struct Scene {
     swatches: Option<[Entity; SWATCHES]>,
     /// The face rig's heads, with `--faces`.
     faces: Option<[Entity; HEADS]>,
+    /// The courtyard, with `--environment`.
+    courtyard: Option<Entity>,
     /// The character's object-space bounds, which demo lights, swatches and the face rig are
     /// placed around.
     bounds: [[f32; 3]; 2],
@@ -156,6 +162,7 @@ impl Scene {
             stalk,
             swatches: None,
             faces: None,
+            courtyard: None,
             bounds,
             characters,
             heads,
@@ -311,6 +318,23 @@ impl Scene {
         debug_assert!(self.faces.is_some(), "no face rig was spawned");
         for head in self.faces.into_iter().flatten() {
             self.ecs.world_mut().entity_mut(head).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the courtyard (`--environment`), drawing `mesh`, around the character, and frames the
+    /// character from farther back to show it. It never moves, so it is extracted once.
+    pub fn spawn_environment(&mut self, mesh: MeshHandle) {
+        let camera = environment::camera(self.bounds);
+        let world = self.ecs.world_mut();
+        world.insert_resource(camera);
+        self.courtyard = Some(world.spawn((RenderMesh(mesh), RenderTransform(Mat4::IDENTITY))).id());
+    }
+
+    /// Sets the mesh the courtyard draws again: after GPU device loss.
+    pub fn set_courtyard_mesh(&mut self, mesh: MeshHandle) {
+        debug_assert!(self.courtyard.is_some(), "no courtyard was spawned");
+        if let Some(courtyard) = self.courtyard {
+            self.ecs.world_mut().entity_mut(courtyard).insert(RenderMesh(mesh));
         }
     }
 
@@ -523,6 +547,7 @@ mod tests {
         let mut scene = Scene::new(BOUNDS, true);
         scene.set_stalk_mesh(MeshHandle::from_raw(1));
         scene.spawn_face_rig(MeshHandle::from_raw(2));
+        scene.spawn_environment(MeshHandle::from_raw(3));
         scene.spawn_demo_lights();
         let mut allocations = 0;
         for _ in 0..60 {

@@ -285,12 +285,13 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     assert_eq!(center(&pixels), [sphere_red[2], sphere_red[1], sphere_red[0], 255], "red and blue swapped");
     assert_eq!(corner(&pixels), new_sky);
 
-    // A shared file: every program that includes it, and every pipeline built from them (the
-    // sky's six, surface, outline, scene prepass, light clusters).
+    // A shared file: every program that includes it (the environment's too, with no pipeline
+    // built from it yet), and every pipeline built from them (the sky's six, surface, outline,
+    // scene prepass, light clusters).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 5, pipelines: 10 });
+    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 10 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -511,10 +512,10 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 2 });
     assert_eq!(frames.render(&gpu), before);
     // The shared file: the sky's six, four surfaces, two outlines, the scene prepass and the
-    // light clusters.
+    // light clusters (and the environment's program, which built no pipeline).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 5, pipelines: 14 });
+    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 14 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 6, "the same set, rebuilt");
 }

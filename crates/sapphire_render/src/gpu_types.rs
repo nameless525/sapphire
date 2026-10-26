@@ -39,6 +39,10 @@ pub(crate) struct FrameUniforms {
     pub ambient_sky: [f32; 4],
     /// rgb: ambient light from below (ground × intensity).
     pub ambient_ground: [f32; 4],
+    /// rgb: the share of the key light kept in shadow (`FramePacket::shadow_tint`).
+    pub shadow_tint: [f32; 4],
+    /// x: wetness; y: puddle coverage (`FramePacket::weather`).
+    pub weather: [f32; 4],
 }
 
 impl FrameUniforms {
@@ -58,6 +62,8 @@ impl FrameUniforms {
             padding: [0.0; 3],
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
+            shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
+            weather: [frame.weather.wetness, frame.weather.puddles, 0.0, 0.0],
         }
     }
 }

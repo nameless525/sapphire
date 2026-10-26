@@ -2,16 +2,18 @@
 // pass's source; WESL imports replace the concatenation in M1 (spec §5.12).
 //
 // Bind groups (the budget behind them is in the crate docs):
-//   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor and
-//              ambient light; the local lights (binding 1) and their lists (binding 2) are
-//              declared in lights.wgsl and anime_character.wgsl, the characters (binding 3)
-//              below
+//   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor,
+//              ambient light, the shadow tint and the weather; the local lights (binding 1) and
+//              their lists (binding 2) are declared in lights.wgsl and the passes that read
+//              them, the characters (binding 3) below
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
-//              family the pass draws (materials.wgsl)
-//   3  material one material's textures and samplers, per family (anime_character.wgsl
-//              declares the anime character family's)
+//              family the pass draws (materials.wgsl): the anime character family's is
+//              `materials` below, the environment family's `environment_materials`
+//              (environment.wgsl)
+//   3  material one material's textures and samplers, per family (anime_character.wgsl and
+//              environment.wgsl declare their families')
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
 // colors linear HDR light, unclamped: passes write `Rgba16Float` scene color, which post.wgsl
@@ -39,6 +41,14 @@ struct FrameUniforms {
     // sky above and from the ground below (see `ambient_light`).
     ambient_sky: vec4<f32>,
     ambient_ground: vec4<f32>,
+    // rgb: the share of the world's key light kept inside its shadows (time of day's
+    // `FramePacket::shadow_tint`), so the world's shadows are colored, never black. The
+    // environment shader reads it; characters take their authored shade colors instead.
+    shadow_tint: vec4<f32>,
+    // The weather's wetness inputs (`FramePacket::weather`): x how wet surfaces are, y how far
+    // puddles have filled, both 0 to 1. Plumbed for the wet surface model that arrives with
+    // weather; no shader reads them yet (environment.wgsl's header says where they will apply).
+    weather: vec4<f32>,
 }
 
 // Under temporal AA (M1 R7) every matrix into clip space carries the frame's sub-pixel jitter,
@@ -221,4 +231,50 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 // hemisphere of sky light above and ground light below, a blend by how far the surface faces up.
 fn ambient_light(n: vec3<f32>) -> vec3<f32> {
     return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, 0.5 + 0.5 * n.y);
+}
+
+// Rec. 709 luminance of linear RGB.
+const LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+// The narrowest light split, in N·L: far below a pixel's change on any curved surface.
+const MIN_SPLIT_WIDTH: f32 = 1e-5;
+
+// A light split: 0 below `edge - width`, 1 above `edge + width`. The width never reaches 0,
+// where smoothstep's edges would meet and its result is undefined (a flat surface with no
+// softness, whose N·L doesn't change across a pixel).
+fn light_step(edge: f32, width: f32, x: f32) -> f32 {
+    let w = max(width, MIN_SPLIT_WIDTH);
+    return smoothstep(edge - w, edge + w, x);
+}
+
+// N·L scaled by `occlusion` in half-Lambert space: unchanged at 1, pushed toward -1 (the
+// deepest shadow) as it falls. Exactly N·L when nothing occludes. Cast shadows and ambient
+// occlusion enter light splits through it, so a shadowed point moves into the shadow side's
+// tones instead of darkening them.
+fn occluded(n_dot_l: f32, occlusion: f32) -> f32 {
+    return n_dot_l + (occlusion - 1.0) * (n_dot_l + 1.0);
+}
+
+// The normal map's tangent-space normal in world space, by a tangent frame built from the
+// screen derivatives of the position and UV (Schüler, "Normal Mapping Without Precomputed
+// Tangents", 2013), since meshes carry no tangents yet. `sampled` is the map's X and Y in [0, 1];
+// maps are OpenGL-style, as glTF's are: +Y toward decreasing v.
+fn mapped_normal(
+    normal: vec3<f32>,
+    position_dx: vec3<f32>,
+    position_dy: vec3<f32>,
+    uv: MaterialUv,
+    sampled: vec2<f32>,
+) -> vec3<f32> {
+    let dy_perp = cross(position_dy, normal);
+    let dx_perp = cross(normal, position_dx);
+    // These solve for the gradients of u and v along the surface, times the determinant of the
+    // screen-space frame, whose sign flips with the screen's y axis (down in WebGPU) and the
+    // facing; `orientation` takes it back out, so they point along increasing u and v.
+    let orientation = select(1.0, -1.0, dot(position_dx, dy_perp) < 0.0);
+    let tangent = (dy_perp * uv.dx.x + dx_perp * uv.dy.x) * orientation;
+    let bitangent = (dy_perp * uv.dx.y + dx_perp * uv.dy.y) * orientation;
+    let scale = inverseSqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-30));
+    let xy = sampled * 2.0 - 1.0;
+    let z = sqrt(saturate(1.0 - dot(xy, xy)));
+    return safe_normalize((tangent * xy.x - bitangent * xy.y) * scale + normal * z);
 }

@@ -59,6 +59,9 @@
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
+//! - `--environment`: place the character in the courtyard, the environment shader's test scene
+//!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
+//!   M1 W4), seen from farther back.
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
@@ -104,6 +107,7 @@ mod content;
 mod cvars;
 #[cfg(feature = "dev")]
 mod dev;
+mod environment;
 mod extract;
 mod faces;
 mod input;

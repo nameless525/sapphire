@@ -164,7 +164,7 @@ impl GpuLight {
     }
 }
 
-/// Rec. 709 luminance of linear RGB (`LUMINANCE` in `anime_character.wgsl`).
+/// Rec. 709 luminance of linear RGB (`LUMINANCE` in `frame.wgsl`).
 pub(crate) fn luminance(rgb: Vec3) -> f32 {
     rgb.dot(Vec3::new(0.2126, 0.7152, 0.0722))
 }

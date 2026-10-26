@@ -54,6 +54,14 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/sky_stars.png",
     "samples/sky_milky_way.png",
     "samples/sky.material.ron",
+    "samples/environment/courtyard.glb",
+    "samples/environment/ground.material.ron",
+    "samples/environment/rock.material.ron",
+    "samples/environment/stone.material.ron",
+    "samples/environment/wall.material.ron",
+    "samples/environment/lantern.material.ron",
+    "samples/environment/terminator_band.png",
+    "samples/environment/ground.png",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

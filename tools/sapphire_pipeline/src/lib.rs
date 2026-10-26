@@ -38,8 +38,9 @@
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
 //!   local store of cooked outputs and pack encodings by key.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
-//!   mannequin, the shader swatches' maps and materials, and the face test head with its face
-//!   maps and material.
+//!   mannequin, the shader swatches' maps and materials, the face test head with its face
+//!   maps and material, the sky's maps and material, and the environment's courtyard with its
+//!   environment materials and maps.
 //!
 //! # Does not own
 //!

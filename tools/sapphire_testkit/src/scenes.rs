@@ -33,8 +33,9 @@ pub struct Scene {
 /// sky's gradient alone, `--plain-sky` (no discs, glows, stars or clouds), so they stay
 /// pixel-identical to their goldens: they are about the character, and the sky has scenes of its
 /// own. Those from before temporal AA (M1 R7) pin 4× MSAA (`--aa msaa`), which the desktop tiers
-/// drew with until then, for the same reason.
-pub fn scenes() -> [Scene; 16] {
+/// drew with until then, for the same reason. The environment's (M1 W4) draw the world as the
+/// desktop tiers do, under the whole sky and temporal AA.
+pub fn scenes() -> [Scene; 19] {
     [
         Scene {
             name: "turntable-start",
@@ -173,6 +174,52 @@ pub fn scenes() -> [Scene; 16] {
                 "--capture-frames",
                 "32",
                 "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The environment shader (M1 W4) by day: the character in the courtyard, under the morning
+        // sun from the front left. Painted ground, a colonnade receding into rolling hills, a
+        // plaster wall and boulders: soft wrapped light, lavender shadow sides with a warm band
+        // along the pillars' terminators, terminators softening and colors greying with
+        // distance, and the character reading on top.
+        Scene {
+            name: "environment-day",
+            args: &["--capture-ticks", "90", "--environment", "--aa", "taa", "--capture-frames", "32"],
+            thresholds: Thresholds::default(),
+        },
+        // Sunset (18:30): the low orange sun from the right warms every lit face, the shadow
+        // sides keep time of day's violet tint, and the lanterns begin to glow.
+        Scene {
+            name: "environment-sunset",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--environment",
+                "--time-of-day",
+                "18.5",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Night (22:00): the world under the moon and a deep blue ambient, the lanterns glowing
+        // orange, and the demo lights' pools on the ground and the pedestal (local lights through
+        // both families' shaders), the character lit by its own rig's brighter key.
+        Scene {
+            name: "environment-night",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--environment",
+                "--time-of-day",
+                "22",
+                "--lights",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

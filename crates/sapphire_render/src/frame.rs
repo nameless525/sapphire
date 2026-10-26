@@ -10,7 +10,8 @@
 //!   sky's layers over it (discs, stars, clouds), ambient light, fog, the shadow tint, the
 //!   character rig's key light, the day/night factor and post-processing. Time of day resolves
 //!   all of them from one set of keys (`sapphire_world::tod`, M1 W1; look pillar 1); the
-//!   renderer sees only the values.
+//!   renderer sees only the values. The weather's wetness ([`Weather`]) joins them, dry until
+//!   weather fills it.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
@@ -51,8 +52,8 @@ const RING_SIZE: usize = 3;
 /// camera.
 ///
 /// Some scene constants are carried for the packages that will read them and drawn from
-/// nothing yet: [`Self::fog`] (W3) and [`Self::shadow_tint`] (R4, W4). Each type's docs name
-/// its readers.
+/// nothing yet: [`Self::fog`] (W3) and [`Self::weather`] (the wet surface model). Each type's
+/// docs name its readers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
@@ -82,9 +83,12 @@ pub struct FramePacket {
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
     /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
-    /// by shadows (R4) and the environment shader (W4). Characters in cast shadow take their
+    /// by the environment shader (W4) on the shadow side of its terminator and in cast shadow,
+    /// times each material's own tint, and by shadows (R4). Characters in cast shadow take their
     /// materials' authored shade colors instead (C1).
     pub shadow_tint: Vec3,
+    /// The weather's wetness inputs. The default is dry.
+    pub weather: Weather,
     /// Time of day's curve for the character rig's key light: the world resolves each
     /// character's [`CharacterLighting`] from it, so the renderer reads it only through
     /// [`Self::characters`].
@@ -166,6 +170,7 @@ impl FramePacket {
             ambient,
             fog,
             shadow_tint,
+            weather,
             character_light,
             day_night,
             time_seconds,
@@ -187,6 +192,7 @@ impl FramePacket {
         *ambient = AmbientLight::default();
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
+        *weather = Weather::default();
         *character_light = CharacterLight::default();
         *day_night = 0.0;
         *time_seconds = 0.0;
@@ -595,6 +601,21 @@ pub struct HeightFog {
     pub base: f32,
 }
 
+/// The weather's wetness inputs (world_lighting_post.md §7), which every uber-shader will read
+/// as frame uniforms: what the wet surface model (Lagarde's: porous albedo darkened, roughness
+/// lowered, puddles filled to a flat, smooth normal, rain ripples) needs from the weather.
+///
+/// They reach the GPU (the frame uniforms' `weather`), and the environment shader's header says
+/// where they will apply, but no shader reads them until weather and that model arrive (M2).
+/// Nothing fills them yet either: the default is a dry world.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Weather {
+    /// How wet surfaces are, 0 (dry) to 1 (soaked).
+    pub wetness: f32,
+    /// How far puddles have filled, 0 (none) to 1 (every puddle a material's mask allows).
+    pub puddles: f32,
+}
+
 /// Time of day's curve for the character rig's key light (spec §5.12 "Character light rig").
 /// Characters are lit by a virtual key light of their own, whose color and brightness time of
 /// day curves separately from the world's (as WuWa fits its character brightness across the
@@ -816,6 +837,7 @@ mod tests {
         packet.sky_material = Some(MaterialHandle(3));
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
+        packet.weather = Weather { wetness: 0.5, puddles: 0.25 };
         packet.day_night = 1.0;
         packet.time_seconds = 1.5;
         packet.lights.push(LocalLight {

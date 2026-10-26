@@ -1,5 +1,6 @@
 //! The environment family: a stylized GGX for the world, kept on the characters' side of the
-//! picture (spec §5.12 "Environment", world_lighting_post.md §2). Its shader is W4's.
+//! picture (spec §5.12 "Environment", world_lighting_post.md §2). Its shader is the renderer's
+//! `environment.wgsl` (M1 W4), whose header says how each field shades.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -32,7 +33,8 @@ pub struct EnvironmentMaterial {
     pub alpha: AlphaMode,
     pub normal_map: Option<AssetId>,
     pub normal_strength: f32,
-    /// Linear RGBA: R ambient occlusion, G cavity, B specular mask, A roughness (× `roughness`).
+    /// Linear RGBA: R ambient occlusion (the ambient light's), G cavity (the ambient light's and
+    /// every highlight's), B specular mask, A roughness (× `roughness`).
     pub mask_map: Option<AssetId>,
     pub roughness: f32,
     pub metallic: f32,
@@ -43,7 +45,8 @@ pub struct EnvironmentMaterial {
     /// Diffuse wrap: 0 is Lambert, 0.3–0.5 a soft painted falloff.
     pub wrap: f32,
     pub terminator: Terminator,
-    /// Multiplies the time of day's shadow tint: shadows take a color, never grey.
+    /// Multiplies the time of day's shadow tint, the share of the key light kept on the shadow
+    /// side and in cast shadow: shadows take a color, never grey.
     pub shadow_tint: [f32; 3],
     pub distance: DistanceStylization,
     /// Linear RGB × intensity; multiplies `emission_map`.
@@ -78,7 +81,8 @@ impl Default for EnvironmentMaterial {
     }
 }
 
-/// The light/shadow boundary: `smoothstep(-width, width, shadow × N·L)`.
+/// The light/shadow boundary: `smoothstep(-w, w, x)` of N·L pushed toward the deepest shadow by
+/// the cast shadow, `w` the width at the point's view distance, at least half a pixel's change.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
@@ -98,7 +102,9 @@ impl Default for Terminator {
     }
 }
 
-/// The terminator band.
+/// The terminator band: one row, read at the transition's value (0 on the shadow side, 1 on the
+/// lit side) and multiplied into the key light's diffuse by `strength`. Its ends should be white,
+/// so only the transition takes its color.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub struct TerminatorBand {

@@ -60,6 +60,26 @@ pub(crate) fn cone(radius: f32, height: f32, segments: u32) -> Geometry {
     )
 }
 
+/// A cylinder standing on the origin, `height` tall, its side smooth and its top a flat cap
+/// behind a hard edge; open at the bottom, where it stands on something.
+pub(crate) fn cylinder(radius: f32, height: f32, segments: u32) -> Geometry {
+    let side = [1.0, 0.0];
+    let up = [0.0, 1.0];
+    lathe(
+        &[
+            vec![
+                ProfilePoint { radius: 0.0, y: height, normal: up },
+                ProfilePoint { radius, y: height, normal: up },
+            ],
+            vec![
+                ProfilePoint { radius, y: height, normal: side },
+                ProfilePoint { radius, y: 0.0, normal: side },
+            ],
+        ],
+        segments,
+    )
+}
+
 /// An axis-aligned box centered on the origin with split normals: four vertices per face.
 pub(crate) fn cuboid(half_extents: [f32; 3]) -> Geometry {
     // (normal axis, u axis, v axis) with u × v = normal, so the corners wind CCW.
@@ -179,6 +199,7 @@ mod tests {
         assert_well_formed(&cone(0.5, 1.0, 16), Vec3::new(0.0, 0.25, 0.0));
         assert_well_formed(&cuboid([1.0, 0.5, 2.0]), Vec3::ZERO);
         assert_well_formed(&sphere_cap(0.5, 1.8, 16, 8), Vec3::ZERO);
+        assert_well_formed(&cylinder(0.5, 2.0, 16), Vec3::new(0.0, 1.0, 0.0));
     }
 
     #[test]

@@ -307,16 +307,19 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Draws",
             format!(
-                "{} surfaces ({} alpha-tested, {} transparent, {} faces), {} outlines, {} instances",
+                "{} surfaces ({} alpha-tested, {} transparent, {} faces, {} environment), {} outlines, {} \
+                 instances",
                 render.draws,
                 render.alpha_tested_draws,
                 render.transparent_draws,
                 render.face_draws,
+                render.environment_draws,
                 render.outline_draws,
                 render.instances
             ),
         );
         row(ui, "Character pipelines", render.character_pipelines.to_string());
+        row(ui, "Environment pipelines", render.environment_pipelines.to_string());
         row(ui, "Changed instances", render.changed_instances.to_string());
         row(ui, "Draw-list builds", render.draw_list_builds.to_string());
         row(ui, "Mesh pool", format_bytes(render.mesh_pool_bytes));

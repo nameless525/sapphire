@@ -74,23 +74,40 @@ const CHARACTER_SURFACE_FACE: u32 = 1u;
 const CHARACTER_SURFACE_HAIR: u32 = 2u;
 const CHARACTER_SURFACE_EYE: u32 = 3u;
 
-// --- Environment (`EnvironmentParams`): stylized GGX, W4's shader.
+// --- Environment (`EnvironmentParams`): stylized GGX, the environment shader (M1 W4).
 
 struct EnvironmentParams {
+    // Linear RGBA; multiplies the base color map.
     base_color: vec4<f32>,
-    // x: roughness; y: metallic; z: normal strength; w: specular clamp.
+    // x: roughness; y: metallic; z: normal strength; w: specular clamp (a multiple of the
+    // light's radiance).
     surface: vec4<f32>,
     // x, y: roughness range; z: alpha cutoff; w: diffuse wrap.
     shaping: vec4<f32>,
-    // x: terminator width; y: its growth per meter; z: band strength.
+    // x: terminator half-width up close, in N·L; y: its growth per meter; z: band strength (0
+    // without a band).
     terminator: vec4<f32>,
+    // rgb: multiplies the frame's shadow tint.
     shadow_tint: vec4<f32>,
-    // x: start; y: end (meters); z: desaturation.
+    // x: start; y: end (meters); z: desaturation at the end.
     distance: vec4<f32>,
+    // rgb: emission × intensity; multiplies the emission map.
     emission: vec4<f32>,
+    // x: bound slots, then ENVIRONMENT_FLAG_*.
     modes: vec4<u32>,
     swizzles: vec4<u32>,
 }
+
+// Texture slots (`EnvironmentMaterial::TEXTURE_SLOTS`).
+const ENVIRONMENT_BASE_COLOR: u32 = 0u;
+const ENVIRONMENT_NORMAL: u32 = 1u;
+const ENVIRONMENT_MASK: u32 = 2u;
+const ENVIRONMENT_TERMINATOR_BAND: u32 = 3u;
+const ENVIRONMENT_EMISSION: u32 = 4u;
+
+// Flags in `modes.x` above the slot bits.
+const ENVIRONMENT_FLAG_ALPHA_TEST: u32 = 256u;
+const ENVIRONMENT_FLAG_TRANSPARENT: u32 = 512u;
 
 // --- Foliage (`FoliageParams`): NPR leaves and grass, W6's shader.
 

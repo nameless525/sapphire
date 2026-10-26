@@ -20,9 +20,10 @@
 //!   every frame.
 //! - **Antialiasing** ([`Antialiasing`], M1 R7): temporal AA with MSAA off on the desktop tiers,
 //!   whose resolve also upsamples to the output; 4× MSAA kept in tile memory on phones.
-//! - **MSAA and temporal AA, bloom levels, the light path, the light budget and the sky** (its
-//!   cube's size and update rate, and the cirrus layer, M1 W2): [`QualityTier::render_settings`],
-//!   which a renderer is created with.
+//! - **MSAA and temporal AA, bloom levels, the light path, the light budget, the sky** (its
+//!   cube's size and update rate, and the cirrus layer, M1 W2) **and the environment shader's
+//!   specular model** (M1 W4): [`QualityTier::render_settings`], which a renderer is created
+//!   with.
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
 //! Plain data until their packages read them: shadow cascades, their resolution and the
@@ -89,8 +90,8 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, RenderSettings, SkySettings,
-    scaled_size,
+    EnvironmentSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
+    RenderSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -205,6 +206,10 @@ pub struct QualityTier {
     /// table without it gets the desktop tiers' sky.
     #[serde(default)]
     pub sky: SkySettings,
+    /// The environment shader's specular model ([`RenderSettings::environment`]). A table
+    /// without it gets the desktop tiers' full specular.
+    #[serde(default)]
+    pub environment: EnvironmentSettings,
 }
 
 /// The scene's size relative to the output.
@@ -375,6 +380,7 @@ impl QualityTier {
             light_path: self.light_path,
             max_lights: self.max_lights,
             sky: self.sky,
+            environment: self.environment,
         }
     }
 
@@ -908,6 +914,18 @@ mod tests {
                 "{id}: spec §3.4's mobile budget"
             );
         }
+    }
+
+    #[test]
+    fn phones_take_cheaper_environment_specular() {
+        use crate::EnvironmentSpecular as Specular;
+        let table = TierTable::shipped();
+        let specular = |id| table.get(id).render_settings().environment.specular;
+        // The desktop tiers draw the default, which the golden images render with.
+        assert_eq!(specular(TierId::DesktopHigh), Specular::Full);
+        assert_eq!(specular(TierId::DesktopLow), Specular::Full);
+        assert_eq!(specular(TierId::MobileHigh), Specular::Approximate);
+        assert_eq!(specular(TierId::MobileLow), Specular::Off);
     }
 
     #[test]

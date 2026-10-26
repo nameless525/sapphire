@@ -108,6 +108,9 @@ impl Stage {
         if options.faces {
             scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?);
         }
+        if options.environment {
+            scene.spawn_environment(content.courtyard(&mut renderer, &gpu)?);
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);

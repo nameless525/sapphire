@@ -6,7 +6,7 @@
 //! | Family | Document | GPU block | Texture slots | Shaders |
 //! |---|---|---|---|---|
 //! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 896 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader and its outlines (C1 grows it) |
-//! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | W4 |
+//! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
 //! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | W3 |
@@ -70,9 +70,10 @@
 //!
 //! # Later milestones
 //!
-//! - Shaders for the environment (W4), foliage (W6) and fog card (W3) families: their
-//!   blocks are defined and uploaded, and their group 3 layouts exist, but nothing draws them
-//!   yet.
+//! - Shaders for the foliage (W6) and fog card (W3) families: their blocks are defined and
+//!   uploaded, and their group 3 layouts exist, but nothing draws them yet.
+//! - A porosity input for the environment family, with the wet surface model that arrives with
+//!   weather (the renderer already carries the frame's wetness).
 //! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows
 //!   today, which the anime character shader (C1) reads by region and time of day.
 

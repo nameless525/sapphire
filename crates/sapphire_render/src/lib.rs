@@ -1,5 +1,5 @@
-//! Sapphire's renderer (spec §5.12). An anime character viewer built on the long-term
-//! structure: M0's scene passes, M1's frame graph, HDR post-processing and local lights.
+//! Sapphire's renderer (spec §5.12). Anime characters in a stylized world, built on the
+//! long-term structure: M0's scene passes, M1's frame graph, HDR post-processing and local lights.
 //!
 //! # Owns
 //!
@@ -7,8 +7,8 @@
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
 //!   resolved scene constants (key light, sky gradient and layers, the sun, moon and celestial
-//!   sphere, ambient, day/night factor and post, and the fog and shadow tint its later packages
-//!   read), and the character light rig (`sapphire_world::light_rig`, M1 C2) only as each
+//!   sphere, ambient, shadow tint, day/night factor and post, and the fog its later package
+//!   reads), and the character light rig (`sapphire_world::light_rig`, M1 C2) only as each
 //!   character's resolved [`CharacterLighting`].
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
@@ -20,22 +20,26 @@
 //!   family's parameter buffer, each block copied as cooked, and their textures in group 3 (see
 //!   "Material buffers" below). [`Renderer::update_material`] rewrites one slot: the path for
 //!   hot reload and live link. The anime character family drives the anime character shader
-//!   (`shaders/anime_character.wgsl`) and its outlines, which sample its textures through
+//!   (`shaders/anime_character.wgsl`) and its outlines, and the environment family the
+//!   environment shader (`shaders/environment.wgsl`, M1 W4); both sample their textures through
 //!   their cooked swizzles.
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The scene pipelines: the anime character uber-shader and its inverted-hull outline, in
-//!   one pipeline per static permutation (see "The anime character shader" below).
+//!   one pipeline per static permutation (see "The anime character shader" below), and the
+//!   environment uber-shader, per coverage (see "The environment shader" below). A mesh's
+//!   submeshes may draw with either family, and draws group by pipeline (see "Material families
+//!   on meshes" below).
 //! - The sky (`sky`, M1 W2): the gradient, stars and the Milky Way, the sun's and moon's discs and
 //!   glows, cirrus and the card clouds' band, drawn at the far plane in the main pass from the
 //!   packet's [`SkyLayers`] and its sky material, and a sky-only cubemap updated a face a frame
 //!   for the probes and reflections that will read it (see "The sky" below).
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
-//!   view and capped, then listed for the anime character shader by clustered forward+ (a
-//!   16 × 9 × 24 grid binned by a compute pass, desktop) or per-object lists (at most 4 per
-//!   instance, chosen on the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths
-//!   run on every backend. The anime character shader lights by each local light in the key
-//!   light's two-tone model.
+//!   view and capped, then listed for the mesh shaders by clustered forward+ (a 16 × 9 × 24 grid
+//!   binned by a compute pass, desktop) or per-object lists (at most 4 per instance, chosen on
+//!   the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths run on every backend.
+//!   The anime character shader lights by each local light in the key light's two-tone model,
+//!   the environment shader through its terminator and wrapped falloff.
 //! - Characters' light rigs and faces on the GPU (`characters`, M1 C2 and C3): each frame's
 //!   [`CharacterInstance`]s, one entry per character in a per-frame buffer that the anime
 //!   character shader finds through the instance (see "The anime character shader" and "Faces"
@@ -204,19 +208,19 @@
 //!
 //! | Group | Binding | Stages | Contents | Written |
 //! |---|---|---|---|---|
-//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient | `prepare` |
+//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
 //! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs and faces, 128 bytes each | the uploads pass, when they changed |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
-//! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot | the uploads pass, changed slots only |
-//! | 3 material | 0–7: textures | fragment | one material's texture slots (the anime character family's eight), white 1×1 where unbound | material upload or update |
+//! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot: a scene group per family meshes draw with, each its own layout | the uploads pass, changed slots only |
+//! | 3 material | 0–7: textures | fragment | one material's texture slots (the anime character family's eight, the environment's five), white 1×1 where unbound | material upload or update |
 //! | 3 material | 8–10: samplers | fragment | trilinear repeating; linear clamped for ramps; nearest for material IDs | — |
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
-//! prepasses bind groups 0–2 like the main pass and read no storage buffer beyond the
-//! instances.
+//! prepasses bind groups 0–2 like the main pass, with the anime character family's scene group
+//! for every family's draws, and read no storage buffer beyond the instances.
 //!
 //! The view group's buffer holds every view at a stride of the device's uniform offset
 //! alignment: the main view (offset 0, written every frame), then the sky cube's six faces
@@ -254,7 +258,9 @@
 //! floor allows; the prepasses, which read no material textures, leave it out. The anime
 //! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
 //! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones
-//! (shadow cascades, probes, the sky cube); the other families bind 1 to 5. Local lights take
+//! (shadow cascades, probes, the sky cube); the other families bind 1 to 5 (the environment's
+//! pipelines read five textures and two samplers, and the same four storage buffers as the anime
+//! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
 //! then 16-bit light indices, read by cluster index or by instance slot (passed from the vertex
 //! stage as a flat varying). Compute skinning writes
@@ -334,6 +340,60 @@
 //!   environment shadow reaches a face whole, per character: a value in the character's entry
 //!   that the face takes as occlusion (R4), never shadow-map texels on it.
 //!
+//! # The environment shader (M1 W4)
+//!
+//! `shaders/environment.wgsl` is one uber-shader for every environment material: a stylized GGX
+//! for the world, softer and less contrasty than the characters drawn over it, so they read on top
+//! (look pillar 4). The file's header has the model, and the `environment` module its tiers:
+//!
+//! - **The key light** is the world's ([`FramePacket::sun`], the frame uniforms' `sun_*`), never a
+//!   character's rig. Its N·L, pushed toward shadow by the cast shadow in half-Lambert space,
+//!   passes a terminator remap `smoothstep(-w, w, ·)` whose half-width grows with view distance,
+//!   so far shading softens into painted masses; the lit side falls off as wrapped Lambert; inside
+//!   the terminator the key light keeps time of day's shadow tint ([`FramePacket::shadow_tint`])
+//!   times the material's, so shadows are colored, never black; a terminator band (a one-row ramp
+//!   read at the terminator's value) tints the transition.
+//! - **Ambient light** is the frame's hemisphere (`ambient_light`, shared with the characters'
+//!   GI), occluded by vertex AO and the mask map's AO and cavity.
+//! - **Specular** is GGX under a clamp, with the roughness remapped into the material's range,
+//!   plus the hemisphere's reflection; a zero specular mask leaves a surface matte at every angle.
+//!   The tier picks the model ([`EnvironmentSpecular`]): full on desktop, approximate on
+//!   Mobile-High, none on Mobile-Low.
+//! - **Distance desaturation** greys the albedo with view distance, keeping the light's hue;
+//!   **emission** adds HDR light.
+//! - **Local lights** come from the same lists the anime character shader walks.
+//! - **Cast shadows** enter through one function, `cast_shadow`, which returns 1 (lit) until R4
+//!   fills it: the key light's visibility past every caster its maps hold (the environment's and
+//!   the characters'), plus the per-character ground shadow (desktop) and capsules (mobile). It
+//!   joins the terminator's input, so shadows take its remap, tint and band.
+//! - **Wetness:** the frame carries the weather's wetness and puddles ([`Weather`]) to the GPU for
+//!   the wet surface model that comes with weather; no shader reads them yet.
+//! - **Outlines:** the environment draws no inverted hull in M1 (decision): its edges are the
+//!   spec's screen-space edge pass, a later desktop option; props that should read like
+//!   characters use the anime character family.
+//! - **The final color** is produced in one place at the end of the fragment shader, where fog
+//!   (W3) joins it.
+//!
+//! # Material families on meshes (M1 W4)
+//!
+//! A mesh's material slots bind anime character or environment materials, mixed freely, and
+//! [`Renderer::upload_mesh`] takes both (other families are [`RenderError::NotDrawable`]). Each
+//! submesh draws through its family's shader:
+//!
+//! - **Surface variants** are a coverage (opaque, alpha-tested, transparent) and a shading: the
+//!   anime character shader for a part (body, face), or the environment shader. Nine in all, each
+//!   a pipeline per position format, built when a draw first needs it.
+//! - **Draws sort by pipeline:** the draw list groups them by position format and variant, so the
+//!   families never interleave whatever order instances and submeshes come in. In each coverage
+//!   characters draw before the world, so depth rejects the world behind them; then the
+//!   characters' outlines, the sky, and transparent surfaces of both families.
+//! - **Scene groups:** each family's pipelines bind group 2 with its own parameter buffer beside
+//!   the instances; the main pass rebinds group 2 only when the family changes.
+//! - **The prepasses** draw every family's opaque and alpha-tested surfaces into the scene
+//!   prepass (depth, normals, velocity, which temporal AA reads); the character prepass draws the
+//!   skinned and morphed instances of the anime character family alone, so a skinned prop in
+//!   environment materials is never taken for a character.
+//!
 //! # The sky (M1 W2)
 //!
 //! `shaders/sky.wgsl` draws the sky over a fullscreen triangle at the far plane, in the main pass
@@ -373,8 +433,8 @@
 //! record's `material` is the slot in that buffer; a slot is kept for the renderer's lifetime
 //! and written through a CPU mirror, so editing a material uploads its one block with the next
 //! frame and nothing else. Every family uploads and binds its textures today; meshes draw with
-//! the anime character family alone, so [`Renderer::upload_mesh`] accepts only its materials, and
-//! the sky draws with a sky material.
+//! the anime character and environment families, so [`Renderer::upload_mesh`] accepts their
+//! materials, and the sky draws with a sky material.
 //!
 //! Material textures are sampled with explicit gradients (taken once per pixel, in uniform
 //! control flow) so that unbound slots can be skipped on a branch, and every sample goes through
@@ -386,7 +446,8 @@
 //! - **M1:** mesh residency (the pool's buffers already hand out ranges first fit and take them
 //!   back when a mesh is replaced) with generational [`MeshHandle`]s; mesh
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
-//!   pipeline/material/mesh draw sorting. The [`FramePacket`] grows with the systems that
+//!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
+//!   M1 W4). The [`FramePacket`] grows with the systems that
 //!   feed it: VFX, UI and debug draws, plus shadow-cascade and UI-inset views.
 //! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
@@ -410,9 +471,14 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **Material families' shaders:** fog cards (W3), environment (W4) and foliage (W6) bring
-//!   pipelines that bind their family's buffer (in a scene group of their own) and group 3. The
-//!   sky (W2) reads its one material's block on the CPU instead (see "The sky").
+//! - **Material families' shaders:** fog cards (W3) and foliage (W6) bring pipelines that bind
+//!   their family's buffer (in a scene group of their own, as the environment's do: join
+//!   `pipelines::MESH_FAMILIES` and `Shading`) and group 3. The sky (W2) reads its one material's
+//!   block on the CPU instead (see "The sky").
+//! - **The environment shader** (see above): shadows (R4) fill `cast_shadow`; fog (W3) joins its
+//!   final color; reflection probes and the sky cube's prefiltered mips (W5) replace the
+//!   hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
+//!   edges for the environment (desktop); foliage (W6) shares its terminator and wrap.
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
 //! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
@@ -438,6 +504,7 @@ mod bind_cache;
 mod buffer;
 mod characters;
 mod draw;
+mod environment;
 mod frame;
 mod gpu_types;
 pub mod graph;
@@ -455,11 +522,12 @@ mod sky;
 pub mod temporal;
 pub mod texture;
 
+pub use environment::{EnvironmentSettings, EnvironmentSpecular};
 pub use frame::{
     AmbientLight, CameraData, Celestial, CharacterFace, CharacterGi, CharacterInstance, CharacterLight,
     CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer, FramePacket,
     FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance,
-    PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData,
+    PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;

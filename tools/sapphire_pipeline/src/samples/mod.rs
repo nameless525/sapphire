@@ -10,9 +10,14 @@
 //!   SDF face map (with its threshold masks), face mask and expression map that material reads,
 //!   for the sandbox's `--faces` (M1 C3);
 //! - the sandbox sky's content ([`sky`]): card cloud, cirrus, moon, star and Milky Way maps and
-//!   the sky material that draws them (M1 W2).
+//!   the sky material that draws them (M1 W2);
+//! - the environment's test content ([`environment`], in `environment/`): a courtyard on rolling
+//!   ground, its environment materials, a terminator band and a painted ground map, for the
+//!   sandbox's `--environment` (M1 W4).
 
+pub mod environment;
 pub mod face;
+mod noise;
 mod shapes;
 pub mod sky;
 pub mod swatch;
@@ -53,7 +58,7 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
     let mut paths = Vec::new();
-    for (name, bytes) in files.into_iter().chain(face::files()?) {
+    for (name, bytes) in files.into_iter().chain(face::files()?).chain(environment::files()?) {
         let path = dir.join(name);
         std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
         std::fs::write(&path, bytes)?;
@@ -351,7 +356,14 @@ mod tests {
         ];
         assert_eq!(written[..names.len()], names.map(|name| nested.join(name)));
         let faces: Vec<_> = face::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
-        assert_eq!(written[names.len()..], faces, "then the face's, in their directory");
+        let environment: Vec<_> =
+            environment::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        assert_eq!(
+            written[names.len()..names.len() + faces.len()],
+            faces,
+            "then the face's, in their directory"
+        );
+        assert_eq!(written[names.len() + faces.len()..], environment, "then the environment's");
         assert!(written.iter().all(|path| path.is_file()));
         assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }

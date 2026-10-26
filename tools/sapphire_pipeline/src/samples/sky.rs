@@ -42,6 +42,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::material::{CloudLayer, Disc, Moon, SkyMaterial, Stars};
 use sapphire_serialize::to_ron;
 
+use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
 use crate::color::{linear_to_srgb, unorm8};
 
 /// File names, in the samples directory.
@@ -114,70 +115,6 @@ pub fn material_document() -> String {
     let material = material();
     material.validate().expect("the sky material is valid");
     to_ron(&material).expect("a material document serializes")
-}
-
-/// A 32-bit integer hash (Wellons' lowbias32): the noise lattices' random values.
-fn hash(mut x: u32) -> u32 {
-    x ^= x >> 16;
-    x = x.wrapping_mul(0x7feb_352d);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x846c_a68b);
-    x ^= x >> 16;
-    x
-}
-
-/// A random value in [0, 1) at lattice point `(x, y)` of noise `seed`.
-fn lattice(x: i32, y: i32, seed: u32) -> f32 {
-    hash(x as u32 ^ hash(y as u32 ^ hash(seed))) as f32 / 4_294_967_296.0
-}
-
-/// Smooth value noise in [0, 1] at `p` (in lattice cells), repeating every `period` cells.
-fn value_noise(p: Vec2, period: (i32, i32), seed: u32) -> f32 {
-    let cell = p.floor();
-    let t = p - cell;
-    let fade = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-    let (x, y) = (cell.x as i32, cell.y as i32);
-    let at = |dx: i32, dy: i32| lattice((x + dx).rem_euclid(period.0), (y + dy).rem_euclid(period.1), seed);
-    let top = at(0, 0) + (at(1, 0) - at(0, 0)) * fade.x;
-    let bottom = at(0, 1) + (at(1, 1) - at(0, 1)) * fade.x;
-    top + (bottom - top) * fade.y
-}
-
-/// Fractal value noise in [0, 1]: `octaves` octaves, each at twice the frequency and half the
-/// amplitude, repeating every `period` cells of the first.
-fn fbm(p: Vec2, period: (i32, i32), octaves: u32, seed: u32) -> f32 {
-    let (mut sum, mut amplitude, mut total, mut scale) = (0.0, 1.0, 0.0, 1);
-    for octave in 0..octaves {
-        let at = p * scale as f32;
-        sum += amplitude * value_noise(at, (period.0 * scale, period.1 * scale), seed.wrapping_add(octave));
-        total += amplitude;
-        amplitude *= 0.5;
-        scale *= 2;
-    }
-    sum / total
-}
-
-/// A period long enough that noise never repeats within a map.
-const NO_PERIOD: i32 = 1 << 20;
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// A deterministic generator for placing puffs.
-struct Rng(u32);
-
-impl Rng {
-    /// Uniform in [0, 1).
-    fn next(&mut self) -> f32 {
-        self.0 = hash(self.0.wrapping_add(0x9e37_79b9));
-        self.0 as f32 / 4_294_967_296.0
-    }
-
-    fn range(&mut self, low: f32, high: f32) -> f32 {
-        low + (high - low) * self.next()
-    }
 }
 
 /// One lobe of a cumulus card: a sphere's front seen from the camera, `depth` toward it.

@@ -1,0 +1,16 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "14ad5875-ec27-4866-bb2e-501408f4e1ad",
+        importer: Gltf((
+            materials: {
+                "Ground": "fdb90952-4488-42d6-a474-55115aa2db08",
+                "Lantern": "75c36792-1225-42ae-aa70-95f4c3f84f2c",
+                "Rock": "26b87ba8-6b44-4aad-a05e-93315d6e4ab1",
+                "Stone": "74541928-2897-450e-9528-157d19d9e9a4",
+                "Wall": "4e68ee72-a635-4ca3-8fb9-87c813226709",
+            },
+        )),
+    ),
+)

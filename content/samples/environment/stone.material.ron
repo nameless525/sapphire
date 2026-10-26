@@ -1,0 +1,33 @@
+(
+    type: "sapphire::render::EnvironmentMaterial",
+    version: 1,
+    data: (
+        base_color: (0.76052463, 0.6724432, 0.5271152, 1.0),
+        base_color_map: None,
+        alpha: Opaque,
+        normal_map: None,
+        normal_strength: 1.0,
+        mask_map: None,
+        roughness: 0.55,
+        metallic: 0.0,
+        roughness_range: (0.25, 0.6),
+        specular_clamp: 0.4,
+        wrap: 0.3,
+        terminator: (
+            width: 0.04,
+            growth: 0.007,
+            band: Some((
+                map: "14d1e642-3b75-456f-b100-0395230326bb",
+                strength: 0.7,
+            )),
+        ),
+        shadow_tint: (1.0, 1.0, 1.0),
+        distance: (
+            start: 15.0,
+            end: 140.0,
+            desaturation: 0.5,
+        ),
+        emission: (0.0, 0.0, 0.0),
+        emission_map: None,
+    ),
+)

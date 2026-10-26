@@ -1,6 +1,6 @@
-// Local lights (spec §5.12 "Lighting", M1 R5), shared by the anime character pass and the
-// light-cluster pass. `shaders.rs` puts it after frame.wgsl and before the pass's own file.
-// Mirrors `src/lights.rs` and `src/lights/clusters.rs`.
+// Local lights (spec §5.12 "Lighting", M1 R5), shared by the anime character and environment
+// passes and the light-cluster pass. `shaders.rs` puts it after frame.wgsl and before the pass's
+// own file. Mirrors `src/lights.rs` and `src/lights/clusters.rs`.
 //
 // `frame.lights` says what group 0 binding 2 holds this frame:
 //   x  local lights in `lights`
@@ -50,6 +50,20 @@ fn cluster_slice(depth: f32) -> u32 {
     }
     let slice = 1.0 + floor(log2(depth / start) * frame.clusters.z);
     return u32(min(slice, f32(CLUSTER_SLICES - 1u)));
+}
+
+// The light list a fragment walks: on the clustered path its cluster's, from the fragment's
+// position (`@builtin(position)`: pixel coordinates and reverse-Z depth), on the per-object path
+// its instance slot's (`instance`).
+fn light_list(clip_position: vec4<f32>, instance: u32) -> u32 {
+    if frame.lights.y == LIGHT_LISTS_OBJECTS {
+        return instance;
+    }
+    let tiles = vec2<f32>(f32(CLUSTER_TILES_X), f32(CLUSTER_TILES_Y));
+    let tile = min(vec2<u32>(clip_position.xy * view.viewport.zw * tiles), vec2<u32>(tiles) - 1u);
+    // Reverse-Z with an infinite far plane: view depth is near / fragment depth.
+    let slice = cluster_slice(frame.clusters.x / max(clip_position.z, 1e-30));
+    return (slice * CLUSTER_TILES_Y + tile.y) * CLUSTER_TILES_X + tile.x;
 }
 
 // The light's smooth range window: 1 at the light, falling to 0 at its range with zero slope,

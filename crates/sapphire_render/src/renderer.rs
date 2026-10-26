@@ -1,7 +1,7 @@
 //! The renderer: compute skinning, the prepasses, the sky cube's face, a main pass into HDR
-//! scene color (anime character surfaces and outlines per static permutation, the sky, then
-//! transparent surfaces), lit by each character's light rig (or the sun) and the frame's local
-//! lights, then post-processing into the target.
+//! scene color (anime character and environment surfaces per surface variant, the characters'
+//! outlines, the sky, then transparent surfaces), lit by each character's light rig (or, for the
+//! world, the sun) and the frame's local lights, then post-processing into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -18,14 +18,15 @@ use serde::{Deserialize, Serialize};
 use crate::buffer;
 use crate::characters::Characters;
 use crate::draw::{DrawSet, MeshDraws};
+use crate::environment::EnvironmentSettings;
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, PoolMoves, SubmeshMaterial};
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, Layouts, MeshPass, NORMALS_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT,
-    SurfaceVariant, VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, NORMALS_FORMAT, Part, Pipelines,
+    SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
@@ -94,6 +95,8 @@ pub struct RenderSettings {
     pub max_lights: u32,
     /// The sky cube's size and update rate, and the cirrus layer (see the `sky` module).
     pub sky: SkySettings,
+    /// The environment shader's specular model (see the `environment` module).
+    pub environment: EnvironmentSettings,
 }
 
 impl Default for RenderSettings {
@@ -108,6 +111,7 @@ impl Default for RenderSettings {
             light_path: LightPath::Clustered,
             max_lights: 64,
             sky: SkySettings::default(),
+            environment: EnvironmentSettings::default(),
         }
     }
 }
@@ -164,7 +168,7 @@ pub enum RenderError {
     MaterialPoolFull(MaterialFamily),
     #[error("the mesh has {slots} material slots, but {handles} materials were given")]
     MaterialCount { slots: usize, handles: usize },
-    #[error("{0} materials have no shaders yet, so meshes can't draw with them")]
+    #[error("meshes don't draw with {0} materials")]
     NotDrawable(MaterialFamily),
     #[error(
         "material slot {slot:?} names material asset {id}, which wasn't uploaded; the asset server \
@@ -176,7 +180,7 @@ pub enum RenderError {
 /// Renderer counters for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
-    /// Anime character surface draws in the last prepared frame, of every static permutation
+    /// Surface draws in the last prepared frame, of every material family and surface variant
     /// (the prepasses draw the opaque and alpha-tested ones again; the sky adds one).
     pub draws: u32,
     /// Of [`Self::draws`], those of alpha-tested materials.
@@ -185,11 +189,16 @@ pub struct RenderStats {
     pub transparent_draws: u32,
     /// Of [`Self::draws`], those of face materials (M1 C3), through the face variants.
     pub face_draws: u32,
+    /// Of [`Self::draws`], those of environment materials (M1 W4), through the environment
+    /// shader.
+    pub environment_draws: u32,
     /// Outline hulls drawn in the last prepared frame.
     pub outline_draws: u32,
     /// Anime character pipelines built (surface and outline variants, across position
     /// formats): each static permutation's are built when the first draw needs them.
     pub character_pipelines: u32,
+    /// Environment pipelines built (surface variants across position formats), likewise.
+    pub environment_pipelines: u32,
     /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
     /// Instances the last prepared packet added or changed; each is uploaded.
@@ -317,7 +326,8 @@ pub struct Renderer {
     materials: Materials,
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
-    scene_bind_group: wgpu::BindGroup,
+    /// Group 2 per [`MESH_FAMILIES`] entry: the instances and that family's materials.
+    scene_bind_groups: [wgpu::BindGroup; MESH_FAMILIES.len()],
     /// Skinned and morphed instances' outputs and the pass that writes them.
     skinning: Skinning,
     post: PostProcess,
@@ -382,8 +392,15 @@ impl Renderer {
 
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);
-        let pipelines =
-            Pipelines::new(&device, &layouts, SCENE_COLOR_FORMAT, samples, gpu.pipeline_cache(), &shaders);
+        let pipelines = Pipelines::new(
+            &device,
+            &layouts,
+            SCENE_COLOR_FORMAT,
+            samples,
+            settings.environment,
+            gpu.pipeline_cache(),
+            &shaders,
+        );
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -428,7 +445,7 @@ impl Renderer {
         let mut materials = Materials::new(&device, gpu.queue());
         let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
         let scene = GpuScene::new(&device);
-        let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &materials);
+        let scene_bind_groups = create_scene_bind_groups(&device, &layouts, &scene, &materials);
         let skinning = Skinning::new(&device);
         let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
@@ -439,6 +456,7 @@ impl Renderer {
             temporal = settings.temporal,
             light_path = ?settings.light_path,
             max_lights = settings.max_lights,
+            environment_specular = ?settings.environment.specular,
             "renderer created"
         );
         Ok(Self {
@@ -460,7 +478,7 @@ impl Renderer {
             meshes,
             materials,
             scene,
-            scene_bind_group,
+            scene_bind_groups,
             skinning,
             post,
             temporal,
@@ -485,9 +503,9 @@ impl Renderer {
     /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
     /// the next recorded frame.
     ///
-    /// Every family uploads. Anime character materials draw on meshes, and a sky material draws
-    /// the sky when a packet names it ([`FramePacket::sky_material`]); the other families' shaders
-    /// come with their packages (fog cards W3, environment W4, foliage W6).
+    /// Every family uploads. Anime character and environment materials draw on meshes, and a sky
+    /// material draws the sky when a packet names it ([`FramePacket::sky_material`]); the other
+    /// families' shaders come with their packages (fog cards W3, foliage W6).
     pub fn upload_material<'t>(
         &mut self,
         material: &ArchivedMaterial,
@@ -495,9 +513,9 @@ impl Renderer {
     ) -> Result<MaterialHandle, RenderError> {
         let (handle, replaced) =
             self.materials.upload(&self.device, &self.queue, &self.layouts.materials, material, textures)?;
-        if replaced && material.family == MaterialFamily::AnimeCharacter {
-            self.scene_bind_group =
-                create_scene_bind_group(&self.device, &self.layouts.scene, &self.scene, &self.materials);
+        if replaced && MESH_FAMILIES.contains(&material.family) {
+            self.scene_bind_groups =
+                create_scene_bind_groups(&self.device, &self.layouts, &self.scene, &self.materials);
         }
         self.update_pool_stats();
         Ok(handle)
@@ -516,11 +534,12 @@ impl Renderer {
         let before = self.materials.record(handle).map(|record| record.flags);
         self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)?;
         let flags = material.flags();
-        // Only the anime character family draws, so only its permutations pick pipelines.
-        if before != Some(flags) && material.family == MaterialFamily::AnimeCharacter {
+        // Only the families meshes draw with pick pipelines by their flags.
+        if before != Some(flags)
+            && let Some(variant) = SurfaceVariant::of_material(material.family, flags)
+        {
             // A new static permutation: its draws move to other pipelines, built for every
             // format already drawn (meshes in another format build theirs when uploaded).
-            let variant = SurfaceVariant::of_material(flags);
             self.checked_build(|renderer| {
                 for format in PositionFormat::ALL {
                     if renderer.pipelines.mesh(format).is_some() {
@@ -573,11 +592,12 @@ impl Renderer {
     }
 
     /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
-    /// into the mesh pool, drawing material slot `i` with `materials[i]`. Its streams are copied
-    /// as they are; all its LODs' indices are uploaded and LOD0 is drawn. A skinned or morphed
-    /// mesh also uploads its skin and morph targets, and each of its instances is drawn from its
-    /// own skinning outputs, in its bind pose until a packet poses it
-    /// ([`SkinnedInstance`](crate::SkinnedInstance)).
+    /// into the mesh pool, drawing material slot `i` with `materials[i]`: anime character or
+    /// environment materials, mixed freely within a mesh and across them (each submesh draws
+    /// through its family's shader). Its streams are copied as they are; all its LODs' indices
+    /// are uploaded and LOD0 is drawn. A skinned or morphed mesh also uploads its skin and morph
+    /// targets, and each of its instances is drawn from its own skinning outputs, in its bind pose
+    /// until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)).
     ///
     /// The first mesh with f32 positions, or skinned or morphed, also builds the f32 pipelines;
     /// the first skinned or morphed one the skinning and character prepass pipelines.
@@ -637,7 +657,7 @@ impl Renderer {
                 }
                 ArchivedSlotMaterial::Embedded(material) => {
                     material.validate()?;
-                    if material.family != MaterialFamily::AnimeCharacter {
+                    if !MESH_FAMILIES.contains(&material.family) {
                         return Err(RenderError::NotDrawable(material.family));
                     }
                     // Embedded materials name no textures (importers make no texture assets), so
@@ -683,13 +703,14 @@ impl Renderer {
         Ok(())
     }
 
-    /// The draw-side record of each of `materials`, which must be this renderer's and drawable.
+    /// The draw-side record of each of `materials`, which must be this renderer's and of a family
+    /// meshes draw with.
     fn submesh_materials(&self, materials: &[MaterialHandle]) -> Result<Vec<SubmeshMaterial>, RenderError> {
         materials
             .iter()
             .map(|&handle| {
                 let record = self.materials.record(handle).ok_or(RenderError::UnknownMaterial(handle))?;
-                if record.family != MaterialFamily::AnimeCharacter {
+                if !MESH_FAMILIES.contains(&record.family) {
                     return Err(RenderError::NotDrawable(record.family));
                 }
                 Ok(SubmeshMaterial { handle, slot: record.slot })
@@ -710,8 +731,13 @@ impl Renderer {
         let format = record.draw_format();
         self.pipelines.prepare_format(&self.device, format);
         for material in materials {
-            let flags = self.materials.record(material.handle).map_or(MaterialFlags::empty(), |r| r.flags);
-            self.pipelines.prepare_variant(&self.device, format, SurfaceVariant::of_material(flags));
+            let variant = self
+                .materials
+                .record(material.handle)
+                .and_then(|record| SurfaceVariant::of_material(record.family, record.flags));
+            if let Some(variant) = variant {
+                self.pipelines.prepare_variant(&self.device, format, variant);
+            }
         }
         if record.deform().is_some() {
             self.pipelines.prepare_characters(&self.device);
@@ -856,18 +882,21 @@ impl Renderer {
         let (device, queue) = (gpu.device(), gpu.queue());
 
         let materials = &self.materials;
-        let material_flags =
-            |handle: MaterialHandle| materials.record(handle).map_or(MaterialFlags::empty(), |r| r.flags);
+        let material_kind = |handle: MaterialHandle| {
+            materials
+                .record(handle)
+                .map_or((MaterialFamily::AnimeCharacter, MaterialFlags::empty()), |r| (r.family, r.flags))
+        };
         if self.scene.prepare(
             device,
             queue,
             packet.frame,
             &packet.instances,
             self.meshes.records(),
-            material_flags,
+            material_kind,
         ) {
-            self.scene_bind_group =
-                create_scene_bind_group(device, &self.layouts.scene, &self.scene, &self.materials);
+            self.scene_bind_groups =
+                create_scene_bind_groups(device, &self.layouts, &self.scene, &self.materials);
         }
         self.materials.prepare();
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
@@ -906,7 +935,8 @@ impl Renderer {
         self.stats.draws = draws(|_| true);
         self.stats.alpha_tested_draws = draws(|variant| variant.coverage == Coverage::AlphaTest);
         self.stats.transparent_draws = draws(|variant| variant.coverage == Coverage::Transparent);
-        self.stats.face_draws = draws(|variant| variant.part == Part::Face);
+        self.stats.face_draws = draws(|variant| variant.shading == Shading::Character(Part::Face));
+        self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
         self.stats.outline_draws = self.scene.outline_count();
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
@@ -1023,7 +1053,7 @@ impl Renderer {
             ref meshes,
             ref mut materials,
             ref mut scene,
-            ref scene_bind_group,
+            ref scene_bind_groups,
             ref skinning,
             ref mut post,
             ref mut temporal,
@@ -1118,10 +1148,12 @@ impl Renderer {
                 cube.record(ctx.encoder, frame_bind_group, view_bind_group, offset, labels, timestamps);
             });
         }
+        // Group 2 starts as the anime character family's, which the prepasses bind for every
+        // family's draws (they read no material); the main pass binds each family's in turn.
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
             pass.set_bind_group(0, frame_bind_group, &[]);
             pass.set_bind_group(1, view_bind_group, &[0]);
-            pass.set_bind_group(2, scene_bind_group, &[]);
+            pass.set_bind_group(2, &scene_bind_groups[0], &[]);
             pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
         };
 
@@ -1134,8 +1166,13 @@ impl Renderer {
             {
                 bind(&mut pass);
                 pass.set_pipeline(pipeline);
-                // Transparent surfaces write no depth.
-                for variant in SurfaceVariant::DEPTH_WRITING {
+                // The characters alone: anime character surfaces that write depth (transparent
+                // ones don't). A skinned environment prop (a flag, a swinging sign) stays out of
+                // the character depth that rim light, hair shadow and the responsive mask read.
+                let characters = SurfaceVariant::DEPTH_WRITING
+                    .into_iter()
+                    .filter(|variant| matches!(variant.shading, Shading::Character(_)));
+                for variant in characters {
                     mesh_draws.draw_deformed(
                         &mut pass,
                         MeshPass::CharacterPrepass,
@@ -1154,8 +1191,8 @@ impl Renderer {
                 let colors = [targets.normals, targets.velocity];
                 let mut pass = begin_prepass(ctx, "scene prepass", targets.depth, &colors, labels);
                 bind(&mut pass);
-                // Opaque and alpha-tested surfaces, through one pipeline per format: the
-                // prepass doesn't cut alpha-tested ones out yet (crate docs, "Later
+                // Opaque and alpha-tested surfaces of every family, through one pipeline per
+                // format: the prepass doesn't cut alpha-tested ones out yet (crate docs, "Later
                 // milestones"). Transparent surfaces write no depth.
                 let prepass = MeshPass::ScenePrepass;
                 for format in PositionFormat::ALL {
@@ -1212,26 +1249,43 @@ impl Renderer {
                 ..Default::default()
             });
             bind(&mut pass);
-            // Opaque and alpha-tested surfaces, then their outlines, after them so depth rejects
-            // the hull wherever a surface covers it, then the sky where no geometry wrote depth,
-            // then transparent surfaces over all of it. Each static permutation draws through
-            // its own pipeline (a face's outline is its coverage's); skinned and morphed
-            // instances draw last in each group, through the f32 pipelines.
+            // Opaque and alpha-tested surfaces (characters before the world in each coverage, so
+            // depth rejects the world behind them), then the characters' outlines, after them so
+            // depth rejects the hull wherever a surface covers it, then the sky where no geometry
+            // wrote depth, then transparent surfaces over all of it. Each surface variant draws
+            // through its own pipeline (a face's outline is its coverage's), binding its family's
+            // scene group when the family changes; skinned and morphed instances draw last in
+            // each group, through the f32 pipelines.
             let groups = SurfaceVariant::DEPTH_WRITING
                 .map(|variant| (variant, DrawSet::Surfaces))
                 .into_iter()
-                .chain(SurfaceVariant::DEPTH_WRITING.map(|variant| (variant, DrawSet::Outlines)));
+                .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)));
+            let mut scene_group = Some(0);
             for (variant, set) in groups {
-                draw_main(&mut pass, pipelines, &mesh_draws, variant, set);
+                draw_main(
+                    &mut pass,
+                    pipelines,
+                    &mesh_draws,
+                    scene_bind_groups,
+                    &mut scene_group,
+                    variant,
+                    set,
+                );
             }
             sky_draw.draw(&mut pass);
-            if SurfaceVariant::TRANSPARENT.into_iter().any(|variant| mesh_draws.has_any(variant)) {
-                // The sky's pipeline bound its own groups 2 and 3; mesh draws bind group 3 per
-                // draw.
-                pass.set_bind_group(2, scene_bind_group, &[]);
-                for variant in SurfaceVariant::TRANSPARENT {
-                    draw_main(&mut pass, pipelines, &mesh_draws, variant, DrawSet::Surfaces);
-                }
+            // The sky's pipeline bound its own groups 2 and 3; mesh draws bind their family's
+            // group 2 again, and group 3 per draw.
+            let mut scene_group = None;
+            for variant in SurfaceVariant::TRANSPARENT {
+                draw_main(
+                    &mut pass,
+                    pipelines,
+                    &mesh_draws,
+                    scene_bind_groups,
+                    &mut scene_group,
+                    variant,
+                    DrawSet::Surfaces,
+                );
             }
         });
 
@@ -1277,7 +1331,8 @@ impl Renderer {
     /// size and sky cube faces.
     pub fn stats(&self) -> RenderStats {
         RenderStats {
-            character_pipelines: self.pipelines.character_pipelines(),
+            character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
+            environment_pipelines: self.pipelines.built(MaterialFamily::Environment),
             sky: self.sky.stats(),
             ..self.stats
         }
@@ -1346,21 +1401,32 @@ impl Renderer {
 
 /// Draws `set` of the main pass's draws of `variant`, static meshes per format and then the
 /// skinned and morphed ones, each group through its pipeline: the surface's, or the outline
-/// hull's.
+/// hull's. Binds the variant's family's scene group first unless `bound` says it is bound
+/// already, and only if the variant has draws.
 fn draw_main(
     pass: &mut wgpu::RenderPass<'_>,
     pipelines: &Pipelines,
     draws: &MeshDraws<'_>,
+    scene_bind_groups: &[wgpu::BindGroup],
+    bound: &mut Option<usize>,
     variant: SurfaceVariant,
     set: DrawSet,
 ) {
+    if !draws.has_any(variant) {
+        return;
+    }
+    let group = variant.shading.scene_group();
+    if *bound != Some(group) {
+        pass.set_bind_group(2, &scene_bind_groups[group], &[]);
+        *bound = Some(group);
+    }
     let pipeline = |format| {
         let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
         let pipeline = match set {
-            DrawSet::Surfaces => mesh.character(variant),
+            DrawSet::Surfaces => mesh.surface(variant),
             DrawSet::Outlines => mesh.outline(variant),
         };
-        pipeline.expect("built when a draw of this permutation was added")
+        pipeline.expect("built when a draw of this variant was added")
     };
     for format in PositionFormat::ALL {
         if draws.has_static(format, variant) {
@@ -1447,22 +1513,24 @@ fn create_frame_bind_group(
     })
 }
 
-/// Group 2 for the anime character family's pipelines (and the prepasses): instances and that
-/// family's materials.
-fn create_scene_bind_group(
+/// Group 2 per [`MESH_FAMILIES`] entry, for that family's pipelines: the instances and the
+/// family's materials. The prepasses bind the anime character family's.
+fn create_scene_bind_groups(
     device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
+    layouts: &Layouts,
     scene: &GpuScene,
     materials: &Materials,
-) -> wgpu::BindGroup {
-    let character = materials.buffer(MaterialFamily::AnimeCharacter);
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("scene"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: character.as_entire_binding() },
-        ],
+) -> [wgpu::BindGroup; MESH_FAMILIES.len()] {
+    std::array::from_fn(|group| {
+        let family = MESH_FAMILIES[group];
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(family.name()),
+            layout: &layouts.scene[group],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: materials.buffer(family).as_entire_binding() },
+            ],
+        })
     })
 }
 

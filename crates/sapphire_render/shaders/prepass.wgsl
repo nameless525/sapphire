@@ -2,7 +2,7 @@
 // visible, for later passes to read.
 //
 // - Character prepass (`vs_character_prepass`, no fragment stage): skinned and morphed instances
-//   only, into a depth target of their own. That character-only depth is what rim light, hair
+//   of the anime character family only, into a depth target of their own. That character-only depth is what rim light, hair
 //   shadow on the face and eyes over the bangs read (C2, C5), on every tier.
 // - Scene prepass (`vs_scene_prepass`, `fs_scene_prepass`): every opaque instance, into depth,
 //   world normals and velocity, for TAA (R7), outlines under TAA (P1), GTAO and screen-space

@@ -1,14 +1,16 @@
 //! Bind group layouts, vertex layouts and render pipelines for the scene passes and the
-//! prepasses, and the anime character shader's static permutations.
+//! prepasses: the surface variants of the material families meshes draw with (the anime character
+//! shader's static permutations, and the environment shader's), and their outline hulls.
 
 use std::mem::offset_of;
 use std::num::NonZeroU64;
 
-use sapphire_assets::material::{AnimeCharacterParams, MaterialFamily, MaterialFlags};
+use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
 use crate::characters::GpuCharacter;
+use crate::environment::{self, EnvironmentSettings};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shaders::{self, Program, ShaderSources};
@@ -226,15 +228,9 @@ impl Permutation {
 
     /// The surface pipelines it draws with.
     pub(crate) fn surface(self) -> SurfaceVariant {
-        let coverage = if self.contains(Self::TRANSPARENT) {
-            Coverage::Transparent
-        } else if self.contains(Self::ALPHA_TEST) {
-            Coverage::AlphaTest
-        } else {
-            Coverage::Opaque
-        };
+        let coverage = Coverage::of(self.contains(Self::ALPHA_TEST), self.contains(Self::TRANSPARENT));
         let part = if self.contains(Self::FACE) { Part::Face } else { Part::Body };
-        SurfaceVariant { coverage, part }
+        SurfaceVariant::character(coverage, part)
     }
 
     /// Whether it draws an outline hull: transparent surfaces never do.
@@ -255,12 +251,29 @@ impl Coverage {
     /// The coverages that write depth and can draw an outline.
     pub(crate) const DEPTH_WRITING: [Self; 2] = [Self::Opaque, Self::AlphaTest];
 
+    /// A material's coverage: transparent wins over alpha-tested, which wins over opaque.
+    pub(crate) const fn of(alpha_test: bool, transparent: bool) -> Self {
+        if transparent {
+            Self::Transparent
+        } else if alpha_test {
+            Self::AlphaTest
+        } else {
+            Self::Opaque
+        }
+    }
+
+    /// The coverage of a material with `flags`.
+    pub(crate) fn of_flags(flags: MaterialFlags) -> Self {
+        Self::of(flags.contains(MaterialFlags::ALPHA_TEST), flags.contains(MaterialFlags::TRANSPARENT))
+    }
+
     pub(crate) fn index(self) -> usize {
         self as usize
     }
 
-    /// The pipeline-overridable constants the coverage sets, in `anime_character.wgsl` and in
-    /// `outline.wgsl` (which has the alpha test's alone, since it draws no transparent hulls).
+    /// The pipeline-overridable constants the coverage sets, in `anime_character.wgsl`,
+    /// `environment.wgsl` and `outline.wgsl` (which has the alpha test's alone, since it draws no
+    /// transparent hulls).
     pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
         match self {
             Self::Opaque => &[],
@@ -286,56 +299,141 @@ impl Part {
     }
 }
 
-/// The anime character surface pipelines one [`PositionFormat`] can draw with: the permutation
-/// bits that change the shader or its render state today (see [`Permutation`]), a coverage and
-/// a part. Outline hulls depend on the coverage alone.
+/// The material families meshes draw with, each through pipelines of its own that bind its
+/// parameter buffer in the scene group (group 2, beside the instances) and its textures in
+/// group 3: the anime character family and, since M1 W4, the environment family. Foliage (W6) and
+/// fog cards (W3) join with their shaders.
+pub(crate) const MESH_FAMILIES: [MaterialFamily; 2] =
+    [MaterialFamily::AnimeCharacter, MaterialFamily::Environment];
+
+/// What a surface's pipeline shades with: its material family's shader, and for anime characters
+/// the part that has a variant of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Shading {
+    /// The anime character shader (`anime_character.wgsl`).
+    Character(Part),
+    /// The environment shader (`environment.wgsl`, M1 W4).
+    Environment,
+}
+
+impl Shading {
+    /// Every shading, in drawing order within a coverage: characters, then the world, whose
+    /// pixels behind them depth then rejects.
+    pub(crate) const ALL: [Self; 3] =
+        [Self::Character(Part::Body), Self::Character(Part::Face), Self::Environment];
+
+    /// Its position in [`Self::ALL`].
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::Character(part) => part.index(),
+            Self::Environment => Part::ALL.len(),
+        }
+    }
+
+    /// The material family it draws.
+    pub(crate) fn family(self) -> MaterialFamily {
+        match self {
+            Self::Character(_) => MaterialFamily::AnimeCharacter,
+            Self::Environment => MaterialFamily::Environment,
+        }
+    }
+
+    /// Its family's position in [`MESH_FAMILIES`]: the scene group its pipelines bind.
+    pub(crate) fn scene_group(self) -> usize {
+        let family = self.family();
+        MESH_FAMILIES
+            .iter()
+            .position(|&mesh_family| mesh_family == family)
+            .expect("meshes draw every shading")
+    }
+}
+
+/// The surface pipelines one [`PositionFormat`] can draw with: a coverage, and a shading (the
+/// family's shader and, for anime characters, the part). For anime characters these are the
+/// permutation bits that change the shader or its render state today (see [`Permutation`]);
+/// environment materials vary by their coverage alone. Outline hulls depend on the coverage alone,
+/// and only anime characters draw them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SurfaceVariant {
     pub coverage: Coverage,
-    pub part: Part,
+    pub shading: Shading,
 }
 
 impl SurfaceVariant {
-    /// Every variant, in drawing order: by coverage, then part.
-    pub(crate) const ALL: [Self; 6] = [
-        Self::new(Coverage::Opaque, Part::Body),
-        Self::new(Coverage::Opaque, Part::Face),
-        Self::new(Coverage::AlphaTest, Part::Body),
-        Self::new(Coverage::AlphaTest, Part::Face),
-        Self::new(Coverage::Transparent, Part::Body),
-        Self::new(Coverage::Transparent, Part::Face),
+    /// Every variant, in drawing order: by coverage, then shading.
+    pub(crate) const ALL: [Self; 9] = [
+        Self::character(Coverage::Opaque, Part::Body),
+        Self::character(Coverage::Opaque, Part::Face),
+        Self::environment(Coverage::Opaque),
+        Self::character(Coverage::AlphaTest, Part::Body),
+        Self::character(Coverage::AlphaTest, Part::Face),
+        Self::environment(Coverage::AlphaTest),
+        Self::character(Coverage::Transparent, Part::Body),
+        Self::character(Coverage::Transparent, Part::Face),
+        Self::environment(Coverage::Transparent),
     ];
-    /// The variants that write depth and can draw an outline.
-    pub(crate) const DEPTH_WRITING: [Self; 4] = [Self::ALL[0], Self::ALL[1], Self::ALL[2], Self::ALL[3]];
+    /// The variants that write depth: drawn first, and into the prepasses.
+    pub(crate) const DEPTH_WRITING: [Self; 6] =
+        [Self::ALL[0], Self::ALL[1], Self::ALL[2], Self::ALL[3], Self::ALL[4], Self::ALL[5]];
+    /// The variants that can draw an outline hull: the anime character's that write depth.
+    pub(crate) const OUTLINED: [Self; 4] = [Self::ALL[0], Self::ALL[1], Self::ALL[3], Self::ALL[4]];
     /// The variants blended over the frame after the sky.
-    pub(crate) const TRANSPARENT: [Self; 2] = [Self::ALL[4], Self::ALL[5]];
-    /// Opaque bodies: what a material with no permutation bits draws with.
-    pub(crate) const OPAQUE: Self = Self::new(Coverage::Opaque, Part::Body);
+    pub(crate) const TRANSPARENT: [Self; 3] = [Self::ALL[6], Self::ALL[7], Self::ALL[8]];
+    /// Opaque anime character bodies: what a material with no permutation bits draws with.
+    pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
-    pub(crate) const fn new(coverage: Coverage, part: Part) -> Self {
-        Self { coverage, part }
+    pub(crate) const fn character(coverage: Coverage, part: Part) -> Self {
+        Self { coverage, shading: Shading::Character(part) }
+    }
+
+    pub(crate) const fn environment(coverage: Coverage) -> Self {
+        Self { coverage, shading: Shading::Environment }
     }
 
     /// Its position in [`Self::ALL`].
     pub(crate) fn index(self) -> usize {
-        self.coverage.index() * Part::ALL.len() + self.part.index()
+        self.coverage.index() * Shading::ALL.len() + self.shading.index()
     }
 
-    /// The variant a material with `flags` draws with, on any mesh.
-    pub(crate) fn of_material(flags: MaterialFlags) -> Self {
-        Permutation::new(flags, false, false).surface()
+    /// The variant a material of `family` with `flags` draws with, on any mesh; `None` for a
+    /// family meshes don't draw with.
+    pub(crate) fn of_material(family: MaterialFamily, flags: MaterialFlags) -> Option<Self> {
+        mesh_draw(family, flags, false, false).map(|(variant, _)| variant)
     }
 
-    /// The surface shader's pipeline-overridable constants for the variant (`PERMUTATION_*` in
-    /// `anime_character.wgsl`). Outlines take their coverage's ([`Coverage::constants`]).
+    /// The surface shader's static permutation constants for the variant (`PERMUTATION_*` in
+    /// `anime_character.wgsl` and `environment.wgsl`). Outlines take their coverage's
+    /// ([`Coverage::constants`]); environment pipelines add their tier's specular model.
     pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
         use override_constant::{ALPHA_TEST, FACE, TRANSPARENT};
-        match (self.coverage, self.part) {
-            (coverage, Part::Body) => coverage.constants(),
-            (Coverage::Opaque, Part::Face) => &[(FACE, 1.0)],
-            (Coverage::AlphaTest, Part::Face) => &[(ALPHA_TEST, 1.0), (FACE, 1.0)],
-            (Coverage::Transparent, Part::Face) => &[(TRANSPARENT, 1.0), (FACE, 1.0)],
+        match (self.coverage, self.shading) {
+            (coverage, Shading::Character(Part::Body) | Shading::Environment) => coverage.constants(),
+            (Coverage::Opaque, Shading::Character(Part::Face)) => &[(FACE, 1.0)],
+            (Coverage::AlphaTest, Shading::Character(Part::Face)) => &[(ALPHA_TEST, 1.0), (FACE, 1.0)],
+            (Coverage::Transparent, Shading::Character(Part::Face)) => &[(TRANSPARENT, 1.0), (FACE, 1.0)],
         }
+    }
+}
+
+/// How a submesh drawn with a material of `family` with `flags`, on a mesh that is `skinned` and
+/// `morphed` or not, draws: its surface variant, and whether it draws an outline hull. Anime
+/// character materials go by their static permutation ([`Permutation`]); environment materials
+/// by their coverage, with no hull (decision M1 W4: the environment's edges are the spec's
+/// screen-space edge pass, a later desktop option, and props that should read like characters
+/// use the anime character family). `None` for a family meshes don't draw with.
+pub(crate) fn mesh_draw(
+    family: MaterialFamily,
+    flags: MaterialFlags,
+    skinned: bool,
+    morphed: bool,
+) -> Option<(SurfaceVariant, bool)> {
+    match family {
+        MaterialFamily::AnimeCharacter => {
+            let permutation = Permutation::new(flags, skinned, morphed);
+            Some((permutation.surface(), permutation.outlined()))
+        }
+        MaterialFamily::Environment => Some((SurfaceVariant::environment(Coverage::of_flags(flags)), false)),
+        MaterialFamily::Foliage | MaterialFamily::Sky | MaterialFamily::FogCard => None,
     }
 }
 
@@ -353,8 +451,9 @@ pub(crate) struct Layouts {
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
-    /// Group 2: instances and a material family's parameter buffer.
-    pub scene: wgpu::BindGroupLayout,
+    /// Group 2 per [`MESH_FAMILIES`] entry: instances and that family's parameter buffer. The
+    /// prepasses, which read no material, bind the anime character family's.
+    pub scene: [wgpu::BindGroupLayout; MESH_FAMILIES.len()],
     /// Group 3 per [`MaterialFamily::ALL`] entry: the family's texture slots and samplers.
     pub materials: [wgpu::BindGroupLayout; MaterialFamily::ALL.len()],
 }
@@ -392,15 +491,16 @@ impl Layouts {
                 "view",
                 &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
             ),
-            scene: layout(
-                "scene",
-                &[
-                    buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
-                    // Each family's pipelines bind their own family's buffer here; only the
-                    // anime character family draws so far.
-                    buffer(1, S::VERTEX_FRAGMENT, storage, false, size_of::<AnimeCharacterParams>()),
-                ],
-            ),
+            scene: MESH_FAMILIES.map(|family| {
+                layout(
+                    family.name(),
+                    &[
+                        buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
+                        // The family's own parameter buffer: its pipelines read nothing else.
+                        buffer(1, S::VERTEX_FRAGMENT, storage, false, family.params_size()),
+                    ],
+                )
+            }),
             materials: MaterialFamily::ALL.map(|family| material_layout(device, family)),
         }
     }
@@ -458,8 +558,8 @@ struct PassDesc<'a> {
     constants: &'a [(&'a str, f64)],
 }
 
-/// Transparent anime character surfaces: blended by coverage, keeping the scene color's alpha,
-/// which opaque surfaces set (the character bloom mask, C7).
+/// Transparent surfaces: blended by coverage, keeping the scene color's alpha, which opaque
+/// surfaces set (the character bloom mask, C7).
 const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -477,41 +577,52 @@ const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
 /// position attribute.
 #[derive(Debug)]
 pub(crate) struct MeshPipelines {
-    /// The anime character surfaces, per [`SurfaceVariant::ALL`] entry; each is built with the
-    /// first draw that needs it ([`Pipelines::prepare_variant`]).
-    character: [Option<wgpu::RenderPipeline>; SurfaceVariant::ALL.len()],
-    /// Their outline hulls, per [`Coverage::DEPTH_WRITING`] entry: every part's outline is the
-    /// same.
+    /// The surfaces, anime character and environment, per [`SurfaceVariant::ALL`] entry; each is
+    /// built with the first draw that needs it ([`Pipelines::prepare_variant`]).
+    surfaces: [Option<wgpu::RenderPipeline>; SurfaceVariant::ALL.len()],
+    /// The anime characters' outline hulls, per [`Coverage::DEPTH_WRITING`] entry: every part's
+    /// outline is the same.
     outline: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
-    /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`).
+    /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`), whatever its
+    /// family.
     pub scene_prepass: wgpu::RenderPipeline,
 }
 
 impl MeshPipelines {
     /// The surface pipeline of `variant`, once it was prepared.
-    pub(crate) fn character(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
-        self.character[variant.index()].as_ref()
+    pub(crate) fn surface(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
+        self.surfaces[variant.index()].as_ref()
     }
 
     /// The outline pipeline of `variant`'s coverage, once it was prepared; transparent surfaces
-    /// have none.
+    /// and the environment have none.
     pub(crate) fn outline(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
+        if variant.shading == Shading::Environment {
+            return None;
+        }
         self.outline.get(variant.coverage.index())?.as_ref()
     }
 
-    /// Anime character pipelines built: surfaces and outlines.
-    fn built(&self) -> u32 {
-        let count = |pipelines: &[Option<wgpu::RenderPipeline>]| pipelines.iter().flatten().count();
-        (count(&self.character) + count(&self.outline)) as u32
+    /// Pipelines built of `family`: its surfaces, and the anime character family's outlines.
+    fn built(&self, family: MaterialFamily) -> u32 {
+        let surfaces = SurfaceVariant::ALL
+            .iter()
+            .filter(|variant| variant.shading.family() == family && self.surface(**variant).is_some())
+            .count();
+        let outlines = match family {
+            MaterialFamily::AnimeCharacter => self.outline.iter().flatten().count(),
+            _ => 0,
+        };
+        (surfaces + outlines) as u32
     }
 }
 
 /// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up
-/// front, opaque surfaces only; the f32 ones when the first f32 mesh, or skinned or morphed mesh,
-/// is uploaded
-/// ([`Self::prepare_format`]); the other surface variants when a draw first needs them
-/// ([`Self::prepare_variant`]); and the character prepass's with the first skinned or morphed
-/// mesh ([`Self::prepare_characters`]). Apps never pay for compiling what they don't draw.
+/// front, opaque anime character surfaces only; the f32 ones when the first f32 mesh, or skinned
+/// or morphed mesh, is uploaded ([`Self::prepare_format`]); the other surface variants, the
+/// environment's among them, when a draw first needs them ([`Self::prepare_variant`]); and the
+/// character prepass's with the first skinned or morphed mesh ([`Self::prepare_characters`]).
+/// Apps never pay for compiling what they don't draw.
 ///
 /// They are built from the renderer's current shader sources, whose modules they keep; new
 /// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]).
@@ -529,6 +640,7 @@ pub(crate) struct Pipelines {
 #[derive(Clone, Debug)]
 struct MeshModules {
     character: wgpu::ShaderModule,
+    environment: wgpu::ShaderModule,
     outline: wgpu::ShaderModule,
     prepass: wgpu::ShaderModule,
 }
@@ -538,11 +650,20 @@ impl MeshModules {
     fn get_mut(&mut self, program: Program) -> &mut wgpu::ShaderModule {
         match program {
             Program::AnimeCharacter => &mut self.character,
+            Program::Environment => &mut self.environment,
             Program::Outline => &mut self.outline,
             Program::Prepass => &mut self.prepass,
             Program::Sky | Program::Clusters | Program::Skinning | Program::Post | Program::Temporal => {
                 unreachable!("not a mesh program")
             }
+        }
+    }
+
+    /// The module a surface of `shading` draws with, and the program it is built from.
+    fn surface(&self, shading: Shading) -> (&wgpu::ShaderModule, Program) {
+        match shading {
+            Shading::Character(_) => (&self.character, Program::AnimeCharacter),
+            Shading::Environment => (&self.environment, Program::Environment),
         }
     }
 }
@@ -552,11 +673,13 @@ impl MeshModules {
 struct PipelineTarget {
     /// Groups 0–2, for passes that read no material textures: the prepasses.
     layout: wgpu::PipelineLayout,
-    /// Groups 0–2 and the anime character family's group 3: the passes that shade with it
-    /// (its shader and its outlines).
-    character_layout: wgpu::PipelineLayout,
+    /// Groups 0–3 per [`MESH_FAMILIES`] entry, with that family's scene group and group 3: the
+    /// passes that shade with it (its surfaces, and the anime character family's outlines).
+    family_layouts: [wgpu::PipelineLayout; MESH_FAMILIES.len()],
     color_format: wgpu::TextureFormat,
     sample_count: u32,
+    /// The environment shader's tier settings: its specular model.
+    environment: EnvironmentSettings,
     cache: Option<wgpu::PipelineCache>,
 }
 
@@ -566,28 +689,39 @@ impl Pipelines {
         layouts: &Layouts,
         color_format: wgpu::TextureFormat,
         sample_count: u32,
+        environment: EnvironmentSettings,
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
-            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene)],
+            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene[0])],
             immediate_size: 0,
         });
-        let character_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("anime character"),
-            bind_group_layouts: &[
-                Some(&layouts.frame),
-                Some(&layouts.view),
-                Some(&layouts.scene),
-                Some(&layouts.materials[MaterialFamily::AnimeCharacter.index()]),
-            ],
-            immediate_size: 0,
+        let family_layouts = std::array::from_fn(|group| {
+            let family = MESH_FAMILIES[group];
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(family.name()),
+                bind_group_layouts: &[
+                    Some(&layouts.frame),
+                    Some(&layouts.view),
+                    Some(&layouts.scene[group]),
+                    Some(&layouts.materials[family.index()]),
+                ],
+                immediate_size: 0,
+            })
         });
-        let target =
-            PipelineTarget { layout, character_layout, color_format, sample_count, cache: cache.cloned() };
+        let target = PipelineTarget {
+            layout,
+            family_layouts,
+            color_format,
+            sample_count,
+            environment,
+            cache: cache.cloned(),
+        };
         let modules = MeshModules {
             character: shaders::module(device, Program::AnimeCharacter, sources),
+            environment: shaders::module(device, Program::Environment, sources),
             outline: shaders::module(device, Program::Outline, sources),
             prepass: shaders::module(device, Program::Prepass, sources),
         };
@@ -630,13 +764,13 @@ impl Pipelines {
                 build_scene_prepass(device, target, &modules, format)
             });
             let mut pipelines =
-                MeshPipelines { character: Default::default(), outline: Default::default(), scene_prepass };
+                MeshPipelines { surfaces: Default::default(), outline: Default::default(), scene_prepass };
             for variant in SurfaceVariant::ALL {
-                if let Some(old) = old.character(variant) {
-                    pipelines.character[variant.index()] =
-                        Some(rebuild(Program::AnimeCharacter, old, &|| {
-                            build_character(device, target, &modules, format, variant)
-                        }));
+                if let Some(old) = old.surface(variant) {
+                    let (_, program) = modules.surface(variant.shading);
+                    pipelines.surfaces[variant.index()] = Some(rebuild(program, old, &|| {
+                        build_surface(device, target, &modules, format, variant)
+                    }));
                 }
             }
             for coverage in Coverage::DEPTH_WRITING {
@@ -653,19 +787,19 @@ impl Pipelines {
     }
 
     /// Builds the mesh pipelines for `format` unless they exist: the scene prepass, and the
-    /// opaque surfaces and their outlines.
+    /// opaque anime character surfaces and their outlines.
     pub(crate) fn prepare_format(&mut self, device: &wgpu::Device, format: PositionFormat) {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
         let scene_prepass = build_scene_prepass(device, &self.target, &self.modules, format);
         self.mesh[format_index(format)] =
-            Some(MeshPipelines { character: Default::default(), outline: Default::default(), scene_prepass });
+            Some(MeshPipelines { surfaces: Default::default(), outline: Default::default(), scene_prepass });
         self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
     }
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
-    /// and the outline pipeline of its coverage, unless they do already.
+    /// and for anime characters the outline pipeline of its coverage, unless they do already.
     pub(crate) fn prepare_variant(
         &mut self,
         device: &wgpu::Device,
@@ -674,24 +808,26 @@ impl Pipelines {
     ) {
         let mesh =
             self.mesh[format_index(format)].as_ref().expect("prepare_format built the format's pipelines");
-        if mesh.character(variant).is_some() {
+        if mesh.surface(variant).is_some() {
             return;
         }
-        let needs_outline = mesh.outline(variant).is_none();
-        let character = build_character(device, &self.target, &self.modules, format, variant);
-        // Transparent surfaces have no outline; every part shares its coverage's.
-        let outline = (variant.coverage != Coverage::Transparent && needs_outline)
+        let needs_outline = SurfaceVariant::OUTLINED.contains(&variant) && mesh.outline(variant).is_none();
+        let surface = build_surface(device, &self.target, &self.modules, format, variant);
+        // Transparent surfaces and the environment have no outline; every part shares its
+        // coverage's.
+        let outline = needs_outline
             .then(|| build_outline(device, &self.target, &self.modules, format, variant.coverage));
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
-        mesh.character[variant.index()] = Some(character);
+        mesh.surfaces[variant.index()] = Some(surface);
         if let Some(outline) = outline {
             mesh.outline[variant.coverage.index()] = Some(outline);
         }
     }
 
-    /// Anime character pipelines built so far: surfaces and outlines, across formats.
-    pub(crate) fn character_pipelines(&self) -> u32 {
-        self.mesh.iter().flatten().map(MeshPipelines::built).sum()
+    /// Pipelines of `family` built so far, across formats: anime character surfaces and
+    /// outlines, or the environment's surfaces.
+    pub(crate) fn built(&self, family: MaterialFamily) -> u32 {
+        self.mesh.iter().flatten().map(|mesh| mesh.built(family)).sum()
     }
 
     /// Builds the character prepass's pipeline unless it exists: for the first skinned or
@@ -713,8 +849,10 @@ impl Pipelines {
     }
 }
 
-/// The anime character surface pipeline of `variant` for meshes in `format`.
-fn build_character(
+/// The surface pipeline of `variant` for meshes in `format`: the anime character shader or the
+/// environment shader, on its family's layout, with the variant's permutation constants (and the
+/// tier's specular model for the environment).
+fn build_surface(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
@@ -722,12 +860,21 @@ fn build_character(
     variant: SurfaceVariant,
 ) -> wgpu::RenderPipeline {
     let transparent = variant.coverage == Coverage::Transparent;
+    let (module, _) = modules.surface(variant.shading);
+    let mut constants = variant.constants().to_vec();
+    let name = match variant.shading {
+        Shading::Character(_) => "anime character",
+        Shading::Environment => {
+            constants.push((environment::SPECULAR_CONSTANT, target.environment.specular.constant()));
+            "environment"
+        }
+    };
     target.build_with(
         device,
-        &target.character_layout,
+        &target.family_layouts[variant.shading.scene_group()],
         PassDesc {
-            name: "anime character",
-            module: &modules.character,
+            name,
+            module,
             vertex_buffers: &MeshPass::Main.buffers(format),
             cull: Some(wgpu::Face::Back),
             // Transparent surfaces are depth-tested against the opaque frame but don't hide
@@ -735,7 +882,7 @@ fn build_character(
             depth_write: !transparent,
             depth_compare: wgpu::CompareFunction::Greater,
             blend: transparent.then_some(TRANSPARENT_BLEND),
-            constants: variant.constants(),
+            constants: &constants,
         },
     )
 }
@@ -751,7 +898,7 @@ fn build_outline(
     // Inverted hull: keep only the back faces of the extruded shell.
     target.build_with(
         device,
-        &target.character_layout,
+        &target.family_layouts[Shading::Character(Part::Body).scene_group()],
         PassDesc {
             name: "outline",
             module: &modules.outline,

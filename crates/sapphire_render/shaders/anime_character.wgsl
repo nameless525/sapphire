@@ -83,10 +83,6 @@
 //   albedo and gloom pushing toward the deepest shadow as occlusion does (its GI too, except
 //   where always lit), each scaled by the character's expression weight.
 
-const LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
-// The narrowest light split, in N·L: far below a pixel's change on any curved surface.
-const MIN_SPLIT_WIDTH: f32 = 1e-5;
-
 // The control map's shadow bias (`character_maps::ilm`): neutral, and the values at and beyond
 // which a point stays lit or in shadow whatever the light.
 const SHADOW_BIAS_NEUTRAL: f32 = 0.5;
@@ -194,20 +190,6 @@ fn sample_material(map: texture_2d<f32>, swizzles: vec4<u32>, slot: u32, uv: Mat
     return material_swizzle(sampled, swizzles, slot);
 }
 
-// The light split: 0 below `edge - width`, 1 above `edge + width`. The width never reaches 0,
-// where smoothstep's edges would meet and its result is undefined (a flat surface with no
-// softness, whose N·L doesn't change across a pixel).
-fn light_step(edge: f32, width: f32, x: f32) -> f32 {
-    let w = max(width, MIN_SPLIT_WIDTH);
-    return smoothstep(edge - w, edge + w, x);
-}
-
-// N·L scaled by `occlusion` in half-Lambert space: unchanged at 1, pushed toward -1 (the
-// deepest shadow) as it falls. Exactly N·L when nothing occludes.
-fn occluded(n_dot_l: f32, occlusion: f32) -> f32 {
-    return n_dot_l + (occlusion - 1.0) * (n_dot_l + 1.0);
-}
-
 // The light split's input: N·L, occluded, plus the shadow bias's offset `2·G − 1`, which a
 // higher bias makes lighter. Exactly N·L with nothing occluding and a neutral bias.
 fn split_input(n_dot_l: f32, occlusion: f32, bias: f32) -> f32 {
@@ -273,31 +255,6 @@ fn face_n_dot_l(margin: f32, threshold: f32) -> f32 {
 fn face_softness(softness: f32, threshold: f32) -> f32 {
     let t = clamp(threshold, -1.0, 1.0);
     return PI * sqrt(1.0 - t * t) * softness;
-}
-
-// The normal map's tangent-space normal in world space, by a tangent frame built from the
-// screen derivatives of the position and UV (Schüler, "Normal Mapping Without Precomputed
-// Tangents", 2013), since meshes carry no tangents yet. `sampled` is the map's X and Y in [0, 1];
-// maps are OpenGL-style, as glTF's are: +Y toward decreasing v.
-fn mapped_normal(
-    normal: vec3<f32>,
-    position_dx: vec3<f32>,
-    position_dy: vec3<f32>,
-    uv: MaterialUv,
-    sampled: vec2<f32>,
-) -> vec3<f32> {
-    let dy_perp = cross(position_dy, normal);
-    let dx_perp = cross(normal, position_dx);
-    // These solve for the gradients of u and v along the surface, times the determinant of the
-    // screen-space frame, whose sign flips with the screen's y axis (down in WebGPU) and the
-    // facing; `orientation` takes it back out, so they point along increasing u and v.
-    let orientation = select(1.0, -1.0, dot(position_dx, dy_perp) < 0.0);
-    let tangent = (dy_perp * uv.dx.x + dx_perp * uv.dy.x) * orientation;
-    let bitangent = (dy_perp * uv.dx.y + dx_perp * uv.dy.y) * orientation;
-    let scale = inverseSqrt(max(max(dot(tangent, tangent), dot(bitangent, bitangent)), 1e-30));
-    let xy = sampled * 2.0 - 1.0;
-    let z = sqrt(saturate(1.0 - dot(xy, xy)));
-    return safe_normalize((tangent * xy.x - bitangent * xy.y) * scale + normal * z);
 }
 
 // The control map's material ID at `uv`: level 0, unfiltered, so IDs never blend across region
@@ -401,18 +358,6 @@ fn local_light_split(
     let width = max(surface.split.y, 0.5 * (abs(dx) + abs(dy)));
     let x = split_input(n_dot_l, surface.occlusion, surface.shadow_bias);
     return bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
-}
-
-// The light list this pixel walks: its cluster's, or its instance's.
-fn pixel_light_list(in: CharacterVaryings) -> u32 {
-    if frame.lights.y == LIGHT_LISTS_OBJECTS {
-        return in.instance;
-    }
-    let tiles = vec2<f32>(f32(CLUSTER_TILES_X), f32(CLUSTER_TILES_Y));
-    let tile = min(vec2<u32>(in.clip_position.xy * view.viewport.zw * tiles), vec2<u32>(tiles) - 1u);
-    // Reverse-Z with an infinite far plane: view depth is near / fragment depth.
-    let slice = cluster_slice(frame.clusters.x / max(in.clip_position.z, 1e-30));
-    return (slice * CLUSTER_TILES_Y + tile.y) * CLUSTER_TILES_X + tile.x;
 }
 
 // Every listed local light, each split and toned like the key light, their sum held under
@@ -569,7 +514,7 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     var color = diffuse + ambient + rim;
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
-        let list = pixel_light_list(in);
+        let list = light_list(in.clip_position, in.instance);
         color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, derivatives);
     }
     if PERMUTATION_FACE {

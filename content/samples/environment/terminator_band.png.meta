@@ -1,0 +1,10 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "14d1e642-3b75-456f-b100-0395230326bb",
+        importer: Texture((
+            class: Ramp(()),
+        )),
+    ),
+)

@@ -140,6 +140,9 @@ impl App for SandboxApp {
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head);
         }
+        if let Some(courtyard) = renderer.courtyard {
+            scene.spawn_environment(courtyard);
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
@@ -626,6 +629,8 @@ struct SceneRenderer {
     swatches: Option<[MeshHandle; SWATCHES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
+    /// The courtyard, with `--environment`.
+    courtyard: Option<MeshHandle>,
     /// The zone's sky material.
     sky: MaterialHandle,
 }
@@ -643,6 +648,9 @@ impl Scene {
         }
         if let Some(head) = renderer.face_head {
             self.set_face_mesh(head);
+        }
+        if let Some(courtyard) = renderer.courtyard {
+            self.set_courtyard_mesh(courtyard);
         }
     }
 }
@@ -670,7 +678,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
-/// the shader swatches, whose materials `content` uploads too, and the face test head.
+/// the shader swatches, whose materials `content` uploads too, the face test head and the
+/// courtyard.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -687,13 +696,21 @@ fn create_renderer(
         let swatches =
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
         let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
+        let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
         let sky = content.sky_material(&mut renderer, gpu)?;
-        Ok((character, character_bounds, stalk, swatches, face_head, sky))
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, sky))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches, face_head, sky)) => {
-            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches, face_head, sky })
-        }
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, sky)) => Ok(SceneRenderer {
+            renderer,
+            character,
+            character_bounds,
+            stalk,
+            swatches,
+            face_head,
+            courtyard,
+            sky,
+        }),
         Err(error) => {
             content.keep_renderer(previous);
             Err(error)

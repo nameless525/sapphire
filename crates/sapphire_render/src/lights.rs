@@ -29,17 +29,19 @@
 //! # Shading
 //!
 //! `shaders/anime_character.wgsl` lights a pixel by each listed light the way it lights it by
-//! the sun: the same two-tone split of N·L (threshold, ILM bias, softness, one-pixel edge) and
-//! the same authored shadow color, in the light's color and brightness, scaled by its smooth
+//! the key light: the same two-tone split of N·L (threshold, ILM bias, softness, one-pixel edge)
+//! and the same authored shadow color, in the light's color and brightness, scaled by its smooth
 //! range window and spot cone. Local lights therefore push the light/shadow split where they
 //! reach and tint both tones, instead of adding a smooth Lambert falloff. Their sum is clamped
 //! to a luminance ceiling so stacked lights tint a character rather than blow it out (the
-//! reference games' `_FilterLight`).
+//! reference games' `_FilterLight`): the character light rig's (M1 C2), per character, 2 for
+//! anything else. They keep their own directions: the rig's limits on where a key light may come
+//! from are for the key light alone.
 //!
 //! # Later milestones
 //!
-//! - **Character light rig (C2):** the luminance ceiling becomes a rig parameter, light layers
-//!   keep VFX lights off faces, and the strongest local light may feed the depth rim (C5).
+//! - **Light layers** keep VFX lights off faces, and the strongest local light may feed the
+//!   depth rim (C5).
 //! - **Ramp and band modes (C1):** each light indexes the ramp (or bands) with its own split, as
 //!   the sun does.
 //! - **The light-cluster heatmap (F5's debug views):** a renderer debug view drawing each

@@ -44,6 +44,9 @@ pub(crate) struct Options {
     pub time_of_day: Option<f32>,
     /// `--day-length <seconds>`: run the day, one every this many seconds of world time.
     pub day_length: Option<f32>,
+    /// `--character-rig <preset>`: the character light rig preset the character is lit by,
+    /// instead of the default (`gameplay`). The scene checks the name against its presets.
+    pub character_rig: Option<String>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
     /// Render offscreen instead of opening a window.
@@ -151,6 +154,7 @@ impl Options {
                     }
                     options.day_length = Some(seconds);
                 }
+                "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
@@ -277,6 +281,20 @@ mod tests {
         assert!(parse(&["--time-of-day", "noon"]).is_err());
         assert!(parse(&["--day-length", "0"]).is_err());
         assert!(parse(&["--day-length", "inf"]).is_err());
+    }
+
+    #[test]
+    fn the_character_rig_takes_a_preset_name() {
+        assert_eq!(
+            parse(&["--character-rig", "portrait"]).unwrap().0.character_rig.as_deref(),
+            Some("portrait")
+        );
+        assert_eq!(
+            parse(&["--character-rig=gameplay"]).unwrap().0.character_rig.as_deref(),
+            Some("gameplay")
+        );
+        assert_eq!(parse(&[]).unwrap().0.character_rig, None);
+        assert!(parse(&["--character-rig"]).is_err(), "needs a name");
     }
 
     #[test]

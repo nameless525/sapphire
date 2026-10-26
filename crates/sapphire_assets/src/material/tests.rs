@@ -30,7 +30,11 @@ fn documents() -> Vec<AnyMaterialDocument> {
         diffuse: DiffuseMode::Ramp(RampDiffuse { map: id(RAMP), mix: 0.3 }),
         regions: vec![
             CharacterRegion { ramp_row: Some(2), night_ramp_row: Some(7), ..CharacterRegion::default() },
-            CharacterRegion { shade_color: [0.9, 0.5, 0.4], ..CharacterRegion::default() },
+            CharacterRegion {
+                shade_color: [0.9, 0.5, 0.4],
+                gi: RegionGi { sphere: 1.0, skin: 0.75 },
+                ..CharacterRegion::default()
+            },
         ],
         matcap: Some(Matcap { map: id(TEXTURE), strength: 0.8, shadow_strength: 0.2 }),
         ..AnimeCharacterMaterial::default()
@@ -95,7 +99,7 @@ fn documents_may_leave_fields_out() {
             base_color: (1.0, 0.5, 0.25, 1.0),
             base_color_map: "{TEXTURE}",
             diffuse: Bands((deep_threshold: -0.4)),
-            regions: [(shade_color: (0.8, 0.4, 0.4))],
+            regions: [(shade_color: (0.8, 0.4, 0.4), gi: (sphere: 1.0))],
             surface: Face((shadow_map: "{RAMP}")),
             outline: (width: 4.0),
         ))"#
@@ -106,6 +110,7 @@ fn documents_may_leave_fields_out() {
     assert_eq!(material.base_color_map, Some(id(TEXTURE)), "`Some` may be left out");
     assert_eq!(material.diffuse, DiffuseMode::Bands(BandDiffuse { deep_threshold: Some(-0.4) }));
     assert_eq!(material.regions[0].outline_color, CharacterRegion::default().outline_color);
+    assert_eq!(material.regions[0].gi, RegionGi { sphere: 1.0, skin: 0.0 }, "a face region's GI");
     assert_eq!(material.rim, Rim::default());
     assert_eq!(material.outline, Outline { width: 4.0, z_offset: 0.0 });
     let CharacterSurface::Face(face) = &material.surface else { panic!("a face") };
@@ -153,6 +158,8 @@ fn validation_names_the_field() {
     assert!(
         error(character(|m| m.regions[0].night_ramp_row = Some(16))).starts_with("regions[0].night_ramp_row")
     );
+    assert!(error(character(|m| m.regions[0].gi.sphere = 1.5)).starts_with("regions[0].gi.sphere"));
+    assert!(error(character(|m| m.regions[0].gi.skin = f32::NAN)).starts_with("regions[0].gi.skin"));
     let environment = EnvironmentMaterial { roughness_range: [0.6, 0.2], ..EnvironmentMaterial::default() };
     assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("roughness_range"));
     let foliage = FoliageMaterial { wrap: 3.0, ..FoliageMaterial::default() };
@@ -290,6 +297,9 @@ fn the_anime_character_block_carries_every_field() {
     // Region 1 keeps A7's rows for material ID 1: day row 1, night row 9.
     assert_eq!(params.regions[1].shade, [0.9, 0.5, 0.4, 1.0]);
     assert_eq!(params.regions[1].deep_shade[3], 9.0);
+    // The GI weights ride in the subsurface and rim vectors' fourth components.
+    assert_eq!((params.regions[1].subsurface[3], params.regions[1].rim[3]), (1.0, 0.75), "GI weights");
+    assert_eq!((params.regions[0].subsurface[3], params.regions[0].rim[3]), (0.0, 0.0), "none by default");
     assert_eq!(params.regions[2], AnimeCharacterRegion::default(), "unused regions stay zero");
     assert_eq!(params.swizzles[0] & 0xfff, swizzle_code(RA01), "slot 0 is bound");
     assert_eq!(params.swizzles[0] >> SWIZZLE_BITS, 0x688, "slot 1 is not");

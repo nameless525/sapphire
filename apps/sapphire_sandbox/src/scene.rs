@@ -4,9 +4,11 @@
 //!
 //! - **Resources:** `WorldClock` (from `sapphire_ecs`), the [`OrbitCamera`], the slow-motion
 //!   handle, [`TimeOfDay`] (the default day, on a clock of its own issued by the world clock),
-//!   and the [`RenderExtract`] packet ring that extraction fills.
-//! - **The character entity:** a [`Turntable`], its `EntityClock`, and the [`RenderMesh`] and
-//!   [`RenderTransform`](extract::RenderTransform) it draws with.
+//!   the character light rig presets ([`LightRigLibrary`], the shipped ones), and the
+//!   [`RenderExtract`] packet ring that extraction fills.
+//! - **The character entity:** a [`Turntable`], its `EntityClock`, the [`RenderMesh`] and
+//!   [`RenderTransform`] it draws with, and its [`CharacterLightRig`]:
+//!   the `gameplay` preset unless `--character-rig` names another.
 //! - **Demo lights** (`--lights`): three colored local lights around the character, entities
 //!   with a [`RenderLight`] each ([`Scene::spawn_demo_lights`]).
 //! - **The skinned stalk** (`--skinned`): a procedural skinned and morphed mesh beside the
@@ -24,7 +26,9 @@
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
 //!   probe, and writes them; the player's filter strength (`post.filter_strength`) goes on top.
-//!   It runs there rather than as an `Extract` system, which would cost an allocation a frame.
+//!   After `Extract` has posed and extracted the instances, it resolves each character's light
+//!   rig for the frame's camera into the packet's characters (M1 C2). Both run there rather than
+//!   as `Extract` systems, which would cost an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -38,12 +42,13 @@
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_render::{FramePacket, LightKind, LocalLight, MeshHandle, ViewData};
+use sapphire_render::{CharacterInstance, FramePacket, LightKind, LocalLight, MeshHandle, ViewData};
 use sapphire_time::{ScaleHandle, ScaleSource};
+use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
 use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
 use crate::LOG_TARGET;
-use crate::extract::{self, RenderExtract, RenderLight, RenderMesh};
+use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransform};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::skinned::{self, Sway};
@@ -60,6 +65,14 @@ const SHADER_TIME_WRAP_SECONDS: f64 = 3600.0;
 /// key, which is exactly the look the sandbox drew before time of day, so golden images that
 /// don't choose a time are unchanged.
 pub(crate) const DEFAULT_TIME_OF_DAY: f32 = 10.0;
+/// The sample mannequin's head, in its own space: the center of its head sphere, 1.47 m above
+/// its 0.2 m pedestal (`sapphire_pipeline`'s samples): face and hair GI turn toward a sphere
+/// around it, and the light rig's limits are judged around it.
+const CHARACTER_HEAD: Vec3 = Vec3::new(0.0, 1.67, 0.0);
+
+/// The characters the light rig lights: instances drawn with a [`CharacterLightRig`].
+type Characters =
+    QueryState<(Entity, &'static CharacterLightRig, &'static RenderTransform), With<RenderMesh>>;
 
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
@@ -74,6 +87,8 @@ pub(crate) struct Scene {
     swatches: Option<[Entity; SWATCHES]>,
     /// The character's object-space bounds, which demo lights and swatches are placed around.
     bounds: [[f32; 3]; 2],
+    /// Made once: a query made each frame would allocate.
+    characters: Characters,
 }
 
 impl Scene {
@@ -90,11 +105,13 @@ impl Scene {
         let time_of_day = TimeOfDay::new(TodTimeline::default_day(), day_clock, DEFAULT_TIME_OF_DAY)
             .expect("the default day sets every group");
         world.insert_resource(time_of_day);
+        world.insert_resource(LightRigLibrary::default_rigs());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
-        let character = world.spawn((Turntable::default(), clock)).id();
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        let character = world.spawn((Turntable::default(), clock, rig)).id();
         let stalk = skinned.then(|| {
             let clock = world.resource_mut::<WorldClock>().new_entity_clock();
-            let place = extract::RenderTransform(skinned::placement(bounds));
+            let place = RenderTransform(skinned::placement(bounds));
             world.spawn((Sway::default(), clock, place, skinned::rest_pose())).id()
         });
         ecs.add_systems(FixedFirst, tick_time_of_day.after(SimSet::Clocks))
@@ -110,7 +127,8 @@ impl Scene {
             );
         }
         ecs.startup();
-        Self { ecs, character, stalk, swatches: None, bounds }
+        let characters = ecs.world_mut().query_filtered();
+        Self { ecs, character, stalk, swatches: None, bounds, characters }
     }
 
     /// [`Self::new`] with the character drawing `mesh`.
@@ -173,6 +191,21 @@ impl Scene {
         clock.set_day_length(day_length);
     }
 
+    /// Lights the character with the light rig preset called `name`, from the scene's presets.
+    /// Fails with the presets' names if there is none of that name.
+    pub fn set_character_rig(&mut self, name: &str) -> Result<(), String> {
+        let world = self.ecs.world_mut();
+        let rigs = world.resource::<LightRigLibrary>();
+        let Some(rig) = rigs.find(name) else {
+            let names: Vec<&str> = rigs.names().collect();
+            return Err(format!("no character light rig preset {name:?}; presets: {}", names.join(", ")));
+        };
+        if let Some(mut character) = world.get_mut::<CharacterLightRig>(self.character) {
+            character.rig = rig;
+        }
+        Ok(())
+    }
+
     /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
     /// `meshes`, top to bottom. They never move, so they are extracted once.
     pub fn spawn_swatches(&mut self, meshes: [MeshHandle; SWATCHES]) {
@@ -180,7 +213,7 @@ impl Scene {
         let world = self.ecs.world_mut();
         let mut index = 0;
         self.swatches = Some(meshes.map(|mesh| {
-            let place = extract::RenderTransform(swatches::placement(bounds, index));
+            let place = RenderTransform(swatches::placement(bounds, index));
             index += 1;
             world.spawn((RenderMesh(mesh), place)).id()
         }));
@@ -244,6 +277,19 @@ impl Scene {
             packet.post.filter_strength = crate::cvars::filter_strength();
         });
         self.ecs.extract();
+        let characters = &mut self.characters;
+        self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
+            let packet = extract.packet_mut();
+            // The rigs are resolved for the camera; without one nothing draws.
+            let Some(camera) = packet.main_view().map(|view| view.camera) else { return };
+            let frame = world.resource::<TimeOfDay>().frame();
+            let rigs = world.resource::<LightRigLibrary>();
+            for (entity, character, transform) in characters.iter(world) {
+                let head = transform.0.transform_point3(character.head);
+                let lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
+                packet.characters.push(CharacterInstance { id: extract::instance_id(entity), lighting });
+            }
+        });
         self.ecs.world().resource::<RenderExtract>().packet()
     }
 
@@ -274,6 +320,12 @@ impl Scene {
 
     pub fn time_of_day(&self) -> &TimeOfDay {
         self.ecs.world().resource()
+    }
+
+    /// The characters of the last packet, with their resolved light rigs.
+    #[cfg(feature = "dev")]
+    pub fn characters(&self) -> &[CharacterInstance] {
+        &self.ecs.world().resource::<RenderExtract>().packet().characters
     }
 
     pub fn time_of_day_mut(&mut self) -> Mut<'_, TimeOfDay> {
@@ -433,6 +485,35 @@ mod tests {
             scene.step();
         }
         assert!((hours(&scene) - 19.2).abs() < 1e-4, "slowed with the world");
+    }
+
+    #[test]
+    fn the_character_is_lit_by_its_light_rig() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let character = InstanceId(scene.character.to_bits());
+        scene.step();
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let [lit] = packet.characters[..] else { panic!("one character: {:?}", packet.characters) };
+        assert_eq!(lit.id, character);
+        // At the default hour the gameplay preset's key is the sun the sandbox always drew with,
+        // in time of day's character key, which equals it at 10:00.
+        assert_eq!(lit.lighting.key, SUN);
+        assert_eq!(lit.lighting.gi.head, Some(CHARACTER_HEAD), "on the turntable's axis");
+        let rigs = LightRigLibrary::default_rigs();
+        assert_eq!(lit.lighting.gi.camera_bias, rigs.rig(LightRigId::DEFAULT).gi.camera_bias);
+        scene.end_frame();
+
+        // A portrait key holds to the camera, wherever the sun is.
+        scene.set_character_rig("portrait").expect("shipped");
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_ne!(packet.characters[0].lighting.key.direction, SUN.direction);
+        scene.end_frame();
+        let error = scene.set_character_rig("noir").unwrap_err();
+        assert!(error.contains("gameplay, portrait"), "{error}");
+
+        // Without a view there is no camera to resolve the rig for, and nothing draws.
+        assert!(scene.frame_packet(1.0, None).characters.is_empty());
+        scene.end_frame();
     }
 
     #[test]

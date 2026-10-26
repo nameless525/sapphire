@@ -2,7 +2,8 @@
 //!
 //! It runs the whole engine path on every platform: the SDL3 platform layer, the fixed 60 Hz
 //! simulation on the engine clocks and ECS, time of day (`sapphire_world::tod`) resolving the
-//! frame's look, plain-data [`FramePacket`](sapphire_render::FramePacket)s filled by
+//! frame's look and the character's light rig, plain-data
+//! [`FramePacket`](sapphire_render::FramePacket)s filled by
 //! change-detecting extract systems, and the wgpu anime renderer's persistent scene, drawing the
 //! cooked sample mannequin.
 //!
@@ -54,6 +55,8 @@
 //!   unless `--day-length` runs it.
 //! - `--day-length <seconds>`: run the day, one every this many seconds of world time (so
 //!   pause and slow motion reach it).
+//! - `--character-rig <preset>`: light the character with this character light rig preset
+//!   (`sapphire_world::light_rig`; `gameplay`, the default, or `portrait`).
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
 //!   `cvars`, `all`). Offscreen captures draw it too.

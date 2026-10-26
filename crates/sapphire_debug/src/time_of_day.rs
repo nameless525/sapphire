@@ -9,24 +9,25 @@
 //!   keys and a line the current hour. Clicking or dragging on it scrubs the hour.
 //! - **The character preview:** a sphere in a skin tone, in front of the sky gradient, lit the
 //!   way the anime character shader lights a character: a crisp two-tone split under the
-//!   character rig's key light (its color and intensity from time of day, its direction the key
-//!   light's), an authored warm shade on the dark side, hemispherical ambient and a rim. It shows
-//!   the character light C2 will draw, which the scene's characters don't use yet. It is
+//!   first character's resolved light rig (M1 C2: its key light, rim scale and stylized GI,
+//!   the sphere taking the skin tint), an authored warm shade on the dark side and a rim. Seen
+//!   from +Z in world axes, as the sandbox's camera starts. Without characters it previews time
+//!   of day's character key from the world key light's direction, with plain ambient. It is
 //!   rendered on the CPU into a 96 × 96 texture only when the values it reads change, so it
-//!   costs nothing while the hour stands still, and, while the hour runs and the panel is open,
-//!   one render and upload a frame: about 55 µs of CPU in a release build on an M5, with sRGB
-//!   encoding through a table (direct encoding took 210 µs).
+//!   costs nothing while the hour and the camera stand still, and, while either moves and the
+//!   panel is open, one render and upload a frame: about 55 µs of CPU in a release build on an
+//!   M5, with sRGB encoding through a table (direct encoding took 210 µs).
 //! - **Resolved values:** the key light and where it comes from, the sun and moon, the sky,
 //!   ambient, fog, shadow tint, character light, day/night factor and post-processing (with the
-//!   grades post's two LUTs blend), zone volumes and the cutscene, and the resolve's own CPU
-//!   time against its 0.05 ms budget.
+//!   grades post's two LUTs blend), zone volumes and the cutscene, each character's resolved
+//!   light rig, and the resolve's own CPU time against its 0.05 ms budget.
 
 use std::sync::LazyLock;
 
 use egui::{Color32, Mesh, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 use sapphire_math::Vec3;
 use sapphire_math::color::linear_to_srgb;
-use sapphire_render::DirectionalLight;
+use sapphire_render::{CharacterGi, CharacterInstance, CharacterLighting, DirectionalLight};
 use sapphire_world::tod::{DAY_HOURS, TimeOfDay, TodFrame, TodLook};
 
 use crate::budget::format_ms;
@@ -104,14 +105,21 @@ struct StripColumn {
 #[derive(Clone, Copy, PartialEq)]
 struct PreviewInputs {
     look: TodLook,
+    /// The first character's light rig, if the frame has characters.
+    lighting: Option<CharacterLighting>,
 }
 
-/// Shows the panel for `time_of_day`, recording what the player asks for in `controls`.
+/// The characters the values list shows.
+const LISTED_CHARACTERS: usize = 4;
+
+/// Shows the panel for `time_of_day` and the frame's `characters`, recording what the player
+/// asks for in `controls`.
 pub(crate) fn panel(
     ui: &mut Ui,
     state: &mut TodPanel,
     controls: &mut TodControls,
     time_of_day: Option<&TimeOfDay>,
+    characters: &[CharacterInstance],
 ) {
     let Some(tod) = time_of_day else {
         ui.weak("The app runs no time of day.");
@@ -159,9 +167,10 @@ pub(crate) fn panel(
         }
     });
     day_strip(ui, state, controls, tod);
+    let lighting = characters.first().map(|character| character.lighting);
     ui.horizontal(|ui| {
-        preview(ui, state, frame);
-        ui.vertical(|ui| values(ui, tod));
+        preview(ui, state, frame, lighting);
+        ui.vertical(|ui| values(ui, tod, characters));
     });
 }
 
@@ -233,43 +242,59 @@ fn day_strip(ui: &mut Ui, state: &mut TodPanel, controls: &mut TodControls, tod:
 }
 
 /// The character preview: drawn again only when its inputs change.
-fn preview(ui: &mut Ui, state: &mut TodPanel, frame: &TodFrame) {
-    let inputs = PreviewInputs { look: frame.look };
+fn preview(ui: &mut Ui, state: &mut TodPanel, frame: &TodFrame, lighting: Option<CharacterLighting>) {
+    let inputs = PreviewInputs { look: frame.look, lighting };
     match &mut state.preview {
         Some((drawn, _)) if *drawn == inputs => {}
         Some((drawn, texture)) => {
-            texture.set(render_preview(&frame.look), TextureOptions::LINEAR);
+            texture.set(render_preview(&frame.look, lighting.as_ref()), TextureOptions::LINEAR);
             *drawn = inputs;
         }
         None => {
             let texture = ui.ctx().load_texture(
                 "sapphire_debug.tod_preview",
-                render_preview(&frame.look),
+                render_preview(&frame.look, lighting.as_ref()),
                 TextureOptions::LINEAR,
             );
             state.preview = Some((inputs, texture));
         }
     }
     if let Some((_, texture)) = &state.preview {
+        let hover = if lighting.is_some() {
+            "The first character's light rig on a skin-toned sphere, in the anime two-tone model"
+        } else {
+            "Time of day's character key on a skin-toned sphere, in the anime two-tone model"
+        };
         ui.add(egui::Image::new((texture.id(), vec2(PREVIEW_SIZE as f32, PREVIEW_SIZE as f32))))
-            .on_hover_text(
-                "The character key light (C2) on a skin-toned sphere, in the anime two-tone model",
-            );
+            .on_hover_text(hover);
     }
 }
 
 /// A skin-toned sphere in front of the sky, lit as the anime character shader lights
-/// characters: a crisp split of N·L into the lit albedo and an authored warm shade under the
-/// character key light, hemispherical ambient, and a rim on the lit side. Exposure applies; the
-/// grade doesn't.
-fn render_preview(look: &TodLook) -> egui::ColorImage {
+/// characters: a crisp split of N·L into the lit albedo and an authored warm shade under
+/// `lighting`'s key light, its stylized GI as skin takes it, and a rim on the lit side. Without
+/// a rig: time of day's character key from the key light's direction, and plain hemispherical
+/// ambient. Exposure applies; the grade doesn't.
+fn render_preview(look: &TodLook, lighting: Option<&CharacterLighting>) -> egui::ColorImage {
     // Linear skin and the authored shade multiplier anime skin takes on its dark side.
     const ALBEDO: Vec3 = Vec3::new(0.94, 0.66, 0.52);
     const SHADE: Vec3 = Vec3::new(0.78, 0.56, 0.62);
     const RADIUS: f32 = 0.72;
-    let key = look.key_light();
+    let unstyled = CharacterLighting {
+        key: DirectionalLight { direction: look.key_light().direction, ..DirectionalLight::default() },
+        ..CharacterLighting::unstyled(DirectionalLight::default())
+    };
+    let (key, rim_scale, gi) = match lighting {
+        Some(lighting) => (lighting.key, lighting.rim, lighting.gi),
+        None => {
+            let character = &look.character_light;
+            let key =
+                DirectionalLight { color: character.color, intensity: character.intensity, ..unstyled.key };
+            (key, unstyled.rim, CharacterGi::default())
+        }
+    };
     let toward_light = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
-    let light = look.character_light.color * look.character_light.intensity;
+    let light = key.color * key.intensity;
     let size = PREVIEW_SIZE as f32;
     let display = Display::new(look.exposure);
     // A split about a texel wide, as `crisp_step` makes it on screen.
@@ -286,10 +311,9 @@ fn render_preview(look: &TodLook) -> egui::ColorImage {
                 let normal = Vec3::new(u / RADIUS, v / RADIUS, (1.0 - radius_squared).sqrt());
                 let lit = sapphire_math::ease::smoothstep(-edge, edge, normal.dot(toward_light));
                 let diffuse = (ALBEDO * SHADE).lerp(ALBEDO, lit) * light;
-                let hemisphere = look.ambient.ground.lerp(look.ambient.sky, normal.y * 0.5 + 0.5);
-                let ambient = ALBEDO * hemisphere * look.ambient.intensity;
+                let ambient = ALBEDO * character_gi(look, &gi, normal);
                 let rim = if 1.0 - normal.z > 0.75 {
-                    light * ALBEDO.lerp(Vec3::ONE, 0.5) * 0.3 * (0.25 + 0.75 * lit)
+                    light * ALBEDO.lerp(Vec3::ONE, 0.5) * 0.3 * rim_scale * (0.25 + 0.75 * lit)
                 } else {
                     Vec3::ZERO
                 };
@@ -299,6 +323,29 @@ fn render_preview(look: &TodLook) -> egui::ColorImage {
         })
         .collect();
     egui::ColorImage::new([PREVIEW_SIZE, PREVIEW_SIZE], pixels)
+}
+
+/// The stylized GI skin facing `normal` takes from `look`'s ambient light, as the anime
+/// character shader's `character_gi` gives it (the preview sphere is its own head, so the
+/// sphere weight changes nothing): the normal bent toward the camera (+Z), the hemisphere, the
+/// HSV clamp and the skin tint.
+fn character_gi(look: &TodLook, gi: &CharacterGi, normal: Vec3) -> Vec3 {
+    let ambient = &look.ambient;
+    let bent = (normal + Vec3::Z * gi.camera_bias).try_normalize().unwrap_or(normal);
+    let hemisphere = ambient.ground.lerp(ambient.sky, bent.y * 0.5 + 0.5) * ambient.intensity * gi.intensity;
+    hsv_clamp(hemisphere, gi.max_saturation, gi.max_value) * gi.skin_tint
+}
+
+/// `color` with its HSV saturation held to `max_saturation` and its value to `max_value`, hue
+/// kept (`hsv_clamp` in `anime_character.wgsl`).
+fn hsv_clamp(color: Vec3, max_saturation: f32, max_value: f32) -> Vec3 {
+    let value = color.max_element().max(1e-12);
+    let saturation = 1.0 - color.min_element() / value;
+    if saturation <= max_saturation && value <= max_value {
+        return color;
+    }
+    let kept = if saturation > max_saturation { max_saturation / saturation } else { 1.0 };
+    Vec3::splat(value).lerp(color, kept) * (value.min(max_value) / value)
 }
 
 /// The sky gradient behind the preview, at height `v` (−1 bottom, 1 top), as `sky_color` in
@@ -312,8 +359,8 @@ fn sky(look: &TodLook, v: f32) -> Vec3 {
     }
 }
 
-/// The resolved values, group by group.
-fn values(ui: &mut Ui, tod: &TimeOfDay) {
+/// The resolved values, group by group, and the characters' light rigs.
+fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
     let look = &tod.frame().look;
     let exposure = look.exposure;
     egui::Grid::new("tod_values").num_columns(2).striped(true).show(ui, |ui| {
@@ -378,6 +425,38 @@ fn values(ui: &mut Ui, tod: &TimeOfDay) {
             ui.monospace(format!("{:.2}", light.intensity));
         });
         ui.end_row();
+        for (index, character) in characters.iter().take(LISTED_CHARACTERS).enumerate() {
+            let lighting = &character.lighting;
+            ui.label(if index == 0 { "Character rigs" } else { "" });
+            ui.horizontal(|ui| {
+                let key = &lighting.key;
+                swatch(ui, key.color * key.intensity, exposure);
+                ui.monospace(format!("{:.2}, {}", key.intensity, position(key)));
+            });
+            ui.end_row();
+            ui.label("");
+            ui.horizontal(|ui| {
+                let gi = &lighting.gi;
+                swatch(ui, gi.skin_tint, 0.0);
+                let value =
+                    if gi.max_value.is_finite() { format!("{:.2}", gi.max_value) } else { "∞".to_owned() };
+                ui.monospace(format!(
+                    "GI ×{:.2}, camera bias {:.2}, saturation ≤ {:.2}, value ≤ {value}; rim ×{:.2}",
+                    gi.intensity, gi.camera_bias, gi.max_saturation, lighting.rim
+                ));
+            });
+            ui.end_row();
+        }
+        if characters.len() > LISTED_CHARACTERS {
+            ui.label("");
+            ui.weak(format!("and {} more characters", characters.len() - LISTED_CHARACTERS));
+            ui.end_row();
+        }
+        if let Some(shot) = &tod.frame().shot_rig {
+            ui.label("Shot rig");
+            ui.monospace(format!("{:.0}% over the characters' own", shot.weight * 100.0));
+            ui.end_row();
+        }
         ui.label("Day/night");
         ui.monospace(format!("{:.2}", look.day_night));
         ui.end_row();
@@ -570,7 +649,7 @@ mod tests {
     #[test]
     fn the_preview_splits_into_lit_and_shade() {
         let (_, tod) = time_of_day();
-        let image = render_preview(&tod.frame().look);
+        let image = render_preview(&tod.frame().look, None);
         assert_eq!(image.size, [PREVIEW_SIZE, PREVIEW_SIZE]);
         // The 10:00 sun comes from the upper left, toward the viewer: the sphere's upper left is
         // lit, its lower right in shade, and the corner is sky.
@@ -579,5 +658,21 @@ mod tests {
         let (lit, shade) = (at(36, 36), at(62, 62));
         assert!(brightness(lit) > brightness(shade) + 60, "{lit:?} vs {shade:?}");
         assert_ne!(at(0, 0), lit);
+
+        // A character's rig turns the split: its key from the lower right.
+        let mut lighting = CharacterLighting::unstyled(DirectionalLight::default());
+        lighting.key.direction = Vec3::new(-0.7, 0.7, 0.1);
+        let rigged = render_preview(&tod.frame().look, Some(&lighting));
+        let at = |x: usize, y: usize| rigged.pixels[y * PREVIEW_SIZE + x];
+        assert!(brightness(at(62, 62)) > brightness(at(36, 36)) + 60, "lit from the lower right");
+    }
+
+    #[test]
+    fn the_preview_clamp_matches_the_shaders() {
+        let orange = Vec3::new(0.8, 0.2, 0.1);
+        assert_eq!(hsv_clamp(orange, 1.0, f32::INFINITY), orange, "within: unchanged");
+        let held = hsv_clamp(orange, 0.5, 0.4);
+        let expected = Vec3::new(0.4, 0.4 - 0.3 * 0.5 / 0.875, 0.4 - 0.35 * 0.5 / 0.875);
+        assert!(held.abs_diff_eq(expected, 1e-6), "{held}");
     }
 }

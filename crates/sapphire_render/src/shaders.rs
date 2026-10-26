@@ -42,6 +42,7 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
+    use crate::characters::{GpuCharacter, GpuRig};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
@@ -214,6 +215,8 @@ mod tests {
             ("sky", SKY, "FogCardParams", size_of::<FogCardParams>()),
             ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
             ("anime_character", ANIME_CHARACTER, "LocalLight", size_of::<GpuLight>()),
+            ("anime_character", ANIME_CHARACTER, "CharacterData", size_of::<GpuCharacter>()),
+            ("anime_character", ANIME_CHARACTER, "CharacterRig", size_of::<GpuRig>()),
             ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
             ("prepass", PREPASS, "InstanceData", size_of::<InstanceData>()),
             ("prepass", PREPASS, "ViewUniforms", size_of::<ViewUniforms>()),
@@ -295,6 +298,55 @@ mod tests {
         ];
         let module = validate("anime_character", ANIME_CHARACTER);
         for (name, rust) in blocks {
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no WGSL struct {name}"));
+            let naga::TypeInner::Struct { members, .. } = &ty.inner else { panic!("{name} is a struct") };
+            let wgsl: Vec<(&str, usize)> = members
+                .iter()
+                .map(|member| (member.name.as_deref().unwrap_or_default(), member.offset as usize))
+                .collect();
+            assert_eq!(wgsl, rust, "{name}: WGSL vs Rust fields");
+        }
+    }
+
+    /// The per-frame structs are uploaded byte for byte too: every field where the WGSL struct
+    /// reads it.
+    #[test]
+    fn frame_structs_match_wgsl_field_by_field() {
+        let structs = [
+            (
+                "FrameUniforms",
+                offsets!(FrameUniforms {
+                    sun_direction,
+                    sun_radiance,
+                    sky_zenith,
+                    sky_horizon,
+                    sky_ground,
+                    time,
+                    lights,
+                    clusters,
+                    day_night,
+                    ambient_sky,
+                    ambient_ground,
+                }),
+            ),
+            (
+                "InstanceData",
+                offsets!(InstanceData {
+                    world_from_object,
+                    normal_from_object,
+                    previous_world_from_object,
+                    character,
+                }),
+            ),
+            ("CharacterData", offsets!(GpuCharacter { rig })),
+            ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
+        ];
+        let module = validate("anime_character", ANIME_CHARACTER);
+        for (name, rust) in structs {
             let (_, ty) = module
                 .types
                 .iter()

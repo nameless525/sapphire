@@ -1,7 +1,7 @@
 //! The renderer: compute skinning, the prepasses, a main pass into HDR scene color (anime
 //! character surfaces and outlines per static permutation, the sky, then transparent
-//! surfaces), lit by the sun and the frame's local lights, then post-processing into the
-//! target.
+//! surfaces), lit by each character's light rig (or the sun) and the frame's local lights, then
+//! post-processing into the target.
 
 use std::num::NonZeroU64;
 
@@ -14,6 +14,7 @@ use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
+use crate::characters::Characters;
 use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
@@ -188,6 +189,12 @@ pub struct RenderStats {
     pub lut_bakes: u32,
     /// Local lights and their lists in the last prepared frame.
     pub lights: LightStats,
+    /// Instances the last prepared frame with a view lit with their own light rigs
+    /// ([`FramePacket::characters`]); one listed twice counts once.
+    pub characters: u32,
+    /// Entries of [`FramePacket::characters`] that frame ignored: for instances it doesn't draw,
+    /// or with lighting that isn't valid.
+    pub ignored_characters: u32,
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
     pub scene_size: (u32, u32),
@@ -248,6 +255,8 @@ pub struct Renderer {
     view_bind_group: wgpu::BindGroup,
     /// The frame's local lights, their lists and the cluster pass.
     lights: Lights,
+    /// The frame's characters and their light rigs.
+    characters: Characters,
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
@@ -322,7 +331,9 @@ impl Renderer {
         // a stride of `min_uniform_buffer_offset_alignment` and binds each by offset.
         let view_uniforms = uniform("view uniforms", size_of::<ViewUniforms>());
         let lights = Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache());
-        let frame_bind_group = create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights);
+        let characters = Characters::new(&device);
+        let frame_bind_group =
+            create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights, &characters);
         let view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &layouts.view,
@@ -362,6 +373,7 @@ impl Renderer {
             view_uniforms,
             view_bind_group,
             lights,
+            characters,
             meshes,
             materials,
             scene,
@@ -516,9 +528,9 @@ impl Renderer {
 
     /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
     /// (rebuilding the draw list only if the drawn set changed), keeps its poses for skinning,
-    /// culls and lists the local lights, computes the frame constants, sizes the buffers and
-    /// bakes any grading LUT the packet's post parameters changed. [`Self::record`] then
-    /// uploads what changed, skins and draws.
+    /// culls and lists the local lights, points the characters at their light rigs, computes
+    /// the frame constants, sizes the buffers and bakes any grading LUT the packet's post
+    /// parameters changed. [`Self::record`] then uploads what changed, skins and draws.
     ///
     /// Every packet must be prepared, in order, including frames that draw nothing (no target,
     /// so no [`Self::record`]): a skipped packet would lose its deltas. Debug builds check the
@@ -549,9 +561,16 @@ impl Renderer {
         }
         self.materials.prepare();
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
-        if self.lights.prepare(device, queue, packet, self.scene.slots()) {
-            self.frame_bind_group =
-                create_frame_bind_group(device, &self.layouts.frame, &self.frame_uniforms, &self.lights);
+        let lists_replaced = self.lights.prepare(device, queue, packet, self.scene.slots());
+        let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
+        if lists_replaced || characters_replaced {
+            self.frame_bind_group = create_frame_bind_group(
+                device,
+                &self.layouts.frame,
+                &self.frame_uniforms,
+                &self.lights,
+                &self.characters,
+            );
         }
 
         // Without a main view the frame has nothing to draw.
@@ -570,6 +589,8 @@ impl Renderer {
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
         self.stats.lights = self.lights.stats();
+        self.stats.characters = self.characters.lit();
+        self.stats.ignored_characters = self.characters.ignored();
         self.stats.skinning = self.skinning.stats();
         self.stats.material_uploads = self.materials.pending();
         self.update_pool_stats();
@@ -664,6 +685,7 @@ impl Renderer {
             ref view_uniforms,
             ref view_bind_group,
             ref mut lights,
+            ref mut characters,
             ref meshes,
             ref mut materials,
             ref mut scene,
@@ -676,6 +698,7 @@ impl Renderer {
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
         let (light_uploads, cluster_pass) = lights.split_for_record();
+        let character_uploads = characters.upload();
         let skinning_frame = skinning.frame();
         let mesh_draws = MeshDraws {
             meshes,
@@ -697,6 +720,7 @@ impl Renderer {
             scene_uploads.write(uploads, ctx.encoder);
             material_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
+            character_uploads.write(uploads, ctx.encoder);
             if let Some(skinning) = &skinning_frame {
                 skinning.upload(uploads, ctx.encoder);
             }
@@ -896,6 +920,7 @@ impl Renderer {
             + self.materials.growths()
             + self.scene.growths()
             + self.lights.growths()
+            + self.characters.growths()
             + self.skinning.growths();
     }
 }
@@ -979,6 +1004,7 @@ fn create_frame_bind_group(
     layout: &wgpu::BindGroupLayout,
     frame_uniforms: &wgpu::Buffer,
     lights: &Lights,
+    characters: &Characters,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
@@ -987,6 +1013,7 @@ fn create_frame_bind_group(
             wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: lights.light_buffer().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: lights.list_buffer().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: characters.buffer().as_entire_binding() },
         ],
     })
 }

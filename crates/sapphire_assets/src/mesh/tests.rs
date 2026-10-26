@@ -156,7 +156,7 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 4 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 5 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;

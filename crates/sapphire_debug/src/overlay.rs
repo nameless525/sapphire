@@ -7,9 +7,9 @@ use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_input::DeviceKind;
 use sapphire_platform::{Event, Scancode, Timestamp, TouchEvent, TouchPhase};
-use sapphire_render::RenderStats;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
+use sapphire_render::{CharacterInstance, RenderStats};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
 use sapphire_world::tod::TimeOfDay;
@@ -66,6 +66,9 @@ pub struct OverlayFrame<'a> {
     pub world_clock: &'a ScaledClock,
     /// The world's time of day, if the app runs one: the time-of-day panel's.
     pub time_of_day: Option<&'a TimeOfDay>,
+    /// This frame's characters with their resolved light rigs (M1 C2), as the frame packet
+    /// carries them: the time-of-day panel shows them and previews the first.
+    pub characters: &'a [CharacterInstance],
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
 }

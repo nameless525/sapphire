@@ -6,8 +6,10 @@
 //! - The extract boundary's data (§4.6): the plain-data [`FramePacket`] and the
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
-//!   resolved scene constants (key light, sky, post, and the ambient, fog, shadow tint,
-//!   character key light and day/night factor its later packages read).
+//!   resolved scene constants (key light, sky, ambient, day/night factor and post, and the fog
+//!   and shadow tint its later packages read), and the character light rig
+//!   (`sapphire_world::light_rig`, M1 C2) only as each character's resolved
+//!   [`CharacterLighting`].
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
 //!   material buffers, and instance and draw-record buffers kept across frames and updated from
@@ -29,8 +31,11 @@
 //!   view and capped, then listed for the anime character shader by clustered forward+ (a
 //!   16 × 9 × 24 grid binned by a compute pass, desktop) or per-object lists (at most 4 per
 //!   instance, chosen on the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths
-//!   run on every backend. The anime character shader lights by each local light in the sun's
-//!   two-tone model.
+//!   run on every backend. The anime character shader lights by each local light in the key
+//!   light's two-tone model.
+//! - Characters' light rigs on the GPU (`characters`, M1 C2): each frame's
+//!   [`CharacterInstance`]s, one entry per character in a per-frame buffer that the anime
+//!   character shader finds through the instance (see "The anime character shader" below).
 //! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`].
@@ -180,11 +185,12 @@
 //!
 //! | Group | Binding | Stages | Contents | Written |
 //! |---|---|---|---|---|
-//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night | `prepare` |
+//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, 80 bytes each | the uploads pass, when they changed |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
-//! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn), by slot | `prepare`, changed instances only, and once more when they come to rest |
+//! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot | the uploads pass, changed slots only |
 //! | 3 material | 0–7: textures | fragment | one material's texture slots, white 1×1 where unbound | material upload or update |
 //! | 3 material | 8, 9: samplers | fragment | trilinear repeating; linear clamped for ramps | — |
@@ -207,10 +213,14 @@
 //! read-write: the same buffers) and the view group as group 1.
 //!
 //! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
-//! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 3 (materials, lights, light
-//! lists), compute 2 in the cluster pass (lights, cluster lists) and 3 in the skinning pass
-//! (sources, frame data, outputs). That leaves one spare in the fragment stage, two in the vertex
-//! stage and one in the skinning pass. Group 3 is the last of the 4 bind groups the floor allows;
+//! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 4 (materials, lights, light
+//! lists, characters), compute 2 in the cluster pass (lights, cluster lists) and 3 in the
+//! skinning pass (sources, frame data, outputs). That leaves none in the fragment stage, two in
+//! the vertex stage and one in the skinning pass. The fragment stage's last went to per-character
+//! data (M1 C2) because every later per-character need joins it rather than taking a binding:
+//! faces' head basis and expressions (C3), the per-character shadow's matrices (R4), outlines lit
+//! by the rig (C4). Frame-wide data that is not per character goes into uniforms or textures
+//! (shadow cascades, probes). Group 3 is the last of the 4 bind groups the floor allows;
 //! the prepasses, which read no material textures, leave it out. The anime character family
 //! binds 7 of the 16 sampled textures and 3 of the 16 samplers a fragment stage gets (trilinear,
 //! ramp, and nearest for material IDs), leaving 9 textures for frame-wide ones (shadow cascades,
@@ -241,12 +251,28 @@
 //!   (only for materials with one), the sky, then transparent surfaces blended over it. Draws
 //!   are grouped by permutation; transparent ones keep the draw list's order.
 //! - **The frame** gives the day/night factor ramp mode blends day and night rows by
-//!   ([`FramePacket::day_night`], from time of day).
+//!   ([`FramePacket::day_night`], from time of day), and the ambient light the GI reads
+//!   ([`FramePacket::ambient`], a sky-and-ground hemisphere: `ambient_light` in `frame.wgsl`).
+//! - **The character light rig (M1 C2)** lights each character in place of the world's sun and
+//!   plain ambient: its own key light (the light split, the shadow side's tone and the rim) and
+//!   stylized GI, resolved per character by the world and carried by the packet
+//!   ([`FramePacket::characters`]). The fragment shader reads the instance's entry of the
+//!   per-character buffer (group 0 binding 3; the `characters` module) once, through the
+//!   `character` index the vertex stage passes on flat from the instance data, and every
+//!   key-light term takes the key from there. Instances the packet doesn't list read entry 0:
+//!   the world's key light ([`FramePacket::sun`]) with unstyled GI. The GI is the ambient
+//!   hemisphere at a normal turned toward a sphere around the head (where the rig gives one) by
+//!   the region's sphere weight and bent toward the camera, HSV-clamped, tinted on skin by the
+//!   region's skin weight, and occluded by vertex AO ([`CharacterGi`]). Local lights keep their
+//!   own directions and take the rig's luminance ceiling.
 //! - **The vertex contract** is `sapphire_assets::mesh`'s: vertex color R ambient occlusion, G
 //!   outline-width scale, B outline Z-offset scale, and a flags byte whose low bits are the
 //!   vertex's material ID.
 //! - **Cast shadows** enter through one function, `cast_shadow`, which R4's cascades fill; it
-//!   returns 1 (lit) until then.
+//!   returns 1 (lit) until then. Its contract with the light rig: it returns how much of the
+//!   world's key light (the sun or the moon) reaches the point past environment casters alone,
+//!   never the character's own geometry (characters don't self-shadow), however the rig turns
+//!   the character's key; the split takes it as it takes vertex AO.
 //!
 //! # Material buffers
 //!
@@ -279,9 +305,9 @@
 //!   hull's velocity (C4); jitter-free velocity once TAA jitters the projection (R7); and, when
 //!   TAA turns MSAA off, letting the main pass reuse the scene prepass's depth.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
-//!   layers, the character rig's ceiling and rim, local-light shadows, and two-level culling for
-//!   hundreds of lights. Mesh bounds move from the per-object light lists into the mesh records
-//!   once CPU culling needs them too.
+//!   layers (VFX lights kept off faces), a rim from the strongest local light (C5), local-light
+//!   shadows, and two-level culling for hundreds of lights. Mesh bounds move from the
+//!   per-object light lists into the mesh records once CPU culling needs them too.
 //! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
 //!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
 //!   then draws use LOD0.
@@ -294,8 +320,8 @@
 //! - **Material families' shaders:** sky (W2), fog cards (W3), environment (W4) and foliage
 //!   (W6) bring pipelines that bind their family's buffer (in a scene group of their own) and
 //!   group 3.
-//! - **The anime character shader** (see above) grows faces (C3), the character light rig and
-//!   stylized GI (C2), hair and eyes (C5, C6) with their permutation bits, and specular,
+//! - **The anime character shader** (see above) grows faces (C3), hair and eyes (C5, C6) with
+//!   their permutation bits, and specular,
 //!   matcaps and stockings (C7) over the control map channels it already reads. Shadows (R4)
 //!   fill `cast_shadow`. Outlines v2 (C4) take each pixel's region from the control map as the
 //!   surface does (today the vertex's), add the authored width curve and view-space flattening,
@@ -309,6 +335,7 @@
 //!   anisotropic filtering joins the quality tiers.
 
 mod buffer;
+mod characters;
 mod draw;
 mod frame;
 mod gpu_types;
@@ -326,9 +353,9 @@ mod skinning;
 pub mod texture;
 
 pub use frame::{
-    AmbientLight, CameraData, Celestial, CharacterLight, DirectionalLight, Fog, FogLayer, FramePacket,
-    FramePacketRing, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
-    SkinnedInstance, SkyGradient, ViewData,
+    AmbientLight, CameraData, Celestial, CharacterGi, CharacterInstance, CharacterLight, CharacterLighting,
+    DirectionalLight, Fog, FogLayer, FramePacket, FramePacketRing, HeightFog, InstanceDeltas, InstanceId,
+    LightKind, LocalLight, MeshInstance, PacketRange, SkinnedInstance, SkyGradient, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;

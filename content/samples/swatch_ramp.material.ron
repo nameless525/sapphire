@@ -28,6 +28,10 @@
                 rim_color: (1.0, 1.0, 1.0),
                 outline_color: (0.32, 0.12, 0.12),
                 outline_width: 1.0,
+                gi: (
+                    sphere: 0.0,
+                    skin: 0.0,
+                ),
             ),
             (
                 shade_color: (0.55, 0.5, 0.65),
@@ -40,6 +44,10 @@
                 rim_color: (1.0, 1.0, 1.0),
                 outline_color: (0.06, 0.06, 0.18),
                 outline_width: 1.0,
+                gi: (
+                    sphere: 0.0,
+                    skin: 0.0,
+                ),
             ),
             (
                 shade_color: (0.55, 0.5, 0.65),
@@ -52,6 +60,10 @@
                 rim_color: (1.0, 1.0, 1.0),
                 outline_color: (0.05, 0.16, 0.11),
                 outline_width: 1.0,
+                gi: (
+                    sphere: 0.0,
+                    skin: 0.0,
+                ),
             ),
             (
                 shade_color: (0.55, 0.5, 0.65),
@@ -64,6 +76,10 @@
                 rim_color: (1.0, 1.0, 1.0),
                 outline_color: (0.22, 0.06, 0.24),
                 outline_width: 1.0,
+                gi: (
+                    sphere: 0.0,
+                    skin: 0.0,
+                ),
             ),
         ],
         rim: (

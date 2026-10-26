@@ -152,7 +152,9 @@ pub(crate) fn show(
     panel("Time of day", &mut panels.day, at(440.0, 180.0), safe)
         .default_width(560.0)
         .resizable(false)
-        .show(ctx, |ui| time_of_day::panel(ui, day_panel, day, view.frame.time_of_day));
+        .show(ctx, |ui| {
+            time_of_day::panel(ui, day_panel, day, view.frame.time_of_day, view.frame.characters)
+        });
     panel("Cvars", &mut panels.cvars, right(380.0, (safe.height() - 250.0).max(44.0)), safe)
         .default_width(380.0)
         .show(ctx, |ui| cvars(ui, view.frame.cvars));
@@ -348,6 +350,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             format!("per object, up to {} each, {} chosen again", lights.list_capacity, lights.object_lists)
         };
         row(ui, "Light lists", lists);
+        row(
+            ui,
+            "Character rigs",
+            format!("{} characters lit, {} ignored", render.characters, render.ignored_characters),
+        );
         let graph = frame.graph.stats();
         row(
             ui,

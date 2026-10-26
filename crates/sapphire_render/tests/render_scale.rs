@@ -11,14 +11,15 @@ use sapphire_assets::mesh::{
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, GraphReport};
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle,
-    MeshInstance, Msaa, PostParams, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
-    scaled_size,
+    AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId,
+    MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData,
+    Vignette, scaled_size,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-/// Linear 0.5 grey under the test light (the unit sun plus 12% sky ambient), like the sky.
+/// Linear 0.5 grey under the test light (the unit sun plus 12% of the grey as ambient), like
+/// the sky.
 const GREY: [f32; 3] = [0.5 / 1.06; 3];
 
 fn gpu() -> GpuContext {
@@ -158,6 +159,7 @@ impl Scene {
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
         packet.sky =
             SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };
+        packet.ambient = AmbientLight { sky: Vec3::splat(0.5), ground: Vec3::splat(0.5), intensity: 0.12 };
         packet.post = self.post;
         if !std::mem::replace(&mut self.added, true) {
             packet.instances.changed.push(MeshInstance {

@@ -1,0 +1,68 @@
+// Sapphire's character light rig presets (M1 C2), compiled into `sapphire_world`:
+// `LightRigLibrary::default_rigs`, whose module docs say how a preset resolves. Packs (A4) will
+// carry presets as content.
+//
+// - Every field a preset leaves out is neutral: the world's key light with no limits, time of
+//   day's character key as it is, and unstyled GI.
+// - Angles are degrees. Azimuth is around the vertical axis through the character's head, from
+//   the camera's side (0° lights the character from where the camera is, positive from the
+//   camera's right, ±180° from behind); elevation is above the horizon.
+// - Time of day sets the key's color and brightness (its `character` group): these scale it.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::LightRigLibrary",
+    version: 1,
+    data: (
+        rigs: [
+            (
+                // The default, for play: the key follows the sun and the moon, held within limits
+                // that keep faces readable. In the default day only the low sun around sunrise
+                // and sunset reaches the floor, and only a camera looking toward the sun the
+                // side limit.
+                name: "gameplay",
+                rig: (
+                    key: (
+                        // Never grazing the horizon, so the split never runs flat along a face;
+                        // never from straight above, which would put eyes under the bangs' shadow.
+                        min_elevation: 5.0,
+                        max_elevation: 65.0,
+                        // A sun further round than this, behind the character, folds back
+                        // toward the camera's side of the head (reaching it when directly
+                        // behind), so a face keeps a lit side and the key never jumps sides.
+                        max_azimuth: 120.0,
+                    ),
+                    gi: (
+                        // Flattened toward the camera: ambient light without the scene's
+                        // noise, as WuWa's character GI.
+                        camera_bias: 0.3,
+                        // Held under a pastel saturation and a value well under the key's, so
+                        // a deep blue night or a bright bounce never stains or blows out skin.
+                        max_saturation: 0.6,
+                        max_value: Some(0.5),
+                        // Skin's ambient warmed, so its shadow side never reads grey or cold.
+                        skin_tint: (1.12, 0.96, 0.86),
+                    ),
+                ),
+            ),
+            (
+                // Dialogue, menus and photo shots: a key held to the camera's upper left
+                // wherever the sun is, and flatter GI.
+                name: "portrait",
+                rig: (
+                    key: (
+                        camera_follow: 1.0,
+                        camera_direction: (azimuth: -35.0, elevation: 30.0),
+                    ),
+                    gi: (
+                        camera_bias: 0.6,
+                        max_saturation: 0.5,
+                        max_value: Some(0.5),
+                        skin_tint: (1.12, 0.96, 0.86),
+                    ),
+                    rim: 0.8,
+                    local_light_ceiling: 1.5,
+                ),
+            ),
+        ],
+    ),
+)

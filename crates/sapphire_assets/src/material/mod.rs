@@ -97,7 +97,7 @@ use serde::de::DeserializeOwned;
 pub use self::character::{
     AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterRegion,
     CharacterSurface, DiffuseMode, EyeShading, FaceShading, HairHighlight, HairShading, HighlightStyle,
-    LightSplit, Matcap, Outline, RampDiffuse, Rim, Specular, SpecularModel,
+    LightSplit, Matcap, Outline, RampDiffuse, RegionGi, Rim, Specular, SpecularModel,
 };
 pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};
 use self::common::{GpuBlock, bound_bits, pack_swizzles};
@@ -324,11 +324,12 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 1: M1 A3's blocks. Bump it whenever a family's block layout or its packing
-    /// (`gpu_params`) changes: the cache key holds it, so every material recooks, and meshes,
-    /// whose generated materials embed blocks, must bump `Mesh::VERSION` with it (a compile-time
-    /// check in `mesh` pairs the two).
-    const VERSION: u32 = 1;
+    /// 2: anime character regions pack the character light rig's GI weights (M1 C2) into their
+    /// subsurface and rim vectors' fourth components. 1: M1 A3's blocks. Bump it whenever a
+    /// family's block layout or its packing (`gpu_params`) changes: the cache key holds it, so
+    /// every material recooks, and meshes, whose generated materials embed blocks, must bump
+    /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
+    const VERSION: u32 = 2;
 }
 
 /// What one texture slot binds.

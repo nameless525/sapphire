@@ -8,6 +8,7 @@ use sapphire_assets::material::{AnimeCharacterParams, MaterialFamily, MaterialFl
 use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
+use crate::characters::GpuCharacter;
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shaders;
@@ -283,7 +284,7 @@ pub(crate) mod override_constant {
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
 #[derive(Debug)]
 pub(crate) struct Layouts {
-    /// Group 0: frame constants, local lights and their lists.
+    /// Group 0: frame constants, local lights and their lists, and the characters' light rigs.
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
@@ -319,6 +320,7 @@ impl Layouts {
                     buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>()),
                     buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
                     buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
+                    buffer(3, S::FRAGMENT, storage, false, size_of::<GpuCharacter>()),
                 ],
             ),
             view: layout(

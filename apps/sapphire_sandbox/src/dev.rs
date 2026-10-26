@@ -158,6 +158,7 @@ impl DevTools {
             cvars: &self.cvars,
             world_clock: frame.scene.world_clock(),
             time_of_day: Some(frame.scene.time_of_day()),
+            characters: frame.scene.characters(),
             assets: Some(frame.assets),
         })
     }

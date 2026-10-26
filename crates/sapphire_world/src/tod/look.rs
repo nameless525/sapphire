@@ -5,8 +5,8 @@ use sapphire_math::Vec3;
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
 use sapphire_render::{
-    AmbientLight, BloomParams, Celestial, CharacterLight, ColorGrade, DirectionalLight, Fog, FogLayer,
-    FramePacket, HeightFog, PostParams, SkyGradient, Vignette,
+    AmbientLight, BloomParams, Celestial, CharacterGi, CharacterLight, CharacterLighting, ColorGrade,
+    DirectionalLight, Fog, FogLayer, FramePacket, HeightFog, PostParams, SkyGradient, Vignette,
 };
 
 use super::key::{
@@ -310,6 +310,30 @@ impl Mix for CharacterLight {
     }
 }
 
+/// A character's lighting (M1 C2), as a shot's light rig blends over the character's own: the
+/// key's direction along the great circle, colors in OkLab, scalars linearly, and the value
+/// ceiling through its reciprocal, so no ceiling (infinite) blends smoothly into one (a ceiling
+/// under 10⁻⁶ blends as 10⁻⁶).
+impl Mix for CharacterLighting {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        let (a, b) = (&self.gi, &other.gi);
+        let reciprocal = |value: f32| 1.0 / value.max(1e-6);
+        Self {
+            key: self.key.mix(&other.key, t),
+            rim: lerp(self.rim, other.rim, t),
+            local_light_ceiling: lerp(self.local_light_ceiling, other.local_light_ceiling, t),
+            gi: CharacterGi {
+                head: a.head.zip(b.head).map(|(a, b)| a.lerp(b, t)).or(b.head).or(a.head),
+                intensity: lerp(a.intensity, b.intensity, t),
+                camera_bias: lerp(a.camera_bias, b.camera_bias, t),
+                max_saturation: lerp(a.max_saturation, b.max_saturation, t),
+                max_value: lerp(reciprocal(a.max_value), reciprocal(b.max_value), t).recip(),
+                skin_tint: mix_oklab(a.skin_tint, b.skin_tint, t),
+            },
+        }
+    }
+}
+
 impl Mix for BloomParams {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
@@ -535,6 +559,25 @@ mod tests {
         assert_eq!(up.key_light(), up.sun, "higher up, exactly as keyed");
         let night = TodLook { moon: DirectionalLight { intensity: 0.3, ..moon }, ..look };
         assert_eq!(night.key_light(), night.moon, "the moon alone, while the sun is down");
+    }
+
+    #[test]
+    fn character_lighting_blends_exactly_at_both_ends_and_lifts_no_ceiling_smoothly() {
+        let a = CharacterLighting::unstyled(DirectionalLight::default());
+        let b = CharacterLighting {
+            key: DirectionalLight { direction: Vec3::X, color: Vec3::new(1.0, 0.5, 0.3), intensity: 0.5 },
+            gi: CharacterGi { max_value: 0.4, camera_bias: 0.6, ..CharacterGi::default() },
+            ..a
+        };
+        assert_eq!(mix(&a, &b, 0.0), a);
+        assert_eq!(mix(&a, &b, f32::NAN), a);
+        assert_eq!(mix(&a, &b, 1.0), b);
+        let half = mix(&a, &b, 0.5);
+        assert!(half.key.direction.is_normalized());
+        assert_eq!((half.key.intensity, half.gi.camera_bias), (0.75, 0.3));
+        // No ceiling (infinite) blends through its reciprocal: halfway is twice the ceiling.
+        assert!((half.gi.max_value - 0.8).abs() < 1e-5, "{}", half.gi.max_value);
+        assert!(mix(&a, &b, 0.01).gi.max_value > 30.0, "barely in, barely clamped");
     }
 
     #[test]

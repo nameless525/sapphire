@@ -6,7 +6,7 @@ use std::time::Duration;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use sapphire_ecs::WorldClock;
 use sapphire_math::Vec3;
-use sapphire_render::FramePacket;
+use sapphire_render::{CameraData, CharacterLighting, FramePacket};
 use sapphire_time::{LocalClock, ScaledClock, Stopwatch};
 
 use super::TodError;
@@ -16,6 +16,7 @@ use super::key::TodGroups;
 use super::look::{TodLook, mix};
 use super::timeline::{Segment, TodTimeline};
 use super::volume::{TodVolume, TodVolumeId};
+use crate::light_rig::LightRig;
 
 /// Time of day for one world (an ECS resource): the base [`TodTimeline`], its clock, the zone
 /// volumes in the world and a playing cutscene track, resolved each frame into a [`TodFrame`]
@@ -50,12 +51,39 @@ pub struct TodFrame {
     /// look while the clock keeps running underneath.
     pub hours: f32,
     pub look: TodLook,
+    /// A playing cutscene's light rig, while its weight is above 0.
+    pub shot_rig: Option<ShotRig>,
+}
+
+/// A cutscene's light rig (M1 C2) and the weight it lights characters with: the track's eased
+/// weight, so the shot's rig blends in and out with its time-of-day values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShotRig {
+    pub rig: LightRig,
+    pub weight: f32,
 }
 
 impl TodFrame {
     /// Writes the look into `packet`'s scene constants (see [`TodLook::write`]).
     pub fn write(&self, packet: &mut FramePacket) {
         self.look.write(packet);
+    }
+
+    /// The lighting of a character lit by `rig`, seen by `camera`, with its head at `head`
+    /// (world space): the preset resolved under this frame's key light and character key
+    /// ([`LightRig::resolve`]), with a playing cutscene's rig over it by the track's weight
+    /// (the key's direction along the great circle, colors in OkLab). Allocates nothing.
+    pub fn character_lighting(&self, rig: &LightRig, camera: &CameraData, head: Vec3) -> CharacterLighting {
+        let key_light = self.look.key_light();
+        let character_light = &self.look.character_light;
+        let own = rig.resolve(&key_light, character_light, camera, head);
+        match &self.shot_rig {
+            Some(shot) => {
+                let shot_lighting = shot.rig.resolve(&key_light, character_light, camera, head);
+                mix(&own, &shot_lighting, shot.weight)
+            }
+            None => own,
+        }
     }
 }
 
@@ -90,7 +118,7 @@ impl TimeOfDay {
         check_complete(&timeline)?;
         let clock = TodClock::new(clock, hours);
         let hours = clock.hours(0.0);
-        let frame = TodFrame { hours, look: timeline.evaluate(hours) };
+        let frame = TodFrame { hours, look: timeline.evaluate(hours), shot_rig: None };
         Ok(Self {
             timeline,
             revision: 0,
@@ -196,7 +224,8 @@ impl TimeOfDay {
     /// 2. each zone volume's timeline at the same hour, over it, by the volume's weight at the
     ///    probe, in priority order;
     /// 3. the playing cutscene track, by its weight: a crossfade to steps 1 and 2 at the shot's
-    ///    hour, if it sets one, then its value keys over the result.
+    ///    hour, if it sets one, then its value keys over the result, and its light rig for
+    ///    [`TodFrame::character_lighting`].
     ///
     /// Allocates nothing, and costs under a microsecond (see the [module docs](super)).
     pub fn resolve(&mut self, probe: Vec3, alpha: f32) -> &TodFrame {
@@ -205,6 +234,7 @@ impl TimeOfDay {
         let hours = self.clock.hours(alpha);
         let (mut look, active_volumes) = self.look_at(hours, probe);
         let mut cutscene_weight = 0.0;
+        let mut shot_rig = None;
         if let Some(playback) = &self.cutscene {
             let seconds = (playback.seconds + f64::from(alpha) * self.world_step) as f32;
             let track = &playback.track;
@@ -215,9 +245,10 @@ impl TimeOfDay {
                     look = mix(&look, &shot, cutscene_weight);
                 }
                 track.apply_values(&mut look, seconds, cutscene_weight);
+                shot_rig = track.light_rig().map(|rig| ShotRig { rig: *rig, weight: cutscene_weight });
             }
         }
-        self.frame = TodFrame { hours, look };
+        self.frame = TodFrame { hours, look, shot_rig };
         self.stats = TodStats {
             resolve_time: stopwatch.elapsed(),
             segment: self.timeline.segment(hours),

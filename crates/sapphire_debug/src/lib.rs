@@ -17,7 +17,8 @@
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
 //!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the
-//!   resolved values and a character preview).
+//!   resolved values and a character preview, which shows the first character's light rig, M1
+//!   C2).
 //! - **[`TimeControls`]**: pause, single-step and speed on the world clock's time-scale stack.
 //! - **[`TodControls`]**: scrubbing the hour, pausing the cycle and setting the day's length on
 //!   the world's `sapphire_world::tod::TimeOfDay`.
@@ -29,7 +30,7 @@
 //!   on this crate (the facade of spec §5.20).
 //! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`], time of day
 //!   included (the world's `TimeOfDay`, read-only: the panel changes it through
-//!   [`TodControls`]). The frame
+//!   [`TodControls`]), and the frame packet's characters with their resolved light rigs. The frame
 //!   graph's report and GPU timings are `sapphire_render::graph`'s; the overlay turns them on
 //!   while it shows them, and keeps GPU timing on while the app reads it too
 //!   ([`DebugOverlay::configure_graph`]). Quality tiers are `sapphire_render::quality`'s.

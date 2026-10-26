@@ -1,6 +1,7 @@
 //! The anime character family: characters with authored light response (spec §5.12, M1 plan
 //! pillar 2). The anime character shader (M1 C1's uber-shader) reads its block: ramp and band
-//! diffuse, the control map's regions and bias, and the static permutations of its flags.
+//! diffuse, the control map's regions and bias, each region's share of the character light
+//! rig's stylized GI (M1 C2), and the static permutations of its flags.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -287,6 +288,8 @@ pub struct CharacterRegion {
     pub outline_color: [f32; 3],
     /// Scales the material's outline width.
     pub outline_width: f32,
+    /// How the character rig's stylized GI treats this region.
+    pub gi: RegionGi,
 }
 
 impl Default for CharacterRegion {
@@ -302,8 +305,26 @@ impl Default for CharacterRegion {
             rim_color: [1.0; 3],
             outline_color: [0.08, 0.06, 0.1],
             outline_width: 1.0,
+            gi: RegionGi::default(),
         }
     }
+}
+
+/// A region's share of the character light rig's stylized GI (spec §5.12 "Stylized character
+/// GI", M1 C2): the ambient light characters take is flattened and tinted rather than shaded
+/// like a physical surface's, and these weights say how much of that each region takes. Both
+/// are 0 to 1, and 0 (the default) leaves the region's GI as its normals give it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct RegionGi {
+    /// How far the region's GI normals turn toward those of a sphere around the character's
+    /// head: 1 for faces and hair, whose ambient light then shades like one smooth ball instead
+    /// of following every fold of a nose or strand (WuWa's spherical GI normals).
+    pub sphere: f32,
+    /// How much of the rig's skin tint the region's GI takes: 1 for skin, so its ambient light
+    /// never reads grey or cold on the shadow side.
+    pub skin: f32,
 }
 
 /// The rim light on the silhouette.
@@ -431,11 +452,12 @@ pub struct AnimeCharacterRegion {
     pub shade: [f32; 4],
     /// rgb: deep shade; a: night ramp row.
     pub deep_shade: [f32; 4],
-    /// rgb: the subsurface tint ramp rows mix with; a: 0.
+    /// rgb: the subsurface tint ramp rows mix with; a: the GI's sphere weight
+    /// ([`RegionGi::sphere`]).
     pub subsurface: [f32; 4],
     /// rgb: specular color × intensity; a: size.
     pub specular: [f32; 4],
-    /// rgb: rim tint; a: 0.
+    /// rgb: rim tint; a: the GI's skin weight ([`RegionGi::skin`]).
     pub rim: [f32; 4],
     /// rgb: outline color; a: outline width scale.
     pub outline: [f32; 4],
@@ -566,9 +588,9 @@ impl AnimeCharacterMaterial {
             *gpu = AnimeCharacterRegion {
                 shade: rgb_w(region.shade_color, row(region.ramp_row, Half::Day)),
                 deep_shade: rgb_w(region.deep_shade_color, row(region.night_ramp_row, Half::Night)),
-                subsurface: rgb_w(region.subsurface_color, 0.0),
+                subsurface: rgb_w(region.subsurface_color, region.gi.sphere),
                 specular: rgb_w(region.specular_color, region.specular_size),
-                rim: rgb_w(region.rim_color, 0.0),
+                rim: rgb_w(region.rim_color, region.gi.skin),
                 outline: rgb_w(region.outline_color, region.outline_width),
             };
         }
@@ -621,6 +643,8 @@ impl MaterialDocument for AnimeCharacterMaterial {
             color(&field("rim_color"), &region.rim_color)?;
             color(&field("outline_color"), &region.outline_color)?;
             non_negative(&field("outline_width"), region.outline_width)?;
+            unit(&field("gi.sphere"), region.gi.sphere)?;
+            unit(&field("gi.skin"), region.gi.skin)?;
         }
         unit("rim.width", self.rim.width)?;
         non_negative("rim.strength", self.rim.strength)?;

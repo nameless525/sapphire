@@ -1,6 +1,6 @@
 // Pass 1: anime character surfaces (M1 C1, spec §5.12). One uber-shader: a thresholded light
-// split with authored shadow colors, an N·V rim, a small sky ambient term, and local point and
-// spot lights split the same way.
+// split with authored shadow colors under the character light rig's key light, an N·V rim, the
+// rig's stylized GI, and local point and spot lights split the same way.
 //
 // Materials are the anime character family (`AnimeCharacterParams` in materials.wgsl). Per
 // pixel the shader reads:
@@ -31,24 +31,33 @@
 //   blended by the frame's day/night factor, then mixed with the region's subsurface tint by the
 //   material's ramp mix (WuWa's `_RampInt`; 1 is the ramp alone).
 //
-// Local lights (M1 R5) are lit like the sun's key light: each light splits its own N·L at the
-// same threshold (bias, locks and vertex AO included) into a lit and a shadow tone, the shadow
-// tone being the surface's shadow color, in the light's color × its smooth range window × its
-// spot cone, with a one-pixel edge. Their sum is held under LOCAL_LIGHT_CEILING, so stacked
-// lights tint rather than blow out. Lights come from the frame's light lists (`lights.wgsl`): the
-// pixel's cluster on desktop, its instance's own list on mobile. Local lights add no rim; the
-// rim stays the key light's (C5 revisits it).
+// The character light rig (M1 C2). Each instance reads its entry of the frame's characters
+// (`frame.wgsl`), resolved on the CPU per character: its own key light (an art-directed
+// direction, and time of day's character key for color and brightness), the rim's scale, the
+// local lights' ceiling and the stylized GI's settings. Instances that aren't characters read
+// entry 0, the world's key light with unstyled GI. The fragment shader reads the key light once,
+// as `key_direction` and `key_radiance`, and every key-light term takes it from there.
+//
+// Stylized GI (`character_gi`, WuWa's character GI) stands in for plain ambient light: the
+// frame's ambient hemisphere (time of day's) at a normal turned toward a sphere around the head
+// by the region's sphere weight (faces, hair) and bent toward the camera, so it stays low
+// frequency; then an HSV clamp of its saturation and value, the rig's skin tint by the region's
+// skin weight, and vertex AO.
+//
+// Local lights (M1 R5) are lit like the key light: each light splits its own N·L at the same
+// threshold (bias, locks and vertex AO included) into a lit and a shadow tone, the shadow tone
+// being the surface's shadow color, in the light's color × its smooth range window × its spot
+// cone, with a one-pixel edge. They keep their own directions: the rig's direction constraints
+// are for the key light alone, and a lantern below a face lights it from below. Their sum is
+// held under the rig's ceiling, so stacked lights tint rather than blow out. Lights come from the
+// frame's light lists (`lights.wgsl`): the pixel's cluster on desktop, its instance's own list on
+// mobile. Local lights add no rim; the rim stays the key light's (C5 revisits it).
 //
 // Static permutations (`pipelines::Permutation`) are pipeline-overridable constants, so each
 // variant compiles only its own code: alpha-tested materials discard below their cutoff, and
 // transparent ones write their coverage for blending. Faces (C3), hair (C5) and eyes (C6) add
 // theirs.
 
-// Strength of the hemispherical sky ambient. Kept small so the two tones stay distinct.
-const AMBIENT_STRENGTH: f32 = 0.12;
-// The most luminance local lights add together, in units of a unit sun. The character light
-// rig (C2) makes it a rig parameter.
-const LOCAL_LIGHT_CEILING: f32 = 2.0;
 const LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // The narrowest light split, in N·L: far below a pixel's change on any curved surface.
 const MIN_SPLIT_WIDTH: f32 = 1e-5;
@@ -98,6 +107,8 @@ struct CharacterVaryings {
     @location(5) @interpolate(flat) instance: u32,
     // The vertex's material ID, the region of a material without a control map.
     @location(6) @interpolate(flat) vertex_material_id: u32,
+    // The instance's entry in the frame's characters: its light rig.
+    @location(7) @interpolate(flat) character: u32,
 }
 
 @vertex
@@ -114,6 +125,7 @@ fn vs_anime_character(packed: PackedVertex, draw: DrawRecord) -> CharacterVaryin
     out.material = draw.material;
     out.instance = draw.instance;
     out.vertex_material_id = vertex.flags & VERTEX_MATERIAL_ID_MASK;
+    out.character = instance.character;
     return out;
 }
 
@@ -176,10 +188,12 @@ fn bias_locks(lit: f32, bias: f32) -> f32 {
     return select(shadowed, 1.0, bias >= SHADOW_BIAS_LIT);
 }
 
-// Sun light reaching the point past cast shadows: 1 lit, 0 shadowed. It scales the light
-// split's input as vertex occlusion does, so a cast shadow pushes the point into the authored
-// shadow tones instead of darkening them. Shadows (R4) fill it from the cascades, with
-// characters receiving environment casters only (no self-shadow); until then nothing casts.
+// The world key light (the sun or the moon) reaching the point past cast shadows: 1 lit, 0
+// shadowed. It scales the light split's input as vertex occlusion does, so a cast shadow pushes
+// the point into the authored shadow tones instead of darkening them. Shadows (R4) fill it from
+// the cascades, which hold environment casters only: characters never self-shadow, and the
+// rig's key direction, which may differ from the sun's, shades but never casts. Until then
+// nothing casts.
 fn cast_shadow(in: CharacterVaryings) -> f32 {
     return 1.0;
 }
@@ -246,14 +260,42 @@ fn shade_tint(surface: CharacterSurface, material: u32, x: f32, width: f32) -> v
     return surface.region.shade.rgb;
 }
 
-// N·V rim light: the mobile rim. Desktop gets a depth-difference rim once the prepass exists.
-fn rim_light(surface: CharacterSurface, lit: f32) -> vec3<f32> {
+// N·V rim light in the key light's color, scaled by the rig: the mobile rim. Desktop gets a
+// depth-difference rim once the prepass exists.
+fn rim_light(surface: CharacterSurface, key_radiance: vec3<f32>, rig_scale: f32, lit: f32) -> vec3<f32> {
     let fresnel = 1.0 - saturate(dot(surface.normal, surface.view_dir));
     let mask = light_step(1.0 - surface.rim.x, 0.5 * fwidth(fresnel), fresnel);
     // Mostly on the lit side, so it reads as the key light wrapping around the silhouette.
-    let strength = surface.rim.y * mask * mix(0.25, 1.0, lit);
+    let strength = surface.rim.y * rig_scale * mask * mix(0.25, 1.0, lit);
     let tint = mix(surface.albedo, vec3<f32>(1.0), 0.5) * surface.region.rim.rgb;
-    return frame.sun_radiance.rgb * tint * strength;
+    return key_radiance * tint * strength;
+}
+
+// Stylized character GI (see the top of this file): the light the GI gives the point, which
+// its albedo then takes.
+fn character_gi(surface: CharacterSurface, rig: CharacterRig, position: vec3<f32>) -> vec3<f32> {
+    // Faces and hair shade like one smooth ball around the head, by the region's weight
+    // (`RegionGi::sphere`, in the subsurface vector's spare channel), where the rig knows the head.
+    let sphere = safe_normalize(position - rig.head.xyz);
+    let spherized = safe_normalize(mix(surface.normal, sphere, surface.region.subsurface.a * rig.gi.w));
+    // The whole character leans toward the camera, which flattens it.
+    let normal = safe_normalize(spherized + rig.gi.x * surface.view_dir);
+    let gi = hsv_clamp(ambient_light(normal) * rig.head.w, rig.gi.y, rig.gi.z);
+    // Skin takes the rig's tint by the region's weight (`RegionGi::skin`, in the rim vector's
+    // spare channel), so its shadow side never reads grey.
+    let skin = mix(vec3<f32>(1.0), rig.skin_tint.rgb, surface.region.rim.a);
+    return gi * skin * surface.occlusion;
+}
+
+// `color` with its HSV saturation held to `max_saturation` and its value (the brightest channel)
+// to `max_value`, its hue kept: the channels move toward the value, then all scale down. A color
+// within both comes back exactly.
+fn hsv_clamp(color: vec3<f32>, max_saturation: f32, max_value: f32) -> vec3<f32> {
+    let value = max(max(max(color.r, color.g), color.b), 1e-12);
+    let saturation = 1.0 - min(min(color.r, color.g), color.b) / value;
+    let kept = select(1.0, max_saturation / max(saturation, 1e-6), saturation > max_saturation);
+    let held = mix(vec3<f32>(value), color, kept) * (min(value, max_value) / value);
+    return select(color, held, saturation > max_saturation || value > max_value);
 }
 
 // Screen-space derivatives of the shading point, taken once per pixel in uniform control flow:
@@ -296,9 +338,11 @@ fn pixel_light_list(in: CharacterVaryings) -> u32 {
     return (slice * CLUSTER_TILES_Y + tile.y) * CLUSTER_TILES_X + tile.x;
 }
 
-// Every listed local light, each split and toned like the sun (see the top of this file).
+// Every listed local light, each split and toned like the key light, their sum held under
+// `ceiling` (the rig's) in luminance (see the top of this file).
 fn local_lighting(
     surface: CharacterSurface,
+    ceiling: f32,
     list: u32,
     position: vec3<f32>,
     derivatives: CharacterDerivatives,
@@ -329,8 +373,8 @@ fn local_lighting(
         shaded += radiance * (1.0 - split);
     }
     let luminance = dot(lit + shaded, LUMINANCE);
-    let ceiling = min(1.0, LOCAL_LIGHT_CEILING / max(luminance, 1e-6));
-    return (surface.albedo * lit + surface.shade * shaded) * ceiling;
+    let held = min(1.0, ceiling / max(luminance, 1e-6));
+    return (surface.albedo * lit + surface.shade * shaded) * held;
 }
 
 @fragment
@@ -373,11 +417,16 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     surface.split = materials[material].split.xy;
     surface.rim = materials[material].edges.xy;
 
-    let n_dot_l = dot(surface.normal, frame.sun_direction.xyz);
+    // The key light, from the character's rig: every key-light term reads it here.
+    let rig = characters[in.character].rig;
+    let key_direction = rig.key_direction.xyz;
+    let key_radiance = rig.key_radiance.rgb;
+
+    let n_dot_l = dot(surface.normal, key_direction);
     let x = split_input(n_dot_l, surface.occlusion * cast_shadow(in), surface.shadow_bias);
     let width = max(surface.split.y, 0.5 * fwidth(x));
     let lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
-    let rim = rim_light(surface, lit);
+    let rim = rim_light(surface, key_radiance, rig.key_direction.w, lit);
     // Taken here for the local lights: after the alpha test below, a discarded pixel's
     // neighbours could no longer rely on them.
     var derivatives: CharacterDerivatives;
@@ -392,12 +441,13 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     }
 
     surface.shade = surface.albedo * shade_tint(surface, material, x, width);
-    let diffuse = mix(surface.shade, surface.albedo, lit) * frame.sun_radiance.rgb;
-    let ambient = surface.albedo * sky_color(surface.normal) * AMBIENT_STRENGTH * surface.occlusion;
+    let diffuse = mix(surface.shade, surface.albedo, lit) * key_radiance;
+    let ambient = surface.albedo * character_gi(surface, rig, in.world_position);
     var color = diffuse + ambient + rim;
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
-        color += local_lighting(surface, pixel_light_list(in), in.world_position, derivatives);
+        let list = pixel_light_list(in);
+        color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, derivatives);
     }
     // Opaque passes keep alpha 1 for the character bloom mask (C7); transparent ones blend by
     // their coverage.

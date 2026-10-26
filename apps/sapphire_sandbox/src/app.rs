@@ -125,6 +125,9 @@ impl App for SandboxApp {
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
+        if let Some(rig) = &options.character_rig {
+            scene.set_character_rig(rig).map_err(AppInitError::msg)?;
+        }
         if options.lights {
             scene.spawn_demo_lights();
         }

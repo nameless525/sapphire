@@ -90,7 +90,7 @@ impl RenderExtract {
 }
 
 /// The packet's instance ID for an entity: its bits, unique among live entities.
-fn instance_id(entity: Entity) -> InstanceId {
+pub(crate) fn instance_id(entity: Entity) -> InstanceId {
     InstanceId(entity.to_bits())
 }
 

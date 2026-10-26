@@ -15,7 +15,8 @@
 //!   over the base by its weight at a probe point (smoothly out over a blend distance around its
 //!   sphere or box), lowest priority first.
 //! - **[`TodCutscene`]** (a `TodCutscene` document): one shot's track, setting the time of day,
-//!   overriding values over the shot's seconds, or both, easing in and out.
+//!   overriding values over the shot's seconds, lighting its characters with a light rig of its
+//!   own (M1 C2, [`crate::light_rig`]), or any of these together, easing in and out.
 //!
 //! # Evaluation
 //!
@@ -50,10 +51,12 @@
 //!
 //! # Consumers
 //!
-//! The packet's sky, key light and post-processing are drawn today. The rest is carried for the
-//! packages that read it: the sun and moon discs (W2), fog (W3), ambient (W4, W5), the shadow
-//! tint (R4, W4), the character key light (C2) and the day/night factor (C1's ramp rows, in the
-//! frame uniforms as `day_night`).
+//! The packet's sky, key light, ambient light and post-processing are drawn today, the ambient
+//! through the character light rig's GI (C2), as is the character key light, which reaches
+//! characters through their rigs ([`TodFrame::character_lighting`], [`crate::light_rig`]). The
+//! day/night factor is C1's ramp blend (the frame uniforms' `day_night`). The rest is carried for
+//! the packages that read it: the sun and moon discs (W2), fog (W3), ambient on the environment
+//! (W4, W5) and the shadow tint (R4, W4).
 //!
 //! # Later milestones
 //!
@@ -89,7 +92,7 @@ pub use key::{
     SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
 };
 pub use look::{GradeMix, TodLook};
-pub use time_of_day::{TimeOfDay, TodFrame, TodStats, tick_time_of_day};
+pub use time_of_day::{ShotRig, TimeOfDay, TodFrame, TodStats, tick_time_of_day};
 pub use timeline::{DAY_HOURS, Segment, TodTimeline};
 pub use volume::{TodVolume, TodVolumeId, VolumeShape};
 
@@ -110,4 +113,6 @@ pub enum TodError {
     Incomplete(TodGroup),
     #[error("cutscene: `{field}` {problem}")]
     Cutscene { field: &'static str, problem: &'static str },
+    #[error("cutscene: `light_rig.{field}` {problem}")]
+    CutsceneRig { field: &'static str, problem: &'static str },
 }

@@ -93,6 +93,9 @@ impl Stage {
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
         scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
+        if let Some(rig) = &options.character_rig {
+            scene.set_character_rig(rig).map_err(AppInitError::msg)?;
+        }
         if options.lights {
             scene.spawn_demo_lights();
         }

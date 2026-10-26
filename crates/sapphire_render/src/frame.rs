@@ -12,6 +12,9 @@
 //!   (`sapphire_world::tod`, M1 W1; look pillar 1); the renderer sees only the values.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
+//! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
+//!   instance its character light rig ([`CharacterLighting`], M1 C2), resolved by the world for
+//!   this frame's camera and time of day, which changes whenever either moves.
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
 //!   packet carries only the instances added, changed or removed since the previous one. The
 //!   renderer must therefore see every packet, in order (see [`crate::Renderer::prepare`]).
@@ -45,9 +48,8 @@ const RING_SIZE: usize = 3;
 /// camera.
 ///
 /// Some scene constants are carried for the packages that will read them and drawn from
-/// nothing yet: [`Self::celestial`] (the sky's sun and moon, W2), [`Self::ambient`] (W4, W5,
-/// C2), [`Self::fog`] (W3), [`Self::shadow_tint`] (R4, W4, C2) and [`Self::character_light`]
-/// (C2). Each type's docs name its readers.
+/// nothing yet: [`Self::celestial`] (the sky's sun and moon, W2), [`Self::fog`] (W3) and
+/// [`Self::shadow_tint`] (R4, W4). Each type's docs name its readers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
@@ -66,8 +68,12 @@ pub struct FramePacket {
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
     /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
-    /// by shadows (R4), the environment shader (W4) and the character rig (C2).
+    /// by shadows (R4) and the environment shader (W4). Characters in cast shadow take their
+    /// materials' authored shade colors instead (C1).
     pub shadow_tint: Vec3,
+    /// Time of day's curve for the character rig's key light: the world resolves each
+    /// character's [`CharacterLighting`] from it, so the renderer reads it only through
+    /// [`Self::characters`].
     pub character_light: CharacterLight,
     /// 0 by day, 1 at night: the anime character shader's day/night ramp blend (C1; spec §5.12
     /// "Ramps"), and anything else that has a day and a night look. The frame uniforms carry it
@@ -84,6 +90,12 @@ pub struct FramePacket {
     /// [`RenderSettings::max_lights`](crate::RenderSettings::max_lights) allows, it keeps the
     /// nearest; a cluster that more reach than it can list keeps the earliest in this order.
     pub lights: Vec<LocalLight>,
+    /// This frame's characters: the instances the character light rig lights (M1 C2), each with
+    /// its rig resolved for this frame. Instances not listed draw with the world's key light
+    /// and unstyled GI ([`CharacterLighting::unstyled`]); an instance listed twice takes its
+    /// last entry. The renderer ignores, and counts, an entry for an instance it doesn't draw or
+    /// whose lighting isn't valid ([`CharacterLighting::is_valid`]).
+    pub characters: Vec<CharacterInstance>,
     /// Mesh instances added, changed or removed since the previous packet.
     pub instances: InstanceDeltas,
     /// New poses for skinned or morphed instances, applied after [`Self::instances`], so an
@@ -143,6 +155,7 @@ impl FramePacket {
             time_seconds,
             post,
             lights,
+            characters,
             instances,
             skinned,
             palettes,
@@ -161,6 +174,7 @@ impl FramePacket {
         *time_seconds = 0.0;
         *post = PostParams::default();
         lights.clear();
+        characters.clear();
         instances.changed.clear();
         instances.removed.clear();
         skinned.clear();
@@ -351,9 +365,10 @@ impl Default for Celestial {
 /// Low-frequency ambient light (look pillar 4): a hemisphere of sky light from above and bounce
 /// light from below, `color × intensity` in linear RGB.
 ///
-/// Read by the environment shader (W4), the probe grid, as the tint of its per-key bake (W5),
-/// and the character rig's stylized GI (C2). The anime character shader takes its ambient from
-/// the sky gradient until C2.
+/// A surface facing `n` receives `mix(ground, sky, 0.5 + 0.5 n.y) × intensity`, the irradiance
+/// of a sky-and-ground hemisphere (`ambient_light` in `frame.wgsl`). The anime character shader
+/// takes it through the character rig's stylized GI ([`CharacterGi`], C2); the environment
+/// shader (W4) and the probe grid, as the tint of its per-key bake (W5), will read it too.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AmbientLight {
     /// From above.
@@ -364,8 +379,8 @@ pub struct AmbientLight {
 }
 
 impl Default for AmbientLight {
-    /// The default sky's horizon from above and its ground from below, at the strength the
-    /// anime character shader gives its sky ambient.
+    /// The default sky's horizon from above and its ground from below, at 12%: the default
+    /// day's 10:00 ambient (`sapphire_world::tod`).
     fn default() -> Self {
         let sky = SkyGradient::default();
         Self { sky: sky.horizon, ground: sky.ground, intensity: 0.12 }
@@ -416,13 +431,13 @@ pub struct HeightFog {
     pub base: f32,
 }
 
-/// The character rig's key light (spec §5.12 "Character light rig"; C2). Characters are lit by
-/// a virtual key light of their own, whose color and brightness time of day curves separately
-/// from the world's (as WuWa fits its character brightness across the day), so they read well
-/// at every hour. Its direction is the key light's ([`FramePacket::sun`]) until C2 adds
-/// per-character offsets and presets.
+/// Time of day's curve for the character rig's key light (spec §5.12 "Character light rig").
+/// Characters are lit by a virtual key light of their own, whose color and brightness time of
+/// day curves separately from the world's (as WuWa fits its character brightness across the
+/// day), so they read well at every hour.
 ///
-/// Read by C2; the anime character shader lights by [`FramePacket::sun`] until then.
+/// The world resolves each character's key from it and the key light's direction, through the
+/// character's rig preset (`sapphire_world::light_rig`, M1 C2), into [`CharacterLighting::key`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterLight {
     /// Linear RGB.
@@ -434,6 +449,108 @@ impl Default for CharacterLight {
     /// White light of intensity 1, as the default key light.
     fn default() -> Self {
         Self { color: Vec3::ONE, intensity: 1.0 }
+    }
+}
+
+/// One character's data for a frame (M1 C2): the character light rig that lights the instance
+/// `id`. A character drawn as several instances (body, hair, a weapon) lists each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterInstance {
+    pub id: InstanceId,
+    pub lighting: CharacterLighting,
+}
+
+/// A character's light rig resolved for one frame (spec §5.12 "Character light rig" and
+/// "Stylized character GI", M1 C2): what the anime character shader lights the character by,
+/// in place of the world's key light and plain ambient. The world resolves it from the
+/// character's preset, time of day and the camera (`sapphire_world::light_rig`); the renderer
+/// only uploads it.
+///
+/// Local lights are not part of it: they keep their own directions, and the rig only caps
+/// their sum ([`Self::local_light_ceiling`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterLighting {
+    /// The character's key light: the direction its light travels (art-directed from the sun or
+    /// moon, or fixed to the camera) and its color and intensity (time of day's
+    /// [`CharacterLight`], scaled by the preset). It replaces [`FramePacket::sun`] for the
+    /// character's light split and rim.
+    pub key: DirectionalLight,
+    /// Scales the materials' rim light, which takes the key light's color.
+    pub rim: f32,
+    /// The most luminance the local lights add together, in units of a unit key light, so
+    /// stacked lights tint a character rather than blow it out (the reference games'
+    /// `_FilterLight`).
+    pub local_light_ceiling: f32,
+    pub gi: CharacterGi,
+}
+
+impl CharacterLighting {
+    /// Lighting by `key` with unstyled GI: the frame's ambient as the surface's normal receives
+    /// it, unclamped and untinted. The renderer lights instances that aren't listed as characters
+    /// with the world's key light this way.
+    pub fn unstyled(key: DirectionalLight) -> Self {
+        Self { key, rim: 1.0, local_light_ceiling: 2.0, gi: CharacterGi::default() }
+    }
+
+    /// Whether every value is one the shader can light with: finite numbers, a key direction
+    /// that isn't zero, and no negative intensity, color, scale or ceiling. The value ceiling may
+    /// be infinite (no clamp).
+    pub fn is_valid(&self) -> bool {
+        let Self { key, rim, local_light_ceiling, gi } = *self;
+        let colors = [key.color, gi.skin_tint];
+        let scalars =
+            [key.intensity, rim, local_light_ceiling, gi.intensity, gi.camera_bias, gi.max_saturation];
+        key.direction.is_finite()
+            && key.direction != Vec3::ZERO
+            && colors.iter().all(|color| color.is_finite() && color.min_element() >= 0.0)
+            && scalars.iter().all(|value| value.is_finite() && *value >= 0.0)
+            && gi.head.is_none_or(Vec3::is_finite)
+            && gi.max_value >= 0.0
+    }
+}
+
+/// A character's stylized GI (spec §5.12 "Stylized character GI", M1 C2): the frame's ambient
+/// light ([`FramePacket::ambient`]) seen through normals flattened toward low frequency, then
+/// clamped and tinted, so characters take the scene's light without its noise and never go
+/// muddy (WuWa's character GI). Per pixel:
+///
+/// 1. The normal turns toward a sphere's around [`Self::head`], if there is one, by the
+///    material region's sphere weight (faces and hair, `RegionGi::sphere` in
+///    `sapphire_assets::material`), then bends toward the camera by [`Self::camera_bias`].
+/// 2. The ambient hemisphere at that normal, times [`Self::intensity`].
+/// 3. An HSV clamp: saturation held to [`Self::max_saturation`] and value (the brightest
+///    channel) to [`Self::max_value`], hue kept.
+/// 4. The skin tint, by the region's skin weight (`RegionGi::skin`), and ambient occlusion
+///    (the vertex color's).
+///
+/// The default changes nothing: the ambient as the normal receives it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterGi {
+    /// The center of the character's head, world space; without one, no region spherizes.
+    pub head: Option<Vec3>,
+    /// Scales the frame's ambient light.
+    pub intensity: f32,
+    /// How far the normal bends toward the camera: the unit view vector times this is added to
+    /// it before renormalizing, so 0 keeps the normal and 1 turns a silhouette's halfway.
+    pub camera_bias: f32,
+    /// Saturation's ceiling, 0 to 1 (1: no clamp).
+    pub max_saturation: f32,
+    /// Value's ceiling, linear light (infinite: no clamp).
+    pub max_value: f32,
+    /// Linear RGB the GI of skin is multiplied by.
+    pub skin_tint: Vec3,
+}
+
+impl Default for CharacterGi {
+    fn default() -> Self {
+        Self {
+            head: None,
+            intensity: 1.0,
+            camera_bias: 0.0,
+            max_saturation: 1.0,
+            max_value: f32::INFINITY,
+            skin_tint: Vec3::ONE,
+        }
     }
 }
 
@@ -481,8 +598,7 @@ pub struct MeshInstance {
     pub transform: Mat4,
 }
 
-/// A three-stop sky gradient in linear RGB. It also drives the anime character shader's
-/// ambient term.
+/// A three-stop sky gradient in linear RGB: the sky pass's colors.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkyGradient {
     pub zenith: Vec3,
@@ -532,6 +648,8 @@ mod tests {
             range: 2.0,
             kind: LightKind::Point,
         });
+        let lighting = CharacterLighting::unstyled(DirectionalLight::default());
+        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -570,6 +688,7 @@ mod tests {
                 packet.views.as_ptr(),
                 packet.views.capacity(),
                 packet.lights.as_ptr(),
+                packet.characters.as_ptr(),
                 packet.instances.changed.as_ptr(),
                 packet.instances.changed.capacity(),
                 packet.instances.removed.as_ptr(),

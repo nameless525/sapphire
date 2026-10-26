@@ -1,9 +1,10 @@
 //! Anime character shader tests that need a GPU (M1 C1): both diffuse modes, the control map,
-//! the normal map, the static permutations and the vertex contract. Run with
+//! the normal map, the static permutations and the vertex contract; and the character light
+//! rig's per-character key light and stylized GI (M1 C2). Run with
 //! `cargo test -p sapphire_render --test character -- --ignored`.
 //!
-//! Most scenes use no ambient light (a black sky), no rim and no outline, so every pixel is the
-//! sun's light on the lit or the shadow side, and colors can be predicted exactly.
+//! Most scenes use no ambient light (and a black sky), no rim and no outline, so every pixel is
+//! the sun's light on the lit or the shadow side, and colors can be predicted exactly.
 
 use std::f32::consts::{PI, TAU};
 
@@ -13,16 +14,17 @@ use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::{MaterialId, ilm};
 use sapphire_assets::material::{
     AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, DiffuseMode, LightSplit, Material,
-    Outline, RampDiffuse, Rim,
+    Outline, RampDiffuse, RegionGi, Rim,
 };
 use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex, VertexFlags};
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat, full_mip_count};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::texture::{GpuTexture, check_format};
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MaterialHandle,
-    MeshHandle, MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient,
-    ToneCurve, ViewData, Vignette,
+    AmbientLight, BloomParams, CameraData, CharacterGi, CharacterInstance, CharacterLighting, ColorGrade,
+    DirectionalLight, FramePacketRing, InstanceId, LightKind, LocalLight, MaterialHandle, MeshHandle,
+    MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData,
+    Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -154,7 +156,12 @@ struct Harness {
     camera: CameraData,
     sun: DirectionalLight,
     sky: SkyGradient,
+    ambient: AmbientLight,
     night: f32,
+    /// Copied into every packet: the instances lit by light rigs of their own.
+    characters: Vec<CharacterInstance>,
+    /// Copied into every packet.
+    lights: Vec<LocalLight>,
     added: Vec<MeshInstance>,
     removed: Vec<InstanceId>,
     next_id: u64,
@@ -189,7 +196,10 @@ impl Harness {
             camera: CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.05),
             sun: DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 },
             sky: SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO },
+            ambient: AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 },
             night: 0.0,
+            characters: Vec::new(),
+            lights: Vec::new(),
             added: Vec::new(),
             removed: Vec::new(),
             next_id: 0,
@@ -270,6 +280,12 @@ impl Harness {
         self.removed.push(id);
     }
 
+    /// Lights instance `id` with `lighting` from the next frame on, in place of the sun.
+    fn light_rig(&mut self, id: InstanceId, lighting: CharacterLighting) {
+        self.characters.retain(|character| character.id != id);
+        self.characters.push(CharacterInstance { id, lighting });
+    }
+
     /// Prepares, records and submits one frame and reads the target back. Fails on any
     /// validation error.
     fn render(&mut self) -> Frame {
@@ -277,8 +293,11 @@ impl Harness {
         packet.views.push(ViewData { camera: self.camera });
         packet.sun = self.sun;
         packet.sky = self.sky;
+        packet.ambient = self.ambient;
         packet.post = passthrough();
         packet.day_night = self.night;
+        packet.characters.extend_from_slice(&self.characters);
+        packet.lights.extend_from_slice(&self.lights);
         packet.instances.changed.append(&mut self.added);
         packet.instances.removed.append(&mut self.removed);
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
@@ -756,6 +775,7 @@ fn alpha_tested_and_transparent_materials() {
     let grey = 0.5;
     harness.sky =
         SkyGradient { zenith: Vec3::splat(grey), horizon: Vec3::splat(grey), ground: Vec3::splat(grey) };
+    harness.ambient = AmbientLight { sky: Vec3::splat(grey), ground: Vec3::splat(grey), intensity: 0.12 };
     // Coverage 0 where the sphere's x is negative (u from 0.25 to 0.75), on its near and far
     // sides alike, and 1 elsewhere.
     let texels: Vec<u8> =
@@ -779,7 +799,7 @@ fn alpha_tested_and_transparent_materials() {
     let mesh = harness.mesh(&sphere(|_| ([255; 3], VertexFlags::NONE)), material);
     harness.add(mesh, Mat4::IDENTITY);
     harness.sun_from(Vec3::Z);
-    // Lit head-on, plus 12% of the grey sky as ambient.
+    // Lit head-on, plus 12% of the grey as ambient.
     let surface = ALBEDO * (1.0 + 0.12 * grey);
     let left = on_sphere(-0.5, 0.0);
     // The left silhouette's outline, just outside the sphere.
@@ -889,6 +909,7 @@ fn vertex_colors_carry_occlusion_outline_width_and_z_offset() {
     let grey = 0.5;
     harness.sky =
         SkyGradient { zenith: Vec3::splat(grey), horizon: Vec3::splat(grey), ground: Vec3::splat(grey) };
+    harness.ambient = AmbientLight { sky: Vec3::splat(grey), ground: Vec3::splat(grey), intensity: 0.12 };
     let outlined = AnimeCharacterMaterial {
         base_color: [grey / 1.06, grey / 1.06, grey / 1.06, 1.0],
         regions: vec![CharacterRegion {
@@ -973,4 +994,288 @@ fn data_slots_refuse_srgb_textures() {
     // Color slots take it.
     let document = AnimeCharacterMaterial { base_color_map: Some(id(BASE)), ..plain() };
     harness.material(&document, &[(BASE, &srgb)]).expect("a color texture");
+}
+
+// --- The character light rig (M1 C2): each character's key light and stylized GI.
+
+/// Lighting by a key light traveling along `direction` with `radiance`, and `gi`.
+fn rig(direction: Vec3, radiance: Vec3, gi: CharacterGi) -> CharacterLighting {
+    CharacterLighting {
+        key: DirectionalLight { direction, color: radiance, intensity: 1.0 },
+        gi,
+        ..CharacterLighting::unstyled(DirectionalLight::default())
+    }
+}
+
+/// No key light: only the GI shows.
+fn gi_only(gi: CharacterGi) -> CharacterLighting {
+    rig(Vec3::NEG_Z, Vec3::ZERO, gi)
+}
+
+/// A plain material whose one region takes `gi`.
+fn gi_material(gi: RegionGi) -> AnimeCharacterMaterial {
+    AnimeCharacterMaterial { regions: vec![CharacterRegion { gi, ..CharacterRegion::default() }], ..plain() }
+}
+
+/// White ambient light from above and none from below: a surface facing `n` receives
+/// `0.5 + 0.5 n.y`.
+fn sky_above() -> AmbientLight {
+    AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 }
+}
+
+/// What [`sky_above`] gives a surface facing `n` (not necessarily unit).
+fn sky_above_at(n: Vec3) -> f32 {
+    0.5 + 0.5 * n.normalize().y
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn each_character_takes_its_own_key_light() {
+    let mut harness = Harness::new(96);
+    harness.frame_unit(0.4);
+    let material = harness.material(&plain(), &[]).unwrap();
+    let mesh = harness.mesh(&plain_square(), material);
+    let at = |x: f32| {
+        Mat4::from_scale_rotation_translation(Vec3::splat(0.8), Default::default(), Vec3::new(x, 0.0, 0.0))
+    };
+    let (left, right) = (Vec3::new(-1.2, 0.0, 0.0), Vec3::new(1.2, 0.0, 0.0));
+    let world = harness.add(mesh, at(left.x));
+    let character = harness.add(mesh, at(right.x));
+    // The world's sun from the front, half strength.
+    harness.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.5 };
+
+    // Unlisted, both are lit by the sun.
+    let frame = harness.render();
+    for point in [left, right] {
+        assert_near(frame.at(point), [0.5 * ALBEDO; 3], "the sun");
+    }
+    // The character's own key: red, from the front. The world's square keeps the sun.
+    let red = Vec3::new(0.9, 0.3, 0.1);
+    harness.light_rig(character, rig(Vec3::NEG_Z, red, CharacterGi::default()));
+    let frame = harness.render();
+    assert_near(frame.at(left), [0.5 * ALBEDO; 3], "unlisted: still the sun");
+    assert_near(frame.at(right), scale(red.to_array(), ALBEDO), "lit by its own key");
+    assert_eq!(harness.renderer.stats().characters, 1);
+    // From behind, the character's key puts it in its authored shade while the sun lights it.
+    harness.light_rig(character, rig(Vec3::Z, red, CharacterGi::default()));
+    let frame = harness.render();
+    let shade = CharacterRegion::default().shade_color;
+    let expected: [f32; 3] = std::array::from_fn(|c| ALBEDO * shade[c] * red[c]);
+    assert_near(frame.at(right), expected, "in the shade of its own key");
+    // A rig for an instance the renderer doesn't draw is ignored, and counted.
+    harness.light_rig(InstanceId(99), rig(Vec3::Z, red, CharacterGi::default()));
+    harness.render();
+    assert_eq!((harness.renderer.stats().characters, harness.renderer.stats().ignored_characters), (1, 1));
+    // Dropped from the list, the character goes back to the sun.
+    harness.characters.clear();
+    let frame = harness.render();
+    assert_near(frame.at(right), [0.5 * ALBEDO; 3], "back to the sun");
+    harness.remove(world);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn the_rim_takes_the_key_lights_color_and_the_rigs_scale() {
+    let mut harness = Harness::new(128);
+    harness.frame_unit(0.8);
+    let rimmed = AnimeCharacterMaterial { rim: Rim { width: 0.3, strength: 0.6 }, ..plain() };
+    let material = harness.material(&rimmed, &[]).unwrap();
+    let mesh = harness.mesh(&sphere(|_| ([255; 3], VertexFlags::NONE)), material);
+    let id = harness.add(mesh, Mat4::IDENTITY);
+    // Lit from the front by a dim key: the rim brightens the lit silhouette.
+    let key = Vec3::splat(0.3);
+    let edge = on_sphere(0.97, 0.0);
+    let center = Vec3::Z;
+    let mut rim_at = |scale: f32| {
+        harness
+            .light_rig(id, CharacterLighting { rim: scale, ..rig(Vec3::NEG_Z, key, CharacterGi::default()) });
+        let frame = harness.render();
+        (frame.at(edge)[0], frame.at(center)[0])
+    };
+    let (none, center_none) = rim_at(0.0);
+    let (full, center_full) = rim_at(1.0);
+    let (double, _) = rim_at(2.0);
+    assert!((center_none - center_full).abs() < 0.01, "no rim at the center");
+    assert!(full > none + 0.02, "the rim shows: {none} then {full}");
+    assert!(((double - none) - 2.0 * (full - none)).abs() < 0.02, "scaled: {none}, {full}, {double}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn gi_normals_turn_toward_the_head_by_the_regions_sphere_weight() {
+    let mut harness = Harness::new(128);
+    harness.frame_unit(0.8);
+    harness.ambient = sky_above();
+    // The head below and behind the square, which faces +Z: spherized, the square's GI normals
+    // tilt up, more toward its top.
+    let head = Vec3::new(0.0, -1.0, -1.0);
+    let points = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.6, 0.0),
+        Vec3::new(0.0, -0.6, 0.0),
+        Vec3::new(0.6, 0.3, 0.0),
+    ];
+    let mut previous = None;
+    for weight in [0.0, 0.5, 1.0] {
+        let material = harness.material(&gi_material(RegionGi { sphere: weight, skin: 0.0 }), &[]).unwrap();
+        let mesh = harness.mesh(&plain_square(), material);
+        let id = harness.add(mesh, Mat4::IDENTITY);
+        if let Some(previous) = previous.replace(id) {
+            harness.remove(previous);
+        }
+        harness.light_rig(id, gi_only(CharacterGi { head: Some(head), ..CharacterGi::default() }));
+        let frame = harness.render();
+        for point in points {
+            let sphere = (point - head).normalize();
+            let normal = (Vec3::Z * (1.0 - weight) + sphere * weight).normalize();
+            let expected = ALBEDO * sky_above_at(normal);
+            assert_near(frame.at(point), [expected; 3], &format!("weight {weight} at {point}"));
+        }
+    }
+    // Without a head (unlisted instances' unstyled GI), the region's weight changes nothing.
+    harness.light_rig(previous.expect("a square"), gi_only(CharacterGi::default()));
+    let frame = harness.render();
+    for point in points {
+        assert_near(frame.at(point), [ALBEDO * 0.5; 3], &format!("no head, at {point}"));
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn gi_normals_bend_toward_the_camera() {
+    let mut harness = Harness::new(128);
+    harness.frame_unit(0.9);
+    harness.ambient = sky_above();
+    let material = harness.material(&plain(), &[]).unwrap();
+    let mesh = harness.mesh(&sphere(|_| ([255; 3], VertexFlags::NONE)), material);
+    let id = harness.add(mesh, Mat4::IDENTITY);
+    let eye = harness.camera.position;
+    for bias in [0.0, 0.5, 1.0] {
+        harness.light_rig(id, gi_only(CharacterGi { camera_bias: bias, ..CharacterGi::default() }));
+        let frame = harness.render();
+        for point in [on_sphere(0.0, -0.7), on_sphere(0.0, 0.7), on_sphere(-0.6, -0.2)] {
+            let view = (eye - point).normalize();
+            let expected = ALBEDO * sky_above_at(point + view * bias);
+            assert_near(frame.at(point), [expected; 3], &format!("bias {bias} at {point}"));
+        }
+    }
+}
+
+/// HSV hue of linear RGB, in sixths of the circle.
+fn hue([r, g, b]: [f32; 3]) -> f32 {
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let chroma = max - min;
+    if max == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn the_gi_clamp_holds_saturation_and_value_and_keeps_the_hue() {
+    let mut harness = Harness::new(64);
+    // A saturated orange ambient from every side.
+    let orange = Vec3::new(0.8, 0.2, 0.1);
+    harness.ambient = AmbientLight { sky: orange, ground: orange, intensity: 1.0 };
+    let material = harness.material(&plain(), &[]).unwrap();
+    let mesh = harness.mesh(&plain_square(), material);
+    let id = harness.add(mesh, Mat4::IDENTITY);
+    // Saturation 0.875 and value 0.8 before the clamp.
+    let cases = [
+        (1.0, f32::INFINITY, [0.8, 0.2, 0.1]),
+        // Saturation to 0.5: the channels move toward the value, hue kept.
+        (0.5, f32::INFINITY, [0.8, 0.8 - 0.6 * 0.5 / 0.875, 0.8 - 0.7 * 0.5 / 0.875]),
+        // Value to 0.4: the whole color halves.
+        (1.0, 0.4, [0.4, 0.1, 0.05]),
+        (0.5, 0.4, [0.4, 0.4 - 0.3 * 0.5 / 0.875, 0.4 - 0.35 * 0.5 / 0.875]),
+    ];
+    for (max_saturation, max_value, gi) in cases {
+        let lighting = gi_only(CharacterGi { max_saturation, max_value, ..CharacterGi::default() });
+        harness.light_rig(id, lighting);
+        let color = harness.render().linear(32, 32);
+        let what = format!("saturation ≤ {max_saturation}, value ≤ {max_value}");
+        assert_near(color, scale(gi, ALBEDO), &what);
+        assert!((hue(color) - hue(orange.to_array())).abs() < 0.05, "{what}: hue {}", hue(color));
+    }
+    // An ambient within both ceilings comes back as it is.
+    let pastel = Vec3::new(0.4, 0.35, 0.3);
+    harness.ambient = AmbientLight { sky: pastel, ground: pastel, intensity: 1.0 };
+    harness.light_rig(
+        id,
+        gi_only(CharacterGi { max_saturation: 0.5, max_value: 0.5, ..CharacterGi::default() }),
+    );
+    assert_near(harness.render().linear(32, 32), scale(pastel.to_array(), ALBEDO), "within the ceilings");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skin_takes_the_skin_tint_and_occlusion_and_intensity_scale_the_gi() {
+    let mut harness = Harness::new(64);
+    harness.ambient = AmbientLight { sky: Vec3::splat(0.5), ground: Vec3::splat(0.5), intensity: 1.0 };
+    let tint = Vec3::new(1.2, 0.8, 0.5);
+    let mut previous = None;
+    let cases = [(0.0, 255, 1.0), (1.0, 255, 1.0), (0.5, 255, 1.0), (1.0, 128, 1.0), (0.0, 255, 0.5)];
+    for (skin, occlusion, intensity) in cases {
+        let material = harness.material(&gi_material(RegionGi { sphere: 0.0, skin }), &[]).unwrap();
+        let mesh = harness.mesh(&square(|_, _| ([occlusion, 255, 255], VertexFlags::NONE)), material);
+        let id = harness.add(mesh, Mat4::IDENTITY);
+        if let Some(previous) = previous.replace(id) {
+            harness.remove(previous);
+        }
+        harness.light_rig(id, gi_only(CharacterGi { skin_tint: tint, intensity, ..CharacterGi::default() }));
+        let ao = f32::from(occlusion) / 255.0;
+        let expected: [f32; 3] =
+            std::array::from_fn(|c| ALBEDO * 0.5 * intensity * ao * (1.0 + (tint[c] - 1.0) * skin));
+        let what = format!("skin {skin}, occlusion {ao:.2}, intensity {intensity}");
+        assert_near(harness.render().linear(32, 32), expected, &what);
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn local_lights_keep_their_light_under_the_rigs_ceiling() {
+    let mut harness = Harness::new(64);
+    let material = harness.material(&plain(), &[]).unwrap();
+    let mesh = harness.mesh(&plain_square(), material);
+    let id = harness.add(mesh, Mat4::IDENTITY);
+    harness.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.1 };
+    let lamp = LocalLight {
+        position: Vec3::new(0.0, 0.0, 0.5),
+        color: Vec3::ONE,
+        intensity: 1.0,
+        range: 3.0,
+        kind: LightKind::Point,
+    };
+    let points = [Vec3::ZERO, Vec3::new(0.5, 0.5, 0.0), Vec3::new(-0.7, 0.2, 0.0)];
+    // What the lamp adds at each point: with it, less without it.
+    let added = |harness: &mut Harness| {
+        harness.lights = vec![lamp];
+        let lit = harness.render();
+        harness.lights.clear();
+        let unlit = harness.render();
+        points.map(|point| {
+            let (with, without) = (lit.at(point), unlit.at(point));
+            [0, 1, 2].map(|c| with[c] - without[c])
+        })
+    };
+    let by_the_sun = added(&mut harness);
+    // A rig with a red key from behind and its own GI: the lamp adds the same light.
+    let lighting =
+        rig(Vec3::Z, Vec3::new(0.3, 0.0, 0.0), CharacterGi { camera_bias: 1.0, ..CharacterGi::default() });
+    harness.light_rig(id, lighting);
+    let by_the_rig = added(&mut harness);
+    for (point, (sun, rig)) in points.iter().zip(by_the_sun.iter().zip(&by_the_rig)) {
+        assert_near(*rig, *sun, &format!("the lamp at {point}, rigged and not"));
+        assert!(sun[0] > 0.1, "the lamp lights {point}");
+    }
+    // A lower ceiling holds the lamp's light to it: at the center the lamp's luminance is its
+    // range window.
+    harness.light_rig(id, CharacterLighting { local_light_ceiling: 0.25, ..lighting });
+    let held = added(&mut harness);
+    let window = (1.0f32 - 0.25 / 9.0).powi(2);
+    assert_near(held[0], scale(by_the_rig[0], 0.25 / window), "held under the ceiling");
 }

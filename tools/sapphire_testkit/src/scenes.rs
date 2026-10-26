@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 8] {
+pub fn scenes() -> [Scene; 9] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -76,6 +76,15 @@ pub fn scenes() -> [Scene; 8] {
         Scene {
             name: "turntable-swatches",
             args: &["--capture-ticks", "90", "--swatches"],
+            thresholds: Thresholds::default(),
+        },
+        // Night from the default day (M1 C2), halfway from dusk to midnight: the character lit by
+        // its light rig's key (time of day's character key, brighter than the world's moon, from
+        // the moon high on the camera's left) and stylized GI under a deep blue ambient, against
+        // the night sky and two blended grading LUTs.
+        Scene {
+            name: "turntable-night",
+            args: &["--capture-ticks", "90", "--time-of-day", "22"],
             thresholds: Thresholds::default(),
         },
     ]

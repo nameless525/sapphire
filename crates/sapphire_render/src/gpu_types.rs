@@ -11,9 +11,10 @@ use crate::{CameraData, FramePacket};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct FrameUniforms {
-    /// xyz: unit vector toward the sun.
+    /// xyz: unit vector toward the world's key light (`FramePacket::sun`); characters take their
+    /// light rigs' instead.
     pub sun_direction: [f32; 4],
-    /// rgb: sun color × intensity.
+    /// rgb: the world's key light's color × intensity.
     pub sun_radiance: [f32; 4],
     pub sky_zenith: [f32; 4],
     pub sky_horizon: [f32; 4],
@@ -26,8 +27,12 @@ pub(crate) struct FrameUniforms {
     pub clusters: [f32; 4],
     /// 0 by day, 1 at night (`FramePacket::day_night`).
     pub day_night: f32,
-    /// Pads the struct to WGSL's 16-byte uniform alignment.
+    /// Pads `day_night` to the next vector, as WGSL aligns it.
     pub padding: [f32; 3],
+    /// rgb: ambient light from above (`FramePacket::ambient`, sky × intensity).
+    pub ambient_sky: [f32; 4],
+    /// rgb: ambient light from below (ground × intensity).
+    pub ambient_ground: [f32; 4],
 }
 
 impl FrameUniforms {
@@ -45,6 +50,8 @@ impl FrameUniforms {
             clusters: lights.clusters,
             day_night: frame.day_night,
             padding: [0.0; 3],
+            ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
+            ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
         }
     }
 }
@@ -88,7 +95,7 @@ impl ViewUniforms {
     }
 }
 
-/// One mesh instance (WGSL `InstanceData`, storage buffer indexed by instance). 176 bytes.
+/// One mesh instance (WGSL `InstanceData`, storage buffer indexed by instance). 192 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct InstanceData {
@@ -98,6 +105,11 @@ pub(crate) struct InstanceData {
     /// `world_from_object` in the last frame drawn, for velocity: equal to it unless the
     /// instance moved since.
     pub previous_world_from_object: [[f32; 4]; 4],
+    /// The instance's entry in the frame's character buffer: 0, the world's key light, unless
+    /// the frame lists it as a character (see the `characters` module).
+    pub character: u32,
+    /// Pads the struct to WGSL's 16-byte storage alignment.
+    pub padding: [u32; 3],
 }
 
 impl InstanceData {

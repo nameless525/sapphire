@@ -2,9 +2,10 @@
 // pass's source; WESL imports replace the concatenation in M1 (spec §5.12).
 //
 // Bind groups (the budget behind them is in the crate docs):
-//   0  frame   per-frame constants: sun, sky, time, light counts and the day/night factor;
-//              the local lights (binding 1) and their lists (binding 2) are declared in
-//              lights.wgsl and anime_character.wgsl
+//   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor and
+//              ambient light; the local lights (binding 1) and their lists (binding 2) are
+//              declared in lights.wgsl and anime_character.wgsl, the characters (binding 3)
+//              below
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
@@ -17,9 +18,11 @@
 // tone maps into the target.
 
 struct FrameUniforms {
-    // xyz: unit vector from the surface toward the sun.
+    // The world's key light (`FramePacket::sun`: the sun or the moon), for what the world shades
+    // and casts by; characters take their light rigs' (`characters`). xyz: unit vector from the
+    // surface toward it.
     sun_direction: vec4<f32>,
-    // rgb: sun color × intensity.
+    // rgb: its color × intensity.
     sun_radiance: vec4<f32>,
     sky_zenith: vec4<f32>,
     sky_horizon: vec4<f32>,
@@ -32,6 +35,10 @@ struct FrameUniforms {
     clusters: vec4<f32>,
     // 0 by day, 1 at night, from time of day: the day/night ramp blend.
     day_night: f32,
+    // Ambient light (time of day's `FramePacket::ambient`), color × intensity: rgb from the
+    // sky above and from the ground below (see `ambient_light`).
+    ambient_sky: vec4<f32>,
+    ambient_ground: vec4<f32>,
 }
 
 struct ViewUniforms {
@@ -53,6 +60,32 @@ struct InstanceData {
     normal_from_object: mat3x3<f32>,
     // `world_from_object` in the last frame drawn, for velocity.
     previous_world_from_object: mat4x4<f32>,
+    // The instance's entry in `characters`: 0, the world's key light, unless the frame lists
+    // it as a character.
+    character: u32,
+}
+
+// A character's light rig (M1 C2), resolved on the CPU for this frame
+// (`sapphire_render::CharacterLighting`).
+struct CharacterRig {
+    // xyz: unit vector toward the character's key light; w: the rim's scale.
+    key_direction: vec4<f32>,
+    // rgb: the key light's color × intensity; w: the local lights' luminance ceiling.
+    key_radiance: vec4<f32>,
+    // xyz: the head's center, world space, which face and hair GI normals turn toward a
+    // sphere around; w: the GI's intensity.
+    head: vec4<f32>,
+    // The stylized GI: x camera bias, y saturation ceiling, z value ceiling, w 1 where the head
+    // is known (so face and hair regions spherize around it) and 0 where not.
+    gi: vec4<f32>,
+    // rgb: the GI's skin tint.
+    skin_tint: vec4<f32>,
+}
+
+// One character's data for the frame. Each package's per-character data is a struct of its
+// own here: the light rig (C2), and faces' (C3).
+struct CharacterData {
+    rig: CharacterRig,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -60,6 +93,9 @@ struct InstanceData {
 @group(2) @binding(0) var<storage, read> instances: array<InstanceData>;
 // The anime character family's blocks, by the draw record's material slot.
 @group(2) @binding(1) var<storage, read> materials: array<AnimeCharacterParams>;
+// The frame's characters, by `InstanceData::character`: entry 0 is the world's key light with
+// unstyled GI, for instances that aren't characters.
+@group(0) @binding(3) var<storage, read> characters: array<CharacterData>;
 
 // A mesh vertex as stored: the packed streams of `sapphire_assets::mesh::VertexStreams`, in
 // vertex buffer slots 1–3 (`pipelines::{POSITION_*, SHADING, SURFACE}_ATTRIBUTES`), each bound
@@ -148,7 +184,7 @@ fn safe_normalize2(v: vec2<f32>) -> vec2<f32> {
     return select(vec2<f32>(0.0), v * inverseSqrt(length_squared), length_squared > 1e-12);
 }
 
-// The sky gradient in direction `dir`. Also the anime character shader's ambient light.
+// The sky gradient in direction `dir`.
 fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     let y = dir.y;
     // A wide pale band above the horizon that deepens toward the zenith.
@@ -156,4 +192,10 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
     // Below the horizon, a quick fade to the ground color.
     let below = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, saturate(-y * 5.0));
     return select(below, above, y >= 0.0);
+}
+
+// The frame's ambient light reaching a surface whose unit normal is `n`: the irradiance of a
+// hemisphere of sky light above and ground light below, a blend by how far the surface faces up.
+fn ambient_light(n: vec3<f32>) -> vec3<f32> {
+    return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, 0.5 + 0.5 * n.y);
 }

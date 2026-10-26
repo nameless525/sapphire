@@ -286,6 +286,7 @@ fn cutscenes_blend_in_and_out() {
         1.0,
         Some(ShotTime { hours: 18.75, hours_per_second: 0.0 }),
         vec![TodKey { exposure: Some(1.0), ..key(0.0) }, TodKey { exposure: Some(2.0), ..key(4.0) }],
+        None,
     )
     .expect("valid");
     let sunset = TodTimeline::default_day().evaluate(18.75);
@@ -367,6 +368,7 @@ fn resolving_is_deterministic() {
             0.5,
             Some(ShotTime { hours: 19.0, hours_per_second: 1.0 }),
             Vec::new(),
+            None,
         )
         .expect("valid");
         let mut frames = Vec::new();

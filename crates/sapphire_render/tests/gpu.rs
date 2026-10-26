@@ -13,9 +13,9 @@ use sapphire_assets::mesh::{
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LightPath,
-    LocalLight, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, PrepassTargets, RenderError,
-    RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
+    AmbientLight, BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, InstanceId,
+    LightKind, LightPath, LocalLight, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams,
+    PrepassTargets, RenderError, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -121,7 +121,8 @@ fn shaded(mut material: AnimeCharacterMaterial, rgb: [f32; 3]) -> AnimeCharacter
     material
 }
 
-/// Linear 0.5 grey, the same as the test sky: lit by the unit sun plus 12% sky ambient.
+/// Linear 0.5 grey, the same as the test sky: lit by the unit sun plus the default 12% grey
+/// ambient.
 const GREY: [f32; 3] = [0.5 / 1.06; 3];
 
 fn white(outline_px: f32) -> AnimeCharacterMaterial {
@@ -179,6 +180,8 @@ struct Frames {
     packets: FramePacketRing,
     /// Copied into every packet: an even grey by default.
     sky: SkyGradient,
+    /// Copied into every packet: 12% of the grey sky from every side by default.
+    ambient: AmbientLight,
     /// Copied into every packet: [`passthrough`] by default.
     post: PostParams,
     /// Copied into every packet: along the view direction by default, so everything the camera
@@ -209,6 +212,7 @@ impl Frames {
                 horizon: Vec3::splat(0.5),
                 ground: Vec3::splat(0.5),
             },
+            ambient: AmbientLight { sky: Vec3::splat(0.5), ground: Vec3::splat(0.5), intensity: 0.12 },
             post: passthrough(),
             sun: DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 },
             lights: Vec::new(),
@@ -246,6 +250,7 @@ impl Frames {
         packet.sun = self.sun;
         packet.lights.extend_from_slice(&self.lights);
         packet.sky = self.sky;
+        packet.ambient = self.ambient;
         packet.post = self.post;
         packet.instances.changed.extend_from_slice(changed);
         packet.instances.removed.extend(removed.iter().copied().map(InstanceId));
@@ -558,6 +563,7 @@ fn quantized_meshes_match_their_f32_reference() {
             intensity: 1.0,
         };
         frames.sky = SkyGradient::default();
+        frames.ambient = AmbientLight::default();
         let mesh = upload(&mut frames.renderer, &sphere_at(center, radius, material.clone(), format));
         let camera = CameraData::look_at(
             center + Vec3::new(0.0, 0.0, 3.0),
@@ -1019,6 +1025,7 @@ impl PostScene {
         let mut frames = Frames::new(gpu, FORMAT, Msaa::default()).expect("renderer");
         let mesh = upload(&mut frames.renderer, &sphere(flat([0.9, 0.2, 0.15], 3.0)));
         frames.sky = SkyGradient::default();
+        frames.ambient = AmbientLight::default();
         Self {
             frames,
             texture: target(gpu, FORMAT, Self::SIZE),
@@ -1060,6 +1067,7 @@ fn values_above_one_survive_into_bloom() {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
         let mesh = upload(&mut frames.renderer, &sphere(flat([brightness; 3], 0.0)));
         frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+        frames.ambient = AmbientLight { intensity: 0.0, ..AmbientLight::default() };
         // A hard threshold at 1: anything clamped to 1 on the way would add no bloom at all.
         frames.post.bloom = BloomParams { threshold: 1.0, knee: 0.0, intensity: 1.0, scatter: 0.7 };
         // A sphere 26 px across on black.
@@ -1200,6 +1208,7 @@ fn a_local_light_shifts_the_light_split() {
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
     let mesh = upload(&mut frames.renderer, &sphere(two_tone()));
     frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    frames.ambient = AmbientLight { intensity: 0.0, ..AmbientLight::default() };
     // The sun from the left lights the left half: 0.5 lit, 0.25 in shadow.
     frames.sun = DirectionalLight { direction: Vec3::X, color: Vec3::ONE, intensity: 0.5 };
     let camera = framing_camera(38.0, size, 0.6);
@@ -1313,6 +1322,7 @@ fn clustered_and_per_object_paths_draw_four_lights_alike() {
         let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
         frames.post = PostParams::default();
         frames.sky = SkyGradient::default();
+        frames.ambient = AmbientLight::default();
         let instances = four_lights_scene(&mut frames);
         if !lights {
             frames.lights.clear();
@@ -1394,6 +1404,7 @@ fn per_object_lists_survive_their_buffer_growing() {
     let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
     let mesh = upload(&mut frames.renderer, &sphere(two_tone()));
     frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    frames.ambient = AmbientLight { intensity: 0.0, ..AmbientLight::default() };
     frames.sun = DirectionalLight { direction: Vec3::Z, color: Vec3::ONE, intensity: 0.1 };
     frames.lights = vec![point_light(Vec3::new(0.0, 0.0, 2.0), Vec3::X, 1.0, 3.0)];
     let size = (64, 64);
@@ -1458,6 +1469,7 @@ fn material_parameters_reach_the_shader() {
     // split runs down the middle, lit to the right. At 0.8 every tone stays below the tone
     // curve's shoulder.
     frames.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    frames.ambient = AmbientLight { intensity: 0.0, ..AmbientLight::default() };
     frames.sun = DirectionalLight { direction: Vec3::NEG_X, color: Vec3::ONE, intensity: 0.8 };
     let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
     let bytes = cooked_with(&two_tone(), &swizzles);
@@ -1527,8 +1539,8 @@ fn textured_materials_sample_through_their_swizzle() {
     let target_texture = target(&gpu, FORMAT, size);
     let view = target_texture.create_view(&Default::default());
     let id: AssetId = "7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d".parse().unwrap();
-    // Lit head-on by the unit sun plus 6% sky ambient, so this base color shows the texture's
-    // logical channels as they are.
+    // Lit head-on by the unit sun plus 6% ambient (12% of the grey), so this base color shows the
+    // texture's logical channels as they are.
     let document = AnimeCharacterMaterial {
         base_color: [1.0 / 1.06, 1.0 / 1.06, 1.0 / 1.06, 1.0],
         base_color_map: Some(id),

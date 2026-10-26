@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_world"
-description = "The world framework. For now, time of day: one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks."
+description = "The world framework. For now, time of day (one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks) and the character light rig's presets."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -25,8 +25,14 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Waits on error scopes in the light rig's GPU tests.
+pollster.workspace = true
+# The light rig's GPU tests build the mesh and material they draw.
+sapphire_assets.workspace = true
 # The counting allocator, for the allocation tests.
 sapphire_core.workspace = true
+# The light rig's GPU tests draw through the renderer on a device of their own.
+sapphire_rhi.workspace = true
 
 [lints]
 workspace = true

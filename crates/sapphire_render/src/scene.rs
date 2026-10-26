@@ -152,6 +152,11 @@ impl GpuScene {
         &self.slots
     }
 
+    /// The instances by slot, to point them at their character entries after `prepare`.
+    pub(crate) fn slots_mut(&mut self) -> &mut InstanceSlots {
+        &mut self.slots
+    }
+
     /// Splits the scene between a frame's passes: the uploads pass writes what changed, and
     /// the draw passes read the draw list and its record buffer.
     pub(crate) fn split_for_record(&mut self) -> (SceneUpload<'_>, &DrawList, &GrowableBuffer) {
@@ -295,6 +300,29 @@ impl InstanceSlots {
             }
         }
         drawn_changed
+    }
+
+    /// Points the live instance in `slot` at entry `index` of the frame's character buffer (0,
+    /// the world's key light, for none), marking it for upload if that changed. Free slots are
+    /// left alone.
+    pub(crate) fn set_character(&mut self, slot: u32, index: u32) {
+        let Some(entry) = self.slots.get_mut(slot as usize).filter(|entry| entry.id.is_some()) else {
+            return;
+        };
+        let data = &mut self.data[slot as usize];
+        if data.character != index {
+            data.character = index;
+            if !entry.dirty {
+                entry.dirty = true;
+                self.dirty.push(slot);
+            }
+        }
+    }
+
+    /// The character entry the instance in `slot` reads.
+    #[cfg(test)]
+    pub(crate) fn character(&self, slot: u32) -> u32 {
+        self.data[slot as usize].character
     }
 
     fn allocate(&mut self, id: InstanceId, mesh: MeshHandle) -> u32 {
@@ -669,6 +697,29 @@ mod tests {
         assert_eq!(slot_of(&slots, 1), Some(0));
         assert_eq!(slots.live().collect::<Vec<_>>(), [(0, MeshHandle::from_raw(2))]);
         assert_eq!(x(&slots, 0), 3.0);
+    }
+
+    #[test]
+    fn character_entries_upload_only_when_they_change() {
+        let character = |slots: &InstanceSlots, slot: u32| slots.data[slot as usize].character;
+        let mut slots = InstanceSlots::default();
+        slots.apply(&deltas(&[instance(1, 0, 0.0), instance(2, 0, 0.0)], &[]));
+        flushed(&mut slots);
+        assert_eq!(character(&slots, 1), 0, "new instances read the world's key light");
+
+        slots.set_character(1, 3);
+        slots.set_character(1, 3);
+        assert_eq!(character(&slots, 1), 3);
+        assert_eq!(flushed(&mut slots), [(1, 1)], "uploaded once");
+        slots.set_character(1, 3);
+        assert_eq!(flushed(&mut slots), [], "unchanged: nothing to upload");
+
+        // A freed slot is left alone; reused, it starts over at the world's key light.
+        slots.apply(&deltas(&[], &[2]));
+        slots.set_character(1, 5);
+        assert_eq!((character(&slots, 1), flushed(&mut slots)), (3, vec![]));
+        slots.apply(&deltas(&[instance(3, 0, 0.0)], &[]));
+        assert_eq!((slot_of(&slots, 3), character(&slots, 1)), (Some(1), 0));
     }
 
     #[test]

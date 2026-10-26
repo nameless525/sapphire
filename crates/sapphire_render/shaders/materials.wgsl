@@ -17,11 +17,12 @@ struct AnimeCharacterRegion {
     shade: vec4<f32>,
     // rgb: deep shade (three bands); a: night ramp row.
     deep_shade: vec4<f32>,
-    // rgb: the subsurface tint ramp rows mix with (ramp mode).
+    // rgb: the subsurface tint ramp rows mix with (ramp mode); a: the character light rig's GI
+    // sphere weight (`RegionGi::sphere`).
     subsurface: vec4<f32>,
     // rgb: specular color × intensity; a: size.
     specular: vec4<f32>,
-    // rgb: rim tint.
+    // rgb: rim tint; a: the GI's skin weight (`RegionGi::skin`).
     rim: vec4<f32>,
     // rgb: outline color; a: outline width scale.
     outline: vec4<f32>,

@@ -5,11 +5,11 @@
 //   of the anime character family only, into a depth target of their own. That character-only depth is what rim light, hair
 //   shadow on the face and eyes over the bangs read (C2, C5), on every tier.
 // - Scene prepass (`vs_scene_prepass`, `fs_scene_prepass`): every opaque instance, into depth,
-//   world normals and velocity, for TAA (R7), outlines under TAA (P1), GTAO and screen-space
+//   world normals and velocity, for TAA (R7, outlines M1 P1), GTAO and screen-space
 //   edges. Characters move by their skinned positions, this frame's and the last drawn one's
 //   (vertex slot 4); static meshes by their instance's transform since it was last drawn; both
 //   by the camera's. The outline hulls follow the surfaces into the same targets
-//   (`vs_outline_prepass` in outline.wgsl, M1 C4), with velocity of their own.
+//   (`vs_outline_prepass` in outline.wgsl, M1 C4), with their line's velocity (M1 P1).
 //
 // Both compute the clip position exactly as the main pass's vertex stages do (`object_position`,
 // then the instance transform, then the view), and mark it invariant, so a prepass's depth is

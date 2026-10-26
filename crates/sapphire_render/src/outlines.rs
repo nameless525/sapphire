@@ -9,6 +9,11 @@
 //! sphere's nearest point is past the cutoff, so a large instance straddling it keeps its hull,
 //! whose width the shader fades to nothing over the cutoff's last quarter anyway. Nothing pops.
 //!
+//! A drawn hull draws twice under temporal AA: in the main pass, and in the scene prepass, where
+//! it writes its line's velocity (the silhouette's motion, M1 P1) and the outline mask that makes
+//! lines fully reactive (`outline.wgsl`'s header; the `temporal` module). A dropped one leaves
+//! neither, which is nothing to lose: its width had faded out.
+//!
 //! # Later milestones
 //!
 //! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop, and skinned

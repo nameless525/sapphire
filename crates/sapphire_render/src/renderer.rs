@@ -283,16 +283,15 @@ pub struct ShaderUpdate {
 ///
 /// A prepass runs only if a later pass reads one of its outputs; the frame graph culls it
 /// otherwise, at no GPU cost. Temporal AA (M1 R7) reads both; rim light and hair shadows (C2,
-/// C5) and outlines under TAA (P1) come later.
+/// C5) come later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepassTargets {
     /// The character prepass: depth of the skinned and morphed instances alone, every tier
     /// (`Depth32Float`, reverse-Z, cleared to 0).
     pub character_depth: TextureId,
     /// The scene prepass: depth of every opaque instance and its outline hull (`Depth32Float`),
-    /// bit for bit the main pass's. Under temporal AA with MSAA it is one of a pair of
-    /// persistent textures, since the next frame reads it as its last (without MSAA the main
-    /// pass's depth is kept instead).
+    /// bit for bit the main pass's. Under temporal AA it is one of a pair of persistent
+    /// textures, since the next frame reads it as its last.
     pub depth: TextureId,
     /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0); a
     /// hull's are its outline normals.
@@ -305,12 +304,15 @@ pub struct PrepassTargets {
     /// own (M1 C4).
     pub velocity: TextureId,
     /// The scene prepass: 1 where an outline hull is the nearest surface, else 0 (`R8Unorm`, M1
-    /// C4). Temporal AA's responsive mask takes it in, so lines in motion keep less history.
+    /// C4). Temporal AA's responsive mask takes it in, so lines in motion are drawn from the
+    /// current frame (M1 P1).
     pub outlines: TextureId,
-    /// With temporal AA, the responsive mask (`R8Unorm`): 1 where a character is the nearest
-    /// surface, from the two prepasses' depths, or an outline hull is, from [`Self::outlines`].
-    /// The resolve keeps less history there and clips it tighter; an external upscaler takes it
-    /// as its reactive mask.
+    /// With temporal AA, the responsive mask (`R8Unorm`): each pixel's reactivity, the share of
+    /// the moving history cap it gives up: characters' where a character is the nearest
+    /// surface, from the two prepasses' depths, and lines' (all of it) where an outline hull
+    /// is, from [`Self::outlines`]; 0 elsewhere. The resolve keeps less history there and
+    /// clips it tighter, and reprojects lines by the silhouette (M1 P1); an external upscaler
+    /// takes it as its reactive mask.
     pub responsive: Option<TextureId>,
     /// The main pass's depth, stored for the tests that compare it with the prepasses'.
     #[cfg(test)]
@@ -1048,11 +1050,11 @@ impl Renderer {
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color and, below
     /// scale 1, upsamples it to the target in its final pass (see the `post` module). Under
-    /// temporal AA the projection is jittered, the main pass keeps its depth, and the
-    /// [`temporal`](crate::temporal) resolve accumulates the scene at the target's size before
-    /// post reads it. On the clustered light path, frames with local lights first bin them in a
-    /// compute pass (see the `lights` module); frames that pose skinned or morphed instances skin
-    /// them first (see the `skinning` module). The prepasses run only if a later pass reads what
+    /// temporal AA the projection is jittered, and the [`temporal`](crate::temporal) resolve
+    /// accumulates the scene at the target's size before post reads it. On the clustered light
+    /// path, frames with local lights first bin them in a compute pass (see the `lights`
+    /// module); frames that pose skinned or morphed instances skin them first (see the
+    /// `skinning` module). The prepasses run only if a later pass reads what
     /// they write ([`PrepassTargets`]), as temporal AA does.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
@@ -1141,22 +1143,17 @@ impl Renderer {
             ref mut uploads,
             ..
         } = *self;
-        // Temporal AA reads what the main pass drew, and keeps it for the next frame's
-        // disocclusion test, in one of a persistent pair it imports along with its history: the
-        // main pass's depth, single-sampled and outline hulls included, or under MSAA the scene
-        // prepass's.
+        // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
+        // next frame's disocclusion test: the scene prepass draws into one of a persistent pair
+        // it imports along with its history. The main pass's depth stays in tile memory.
         let temporal = temporal.as_mut().map(Temporal::split_for_record);
         let temporal_targets = temporal.as_ref().map(|(textures, _)| textures.import(graph, temporal_reset));
-        let kept = temporal_targets.map(|temporal| temporal.depth);
-        let (depth, depth_store) = match kept {
-            Some(kept) if samples == 1 => (kept, wgpu::StoreOp::Store),
-            _ => (graph.create_texture("depth", depth_desc), depth_store),
-        };
+        let depth = graph.create_texture("depth", depth_desc);
         let targets = PrepassTargets {
             character_depth: graph.create_texture("character depth", prepass_target(DEPTH_FORMAT)),
-            depth: match kept {
-                Some(kept) if samples > 1 => kept,
-                _ => graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
+            depth: match temporal_targets {
+                Some(temporal) => temporal.depth,
+                None => graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
             },
             normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
             velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
@@ -1420,7 +1417,6 @@ impl Renderer {
                     depth: targets.depth,
                     velocity: targets.velocity,
                     responsive,
-                    drawn_depth: temporal_targets.depth,
                 };
                 let masks = TemporalMasks { characters: targets.character_depth, outlines: targets.outlines };
                 let slot = textures.write_slot();
@@ -1433,15 +1429,15 @@ impl Renderer {
         Some(targets)
     }
 
-    /// The main pass's depth, where it is a transient (temporal AA keeps a single-sampled one,
-    /// see `record`), and how it is stored: kept in tile memory and discarded.
+    /// The main pass's depth, a transient, and how it is stored: kept in tile memory and
+    /// discarded.
     #[cfg(not(test))]
     fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
         (desc, wgpu::StoreOp::Discard)
     }
 
-    /// The main pass's depth, where it is a transient, and how it is stored: stored and copyable
-    /// when a test reads it.
+    /// The main pass's depth, a transient, and how it is stored: stored and copyable when a test
+    /// reads it.
     #[cfg(test)]
     fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
         if !self.readable_depth {

@@ -17,10 +17,11 @@
 //!    positions, so geometry that holds still has exactly zero velocity whatever the jitter. The
 //!    scene prepass's depth and velocity, and the character prepass's depth, are the resolve's
 //!    inputs, so the frame graph runs both prepasses under TAA (it culls them otherwise).
-//! 3. **The responsive mask** (`responsive mask` pass, `R8Unorm` at the scene's size): 1 where a
-//!    character (a skinned or morphed instance) is the nearest surface, from the character
-//!    prepass's depth against the scene prepass's, or an outline hull is, from the scene
-//!    prepass's outline mask (M1 C4).
+//! 3. **The responsive mask** (`responsive mask` pass, `R8Unorm` at the scene's size): each
+//!    pixel's reactivity, the share of the moving history cap it gives up. Characters' (0.5)
+//!    where a character (a skinned or morphed instance) is the nearest surface, from the
+//!    character prepass's depth against the scene prepass's; lines' (1) where an outline hull
+//!    is, from the scene prepass's outline mask (M1 C4, P1); 0 elsewhere.
 //! 4. **The resolve** (`taa` pass), a compute pass at the output's size, on HDR scene color
 //!    before bloom and the tone curve, in a tonemap-weighted space (see `shaders/temporal.wgsl`,
 //!    whose header also says how it is kept fast):
@@ -31,26 +32,28 @@
 //!    - velocity dilation: a pixel follows the nearest surface of those 3 × 3 when that one is
 //!      clearly nearer than its own, so silhouette edges move with the object in front;
 //!    - reprojection from depth where no geometry is (the sky): the camera's motion at infinity;
-//!    - pixels the main pass drew without velocity: where its depth is nearer than the scene
-//!      prepass's, the pixel takes the velocity of the nearest surface matching its depth within
-//!      an outline's width, and counts as responsive. R7 built it for the outline hull, which
-//!      drew no velocity; since M1 C4 the scene prepass draws the hulls with their own velocity
-//!      and the main pass's depth, so it finds no pixels (P1 removes it);
-//!    - disocclusion rejection: what the main pass drew (hulls included) against the farthest
+//!    - lines (M1 P1): a hull pixel's velocity is its line's, the silhouette's motion as the
+//!      outline prepass extrapolates it (`outline.wgsl`), not that of the hull points it shows,
+//!      which slide through the silhouette when a body turns against the view. Pixels with a
+//!      line in their 3 × 3 also try the camera's motion alone and none, and keep whichever
+//!      reprojection's history matches this frame best (`line_motion`);
+//!    - disocclusion rejection: the scene prepass's depth (hulls included) against the farthest
 //!      of last frame's depths around where the pixel came from;
 //!    - an accumulation weight in the history's alpha, capped lower for moving pixels (or ones
-//!      resampled between texels, which thin lines don't survive) and lower again, with a
-//!      tighter clip box, on responsive ones that move.
+//!      resampled between texels, which thin lines don't survive) and lower again on reactive
+//!      ones that move, by their reactivity, with a tighter clip box: a moving character keeps
+//!      half the cap, and a moving line none, so it is drawn from the current frame.
 //! 5. **Post** then blooms, grades and tone maps the resolved frame at the output's size.
 //!
-//! The history is a pair of `Rgba16Float` textures at the output's size, the main pass's depth
-//! a pair at the scene's size (the scene prepass's under MSAA, whose depth is multisampled),
-//! both persistent and imported into each frame's graph: one of each pair is written while the
-//! other holds last frame's. The history is dropped ([`HistoryReset`]) when a renderer starts (a
-//! new renderer after device loss or a tier change), when the output's size changes, and on a
-//! camera cut ([`ViewData::cut`](crate::ViewData::cut)). A render-scale change keeps it: the
-//! history is at the output's size, so it stays valid while dynamic resolution moves the scene's,
-//! as FSR 2 and DLSS keep theirs (spec §5.12, "As built (M1 R7)").
+//! The history is a pair of `Rgba16Float` textures at the output's size, the scene prepass's
+//! depth a pair at the scene's size, both persistent and imported into each frame's graph: one
+//! of each pair is written while the other holds last frame's. The main pass's depth is a
+//! transient again (M1 P1), discarded after the pass. The history is dropped
+//! ([`HistoryReset`]) when a renderer starts (a new renderer after device loss or a tier
+//! change), when the output's size changes, and on a camera cut
+//! ([`ViewData::cut`](crate::ViewData::cut)). A render-scale change keeps it: the history is at
+//! the output's size, so it stays valid while dynamic resolution moves the scene's, as FSR 2 and
+//! DLSS keep theirs (spec §5.12, "As built (M1 R7)").
 //!
 //! `temporal.wgsl` is a program of its own ([`ShaderFile::Temporal`](crate::ShaderFile)): an
 //! edited one rebuilds the mask's and the resolve's pipelines on the layouts they had
@@ -62,27 +65,31 @@
 //! color, depth, velocity in texture coordinates (zero where none is: reproject from depth), the
 //! responsive mask (FSR's reactive mask, DLSS's bias-current-color mask, MetalFX's
 //! `reactiveMaskTexture`), the jitter in pixels, the exposure and a reset flag, plus the output
-//! size (`TemporalInputs`). Only the main pass's depth, for disocclusion, is its own; an upscaler
-//! does without it. Outline hulls are in the velocity and the responsive mask (M1 C4). One of
-//! them replaces the `taa` pass behind the same inputs.
+//! size (`TemporalInputs`), and nothing else (M1 P1): one of them replaces the `taa` pass behind
+//! the same inputs. Outline hulls are in all of them (M1 C4): their depth, their line's velocity
+//! (the silhouette's, which serves any upscaler: a hull point's would smear a turning body's
+//! line in each of them) and a reactivity of 1, so an upscaler takes a moving line from the
+//! current frame as the resolve does. Only `line_motion`'s search among reprojections is the
+//! resolve's own; an upscaler does without it.
 //!
 //! # Later milestones
 //!
 //! - **External upscalers:** DLSS (`dlss_wgpu`, NVIDIA on Vulkan) and MetalFX temporal behind
 //!   `TemporalInputs`, chosen by `GpuCaps` and the tier; FSR 3 or Arm ASR where neither runs.
-//! - **Outlines under TAA (P1):** since C4 the scene prepass draws the hulls with their own
-//!   velocity (from the skinned positions of both frames) and writes an outline mask the
-//!   responsive mask takes in, so a line on a body turning about its own axis holds still with
-//!   its hull rather than sliding with the surface. The resolve's search for the surface a hull
-//!   pixel belongs to finds nothing since, and P1 removes it with `OUTLINE_REACH`, then decides
-//!   whether hulls stay responsive or composite after the resolve.
+//! - **Turning lines' stability:** drawn from the current frame, a line on a turning body
+//!   changes from frame to frame 2.9 times as much as 4× MSAA's on the GPU tests' sphere (4.2
+//!   before M1 P1), as each frame's jitter draws it anew. Reprojected exactly (with no motion,
+//!   which is exact for that sphere alone) it would keep its history and change 2.0 times as
+//!   much. Nothing in the frame gives a silhouette's exact motion; a closer estimate than the
+//!   outline prepass's extrapolation would let moving lines keep some history.
 //! - **Transparent surfaces and particles** write the responsive mask (or FSR's
 //!   transparency-and-composition mask) as they draw, since they write no velocity.
-//! - **The character mask through the resolve:** post (M1 P2) reads its character mask, scene
-//!   color's alpha, from the scene color before the resolve, at the scene's size and jittered,
-//!   since the history's alpha holds the accumulation weight. An effect that needs the mask
-//!   sharp at the output's size (P3's) would carry it through the resolve in a channel of its
-//!   own.
+//! - **The character mask through the resolve:** post (M1 P2) and the effect stack (M1 P3) read
+//!   the character mask, scene color's alpha, from the scene color before the resolve, at the
+//!   scene's size and jittered, since the history's alpha holds the accumulation weight: right
+//!   within a pixel, which they need no better. Only an effect that needs it hard-edged at the
+//!   output's size, such as M2's character cut-ins, might carry it through the resolve in a
+//!   channel of its own.
 //! - **Thin features in still scenes:** where a jitter phase's samples all miss a line's end,
 //!   its clip box closes on the background and the pixel flickers once a cycle; FSR 2's locks
 //!   protect such pixels.
@@ -107,8 +114,8 @@ pub const PASSES: [&str; 2] = [MASK_PASS, RESOLVE_PASS];
 const MASK_PASS: &str = "responsive mask";
 const RESOLVE_PASS: &str = "taa";
 
-/// The responsive mask's format: one byte, 0 or 1 today, with room for partial values (FSR's
-/// reactive masks are fractional).
+/// The responsive mask's format: one byte, each pixel's reactivity (FSR's reactive masks are
+/// fractional too): 0, characters' or lines' (see the module docs).
 pub(crate) const RESPONSIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// The history's format: the scene color's, so post reads it as it read scene color.
@@ -137,8 +144,18 @@ mod tuning {
     /// pixel (see the resolve's resampling loss).
     pub const HISTORY_MOVING: f32 = 4.0;
     pub const MOVING_SPEED: f32 = 2.0;
-    /// Responsive pixels (characters) moving that fast keep this fraction of the cap.
+    /// Responsive pixels (characters) moving that fast keep this fraction of the cap: the
+    /// responsive mask holds the rest on them, their reactivity.
     pub const RESPONSIVE_HISTORY: f32 = 0.5;
+    /// Line pixels (an outline hull's, or beside one) moving that fast keep this fraction: none,
+    /// so a moving line is drawn from the current frame (M1 P1), as Blue Protocol keeps TAA's
+    /// blur off its lines. On the sandbox character turning at 3 rad/s, against 4× MSAA, this
+    /// alone raised the lines' strength from 81% (head) and 83% (figure) at characters' 0.5 to
+    /// 89% and 91%; with the line's velocity and `line_motion` they keep 96% and 93%. A still
+    /// line keeps the full history. Spec §5.12's P1 note has the measurements. It stays below
+    /// `RESPONSIVE_HISTORY`: the resolve tells lines from characters by their higher reactivity.
+    pub const OUTLINE_HISTORY: f32 = 0.0;
+    const _: () = assert!(OUTLINE_HISTORY < RESPONSIVE_HISTORY);
     /// The clip box's half-width in standard deviations. Narrower boxes clip one-pixel outlines
     /// toward their brighter neighbors: at 1.0 they lost a visible share of their darkness
     /// against 4× MSAA.
@@ -150,13 +167,12 @@ mod tuning {
     /// frame disoccluded. Wide enough for one surface's own curvature across a few pixels and
     /// for objects' motion in depth between frames.
     pub const DEPTH_MARGIN: f32 = 0.1;
-    /// How far a pixel the main pass drew without velocity looks for the surface it moves with,
-    /// in pixels at 1080 rows (outline widths are too): the default width of 5.5 px, plus the
-    /// jitter and the surface's antialiased edge, with room for wider lines. Built for the
-    /// outline hull (R7); since C4 the hull is in the scene prepass with its own velocity, and
-    /// the search finds no pixels.
-    pub const OUTLINE_REACH: f32 = 8.0;
 }
+
+/// The responsive mask's value on characters and on lines: the share of the moving cap each
+/// gives up.
+const CHARACTER_REACTIVITY: f32 = 1.0 - tuning::RESPONSIVE_HISTORY;
+const OUTLINE_REACTIVITY: f32 = 1.0 - tuning::OUTLINE_HISTORY;
 
 /// Jitter phases at native resolution; upsampling multiplies them by the area ratio.
 const BASE_PHASES: f32 = 8.0;
@@ -247,14 +263,9 @@ pub(crate) struct TemporalInputs {
     pub depth: TextureId,
     /// The scene prepass's velocity, in texture coordinates; 0 where no geometry is.
     pub velocity: TextureId,
-    /// The responsive mask: 1 where a character or an outline hull is the nearest surface.
+    /// The responsive mask: each pixel's reactivity, characters' where a character is the
+    /// nearest surface and lines' where an outline hull is.
     pub responsive: TextureId,
-    /// What the main pass drew: its depth, single-sampled ([`TemporalTargets::depth`]), outline
-    /// hulls included. Where it is nearer than the scene prepass's, the main pass drew something
-    /// without velocity (the hull, until M1 C4 drew it into the prepass); disocclusion compares
-    /// it with last frame's. Under MSAA, whose depth this can't read, the scene prepass's depth.
-    /// External upscalers do without it.
-    pub drawn_depth: TextureId,
 }
 
 /// What the responsive mask is made from, at the scene's size.
@@ -269,8 +280,8 @@ pub(crate) struct TemporalMasks {
 /// The persistent textures one frame's graph imports (see [`TemporalTextures::import`]).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TemporalTargets {
-    /// This frame's kept depth, which the next frame reads as its last: the main pass's depth
-    /// attachment, single-sampled; under MSAA, the scene prepass's.
+    /// This frame's kept depth, which the next frame reads as its last: the scene prepass's
+    /// depth target, outline hulls included.
     pub depth: TextureId,
     /// Last frame's kept depth (this frame's after a reset, unread then).
     previous_depth: TextureId,
@@ -294,10 +305,11 @@ pub(crate) struct TemporalUniforms {
     pub previous_clip_from_clip: [[f32; 4]; 4],
     /// x: exposure; y: 1 drops the history; z, w: the history's cap still and moving.
     pub history: [f32; 4],
-    /// x: the moving cap's speed; y: the responsive cap scale; z, w: clip γ, and responsive.
+    /// x: the moving cap's speed; y: characters' reactivity; z, w: clip γ, and responsive.
     pub response: [f32; 4],
-    /// x: how far a pixel drawn without velocity looks for its surface, in scene pixels.
-    pub motion: [f32; 4],
+    /// x: lines' reactivity; y: the reactivity above which a pixel is a line's; z: 1 when the
+    /// camera moved.
+    pub outlines: [f32; 4],
 }
 
 fn size_and_reciprocal((width, height): (u32, u32)) -> [f32; 4] {
@@ -390,7 +402,7 @@ pub(crate) struct TemporalPasses {
     shared: wgpu::BindGroup,
     /// Group 1 of each pass, one per write slot: the persistent textures alternate.
     mask_groups: [CachedBindGroup<3>; 2],
-    resolve_groups: [CachedBindGroup<8>; 2],
+    resolve_groups: [CachedBindGroup<7>; 2],
     /// What the last `begin` computed for the uploads.
     uniforms: TemporalUniforms,
 }
@@ -546,11 +558,16 @@ impl Temporal {
             ],
             response: [
                 tuning::MOVING_SPEED,
-                tuning::RESPONSIVE_HISTORY,
+                CHARACTER_REACTIVITY,
                 tuning::CLIP_GAMMA,
                 tuning::RESPONSIVE_CLIP_GAMMA,
             ],
-            motion: [(tuning::OUTLINE_REACH * input.1 as f32 / 1080.0).max(2.0), 0.0, 0.0, 0.0],
+            outlines: [
+                OUTLINE_REACTIVITY,
+                0.5 * (CHARACTER_REACTIVITY + OUTLINE_REACTIVITY),
+                if previous_clip_from_clip == Mat4::IDENTITY { 0.0 } else { 1.0 },
+                0.0,
+            ],
         };
         self.stats = TemporalStats {
             enabled: true,
@@ -641,11 +658,10 @@ impl TemporalPasses {
                 texture(1, S::COMPUTE, depth),
                 texture(2, S::COMPUTE, loaded),
                 texture(3, S::COMPUTE, loaded),
-                texture(4, S::COMPUTE, depth),
-                texture(5, S::COMPUTE, filtered),
-                texture(6, S::COMPUTE, depth),
+                texture(4, S::COMPUTE, filtered),
+                texture(5, S::COMPUTE, depth),
                 entry(
-                    7,
+                    6,
                     S::COMPUTE,
                     wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
@@ -763,7 +779,6 @@ impl TemporalPasses {
             inputs.depth,
             inputs.velocity,
             inputs.responsive,
-            inputs.drawn_depth,
             targets.history,
             targets.previous_depth,
         ];
@@ -774,18 +789,10 @@ impl TemporalPasses {
         }
         builder.write(targets.output).record(move |ctx| {
             let label = labels.then_some(RESOLVE_PASS);
-            let [color, depth, velocity, responsive, drawn_depth, history, previous_depth] =
+            let [color, depth, velocity, responsive, history, previous_depth] =
                 reads.map(|texture| ctx.view(texture));
-            let views = [
-                color,
-                depth,
-                velocity,
-                responsive,
-                drawn_depth,
-                history,
-                previous_depth,
-                ctx.view(targets.output),
-            ];
+            let views =
+                [color, depth, velocity, responsive, history, previous_depth, ctx.view(targets.output)];
             let group = resolve_group.get(device, label, resolve_layout, &views);
             let mut pass = ctx.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label,

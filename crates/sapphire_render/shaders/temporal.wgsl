@@ -1,6 +1,6 @@
-// Temporal anti-aliasing and upsampling (M1 R7; spec §5.12 "Anti-aliasing and upscaling"): the
-// responsive mask and the resolve. Like post.wgsl this file stands alone; none of frame.wgsl's
-// groups are bound.
+// Temporal anti-aliasing and upsampling (M1 R7, outlines M1 P1; spec §5.12 "Anti-aliasing and
+// upscaling"): the responsive mask and the resolve. Like post.wgsl this file stands alone; none
+// of frame.wgsl's groups are bound.
 //
 // Bind groups:
 //   0  temporal  constants (`TemporalUniforms`, written each frame), a linear clamp sampler and a
@@ -10,10 +10,9 @@
 //      pass        bindings
 //      mask        0 character depth, 1 scene depth, 2 the outline mask (all the scene's size,
 //                  from the prepasses)
-//      resolve     0 scene color, 1 scene depth, 2 velocity, 3 responsive mask, 4 this frame's
-//                  drawn depth (all the scene's size), 5 history (the output's size), 6 last
-//                  frame's drawn depth (last frame's scene size), 7 the resolved frame (written,
-//                  the output's size)
+//      resolve     0 scene color, 1 scene depth, 2 velocity, 3 responsive mask (all the scene's
+//                  size), 4 history (the output's size), 5 last frame's scene depth (last
+//                  frame's scene size), 6 the resolved frame (written, the output's size)
 //
 // The resolve runs at the output's size and reads the scene at its own (temporal upsampling when
 // the scene is smaller), on HDR scene color before bloom and the tone curve: WuWa found that
@@ -44,13 +43,15 @@ struct TemporalUniforms {
     // x: exposure multiplier; y: 1 drops the history (a reset); z: the history's weight cap,
     // in frames, for pixels that hold still; w: for pixels moving at `response.x` or faster.
     history: vec4<f32>,
-    // x: the speed, in output pixels per frame, where the moving cap applies; y: what the cap
-    // is scaled by on responsive pixels moving that fast; z: the clip box's half-width in
-    // standard deviations; w: the same on responsive pixels moving that fast.
+    // x: the speed, in output pixels per frame, where the moving cap applies; y: characters'
+    // reactivity, which the responsive mask writes on them (see `fs_responsive_mask`); z: the
+    // clip box's half-width in standard deviations; w: the same on responsive pixels moving at
+    // `response.x` or faster.
     response: vec4<f32>,
-    // x: how far, in scene pixels, a pixel drawn without velocity looks for the surface it moves
-    // with: an outline's width at the scene's height.
-    motion: vec4<f32>,
+    // x: lines' reactivity, which the responsive mask writes on outline hulls; y: the mask's
+    // value above which a pixel is a line's (between characters' and lines' reactivities);
+    // z: 1 when the camera moved since the last frame.
+    outlines: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> taa: TemporalUniforms;
@@ -68,12 +69,10 @@ struct TemporalUniforms {
 @group(1) @binding(1) var scene_depth: texture_depth_2d;
 @group(1) @binding(2) var velocity_texture: texture_2d<f32>;
 @group(1) @binding(3) var responsive_mask: texture_2d<f32>;
-// What the main pass drew: its depth, the outline hull's included; the scene prepass's under
-// MSAA, whose multisampled depth this can't read. This frame's, and last frame's.
-@group(1) @binding(4) var drawn_depth: texture_depth_2d;
-@group(1) @binding(5) var history: texture_2d<f32>;
-@group(1) @binding(6) var previous_depth: texture_depth_2d;
-@group(1) @binding(7) var resolved: texture_storage_2d<rgba16float, write>;
+@group(1) @binding(4) var history: texture_2d<f32>;
+// Last frame's scene prepass depth, outline hulls included (M1 C4), kept for disocclusion.
+@group(1) @binding(5) var previous_depth: texture_depth_2d;
+@group(1) @binding(6) var resolved: texture_storage_2d<rgba16float, write>;
 
 struct FullscreenVaryings {
     @builtin(position) position: vec4<f32>,
@@ -88,18 +87,23 @@ fn vs_fullscreen(@builtin(vertex_index) index: u32) -> FullscreenVaryings {
     return out;
 }
 
-// The responsive mask (R8Unorm, the scene's size): 1 where a character or an outline hull is the
-// nearest surface. The character prepass writes the same depth as the scene prepass there, bit
-// for bit, and less where something stands in front; it is cleared to 0 where no character is.
-// The scene prepass's outline mask is 1 where a hull is nearest (M1 C4): lines, whatever they
-// outline, keep less history in motion, as Blue Protocol protects its outlines from blur.
+// The responsive mask (R8Unorm, the scene's size): each pixel's reactivity, the share of the
+// moving history cap it gives up (FSR's reactive mask is fractional too). 0 on the world,
+// characters' reactivity where a character is the nearest surface, lines' where an outline hull
+// is (M1 P1): more than characters', so the resolve tells lines apart by it. The character
+// prepass writes the same depth as the scene prepass where a character is nearest, bit for bit,
+// and less where something stands in front; it is cleared to 0 where no character is. The scene
+// prepass's outline mask is 1 where a hull is nearest (M1 C4): lines, whatever they outline,
+// are drawn from the current frame in motion, as Blue Protocol protects its outlines from blur.
 @fragment
 fn fs_responsive_mask(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(in.position.xy);
     let character = textureLoad(character_depth, pixel, 0);
     let scene = textureLoad(mask_scene_depth, pixel, 0);
     let outline = textureLoad(outline_mask, pixel, 0).r;
-    return vec4<f32>(select(0.0, 1.0, (character > 0.0 && character >= scene) || outline > 0.5), 0.0, 0.0, 0.0);
+    var reactivity = select(0.0, taa.response.y, character > 0.0 && character >= scene);
+    reactivity = select(reactivity, taa.outlines.x, outline > 0.5);
+    return vec4<f32>(reactivity, 0.0, 0.0, 0.0);
 }
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -213,6 +217,48 @@ fn disoccluded(uv: vec2<f32>, depth: f32, previous_uv: vec2<f32>) -> bool {
     return farthest > expected * (1.0 + taa.jitter.w) + 1e-7;
 }
 
+// The history's distance from `current` at `uv`, in the resolve's space (YCoCg, luma first).
+fn history_distance(uv: vec2<f32>, current: vec3<f32>) -> f32 {
+    let difference = to_ycocg(compress(textureSampleLevel(history, linear_clamp, uv, 0.0).rgb)) - current;
+    return dot(difference * difference, vec3<f32>(4.0, 1.0, 1.0));
+}
+
+// Where a line pixel's history is (M1 P1), as a velocity, from `own` (the pixel's; on a hull,
+// its line's), its surface's reverse-Z `depth` and this frame's color there, `current`, in the
+// resolve's space.
+//
+// A line moves with the silhouette it draws, not with the hull points it shows, which slide
+// through the silhouette whenever the body turns against the view (about its own axis, or under
+// a camera circling it): 1.7 px a frame at a line's inner edge on the GPU tests' sphere turning
+// at 3 rad/s. History fetched there smears the line across itself. The hull writes the
+// silhouette's motion as the facing's gradient extrapolates it (`fs_outline_prepass` in
+// outline.wgsl), close but not exact, and the pixels beside a line keep their own surface's or
+// the sky's. So pixels with a line in their 3 × 3 also try the reprojections a turning body's
+// silhouette follows, the camera's motion alone (a body turning in place) and none (a
+// silhouette holding still on screen), and keep whichever's history matches this frame best,
+// their own on a tie. Rigid motion, translation and limbs swinging keep their own. Two more
+// bilinear taps, on line pixels alone; nothing to try where neither the pixel nor the camera
+// moved.
+fn line_motion(uv: vec2<f32>, own: vec2<f32>, depth: f32, current: vec3<f32>) -> vec2<f32> {
+    var best = own;
+    if taa.outlines.z == 0.0 && all(own == vec2<f32>(0.0)) {
+        return best;
+    }
+    var best_distance = history_distance(uv - own, current);
+    if taa.outlines.z != 0.0 {
+        let still = camera_motion(uv, depth);
+        let distance = history_distance(uv - still, current);
+        if distance < best_distance {
+            best = still;
+            best_distance = distance;
+        }
+    }
+    if history_distance(uv, current) < best_distance {
+        best = vec2<f32>(0.0);
+    }
+    return best;
+}
+
 // The resolve's workgroups are GROUP × GROUP output pixels.
 const GROUP: u32 = 8u;
 // The scene pixels a workgroup's 3 × 3 neighborhoods cover, a side: the scene is never larger
@@ -224,8 +270,8 @@ const TILE_PIXELS: u32 = 144u;
 // The tile, from the scene pixel at `tile_origin` (clamped to the scene: rows and columns past its
 // edges repeat the edge's). xyz: color in the resolve's space (compressed, YCoCg); w: depth.
 var<workgroup> tile_color: array<vec4<f32>, TILE_PIXELS>;
-// x: the responsive mask; y: the drawn depth.
-var<workgroup> tile_other: array<vec2<f32>, TILE_PIXELS>;
+// The responsive mask.
+var<workgroup> tile_responsive: array<f32, TILE_PIXELS>;
 
 // The output pixel's center among the scene's pixels, without the jitter.
 fn scene_position(pixel: vec2<u32>) -> vec2<f32> {
@@ -251,7 +297,6 @@ fn gather_block(tile_origin: vec2<i32>, block: vec2<u32>) {
     let corner = vec2<f32>(tile_origin + vec2<i32>(block) + 1) * texel;
     let depth = textureGather(scene_depth, nearest_clamp, corner);
     let responsive = textureGather(0, responsive_mask, nearest_clamp, corner);
-    let drawn = textureGather(drawn_depth, nearest_clamp, corner);
     let half_texel = 0.5 * texel;
     // A gather's components are its pixels (0, 1), (1, 1), (1, 0) and (0, 0), as x, y, z, w.
     let i = block.y * TILE + block.x;
@@ -259,10 +304,10 @@ fn gather_block(tile_origin: vec2<i32>, block: vec2<u32>) {
     tile_color[i + 1u] = tile_color_at(corner + vec2<f32>(half_texel.x, -half_texel.y), depth.z);
     tile_color[i + TILE] = tile_color_at(corner + vec2<f32>(-half_texel.x, half_texel.y), depth.x);
     tile_color[i + TILE + 1u] = tile_color_at(corner + half_texel, depth.y);
-    tile_other[i] = vec2<f32>(responsive.w, drawn.w);
-    tile_other[i + 1u] = vec2<f32>(responsive.z, drawn.z);
-    tile_other[i + TILE] = vec2<f32>(responsive.x, drawn.x);
-    tile_other[i + TILE + 1u] = vec2<f32>(responsive.y, drawn.y);
+    tile_responsive[i] = responsive.w;
+    tile_responsive[i + 1u] = responsive.z;
+    tile_responsive[i + TILE] = responsive.x;
+    tile_responsive[i + TILE + 1u] = responsive.y;
 }
 
 // What one pass over a pixel's 3 × 3 neighborhood gathers.
@@ -274,17 +319,13 @@ struct Neighborhood {
     // The nearest surface's depth and tile index.
     closest_depth: f32,
     closest: u32,
-    // Whether a character covers any of it.
+    // Its most reactive pixel's reactivity: whether a character or a line covers any of it.
     responsive: f32,
-    // The nearest depth the main pass drew clearly in front of the scene prepass's (the outline
-    // hull, see the resolve), or 0.
-    hull_depth: f32,
 }
 
 // Adds the tile's pixel `index`, of filter weight `weight`.
 fn add_tap(neighborhood: ptr<function, Neighborhood>, index: u32, weight: f32) {
     let texel = tile_color[index];
-    let other = tile_other[index];
     let color = texel.xyz;
     (*neighborhood).filtered += color * weight;
     (*neighborhood).moment1 += color;
@@ -293,9 +334,7 @@ fn add_tap(neighborhood: ptr<function, Neighborhood>, index: u32, weight: f32) {
         (*neighborhood).closest_depth = texel.w;
         (*neighborhood).closest = index;
     }
-    (*neighborhood).responsive = max((*neighborhood).responsive, other.x);
-    let hull = select(0.0, other.y, other.y > texel.w * (1.0 + taa.jitter.w));
-    (*neighborhood).hull_depth = max((*neighborhood).hull_depth, hull);
+    (*neighborhood).responsive = max((*neighborhood).responsive, tile_responsive[index]);
 }
 
 @compute @workgroup_size(GROUP, GROUP)
@@ -335,12 +374,12 @@ fn cs_temporal_resolve(
     let wy = exp(-taa.jitter.z * rows * rows);
 
     // One pass over the 3 × 3 scene pixels around it: the filter, the neighborhood's color
-    // moments, its nearest surface and whether a character covers it.
+    // moments, its nearest surface and whether a character or a line covers it.
     let tap = clamp(nearest - tile_origin, vec2<i32>(1), vec2<i32>(i32(TILE) - 2));
     let center_index = u32(tap.y) * TILE + u32(tap.x);
     let top = center_index - TILE;
     let bottom = center_index + TILE;
-    var neighborhood = Neighborhood(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0u, 0.0, 0.0);
+    var neighborhood = Neighborhood(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0u, 0.0);
     add_tap(&neighborhood, top - 1u, wx.x * wy.x);
     add_tap(&neighborhood, top, wx.y * wy.x);
     add_tap(&neighborhood, top + 1u, wx.z * wy.x);
@@ -357,7 +396,7 @@ fn cs_temporal_resolve(
     let confidence = min(weight, 1.0);
     let mean = neighborhood.moment1 / 9.0;
     let deviation = sqrt(max(neighborhood.moment2 / 9.0 - mean * mean, vec3<f32>(0.0)));
-    var responsive = neighborhood.responsive;
+    let responsive = neighborhood.responsive;
 
     // Whose motion the pixel follows. Its own surface's, unless a surface clearly nearer covers
     // part of the neighborhood: then that one's (velocity dilation), so a silhouette's edge
@@ -370,66 +409,29 @@ fn cs_temporal_resolve(
         source = neighborhood.closest;
         source_depth = neighborhood.closest_depth;
     }
-    var source_pixel = clamp(tile_origin + vec2<i32>(vec2<u32>(source % TILE, source / TILE)), vec2<i32>(0), last);
-    // Where the main pass drew something clearly nearer than the scene prepass saw, that
-    // something writes no velocity: the outline hull, until M1 C4 drew it into the prepass with
-    // its own velocity and depth, so since then hull pixels don't take this branch (P1 removes
-    // it). It moves with the edge it outlines, which no surface pixel's velocity quite gives: on
-    // a body turning about its own axis the surface slides a pixel inside the silhouette while
-    // the silhouette, and so its outline, holds still. So outlines are responsive, as Blue
-    // Protocol protects its outlines from blur: the current frame's opaque line outweighs a
-    // history fetched from slightly the wrong place. Pixels a hull covers part of the
-    // neighborhood of, in front of their own surface, follow it too, as a silhouette's edge
-    // pixels follow the silhouette: the outline's antialiased edges, which this frame's jittered
-    // hull may miss, would otherwise keep a still history of what the outline is moving over.
-    let drawn = tile_other[center_index].y;
-    let hull = neighborhood.hull_depth;
-    if hull > own_depth * (1.0 + taa.jitter.w) {
-        responsive = 1.0;
-        // A hull wider than this neighborhood takes the velocity of the nearest surface whose
-        // depth matches its own, looking out to an outline's width in rings of eight, the
-        // innermost first: the edge's, not any surface point's of that depth. Hull pixels are
-        // few, so this one loop stays.
-        if hull > neighborhood.closest_depth * (1.0 + taa.jitter.w) {
-            // A surface must match the hull's depth better than the sky (depth 0) does.
-            var best = hull;
-            for (var ring = 1; ring <= 3; ring++) {
-                let distance = taa.motion.x * f32(ring) / 3.0;
-                for (var direction = 0; direction < 8; direction++) {
-                    let angle = f32(direction) * 0.7853982;
-                    let reach = round(vec2<f32>(cos(angle), sin(angle)) * distance);
-                    let pixel = clamp(nearest + vec2<i32>(reach), vec2<i32>(0), last);
-                    let depth = textureSampleLevel(scene_depth, nearest_clamp, (vec2<f32>(pixel) + 0.5) * taa.input_size.zw, 0);
-                    let difference = abs(depth - hull);
-                    if difference < best {
-                        best = difference;
-                        source_depth = depth;
-                        source_pixel = pixel;
-                    }
-                }
-                if best < hull * taa.jitter.w {
-                    break;
-                }
-            }
-        }
-    }
+    let source_pixel = clamp(tile_origin + vec2<i32>(vec2<u32>(source % TILE, source / TILE)), vec2<i32>(0), last);
 
     // Where no geometry is, the camera's motion at infinity.
     var velocity = textureSampleLevel(velocity_texture, nearest_clamp, (vec2<f32>(source_pixel) + 0.5) * taa.input_size.zw, 0.0).xy;
     if source_depth == 0.0 {
         velocity = camera_motion(uv, 0.0);
     }
+    // A line's pixels, and those beside one that its antialiased edges reach, follow the line.
+    if responsive > taa.outlines.y {
+        velocity = line_motion(uv, velocity, source_depth, neighborhood.filtered / weight);
+    }
     let previous_uv = uv - velocity;
     let on_screen = all(previous_uv >= vec2<f32>(0.0)) && all(previous_uv <= vec2<f32>(1.0));
-    // Against what was drawn, hulls included, so the pixels an outline has just moved off are
-    // disoccluded too.
-    let kept = taa.history.y == 0.0 && on_screen && !disoccluded(uv, drawn, previous_uv);
+    // Against last frame's scene depth, outline hulls included (M1 C4), so the pixels an outline
+    // has just moved off are disoccluded too.
+    let kept = taa.history.y == 0.0 && on_screen && !disoccluded(uv, own_depth, previous_uv);
 
     // The history weighs at most `cap` frames: fewer the faster the pixel moves (the current
     // frame's weight rises with motion, as WuWa's does), and fewer again on moving responsive
-    // pixels, which also clip tighter, so characters' outlines and light splits don't smear. A
-    // character that holds still accumulates like everything else: its thin outlines need the
-    // full history and the wide box to keep their contrast.
+    // pixels, by their reactivity, which also clip tighter: characters' light splits don't smear,
+    // and a moving line is drawn from the current frame. A character that holds still
+    // accumulates like everything else: its thin outlines need the full history and the wide box
+    // to keep their contrast.
     //
     // Motion by a fraction of a pixel counts as fast motion does: every such frame resamples the
     // history between its texels, which a one- or two-pixel line doesn't survive many times (at
@@ -438,9 +440,8 @@ fn cs_temporal_resolve(
     let fraction = abs(moved - round(moved));
     let resampling = 4.0 * max(fraction.x * (1.0 - fraction.x), fraction.y * (1.0 - fraction.y));
     let motion = max(saturate(length(moved) / taa.response.x), resampling);
-    let responding = responsive * motion;
-    let cap = mix(taa.history.z, taa.history.w, motion) * mix(1.0, taa.response.y, responding);
-    let gamma = mix(taa.response.z, taa.response.w, responding);
+    let cap = mix(taa.history.z, taa.history.w, motion) * (1.0 - responsive * motion);
+    let gamma = mix(taa.response.z, taa.response.w, select(0.0, motion, responsive > 0.0));
 
     // Fetched whether or not it is kept, so the fetches start before the test is done.
     let sampled = sample_history(previous_uv);

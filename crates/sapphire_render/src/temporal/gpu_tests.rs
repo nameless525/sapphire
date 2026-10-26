@@ -237,8 +237,8 @@ fn disoccluded_pixels_restart_their_accumulation() {
 fn pixels_an_outline_leaves_restart_their_accumulation() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu);
-    // 18 px at 1080 rows: 3 px here. The hull draws no velocity, and the scene prepass never
-    // saw it; only the main pass's depth shows where it was.
+    // 18 px at 1080 rows: 3 px here. The scene prepass draws the hull, so last frame's depth
+    // shows where it was.
     let ball = upload(&mut frames.renderer, &outlined_sphere(false, 18.0));
     let view = ViewData::new(camera());
     for _ in 0..24 {

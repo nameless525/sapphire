@@ -683,7 +683,8 @@ fn outlines_keep_their_place_and_darkness_in_motion() {
     let gpu = gpu();
     let size = (960, 540);
     // The default outline, 5.5 px at 1080 rows: 2.75 px here, most of it beyond what a 3 × 3
-    // velocity dilation reaches from the silhouette, since the hull draws no velocity.
+    // velocity dilation reaches from the silhouette. The hull draws its silhouette's velocity
+    // (M1 P1), so the whole line reprojects with the sphere.
     let material = flat([0.9, 0.6, 0.3], 5.5);
     let speed = 4.5 / 270.0;
     let mut taa_frames = Frames::new(&gpu, taa_settings(), size);
@@ -737,15 +738,56 @@ fn outlines_keep_their_place_and_darkness_in_motion() {
     }
 }
 
+/// Moving lines leave no trail (M1 P1): a character moving 4.5 px a frame under a still camera,
+/// and a still one under a camera panning as fast, match 4× MSAA away from its edges after 24
+/// frames. A line pixel tries other reprojections than its hull's motion and keeps the one whose
+/// history matches best; a wrong pick would leave the line behind.
 #[test]
 #[ignore = "needs a GPU"]
-fn the_responsive_mask_marks_visible_characters() {
+fn moving_lines_leave_no_trail() {
+    let gpu = gpu();
+    let size = (960, 540);
+    let mesh = character_sphere(&flat([0.9, 0.6, 0.3], 5.5));
+    // 270 px a world unit in the plane z = 0.
+    let step = 4.5 / 270.0;
+    let moving =
+        |frame: u32| (camera(size, Vec3::ZERO, 2.0), translate(-0.6 + step * frame as f32, 0.0, 0.5));
+    let panning =
+        |frame: u32| (camera(size, Vec3::new(-step * frame as f32, 0.0, 0.0), 2.0), translate(0.3, 0.0, 0.5));
+    type Scene<'a> = &'a dyn Fn(u32) -> (CameraData, Mat4);
+    let scenes: [(&str, Scene<'_>); 2] = [("moving", &moving), ("panning", &panning)];
+    for (name, scene) in scenes {
+        let mut taa = Frames::taa(&gpu, size);
+        let mut msaa = Frames::msaa(&gpu, size);
+        let (taa_ball, msaa_ball) = (upload(&mut taa.renderer, &mesh), upload(&mut msaa.renderer, &mesh));
+        let (mut taa_pixels, mut msaa_pixels) = (Vec::new(), Vec::new());
+        for frame in 0..24 {
+            let (view, at) = scene(frame);
+            taa_pixels = taa.frame(&gpu, ViewData::new(view), &[instance(0, taa_ball, at)], &[]);
+            msaa_pixels = msaa.frame(&gpu, ViewData::new(view), &[instance(0, msaa_ball, at)], &[]);
+        }
+        dump(&format!("trail_{name}_taa"), size, &taa_pixels);
+        dump(&format!("trail_{name}_msaa"), size, &msaa_pixels);
+        let edges = edge_zone(&msaa_pixels, size, 2);
+        let (worst, over) = outside(&taa_pixels, &msaa_pixels, &edges, 12);
+        eprintln!("{name}: away from 4× MSAA's edges max {worst}, {over} pixels over 12");
+        assert!(over < 20 && worst < 32, "{name}: {over} pixels away from edges differ, by up to {worst}");
+    }
+}
+
+/// The responsive mask holds each pixel's reactivity (M1 P1): characters' (half the moving cap,
+/// 128) where a character is the nearest surface, lines' (all of it, 255) where an outline hull
+/// is, and nothing elsewhere: behind a wall, on other geometry and on the sky.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_responsive_mask_marks_visible_characters_and_lines() {
     let gpu = gpu();
     let size = (240, 135);
     let mut frames = Frames::taa(&gpu, size);
     let material = flat([0.8; 3], 0.0);
     let character = upload(&mut frames.renderer, &character_sphere(&material));
     let ball = upload(&mut frames.renderer, &sphere(&material));
+    let outlined = upload(&mut frames.renderer, &sphere(&flat([0.8; 3], 40.0)));
     let wall = upload(&mut frames.renderer, &rectangles(&[[[-0.6, -1.0], [-0.45, 1.0]]], &material));
     let view = ViewData::new(camera(size, Vec3::ZERO, 2.0));
     let mask = Readback::new(&gpu, size, 1);
@@ -754,6 +796,8 @@ fn the_responsive_mask_marks_visible_characters() {
         instance(1, ball, translate(0.5, 0.0, 0.35)),
         // In front of the character's middle.
         instance(2, wall, Mat4::from_translation(Vec3::new(0.0, 0.0, 0.5))),
+        // Above the static sphere, its line a few pixels wide.
+        instance(3, outlined, translate(0.5, 0.6, 0.2)),
     ];
     frames.frame(&gpu, view, &changed, &[(|t| t.responsive, &mask)]);
     let texels = mask.texels(&gpu);
@@ -763,14 +807,19 @@ fn the_responsive_mask_marks_visible_characters() {
     };
     // In perspective the wall, nearer the camera, covers x ∈ [-0.69, -0.52] on screen, and the
     // character x ∈ [-0.89, -0.13].
-    assert_eq!(at(-0.8, 0.0), 255, "the character, left of the wall");
-    assert_eq!(at(-0.35, 0.1), 255, "the character, right of it");
+    assert_eq!(at(-0.8, 0.0), 128, "the character, left of the wall");
+    assert_eq!(at(-0.35, 0.1), 128, "the character, right of it");
     assert_eq!(at(-0.6, 0.0), 0, "behind the wall");
     assert_eq!(at(0.5, 0.0), 0, "a static sphere");
     assert_eq!(at(0.0, 0.5), 0, "the sky");
-    let marked = texels.iter().filter(|texel| texel[0] == 255).count();
-    assert!(texels.iter().all(|texel| texel[0] == 0 || texel[0] == 255));
-    assert!(marked > 1000, "{marked} pixels");
+    // The outlined sphere's silhouette lies about 0.2 units from its middle on screen; its line
+    // just outside it.
+    assert_eq!(at(0.5, 0.6), 0, "the outlined sphere");
+    assert_eq!(at(0.5 + 0.23, 0.6), 255, "its line");
+    let count = |value: u8| texels.iter().filter(|texel| texel[0] == value).count();
+    let (characters, lines) = (count(128), count(255));
+    assert!(texels.iter().all(|texel| [0, 128, 255].contains(&texel[0])));
+    assert!(characters > 1000 && lines > 100, "{characters} character and {lines} line pixels");
 }
 
 #[test]

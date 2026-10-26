@@ -1,8 +1,8 @@
 //! Outlines v2 (M1 C4) on the GPU: hulls that stay closed at hard edges and through skinning,
 //! the width's distance curve, FOV normalization, model scale and LOD cutoff, view-space
-//! flattening and push-back, lines lit in light, shade and at night, and the hull's own velocity,
-//! under motion and under temporal AA. Run with `cargo test -p sapphire_render --tests --
-//! --ignored`.
+//! flattening and push-back, lines lit in light, shade and at night, and the hull's own velocity;
+//! and lines under temporal AA (M1 P1) against 4× MSAA: turning, under a circling camera,
+//! upsampled and held still. Run with `cargo test -p sapphire_render --tests -- --ignored`.
 
 use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
@@ -754,9 +754,14 @@ fn hard_edges_keep_their_hulls_closed_static_and_skinned() {
     assert_eq!(bent, 0, "the bent box's hull stays closed");
 }
 
+/// A hull pixel's velocity is its line's (M1 C4, the silhouette's since M1 P1): exactly none
+/// held still; under a translation or a camera pan the silhouette's motion, not that of the
+/// deeper hull points the line shows; and on a body turning about its own axis next to none,
+/// where those points slide by up to 3.4 px a frame (0.1 rad a frame; 3 rad/s at 60 fps is half
+/// that). The line measures 19–28% of the sliding at each pixel, 18% in all.
 #[test]
 #[ignore = "needs a GPU"]
-fn hulls_move_with_their_own_velocity() {
+fn hulls_move_with_their_silhouette() {
     let gpu = gpu();
     let mut frames = Frames::msaa(&gpu);
     let velocity = Readback::new(&gpu);
@@ -770,13 +775,13 @@ fn hulls_move_with_their_own_velocity() {
     let silhouette_px = (radius / (distance * distance - radius * radius).sqrt()) / tan * SIZE.1 as f32 / 2.0;
     let row = SIZE.1 / 2;
     // A pixel `out` pixels beyond the silhouette shows the hull of the sphere point `line − out`
-    // pixels inside it on the far side, which lies deeper than the silhouette: where it is, a
-    // translation moves it by the inverse of that depth.
-    let depth_of = |out: f32| {
-        let meters_per_pixel = 2.0 * silhouette_depth(distance, radius) * tan / SIZE.1 as f32;
+    // pixels inside it on the far side, which lies deeper than the silhouette.
+    let meters_per_pixel = 2.0 * silhouette_depth(distance, radius) * tan / SIZE.1 as f32;
+    let behind = |out: f32| {
         let cosine = 1.0 - (line - out) * meters_per_pixel / radius;
-        silhouette_depth(distance, radius) + radius * (1.0 - cosine * cosine).max(0.0).sqrt()
+        (1.0 - cosine * cosine).max(0.0).sqrt()
     };
+    let depth_of = |out: f32| silhouette_depth(distance, radius) + radius * behind(out);
     // Pixels 3, 5 and 8 out on each side, around a center `offset` pixels right of the image's.
     let pixels = |offset: f32| {
         let center = SIZE.0 as f32 / 2.0 + offset;
@@ -794,7 +799,8 @@ fn hulls_move_with_their_own_velocity() {
         assert_eq!(rg16f(at(&texels, x, row)), [0.0, 0.0], "still: none at x = {x}");
     }
 
-    // Moved right by 5 cm: the hull with its surface, each part by its own depth.
+    // Moved right by 5 cm: the line with the silhouette, though the hull points it shows are
+    // deeper and move less (by the inverse of their depth).
     let step = 0.05;
     let shift = |depth: f32| 0.5 * focal_x * step / depth * SIZE.0 as f32;
     let moved_px = shift(silhouette_depth(distance, radius));
@@ -807,11 +813,12 @@ fn hulls_move_with_their_own_velocity() {
     let texels = velocity.texels(&gpu);
     for (x, out) in pixels(moved_px) {
         let [vx, vy] = rg16f(at(&texels, x, row));
-        let (found, expected) = (vx * SIZE.0 as f32, shift(depth_of(out)));
+        let found = vx * SIZE.0 as f32;
         eprintln!(
-            "moved: the hull {out} px out moved {found:.3} px, expected {expected:.3} (the silhouette {moved_px:.3})"
+            "moved: the line {out} px out moved {found:.3} px, the silhouette {moved_px:.3} (its hull point {:.3})",
+            shift(depth_of(out))
         );
-        assert!((found - expected).abs() < 0.015 * expected && vy.abs() < 1e-4, "{found} against {expected}");
+        assert!((found - moved_px).abs() < 0.02 * moved_px && vy.abs() < 1e-4, "{found} against {moved_px}");
     }
     // Held still: exactly none.
     frames.render(&gpu, view, &[], &reads);
@@ -819,22 +826,20 @@ fn hulls_move_with_their_own_velocity() {
     for (x, _) in pixels(moved_px) {
         assert_eq!(rg16f(at(&texels, x, row)), [0.0, 0.0], "still again: none at x = {x}");
     }
-    // The camera moving left moves everything right, by the same depths.
+    // The camera moving left moves everything right, the silhouette by its depth.
     let panned = looking(Vec3::new(-step, 0.0, distance), Vec3::new(-step, 0.0, 0.0), fov);
     frames.render(&gpu, panned, &[], &reads);
     let texels = velocity.texels(&gpu);
     for (x, out) in pixels(2.0 * moved_px) {
-        let (found, expected) = (rg16f(at(&texels, x, row))[0] * SIZE.0 as f32, shift(depth_of(out)));
-        eprintln!("panned: the hull {out} px out moved {found:.3} px, expected {expected:.3}");
-        assert!((found - expected).abs() < 0.015 * expected, "{found} against {expected}");
+        let found = rg16f(at(&texels, x, row))[0] * SIZE.0 as f32;
+        eprintln!("panned: the line {out} px out moved {found:.3} px, the silhouette {moved_px:.3}");
+        assert!((found - moved_px).abs() < 0.02 * moved_px, "{found} against {moved_px}");
     }
 
     // Turning about its own vertical axis by ω, the silhouette holds still while the surface
     // slides: the front's middle across at ωR, the sphere's points behind the silhouette the other
-    // way at ωR sin β, β past it. The line shows the hull of those points, and moves with them, as
-    // much slower and the other way as they are: closer to the silhouette's stillness than the
-    // front's surface (R7's resolve borrowed that until hulls drew velocity), and still the
-    // farther from it the deeper into the line.
+    // way at ωR sin β, β past it. The line shows the hull of those points, but holds still with
+    // the silhouette.
     let turn = 0.1;
     // A second sphere at rest in the middle of the first view, the first out of the way.
     let away = instance(1, mesh, Mat4::from_translation(Vec3::splat(1e4)));
@@ -845,64 +850,216 @@ fn hulls_move_with_their_own_velocity() {
     let front = 0.5 * focal_x * turn * radius / (distance - radius) * SIZE.0 as f32;
     eprintln!("turning: the surface's middle moves {center:.2} px, expected {front:.2}");
     assert!((center - front).abs() < 0.03 * front, "{center} against {front}");
-    let meters_per_pixel = 2.0 * silhouette_depth(distance, radius) * tan / SIZE.1 as f32;
-    let found: Vec<(f32, f32)> =
-        pixels(0.0).map(|(x, out)| (out, rg16f(at(&texels, x, row))[0] * SIZE.0 as f32)).collect();
-    for &[(out, left), (_, right)] in found.as_chunks::<2>().0 {
-        let cosine = 1.0 - (line - out) * meters_per_pixel / radius;
-        let sine = (1.0 - cosine * cosine).sqrt();
-        let expected = -0.5 * focal_x * turn * radius * sine / depth_of(out) * SIZE.0 as f32;
-        // The points' motion in depth shifts both sides alike by perspective; their mean is the
-        // sliding alone.
-        let mean = 0.5 * (left + right);
-        eprintln!(
-            "turning: the hull {out} px out moves {left:.3} and {right:.3} px, the sliding {expected:.3}"
-        );
-        assert!((mean - expected).abs() < 0.1 * expected.abs(), "{mean} against {expected}");
-        assert!(left < 0.0 && right < 0.0 && left.max(right).abs() < 0.4 * front, "{left}, {right}: {front}");
+    let (mut moved, mut slid) = (0.0, 0.0);
+    for (x, out) in pixels(0.0) {
+        let found = rg16f(at(&texels, x, row))[0] * SIZE.0 as f32;
+        let sliding = 0.5 * focal_x * turn * radius * behind(out) / depth_of(out) * SIZE.0 as f32;
+        eprintln!("turning: the line {out} px out moves {found:.3} px, its hull point slides {sliding:.3}");
+        assert!(found.abs() < 0.35 * sliding, "{found} against the sliding {sliding}");
+        moved += found.abs();
+        slid += sliding;
+    }
+    assert!(moved < 0.25 * slid, "the line moves {moved} px against its points' {slid} in all");
+}
+
+/// How the lines around a sphere's silhouette look in one frame: each pixel's darkness against
+/// the grey sky, in windows across both sides of the silhouette on 17 rows through it.
+struct Lines(Vec<f32>);
+
+impl Lines {
+    /// The windows around a sphere of `radius_px` centered on the image: from 14 px outside the
+    /// silhouette to 3 px inside it, where the line and its antialiased edges lie.
+    fn of(pixels: &[[u8; 4]], radius_px: f32) -> Self {
+        let center = (SIZE.0 as f32 / 2.0, SIZE.1 as f32 / 2.0);
+        let mut darkness = Vec::new();
+        for row in -8..=8 {
+            let dy = row as f32 * radius_px / 10.0;
+            let half = (radius_px * radius_px - dy * dy).sqrt();
+            let y = (center.1 + dy) as u32;
+            for (from, to) in [
+                (center.0 - half - 14.0, center.0 - half + 3.0),
+                (center.0 + half - 3.0, center.0 + half + 14.0),
+            ] {
+                darkness.extend(
+                    (from as u32..to as u32)
+                        .map(|x| (1.0 - linear(at(pixels, x, y)).y / 0.5).clamp(0.0, 1.0)),
+                );
+            }
+        }
+        Self(darkness)
+    }
+
+    /// The lines' strength: their total darkness.
+    fn strength(&self) -> f32 {
+        self.0.iter().sum()
+    }
+
+    /// Their contrast: the darkness-weighted mean darkness, which a blurred line loses.
+    fn contrast(&self) -> f32 {
+        self.0.iter().map(|d| d * d).sum::<f32>() / self.strength().max(1e-6)
+    }
+
+    /// Their width: how many pixels' worth the darkness spreads over (`strength / contrast`).
+    fn width(&self) -> f32 {
+        self.strength() / self.contrast().max(1e-6)
+    }
+
+    /// The mean change of a pixel's darkness from `previous`.
+    fn change(&self, previous: &Self) -> f32 {
+        self.0.iter().zip(&previous.0).map(|(a, b)| (a - b).abs()).sum::<f32>() / self.0.len() as f32
     }
 }
 
-#[test]
-#[ignore = "needs a GPU"]
-fn a_turning_body_keeps_its_outline_under_temporal_aa() {
-    let gpu = gpu();
+/// How lines under TAA compare with 4× MSAA's over the last 8 frames of `frames` (a jitter cycle):
+/// their strength, contrast and width relative to MSAA's, and their mean frame-to-frame change
+/// (MSAA's alongside).
+#[derive(Debug)]
+struct LineComparison {
+    strength: f32,
+    contrast: f32,
+    width: f32,
+    change: f32,
+    msaa_change: f32,
+}
+
+/// Draws the outlined unit sphere 4 m from the camera (its default 5.5 px line, 2.75 px here)
+/// with TAA at render scale `scale` and with 4× MSAA alike for `frames` frames, frame `n` seen
+/// by `view(n)` with the sphere at `transform(n)`, and compares their lines.
+fn compare_lines(
+    gpu: &GpuContext,
+    scale: impl Fn(u32) -> f32,
+    frames: u32,
+    view: impl Fn(u32) -> CameraData,
+    transform: impl Fn(u32) -> Mat4,
+) -> LineComparison {
     let taa_settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
-    let mut taa = Frames::new(&gpu, taa_settings);
-    let mut msaa = Frames::msaa(&gpu);
-    // 5.5 px at 1080 rows (the default), 2.75 here: beyond a 3 × 3 dilation's reach.
-    let material = flat([0.9, 0.6, 0.3], 5.5);
-    let (radius, distance, fov): (f32, f32, f32) = (1.0, 4.0, 45.0);
-    let taa_ball = upload(&mut taa.renderer, &sphere(radius, &material, |n| n));
-    let msaa_ball = upload(&mut msaa.renderer, &sphere(radius, &material, |n| n));
-    let view = camera(Vec3::new(0.0, 0.0, distance), fov);
-    let silhouette_px = (radius / (distance * distance - radius * radius).sqrt())
-        / (fov.to_radians() * 0.5).tan()
-        * SIZE.1 as f32
-        / 2.0;
-    let row = SIZE.1 / 2;
-    // Each side's outline along the middle row: its total darkness against the sky.
-    let darkness = |pixels: &[[u8; 4]], range: std::ops::Range<u32>| -> f32 {
-        range.map(|x| (1.0 - linear(at(pixels, x, row)).y / 0.5).clamp(0.0, 1.0)).sum()
-    };
-    let center = SIZE.0 / 2;
-    let left = center - silhouette_px as u32 - 12..center - silhouette_px as u32 + 2;
-    let right = center + silhouette_px as u32 - 2..center + silhouette_px as u32 + 12;
-    // Turning at 3 rad/s at 60 fps, as the golden scene `turntable-taa-motion` does, averaged over
-    // a jitter cycle after 16 frames to settle.
-    let (mut taa_dark, mut msaa_dark) = (0.0, 0.0);
-    for frame in 0..24 {
-        let turn = Mat4::from_rotation_y(0.05 * frame as f32);
-        let taa_pixels = taa.render(&gpu, view, &[instance(1, taa_ball, turn)], &[]);
-        let msaa_pixels = msaa.render(&gpu, view, &[instance(1, msaa_ball, turn)], &[]);
-        if frame >= 16 {
-            taa_dark += (darkness(&taa_pixels, left.clone()) + darkness(&taa_pixels, right.clone())) / 16.0;
-            msaa_dark +=
-                (darkness(&msaa_pixels, left.clone()) + darkness(&msaa_pixels, right.clone())) / 16.0;
+    let mut taa = Frames::new(gpu, taa_settings);
+    let mut msaa = Frames::msaa(gpu);
+    let mesh = sphere(1.0, &flat([0.9, 0.6, 0.3], 5.5), |n| n);
+    let (taa_ball, msaa_ball) = (upload(&mut taa.renderer, &mesh), upload(&mut msaa.renderer, &mesh));
+    let radius_px = (1.0 / 15f32.sqrt()) / 22.5f32.to_radians().tan() * SIZE.1 as f32 / 2.0;
+    let (mut taa_lines, mut msaa_lines) = (Vec::new(), Vec::new());
+    for frame in 0..frames {
+        let at = transform(frame);
+        taa.renderer.set_render_scale(scale(frame));
+        let taa_pixels = taa.render(gpu, view(frame), &[instance(1, taa_ball, at)], &[]);
+        let msaa_pixels = msaa.render(gpu, view(frame), &[instance(1, msaa_ball, at)], &[]);
+        if frame + 8 >= frames {
+            taa_lines.push(Lines::of(&taa_pixels, radius_px));
+            msaa_lines.push(Lines::of(&msaa_pixels, radius_px));
         }
     }
-    eprintln!("turning: TAA's outline darkness {taa_dark:.2} a side against 4× MSAA's {msaa_dark:.2}");
-    assert!(taa_dark > 0.85 * msaa_dark && taa_dark < 1.15 * msaa_dark, "{taa_dark} against {msaa_dark}");
+    let total = |lines: &[Lines], measure: fn(&Lines) -> f32| lines.iter().map(measure).sum::<f32>();
+    let change = |lines: &[Lines]| {
+        lines.windows(2).map(|pair| pair[1].change(&pair[0])).sum::<f32>() / (lines.len() - 1) as f32
+    };
+    LineComparison {
+        strength: total(&taa_lines, Lines::strength) / total(&msaa_lines, Lines::strength),
+        contrast: total(&taa_lines, Lines::contrast) / total(&msaa_lines, Lines::contrast),
+        width: total(&taa_lines, Lines::width) / total(&msaa_lines, Lines::width),
+        change: change(&taa_lines),
+        msaa_change: change(&msaa_lines),
+    }
+}
+
+/// The camera 4 m from the origin on a circle about the vertical axis, `angle` round it from +Z.
+fn circling(angle: f32) -> CameraData {
+    camera(Vec3::new(4.0 * angle.sin(), 0.0, 4.0 * angle.cos()), 45.0)
+}
+
+/// Turning at 3 rad/s at 60 fps, as the golden scenes `turntable-taa-motion` and
+/// `outlines-turning-taa` do.
+const TURN: f32 = 0.05;
+
+/// A body turning about its own axis under TAA (M1 P1): its silhouette, and so its line, holds
+/// still while the hull's points slide through it (`hulls_move_with_their_silhouette`). With
+/// the hull points' velocity and characters' reactivity (M1 C4's resolve), the line smeared
+/// across itself: 82% of 4× MSAA's contrast, 122% of its width, and its pixels changed 4.2 times
+/// as much from frame to frame as MSAA's. With the line's velocity, drawn from the current frame
+/// in motion and reprojected by whichever reprojection's history matches best: 94%, 115% and
+/// 2.9 times.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_turning_body_keeps_its_lines_crisp_and_steady_under_temporal_aa() {
+    let gpu = gpu();
+    let still_camera = |_| camera(Vec3::new(0.0, 0.0, 4.0), 45.0);
+    let lines =
+        compare_lines(&gpu, |_| 1.0, 32, still_camera, |frame| Mat4::from_rotation_y(TURN * frame as f32));
+    eprintln!("turning: {lines:?}");
+    assert!((0.9..1.15).contains(&lines.strength), "{lines:?}");
+    assert!(lines.contrast > 0.9 && lines.width < 1.19, "{lines:?}");
+    assert!(lines.change < 3.6 * lines.msaa_change, "{lines:?}");
+}
+
+/// A camera circling a still body under TAA (M1 P1): the same sliding, from the camera's motion,
+/// with the silhouette holding still on screen. Before: 82% of 4× MSAA's contrast, 122% of its
+/// width and 4.0 times its change a frame; now 96%, 112% and 3.1 times.
+#[test]
+#[ignore = "needs a GPU"]
+fn lines_hold_still_under_a_circling_camera() {
+    let gpu = gpu();
+    let lines = compare_lines(&gpu, |_| 1.0, 32, |frame| circling(TURN * frame as f32), |_| Mat4::IDENTITY);
+    eprintln!("circling: {lines:?}");
+    assert!((0.9..1.15).contains(&lines.strength), "{lines:?}");
+    assert!(lines.contrast > 0.9 && lines.width < 1.19, "{lines:?}");
+    assert!(lines.change < 3.6 * lines.msaa_change, "{lines:?}");
+}
+
+/// Upsampled (Desktop-High draws 1440 rows of a 4K output), a turning body's line keeps its width
+/// in output pixels (M1 P1): the scene at two thirds of the output's size, against native 4×
+/// MSAA. Before, it spread to 147% of MSAA's width at 69% of its contrast; now 118% and 88%.
+/// Held still, the upsampled line measures 125% and 85% here, as before, and on the sandbox's
+/// character at 4K 103% and 96%.
+#[test]
+#[ignore = "needs a GPU"]
+fn upsampled_lines_keep_their_width_in_output_pixels() {
+    let gpu = gpu();
+    let still_camera = |_| camera(Vec3::new(0.0, 0.0, 4.0), 45.0);
+    let lines =
+        compare_lines(&gpu, |_| 0.667, 32, still_camera, |frame| Mat4::from_rotation_y(TURN * frame as f32));
+    eprintln!("upsampled, turning: {lines:?}");
+    assert!((0.9..1.15).contains(&lines.strength), "{lines:?}");
+    assert!(lines.width < 1.3 && lines.contrast > 0.84, "{lines:?}");
+}
+
+/// A render-scale step (dynamic resolution) in mid-turn is a non-event for lines (M1 P1): the
+/// history is at the output's size and outlives it (M1 R7), and a moving line is drawn from the
+/// current frame at whatever size the scene is. Stepping from 1 to 0.85 halfway through the
+/// measured frames, the line measures between its measures at either scale held (107% of 4×
+/// MSAA's strength, against 105% and 108%; 93% of its contrast, against 92% and 94%) and
+/// changes from frame to frame no more than at 0.85 (0.037 a pixel, against 0.043 and 0.033).
+#[test]
+#[ignore = "needs a GPU"]
+fn lines_ride_out_a_render_scale_step() {
+    let gpu = gpu();
+    let still_camera = |_| camera(Vec3::new(0.0, 0.0, 4.0), 45.0);
+    let turning = |frame: u32| Mat4::from_rotation_y(TURN * frame as f32);
+    let native = compare_lines(&gpu, |_| 1.0, 32, still_camera, turning);
+    let reduced = compare_lines(&gpu, |_| 0.85, 32, still_camera, turning);
+    let stepped = compare_lines(&gpu, |frame| if frame < 28 { 1.0 } else { 0.85 }, 32, still_camera, turning);
+    eprintln!("at 1: {native:?}\nat 0.85: {reduced:?}\nstepped from 1 to 0.85: {stepped:?}");
+    for (name, found, at_native, at_reduced) in [
+        ("strength", stepped.strength, native.strength, reduced.strength),
+        ("contrast", stepped.contrast, native.contrast, reduced.contrast),
+        ("width", stepped.width, native.width, reduced.width),
+    ] {
+        let (low, high) = (at_native.min(at_reduced), at_native.max(at_reduced));
+        assert!(found > low * 0.97 && found < high * 1.03, "{name}: {found} against {low}–{high}");
+    }
+    assert!(stepped.change < 1.1 * native.change.max(reduced.change), "{stepped:?}");
+}
+
+/// Held still, lines converge and hold steady: the full history, unchanged by M1 P1 (91% of 4×
+/// MSAA's contrast, 116% of its width, a pixel changing by 0.015 a frame).
+#[test]
+#[ignore = "needs a GPU"]
+fn still_lines_hold_steady() {
+    let gpu = gpu();
+    let still_camera = |_| camera(Vec3::new(0.0, 0.0, 4.0), 45.0);
+    let lines = compare_lines(&gpu, |_| 1.0, 40, still_camera, |_| Mat4::from_rotation_y(0.3));
+    eprintln!("still: {lines:?}");
+    assert!((0.95..1.15).contains(&lines.strength) && lines.contrast > 0.88, "{lines:?}");
+    assert!(lines.change < 0.02, "{lines:?}");
 }
 
 /// Writes `pixels` as `<name>.png` into `SAPPHIRE_OUTLINE_DUMP`, if set.

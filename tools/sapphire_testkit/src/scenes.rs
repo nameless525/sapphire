@@ -44,7 +44,7 @@ pub struct Scene {
 /// The screen effect scenes (M1 P3) push the sample presets held on one frame
 /// (`--post-effect <preset>@<seconds>`) over the full look; no earlier scene pushes any, and an
 /// empty effect stack draws exactly what it drew before, so nothing earlier needs pinning.
-pub fn scenes() -> [Scene; 35] {
+pub fn scenes() -> [Scene; 36] {
     [
         Scene {
             name: "turntable-start",
@@ -513,7 +513,8 @@ pub fn scenes() -> [Scene; 35] {
             thresholds: Thresholds::default(),
         },
         // A close-up of the character turning at 3 rad/s under temporal AA (M1 C4): its hulls
-        // write velocity in the prepass, so the lines stay as crisp as 4× MSAA draws them.
+        // write their line's velocity in the prepass, the silhouette's (M1 P1), and moving lines
+        // resolve from the current frame, so they stay as crisp as 4× MSAA draws them.
         Scene {
             name: "outlines-turning-taa",
             args: &[
@@ -523,6 +524,33 @@ pub fn scenes() -> [Scene; 35] {
                 "0.6",
                 "--aa",
                 "taa",
+                "--spin",
+                "3",
+                "--capture-frames",
+                "32",
+                "--capture-step",
+                "1",
+                "--plain-post",
+                "--plain-sky",
+                "--shadows",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same close-up upsampled (M1 P1): the scene at two thirds of the output's size
+        // (427×240 to 640×360), as Desktop-High draws 4K from 1440 rows. The turning lines keep
+        // their width in output pixels and their darkness.
+        Scene {
+            name: "outlines-turning-taa-upsampled",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--zoom",
+                "0.6",
+                "--aa",
+                "taa",
+                "--render-scale",
+                "0.667",
                 "--spin",
                 "3",
                 "--capture-frames",

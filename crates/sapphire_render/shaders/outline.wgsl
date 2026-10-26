@@ -42,12 +42,14 @@
 // unlisted instance's.
 //
 // Velocity: the scene prepass draws the hulls too (`vs_outline_prepass`), after the surfaces,
-// with this frame's and the last frame's clip positions, so temporal AA reprojects a hull pixel
-// by the motion of the hull itself, and its depth is the main pass's. A hull vertex moves with
-// its surface vertex (the last drawn pose, slot 4), its instance's last transform and the last
-// frame's camera. A skinned outline normal is this frame's in both: the skinning outputs keep
-// last frame's positions, not normals. The hulls also write the prepass's outline mask, which
-// keeps lines responsive under temporal AA.
+// with this frame's and the last frame's clip positions, and its depth is the main pass's. A
+// hull vertex moves with its surface vertex (the last drawn pose, slot 4), its instance's last
+// transform and the last frame's camera. A skinned outline normal is this frame's in both: the
+// skinning outputs keep last frame's positions, not normals. A hull pixel writes its line's
+// velocity, the motion of the silhouette it draws rather than of the hull's point there
+// (`fs_outline_prepass`, M1 P1), so temporal AA, and any upscaler that replaces it, reprojects
+// the line with the silhouette. The hulls also write the prepass's outline mask, which makes
+// lines fully reactive under temporal AA: a moving line is drawn from the current frame.
 //
 // The alpha-tested permutation discards the hull where the base color map's coverage is below
 // the material's cutoff, so cutouts get no outline across their holes; its prepass doesn't, as
@@ -59,6 +61,11 @@ const OUTLINE_REFERENCE_TAN_HALF_FOV: f32 = 0.41421356;
 // The share of the cutoff distance, at its end, over which the width fades out
 // (`OutlineCurve::FADE`).
 const OUTLINE_CUTOFF_FADE: f32 = 0.25;
+// How many line widths a hull pixel's velocity follows the facing's gradient to the silhouette
+// (`fs_outline_prepass`): the facing grows like a square root of the distance from the
+// silhouette, so a linear estimate from inside the line overshoots it (by 1.6 times at a sphere
+// line's inner edge).
+const OUTLINE_SILHOUETTE_REACH: f32 = 2.0;
 
 struct OutlineVaryings {
     // Invariant, so the hull's prepass (`vs_outline_prepass`) computes the same depth.
@@ -261,6 +268,20 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     return vec4<f32>(select(mix(line, lit_line, style.y), line, style.y <= 0.0), world);
 }
 
+// The hull in the scene prepass: `ScenePrepassVaryings` (frame.wgsl), and how squarely the
+// outline normal faces the camera, which the fragment stage follows to the silhouette.
+struct OutlinePrepassVaryings {
+    @builtin(position) @invariant clip_position: vec4<f32>,
+    @location(0) world_normal: vec3<f32>,
+    @location(1) current: vec4<f32>,
+    @location(2) previous: vec4<f32>,
+    // The outline normal's cosine with the direction to the camera at the surface vertex: 0 on
+    // the silhouette, negative on the back of the hull that shows as the line.
+    @location(3) facing: f32,
+    // How far, in pixels, the extrusion moved the vertex across the screen: the line's width.
+    @location(4) reach: f32,
+}
+
 // The hull in the scene prepass: depth, its outline normal and its velocity.
 @vertex
 fn vs_outline_prepass(
@@ -269,7 +290,7 @@ fn vs_outline_prepass(
     // their own positions again.
     @location(10) previous_position: vec4<f32>,
     draw: DrawRecord,
-) -> ScenePrepassVaryings {
+) -> OutlinePrepassVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let width = hull_width(vertex, draw.material, outline_region(vertex, draw.material));
@@ -279,11 +300,15 @@ fn vs_outline_prepass(
         object_position(previous_position, draw),
         vertex.outline_normal,
     );
-    var out: ScenePrepassVaryings;
+    var out: OutlinePrepassVaryings;
     out.current = outline_clip(view.unjittered_clip_from_world, hull, width);
     out.clip_position = jittered(out.current);
     out.previous = outline_clip(view.previous_clip_from_world, previous, width);
     out.world_normal = hull.normal;
+    out.facing = dot(safe_normalize(hull.normal), safe_normalize(view.position.xyz - hull.position));
+    let base = view.unjittered_clip_from_world * vec4<f32>(hull.position, 1.0);
+    let across = out.current.xy / max(out.current.w, 1e-4) - base.xy / max(base.w, 1e-4);
+    out.reach = length(across * 0.5 * view.viewport.xy);
     return out;
 }
 
@@ -295,8 +320,31 @@ struct OutlinePrepassTargets {
     @location(2) outline: f32,
 }
 
+// The velocity a hull pixel writes is the line's (M1 P1): the motion of the silhouette it draws,
+// not of the hull's point there. Whenever a body turns against the view (about its own axis, or
+// under a camera circling it), its points slide through the silhouette, which moves with the
+// point on it alone: the line shows the back of the hull, points up to a line's width behind the
+// silhouette, sliding the other way. Across the line the motion changes with how squarely the
+// outline normal faces the camera, so the pixel follows its derivatives to where it faces
+// across, the silhouette, at most a line's width: a turn's sliding goes, a translation or a limb
+// swinging (the same motion everywhere, or the silhouette's own) stays.
 @fragment
-fn fs_outline_prepass(in: ScenePrepassVaryings) -> OutlinePrepassTargets {
-    let targets = scene_prepass_targets(in);
-    return OutlinePrepassTargets(targets.normal, targets.velocity, 1.0);
+fn fs_outline_prepass(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
+    let current = in.current.xy / in.current.w;
+    let previous = in.previous.xy / in.previous.w;
+    // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
+    let velocity = (current - previous) * vec2<f32>(0.5, -0.5);
+    // Derivatives first, in uniform control flow.
+    let gradient = vec2<f32>(dpdx(in.facing), dpdy(in.facing));
+    let along = dpdx(velocity) * gradient.x + dpdy(velocity) * gradient.y;
+    let steepness = max(dot(gradient, gradient), 1e-12);
+    // How far the silhouette is, in pixels, as the facing's gradient extrapolates it: farther
+    // than the hull reaches across the screen, the estimate is unsure and is followed less.
+    let distance = abs(in.facing) * inverseSqrt(steepness);
+    let followed = min(1.0, OUTLINE_SILHOUETTE_REACH * in.reach / max(distance, 1e-6));
+    let sliding = along * (in.facing * followed / steepness);
+    // Below a thousandth of a pixel the derivatives' rounding is all there is: a hull that holds
+    // still keeps exactly no velocity.
+    let line = velocity - select(vec2<f32>(0.0), sliding, dot(sliding, sliding) > 1e-12);
+    return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, 1.0);
 }

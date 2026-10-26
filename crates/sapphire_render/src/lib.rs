@@ -194,8 +194,8 @@
 //!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest).
 //!   Characters move by their skinned positions, static meshes by their instance transform, and
 //!   both by the camera's, never by temporal AA's jitter; a hull moves with its surface's
-//!   vertices, so its depth and velocity are the main pass's hull's. TAA (R7), outlines under
-//!   TAA (P1), GTAO and screen-space edges read it.
+//!   vertices, so its depth is the main pass's hull's, and its velocity is its line's, the
+//!   silhouette's motion (M1 P1). TAA (R7), GTAO and screen-space edges read it.
 //!
 //! Temporal AA reads both (its depth, velocity and responsive mask). Without it nothing reads
 //! them yet, so the frame graph culls both passes: two boxed closures a frame and no GPU time.
@@ -255,7 +255,7 @@
 //! the two LUTs and the diffusion glow's level; its input, the constants and the sampler are
 //! visible to its vertex shader too, which measures the lens flare's visibility, M1 P2) and no
 //! storage buffer. Temporal AA's two passes do the same
-//! (`shaders/temporal.wgsl`, two samplers): the resolve, a compute pass, reads seven textures,
+//! (`shaders/temporal.wgsl`, two samplers): the resolve, a compute pass, reads six textures,
 //! writes the history as a storage texture and binds no storage buffer. The view
 //! group's uniforms carry the jitter (appended in M1 R7: the unjittered `clip_from_world` and
 //! the jitter itself). The light-cluster pass (`shaders/clusters.wgsl`)
@@ -461,8 +461,10 @@
 //!   quarter first. [`RenderStats::outline_draws`] and [`RenderStats::outlines_culled`] count
 //!   both.
 //! - **Velocity:** the scene prepass draws each hull with this frame's and the last drawn
-//!   frame's clip positions and writes the outline mask, which the responsive mask takes in
-//!   ([`temporal`]), so lines follow their own motion under TAA.
+//!   frame's clip positions and writes its line's velocity, the silhouette's motion rather than
+//!   the hull point's (M1 P1), and the outline mask, which makes lines fully reactive in the
+//!   responsive mask ([`temporal`]): under TAA a moving line follows the silhouette and is
+//!   drawn from the current frame.
 //!
 //! # The sky (M1 W2)
 //!
@@ -524,7 +526,7 @@
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
 //!   vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their other consumers (rim and hair shadow, outlines under TAA (P1)); and,
+//! - **Prepasses:** their other consumers (rim and hair shadow); and,
 //!   now that TAA turns MSAA off on desktop, letting the main pass
 //!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
 //!   the prepass to cut alpha-tested surfaces out first.

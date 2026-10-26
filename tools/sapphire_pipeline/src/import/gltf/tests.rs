@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use glam::{Quat, Vec4};
-use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
+use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion, Rim};
 use sapphire_assets::mesh::{Bounds, PositionFormat, VertexFlags};
 use serde_json::json;
 
@@ -191,7 +191,15 @@ fn maps_materials_and_their_extras() {
         },
     }));
     let plain = writer.add_material(json!({ "name": "Plain", "extras": ["not", "an", "object"] }));
-    let twin = writer.add_material(json!({ "name": "Plain", "alphaMode": "BLEND" }));
+    // The depth-offset rim's settings and per-region rim scales (M1 C5).
+    let twin = writer.add_material(json!({
+        "name": "Plain",
+        "alphaMode": "BLEND",
+        "extras": {
+            "rim": { "width": 3.0, "back_light": 1.0 },
+            "rim_regions": [[1.0, 1.0, 1.0], [0.5, 2.0, 0.0]],
+        },
+    }));
     let unnamed = writer.add_material(json!({}));
     let triangle = slanted_triangle(true);
     let parts = [skin, plain, skin, twin, unnamed].map(|material| (&triangle, Some(material)));
@@ -223,7 +231,12 @@ fn maps_materials_and_their_extras() {
     assert_eq!(imported.materials[0].generated, expected);
     let white = AnimeCharacterMaterial { base_color: [1.0; 4], ..defaults.clone() };
     assert_eq!(imported.materials[1].generated, white);
-    assert_eq!(imported.materials[2].generated.alpha, AlphaMode::Blend);
+    let twin = &imported.materials[2].generated;
+    assert_eq!(twin.alpha, AlphaMode::Blend);
+    assert_eq!(twin.rim, Rim { width: 3.0, back_light: 1.0, ..Rim::default() });
+    let region = CharacterRegion::default();
+    let masked = CharacterRegion { rim_strength: 0.5, rim_width: 2.0, rim_overlap: 0.0, ..region };
+    assert_eq!(twin.regions, [region, masked], "regions past the first copy region 0 but for their rims");
     // The glTF default material is white.
     assert_eq!(imported.materials[4].generated, white);
 }
@@ -253,6 +266,14 @@ fn slot_names_stay_unique_when_names_look_made_up() {
 
 #[test]
 fn rejects_malformed_material_extras() {
+    let mut writer = GltfWriter::default();
+    let material = writer.add_material(json!({ "extras": { "rim": { "widht": 3.0 } } }));
+    let mesh = writer.add_mesh("Mesh", &[(&slanted_triangle(true), Some(material))]);
+    let node = writer.add_node(json!({ "mesh": mesh }));
+    writer.add_root(node);
+    let err = import_slice(&writer.to_glb(), None).unwrap_err();
+    assert!(matches!(err, GltfImportError::MaterialExtras { .. }), "a misspelled rim setting: {err:?}");
+
     let mut writer = GltfWriter::default();
     let material =
         writer.add_material(json!({ "name": "Broken", "extras": { "character_shading": [0.1, 0.2, 0.3] } }));

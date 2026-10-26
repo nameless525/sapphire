@@ -33,9 +33,20 @@ fn documents() -> Vec<AnyMaterialDocument> {
             CharacterRegion {
                 shade_color: [0.9, 0.5, 0.4],
                 gi: RegionGi { sphere: 1.0, skin: 0.75 },
+                rim_strength: 0.5,
+                rim_width: 1.5,
+                rim_overlap: 0.0,
                 ..CharacterRegion::default()
             },
         ],
+        rim: Rim {
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.05,
+            fresnel: 0.8,
+            light_gate: 0.25,
+            back_light: 1.0,
+        },
         matcap: Some(Matcap { map: id(TEXTURE), strength: 0.8, shadow_strength: 0.2 }),
         outline: Outline {
             curve: OutlineCurve { near: (0.25, 1.5), mid: 2.0, far: (12.0, 0.5), cutoff: 60.0 },
@@ -103,7 +114,7 @@ fn every_family_round_trips_as_a_document() {
 #[test]
 fn documents_may_leave_fields_out() {
     let text = format!(
-        r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 1, data: (
+        r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 2, data: (
             base_color: (1.0, 0.5, 0.25, 1.0),
             base_color_map: "{TEXTURE}",
             diffuse: Bands((deep_threshold: -0.4)),
@@ -124,6 +135,9 @@ fn documents_may_leave_fields_out() {
     let CharacterSurface::Face(face) = &material.surface else { panic!("a face") };
     assert_eq!(face, &FaceShading::new(id(RAMP)), "a face's settings may be left out too");
     assert_eq!((face.mask_map, face.expression_map, face.softness), (None, None, 0.02));
+    assert_eq!((face.hair_shadow, face.through_hair), (HairShadow::default(), None));
+    let region = material.regions[0];
+    assert_eq!((region.rim_strength, region.rim_width, region.rim_overlap), (1.0, 1.0, 1.0));
 
     let empty = r#"(type: "sapphire::render::SkyMaterial", version: 1, data: ())"#;
     assert_eq!(
@@ -234,7 +248,7 @@ fn cooked_materials_that_break_the_format_are_rejected() {
         let error = Material::read(&material.to_cooked().unwrap()).unwrap_err();
         assert!(expected(&error), "{error}");
     };
-    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 945, .. }));
+    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 1121, .. }));
     check(
         |m| m.family = MaterialFamily::Sky,
         |e| matches!(e, MaterialError::ParamsSize { expected: 96, .. }),
@@ -283,7 +297,7 @@ fn swizzles_pack_two_slots_to_a_word() {
 #[test]
 fn gpu_blocks_have_their_documented_sizes() {
     let sizes = MaterialFamily::ALL.map(MaterialFamily::params_size);
-    assert_eq!(sizes, [944, 144, 160, 96, 80]);
+    assert_eq!(sizes, [1120, 144, 160, 96, 80]);
     assert!(sizes.iter().all(|size| size % 16 == 0), "WGSL storage arrays stride by 16");
     assert_eq!(size_of::<AnimeCharacterRegion>(), 96);
     for family in MaterialFamily::ALL {
@@ -307,7 +321,7 @@ fn the_anime_character_block_carries_every_field() {
         [flags, 2, AnimeCharacterParams::SURFACE_HAIR, AnimeCharacterParams::HIGHLIGHT_ANGEL_RING << 8]
     );
     assert_eq!(params.split, [0.0, 0.02, 0.0, 0.4]);
-    assert_eq!(params.edges, [0.22, 0.35, 5.5, 0.0]);
+    assert_eq!(params.edges, [3.0, 0.6, 5.5, 0.0], "the rim's width in pixels and strength");
     assert_eq!(params.terms, [0.3, 0.05, 0.8, 0.2]);
     assert_eq!(params.surface[0], 0.6);
     assert_eq!((params.regions[0].shade[3], params.regions[0].deep_shade[3]), (2.0, 7.0), "ramp rows");
@@ -323,6 +337,14 @@ fn the_anime_character_block_carries_every_field() {
     assert_eq!(params.outline_shape, [1.5, 0.5, 0.6, 0.05]);
     assert_eq!(params.outline_color, [0.75, 0.5, 0.0, 0.0]);
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, outline_curve), 128 + 8 * 96);
+    // C5's settings follow the outline's; a hair material has no hair shadow or eyes through it.
+    assert_eq!(params.rim, [0.05, 0.8, 0.25, 1.0]);
+    assert_eq!((params.hair_shadow, params.through_hair), ([0.0; 4], [0.0; 4]));
+    assert_eq!(params.rim_regions[0], [1.0, 1.0, 1.0, 0.0], "a region's rim by default");
+    assert_eq!(params.rim_regions[1], [0.5, 1.5, 0.0, 0.0]);
+    assert_eq!(params.rim_regions[2], [0.0; 4], "unused regions stay zero");
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, rim), 128 + 8 * 96 + 3 * 16);
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, rim_regions), 128 + 8 * 96 + 6 * 16);
     assert_eq!(params.swizzles[0] & 0xfff, swizzle_code(RA01), "slot 0 is bound");
     assert_eq!(params.swizzles[0] >> SWIZZLE_BITS, 0x688, "slot 1 is not");
     let expected = MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE | MaterialFlags::HAIR;
@@ -371,9 +393,12 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
         highlight: 0.25,
         highlight_reveal: 0.1,
         blush_color: [1.0, 0.5, 0.6],
+        hair_shadow: HairShadow { distance: 0.02, strength: 0.75 },
+        through_hair: Some(ThroughHair { opacity: 0.6, fade_yaw: 60.0, fade_pitch: 90.0, distance: 0.1 }),
         ..FaceShading::new(id(RAMP))
     };
-    let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..Default::default() };
+    let document =
+        AnimeCharacterMaterial { surface: CharacterSurface::Face(face.clone()), ..Default::default() };
     let textures = document.textures();
     assert_eq!(textures[AnimeCharacterMaterial::FACE_SHADOW], Some(id(RAMP)));
     assert_eq!(textures[AnimeCharacterMaterial::SURFACE_MASK], Some(id(TEXTURE)));
@@ -393,7 +418,28 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
         | 1 << AnimeCharacterMaterial::EXPRESSION;
     assert_eq!(params.modes[0], bound);
     assert_eq!(params.swizzles[3] >> SWIZZLE_BITS, swizzle_code(RA01), "slot 7, the expression map's");
-    assert!(material.material_flags().contains(MaterialFlags::FACE));
+    assert!(material.material_flags().contains(MaterialFlags::FACE | MaterialFlags::THROUGH_HAIR));
+    assert_eq!(params.hair_shadow, [0.02, 0.75, 0.0, 0.0]);
+    let [opacity, yaw, pitch, distance] = params.through_hair;
+    assert_eq!((opacity, distance), (0.6, 0.1));
+    assert!((yaw - 0.5).abs() < 1e-6 && pitch.abs() < 1e-6, "the fades' cosines: {yaw}, {pitch}");
+
+    // Eyes through hair needs the mask, whose B says which parts of a face draw through.
+    let unmasked = FaceShading { mask_map: None, ..face };
+    let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(unmasked), ..Default::default() };
+    assert!(!document.flags().contains(MaterialFlags::THROUGH_HAIR));
+    // An eye draws all of itself through, unless its opacity is 0.
+    let eye = |opacity| AnimeCharacterMaterial {
+        surface: CharacterSurface::Eye(EyeShading {
+            through_hair: Some(ThroughHair { opacity, ..ThroughHair::default() }),
+            ..EyeShading::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(eye(0.5).flags(), MaterialFlags::OUTLINE | MaterialFlags::EYE | MaterialFlags::THROUGH_HAIR);
+    assert!(!eye(0.0).flags().contains(MaterialFlags::THROUGH_HAIR));
+    let params = eye(0.5).gpu_params(&[Swizzle::IDENTITY; 8]);
+    assert_eq!((params.through_hair[0], params.hair_shadow), (0.5, [0.0; 4]));
 
     let invalid = |edit: fn(&mut FaceShading)| {
         let mut face = FaceShading::new(id(RAMP));
@@ -404,4 +450,76 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
     assert!(invalid(|f| f.nose_line = -0.1).starts_with("surface.nose_line"));
     assert!(invalid(|f| f.highlight_reveal = f32::NAN).starts_with("surface.highlight_reveal"));
     assert!(invalid(|f| f.blush_color = [2.0, -1.0, 0.0]).starts_with("surface.blush_color"));
+    assert!(invalid(|f| f.hair_shadow.strength = 1.5).starts_with("surface.hair_shadow.strength"));
+    assert!(invalid(|f| f.hair_shadow.distance = -0.1).starts_with("surface.hair_shadow.distance"));
+    let through = |edit: fn(&mut ThroughHair)| {
+        let mut through = ThroughHair::default();
+        edit(&mut through);
+        invalid_through(through)
+    };
+    assert!(through(|t| t.opacity = 1.5).starts_with("surface.through_hair.opacity"));
+    assert!(through(|t| t.fade_yaw = 0.0).starts_with("surface.through_hair.fade_yaw"));
+    assert!(through(|t| t.fade_pitch = 200.0).starts_with("surface.through_hair.fade_pitch"));
+    assert!(through(|t| t.distance = f32::NAN).starts_with("surface.through_hair.distance"));
+}
+
+fn invalid_through(through: ThroughHair) -> String {
+    let face = FaceShading { through_hair: Some(through), ..FaceShading::new(id(RAMP)) };
+    let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..Default::default() };
+    document.validate().unwrap_err().to_string()
+}
+
+#[test]
+fn rims_and_regions_validate_their_ranges() {
+    let invalid = |edit: fn(&mut AnimeCharacterMaterial)| {
+        let mut document = AnimeCharacterMaterial::default();
+        edit(&mut document);
+        document.validate().unwrap_err().to_string()
+    };
+    assert!(invalid(|m| m.rim.width = -1.0).starts_with("rim.width"));
+    assert!(invalid(|m| m.rim.threshold = f32::INFINITY).starts_with("rim.threshold"));
+    assert!(invalid(|m| m.rim.fresnel = 1.5).starts_with("rim.fresnel"));
+    assert!(invalid(|m| m.rim.light_gate = -0.5).starts_with("rim.light_gate"));
+    assert!(invalid(|m| m.rim.back_light = 2.0).starts_with("rim.back_light"));
+    assert!(invalid(|m| m.regions[0].rim_strength = -1.0).starts_with("regions[0].rim_strength"));
+    assert!(invalid(|m| m.regions[0].rim_width = f32::NAN).starts_with("regions[0].rim_width"));
+    assert!(invalid(|m| m.regions[0].rim_overlap = 1.5).starts_with("regions[0].rim_overlap"));
+}
+
+/// Version 1 documents (M1 A3 to C4) load: their rim's width, the share of N·V it covered,
+/// becomes the Fresnel gate, and everything new takes its default.
+#[test]
+fn version_1_documents_upgrade() {
+    let text = format!(
+        r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 1, data: (
+            base_color: (1.0, 0.5, 0.25, 1.0),
+            regions: [(shade_color: (0.8, 0.4, 0.4), rim_color: (1.0, 0.9, 0.8))],
+            surface: Face((shadow_map: "{RAMP}", softness: 0.03)),
+            rim: (width: 0.3, strength: 0.6),
+            outline: (width: 4.0),
+        ))"#
+    );
+    let AnyMaterialDocument::AnimeCharacter(material) = AnyMaterialDocument::from_ron(&text).unwrap() else {
+        panic!("an anime character material");
+    };
+    assert_eq!(material.rim, Rim { fresnel: 0.3, strength: 0.6, ..Rim::default() });
+    assert_eq!(material.base_color, [1.0, 0.5, 0.25, 1.0]);
+    assert_eq!(material.regions[0].rim_color, [1.0, 0.9, 0.8]);
+    assert_eq!(material.regions[0].rim_overlap, 1.0);
+    assert_eq!(material.outline.width, 4.0);
+    let CharacterSurface::Face(face) = &material.surface else { panic!("a face") };
+    assert_eq!(face, &FaceShading { softness: 0.03, ..FaceShading::new(id(RAMP)) });
+
+    // A version 1 document that leaves the rim out keeps version 1's default extent.
+    let bare = r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 1, data: ())"#;
+    let AnyMaterialDocument::AnimeCharacter(material) = AnyMaterialDocument::from_ron(bare).unwrap() else {
+        panic!("an anime character material");
+    };
+    assert_eq!(
+        material,
+        AnimeCharacterMaterial { rim: Rim { fresnel: 0.22, ..Rim::default() }, ..Default::default() }
+    );
+    // What's written is version 2.
+    let written = AnyMaterialDocument::AnimeCharacter(material).to_ron().unwrap();
+    assert!(written.contains("version: 2"), "{written}");
 }

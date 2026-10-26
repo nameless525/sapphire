@@ -99,19 +99,27 @@ pub(crate) struct Subject {
 /// Uploads the floor and the pillar, each with its embedded material, and the `character`
 /// split from its pedestal (see the module docs).
 pub(crate) fn upload_stage(renderer: &mut Renderer, character: &Mesh) -> Result<StageMeshes, AppInitError> {
-    let mut upload = |mesh: &Mesh| -> Result<MeshHandle, AppInitError> {
-        let bytes = mesh.to_cooked().map_err(AppInitError::msg)?;
-        let mesh = Mesh::read(&bytes)?;
-        let materials = renderer.upload_embedded_materials(mesh)?;
-        Ok(renderer.upload_mesh(mesh, &materials)?)
-    };
     let (figure, pedestal) = split_pedestal(character);
     Ok(StageMeshes {
-        floor: upload(&floor_mesh())?,
-        pillar: upload(&pillar_mesh())?,
-        figure: upload(&figure)?,
-        pedestal: pedestal.as_ref().map(&mut upload).transpose()?,
+        floor: upload(renderer, &floor_mesh())?,
+        pillar: upload(renderer, &pillar_mesh())?,
+        figure: upload(renderer, &figure)?,
+        pedestal: pedestal.as_ref().map(|pedestal| upload(renderer, pedestal)).transpose()?,
     })
+}
+
+/// Uploads the `character` without its pedestal: the stage's figure, and the rim rig's
+/// (`crate::rims`).
+pub(crate) fn upload_figure(renderer: &mut Renderer, character: &Mesh) -> Result<MeshHandle, AppInitError> {
+    upload(renderer, &split_pedestal(character).0)
+}
+
+/// Uploads `mesh` with its embedded materials, as cooked.
+pub(crate) fn upload(renderer: &mut Renderer, mesh: &Mesh) -> Result<MeshHandle, AppInitError> {
+    let bytes = mesh.to_cooked().map_err(AppInitError::msg)?;
+    let mesh = Mesh::read(&bytes)?;
+    let materials = renderer.upload_embedded_materials(mesh)?;
+    Ok(renderer.upload_mesh(mesh, &materials)?)
 }
 
 /// `mesh` without its pedestal's submeshes, and the pedestal's alone (`None` without a

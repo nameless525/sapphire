@@ -1085,7 +1085,9 @@ fn each_character_takes_its_own_key_light() {
 fn the_rim_takes_the_key_lights_color_and_the_rigs_scale() {
     let mut harness = Harness::new(128);
     harness.frame_unit(0.8);
-    let rimmed = AnimeCharacterMaterial { rim: Rim { width: 0.3, strength: 0.6 }, ..plain() };
+    // A wide rim (in pixels at 1080 rows), so it covers a few of this small target's.
+    let rimmed =
+        AnimeCharacterMaterial { rim: Rim { width: 30.0, strength: 0.6, ..Rim::default() }, ..plain() };
     let material = harness.material(&rimmed, &[]).unwrap();
     let mesh = harness.mesh(&sphere(|_| ([255; 3], VertexFlags::NONE)), material);
     let id = harness.add(mesh, Mat4::IDENTITY);

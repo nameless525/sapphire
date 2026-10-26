@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "696a3e12-2b79-42e4-a077-f07c3a140e3b",
+        importer: Texture((
+            class: Mask((
+                channels: Three,
+            )),
+        )),
+    ),
+)

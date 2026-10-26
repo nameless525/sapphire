@@ -33,9 +33,8 @@ struct AnimeCharacterParams {
     base_color: vec4<f32>,
     // x: light-split threshold on N·L; y: split softness; z: deep shade threshold; w: alpha cutoff.
     split: vec4<f32>,
-    // x: rim width (fraction of N·V in from the silhouette); y: rim strength; z: outline width
-    // in pixels at a 1080-pixel-high target at the outline curve's mid distance; w: outline Z
-    // offset in meters.
+    // x: rim width in pixels at a 1080-pixel-high target at the outline curve's mid distance
+    // (M1 C5); y: rim strength; z: outline width, likewise; w: outline Z offset in meters.
     edges: vec4<f32>,
     // x: ramp mix; y: specular softness; z, w: matcap strength lit and in shadow.
     terms: vec4<f32>,
@@ -59,6 +58,17 @@ struct AnimeCharacterParams {
     outline_shape: vec4<f32>,
     // x: how much of the albedo the line takes; y: how much it is lit.
     outline_color: vec4<f32>,
+    // The depth-offset rim (M1 C5; `Rim`): x the depth step in meters; y the Fresnel extent; z
+    // the light gate; w the back-light weighting.
+    rim: vec4<f32>,
+    // A face's hair shadow (`HairShadow`): x distance in meters; y strength.
+    hair_shadow: vec4<f32>,
+    // Eyes through hair (`ThroughHair`): x opacity (0 for none); y, z the cosines of the yaw and
+    // pitch at which they have faded; w how far behind the hair, in meters.
+    through_hair: vec4<f32>,
+    // Per region: x rim strength scale; y rim width scale; z rim where the character overlaps
+    // itself.
+    rim_regions: array<vec4<f32>, 8>,
 }
 
 // Texture slots (`AnimeCharacterMaterial::TEXTURE_SLOTS`).
@@ -81,6 +91,11 @@ const CHARACTER_SURFACE_BODY: u32 = 0u;
 const CHARACTER_SURFACE_FACE: u32 = 1u;
 const CHARACTER_SURFACE_HAIR: u32 = 2u;
 const CHARACTER_SURFACE_EYE: u32 = 3u;
+
+// Hair highlight styles, in `modes.w`'s second byte.
+const CHARACTER_HIGHLIGHT_PAINTED_BAND: u32 = 0u;
+const CHARACTER_HIGHLIGHT_ANGEL_RING: u32 = 1u;
+const CHARACTER_HIGHLIGHT_KAJIYA_KAY: u32 = 2u;
 
 // --- Environment (`EnvironmentParams`): stylized GGX, the environment shader (M1 W4).
 

@@ -56,12 +56,8 @@
 // the material's cutoff, so cutouts get no outline across their holes; its prepass doesn't, as
 // the surfaces' doesn't. Transparent materials draw no hull.
 
-const OUTLINE_REFERENCE_HEIGHT: f32 = 1080.0;
-// tan(22.5°): widths are normalized to a 45° vertical field of view.
-const OUTLINE_REFERENCE_TAN_HALF_FOV: f32 = 0.41421356;
-// The share of the cutoff distance, at its end, over which the width fades out
-// (`OutlineCurve::FADE`).
-const OUTLINE_CUTOFF_FADE: f32 = 0.25;
+// The width's reference (`OUTLINE_REFERENCE_*`) and its curve (`outline_curve`) are
+// anime_character.wgsl's, which the depth-offset rim's width follows too (M1 C5).
 // How many line widths a hull pixel's velocity follows the facing's gradient to the silhouette
 // (`fs_outline_prepass`): the facing grows like a square root of the distance from the
 // silhouette, so a linear estimate from inside the line overshoots it (by 1.6 times at a sphere
@@ -132,29 +128,6 @@ fn hull_vertex(world_from_object: mat4x4<f32>, position: vec3<f32>, outline_norm
     hull.position = (world_from_object * vec4<f32>(position, 1.0)).xyz;
     hull.normal = cofactor * outline_normal;
     return hull;
-}
-
-// How far `x` lies from `start` to `end`, clamped to 0..=1; 1 for an empty range.
-fn outline_segment(start: f32, end: f32, x: f32) -> f32 {
-    return select(1.0, saturate((x - start) / (end - start)), end > start);
-}
-
-// The width's scale at the effective distance `distance`, with the cutoff's fade:
-// `OutlineCurve::scale × OutlineCurve::fade`.
-fn outline_curve(material: u32, distance: f32) -> f32 {
-    let knots = materials[material].outline_curve;
-    let scales = materials[material].outline_shape.xy;
-    let near = scales.x * knots.x / max(distance, 1e-6);
-    let first = mix(scales.x, 1.0, outline_segment(knots.x, knots.y, distance));
-    let second = mix(1.0, scales.y, outline_segment(knots.y, knots.z, distance));
-    let far = scales.y * knots.z / max(distance, 1e-6);
-    var scale = select(far, second, distance <= knots.z);
-    scale = select(scale, first, distance <= knots.y);
-    scale = select(scale, near, distance < knots.x);
-    // The renderer's scale on the cutoff (`r.outline_distance`) applies to every material.
-    let cutoff = knots.w * frame.outline_distance;
-    let fade = saturate((cutoff - distance) / max(cutoff * OUTLINE_CUTOFF_FADE, 1e-6));
-    return scale * fade;
 }
 
 // Where `hull` lands, extruded, through `clip_from_world`: an unjittered matrix into clip space

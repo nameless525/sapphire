@@ -78,8 +78,9 @@ use crate::meta::MeshSettings;
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// the mesh is that importer's, so a bump there must recook VRM files too. Bump the high bits
-/// whenever the VRM part of the output changes for the same file.
-pub const IMPORTER: Stage = Stage { name: "vrm", version: (1 << 16) | gltf_import::IMPORTER.version };
+/// whenever the VRM part of the output changes for the same file. 2: MToon's rim maps onto the
+/// depth-offset rim's Fresnel gate and light gate (M1 C5).
+pub const IMPORTER: Stage = Stage { name: "vrm", version: (2 << 16) | gltf_import::IMPORTER.version };
 
 /// Packing a rig. Bump the version whenever it changes output for the same import.
 pub const RIG_COOKER: Stage = Stage { name: "srig", version: 1 };

@@ -18,9 +18,12 @@
 //! - **The shader swatches** (`--swatches`): three spheres in a column on the character's other
 //!   side, static, each with a [`RenderMesh`] and its placement ([`Scene::spawn_swatches`],
 //!   [`crate::swatches`]).
-//! - **The face rig** (`--faces`): rows of the face test head well beside the character, static,
-//!   each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which the camera frames
-//!   instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
+//! - **The face rig** (`--faces`, `--face-layout`): rows of the face test head well beside the
+//!   character, static, each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which
+//!   the camera frames instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
+//! - **The rim rig** (`--rim-rig`): a row of the character before dark and bright panels on its
+//!   other side, static, each figure a character with a [`RimKey`] turning its key light, which
+//!   the camera frames instead of the character ([`Scene::spawn_rim_rig`], [`crate::rims`]).
 //! - **The courtyard** (`--environment`): the environment shader's test scene around the
 //!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
 //!   to show it ([`Scene::spawn_environment`], [`crate::environment`]); with fog, its fog cards,
@@ -49,9 +52,9 @@
 //!   After `Extract` has posed and extracted the instances, it resolves each character's light
 //!   rig for the frame's camera into the packet's characters (M1 C2), with its face (M1 C3) and
 //!   its body (M1 R4): the turntable's head turning with it and its body a capsule from its feet
-//!   to its head, and each face rig head lit from its own angles, its body a sphere around it.
-//!   Both run there rather than as `Extract` systems, which would cost an allocation a frame
-//!   each.
+//!   to its head, each rim rig figure's key turned to its angles, and each face rig head lit
+//!   from its own angles, its body a sphere around it. Both run there rather than as `Extract`
+//!   systems, which would cost an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -77,10 +80,11 @@ use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 use crate::LOG_TARGET;
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransform};
-use crate::faces::{self, FaceRig, HEADS};
+use crate::faces::{self, FaceLayout, FaceRig};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
+use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 use crate::skinned::{self, Sway};
 use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
@@ -106,9 +110,12 @@ const CHARACTER_BODY_RADIUS: f32 = 0.24;
 /// The radius of a face rig head's body: a sphere around the head.
 const HEAD_BODY_RADIUS: f32 = 0.16;
 
-/// The characters the light rig lights: instances drawn with a [`CharacterLightRig`].
-type Characters =
-    QueryState<(Entity, &'static CharacterLightRig, &'static RenderTransform), With<RenderMesh>>;
+/// The characters the light rig lights: instances drawn with a [`CharacterLightRig`], and the
+/// rim rig's key, if one is a figure of it.
+type Characters = QueryState<
+    (Entity, &'static CharacterLightRig, &'static RenderTransform, Option<&'static RimKey>),
+    With<RenderMesh>,
+>;
 
 /// The face rig's heads, each a character lit from its own angles (see [`crate::faces`]).
 type FaceHeads = QueryState<(Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
@@ -124,8 +131,12 @@ pub(crate) struct Scene {
     stalk: Option<Entity>,
     /// The shader swatches, with `--swatches`.
     swatches: Option<[Entity; SWATCHES]>,
-    /// The face rig's heads, with `--faces`.
-    faces: Option<[Entity; HEADS]>,
+    /// The face rig's heads, with `--faces`, and their layout.
+    faces: Vec<Entity>,
+    face_layout: FaceLayout,
+    /// The rim rig's figures and backdrop panels, with `--rim-rig`.
+    rim_figures: Vec<Entity>,
+    rim_backdrop: Vec<(Entity, Panel)>,
     /// The courtyard, with `--environment`.
     courtyard: Option<Entity>,
     /// The courtyard's fog cards, with `--environment` and fog, each with its mesh's index in
@@ -203,7 +214,10 @@ impl Scene {
             character,
             stalk,
             swatches: None,
-            faces: None,
+            faces: Vec::new(),
+            face_layout: FaceLayout::default(),
+            rim_figures: Vec::new(),
+            rim_backdrop: Vec::new(),
             courtyard: None,
             fog_cards: Vec::new(),
             outline_row: None,
@@ -409,16 +423,54 @@ impl Scene {
         }
     }
 
-    /// Places the face look-dev rig (`--faces`) well beside the character, its heads drawing
-    /// `mesh`, and frames it with the camera instead of the character. The heads never move, so
-    /// they are extracted once.
-    pub fn spawn_face_rig(&mut self, mesh: MeshHandle) {
-        let camera = faces::camera(self.bounds);
-        let heads = faces::heads(self.bounds, &camera);
+    /// Places the face look-dev rig (`--faces`) in `layout` well beside the character, its heads
+    /// drawing `mesh`, and frames it with the camera instead of the character. The heads never
+    /// move, so they are extracted once.
+    pub fn spawn_face_rig(&mut self, mesh: MeshHandle, layout: FaceLayout) {
+        let camera = faces::camera(self.bounds, layout);
+        let heads = faces::heads(self.bounds, layout, &camera);
         let world = self.ecs.world_mut();
         world.insert_resource(camera);
-        self.faces =
-            Some(heads.map(|(rig, place)| world.spawn((rig, RenderMesh(mesh), RenderTransform(place))).id()));
+        self.face_layout = layout;
+        self.faces = heads
+            .into_iter()
+            .map(|(rig, place)| world.spawn((rig, RenderMesh(mesh), RenderTransform(place))).id())
+            .collect();
+    }
+
+    /// Places the rim look-dev rig (`--rim-rig`) in `layout` on the character's other side,
+    /// drawing `meshes`: its figures, each a character lit by the default light rig with its key
+    /// turned by `layout`, before the backdrop's panels. The camera frames it instead of the
+    /// character. Nothing moves, so it is extracted once.
+    pub fn spawn_rim_rig(&mut self, layout: RimLayout, meshes: RimRigMeshes) {
+        let camera = rims::camera(self.bounds);
+        let figures = rims::figures(self.bounds, layout, &camera);
+        let panels = rims::panels(self.bounds, &camera);
+        let world = self.ecs.world_mut();
+        world.insert_resource(camera);
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        let figure = RenderMesh(meshes.figure);
+        self.rim_figures = figures
+            .into_iter()
+            .map(|(key, place)| world.spawn((key, rig, figure, RenderTransform(place))).id())
+            .collect();
+        self.rim_backdrop = panels
+            .into_iter()
+            .map(|(panel, place)| {
+                (world.spawn((RenderMesh(meshes.panel(panel)), RenderTransform(place))).id(), panel)
+            })
+            .collect();
+    }
+
+    /// Sets the meshes the rim rig draws again: after GPU device loss.
+    pub fn set_rim_rig_meshes(&mut self, meshes: RimRigMeshes) {
+        let world = self.ecs.world_mut();
+        for &entity in &self.rim_figures {
+            world.entity_mut(entity).insert(RenderMesh(meshes.figure));
+        }
+        for &(entity, panel) in &self.rim_backdrop {
+            world.entity_mut(entity).insert(RenderMesh(meshes.panel(panel)));
+        }
     }
 
     /// Builds the stage (`--stage`) around the subject, the face rig with `--faces` or else the
@@ -429,10 +481,10 @@ impl Scene {
     pub fn spawn_stage(&mut self, layout: StageLayout, meshes: StageMeshes) {
         self.set_character_mesh(meshes.figure);
         let floor = self.bounds[0][1];
-        let subject = match self.faces {
+        let subject = match self.faces.is_empty() {
             // Every head's shadow from far enough to stay out of the rig's view.
-            Some(_) => {
-                let (center, half_height) = faces::rig_center(self.bounds);
+            false => {
+                let (center, half_height) = faces::rig_center(self.bounds, self.face_layout);
                 Subject {
                     base: Vec3::new(center.x, floor, center.z),
                     shade_height: center.y + half_height + 0.1,
@@ -441,7 +493,7 @@ impl Scene {
                 }
             }
             // From the feet to the chest, so the shadow's edge crosses the body.
-            None => Subject {
+            true => Subject {
                 base: Vec3::new(0.0, floor, 0.0),
                 shade_height: CHARACTER_FEET.y + 0.65 * (CHARACTER_HEAD.y - CHARACTER_FEET.y),
                 pillar_distance: 2.2,
@@ -470,8 +522,8 @@ impl Scene {
 
     /// Sets the mesh the face rig's heads draw again: after GPU device loss.
     pub fn set_face_mesh(&mut self, mesh: MeshHandle) {
-        debug_assert!(self.faces.is_some(), "no face rig was spawned");
-        for head in self.faces.into_iter().flatten() {
+        debug_assert!(!self.faces.is_empty(), "no face rig was spawned");
+        for &head in &self.faces {
             self.ecs.world_mut().entity_mut(head).insert(RenderMesh(mesh));
         }
     }
@@ -621,9 +673,13 @@ impl Scene {
             let Some(camera) = packet.main_view().map(|view| view.camera) else { return };
             let frame = world.resource::<TimeOfDay>().frame();
             let rigs = world.resource::<LightRigLibrary>();
-            for (entity, character, transform) in characters.iter(world) {
+            for (entity, character, transform, key) in characters.iter(world) {
                 let head = transform.0.transform_point3(character.head);
-                let lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
+                let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
+                // A rim rig figure's key light turns to its angles around it.
+                if let Some(key) = key {
+                    lighting.key.direction = -key.toward(camera.position, head);
+                }
                 // The model's head turns with it: no head joint of its own yet.
                 let pose = HeadBasis {
                     forward: transform.0.transform_vector3(Vec3::Z),
@@ -773,7 +829,7 @@ mod tests {
         // As the app runs it: steps from the first frame on, with frames in between.
         let mut scene = Scene::new(BOUNDS, true);
         scene.set_stalk_mesh(MeshHandle::from_raw(1));
-        scene.spawn_face_rig(MeshHandle::from_raw(2));
+        scene.spawn_face_rig(MeshHandle::from_raw(2), FaceLayout::Turn);
         scene.spawn_environment(MeshHandle::from_raw(3));
         scene.spawn_demo_lights();
         let mut allocations = 0;
@@ -931,17 +987,18 @@ mod tests {
     #[test]
     fn the_face_rig_lists_each_head_lit_from_its_own_angles() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-        scene.spawn_face_rig(MeshHandle::from_raw(1));
-        let heads = scene.faces.expect("spawned").map(|head| InstanceId(head.to_bits()));
+        scene.spawn_face_rig(MeshHandle::from_raw(1), FaceLayout::Lights);
+        let heads: Vec<_> = scene.faces.iter().map(|head| InstanceId(head.to_bits())).collect();
+        let count = FaceLayout::Lights.heads();
         let (turntable, turntable_id) = (scene.character, InstanceId(scene.character.to_bits()));
         for frame in 0..2 {
             scene.step();
             let packet = scene.frame_packet(1.0, Some((1920, 1080)));
-            assert_eq!(packet.characters.len(), HEADS + 1, "the heads and the turntable");
+            assert_eq!(packet.characters.len(), count + 1, "the heads and the turntable");
             let added =
                 packet.instances.changed.iter().filter(|instance| heads.contains(&instance.id)).count();
-            assert_eq!(added, if frame == 0 { HEADS } else { 0 }, "the heads are extracted once");
-            let rigs = faces::ROWS.iter().flat_map(|row| row.iter());
+            assert_eq!(added, if frame == 0 { count } else { 0 }, "the heads are extracted once");
+            let rigs = FaceLayout::Lights.rows().iter().flat_map(|row| row.iter());
             for (&id, rig) in heads.iter().zip(rigs) {
                 let character = packet.characters.iter().find(|c| c.id == id).expect("listed every frame");
                 assert!(character.is_valid());

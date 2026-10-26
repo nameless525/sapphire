@@ -31,6 +31,8 @@ const CUBE: Look = Look {
     shade: [190, 140, 205],
     outline: [84, 30, 34],
     character_shading: [0.1, 0.02, 0.2, 5.5],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 const HEX: Look = Look {
     name: "Hex",
@@ -38,6 +40,8 @@ const HEX: Look = Look {
     shade: [140, 150, 215],
     outline: [18, 58, 70],
     character_shading: [0.1, 0.02, 0.2, 5.5],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 const WEDGE: Look = Look {
     name: "Wedge",
@@ -45,6 +49,8 @@ const WEDGE: Look = Look {
     shade: [215, 160, 150],
     outline: [92, 62, 12],
     character_shading: [0.1, 0.02, 0.2, 5.5],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 const GEM: Look = Look {
     name: "Gem",
@@ -52,6 +58,8 @@ const GEM: Look = Look {
     shade: [150, 140, 220],
     outline: [52, 22, 84],
     character_shading: [0.1, 0.02, 0.2, 5.5],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 
 /// Builds the sample as a binary glTF (`.glb`).

@@ -357,12 +357,18 @@ mod tests {
 
     const PASSES: [(Program, &[&str]); 11] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
-        (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
+        (
+            Program::AnimeCharacter,
+            &["vs_anime_character", "fs_anime_character", "vs_through_hair", "fs_through_hair"],
+        ),
         (Program::Environment, &["vs_environment", "fs_environment"]),
         (Program::FogCard, &["vs_fog_card", "fs_fog_card"]),
         (Program::Outline, &["vs_outline", "fs_outline", "vs_outline_prepass", "fs_outline_prepass"]),
         (Program::Clusters, &["cs_clusters"]),
-        (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
+        (
+            Program::Prepass,
+            &["vs_character_prepass", "fs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"],
+        ),
         (Program::Skinning, &["cs_skinning"]),
         (
             Program::Post,
@@ -381,8 +387,9 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 8] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 9] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
+        (Program::AnimeCharacter, "vs_through_hair", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
         (Program::FogCard, "vs_fog_card", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
@@ -665,6 +672,10 @@ mod tests {
                     outline_curve,
                     outline_shape,
                     outline_color,
+                    rim,
+                    hair_shadow,
+                    through_hair,
+                    rim_regions,
                 }),
             ),
             (
@@ -1193,7 +1204,10 @@ mod tests {
     /// them: the vertex flags, the control map's encodings and the ramp rows.
     #[test]
     fn wgsl_character_contract_matches_rust() {
-        use sapphire_assets::character_maps::{MATERIAL_IDS, face_sdf, ilm, ramp};
+        use sapphire_assets::character_maps::{MATERIAL_IDS, face_sdf, hair_mask, ilm, ramp};
+        use sapphire_assets::material::AnimeCharacterParams;
+
+        use crate::character_prepass;
         use sapphire_assets::mesh::VertexFlags;
         let character = validate(Program::AnimeCharacter);
         let outline = validate(Program::Outline);
@@ -1207,6 +1221,36 @@ mod tests {
         assert_eq!(wgsl_f32(&character, "MATERIAL_ID_LEVELS"), f32::from(MATERIAL_IDS));
         assert_eq!(wgsl_f32(&character, "FACE_MIRROR_BLEND"), face_sdf::MIRROR_BLEND);
         assert_eq!(wgsl_f32(&character, "PI"), std::f32::consts::PI);
+        // The hair mask (M1 C5).
+        assert_eq!(wgsl_f32(&character, "HAIR_MASK_NO_SHIFT"), hair_mask::NO_SHIFT);
+        assert_eq!(
+            (
+                wgsl_u32(&character, "CHARACTER_HIGHLIGHT_ANGEL_RING"),
+                wgsl_u32(&character, "CHARACTER_HIGHLIGHT_KAJIYA_KAY")
+            ),
+            (AnimeCharacterParams::HIGHLIGHT_ANGEL_RING, AnimeCharacterParams::HIGHLIGHT_KAJIYA_KAY)
+        );
+        assert_eq!(
+            wgsl_u32(&character, "CHARACTER_HIGHLIGHT_PAINTED_BAND"),
+            AnimeCharacterParams::HIGHLIGHT_PAINTED_BAND
+        );
+        // The character prepass's IDs (M1 C5), which the prepass writes and the surface reads.
+        let prepass = validate(Program::Prepass);
+        for module in [&character, &prepass] {
+            assert_eq!(wgsl_u32(module, "CHARACTER_ID_ENTRY_BITS"), character_prepass::ID_ENTRY_BITS);
+            assert_eq!(wgsl_u32(module, "CHARACTER_ID_ENTRY_MASK"), character_prepass::ID_ENTRY_MASK);
+        }
+        // Its parts are the material's surfaces, in `pipelines::Part`'s order.
+        use crate::pipelines::Part;
+        let surfaces = [
+            AnimeCharacterParams::SURFACE_BODY,
+            AnimeCharacterParams::SURFACE_FACE,
+            AnimeCharacterParams::SURFACE_HAIR,
+            AnimeCharacterParams::SURFACE_EYE,
+        ];
+        assert_eq!(Part::ALL.map(|part| part.index() as u32), surfaces);
+        assert_eq!(character_prepass::encode_id(5, AnimeCharacterParams::SURFACE_HAIR), 5 | 2 << 14);
+        assert_eq!(character_prepass::encode_id(16384 + 3, 1), 3 | 1 << 14, "entries wrap at 14 bits");
     }
 
     /// The value of the WGSL `const` called `name`, a `vec3<f32>` of literals.
@@ -1329,7 +1373,13 @@ mod tests {
             assert!(overrides.contains(&override_constant::ALPHA_TEST), "{name}");
         }
         let character = validate(Program::AnimeCharacter);
-        for constant in [override_constant::TRANSPARENT, override_constant::FACE] {
+        let constants = [
+            override_constant::TRANSPARENT,
+            override_constant::FACE,
+            override_constant::HAIR,
+            override_constant::EYE,
+        ];
+        for constant in constants {
             assert!(
                 character.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),
                 "{constant}"

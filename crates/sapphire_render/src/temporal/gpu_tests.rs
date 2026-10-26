@@ -16,8 +16,8 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use super::tuning;
 use crate::graph::{FrameGraph, GraphExecutor};
 use crate::{
-    CameraData, FramePacketRing, InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer,
-    ViewData,
+    CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
+    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
 };
 
 const SIZE: (u32, u32) = (320, 180);
@@ -30,7 +30,8 @@ fn gpu() -> GpuContext {
 }
 
 /// A unit sphere in one flat color, with an outline `outline_px` wide at 1080 rows. `character`
-/// adds a morph target of zero deltas, so the character prepass draws it.
+/// adds a morph target of zero deltas, as a character's mesh would have (the frame lists the
+/// characters, [`Frames::characters`]).
 fn outlined_sphere(character: bool, outline_px: f32) -> Mesh {
     let mut mesh = sphere(character);
     let material = AnimeCharacterMaterial {
@@ -52,7 +53,8 @@ fn outlined_sphere(character: bool, outline_px: f32) -> Mesh {
 
 /// A unit sphere in one flat color, without an outline (the outline hull is responsive
 /// anywhere, which would hide what these tests look for). `character` adds a morph target of
-/// zero deltas, so the character prepass draws it.
+/// zero deltas, as a character's mesh would have (the frame lists the characters,
+/// [`Frames::characters`]).
 fn sphere(character: bool) -> Mesh {
     const RINGS: u32 = 32;
     const SEGMENTS: u32 = 48;
@@ -124,6 +126,8 @@ struct Frames {
     graph: GraphExecutor,
     packets: FramePacketRing,
     target: wgpu::Texture,
+    /// The instances each frame lists as characters: what the character prepass draws.
+    characters: Vec<InstanceId>,
 }
 
 impl Frames {
@@ -144,6 +148,7 @@ impl Frames {
             graph: GraphExecutor::new(),
             packets: FramePacketRing::new(),
             target,
+            characters: Vec::new(),
         }
     }
 
@@ -151,6 +156,13 @@ impl Frames {
         let packet = self.packets.begin();
         packet.views.push(view);
         packet.instances.changed.extend_from_slice(changed);
+        let lighting = CharacterLighting::unstyled(packet.sun);
+        packet.characters.extend(self.characters.iter().map(|&id| CharacterInstance {
+            id,
+            lighting,
+            face: CharacterFace::default(),
+            body: CharacterBody::default(),
+        }));
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(gpu, self.packets.current());
         let view = self.target.create_view(&Default::default());
@@ -263,6 +275,7 @@ fn moving_characters_keep_less_history_than_other_geometry() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu);
     let character = upload(&mut frames.renderer, &sphere(true));
+    frames.characters.push(InstanceId(0));
     let ball = upload(&mut frames.renderer, &sphere(false));
     let view = ViewData::new(camera());
     // Both move 3 pixels a frame, then hold still.

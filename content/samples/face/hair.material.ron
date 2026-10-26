@@ -1,0 +1,76 @@
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Hair((
+            mask_map: None,
+            highlight: (
+                style: AngelRing,
+                color: (0.75, 0.8, 1.0),
+                strength: 0.45,
+                width: 0.06,
+                shift: 0.7,
+            ),
+        )),
+        base_color: (0.04231141, 0.034339808, 0.13843162, 1.0),
+        base_color_map: None,
+        alpha: Opaque,
+        control_map: None,
+        normal_map: None,
+        light_split: (
+            threshold: 0.0,
+            softness: 0.02,
+        ),
+        diffuse: Bands((
+            deep_threshold: None,
+        )),
+        regions: [
+            (
+                shade_color: (0.6, 0.6, 0.86),
+                deep_shade_color: (0.4, 0.35, 0.55),
+                ramp_row: None,
+                night_ramp_row: None,
+                subsurface_color: (1.0, 1.0, 1.0),
+                specular_color: (0.0, 0.0, 0.0),
+                specular_size: 32.0,
+                rim_color: (0.85, 0.9, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
+                outline_color: (0.009134057, 0.00699541, 0.025186857),
+                outline_width: 1.0,
+                gi: (
+                    sphere: 1.0,
+                    skin: 0.0,
+                ),
+            ),
+        ],
+        rim: (
+            width: 4.0,
+            strength: 0.3,
+            threshold: 0.1,
+            fresnel: 0.5,
+            light_gate: 0.75,
+            back_light: 0.0,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.05,
+        ),
+        matcap: None,
+        outline: (
+            width: 3.5,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.0),
+                mid: 3.0,
+                far: (20.0, 0.35),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+    ),
+)

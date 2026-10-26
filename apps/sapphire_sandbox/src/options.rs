@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use sapphire_render::quality::{QualitySettings, Switch, TierId};
 use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings};
 
+use crate::faces::FaceLayout;
+use crate::rims::RimLayout;
 use crate::scene::{self, Scene};
 use crate::stage::StageLayout;
 
@@ -60,8 +62,11 @@ pub(crate) struct Options {
     pub character_rig: Option<String>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
-    /// `--faces`: show the face look-dev rig instead of the character.
-    pub faces: bool,
+    /// `--faces [--face-layout lights|hair|highlights|turn]`: show the face look-dev rig instead
+    /// of the character, in this layout (`lights` without `--face-layout`).
+    pub faces: Option<FaceLayout>,
+    /// `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character (M1 C5).
+    pub rim_rig: Option<RimLayout>,
     /// `--environment`: place the character in the courtyard, the environment shader's test
     /// scene.
     pub environment: bool,
@@ -274,6 +279,7 @@ impl Options {
         let mut unknown = Vec::new();
         let (mut capture, mut bench, mut capture_ticks, mut size) = (None, None, None, None);
         let (mut capture_frames, mut capture_step) = (None, None);
+        let (mut faces, mut face_layout) = (false, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -352,7 +358,20 @@ impl Options {
                 }
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
-                "--faces" => options.faces = true,
+                "--faces" => faces = true,
+                "--face-layout" => {
+                    let raw = value("--face-layout")?;
+                    face_layout = Some(FaceLayout::from_name(&raw).ok_or_else(|| {
+                        format!("--face-layout expects lights, hair, highlights or turn, got {raw:?}")
+                    })?);
+                }
+                "--rim-rig" => {
+                    let raw = value("--rim-rig")?;
+                    options.rim_rig = Some(
+                        RimLayout::from_name(&raw)
+                            .ok_or_else(|| format!("--rim-rig expects angles or backlit, got {raw:?}"))?,
+                    );
+                }
                 "--environment" => options.environment = true,
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
@@ -441,6 +460,14 @@ impl Options {
                 "--size" => size = Some(parse_size(&value("--size")?)?),
                 _ => unknown.push(arg.clone()),
             }
+        }
+        options.faces = match (faces, face_layout) {
+            (true, layout) => Some(layout.unwrap_or_default()),
+            (false, Some(_)) => return Err("--face-layout needs --faces".to_owned()),
+            (false, None) => None,
+        };
+        if options.faces.is_some() && options.rim_rig.is_some() {
+            return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         let mode = match (capture, bench) {
@@ -663,6 +690,20 @@ mod tests {
         assert!(parse(&["--zoom", "inf"]).is_err());
         assert!(parse(&["--outline-distance", "-1"]).is_err());
         assert!(parse(&["--outline-distance", "5"]).is_err());
+    }
+
+    #[test]
+    fn look_dev_rigs_take_their_layouts() {
+        assert_eq!(parse(&["--faces"]).unwrap().0.faces, Some(FaceLayout::Lights));
+        assert_eq!(parse(&["--faces", "--face-layout", "turn"]).unwrap().0.faces, Some(FaceLayout::Turn));
+        assert_eq!(parse(&["--face-layout=hair", "--faces"]).unwrap().0.faces, Some(FaceLayout::Hair));
+        assert!(parse(&["--face-layout", "hair"]).is_err(), "a layout needs the rig");
+        assert!(parse(&["--faces", "--face-layout", "bangs"]).is_err());
+        assert_eq!(parse(&["--rim-rig", "backlit"]).unwrap().0.rim_rig, Some(RimLayout::Backlit));
+        assert!(parse(&["--rim-rig", "front"]).is_err());
+        assert!(parse(&["--faces", "--rim-rig", "angles"]).is_err(), "one rig frames the camera");
+        let defaults = Options::default();
+        assert_eq!((defaults.faces, defaults.rim_rig), (None, None));
     }
 
     #[test]

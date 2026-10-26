@@ -3,7 +3,7 @@ use std::fs;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterSurface, DiffuseMode, MaterialDocument,
+    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterSurface, DiffuseMode, MaterialDocument, Rim,
 };
 use sapphire_assets::mesh::{Mesh, PositionFormat, SlotMaterial};
 use sapphire_assets::rig::{
@@ -261,8 +261,11 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     assert_eq!((region.outline_color, region.outline_width), ([0.1, 0.05, 0.05], 1.0));
     assert!(close3(region.rim_color, [1.0, 0.5, 0.5]));
     assert!(close(material.rim.strength, 0.4));
-    // Half intensity where (1 − N·V + 0.1)² = ½.
-    assert!(close(material.rim.width, 1.1 - 0.5f32.sqrt()), "{}", material.rim.width);
+    // The Fresnel gate at half intensity, where (1 − N·V + 0.1)² = ½; the depth-offset rim's own
+    // width (M1 C5), and the lighting mix as its light gate.
+    assert!(close(material.rim.fresnel, 1.1 - 0.5f32.sqrt()), "{}", material.rim.fresnel);
+    assert_eq!(material.rim.width, Rim::default().width);
+    assert!(close(material.rim.light_gate, 0.5), "{}", material.rim.light_gate);
     let matcap = material.matcap.unwrap();
     assert_eq!(matcap.map, use_id(TextureUse::Matcap));
     assert!(close(matcap.strength, 0.5) && close(matcap.shadow_strength, 0.25));
@@ -323,7 +326,7 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     assert!(close3(mapped.regions[0].shade_color, [0.3, 0.5, 0.0]), "a black base channel keeps the shade");
     assert_eq!(mapped.light_split.softness, 0.0, "toony clamps to 1");
     assert_eq!((mapped.rim.strength, mapped.regions[0].rim_color), (0.0, [1.0; 3]));
-    assert_eq!(mapped.rim.width, 1.0, "a zero power lights the whole silhouette");
+    assert_eq!(mapped.rim.fresnel, 1.0, "a zero power lights the whole silhouette");
     assert_eq!(mapped.outline.width, 0.0);
     assert!(mapped.matcap.is_none(), "no matcap without its texture's asset");
     mapped.validate().expect("mapped materials are valid documents");

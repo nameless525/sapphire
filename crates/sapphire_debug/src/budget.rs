@@ -62,6 +62,12 @@ impl BudgetTier {
         self.pick(2.0, 3.0)
     }
 
+    /// Culling and the prepasses (§3.3's row): the character prepass on every tier (M1 C5), and
+    /// the scene prepass where temporal AA reads it.
+    pub fn prepass(self) -> Duration {
+        self.pick(1.5, 1.5)
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {
@@ -210,6 +216,7 @@ mod tests {
         assert_eq!((mobile.game_side(), mobile.gpu_frame()), (ms(13.6), ms(23.5)));
         assert_eq!((desktop.taa_upscaling(), mobile.taa_upscaling()), (ms(0.8), ms(1.0)));
         assert_eq!((desktop.post(), mobile.post()), (ms(0.7), ms(2.5)));
+        assert_eq!((desktop.prepass(), mobile.prepass()), (ms(1.5), ms(1.5)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));
         assert_eq!(BudgetTier::CURRENT == mobile, FormFactor::CURRENT == FormFactor::Mobile);
     }

@@ -29,6 +29,7 @@ use glam::Vec3;
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
+use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{CharacterBody, CharacterFace, CharacterLighting, FramePacket};
 
@@ -193,8 +194,8 @@ impl Characters {
         self.list.lit
     }
 
-    /// Entries the last frame with a view ignored: for instances it doesn't draw, or with
-    /// lighting or a face that isn't valid.
+    /// Entries the last frame with a view ignored: for instances it doesn't draw, with lighting
+    /// or a face that isn't valid, or past the 16,383 entries the character prepass's IDs hold.
     pub(crate) fn ignored(&self) -> u32 {
         self.list.ignored
     }
@@ -204,13 +205,21 @@ impl Characters {
         self.buffer.growths()
     }
 
-    /// The characters' share of a frame's uploads pass.
-    pub(crate) fn upload(&mut self) -> CharacterUpload<'_> {
-        CharacterUpload {
+    /// The entry the instance in `slot` reads this frame: 0 unless the frame lists it.
+    pub(crate) fn entry(&self, slot: u32) -> u32 {
+        self.list.next.get(slot as usize).copied().unwrap_or(0)
+    }
+
+    /// Splits the characters between a frame's passes: the uploads pass writes the entries, and
+    /// the character prepass draws the instances with one, by slot (each slot's entry, 0 for
+    /// none; slots past its end have none).
+    pub(crate) fn split_for_record(&mut self) -> (CharacterUpload<'_>, &[u32]) {
+        let upload = CharacterUpload {
             entries: &self.list.entries,
             unsent: &mut self.unsent,
             buffer: self.buffer.buffer(),
-        }
+        };
+        (upload, &self.list.next)
     }
 }
 
@@ -241,7 +250,7 @@ struct CharacterList {
     /// The instance slots the last frame gave an entry, and scratch for this frame's.
     listed: Vec<u32>,
     listing: Vec<u32>,
-    /// Per instance slot, while updating: the entry this frame gives it.
+    /// Per instance slot: the entry this frame gives it, 0 for none.
     next: Vec<u32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
     lit: u32,
@@ -266,7 +275,10 @@ impl CharacterList {
         self.listing.clear();
         (self.lit, self.ignored) = (0, 0);
         for character in &packet.characters {
-            let slot = slots.slot(character.id).filter(|_| character.is_valid());
+            // An entry past the character prepass's ID bits would alias an earlier character's
+            // (or none), so the frame's characters stop there.
+            let room = self.entries.len() <= ID_ENTRY_MASK as usize;
+            let slot = slots.slot(character.id).filter(|_| character.is_valid() && room);
             let Some(slot) = slot else {
                 self.ignored += 1;
                 continue;
@@ -431,6 +443,18 @@ mod tests {
         assert!(list.update(&packet(&[]), &mut slots));
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0; 4]);
         assert_eq!(list.entries.len(), 1, "the fallback alone");
+    }
+
+    #[test]
+    fn characters_stop_at_the_prepass_ids_entries() {
+        let count = ID_ENTRY_MASK as u64 + 2;
+        let mut slots = slots(0..count);
+        let mut list = CharacterList::default();
+        let characters: Vec<(u64, f32)> = (0..count).map(|id| (id, 1.0)).collect();
+        list.update(&packet(&characters), &mut slots);
+        assert_eq!((list.lit, list.ignored), (ID_ENTRY_MASK, 2));
+        assert_eq!(list.entries.len(), ID_ENTRY_MASK as usize + 1, "the fallback and the rest");
+        assert_eq!(slots.character(slots.slot(InstanceId(count - 1)).expect("live")), 0, "unlit");
     }
 
     #[test]

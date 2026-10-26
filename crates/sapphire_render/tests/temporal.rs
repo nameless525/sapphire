@@ -18,10 +18,10 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor, GraphReport, TextureId};
 use sapphire_render::quality::{TierId, TierTable};
 use sapphire_render::temporal::{jitter, jitter_phases};
 use sapphire_render::{
-    BloomParams, CameraData, Celestial, ColorGrade, DirectionalLight, FramePacketRing, HistoryReset,
-    InstanceId, MeshHandle, MeshInstance, Msaa, PostParams, PrepassTargets, RenderSettings, Renderer,
-    ShaderError, ShaderFile, ShaderSources, ShaderUpdate, SkyDisc, SkyGradient, SkyLayers, ToneCurve,
-    ViewData, Vignette, scaled_size,
+    BloomParams, CameraData, Celestial, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
+    ColorGrade, DirectionalLight, FramePacketRing, HistoryReset, InstanceId, MeshHandle, MeshInstance, Msaa,
+    PostParams, PrepassTargets, RenderSettings, Renderer, ShaderError, ShaderFile, ShaderSources,
+    ShaderUpdate, SkyDisc, SkyGradient, SkyLayers, ToneCurve, ViewData, Vignette, scaled_size,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -116,8 +116,9 @@ fn sphere(material: &AnimeCharacterMaterial) -> Mesh {
     mesh(&vertices, indices, material)
 }
 
-/// `sphere` with a morph target of zero deltas: its instances are characters (the character
-/// prepass draws skinned and morphed instances) and look exactly like the sphere.
+/// `sphere` with a morph target of zero deltas, as a character's mesh would have, looking
+/// exactly like the sphere. Its instances are characters when the frame lists them
+/// ([`Frames::characters`]): the character prepass draws those (M1 C5).
 fn character_sphere(material: &AnimeCharacterMaterial) -> Mesh {
     let mut mesh = sphere(material);
     mesh.morph_targets =
@@ -208,6 +209,8 @@ struct Frames {
     /// Where the bodies and the stars are, and what the sky draws of them (M1 W2): by default
     /// the gradient alone.
     layers: Option<(Celestial, SkyLayers)>,
+    /// The instances each frame lists as characters.
+    characters: Vec<InstanceId>,
 }
 
 impl Frames {
@@ -225,6 +228,7 @@ impl Frames {
                 ground: Vec3::splat(0.5),
             },
             layers: None,
+            characters: Vec::new(),
         }
     }
 
@@ -265,6 +269,13 @@ impl Frames {
         }
         packet.post = passthrough();
         packet.instances.changed.extend_from_slice(changed);
+        let lighting = CharacterLighting::unstyled(packet.sun);
+        packet.characters.extend(self.characters.iter().map(|&id| CharacterInstance {
+            id,
+            lighting,
+            face: CharacterFace::default(),
+            body: CharacterBody::default(),
+        }));
 
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(gpu, self.packets.current());
@@ -786,6 +797,7 @@ fn the_responsive_mask_marks_visible_characters_and_lines() {
     let mut frames = Frames::taa(&gpu, size);
     let material = flat([0.8; 3], 0.0);
     let character = upload(&mut frames.renderer, &character_sphere(&material));
+    frames.characters.push(InstanceId(0));
     let ball = upload(&mut frames.renderer, &sphere(&material));
     let outlined = upload(&mut frames.renderer, &sphere(&flat([0.8; 3], 40.0)));
     let wall = upload(&mut frames.renderer, &rectangles(&[[[-0.6, -1.0], [-0.45, 1.0]]], &material));
@@ -952,9 +964,11 @@ fn mobile_tiers_keep_msaa_in_tile_memory() {
             );
         }
         let running: Vec<&str> = report.running().map(|pass| pass.name).collect();
-        for pass in ["taa", "responsive mask", "scene prepass", "character prepass"] {
+        for pass in ["taa", "responsive mask", "scene prepass"] {
             assert!(!running.contains(&pass), "{id} runs {pass}: {running:?}");
         }
+        // The character prepass runs on every tier: the main pass reads it (M1 C5).
+        assert!(running.contains(&"character prepass"), "{id}: {running:?}");
         assert!(!frames.renderer.stats().temporal.enabled);
     }
 }

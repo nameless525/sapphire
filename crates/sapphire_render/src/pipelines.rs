@@ -11,6 +11,7 @@ use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
+use crate::character_prepass;
 use crate::characters::GpuCharacter;
 use crate::environment::{self, EnvironmentSettings};
 use crate::fog;
@@ -207,9 +208,14 @@ pub(crate) mod material_binding {
 /// | skinned, morph | the mesh | the f32-position pipelines, which read the compute skinning pass's outputs (M1 R2); no shader variant, since skinning and morphs no longer run in the vertex stage |
 /// | alpha test | the material ([`MaterialFlags::ALPHA_TEST`]) | [`Coverage::AlphaTest`]: the surface and outline shaders discard below the cutoff |
 /// | outline | the material ([`MaterialFlags::OUTLINE`]) | whether the draw is in the outline pass |
-/// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; outlines are the body's |
-/// | hair, eye | the material | nothing yet: hair (C5) and eyes (C6) add their parts |
+/// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; the bangs' shadow on it (C5); outlines are the body's |
+/// | hair | the material ([`MaterialFlags::HAIR`]) | [`Part::Hair`] (M1 C5): the hair mask's occlusion and the highlight band, painted, angel ring or Kajiya-Kay by a branch on the block |
+/// | eye | the material ([`MaterialFlags::EYE`]) | [`Part::Eye`] (M1 C5): always lit, no rim; C6 layers it |
 /// | transparent | the material ([`MaterialFlags::TRANSPARENT`]) | [`Coverage::Transparent`]: blended over the frame after the sky, depth-tested without writing, with no outline and in no prepass |
+///
+/// Eyes through hair ([`MaterialFlags::THROUGH_HAIR`], M1 C5) is no permutation bit: like the
+/// outline, it adds the draw to a pass, the eyes-through-hair draws after the outlines, through
+/// a pipeline of the face or eye variant's own.
 ///
 /// A variant's pipelines are built for a position format when a mesh in that format is uploaded
 /// with a material that needs them, or a material edit moves to the variant (for every format
@@ -250,10 +256,19 @@ impl Permutation {
         self.0 & other.0 == other.0
     }
 
-    /// The surface pipelines it draws with.
+    /// The surface pipelines it draws with. A material is one part, so at most one of the face,
+    /// hair and eye bits is set.
     pub(crate) fn surface(self) -> SurfaceVariant {
         let coverage = Coverage::of(self.contains(Self::ALPHA_TEST), self.contains(Self::TRANSPARENT));
-        let part = if self.contains(Self::FACE) { Part::Face } else { Part::Body };
+        let part = if self.contains(Self::FACE) {
+            Part::Face
+        } else if self.contains(Self::HAIR) {
+            Part::Hair
+        } else if self.contains(Self::EYE) {
+            Part::Eye
+        } else {
+            Part::Body
+        };
         SurfaceVariant::character(coverage, part)
     }
 
@@ -307,19 +322,32 @@ impl Coverage {
     }
 }
 
-/// Which part of a character a surface shades, among those with shader variants of their own:
-/// the body, and faces (M1 C3). Hair (C5) and eyes (C6) join with theirs.
+/// Which part of a character a surface shades, each a shader variant of its own: the body, faces
+/// (M1 C3), hair and eyes (M1 C5; C6 layers eyes). In the order of the material's
+/// `AnimeCharacterParams::SURFACE_*`, which the character prepass writes as the pixel's part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Part {
     Body,
     Face,
+    Hair,
+    Eye,
 }
 
 impl Part {
-    pub(crate) const ALL: [Self; 2] = [Self::Body, Self::Face];
+    pub(crate) const ALL: [Self; 4] = [Self::Body, Self::Face, Self::Hair, Self::Eye];
 
     pub(crate) fn index(self) -> usize {
         self as usize
+    }
+
+    /// Its permutation constant, if it has one.
+    fn constant(self) -> Option<&'static str> {
+        match self {
+            Self::Body => None,
+            Self::Face => Some(override_constant::FACE),
+            Self::Hair => Some(override_constant::HAIR),
+            Self::Eye => Some(override_constant::EYE),
+        }
     }
 }
 
@@ -348,8 +376,13 @@ pub(crate) enum Shading {
 impl Shading {
     /// The shadings drawn at every coverage, in drawing order within one: characters, then the
     /// world, whose pixels behind them depth then rejects. Fog cards are transparent alone.
-    pub(crate) const SURFACES: [Self; 3] =
-        [Self::Character(Part::Body), Self::Character(Part::Face), Self::Environment];
+    pub(crate) const SURFACES: [Self; 5] = [
+        Self::Character(Part::Body),
+        Self::Character(Part::Face),
+        Self::Character(Part::Hair),
+        Self::Character(Part::Eye),
+        Self::Environment,
+    ];
 
     /// Its position in [`Self::SURFACES`], or past it for fog cards.
     pub(crate) fn index(self) -> usize {
@@ -392,28 +425,62 @@ pub(crate) struct SurfaceVariant {
 
 impl SurfaceVariant {
     /// Every variant, in drawing order: by coverage, then shading, and fog cards last.
-    pub(crate) const ALL: [Self; 10] = [
-        Self::character(Coverage::Opaque, Part::Body),
-        Self::character(Coverage::Opaque, Part::Face),
-        Self::environment(Coverage::Opaque),
-        Self::character(Coverage::AlphaTest, Part::Body),
-        Self::character(Coverage::AlphaTest, Part::Face),
-        Self::environment(Coverage::AlphaTest),
-        Self::character(Coverage::Transparent, Part::Body),
-        Self::character(Coverage::Transparent, Part::Face),
-        Self::environment(Coverage::Transparent),
-        Self::FOG_CARD,
-    ];
+    pub(crate) const ALL: [Self; 16] = {
+        let mut all = [Self::FOG_CARD; 16];
+        let coverages = [Coverage::Opaque, Coverage::AlphaTest, Coverage::Transparent];
+        let mut index = 0;
+        while index < coverages.len() * Shading::SURFACES.len() {
+            let coverage = coverages[index / Shading::SURFACES.len()];
+            all[index] = Self { coverage, shading: Shading::SURFACES[index % Shading::SURFACES.len()] };
+            index += 1;
+        }
+        all
+    };
     /// The variants that write depth: drawn first, and into the prepasses.
-    pub(crate) const DEPTH_WRITING: [Self; 6] =
-        [Self::ALL[0], Self::ALL[1], Self::ALL[2], Self::ALL[3], Self::ALL[4], Self::ALL[5]];
+    pub(crate) const DEPTH_WRITING: [Self; 10] = {
+        let mut variants = [Self::OPAQUE; 10];
+        let mut index = 0;
+        while index < variants.len() {
+            variants[index] = Self::ALL[index];
+            index += 1;
+        }
+        variants
+    };
+    /// The anime character variants that write depth: what the character prepass draws, and
+    /// the variants that can draw an outline hull.
+    pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 8] = {
+        let mut variants = [Self::OPAQUE; 8];
+        let mut index = 0;
+        while index < variants.len() {
+            let coverage = if index < Part::ALL.len() { Coverage::Opaque } else { Coverage::AlphaTest };
+            variants[index] = Self::character(coverage, Part::ALL[index % Part::ALL.len()]);
+            index += 1;
+        }
+        variants
+    };
     /// The variants that can draw an outline hull: the anime character's that write depth.
-    pub(crate) const OUTLINED: [Self; 4] = [Self::ALL[0], Self::ALL[1], Self::ALL[3], Self::ALL[4]];
+    pub(crate) const OUTLINED: [Self; 8] = Self::CHARACTER_DEPTH_WRITING;
     /// The surfaces' variants blended over the frame after the sky; fog cards ([`Self::FOG_CARD`])
     /// blend after them, sorted back to front.
-    pub(crate) const TRANSPARENT: [Self; 3] = [Self::ALL[6], Self::ALL[7], Self::ALL[8]];
+    pub(crate) const TRANSPARENT: [Self; 5] = {
+        let mut variants = [Self::OPAQUE; 5];
+        let mut index = 0;
+        while index < variants.len() {
+            variants[index] = Self::ALL[Self::DEPTH_WRITING.len() + index];
+            index += 1;
+        }
+        variants
+    };
     /// Fog cards (M1 W3).
     pub(crate) const FOG_CARD: Self = Self { coverage: Coverage::Transparent, shading: Shading::FogCard };
+    /// The variants whose draws can draw eyes through the character's hair
+    /// ([`MaterialFlags::THROUGH_HAIR`]): faces and eyes that write depth.
+    pub(crate) const THROUGH_HAIR: [Self; 4] = [
+        Self::character(Coverage::Opaque, Part::Face),
+        Self::character(Coverage::Opaque, Part::Eye),
+        Self::character(Coverage::AlphaTest, Part::Face),
+        Self::character(Coverage::AlphaTest, Part::Eye),
+    ];
     /// Opaque anime character bodies: what a material with no permutation bits draws with.
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
@@ -440,18 +507,23 @@ impl SurfaceVariant {
     }
 
     /// The surface shader's static permutation constants for the variant (`PERMUTATION_*` in
-    /// `anime_character.wgsl` and `environment.wgsl`). Outlines take their coverage's
-    /// ([`Coverage::constants`]); environment pipelines add their tier's specular model. Fog cards
-    /// have none (their pipelines add the depth fade).
-    pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
-        use override_constant::{ALPHA_TEST, FACE, TRANSPARENT};
-        match (self.coverage, self.shading) {
-            (_, Shading::FogCard) => &[],
-            (coverage, Shading::Character(Part::Body) | Shading::Environment) => coverage.constants(),
-            (Coverage::Opaque, Shading::Character(Part::Face)) => &[(FACE, 1.0)],
-            (Coverage::AlphaTest, Shading::Character(Part::Face)) => &[(ALPHA_TEST, 1.0), (FACE, 1.0)],
-            (Coverage::Transparent, Shading::Character(Part::Face)) => &[(TRANSPARENT, 1.0), (FACE, 1.0)],
+    /// `anime_character.wgsl` and `environment.wgsl`): its coverage's ([`Coverage::constants`],
+    /// which outlines take alone), then its part's. Environment pipelines add their tier's
+    /// specular model. Fog cards have none (their pipelines add the depth fade).
+    pub(crate) fn constants(self) -> Vec<(&'static str, f64)> {
+        let mut constants = match self.shading {
+            Shading::FogCard => Vec::new(),
+            _ => self.coverage.constants().to_vec(),
+        };
+        if let Shading::Character(part) = self.shading {
+            constants.extend(part.constant().map(|name| (name, 1.0)));
         }
+        constants
+    }
+
+    /// Its position in [`Self::THROUGH_HAIR`], if it is there.
+    pub(crate) fn through_hair_index(self) -> Option<usize> {
+        Self::THROUGH_HAIR.iter().position(|&variant| variant == self)
     }
 }
 
@@ -484,13 +556,16 @@ pub(crate) mod override_constant {
     pub const ALPHA_TEST: &str = "PERMUTATION_ALPHA_TEST";
     pub const TRANSPARENT: &str = "PERMUTATION_TRANSPARENT";
     pub const FACE: &str = "PERMUTATION_FACE";
+    pub const HAIR: &str = "PERMUTATION_HAIR";
+    pub const EYE: &str = "PERMUTATION_EYE";
 }
 
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
 #[derive(Debug)]
 pub(crate) struct Layouts {
-    /// Group 0: frame constants, local lights and their lists, the characters' entries, and the
-    /// shadows' uniforms, maps and comparison sampler (M1 R4).
+    /// Group 0: frame constants, local lights and their lists, the characters' entries, the
+    /// shadows' uniforms, maps and comparison sampler (M1 R4), and the character prepass's
+    /// depth and IDs with the sampler that gathers them (M1 C5).
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
@@ -546,6 +621,23 @@ impl Layouts {
                         binding: 7,
                         visibility: S::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    depth(8, wgpu::TextureViewDimension::D2),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
+                        visibility: S::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: S::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                 ],
@@ -621,8 +713,9 @@ struct PassDesc<'a> {
     constants: &'a [(&'a str, f64)],
 }
 
-/// Transparent surfaces: blended by coverage, keeping the scene color's alpha, which opaque
-/// surfaces set (post's character mask, M1 P2: the world's share of the pixel).
+/// Transparent surfaces, and eyes through hair: blended by coverage, keeping the scene color's
+/// alpha, which opaque surfaces set (post's character mask, M1 P2: the world's share of the
+/// pixel).
 const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
     color: wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -653,6 +746,11 @@ pub(crate) struct MeshPipelines {
     /// format's first outline: one for every coverage, since the prepass doesn't cut
     /// alpha-tested surfaces out.
     outline_prepass: Option<wgpu::RenderPipeline>,
+    /// The characters' depth and IDs (`prepass.wgsl`, M1 C5), whatever their variant.
+    pub character_prepass: wgpu::RenderPipeline,
+    /// Eyes and brows through the character's hair (M1 C5), per [`SurfaceVariant::THROUGH_HAIR`]
+    /// entry, built with the first draw of a face or eye material that draws through.
+    through_hair: [Option<wgpu::RenderPipeline>; SurfaceVariant::THROUGH_HAIR.len()],
 }
 
 impl MeshPipelines {
@@ -675,26 +773,34 @@ impl MeshPipelines {
         self.outline_prepass.as_ref()
     }
 
-    /// Pipelines built of `family`: its surfaces, and the anime character family's outlines.
+    /// The eyes-through-hair pipeline of `variant`, once it was prepared.
+    pub(crate) fn through_hair(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
+        self.through_hair[variant.through_hair_index()?].as_ref()
+    }
+
+    /// Pipelines built of `family`: its surfaces, and the anime character family's outlines and
+    /// eyes through hair.
     fn built(&self, family: MaterialFamily) -> u32 {
         let surfaces = SurfaceVariant::ALL
             .iter()
             .filter(|variant| variant.shading.family() == family && self.surface(**variant).is_some())
             .count();
-        let outlines = match family {
-            MaterialFamily::AnimeCharacter => self.outline.iter().flatten().count(),
+        let character = match family {
+            MaterialFamily::AnimeCharacter => {
+                self.outline.iter().flatten().count() + self.through_hair.iter().flatten().count()
+            }
             _ => 0,
         };
-        (surfaces + outlines) as u32
+        (surfaces + character) as u32
     }
 }
 
 /// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up
-/// front, opaque anime character surfaces only; the f32 ones when the first f32 mesh, or skinned
-/// or morphed mesh, is uploaded ([`Self::prepare_format`]); the other surface variants, the
-/// environment's among them, when a draw first needs them ([`Self::prepare_variant`]); and the
-/// character prepass's with the first skinned or morphed mesh ([`Self::prepare_characters`]).
-/// Apps never pay for compiling what they don't draw.
+/// front, the prepasses' and opaque anime character surfaces only; the f32 ones when the first
+/// f32 mesh, or skinned or morphed mesh, is uploaded ([`Self::prepare_format`]); the other
+/// surface variants, the environment's among them, when a draw first needs them
+/// ([`Self::prepare_variant`]); and eyes through hair with the first material that draws
+/// through ([`Self::prepare_through_hair`]). Apps never pay for compiling what they don't draw.
 ///
 /// They are built from the renderer's current shader sources, whose modules they keep; new
 /// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]).
@@ -702,8 +808,6 @@ impl MeshPipelines {
 pub(crate) struct Pipelines {
     /// Per [`PositionFormat::ALL`] entry.
     mesh: [Option<MeshPipelines>; 2],
-    /// Depth of skinned and morphed instances, whose skinning outputs are f32.
-    character_prepass: Option<wgpu::RenderPipeline>,
     target: PipelineTarget,
     modules: MeshModules,
 }
@@ -749,8 +853,10 @@ impl MeshModules {
 /// What every scene pipeline shares, kept to build the f32 ones later.
 #[derive(Clone, Debug)]
 struct PipelineTarget {
-    /// Groups 0–2, for passes that read no material textures: the prepasses.
+    /// Groups 0–2, for passes that read no material textures: the scene prepass.
     layout: wgpu::PipelineLayout,
+    /// Groups 1 and 2 alone: the character prepass, which writes the targets group 0 binds.
+    character_layout: wgpu::PipelineLayout,
     /// Groups 0–3 per [`MESH_FAMILIES`] entry, with that family's scene group and group 3: the
     /// passes that shade with it (its surfaces, and the anime character family's outlines).
     family_layouts: [wgpu::PipelineLayout; MESH_FAMILIES.len()],
@@ -788,6 +894,11 @@ impl Pipelines {
             bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&layouts.scene[0])],
             immediate_size: 0,
         });
+        let character_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("character prepass"),
+            bind_group_layouts: &[None, Some(&layouts.view), Some(&layouts.scene[0])],
+            immediate_size: 0,
+        });
         let family_layouts = std::array::from_fn(|group| {
             let family = MESH_FAMILIES[group];
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -803,6 +914,7 @@ impl Pipelines {
         });
         let target = PipelineTarget {
             layout,
+            character_layout,
             family_layouts,
             color_format,
             sample_count,
@@ -818,7 +930,7 @@ impl Pipelines {
             outline: shaders::module(device, Program::Outline, sources),
             prepass: shaders::module(device, Program::Prepass, sources),
         };
-        let mut pipelines = Self { mesh: [None, None], character_prepass: None, target, modules };
+        let mut pipelines = Self { mesh: [None, None], target, modules };
         pipelines.prepare_format(device, PositionFormat::Unorm16);
         pipelines
     }
@@ -846,10 +958,6 @@ impl Pipelines {
                     old.clone()
                 }
             };
-        let character_prepass = self
-            .character_prepass
-            .as_ref()
-            .map(|old| rebuild(Program::Prepass, old, &|| build_character_prepass(device, target, &modules)));
         let mut mesh = [None, None];
         for format in PositionFormat::ALL {
             let Some(old) = self.mesh(format) else { continue };
@@ -859,12 +967,24 @@ impl Pipelines {
             let outline_prepass = old.outline_prepass.as_ref().map(|old| {
                 rebuild(Program::Outline, old, &|| build_outline_prepass(device, target, &modules, format))
             });
+            let character_prepass = rebuild(Program::Prepass, &old.character_prepass, &|| {
+                build_character_prepass(device, target, &modules, format)
+            });
             let mut pipelines = MeshPipelines {
                 surfaces: Default::default(),
                 outline: Default::default(),
                 scene_prepass,
                 outline_prepass,
+                character_prepass,
+                through_hair: Default::default(),
             };
+            for (index, variant) in SurfaceVariant::THROUGH_HAIR.into_iter().enumerate() {
+                if let Some(old) = &old.through_hair[index] {
+                    pipelines.through_hair[index] = Some(rebuild(Program::AnimeCharacter, old, &|| {
+                        build_through_hair(device, target, &modules, format, variant)
+                    }));
+                }
+            }
             for variant in SurfaceVariant::ALL {
                 if let Some(old) = old.surface(variant) {
                     let (_, program) = modules.surface(variant.shading);
@@ -882,24 +1002,46 @@ impl Pipelines {
             }
             mesh[format_index(format)] = Some(pipelines);
         }
-        let pipelines = Self { mesh, character_prepass, target: self.target.clone(), modules };
+        let pipelines = Self { mesh, target: self.target.clone(), modules };
         (pipelines, built)
     }
 
-    /// Builds the mesh pipelines for `format` unless they exist: the scene prepass, and the
+    /// Builds the mesh pipelines for `format` unless they exist: the two prepasses, and the
     /// opaque anime character surfaces and their outlines.
     pub(crate) fn prepare_format(&mut self, device: &wgpu::Device, format: PositionFormat) {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
         let scene_prepass = build_scene_prepass(device, &self.target, &self.modules, format);
+        let character_prepass = build_character_prepass(device, &self.target, &self.modules, format);
         self.mesh[format_index(format)] = Some(MeshPipelines {
             surfaces: Default::default(),
             outline: Default::default(),
             scene_prepass,
             outline_prepass: None,
+            character_prepass,
+            through_hair: Default::default(),
         });
         self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
+    }
+
+    /// Builds the eyes-through-hair pipeline of `variant`, a face or eye variant that writes
+    /// depth, for `format`, whose mesh pipelines must exist, unless it does already.
+    pub(crate) fn prepare_through_hair(
+        &mut self,
+        device: &wgpu::Device,
+        format: PositionFormat,
+        variant: SurfaceVariant,
+    ) {
+        let Some(index) = variant.through_hair_index() else { return };
+        let mesh =
+            self.mesh[format_index(format)].as_ref().expect("prepare_format built the format's pipelines");
+        if mesh.through_hair[index].is_some() {
+            return;
+        }
+        let pipeline = build_through_hair(device, &self.target, &self.modules, format, variant);
+        let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
+        mesh.through_hair[index] = Some(pipeline);
     }
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
@@ -942,22 +1084,9 @@ impl Pipelines {
         self.mesh.iter().flatten().map(|mesh| mesh.built(family)).sum()
     }
 
-    /// Builds the character prepass's pipeline unless it exists: for the first skinned or
-    /// morphed mesh.
-    pub(crate) fn prepare_characters(&mut self, device: &wgpu::Device) {
-        if self.character_prepass.is_none() {
-            self.character_prepass = Some(build_character_prepass(device, &self.target, &self.modules));
-        }
-    }
-
     /// The mesh pipelines for `format`, once [`Self::prepare_format`] built them.
     pub(crate) fn mesh(&self, format: PositionFormat) -> Option<&MeshPipelines> {
         self.mesh[format_index(format)].as_ref()
-    }
-
-    /// The character prepass's pipeline, once [`Self::prepare_characters`] built it.
-    pub(crate) fn character_prepass(&self) -> Option<&wgpu::RenderPipeline> {
-        self.character_prepass.as_ref()
     }
 }
 
@@ -974,7 +1103,7 @@ fn build_surface(
     let transparent = variant.coverage == Coverage::Transparent;
     let (module, _) = modules.surface(variant.shading);
     // The permutation's constants, then the shadows' (M1 R4), which fog cards don't receive.
-    let mut constants = variant.constants().to_vec();
+    let mut constants = variant.constants();
     if variant.shading != Shading::FogCard {
         constants.extend(target.shadows.iter().flatten());
     }
@@ -1071,24 +1200,84 @@ fn build_outline_prepass(
     )
 }
 
-/// The character prepass pipeline: skinning outputs are f32.
+/// The character prepass pipeline for meshes in `format` (skinning outputs are f32): depth, and
+/// each pixel's character ID (M1 C5), on a layout without group 0, which binds what it writes.
 fn build_character_prepass(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
+    format: PositionFormat,
 ) -> wgpu::RenderPipeline {
-    let buffers = MeshPass::CharacterPrepass.buffers(PositionFormat::Float32);
-    target.build_prepass(device, "character prepass", &modules.prepass, &buffers, wgpu::Face::Back, &[])
+    let buffers = MeshPass::CharacterPrepass.buffers(format);
+    let ids = [Some(wgpu::ColorTargetState {
+        format: character_prepass::IDS_FORMAT,
+        blend: None,
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+    target.build_prepass_on(
+        device,
+        &target.character_layout,
+        "character prepass",
+        &modules.prepass,
+        &buffers,
+        wgpu::Face::Back,
+        &ids,
+    )
+}
+
+/// The eyes-through-hair pipeline of `variant` (a face or eye that writes depth) for meshes in
+/// `format` (M1 C5): the anime character shader's own vertex stage and its `fs_through_hair`,
+/// with the variant's constants, blended by coverage over the hair. It writes the hair's depth
+/// from the character prepass, nudged nearer, and tests it with greater-or-equal against the
+/// main pass's, so nothing that hides the hair is drawn over, and writes no depth.
+fn build_through_hair(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+    variant: SurfaceVariant,
+) -> wgpu::RenderPipeline {
+    let mut constants = variant.constants();
+    constants.extend(target.shadows.iter().flatten());
+    target.build_with(
+        device,
+        &target.family_layouts[variant.shading.scene_group()],
+        PassDesc {
+            name: "through hair",
+            module: &modules.character,
+            vertex_buffers: &MeshPass::Main.buffers(format),
+            cull: Some(wgpu::Face::Back),
+            depth_write: false,
+            depth_compare: wgpu::CompareFunction::GreaterEqual,
+            blend: Some(TRANSPARENT_BLEND),
+            constants: &constants,
+        },
+    )
 }
 
 impl PipelineTarget {
-    /// A prepass pipeline: `cull` faces culled, reverse-Z depth written, no multisampling (the
-    /// targets are sampled by later passes), and `color_targets` written by the
-    /// `fs_<entry>` entry point when there are any. `name` is the entry points' suffix with
-    /// spaces as underscores.
+    /// A prepass pipeline on the scene prepass's layout: see [`Self::build_prepass_on`].
     fn build_prepass(
         &self,
         device: &wgpu::Device,
+        name: &'static str,
+        module: &wgpu::ShaderModule,
+        vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+        cull: wgpu::Face,
+        color_targets: &[Option<wgpu::ColorTargetState>],
+    ) -> wgpu::RenderPipeline {
+        self.build_prepass_on(device, &self.layout, name, module, vertex_buffers, cull, color_targets)
+    }
+
+    /// A prepass pipeline on `layout`: `cull` faces culled, reverse-Z depth written, no
+    /// multisampling (the targets are sampled by later passes), and `color_targets` written by
+    /// the `fs_<entry>` entry point when there are any. `name` is the entry points' suffix with
+    /// spaces as underscores.
+    #[expect(clippy::too_many_arguments, reason = "a pipeline's state, each read once")]
+    fn build_prepass_on(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
         name: &'static str,
         module: &wgpu::ShaderModule,
         vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
@@ -1101,7 +1290,7 @@ impl PipelineTarget {
         tracing::debug!(target: LOG_TARGET, pipeline = name, targets, "building a mesh pipeline");
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(name),
-            layout: Some(&self.layout),
+            layout: Some(layout),
             vertex: wgpu::VertexState {
                 module,
                 entry_point: Some(&vs),
@@ -1192,4 +1381,44 @@ impl PipelineTarget {
 /// The index of `format` in [`PositionFormat::ALL`].
 pub(crate) fn format_index(format: PositionFormat) -> usize {
     PositionFormat::ALL.iter().position(|&f| f == format).expect("ALL lists every format")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_permutations_are_eight_bits_and_pick_one_part() {
+        let bits = [
+            Permutation::SKINNED,
+            Permutation::ALPHA_TEST,
+            Permutation::OUTLINE,
+            Permutation::MORPH,
+            Permutation::FACE,
+            Permutation::HAIR,
+            Permutation::EYE,
+            Permutation::TRANSPARENT,
+        ];
+        let all = bits.iter().fold(0u8, |all, bit| {
+            assert_eq!((bit.0.count_ones(), all & bit.0), (1, 0), "one bit each, distinct");
+            all | bit.0
+        });
+        assert_eq!(all, u8::MAX, "the plan's eight bits, no more");
+        // Eyes through hair adds a pass, not a permutation: the variant stays the part's.
+        for (flags, part) in [
+            (MaterialFlags::empty(), Part::Body),
+            (MaterialFlags::FACE, Part::Face),
+            (MaterialFlags::HAIR, Part::Hair),
+            (MaterialFlags::EYE, Part::Eye),
+            (MaterialFlags::FACE | MaterialFlags::THROUGH_HAIR, Part::Face),
+            (MaterialFlags::EYE | MaterialFlags::THROUGH_HAIR, Part::Eye),
+        ] {
+            let variant = Permutation::new(flags, false, false).surface();
+            assert_eq!(variant, SurfaceVariant::character(Coverage::Opaque, part), "{flags:?}");
+        }
+        let eye = Permutation::new(MaterialFlags::EYE | MaterialFlags::ALPHA_TEST, true, false).surface();
+        assert_eq!(eye, SurfaceVariant::character(Coverage::AlphaTest, Part::Eye));
+        assert!(SurfaceVariant::THROUGH_HAIR.iter().all(|variant| variant.through_hair_index().is_some()));
+        assert_eq!(SurfaceVariant::ALL.len(), 3 * Shading::SURFACES.len() + 1, "and fog cards");
+    }
 }

@@ -8,12 +8,14 @@
 //! one binding. Passes that shade bind each draw's material (group 3) the same way: only when
 //! it changes. Draws come in groups of one surface variant (the draw list's), each drawn
 //! through its own pipeline; outline hulls are drawn for the draws that have one and are within
-//! their material's LOD cutoff this frame (`outlines`), and the shadow passes draw only the
-//! instances that cast into the map they draw (`*_where`). Fog cards draw in an order of the
-//! frame's own, back to front ([`MeshDraws::draw_ordered`]).
+//! their material's LOD cutoff this frame (`outlines`), eyes through hair for the draws whose
+//! material draws through (M1 C5), and the shadow passes and the character prepass draw only the
+//! instances that cast into the map they draw, or are characters (`*_where`). Fog cards draw in
+//! an order of the frame's own, back to front ([`MeshDraws::draw_ordered`]).
 
 use std::ops::Range;
 
+use sapphire_assets::material::MaterialFlags;
 use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
@@ -60,12 +62,23 @@ pub(crate) enum DrawSet {
     /// The outline hulls the frame draws: of the draws with one, those within their material's
     /// LOD cutoff.
     Outlines,
+    /// The surfaces whose material draws eyes through the character's hair
+    /// ([`MaterialFlags::THROUGH_HAIR`], M1 C5).
+    ThroughHair,
 }
 
 impl MeshDraws<'_> {
-    /// Whether `set` includes draw record `draw_id`, which has an outline hull or not.
-    fn includes(&self, set: DrawSet, draw_id: u32, outline: bool) -> bool {
-        set == DrawSet::Surfaces || (outline && self.hulls.get(draw_id as usize).copied().unwrap_or(false))
+    /// Whether `set` includes draw record `draw_id` of `material`, which has an outline hull or
+    /// not.
+    fn includes(&self, set: DrawSet, draw_id: u32, material: MaterialHandle, outline: bool) -> bool {
+        match set {
+            DrawSet::Surfaces => true,
+            DrawSet::Outlines => outline && self.hulls.get(draw_id as usize).copied().unwrap_or(false),
+            DrawSet::ThroughHair => self
+                .materials
+                .get(material.index())
+                .is_some_and(|record| record.flags.contains(MaterialFlags::THROUGH_HAIR)),
+        }
     }
 }
 
@@ -84,11 +97,6 @@ impl MeshDraws<'_> {
     pub(crate) fn has_any(&self, variant: SurfaceVariant) -> bool {
         PositionFormat::ALL.into_iter().any(|format| self.has_static(format, variant))
             || self.has_deformed(variant)
-    }
-
-    /// Whether there are skinned or morphed instances of any variant to draw.
-    pub(crate) fn has_any_deformed(&self) -> bool {
-        SurfaceVariant::ALL.into_iter().any(|variant| self.has_deformed(variant))
     }
 
     /// Draws `set` of the static meshes in `format` of `variant` with the streams `kind` reads,
@@ -118,7 +126,9 @@ impl MeshDraws<'_> {
     ) {
         let mut bound = Bound::default();
         for command in &self.list.commands[format_index(format)][variant.index()] {
-            if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
+            if !self.includes(set, command.draw_id, command.material, command.outline)
+                || !instance(command.slot)
+            {
                 continue;
             }
             self.draw_command(pass, kind, format, command, &mut bound);
@@ -182,7 +192,9 @@ impl MeshDraws<'_> {
     ) {
         let mut bound = Bound::default();
         for command in &self.list.deformed[variant.index()] {
-            if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
+            if !self.includes(set, command.draw_id, command.material, command.outline)
+                || !instance(command.slot)
+            {
                 continue;
             }
             self.draw_deformed_command(pass, kind, command, &mut bound);

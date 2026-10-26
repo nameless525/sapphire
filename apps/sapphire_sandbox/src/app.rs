@@ -25,11 +25,12 @@ use crate::dev::{DevTools, FrameState};
 use crate::environment::FOG_CARDS;
 use crate::input::SandboxInput;
 use crate::options::Options;
+use crate::rims::RimRigMeshes;
 use crate::scene::Scene;
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{skinned, stage, swatches};
+use crate::{rims, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -116,7 +117,8 @@ impl App for SandboxApp {
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut content = Content::new(platform)?;
-        if options.stage.is_some() {
+        // The stage and the rim rig draw the character without its pedestal.
+        if options.stage.is_some() || options.rim_rig.is_some() {
             content.keep_character_mesh();
         }
         let renderer = create_renderer(
@@ -143,7 +145,10 @@ impl App for SandboxApp {
             scene.spawn_swatches(meshes);
         }
         if let Some(head) = renderer.face_head {
-            scene.spawn_face_rig(head);
+            scene.spawn_face_rig(head, options.faces.unwrap_or_default());
+        }
+        if let (Some(layout), Some(meshes)) = (options.rim_rig, renderer.rim_rig) {
+            scene.spawn_rim_rig(layout, meshes);
         }
         if let Some(courtyard) = renderer.courtyard {
             scene.spawn_environment(courtyard);
@@ -643,6 +648,8 @@ struct SceneRenderer {
     swatches: Option<[MeshHandle; SWATCHES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
+    /// The rim rig's figure and backdrop, with `--rim-rig`.
+    rim_rig: Option<RimRigMeshes>,
     /// The courtyard, with `--environment`.
     courtyard: Option<MeshHandle>,
     /// The courtyard's fog cards, with `--environment` and fog.
@@ -668,6 +675,9 @@ impl Scene {
         }
         if let Some(head) = renderer.face_head {
             self.set_face_mesh(head);
+        }
+        if let Some(meshes) = renderer.rim_rig {
+            self.set_rim_rig_meshes(meshes);
         }
         if let Some(courtyard) = renderer.courtyard {
             self.set_courtyard_mesh(courtyard);
@@ -708,8 +718,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
-/// the shader swatches, whose materials `content` uploads too, the face test head, the
-/// courtyard and its fog cards, the hard-edged outline sample and the stage.
+/// the shader swatches, whose materials `content` uploads too, the face test head, the rim rig,
+/// the courtyard and its fog cards, the hard-edged outline sample and the stage.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -725,7 +735,16 @@ fn create_renderer(
         let stalk = options.skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
         let swatches =
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
-        let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
+        let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
+        let rim_rig = match options.rim_rig {
+            Some(_) => {
+                let character = content
+                    .character_mesh()
+                    .ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+                Some(rims::upload_rig(&mut renderer, character)?)
+            }
+            None => None,
+        };
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
         let fog_cards = (options.environment && !options.fog_off)
             .then(|| content.fog_cards(&mut renderer, gpu))
@@ -741,21 +760,13 @@ fn create_renderer(
             None => None,
         };
         let sky = content.sky_material(&mut renderer, gpu)?;
+        let rigs = (face_head, rim_rig);
         let environment = (courtyard, fog_cards);
-        Ok((character, character_bounds, stalk, swatches, face_head, environment, hard_edges, stage, sky))
+        Ok((character, character_bounds, stalk, swatches, rigs, environment, hard_edges, stage, sky))
     });
     match scene {
-        Ok((
-            character,
-            character_bounds,
-            stalk,
-            swatches,
-            face_head,
-            environment,
-            hard_edges,
-            stage,
-            sky,
-        )) => {
+        Ok((character, character_bounds, stalk, swatches, rigs, environment, hard_edges, stage, sky)) => {
+            let (face_head, rim_rig) = rigs;
             let (courtyard, fog_cards) = environment;
             Ok(SceneRenderer {
                 renderer,
@@ -764,6 +775,7 @@ fn create_renderer(
                 stalk,
                 swatches,
                 face_head,
+                rim_rig,
                 courtyard,
                 fog_cards,
                 hard_edges,

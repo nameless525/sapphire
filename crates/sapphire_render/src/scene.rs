@@ -597,6 +597,7 @@ mod tests {
     use crate::bounds::Sphere;
     use crate::gpu_types::Dequantize;
     use crate::mesh_pool::{DeformSource, Placement, SubmeshDraw, SubmeshMaterial};
+    use crate::pipelines::{Coverage, Part};
 
     /// Material `slot`, uploaded as handle `slot + 10`.
     fn material(slot: u32) -> SubmeshMaterial {
@@ -886,10 +887,16 @@ mod tests {
             ]
         );
         // Grouped by format, then by surface variant, in slot order within each group.
+        let character = |coverage, part| SurfaceVariant::character(coverage, part).index();
+        let (opaque, face) =
+            (character(Coverage::Opaque, Part::Body), character(Coverage::Opaque, Part::Face));
+        let alpha_test = character(Coverage::AlphaTest, Part::Body);
+        let transparent = character(Coverage::Transparent, Part::Body);
         let [unorm16_variants, float32_variants] = &list.commands;
-        let [unorm16, unorm16_face, _, unorm16_alpha_test, _, _, unorm16_transparent, _, _, _] =
-            unorm16_variants;
-        let [float32, _, _, _, _, _, float32_transparent, _, _, _] = float32_variants;
+        let (unorm16, unorm16_face) = (&unorm16_variants[opaque], &unorm16_variants[face]);
+        let (unorm16_alpha_test, unorm16_transparent) =
+            (&unorm16_variants[alpha_test], &unorm16_variants[transparent]);
+        let (float32, float32_transparent) = (&float32_variants[opaque], &float32_variants[transparent]);
         // Each names its instance's slot and its material (by material slot).
         let command = |indices, first_vertex, instance, draw_id, slot: u32, outline| DrawCommand {
             indices,
@@ -911,19 +918,24 @@ mod tests {
             deformed_opaque[..],
             [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
         );
-        let lens = SurfaceVariant::ALL.map(|variant| list.len(variant));
-        assert_eq!((lens, list.outlines()), ([2, 1, 0, 1, 0, 0, 1, 0, 0, 0], 3));
+        // Draws per variant: `[opaque, face, alpha-tested, transparent]` bodies and faces.
+        let lens = |[o, f, a, t]: [usize; 4]| {
+            let mut lens = [0; SurfaceVariant::ALL.len()];
+            (lens[opaque], lens[face], lens[alpha_test], lens[transparent]) = (o, f, a, t);
+            lens
+        };
+        let found = SurfaceVariant::ALL.map(|variant| list.len(variant));
+        assert_eq!((found, list.outlines()), (lens([2, 1, 1, 1]), 3));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
         list.build(&meshes, flags, &slots);
         assert_eq!(list.draws.len(), 3);
-        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 0, 1, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), lens([0, 1, 1, 1]));
     }
 
     #[test]
     fn families_mix_in_a_mesh_and_draws_group_by_pipeline() {
-        use crate::pipelines::{Coverage, Part};
         let identity = Dequantize { position_scale: [1.0; 3], ..Dequantize::default() };
         let submesh =
             |first_index, slot| SubmeshDraw { first_index, index_count: 3, material: material(slot) };

@@ -14,8 +14,8 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use super::reference;
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
-    CameraData, FramePacketRing, InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer,
-    ViewData,
+    CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
+    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
 };
 
 /// `material` embedded in a mesh's material slot, as the glTF importer embeds one.
@@ -471,6 +471,13 @@ fn prepass_depth_equals_the_main_pass_depth() {
     // Leans the character into the prop's way, so the two overlap on screen.
     let lean = Affine3A::from_rotation_translation(Quat::from_rotation_y(0.4), Vec3::new(0.5, 0.1, 0.2));
     packet.push_skinned(InstanceId(1), [Affine3A::IDENTITY, lean], []);
+    // Listed as a character, so the character prepass draws it (M1 C5); the prop isn't.
+    packet.characters.push(CharacterInstance {
+        id: InstanceId(1),
+        lighting: CharacterLighting::unstyled(packet.sun),
+        face: CharacterFace::default(),
+        body: CharacterBody::default(),
+    });
     renderer.prepare(&gpu, packets.current());
 
     let texture = target(&gpu, size);

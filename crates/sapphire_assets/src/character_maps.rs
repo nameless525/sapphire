@@ -1,5 +1,5 @@
-//! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps, SDF face maps
-//! and the face's masks (M1 C3).
+//! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps, SDF face maps,
+//! the face's masks (M1 C3) and the hair mask (M1 C5).
 //!
 //! The maps are ordinary cooked textures ([`texture`](crate::texture)) of the ILM, ramp, SDF
 //! and mask classes. This module fixes their channel and row layouts and the encodings inside
@@ -90,13 +90,20 @@
 //! A face material (C3) binds two masks besides its SDF map, both linear:
 //!
 //! - **The face mask** (the material's surface mask slot), [`face_mask`]: R the nose line,
-//!   G the face highlight, B always lit (eyes, brows, lashes); A unused. These are the face's
-//!   fixed features.
+//!   G the face highlight, B always lit (eyes, brows, lashes; also what draws through the
+//!   bangs, M1 C5); A unused. These are the face's fixed features.
 //! - **The expression map** ([`face_expression`]): R blush, G gloom; B and A unused. Each
 //!   channel is scaled by a weight the frame packet animates per character, so one material
 //!   serves every expression of every character wearing it.
 //!
 //! Neutral values are 0 everywhere: an unpainted mask changes nothing.
+//!
+//! # Hair masks
+//!
+//! A hair material (M1 C5) binds a linear mask in its surface mask slot, [`hair_mask`] (WuWa's
+//! `_HM`): R where the highlight may show and how strongly, G a shift of the highlight's band
+//! (0.5 none), B occlusion that darkens the hair's light between strands (1 none). An unbound
+//! mask reads as a full highlight, no shift and no occlusion.
 
 /// How many material IDs the character maps tell apart: ILM alpha levels, ramp rows per half,
 /// and the per-ID parameter arrays of the anime character shader (C1).
@@ -303,6 +310,22 @@ pub mod face_mask {
     pub const HIGHLIGHT: usize = 1;
     /// B, always lit: eyes, brows and lashes, which the light split never shadows.
     pub const ALWAYS_LIT: usize = 2;
+}
+
+/// The hair mask's channels (M1 C5). Linear.
+pub mod hair_mask {
+    /// R, the highlight: where the hair's highlight band may show, and how strongly.
+    pub const HIGHLIGHT: usize = 0;
+    /// G, the highlight's shift: `G − 0.5` moves the band by that much in the highlight style's
+    /// own units (N·H, the view-space normal's height, or along the normal), so a painted
+    /// gradient bends a straight band to follow a hairstyle. 0.5 is no shift.
+    pub const SHIFT: usize = 1;
+    /// B, occlusion: multiplies the hair's ambient occlusion, darkening it between strands and
+    /// under layers. 1 is none.
+    pub const OCCLUSION: usize = 2;
+
+    /// The value of G that leaves the band where it is.
+    pub const NO_SHIFT: f32 = 0.5;
 }
 
 /// The expression map's channels (M1 C3), each scaled by a weight the frame packet animates

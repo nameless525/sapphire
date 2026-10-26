@@ -17,7 +17,8 @@
 //!
 //! Then, where the device has timestamp queries, it runs [`TIMED_FRAMES`] more frames with the
 //! frame graph's GPU timing on and logs the mean GPU time of the main pass (the sky draws in it),
-//! the prepasses, temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post (its bloom
+//! the prepasses (against §3.3's "Culling + prepass", 1.5 ms) and the character prepass among them
+//! (M1 C5, with its draws), temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post (its bloom
 //! chain, its fused composite with the compositing layers, and the two together against §3.3's
 //! "Bloom + tonemap + LUT", 0.7 ms on Desktop-Low and 2.5 ms on Mobile-Low), the skinning pass
 //! (`--skinned`), the sky cube's face pass, the shadow passes (the cascades drawn, the character
@@ -30,7 +31,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{post, shadows, temporal};
+use sapphire_render::{CHARACTER_PREPASS, PREPASSES, post, shadows, temporal};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -122,7 +123,8 @@ pub(crate) fn run(
         stage = ?options.stage,
         lights = options.lights,
         skinned = options.skinned,
-        faces = options.faces,
+        faces = ?options.faces,
+        rim_rig = ?options.rim_rig,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),
@@ -159,6 +161,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
     let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut shadow) =
         (zero, zero, zero, zero, zero, zero);
+    let mut character_prepass = zero;
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -178,11 +181,12 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
         // runs are its inputs, timed apart; post's composite runs at the output's size either way,
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
-        let groups: [(&[&str], &mut Sums); 6] = [
+        let groups: [(&[&str], &mut Sums); 7] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&["main"], &mut main),
-            (&["character prepass", "scene prepass"], &mut prepasses),
+            (&PREPASSES, &mut prepasses),
+            (&[CHARACTER_PREPASS], &mut character_prepass),
             (&temporal::PASSES, &mut taa),
             (&shadows::PASSES, &mut shadow),
         ];
@@ -219,6 +223,10 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_main_us = format_args!("{:.1}", micros(main.0, main.2)),
         gpu_main_duration_us = format_args!("{:.1}", micros(main.1, main.2)),
         gpu_prepasses_us = format_args!("{:.1}", micros(prepasses.0, prepasses.2)),
+        gpu_character_prepass_us = format_args!("{:.1}", micros(character_prepass.0, character_prepass.2)),
+        gpu_character_prepass_duration_us =
+            format_args!("{:.1}", micros(character_prepass.1, character_prepass.2)),
+        character_prepass_draws = stage.renderer.stats().character_prepass.draws,
         gpu_taa_us = format_args!("{:.1}", micros(taa.0, taa.2)),
         gpu_taa_duration_us = format_args!("{:.1}", micros(taa.1, taa.2)),
         taa_frames = taa.2,

@@ -90,7 +90,8 @@ impl Stage {
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
         let mut content = Content::new(platform)?;
-        if options.stage.is_some() {
+        // The stage and the rim rig draw the character without its pedestal.
+        if options.stage.is_some() || options.rim_rig.is_some() {
             content.keep_character_mesh();
         }
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
@@ -108,8 +109,13 @@ impl Stage {
         if options.swatches {
             scene.spawn_swatches(crate::swatches::upload_swatches(&mut content, &gpu, &mut renderer)?);
         }
-        if options.faces {
-            scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?);
+        if let Some(layout) = options.faces {
+            scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?, layout);
+        }
+        if let Some(layout) = options.rim_rig {
+            let figure =
+                content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+            scene.spawn_rim_rig(layout, crate::rims::upload_rig(&mut renderer, figure)?);
         }
         if options.environment {
             scene.spawn_environment(content.courtyard(&mut renderer, &gpu)?);

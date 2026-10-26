@@ -1,8 +1,8 @@
 //! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, a main
 //! pass into HDR scene color (anime character and environment surfaces per surface variant, the
-//! characters' outlines, the sky, then transparent surfaces and fog cards), lit by each
-//! character's light rig (or, for the world, the sun) under the frame's shadows, local lights and
-//! fog, then post-processing into the target.
+//! characters' outlines, their eyes through hair, the sky, then transparent surfaces and fog
+//! cards), lit by each character's light rig (or, for the world, the sun) under the frame's
+//! shadows, local lights and fog, then post-processing into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -17,6 +17,7 @@ use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
+use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
 use crate::draw::{DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
@@ -194,6 +195,15 @@ pub enum RenderError {
     UnresolvedMaterial { slot: String, id: AssetId },
 }
 
+/// The character prepass's name in the frame graph (M1 C5): the characters' depth and IDs, on
+/// every tier.
+pub const CHARACTER_PREPASS: &str = "character prepass";
+/// The scene prepass's name in the frame graph (M1 R2): every opaque instance's depth, normals
+/// and velocity, where something reads them (temporal AA).
+pub const SCENE_PREPASS: &str = "scene prepass";
+/// The prepasses, which spec §3.3's "Culling + prepass" row budgets.
+pub const PREPASSES: [&str; 2] = [CHARACTER_PREPASS, SCENE_PREPASS];
+
 /// Renderer counters for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
@@ -206,6 +216,10 @@ pub struct RenderStats {
     pub transparent_draws: u32,
     /// Of [`Self::draws`], those of face materials (M1 C3), through the face variants.
     pub face_draws: u32,
+    /// Of [`Self::draws`], those of hair materials (M1 C5), through the hair variants.
+    pub hair_draws: u32,
+    /// Of [`Self::draws`], those of eye materials (M1 C5), through the eye variants.
+    pub eye_draws: u32,
     /// Of [`Self::draws`], those of environment materials (M1 W4), through the environment
     /// shader.
     pub environment_draws: u32,
@@ -251,6 +265,9 @@ pub struct RenderStats {
     /// Entries of [`FramePacket::characters`] that frame ignored: for instances it doesn't draw,
     /// or with lighting or a face that isn't valid.
     pub ignored_characters: u32,
+    /// The character prepass's draws, and what reads it: faces with the bangs' shadow, eyes
+    /// through hair (M1 C5).
+    pub character_prepass: CharacterPrepassStats,
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
     pub scene_size: (u32, u32),
@@ -285,14 +302,19 @@ pub struct ShaderUpdate {
 /// added after the renderer's to read. Each is the scene's size (the target's at the render
 /// scale), single-sampled, and can be sampled and copied.
 ///
-/// A prepass runs only if a later pass reads one of its outputs; the frame graph culls it
-/// otherwise, at no GPU cost. Temporal AA (M1 R7) reads both; rim light and hair shadows (C2,
-/// C5) come later.
+/// The scene prepass runs only if a later pass reads one of its outputs; the frame graph culls
+/// it otherwise, at no GPU cost. Temporal AA (M1 R7) reads it. The character prepass (M1 C5) runs
+/// every frame: the main pass reads it for the rim, the bangs' shadow and eyes through hair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepassTargets {
-    /// The character prepass: depth of the skinned and morphed instances alone, every tier
-    /// (`Depth32Float`, reverse-Z, cleared to 0).
+    /// The character prepass: depth of the characters the frame lists alone, opaque and
+    /// alpha-tested surfaces, every tier (`Depth32Float`, reverse-Z, cleared to 0). Persistent:
+    /// the renderer's own, imported.
     pub character_depth: TextureId,
+    /// The character prepass: each pixel's character ID (`R16Uint`, cleared to 0): its entry in
+    /// the frame's character buffer in bits 0 to 13 and its part in bits 14 and 15 (0 body, 1
+    /// face, 2 hair, 3 eye or brow; `AnimeCharacterParams::SURFACE_*`).
+    pub character_ids: TextureId,
     /// The scene prepass: depth of every opaque instance and its outline hull (`Depth32Float`),
     /// bit for bit the main pass's. Under temporal AA it is one of a pair of persistent
     /// textures, since the next frame reads it as its last.
@@ -360,6 +382,10 @@ pub struct Renderer {
     lights: Lights,
     /// The frame's characters and their light rigs.
     characters: Characters,
+    /// The character prepass's depth and IDs, which group 0 binds (M1 C5).
+    character_prepass: CharacterPrepassTargets,
+    /// Scratch for counting the characters with the bangs' shadow.
+    character_scratch: Vec<u32>,
     /// The key light's shadow maps, their passes and each frame's plan.
     shadows: Shadows,
     meshes: MeshPool,
@@ -480,8 +506,16 @@ impl Renderer {
             Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache(), &shaders);
         let characters = Characters::new(&device);
         shadows.set_character_buffer(&device, characters.buffer());
-        let frame_bind_group =
-            create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights, &characters, &shadows);
+        let character_prepass = CharacterPrepassTargets::new(&device);
+        let frame_bind_group = create_frame_bind_group(
+            &device,
+            &layouts.frame,
+            &frame_uniforms,
+            &lights,
+            &characters,
+            &shadows,
+            &character_prepass,
+        );
         let view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &layouts.view,
@@ -530,6 +564,8 @@ impl Renderer {
             sky,
             lights,
             characters,
+            character_prepass,
+            character_scratch: Vec::new(),
             shadows,
             meshes,
             materials,
@@ -602,11 +638,16 @@ impl Renderer {
             && let Some(variant) = SurfaceVariant::of_material(material.family, flags)
         {
             // A new static permutation: its draws move to other pipelines, built for every
-            // format already drawn (meshes in another format build theirs when uploaded).
+            // format already drawn (meshes in another format build theirs when uploaded); and
+            // eyes through hair, if it draws through now.
+            let through_hair = flags.contains(MaterialFlags::THROUGH_HAIR);
             self.checked_build(|renderer| {
                 for format in PositionFormat::ALL {
                     if renderer.pipelines.mesh(format).is_some() {
                         renderer.pipelines.prepare_variant(&renderer.device, format, variant);
+                        if through_hair {
+                            renderer.pipelines.prepare_through_hair(&renderer.device, format, variant);
+                        }
                     }
                 }
             });
@@ -779,8 +820,9 @@ impl Renderer {
     }
 
     /// Builds what mesh `handle`, just placed in the pool with `materials`, draws with: the
-    /// pipelines of its position format and its materials' permutations, its format's shadow
-    /// caster, and for a skinned or morphed mesh the skinning and character prepass pipelines.
+    /// pipelines of its position format (the prepasses' among them) and its materials'
+    /// permutations and eyes through hair, its format's shadow caster, and for a skinned or
+    /// morphed mesh the skinning pipeline.
     fn prepare_mesh(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
         self.checked_build(|renderer| renderer.build_mesh_pipelines(handle, materials, moves));
     }
@@ -792,16 +834,15 @@ impl Renderer {
         self.pipelines.prepare_format(&self.device, format);
         self.shadows.prepare_format(&self.device, format, &self.shaders);
         for material in materials {
-            let variant = self
-                .materials
-                .record(material.handle)
-                .and_then(|record| SurfaceVariant::of_material(record.family, record.flags));
-            if let Some(variant) = variant {
-                self.pipelines.prepare_variant(&self.device, format, variant);
+            let Some(record) = self.materials.record(material.handle) else { continue };
+            let Some(variant) = SurfaceVariant::of_material(record.family, record.flags) else { continue };
+            let through_hair = record.flags.contains(MaterialFlags::THROUGH_HAIR);
+            self.pipelines.prepare_variant(&self.device, format, variant);
+            if through_hair {
+                self.pipelines.prepare_through_hair(&self.device, format, variant);
             }
         }
         if record.deform().is_some() {
-            self.pipelines.prepare_characters(&self.device);
             self.skinning.enable(&self.device, self.pipeline_cache.as_ref(), &self.shaders);
         }
         if moves.deformable {
@@ -988,6 +1029,7 @@ impl Renderer {
                 &self.lights,
                 &self.characters,
                 &self.shadows,
+                &self.character_prepass,
             );
         }
         let entries = self.characters.entries();
@@ -1034,6 +1076,8 @@ impl Renderer {
         self.stats.alpha_tested_draws = draws(|variant| variant.coverage == Coverage::AlphaTest);
         self.stats.transparent_draws = draws(|variant| variant.coverage == Coverage::Transparent);
         self.stats.face_draws = draws(|variant| variant.shading == Shading::Character(Part::Face));
+        self.stats.hair_draws = draws(|variant| variant.shading == Shading::Character(Part::Hair));
+        self.stats.eye_draws = draws(|variant| variant.shading == Shading::Character(Part::Eye));
         self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
         self.stats.fog.cards = draws(|variant| variant == SurfaceVariant::FOG_CARD);
         self.stats.fog.layers = GpuFog::new(&packet.fog).layers();
@@ -1047,6 +1091,13 @@ impl Renderer {
         self.stats.lights = self.lights.stats();
         self.stats.characters = self.characters.lit();
         self.stats.ignored_characters = self.characters.ignored();
+        let characters = &self.characters;
+        self.stats.character_prepass = CharacterPrepassStats::count(
+            self.scene.draw_list(),
+            |slot| characters.entry(slot),
+            &self.materials,
+            &mut self.character_scratch,
+        );
         self.stats.skinning = self.skinning.stats();
         self.stats.shadows = self.shadows.stats();
         self.stats.material_uploads = self.materials.pending();
@@ -1063,10 +1114,11 @@ impl Renderer {
     /// view or for an empty target.
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
-    /// textures (HDR scene color, MSAA color, depth, the prepass targets, the bloom chain) are
-    /// transient graph textures sized from it at the render scale ([`Self::set_render_scale`]),
-    /// so any size works, including one that changed since the last frame. Temporal AA's history
-    /// and kept depth are persistent textures of its own, made again when the sizes change.
+    /// textures (HDR scene color, MSAA color, depth, the scene prepass's targets, the bloom
+    /// chain) are transient graph textures sized from it at the render scale
+    /// ([`Self::set_render_scale`]), so any size works, including one that changed since the
+    /// last frame. Temporal AA's history and kept depth, and the character prepass's depth and
+    /// IDs, are persistent textures, made again when the sizes change.
     ///
     /// The surface, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
@@ -1076,8 +1128,9 @@ impl Renderer {
     /// accumulates the scene at the target's size before post reads it. On the clustered light
     /// path, frames with local lights first bin them in a compute pass (see the `lights`
     /// module); frames that pose skinned or morphed instances skin them first (see the
-    /// `skinning` module). The prepasses run only if a later pass reads what
-    /// they write ([`PrepassTargets`]), as temporal AA does.
+    /// `skinning` module). The character prepass runs every frame, before the main pass, which
+    /// reads it; the scene prepass only if a later pass reads what it writes
+    /// ([`PrepassTargets`]), as temporal AA does.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
@@ -1092,6 +1145,18 @@ impl Renderer {
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes);
+        // The character prepass's targets follow the scene's size, and group 0 binds them.
+        if self.character_prepass.resize(&self.device, size) {
+            self.frame_bind_group = create_frame_bind_group(
+                &self.device,
+                &self.layouts.frame,
+                &self.frame_uniforms,
+                &self.lights,
+                &self.characters,
+                &self.shadows,
+                &self.character_prepass,
+            );
+        }
         // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
         // the camera counts as unmoved.
         let clip_from_world = camera.proj * camera.view;
@@ -1153,6 +1218,7 @@ impl Renderer {
             ref mut sky,
             ref mut lights,
             ref mut characters,
+            ref character_prepass,
             ref shadows,
             ref meshes,
             ref mut materials,
@@ -1174,8 +1240,10 @@ impl Renderer {
         let temporal = temporal.as_mut().map(Temporal::split_for_record);
         let temporal_targets = temporal.as_ref().map(|(textures, _)| textures.import(graph, temporal_reset));
         let depth = graph.create_texture("depth", depth_desc);
+        let (character_depth, character_ids) = character_prepass.import(graph);
         let targets = PrepassTargets {
-            character_depth: graph.create_texture("character depth", prepass_target(DEPTH_FORMAT)),
+            character_depth,
+            character_ids,
             depth: match temporal_targets {
                 Some(temporal) => temporal.depth,
                 None => graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
@@ -1196,7 +1264,7 @@ impl Renderer {
         let (material_uploads, material_records) = materials.split_for_record();
         let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
         let (light_uploads, cluster_pass) = lights.split_for_record();
-        let character_uploads = characters.upload();
+        let (character_uploads, character_entries) = characters.split_for_record();
         let skinning_frame = skinning.frame();
         let mesh_draws = MeshDraws {
             meshes,
@@ -1277,40 +1345,68 @@ impl Renderer {
             pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
         };
 
-        // The prepasses: temporal AA reads them; without it the graph culls them unless a pass
-        // added after the renderer's does (see `PrepassTargets`).
-        graph.add_pass("character prepass").write(targets.character_depth).record(move |ctx| {
-            let mut pass = begin_prepass(ctx, "character prepass", targets.character_depth, &[], labels);
-            if let Some(pipeline) = pipelines.character_prepass()
-                && mesh_draws.has_any_deformed()
-            {
-                bind(&mut pass);
-                pass.set_pipeline(pipeline);
-                // The characters alone: anime character surfaces that write depth (transparent
-                // ones don't). A skinned environment prop (a flag, a swinging sign) stays out of
-                // the character depth that rim light, hair shadow and the responsive mask read.
-                let characters = SurfaceVariant::DEPTH_WRITING
-                    .into_iter()
-                    .filter(|variant| matches!(variant.shading, Shading::Character(_)));
-                for variant in characters {
-                    mesh_draws.draw_deformed(
-                        &mut pass,
-                        MeshPass::CharacterPrepass,
-                        variant,
-                        DrawSet::Surfaces,
-                    );
+        // The character prepass (M1 C5): the main pass reads it through group 0 and temporal AA
+        // through the graph; its targets are imported, so it always runs. The characters the
+        // frame lists alone, their anime character surfaces that write depth (transparent ones
+        // don't): an unlisted instance (a skinned prop, an anime-shaded pedestal) stays out of
+        // what the rim, the bangs' shadow, eyes through hair and the responsive mask read. Its
+        // layout leaves group 0, which binds its targets, out.
+        graph.add_pass(CHARACTER_PREPASS).write(targets.character_depth).write(targets.character_ids).record(
+            move |ctx| {
+                let colors = [targets.character_ids];
+                let mut pass =
+                    begin_prepass(ctx, CHARACTER_PREPASS, targets.character_depth, &colors, labels);
+                pass.set_bind_group(1, view_bind_group, &[0]);
+                pass.set_bind_group(2, &scene_bind_groups[0], &[]);
+                pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
+                let listed =
+                    |slot: u32| character_entries.get(slot as usize).is_some_and(|&entry| entry != 0);
+                let prepass = MeshPass::CharacterPrepass;
+                for format in PositionFormat::ALL {
+                    let Some(mesh) = pipelines.mesh(format) else { continue };
+                    let variants = SurfaceVariant::CHARACTER_DEPTH_WRITING;
+                    if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                        pass.set_pipeline(&mesh.character_prepass);
+                        for variant in variants {
+                            mesh_draws.draw_static_where(
+                                &mut pass,
+                                prepass,
+                                format,
+                                variant,
+                                DrawSet::Surfaces,
+                                listed,
+                            );
+                        }
+                    }
                 }
-            }
-        });
+                let deformed = pipelines.mesh(PositionFormat::Float32);
+                if let Some(mesh) = deformed
+                    && SurfaceVariant::CHARACTER_DEPTH_WRITING
+                        .iter()
+                        .any(|&variant| mesh_draws.has_deformed(variant))
+                {
+                    pass.set_pipeline(&mesh.character_prepass);
+                    for variant in SurfaceVariant::CHARACTER_DEPTH_WRITING {
+                        mesh_draws.draw_deformed_where(
+                            &mut pass,
+                            prepass,
+                            variant,
+                            DrawSet::Surfaces,
+                            listed,
+                        );
+                    }
+                }
+            },
+        );
         graph
-            .add_pass("scene prepass")
+            .add_pass(SCENE_PREPASS)
             .write(targets.depth)
             .write(targets.normals)
             .write(targets.velocity)
             .write(targets.outlines)
             .record(move |ctx| {
                 let colors = [targets.normals, targets.velocity, targets.outlines];
-                let mut pass = begin_prepass(ctx, "scene prepass", targets.depth, &colors, labels);
+                let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
                 bind(&mut pass);
                 // Opaque and alpha-tested surfaces of every family, through one pipeline per
                 // format: the prepass doesn't cut alpha-tested ones out yet (crate docs, "Later
@@ -1371,7 +1467,12 @@ impl Renderer {
         let card_depth_fade = fog_cards.depth_fade();
         let (card_draws, card_groups) = fog_cards.split_for_record();
         let card_depth = (card_depth_fade && !card_draws.is_empty()).then_some(targets.depth);
-        let mut main = graph.add_pass("main").write(scene_color).write(depth);
+        let mut main = graph
+            .add_pass("main")
+            .read(targets.character_depth)
+            .read(targets.character_ids)
+            .write(scene_color)
+            .write(depth);
         if let Some(msaa_color) = msaa_color {
             main = main.write(msaa_color);
         }
@@ -1417,15 +1518,17 @@ impl Renderer {
             bind(&mut pass);
             // Opaque and alpha-tested surfaces (characters before the world in each coverage, so
             // depth rejects the world behind them), then the characters' outlines, after them so
-            // depth rejects the hull wherever a surface covers it, then the sky where no geometry
-            // wrote depth, then transparent surfaces over all of it. Each surface variant draws
-            // through its own pipeline (a face's outline is its coverage's), binding its family's
-            // scene group when the family changes; skinned and morphed instances draw last in
-            // each group, through the f32 pipelines.
+            // depth rejects the hull wherever a surface covers it, then eyes through the bangs
+            // over the hair (M1 C5), then the sky where no geometry wrote depth, then transparent
+            // surfaces over all of it. Each surface variant draws through its own pipeline (a
+            // face's outline is its coverage's), binding its family's scene group when the
+            // family changes; skinned and morphed instances draw last in each group, through the
+            // f32 pipelines.
             let groups = SurfaceVariant::DEPTH_WRITING
                 .map(|variant| (variant, DrawSet::Surfaces))
                 .into_iter()
-                .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)));
+                .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
+                .chain(SurfaceVariant::THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
             let mut scene_group = Some(0);
             for (variant, set) in groups {
                 draw_main(
@@ -1612,22 +1715,32 @@ fn draw_main(
         pass.set_bind_group(2, &scene_bind_groups[group], &[]);
         *bound = Some(group);
     }
+    // Eyes through hair are only for the draws whose material draws through: a face or eye
+    // variant with none has no pipeline for it, and nothing to draw.
     let pipeline = |format| {
         let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-        let pipeline = match set {
-            DrawSet::Surfaces => mesh.surface(variant),
-            DrawSet::Outlines => mesh.outline(variant),
-        };
-        pipeline.expect("built when a draw of this variant was added")
+        match set {
+            DrawSet::Surfaces => {
+                Some(mesh.surface(variant).expect("built when a draw of this variant was added"))
+            }
+            DrawSet::Outlines => {
+                Some(mesh.outline(variant).expect("built when a draw of this variant was added"))
+            }
+            DrawSet::ThroughHair => mesh.through_hair(variant),
+        }
     };
     for format in PositionFormat::ALL {
-        if draws.has_static(format, variant) {
-            pass.set_pipeline(pipeline(format));
+        if draws.has_static(format, variant)
+            && let Some(pipeline) = pipeline(format)
+        {
+            pass.set_pipeline(pipeline);
             draws.draw_static(pass, MeshPass::Main, format, variant, set);
         }
     }
-    if draws.has_deformed(variant) {
-        pass.set_pipeline(pipeline(PositionFormat::Float32));
+    if draws.has_deformed(variant)
+        && let Some(pipeline) = pipeline(PositionFormat::Float32)
+    {
+        pass.set_pipeline(pipeline);
         draws.draw_deformed(pass, MeshPass::Main, variant, set);
     }
 }
@@ -1693,8 +1806,10 @@ fn create_frame_bind_group(
     lights: &Lights,
     characters: &Characters,
     shadows: &Shadows,
+    character_prepass: &CharacterPrepassTargets,
 ) -> wgpu::BindGroup {
     let [shadow_uniforms, cascades, atlas, sampler] = shadows.frame_entries();
+    let [character_depth, character_ids, character_sampler] = character_prepass.frame_entries();
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
         layout,
@@ -1707,6 +1822,9 @@ fn create_frame_bind_group(
             cascades,
             atlas,
             sampler,
+            character_depth,
+            character_ids,
+            character_sampler,
         ],
     })
 }

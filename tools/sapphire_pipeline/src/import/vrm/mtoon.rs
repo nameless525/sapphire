@@ -27,9 +27,9 @@
 //! | `shadeMultiplyTexture` | (the ratio above) | Exact when it is the base color's image, as exporters write it; otherwise approximated by the base texture. Extracted as a color texture either way |
 //! | `shadingShiftTexture` (R) and its `scale` | `control_map`, G (shadow bias) | Extraction writes an ILM document whose G is the image's R mapped onto `[0.5, 0.5 + scale / 2]`: A7's encoding of an N·L offset of `r × scale` (`character_maps::ilm::encode_shadow_bias`). R, B and A stay neutral. Before extraction (the material the import generates), the texture's mean offset, measured on import, joins the threshold instead |
 //! | `parametricRimColorFactor` | `rim.strength`, `regions[0].rim_color` | Strength is the brightest channel, the tint the color over it |
-//! | `parametricRimFresnelPowerFactor`, `parametricRimLiftFactor` | `rim.width` | The N·V where MToon's falloff is at half: `1 + lift − 0.5^(1 / power)`, clamped to `[0, 1]`; Sapphire's rim is a hard band there |
+//! | `parametricRimFresnelPowerFactor`, `parametricRimLiftFactor` | `rim.fresnel` | The N·V where MToon's falloff is at half: `1 + lift − 0.5^(1 / power)`, clamped to `[0, 1]`, the depth-offset rim's Fresnel gate (M1 C5): Sapphire's rim is a band of its default width in pixels at the silhouette, cut where N·V passes it |
 //! | `matcapTexture`, `matcapFactor` | `matcap` | The texture as a color texture; strength the factor's brightest channel |
-//! | `rimLightingMixFactor` | `matcap.shadow_strength` | `strength × (1 − mix)`: how much of the matcap the shadow side keeps. Sapphire's rim always leans to the lit side |
+//! | `rimLightingMixFactor` | `rim.light_gate`, `matcap.shadow_strength` | As it is: MToon multiplies the rim by the light by this much, Sapphire keeps it to the lit side by this much (M1 C5); and `strength × (1 − mix)` for the matcap, how much of it the shadow side keeps |
 //! | `outlineWidthMode`, `outlineWidthFactor` | `outline.width` (pixels at 1080p) and `outline.curve` | None → 0. Screen: `factor × 1080`, the factor being a fraction of the full screen height, kept from the camera out to the curve's cutoff (`near` at 0 m, `far` at the cutoff). World: the width in pixels from [`WORLD_OUTLINE_DISTANCE`] through a [`WORLD_OUTLINE_FOV_DEGREES`] field of view, with the curve's three knots at that distance, so the line keeps its width in meters at every distance and field of view (outlines v2, M1 C4) |
 //! | `outlineWidthMultiplyTexture` (G) | vertex color G, the outline-width scale | Sampled at each vertex's UV and baked into the outline-width scale the mesh carries (the research note's mobile-friendly choice). Extracted as a mask too |
 //! | `outlineColorFactor` | `regions[0].outline_color` | As it is |
@@ -39,7 +39,8 @@
 //! Dropped, because the anime character family (A3, C1's contract) has nowhere to put them yet;
 //! their textures are still extracted, so nothing authored is lost:
 //!
-//! - `rimMultiplyTexture`: no rim mask slot (C5's region rim). Extracted as a mask.
+//! - `rimMultiplyTexture`: no rim mask slot; the rim is masked per region (`rim_strength`, M1
+//!   C5), which a control map's material IDs pick. Extracted as a mask.
 //! - `emissiveFactor`, `emissiveTexture`, `KHR_materials_emissive_strength` and
 //!   `VRMC_materials_hdr_emissiveMultiplier`: no emission (C7). The texture is extracted as color.
 //! - `uvAnimation*` and its mask: no UV animation. The mask is extracted.
@@ -500,7 +501,7 @@ impl Mtoon {
         let rim_color = if rim_strength > 0.0 { self.rim_color.map(|c| c / rim_strength) } else { [1.0; 3] };
         // MToon raises the falloff to max(power, ε); 0.5^(1/ε) underflows to 0, a full-width rim.
         let half = 0.5f32.powf(1.0 / self.rim_fresnel_power.max(1e-4));
-        let rim_width = (1.0 + self.rim_lift - half).clamp(0.0, 1.0);
+        let rim_fresnel = (1.0 + self.rim_lift - half).clamp(0.0, 1.0);
         let matcap_strength = brightest(self.matcap_factor);
         let default_curve = OutlineCurve::default();
         let (outline_width, curve) = match self.outline_width {
@@ -548,7 +549,12 @@ impl Mtoon {
                 outline_width: 1.0,
                 ..CharacterRegion::default()
             }],
-            rim: Rim { width: rim_width, strength: rim_strength },
+            rim: Rim {
+                strength: rim_strength,
+                fresnel: rim_fresnel,
+                light_gate: self.rim_lighting_mix.clamp(0.0, 1.0),
+                ..Rim::default()
+            },
             matcap: self.matcap_texture.and_then(|_| bind(TextureUse::Matcap)).map(|map| Matcap {
                 map,
                 strength: matcap_strength,

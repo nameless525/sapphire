@@ -6,8 +6,9 @@
 //! Time of day resolves the frame's [`Fog`] (its keys set it per hour, zones and cutscenes
 //! override it), and every pass that draws the world applies it at its single final-color point
 //! through one shared function, `fogged` in `shaders/frame.wgsl`: the environment shader, the
-//! anime character shader and its outlines (a line fogs like its surface), fog cards, and the
-//! sky. It is a few exponentials a pixel, on every tier.
+//! anime character shader and its outlines (a line fogs like its surface), eyes and brows drawn
+//! through hair (M1 C5, as the surface under them), fog cards, and the sky. It is a few
+//! exponentials a pixel, on every tier.
 //!
 //! - **Three layers.** Two homogeneous distance layers, near haze and far aerial perspective,
 //!   each from its own start distance (Honkai Impact 3rd's split), and an exponential height

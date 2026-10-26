@@ -5,7 +5,10 @@
         id: "cff436cc-9604-4a9f-8d3a-3bc8b5b6637e",
         importer: Gltf((
             materials: {
+                "Bangs": "2f98029c-69ec-413e-97a8-19d16a31536f",
+                "Brows": "c8743de9-da29-4a7c-aa8e-5f10039ac2c9",
                 "Face": "27736276-a00e-49a7-ac82-4c52b151b8a3",
+                "Hair": "b76819c5-1d6a-4e71-b282-1aaed7e94685",
             },
         )),
     ),

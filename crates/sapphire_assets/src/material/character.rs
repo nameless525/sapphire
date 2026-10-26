@@ -1,11 +1,20 @@
 //! The anime character family: characters with authored light response (spec §5.12, M1 plan
 //! pillar 2). The anime character shader (M1 C1's uber-shader) reads its block: ramp and band
 //! diffuse, the control map's regions and bias, each region's share of the character light
-//! rig's stylized GI (M1 C2), and the static permutations of its flags.
+//! rig's stylized GI (M1 C2), the depth-offset rim and its region mask, hair highlights, the
+//! bangs' shadow on a face and eyes through the bangs (M1 C5), and the static permutations of
+//! its flags.
+//!
+//! # Versions
+//!
+//! 2 (M1 C5): the rim became the depth-offset rim. Its `width` is now pixels at a 1080-row
+//! target, the depth offset; what was the width, the share of N·V in from the silhouette, is
+//! `fresnel`. Version 1 documents load through [`v1::AnimeCharacterMaterial`], their rim width
+//! becoming the Fresnel extent and the new settings taking their defaults.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{Decoder, VersionError, Versioned, decode_versioned};
 use sapphire_serialize::ReflectDocument;
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +32,7 @@ use crate::texture::Swizzle;
 /// ```ron
 /// (
 ///     type: "sapphire::render::AnimeCharacterMaterial",
-///     version: 1,
+///     version: 2,
 ///     data: (
 ///         base_color: (1.0, 0.75, 0.62, 1.0),
 ///         base_color_map: "7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d",
@@ -34,7 +43,7 @@ use crate::texture::Swizzle;
 ///             (shade_color: (0.84, 0.4, 0.39), outline_color: (0.15, 0.03, 0.03)),
 ///             (shade_color: (0.6, 0.55, 0.85), outline_color: (0.02, 0.02, 0.05)),
 ///         ],
-///         rim: (strength: 0.25),
+///         rim: (width: 3.5, strength: 0.25),
 ///         outline: (width: 4.1),
 ///     ),
 /// )
@@ -52,6 +61,7 @@ use crate::texture::Swizzle;
 ///   by the vertex's material ID (`sapphire_assets::mesh::VertexFlags`).
 /// - **Surface:** body, face, hair or eye. Faces, hair and eyes are static permutation bits of
 ///   the anime character shader, each with settings of its own.
+/// - **Rim:** the depth-offset rim ([`Rim`]), which each region scales, widens and masks.
 ///
 /// Colors are linear RGB(A), as glTF factors are. Textures are referenced by [`AssetId`]; see
 /// [`AnimeCharacterMaterial::TEXTURE_SLOTS`] for what each must hold.
@@ -85,7 +95,12 @@ pub struct AnimeCharacterMaterial {
 }
 
 impl Versioned for AnimeCharacterMaterial {
-    const VERSION: u32 = 1;
+    /// 2: the depth-offset rim (M1 C5; see the [module docs](self)).
+    const VERSION: u32 = 2;
+
+    fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {
+        decode_versioned::<v1::AnimeCharacterMaterial, D>(version, data).map(Into::into)
+    }
 }
 
 impl Default for AnimeCharacterMaterial {
@@ -159,6 +174,13 @@ pub struct FaceShading {
     /// Linear RGB the albedo is multiplied toward at full blush.
     #[serde(default = "FaceShading::default_blush_color")]
     pub blush_color: [f32; 3],
+    /// The bangs' shadow on the face (M1 C5).
+    #[serde(default)]
+    pub hair_shadow: HairShadow,
+    /// Draws the mask's always-lit parts (B: eyes, brows) through the character's hair (M1 C5),
+    /// which needs `mask_map`.
+    #[serde(default)]
+    pub through_hair: Option<ThroughHair>,
 }
 
 impl FaceShading {
@@ -173,6 +195,8 @@ impl FaceShading {
             highlight: Self::default_highlight(),
             highlight_reveal: Self::default_highlight_reveal(),
             blush_color: Self::default_blush_color(),
+            hair_shadow: HairShadow::default(),
+            through_hair: None,
         }
     }
 
@@ -197,17 +221,90 @@ impl FaceShading {
     }
 }
 
-/// Hair settings.
+/// The bangs' shadow on a face (M1 C5; spec §5.12 "Anime character shading"): the face darkens
+/// into its own shadow tone (its split and diffuse colors, as an SDF shadow does) where the
+/// character's hair lies a short way toward the key light from it across the screen, in front
+/// of it. The renderer finds that hair in the character prepass, so it costs a face two texture
+/// gathers and no extra draw.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct HairShadow {
+    /// How far the shadow reaches below the hair, in meters across the face, with the key light
+    /// across the view. Light from in front of the face or behind it shortens it, as a real
+    /// shadow looks shorter from the light's side. 0 turns it off.
+    pub distance: f32,
+    /// How dark it is: 1 the face's full shadow tone.
+    pub strength: f32,
+}
+
+impl Default for HairShadow {
+    fn default() -> Self {
+        Self { distance: 0.03, strength: 1.0 }
+    }
+}
+
+/// Eyes and brows drawn through the bangs (M1 C5; spec §5.12 "Anime character shading"): where
+/// the character's own hair covers them, they show through it, at an opacity that fades as the
+/// head turns away from the camera, so a character's eyes stay readable under the bangs
+/// (StarRailNPR's eyes-through-hair pass). A face draws its mask's always-lit parts through, an
+/// eye material all of itself.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct ThroughHair {
+    /// How much of the eye shows through the hair with the head facing the camera: 0 to 1.
+    pub opacity: f32,
+    /// The camera's angle from head-forward around the head's up axis, in degrees, by which the
+    /// eyes have faded behind the hair: above 0, at most 180.
+    pub fade_yaw: f32,
+    /// The same above or below head-forward.
+    pub fade_pitch: f32,
+    /// How far behind the hair, in meters, an eye may lie and still show through it, so hair
+    /// well in front of the face covers it.
+    pub distance: f32,
+}
+
+impl Default for ThroughHair {
+    fn default() -> Self {
+        Self { opacity: 0.5, fade_yaw: 70.0, fade_pitch: 45.0, distance: 0.15 }
+    }
+}
+
+impl ThroughHair {
+    fn validate(&self, field: &str) -> Result<(), MaterialError> {
+        unit(&format!("{field}.opacity"), self.opacity)?;
+        for (name, angle) in [("fade_yaw", self.fade_yaw), ("fade_pitch", self.fade_pitch)] {
+            if !(angle > 0.0 && angle <= 180.0) {
+                return Err(invalid(&format!("{field}.{name}"), "must be above 0° and at most 180°"));
+            }
+        }
+        non_negative(&format!("{field}.distance"), self.distance)
+    }
+
+    /// The GPU block's `through_hair` vector: opacity, the fade angles' cosines, distance; all
+    /// zero for none.
+    fn gpu(through: Option<&Self>) -> [f32; 4] {
+        through.map_or([0.0; 4], |t| {
+            [t.opacity, t.fade_yaw.to_radians().cos(), t.fade_pitch.to_radians().cos(), t.distance]
+        })
+    }
+}
+
+/// Hair settings (M1 C5).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct HairShading {
-    /// Linear RGB: R highlight intensity, G highlight shift, B occlusion (WuWa's `_HM`).
+    /// Linear RGB: R highlight intensity, G highlight shift (0.5 none, in the highlight's own
+    /// units), B occlusion (WuWa's `_HM`; `character_maps::hair_mask`).
     pub mask_map: Option<AssetId>,
     pub highlight: HairHighlight,
 }
 
-/// The hair highlight.
+/// The hair highlight: a band of the key light's color over the hair, revealed by the mask's R
+/// and the style's geometry, edged by the material's specular softness, and dimmed on the
+/// shadow side.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
@@ -217,9 +314,12 @@ pub struct HairHighlight {
     pub color: [f32; 3],
     /// 0 turns the highlight off.
     pub strength: f32,
-    /// Width of the band, in N·H.
+    /// Width of the band: in N·H for a painted band, in the view-space normal's height for an
+    /// angel ring, in sin(T, H) for Kajiya-Kay.
     pub width: f32,
-    /// Moves the band along the strands, before the mask's shift.
+    /// Moves the band, before the mask's shift: lowers a painted band's N·H threshold, sets an
+    /// angel ring's height on the head (the view-space normal's Y: 0.5 rings it 30° above its
+    /// middle), tilts Kajiya-Kay's strands along the normal.
     pub shift: f32,
 }
 
@@ -233,14 +333,21 @@ impl Default for HairHighlight {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub enum HighlightStyle {
-    /// A painted mask revealed by thresholded N·H (WuWa, ZZZ). Cheapest.
+    /// A painted mask revealed by thresholded N·H on the region's GI normals, which its sphere
+    /// weight rounds (WuWa, ZZZ). Cheapest.
     #[default]
     PaintedBand,
-    /// A ring fixed in view space, from a second UV set (Unity Toon Shader's angel ring).
+    /// A ring fixed in view space: a band where the view-space normal's height is `shift`, so it
+    /// stays put on screen as the camera moves around the head (the angel ring of Unity's anime
+    /// shaders, without their second UV set).
     AngelRing,
+    /// Kajiya-Kay's strand highlight, thresholded, along strands that run the way the hair's UV
+    /// V grows, root to tip (meshes carry no tangents).
+    KajiyaKay,
 }
 
-/// Eye settings.
+/// Eye settings: eyes and brows modeled apart from the face. They are always lit, take no rim,
+/// and draw through the bangs when `through_hair` says so (M1 C5); C6 layers them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
@@ -249,6 +356,8 @@ pub struct EyeShading {
     pub mask_map: Option<AssetId>,
     /// Depth of the iris's parallax refraction fake, in UV units.
     pub parallax: f32,
+    /// Draws the eye through the character's hair.
+    pub through_hair: Option<ThroughHair>,
 }
 
 /// The light split: where N·L turns from lit to shadow.
@@ -337,6 +446,13 @@ pub struct CharacterRegion {
     pub specular_size: f32,
     /// Tints the rim light.
     pub rim_color: [f32; 3],
+    /// Scales the rim's strength: 0 masks the rim off the region (M1 C5).
+    pub rim_strength: f32,
+    /// Scales the rim's width.
+    pub rim_width: f32,
+    /// How much rim the region takes where the character overlaps itself (an arm over the
+    /// torso) rather than where it ends against something else: 0 none, 1 full.
+    pub rim_overlap: f32,
     /// The inverted-hull outline's color.
     pub outline_color: [f32; 3],
     /// Scales the material's outline width.
@@ -356,6 +472,9 @@ impl Default for CharacterRegion {
             specular_color: [0.0; 3],
             specular_size: 32.0,
             rim_color: [1.0; 3],
+            rim_strength: 1.0,
+            rim_width: 1.0,
+            rim_overlap: 1.0,
             outline_color: [0.08, 0.06, 0.1],
             outline_width: 1.0,
             gi: RegionGi::default(),
@@ -380,20 +499,53 @@ pub struct RegionGi {
     pub skin: f32,
 }
 
-/// The rim light on the silhouette.
+/// The depth-offset rim light (M1 C5; spec §5.12 "Anime character shading"): a thin line of the
+/// key light on the silhouette, where the character ends against what lies behind it.
+///
+/// Each pixel looks `width` pixels across the screen, along its normal, into the character
+/// prepass's depth. Where what lies there is at least `threshold` farther away, or no character
+/// is there at all, the pixel is on the rim, which then takes the key light's color and the
+/// rig's rim scale, gated by Fresnel, by the light and by the region. The offset is in pixels,
+/// so the rim holds its width at any distance and field of view as the reference games' rims
+/// do, rather than thinning on a close-up and swamping a distant character as an N·V rim does.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Rim {
-    /// Fraction of the N·V range, in from the silhouette, that the rim covers.
+    /// The rim's width in pixels at a 1080-row target, scaled with the target's height and, as
+    /// the outline's is, by its distance curve and model scale ([`Outline`]), so rim and line
+    /// art keep their proportions. Each region scales it.
     pub width: f32,
     /// 0 turns it off.
     pub strength: f32,
+    /// The depth step behind the pixel, in meters, that makes a rim.
+    pub threshold: f32,
+    /// The Fresnel gate: the share of the N·V range, in from the silhouette, where the rim may
+    /// show. 1 leaves it to the depth step alone.
+    pub fresnel: f32,
+    /// How much the rim needs the light: 0 it shows on the shadow side as on the lit, 1 only
+    /// where the key light reaches (WuWa).
+    pub light_gate: f32,
+    /// ZZZ's back-light weighting: 0 none. At 1 the rim scales with how far behind the character
+    /// the light is: nothing with the light behind the camera, 1 with it to the side, 2 with it
+    /// straight behind.
+    pub back_light: f32,
 }
 
 impl Default for Rim {
     fn default() -> Self {
-        Self { width: 0.22, strength: 0.35 }
+        Self { width: 4.0, strength: 0.35, threshold: 0.1, fresnel: 0.5, light_gate: 0.75, back_light: 0.0 }
+    }
+}
+
+impl Rim {
+    fn validate(&self) -> Result<(), MaterialError> {
+        non_negative("rim.width", self.width)?;
+        non_negative("rim.strength", self.strength)?;
+        non_negative("rim.threshold", self.threshold)?;
+        unit("rim.fresnel", self.fresnel)?;
+        unit("rim.light_gate", self.light_gate)?;
+        unit("rim.back_light", self.back_light)
     }
 }
 
@@ -603,8 +755,10 @@ fn ramp(from: f32, to: f32, x: f32) -> f32 {
 }
 
 /// The anime character family's GPU block (WGSL `AnimeCharacterParams`,
-/// `shaders/materials.wgsl` in `sapphire_render`). 944 bytes: a 128-byte header, the regions,
-/// then outlines v2's settings (M1 C4), after the regions so every earlier offset holds.
+/// `shaders/materials.wgsl` in `sapphire_render`). 1120 bytes: a 128-byte header, the regions,
+/// then outlines v2's settings (M1 C4), then the rim's, the hair shadow's and the
+/// eyes-through-hair settings and the regions' rim settings (M1 C5), each after the last so
+/// every earlier offset holds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct AnimeCharacterParams {
@@ -613,8 +767,8 @@ pub struct AnimeCharacterParams {
     /// x: light-split threshold on N·L; y: split softness; z: the deep shade's threshold (with
     /// [`Self::FLAG_DEEP_SHADE`]); w: alpha-test cutoff.
     pub split: [f32; 4],
-    /// x: rim width; y: rim strength; z: outline width in pixels at 1080p; w: outline Z offset
-    /// in meters.
+    /// x: rim width in pixels at 1080p; y: rim strength; z: outline width in pixels at 1080p;
+    /// w: outline Z offset in meters.
     pub edges: [f32; 4],
     /// x: ramp mix; y: specular softness; z: matcap strength lit; w: matcap strength in shadow.
     pub terms: [f32; 4],
@@ -637,6 +791,16 @@ pub struct AnimeCharacterParams {
     pub outline_shape: [f32; 4],
     /// x: how much of the albedo the line takes; y: how much it is lit; z, w: zero.
     pub outline_color: [f32; 4],
+    /// The rim ([`Rim`]): x depth threshold in meters; y Fresnel extent; z light gate; w
+    /// back-light weighting.
+    pub rim: [f32; 4],
+    /// A face's hair shadow ([`HairShadow`]): x distance in meters; y strength; z, w: zero.
+    pub hair_shadow: [f32; 4],
+    /// Eyes through hair ([`ThroughHair`]): x opacity, 0 for none; y, z the cosines of the yaw
+    /// and pitch fades; w the distance in meters.
+    pub through_hair: [f32; 4],
+    /// Per region: x rim strength scale; y rim width scale; z rim on self-overlap; w zero.
+    pub rim_regions: [[f32; 4]; AnimeCharacterParams::MAX_REGIONS],
 }
 
 /// One region of [`AnimeCharacterParams`] (WGSL `AnimeCharacterRegion`). 96 bytes.
@@ -667,7 +831,8 @@ impl GpuBlock for AnimeCharacterParams {
             .iter()
             .flat_map(|r| [r.shade, r.deep_shade, r.subsurface, r.specular, r.rim, r.outline]);
         let outline = [self.outline_curve, self.outline_shape, self.outline_color];
-        header.into_iter().chain(regions).chain(outline).collect()
+        let c5 = [self.rim, self.hair_shadow, self.through_hair];
+        header.into_iter().chain(regions).chain(outline).chain(c5).chain(self.rim_regions).collect()
     }
 
     fn modes(&self) -> [u32; 4] {
@@ -702,6 +867,7 @@ impl AnimeCharacterParams {
 
     pub const HIGHLIGHT_PAINTED_BAND: u32 = 0;
     pub const HIGHLIGHT_ANGEL_RING: u32 = 1;
+    pub const HIGHLIGHT_KAJIYA_KAY: u32 = 2;
 }
 
 impl AnimeCharacterMaterial {
@@ -768,6 +934,7 @@ impl AnimeCharacterMaterial {
                 let style = match h.style {
                     HighlightStyle::PaintedBand => AnimeCharacterParams::HIGHLIGHT_PAINTED_BAND,
                     HighlightStyle::AngelRing => AnimeCharacterParams::HIGHLIGHT_ANGEL_RING,
+                    HighlightStyle::KajiyaKay => AnimeCharacterParams::HIGHLIGHT_KAJIYA_KAY,
                 };
                 (
                     AnimeCharacterParams::SURFACE_HAIR,
@@ -780,6 +947,14 @@ impl AnimeCharacterMaterial {
                 (AnimeCharacterParams::SURFACE_EYE, [eye.parallax, 0.0, 0.0, 0.0], [0.0; 4], 0)
             }
         };
+        let (hair_shadow, through_hair) = match &self.surface {
+            CharacterSurface::Face(face) => {
+                let shadow = face.hair_shadow;
+                ([shadow.distance, shadow.strength, 0.0, 0.0], ThroughHair::gpu(face.through_hair.as_ref()))
+            }
+            CharacterSurface::Eye(eye) => ([0.0; 4], ThroughHair::gpu(eye.through_hair.as_ref())),
+            CharacterSurface::Body | CharacterSurface::Hair(_) => ([0.0; 4], [0.0; 4]),
+        };
         let specular_model = match self.specular.model {
             SpecularModel::Blinn => AnimeCharacterParams::SPECULAR_BLINN,
             SpecularModel::Ggx => AnimeCharacterParams::SPECULAR_GGX,
@@ -787,6 +962,10 @@ impl AnimeCharacterMaterial {
         let (matcap, matcap_shadow) = self.matcap.map_or((0.0, 0.0), |m| (m.strength, m.shadow_strength));
         let (outline, curve) = (&self.outline, &self.outline.curve);
         let mut regions = [AnimeCharacterRegion::default(); AnimeCharacterParams::MAX_REGIONS];
+        let mut rim_regions = [[0.0; 4]; AnimeCharacterParams::MAX_REGIONS];
+        for (rim, region) in rim_regions.iter_mut().zip(&self.regions) {
+            *rim = [region.rim_strength, region.rim_width, region.rim_overlap, 0.0];
+        }
         for ((gpu, region), id) in regions.iter_mut().zip(&self.regions).zip(MaterialId::ALL) {
             let row = |row: Option<u16>, half| row.map_or(ramp::row(id, half), u32::from) as f32;
             *gpu = AnimeCharacterRegion {
@@ -811,7 +990,22 @@ impl AnimeCharacterMaterial {
             outline_curve: [curve.near.0, curve.mid, curve.far.0, curve.cutoff],
             outline_shape: [curve.near.1, curve.far.1, outline.model_scale, outline.flatten],
             outline_color: [outline.albedo, outline.lighting, 0.0, 0.0],
+            rim: [self.rim.threshold, self.rim.fresnel, self.rim.light_gate, self.rim.back_light],
+            hair_shadow,
+            through_hair,
+            rim_regions,
         }
+    }
+
+    /// Whether it draws anything through the character's hair: a face with a mask (whose B
+    /// says which parts) or an eye, with `through_hair` set and some opacity.
+    fn draws_through_hair(&self) -> bool {
+        let through = match &self.surface {
+            CharacterSurface::Face(face) if face.mask_map.is_some() => face.through_hair,
+            CharacterSurface::Eye(eye) => eye.through_hair,
+            _ => None,
+        };
+        through.is_some_and(|t| t.opacity > 0.0) && !matches!(self.alpha, AlphaMode::Blend)
     }
 }
 
@@ -848,13 +1042,15 @@ impl MaterialDocument for AnimeCharacterMaterial {
             color(&field("specular_color"), &region.specular_color)?;
             non_negative(&field("specular_size"), region.specular_size)?;
             color(&field("rim_color"), &region.rim_color)?;
+            non_negative(&field("rim_strength"), region.rim_strength)?;
+            non_negative(&field("rim_width"), region.rim_width)?;
+            unit(&field("rim_overlap"), region.rim_overlap)?;
             color(&field("outline_color"), &region.outline_color)?;
             non_negative(&field("outline_width"), region.outline_width)?;
             unit(&field("gi.sphere"), region.gi.sphere)?;
             unit(&field("gi.skin"), region.gi.skin)?;
         }
-        unit("rim.width", self.rim.width)?;
-        non_negative("rim.strength", self.rim.strength)?;
+        self.rim.validate()?;
         non_negative("specular.softness", self.specular.softness)?;
         if let Some(matcap) = &self.matcap {
             non_negative("matcap.strength", matcap.strength)?;
@@ -868,7 +1064,10 @@ impl MaterialDocument for AnimeCharacterMaterial {
                 non_negative("surface.nose_line", face.nose_line)?;
                 non_negative("surface.highlight", face.highlight)?;
                 non_negative("surface.highlight_reveal", face.highlight_reveal)?;
-                color("surface.blush_color", &face.blush_color)
+                color("surface.blush_color", &face.blush_color)?;
+                non_negative("surface.hair_shadow.distance", face.hair_shadow.distance)?;
+                unit("surface.hair_shadow.strength", face.hair_shadow.strength)?;
+                face.through_hair.map_or(Ok(()), |t| t.validate("surface.through_hair"))
             }
             CharacterSurface::Hair(hair) => {
                 let h = &hair.highlight;
@@ -877,7 +1076,10 @@ impl MaterialDocument for AnimeCharacterMaterial {
                 non_negative("surface.highlight.width", h.width)?;
                 finite("surface.highlight.shift", h.shift)
             }
-            CharacterSurface::Eye(eye) => finite("surface.parallax", eye.parallax),
+            CharacterSurface::Eye(eye) => {
+                finite("surface.parallax", eye.parallax)?;
+                eye.through_hair.map_or(Ok(()), |t| t.validate("surface.through_hair"))
+            }
         }
     }
 
@@ -914,6 +1116,9 @@ impl MaterialDocument for AnimeCharacterMaterial {
         if self.outline.width > 0.0 {
             flags |= MaterialFlags::OUTLINE;
         }
+        if self.draws_through_hair() {
+            flags |= MaterialFlags::THROUGH_HAIR;
+        }
         flags
             | match self.surface {
                 CharacterSurface::Body => MaterialFlags::empty(),
@@ -925,5 +1130,95 @@ impl MaterialDocument for AnimeCharacterMaterial {
 
     fn params(&self, swizzles: &[Swizzle]) -> Vec<u8> {
         bytemuck::bytes_of(&self.gpu_params(swizzles)).to_vec()
+    }
+}
+
+impl From<v1::AnimeCharacterMaterial> for AnimeCharacterMaterial {
+    fn from(old: v1::AnimeCharacterMaterial) -> Self {
+        let rim = Rim { fresnel: old.rim.width, strength: old.rim.strength, ..Rim::default() };
+        Self {
+            surface: old.surface,
+            base_color: old.base_color,
+            base_color_map: old.base_color_map,
+            alpha: old.alpha,
+            control_map: old.control_map,
+            normal_map: old.normal_map,
+            light_split: old.light_split,
+            diffuse: old.diffuse,
+            regions: old.regions,
+            rim,
+            specular: old.specular,
+            matcap: old.matcap,
+            outline: old.outline,
+        }
+    }
+}
+
+/// Version 1 of the document (M1 A3 to C4), frozen: its rim's `width` was the share of N·V, in
+/// from the silhouette, that the rim covered, which version 2 calls `fresnel`. Its other fields
+/// are version 2's, whose later additions all have defaults.
+mod v1 {
+    use serde::Deserialize;
+
+    use super::{
+        AlphaMode, CharacterRegion, CharacterSurface, DiffuseMode, LightSplit, Matcap, Outline, Specular,
+    };
+    use crate::AssetId;
+
+    #[derive(Deserialize)]
+    #[serde(default)]
+    pub struct AnimeCharacterMaterial {
+        pub surface: CharacterSurface,
+        pub base_color: [f32; 4],
+        pub base_color_map: Option<AssetId>,
+        pub alpha: AlphaMode,
+        pub control_map: Option<AssetId>,
+        pub normal_map: Option<AssetId>,
+        pub light_split: LightSplit,
+        pub diffuse: DiffuseMode,
+        pub regions: Vec<CharacterRegion>,
+        pub rim: Rim,
+        pub specular: Specular,
+        pub matcap: Option<Matcap>,
+        pub outline: Outline,
+    }
+
+    impl Default for AnimeCharacterMaterial {
+        fn default() -> Self {
+            let current = super::AnimeCharacterMaterial::default();
+            Self {
+                surface: current.surface,
+                base_color: current.base_color,
+                base_color_map: None,
+                alpha: current.alpha,
+                control_map: None,
+                normal_map: None,
+                light_split: current.light_split,
+                diffuse: current.diffuse,
+                regions: current.regions,
+                rim: Rim::default(),
+                specular: current.specular,
+                matcap: None,
+                outline: current.outline,
+            }
+        }
+    }
+
+    impl sapphire_reflect::Versioned for AnimeCharacterMaterial {
+        const VERSION: u32 = 1;
+    }
+
+    #[derive(Deserialize)]
+    #[serde(default)]
+    pub struct Rim {
+        /// The share of N·V, in from the silhouette, that the rim covered.
+        pub width: f32,
+        pub strength: f32,
+    }
+
+    impl Default for Rim {
+        fn default() -> Self {
+            Self { width: 0.22, strength: 0.35 }
+        }
     }
 }

@@ -10,7 +10,7 @@ use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{post, shadows, temporal};
+use sapphire_render::{PREPASSES, post, shadows, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -277,6 +277,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         match gpu {
             Some(timings) => {
                 budget_row(ui, "GPU frame (pass span)", timings.span(), tier.gpu_frame());
+                // The prepasses: the character prepass on every tier (M1 C5), the scene prepass
+                // under TAA, what each added to the frame.
+                let prepasses =
+                    PREPASSES.iter().filter_map(|name| timings.get(name)).map(|pass| pass.exclusive);
+                budget_row(ui, "  Culling + prepass", prepasses.sum(), tier.prepass());
                 // Temporal AA's two passes (the renderer's `responsive mask` and `taa`), what
                 // each added to the frame.
                 if frame.render.temporal.enabled {
@@ -335,16 +340,27 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Draws",
             format!(
-                "{} surfaces ({} alpha-tested, {} transparent, {} faces, {} environment), {} outlines ({} \
-                 past their cutoff), {} instances",
+                "{} surfaces ({} alpha-tested, {} transparent, {} faces, {} hair, {} eyes, {} environment), {} \
+                 outlines ({} past their cutoff), {} instances",
                 render.draws,
                 render.alpha_tested_draws,
                 render.transparent_draws,
                 render.face_draws,
+                render.hair_draws,
+                render.eye_draws,
                 render.environment_draws,
                 render.outline_draws,
                 render.outlines_culled,
                 render.instances
+            ),
+        );
+        let prepass = &render.character_prepass;
+        row(
+            ui,
+            "Character prepass",
+            format!(
+                "{} draws, {} faces under bangs, {} eye draws through hair",
+                prepass.draws, prepass.hair_shadow_characters, prepass.through_hair_draws
             ),
         );
         row(ui, "Character pipelines", render.character_pipelines.to_string());

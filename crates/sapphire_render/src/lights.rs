@@ -40,8 +40,9 @@
 //!
 //! # Later milestones
 //!
-//! - **Light layers** keep VFX lights off faces, and the strongest local light may feed the
-//!   depth rim (C5).
+//! - **Light layers** keep VFX lights off faces and off the depth-offset rim, which every local
+//!   light reaches through the rim's shared mask (M1 C5: a rim from only the strongest light
+//!   would pop as lights reorder).
 //! - **Ramp and band modes (C1):** each light indexes the ramp (or bands) with its own split, as
 //!   the sun does.
 //! - **The light-cluster heatmap (F5's debug views):** a renderer debug view drawing each
@@ -812,8 +813,8 @@ mod gpu_tests {
         assert!(pollster::block_on(scope.pop()).is_none());
         assert_eq!(
             executor.stats().passes,
-            15,
-            "uploads, light clusters, sky cube, main, 9 bloom, post, readback"
+            16,
+            "uploads, light clusters, sky cube, character prepass, main, 9 bloom, post, readback"
         );
         readback.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");

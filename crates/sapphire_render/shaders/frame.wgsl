@@ -5,7 +5,8 @@
 //   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor,
 //              ambient light, the shadow tint, the weather and the fog; the local lights (binding 1) and
 //              their lists (binding 2) are declared in lights.wgsl and the passes that read
-//              them, the characters (binding 3) and the shadows (bindings 4–7) below
+//              them, the characters (binding 3), the shadows (bindings 4–7) and the
+//              character prepass's targets (bindings 8–10) below
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
@@ -162,6 +163,46 @@ struct CharacterData {
 // The frame's characters, by `InstanceData::character`: entry 0 is the world's key light with
 // unstyled GI, for instances that aren't characters.
 @group(0) @binding(3) var<storage, read> characters: array<CharacterData>;
+
+// The character prepass (M1 C5, prepass.wgsl; the `character_prepass` module): the listed
+// characters' own depth (reverse-Z, 0 where none is) and IDs (`character_id`), single-sampled at
+// the scene's size, which the anime character shader reads for its rim, the bangs' shadow on
+// faces and eyes through the bangs. The pass that writes them binds no group 0.
+@group(0) @binding(8) var character_depth: texture_depth_2d;
+@group(0) @binding(9) var character_ids: texture_2d<u32>;
+// Nearest, clamped to the edge: gathers of both.
+@group(0) @binding(10) var character_sampler: sampler;
+
+// A character ID's layout (`character_prepass::ID_ENTRY_BITS`): the character's entry in the low
+// bits, 0 for none, and its part (`CHARACTER_SURFACE_*`) above them.
+const CHARACTER_ID_ENTRY_BITS: u32 = 14u;
+const CHARACTER_ID_ENTRY_MASK: u32 = 16383u;
+
+// The character prepass's ID for part `part` of the character in entry `entry`
+// (`character_prepass::encode_id`).
+fn character_id(entry: u32, part: u32) -> u32 {
+    return (entry & CHARACTER_ID_ENTRY_MASK) | (part << CHARACTER_ID_ENTRY_BITS);
+}
+
+// The reverse-Z depth of a point `distance` meters in front of the main view's camera, through
+// its projection (any jitter moves x and y alone).
+fn depth_at_distance(distance: f32) -> f32 {
+    let p = view.clip_from_view;
+    return (p[2][2] * -distance + p[3][2]) / (p[2][3] * -distance + p[3][3]);
+}
+
+// The distance in front of the camera of a point at reverse-Z depth `depth`: the inverse of
+// `depth_at_distance`, and very large at 0, the cleared depth.
+fn distance_at_depth(depth: f32) -> f32 {
+    let p = view.clip_from_view;
+    let denominator = depth * p[2][3] - p[2][2];
+    return (depth * p[3][3] - p[3][2]) / select(-1e-30, denominator, abs(denominator) > 1e-30);
+}
+
+// How far in front of the main view's camera `position` (world space) is.
+fn view_distance(position: vec3<f32>) -> f32 {
+    return -(view.view_from_world * vec4<f32>(position, 1.0)).z;
+}
 
 // What the scene prepass's vertex stages pass on (prepass.wgsl, and the outline hull's in
 // outline.wgsl).

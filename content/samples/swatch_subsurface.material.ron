@@ -1,6 +1,6 @@
 (
     type: "sapphire::render::AnimeCharacterMaterial",
-    version: 1,
+    version: 2,
     data: (
         surface: Body,
         base_color: (0.95, 0.93, 0.9, 1.0),
@@ -26,6 +26,9 @@
                 specular_color: (0.0, 0.0, 0.0),
                 specular_size: 32.0,
                 rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
                 outline_color: (0.32, 0.12, 0.12),
                 outline_width: 1.0,
                 gi: (
@@ -42,6 +45,9 @@
                 specular_color: (0.0, 0.0, 0.0),
                 specular_size: 32.0,
                 rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
                 outline_color: (0.06, 0.06, 0.18),
                 outline_width: 1.0,
                 gi: (
@@ -58,6 +64,9 @@
                 specular_color: (0.0, 0.0, 0.0),
                 specular_size: 32.0,
                 rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
                 outline_color: (0.05, 0.16, 0.11),
                 outline_width: 1.0,
                 gi: (
@@ -74,6 +83,9 @@
                 specular_color: (0.0, 0.0, 0.0),
                 specular_size: 32.0,
                 rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
                 outline_color: (0.22, 0.06, 0.24),
                 outline_width: 1.0,
                 gi: (
@@ -83,8 +95,12 @@
             ),
         ],
         rim: (
-            width: 0.22,
+            width: 4.0,
             strength: 0.35,
+            threshold: 0.1,
+            fresnel: 0.5,
+            light_gate: 0.75,
+            back_light: 0.0,
         ),
         specular: (
             model: Blinn,

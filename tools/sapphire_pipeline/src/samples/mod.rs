@@ -82,7 +82,20 @@ struct Look {
     outline: [u8; 3],
     /// `[shadow threshold, softness, rim strength, outline width in pixels at 1080p]`.
     character_shading: [f32; 4],
+    /// The regions' rim scales, `[strength, width, overlap]` (M1 C5), or none for one region
+    /// that rims at its defaults.
+    rim_regions: &'static [[f32; 3]],
+    /// ZZZ's back-light weighting of the rim (`Rim::back_light`, M1 C5): the outfit's rim
+    /// strengthens as the light comes round behind the figure.
+    back_light: f32,
 }
+
+/// The skin's regions: the head and the rest (0), and the arms (1, the arm meshes' vertex
+/// material ID), which keep their rim to the figure's outer silhouette, none where an arm crosses
+/// the torso (M1 C5).
+const SKIN_RIM_REGIONS: [[f32; 3]; 2] = [[1.0, 1.0, 1.0], [1.0, 1.0, 0.0]];
+/// The arms' region of the skin material.
+const ARM_REGION: f32 = 1.0;
 
 const SKIN: Look = Look {
     name: "Skin",
@@ -90,6 +103,8 @@ const SKIN: Look = Look {
     shade: [236, 170, 168],
     outline: [110, 52, 48],
     character_shading: [0.1, 0.03, 0.25, 4.1],
+    rim_regions: &SKIN_RIM_REGIONS,
+    back_light: 0.0,
 };
 const OUTFIT: Look = Look {
     name: "Outfit",
@@ -97,6 +112,8 @@ const OUTFIT: Look = Look {
     shade: [150, 140, 200],
     outline: [12, 12, 22],
     character_shading: [0.0, 0.02, 0.4, 5.5],
+    rim_regions: &[],
+    back_light: 1.0,
 };
 const HAIR: Look = Look {
     name: "Hair",
@@ -104,6 +121,8 @@ const HAIR: Look = Look {
     shade: [110, 120, 210],
     outline: [18, 56, 84],
     character_shading: [0.05, 0.015, 0.5, 4.8],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 const ACCENT: Look = Look {
     name: "Accent",
@@ -111,6 +130,8 @@ const ACCENT: Look = Look {
     shade: [200, 160, 120],
     outline: [64, 60, 10],
     character_shading: [-0.1, 0.01, 0.3, 5.5],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 const PEDESTAL: Look = Look {
     name: "Pedestal",
@@ -118,6 +139,8 @@ const PEDESTAL: Look = Look {
     shade: [150, 150, 178],
     outline: [26, 26, 32],
     character_shading: [0.2, 0.05, 0.1, 6.9],
+    rim_regions: &[],
+    back_light: 0.0,
 };
 
 /// Every material in the mannequin, in file order.
@@ -126,7 +149,7 @@ const LOOKS: [&Look; 5] = [&SKIN, &OUTFIT, &HAIR, &ACCENT, &PEDESTAL];
 impl Look {
     fn material(&self) -> Value {
         let [r, g, b] = self.base;
-        json!({
+        let mut material = json!({
             "name": self.name,
             "pbrMetallicRoughness": {
                 "baseColorFactor": srgb8(r, g, b),
@@ -138,7 +161,14 @@ impl Look {
                 "outline_color": srgb8(self.outline[0], self.outline[1], self.outline[2]),
                 "character_shading": self.character_shading,
             },
-        })
+        });
+        if !self.rim_regions.is_empty() {
+            material["extras"]["rim_regions"] = json!(self.rim_regions);
+        }
+        if self.back_light > 0.0 {
+            material["extras"]["rim"] = json!({ "back_light": self.back_light });
+        }
+        material
     }
 }
 
@@ -157,7 +187,8 @@ const HAT_HEIGHT: f32 = 0.3;
 ///
 /// - A sphere head (skin, thinner outline via `COLOR_0` green) under a hair cap.
 /// - Capsule torso (flattened by a non-uniform node scale) and legs in the outfit color.
-/// - Capsule arms in skin, the left one a mirror (negative scale) of the right.
+/// - Capsule arms in skin, the left one a mirror (negative scale) of the right, in the skin's
+///   second region (a `_MATERIAL_ID` of 1), whose rim stays to the outer silhouette.
 /// - A hard-edged cone hat in the accent color and a hard-edged box pedestal.
 ///
 /// Shading parameters live in material extras, as a Blender export would carry them.
@@ -173,7 +204,9 @@ pub fn mannequin_glb() -> Vec<u8> {
         gltf.add_mesh("Pedestal", &[(&shapes::cuboid(PEDESTAL_HALF_EXTENTS), Some(pedestal))]);
     let leg_mesh = gltf.add_mesh("Leg", &[(&shapes::capsule(0.075, 0.325, 24, 8), Some(outfit))]);
     let torso_mesh = gltf.add_mesh("Torso", &[(&shapes::capsule(0.17, 0.14, 32, 10), Some(outfit))]);
-    let arm_mesh = gltf.add_mesh("Arm", &[(&shapes::capsule(0.055, 0.255, 20, 6), Some(skin))]);
+    let mut arm_geometry = shapes::capsule(0.055, 0.255, 20, 6);
+    arm_geometry.material_ids = vec![ARM_REGION; arm_geometry.positions.len()];
+    let arm_mesh = gltf.add_mesh("Arm", &[(&arm_geometry, Some(skin))]);
     let head_mesh = gltf.add_mesh("Head", &[(&head_geometry, Some(skin))]);
     let hair_mesh =
         gltf.add_mesh("Hair", &[(&shapes::sphere_cap(0.162, 105f32.to_radians(), 32, 14), Some(hair))]);
@@ -276,17 +309,33 @@ mod tests {
                 (threshold, softness)
             );
             assert_eq!((material.rim.strength, material.outline.width), (rim, outline), "{}", look.name);
-            assert_eq!(
-                material.regions,
-                [CharacterRegion {
-                    shade_color: rgb(look.shade),
-                    outline_color: rgb(look.outline),
-                    ..CharacterRegion::default()
-                }],
-                "{}",
-                look.name
-            );
+            assert_eq!(material.rim.back_light, look.back_light, "{}", look.name);
+            let region = CharacterRegion {
+                shade_color: rgb(look.shade),
+                outline_color: rgb(look.outline),
+                ..CharacterRegion::default()
+            };
+            let regions: Vec<_> = match look.rim_regions {
+                [] => vec![region],
+                scales => scales
+                    .iter()
+                    .map(|&[rim_strength, rim_width, rim_overlap]| CharacterRegion {
+                        rim_strength,
+                        rim_width,
+                        rim_overlap,
+                        ..region
+                    })
+                    .collect(),
+            };
+            assert_eq!(material.regions, regions, "{}", look.name);
         }
+        // The arms, and only they, are the skin's second region.
+        let arm_vertices = 2 * shapes::capsule(0.055, 0.255, 20, 6).positions.len();
+        let in_region = |id: u8| mesh.vertices.iter().filter(|v| v.flags.material_id().get() == id).count();
+        assert_eq!(
+            (in_region(ARM_REGION as u8), mesh.vertices.len() - in_region(0)),
+            (arm_vertices, arm_vertices)
+        );
 
         // Only the head carries a thinner outline, and all of it does.
         let head_center = Vec3::new(0.0, PEDESTAL_TOP + HEAD_HEIGHT, 0.0);

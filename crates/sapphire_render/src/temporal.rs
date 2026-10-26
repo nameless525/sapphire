@@ -16,12 +16,14 @@
 //! 2. **Velocity stays unjittered.** The scene prepass (M1 R2) compares unjittered clip
 //!    positions, so geometry that holds still has exactly zero velocity whatever the jitter. The
 //!    scene prepass's depth and velocity, and the character prepass's depth, are the resolve's
-//!    inputs, so the frame graph runs both prepasses under TAA (it culls them otherwise).
+//!    inputs, so the frame graph runs the scene prepass under TAA (it culls it otherwise; the
+//!    character prepass runs on every tier since M1 C5).
 //! 3. **The responsive mask** (`responsive mask` pass, `R8Unorm` at the scene's size): each
 //!    pixel's reactivity, the share of the moving history cap it gives up. Characters' (0.5)
-//!    where a character (a skinned or morphed instance) is the nearest surface, from the
-//!    character prepass's depth against the scene prepass's; lines' (1) where an outline hull
-//!    is, from the scene prepass's outline mask (M1 C4, P1); 0 elsewhere.
+//!    where a character (an instance the frame lists as one, since M1 C5; a skinned or morphed
+//!    instance before) is the nearest surface, from the character prepass's depth against the
+//!    scene prepass's; lines' (1) where an outline hull is, from the scene prepass's outline
+//!    mask (M1 C4, P1); 0 elsewhere.
 //! 4. **The resolve** (`taa` pass), a compute pass at the output's size, on HDR scene color
 //!    before bloom and the tone curve, in a tonemap-weighted space (see `shaders/temporal.wgsl`,
 //!    whose header also says how it is kept fast):

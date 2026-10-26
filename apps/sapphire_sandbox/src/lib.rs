@@ -65,6 +65,13 @@
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
+//! - `--face-layout lights|hair|highlights|turn` (with `--faces`): the face rig's heads (M1 C5):
+//!   the lights above (the default); keys around the front and above, for the bangs' shadow on
+//!   the face; heads nodding under one key, for the hair's highlights; heads turning and nodding
+//!   from the camera, for the eyes and brows through the bangs.
+//! - `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character: a row of it
+//!   before dark and bright panels, each figure lit from its own angle around it, from the front
+//!   round to behind (`angles`) or from behind at several heights (`backlit`; M1 C5).
 //! - `--environment`: place the character in the courtyard, the environment shader's test scene
 //!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
 //!   M1 W4), seen from farther back, with fog cards (mist across the valley, haze among the
@@ -157,6 +164,7 @@ mod orbit;
 mod outlines;
 #[cfg(feature = "dev")]
 mod reload;
+mod rims;
 mod scene;
 mod skinned;
 mod stage;

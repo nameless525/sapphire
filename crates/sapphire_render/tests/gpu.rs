@@ -1177,9 +1177,9 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
                 let camera = framing_camera(38.0, size, 0.5);
                 let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
                 assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
-                // Uploads, the sky cube's face, main, the bloom chain (a prefilter, then a down
-                // and an up pass per further level) and the composite.
-                let expected = 4 + if bloom_levels > 0 { 2 * bloom_levels - 1 } else { 0 };
+                // Uploads, the sky cube's face, the character prepass, main, the bloom chain (a
+                // prefilter, then a down and an up pass per further level) and the composite.
+                let expected = 5 + if bloom_levels > 0 { 2 * bloom_levels - 1 } else { 0 };
                 assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
             }
         }
@@ -1389,9 +1389,9 @@ fn local_lights_run_at_any_size_and_msaa_on_both_paths() {
                 let camera = framing_camera(38.0, size, 0.5);
                 let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
                 assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
-                // Uploads, the sky cube's face, main and the composite (no bloom), plus the
-                // cluster pass.
-                let expected = 4 + u32::from(light_path == LightPath::Clustered);
+                // Uploads, the sky cube's face, the character prepass, main and the composite (no
+                // bloom), plus the cluster pass.
+                let expected = 5 + u32::from(light_path == LightPath::Clustered);
                 assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
                 let stats = frames.renderer.stats().lights;
                 let capacity = if light_path == LightPath::Clustered { 64 } else { 4 };

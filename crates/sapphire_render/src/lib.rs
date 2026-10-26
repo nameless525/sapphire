@@ -61,9 +61,10 @@
 //! - Compute skinning and morph targets (`skinning`, M1 R2): every instance of a skinned or
 //!   morphed mesh draws from output streams of its own, which one dispatch a frame writes from
 //!   the packet's poses ([`SkinnedInstance`]); see "Skinned and morphed meshes" below.
-//! - The prepasses (M1 R2): a character-only depth prepass, and a scene prepass of depth, world
-//!   normals and velocity, as frame-graph transients for later passes to read
-//!   ([`PrepassTargets`]); the graph culls them while nothing does.
+//! - The prepasses (M1 R2, C5): a character prepass of the listed characters' depth and IDs on
+//!   every tier, into persistent targets the main pass reads, and a scene prepass of depth,
+//!   world normals and velocity as frame-graph transients, which the graph culls while nothing
+//!   reads them ([`PrepassTargets`]).
 //! - Temporal AA and upsampling ([`temporal`], M1 R7): the projection's sub-pixel jitter, the
 //!   responsive mask, and a resolve that accumulates frames in a history at the target's size,
 //!   upsampling a smaller scene, before bloom and grading. The desktop tiers resolve with it;
@@ -192,9 +193,16 @@
 //! scale"), sampled and copyable. Velocity is in texture coordinates, so it holds at any render
 //! scale, and when the scale changes between frames.
 //!
-//! - **Character prepass** (every tier): depth of the skinned and morphed instances alone,
-//!   position-only. Rim light, hair shadow on the face and eyes over the bangs read it (C2, C5).
-//! - **Scene prepass**: depth, world normals (octahedral, `Rg16Float`) and velocity
+//! - **Character prepass** ([`CHARACTER_PREPASS`], every tier, M1 C5; the `character_prepass`
+//!   module): the depth (`Depth32Float`) and IDs (`R16Uint`: the character's entry and its part,
+//!   body, face, hair or eye) of the opaque and alpha-tested anime character surfaces of the
+//!   instances the frame lists as characters ([`FramePacket::characters`]), static or deformed,
+//!   position-only. Its targets are the renderer's own, persistent and imported into the graph,
+//!   so it runs every frame with a view, and group 0 binds them (bindings 8–10) for the main
+//!   pass: the rim, the bangs' shadow on faces and eyes through hair read it (see "Rim, hair and
+//!   eyes through hair"), and temporal AA's responsive mask, which gives the characters it holds
+//!   their reactivity (P1's 0.5; [`temporal`]).
+//! - **Scene prepass** ([`SCENE_PREPASS`]): depth, world normals (octahedral, `Rg16Float`) and velocity
 //!   (`Rg16Float`, texture coordinates) of every opaque instance, then of their outline hulls
 //!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest).
 //!   Characters move by their skinned positions, static meshes by their instance transform, and
@@ -203,7 +211,7 @@
 //!   silhouette's motion (M1 P1). TAA (R7), GTAO and screen-space edges read it.
 //!
 //! Temporal AA reads both (its depth, velocity and responsive mask). Without it nothing reads
-//! them yet, so the frame graph culls both passes: two boxed closures a frame and no GPU time.
+//! the scene prepass yet, so the frame graph culls it: a boxed closure a frame and no GPU time.
 //!
 //! # Render scale
 //!
@@ -227,7 +235,9 @@
 //! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces and shadows, 160 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
-//! | 0 frame | 7: comparison sampler | fragment | shadow lookups | — |
+//! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
+//! | 0 frame | 8, 9: textures | fragment | the character prepass's depth and IDs (`texture_depth_2d`, `texture_2d<u32>`; M1 C5) | the character prepass |
+//! | 0 frame | 10: sampler | fragment | nearest, clamped: the character prepass's gathers (non-filtering) | — |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot: a scene group per family meshes draw with, each its own layout | the uploads pass, changed slots only |
@@ -275,12 +285,14 @@
 //! data (M1 C2) because every later per-character need joins it rather than taking a binding:
 //! faces' head basis and expressions (C3, beside the rig), the environment's shadow over the face
 //! (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
-//! uniforms or textures: the shadows' uniforms, cascades and character atlas (R4), probes. Group 3 is the last of the 4 bind groups the
+//! uniforms or textures: the shadows' uniforms, cascades and character atlas (R4), the character
+//! prepass's targets (C5), probes. Group 3 is the last of the 4 bind groups the
 //! floor allows; the prepasses, which read no material textures, leave it out. The anime
 //! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
 //! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones:
-//! shadows take two (the cascades and the character atlas) and a comparison sampler (R4), which
-//! leaves 6 (probes, the sky cube); the other families bind 1 to 5 (the environment's
+//! shadows take two (the cascades and the character atlas) and a comparison sampler (R4), and
+//! the character prepass two (its depth and IDs) and a nearest sampler (C5), which leaves 4
+//! (probes, the sky cube) and 11 samplers; the other families bind 1 to 5 (the environment's
 //! pipelines read five textures and two samplers, and the same four storage buffers as the anime
 //! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
@@ -301,14 +313,15 @@
 //! without a control map. The file's header has the details.
 //!
 //! - **Static permutations** are at most eight bits (`pipelines::Permutation`): of
-//!   them, alpha test, transparency and faces are shader variants today, through
+//!   them, alpha test, transparency, faces, hair and eyes are shader variants today, through
 //!   pipeline-overridable constants, and each
 //!   variant's pipelines are built when a mesh or a material edit first needs them. Everything
 //!   else (ramp or bands, a deep band, which maps are bound) is a branch on the block that every
 //!   pixel of a draw takes alike.
 //! - **Draw order** within the main pass: opaque surfaces, alpha-tested ones, their outlines
-//!   (only for materials with one), the sky, then transparent surfaces blended over it. Draws
-//!   are grouped by permutation; transparent ones keep the draw list's order.
+//!   (only for materials with one), eyes and brows through hair (M1 C5), the sky, then
+//!   transparent surfaces blended over it. Draws are grouped by permutation; transparent ones
+//!   keep the draw list's order.
 //! - **The frame** gives the day/night factor ramp mode blends day and night rows by
 //!   ([`FramePacket::day_night`], from time of day), and the ambient light the GI reads
 //!   ([`FramePacket::ambient`], a sky-and-ground hemisphere: `ambient_light` in `frame.wgsl`).
@@ -359,12 +372,67 @@
 //! - **Masks:** always-lit eyes and brows, a face highlight, and a nose line that appears as the
 //!   head turns from the camera (the face mask); blush and gloom scaled per character (the
 //!   expression map).
+//! - **The bangs' shadow** (M1 C5): the character's own hair, toward the key light across the
+//!   screen in the character prepass, occludes the split as a cast shadow would, so the face
+//!   darkens into its authored shadow tone (see "Rim, hair and eyes through hair").
 //! - **No cast shadow:** shadow maps are too coarse and unstable at face scale, so the face
 //!   permutation doesn't call `cast_shadow` and reads no shadow map. An environment shadow
 //!   reaches a face whole, per character (R4): the face pass samples the cascades over a sphere
 //!   around the head once a frame and writes the result into the character's entry
 //!   (`CharacterData::shadow`), which the face takes as occlusion of its split, with its
 //!   always-lit eyes and brows; never shadow-map texels on it.
+//!
+//! # Rim, hair and eyes through hair (M1 C5)
+//!
+//! The character prepass's readers, in `shaders/anime_character.wgsl` (its header has the
+//! formulas) on every tier:
+//!
+//! - **The depth-offset rim** replaces C1's key-light Fresnel rim on characters' bodies, faces and
+//!   hair. A pixel looks across the screen along its normal, the material's width in pixels at
+//!   1080 rows (× the region's width scale, and like an outline's × its distance curve and model
+//!   scale, so rim and lines keep their proportions at any distance and lens, though not its LOD
+//!   cutoff), and compares the
+//!   character depth there against its own plus the material's threshold (a filtered
+//!   comparison): the rim is where the character ends against what lies well behind it, or
+//!   against no character. Where the pixel there is the same character's, the region's overlap
+//!   scales it (an arm over the torso). A Fresnel gate and the region's strength scale it. Per
+//!   light, the light gate keeps it to the lit side by the material's amount (WuWa) and ZZZ's
+//!   back-light weighting scales it by 1 − V·L; it takes the light's radiance, the rig's rim
+//!   scale and a tint (half albedo, half white, × the region's rim color). **Local lights rim
+//!   too,** through the same mask: a rim from only the strongest light would pop as lights
+//!   reorder. Unlisted instances, eyes and transparent surfaces have none.
+//! - **Hair** (the hair permutation): the hair mask's occlusion (B) and highlight (R, with G
+//!   shifting it), and a band in the key light's color over one of three placements, picked on a
+//!   branch: a painted band where N·H on the GI normals passes 1 − width, an angel ring at a
+//!   height of the view-space normal (it holds still on screen), or Kajiya-Kay along the
+//!   strands. **Decision: strands run along UV v** (root to tip), the direction taken from the
+//!   screen derivatives of the position and v, since meshes carry no tangents; hair cards and
+//!   strips are authored that way.
+//! - **The bangs' shadow on faces:** the face pixel steps toward the key light across the screen
+//!   (the material's distance at its depth, the light's view-space direction unnormalized, so a
+//!   light along the view casts a short shadow) and gathers the prepass there: the bilinearly
+//!   weighted share of its own character's hair more than 5 mm nearer than the face, × the
+//!   strength, occludes the split. **Decision: the same on mobile,** where the plan had offset
+//!   bangs and a stencil: the prepass runs on every tier anyway, and this costs two gathers and
+//!   no extra draw.
+//! - **Eyes and brows through hair:** face materials (their always-lit mask) and eye materials
+//!   that ask for it (`MaterialFlags::THROUGH_HAIR`) draw a second time after the outlines,
+//!   through a pipeline of their variant's own (`fs_through_hair`, blended, no depth write):
+//!   where the prepass's ID is the character's own hair and the eye lies within the material's
+//!   distance behind it, at the material's opacity faded as the camera turns from head-forward
+//!   past its yaw and pitch, at the hair's depth nudged nearer, so what hides the hair hides
+//!   them, and fogged as the surface is (`fogged` at the eye's own position with its character's
+//!   share, M1 W3). The rim and the hair's highlight are lit before the surface's one `fogged`.
+//!   Writing depth turns early depth testing off, so the pass tests the prepass first and shades
+//!   only the 2 × 2 quads with a pixel under the character's own hair (an answer made the same
+//!   across each quad, so the shading's derivatives hold).
+//!   **Decision: the ID's two part bits do the stencil's work:** a hardware stencil would
+//!   need the main pass's depth-stencil format and a third pass on tilers, while the IDs exist
+//!   anyway. They are also C6's hook: eye and brow pixels are marked, and eyes have their own
+//!   permutation and through-hair pipeline.
+//! - **Counters** ([`CharacterPrepassStats`] in [`RenderStats::character_prepass`]): the
+//!   prepass's draws, the characters with a face under the bangs' shadow, and the eye and face
+//!   draws through hair; [`RenderStats`] counts hair and eye draws by variant too.
 //!
 //! # The environment shader (M1 W4)
 //!
@@ -426,9 +494,10 @@
 //! [`RenderError::NotDrawable`]). Each submesh draws through its family's shader:
 //!
 //! - **Surface variants** are a coverage (opaque, alpha-tested, transparent) and a shading: the
-//!   anime character shader for a part (body, face), the environment shader, or the fog card
-//!   shader (always transparent). Ten in all, each a pipeline per position format, built when a
-//!   draw first needs it.
+//!   anime character shader for a part (body, face, hair, eye), the environment shader, or the
+//!   fog card shader (always transparent). Sixteen in all, each a pipeline per position format,
+//!   built when a draw first needs it; the opaque and alpha-tested face and eye variants have a
+//!   through-hair pipeline too (M1 C5).
 //! - **Draws sort by pipeline:** the draw list groups them by position format and variant, so the
 //!   families never interleave whatever order instances and submeshes come in. In each coverage
 //!   characters draw before the world, so depth rejects the world behind them; then the
@@ -438,8 +507,8 @@
 //!   the instances; the main pass rebinds group 2 only when the family changes.
 //! - **The prepasses** draw every family's opaque and alpha-tested surfaces into the scene
 //!   prepass (depth, normals, velocity, which temporal AA reads); the character prepass draws the
-//!   skinned and morphed instances of the anime character family alone, so a skinned prop in
-//!   environment materials is never taken for a character.
+//!   anime character family's surfaces of the instances the frame lists as characters alone, so
+//!   a skinned prop or an anime-shaded pedestal is never taken for a character.
 //!
 //! # Outlines (M1 C4)
 //!
@@ -503,8 +572,9 @@
 //! # Material buffers
 //!
 //! Each material family has a parameter buffer of its own, an array of its block
-//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 944 bytes for the anime
-//! character family (896 until outlines v2, M1 C4), 80 to 160 for the others. One shared array would pad every slot to the
+//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 1,120 bytes for the anime
+//! character family (944 until the depth-offset rim's per-region settings, M1 C5; 896 until
+//! outlines v2, M1 C4), 80 to 160 for the others. One shared array would pad every slot to the
 //! largest block, and a pipeline only reads its own family, so each family's pipelines bind
 //! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. The sky
 //! draws one material at a time and reads its block from the CPU mirror into its frame uniforms
@@ -533,13 +603,17 @@
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
 //!   vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their other consumers (rim and hair shadow); and,
+//! - **Prepasses:** their other consumers (GTAO); cutting alpha-tested surfaces out of the
+//!   character prepass, so a lash or brow card that is a quad of alpha-tested texels (VRoid's
+//!   exports draw lashes and brows as MASK materials) takes the rim, the bangs' shadow and eyes
+//!   through hair at its drawn shape, not at its quad's (M1 C5 draws them solid; the sample
+//!   content and X1's VRM have none); and,
 //!   now that TAA turns MSAA off on desktop, letting the main pass
 //!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
 //!   the prepass to cut alpha-tested surfaces out first.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
-//!   layers (VFX lights kept off faces), a rim from the strongest local light (C5), local-light
-//!   shadows, and two-level culling for hundreds of lights.
+//!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
+//!   hundreds of lights.
 //! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
 //!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
 //!   then draws use LOD0.
@@ -559,13 +633,20 @@
 //!   edges for the environment (desktop); foliage (W6) shares its terminator and wrap.
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
-//! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
-//!   permutation bits, and specular, matcaps and stockings (C7) over the control map channels it
+//! - **The anime character shader** (see above) grows layered eyes (C6) on the eye permutation,
+//!   and specular, matcaps and stockings (C7) over the control map channels it
 //!   already reads. Outlines take their width's region per vertex (the vertex stage reads no
 //!   textures): a width texture would make group 3 visible to it. Cooked MikkTSpace tangents
 //!   replace the normal map's screen-derivative frame (outline normals need none: their frame is
-//!   derived from the normal).
-//! - **Faces** (see above): hair shadow on the face and eyes over the bangs (C5); light layers,
+//!   derived from the normal), and give Kajiya-Kay a strand direction of the mesh's own.
+//! - **Rim, hair and eyes through hair** (see above): a rim against the environment's depth
+//!   step too (today anything that isn't a character counts as far behind), from a scene depth
+//!   every tier keeps; a per-character rim scale in `CharacterData` if one material needs two;
+//!   the bangs' shadow from local lights; eyes through hair for transparent eyes; a rim mask
+//!   texture (MToon's `rimMultiplyTexture`) if per-region strength proves too coarse; under
+//!   MSAA, a through-hair depth nudge from the hair depth's slope (today a fixed ratio from the
+//!   pixel center's depth, which samples of bangs steeper than about 80° to the view can fail).
+//! - **Faces** (see above): light layers,
 //!   so local lights split on faces by the face map or not at all (today they split on the
 //!   face's normals, as on the body); a face-SDF threshold debug view (F5's views).
 //! - **Shadows** (see the [`shadows`] module's later milestones): alpha-tested casters cut out,
@@ -583,6 +664,7 @@
 mod bind_cache;
 mod bounds;
 mod buffer;
+mod character_prepass;
 mod characters;
 mod draw;
 mod environment;
@@ -606,6 +688,7 @@ mod sky;
 pub mod temporal;
 pub mod texture;
 
+pub use character_prepass::CharacterPrepassStats;
 pub use environment::{EnvironmentSettings, EnvironmentSpecular};
 pub use fog::FogStats;
 pub use frame::{
@@ -624,8 +707,8 @@ pub use post::{
     RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use renderer::{
-    MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, ShaderUpdate,
-    scaled_size,
+    CHARACTER_PREPASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError, RenderSettings,
+    RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
 };
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};

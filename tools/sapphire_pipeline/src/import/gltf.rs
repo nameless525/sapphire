@@ -13,8 +13,12 @@
 //!   unnamed one, `<name>#<index>` when two share a name, `#default` for glTF's default
 //!   material), holding a generated [`AnimeCharacterMaterial`]: `baseColorFactor` is its base
 //!   color, `alphaMode` and `alphaCutoff` its alpha, and material `extras` may set
-//!   `shade_color` and `outline_color` (region 0's, linear RGB or RGBA, alpha ignored) and
-//!   `character_shading` (`[light-split threshold, softness, rim strength, outline width]`).
+//!   `shade_color` and `outline_color` (region 0's, linear RGB or RGBA, alpha ignored),
+//!   `character_shading` (`[light-split threshold, softness, rim strength, outline width]`),
+//!   `rim` (an object with any of the depth-offset rim's settings, M1 C5: `width`, `strength`,
+//!   `threshold`, `fresnel`, `light_gate`, `back_light`) and `rim_regions` (`[[strength, width, overlap],
+//!   …]`, one per region from region 0: the regions' rim scales, each region past the first a
+//!   copy of region 0 but for them, which `_MATERIAL_ID` picks).
 //!   Everything else keeps its default. In Blender these are custom properties on the
 //!   material, exported with "Include → Custom Properties". A mesh's sidecar can bind slots to
 //!   material documents instead (see [`sapphire_assets::material`]).
@@ -86,7 +90,7 @@ use ::gltf::mesh::{Mode, Semantic};
 use ::gltf::{Accessor, Document, Gltf, Material, Mesh, Node, Primitive, Scene};
 use glam::{Mat3, Mat4, Vec3};
 use sapphire_assets::character_maps::{MATERIAL_IDS, MaterialId};
-use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial};
+use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
 use sapphire_assets::mesh::{
     Joint, JointTransform, Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
@@ -103,9 +107,11 @@ use crate::mesh::{
 const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file. 6: generated materials carry outlines v2's settings, and VRM's MToon maps
-/// its outline widths onto the width's curve and its outline lighting mix (M1 C4).
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 6 };
+/// for the same file. 7: generated materials carry the depth-offset rim's settings and per-region
+/// rim scales from material extras (M1 C5). 6: generated materials carry outlines v2's settings,
+/// and VRM's MToon maps its outline widths onto the width's curve and its outline lighting mix
+/// (M1 C4).
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 7 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -577,6 +583,25 @@ struct MaterialExtras {
     /// `[light-split threshold, softness, rim strength, outline width]`, as the sample
     /// mannequin carries them.
     character_shading: Option<[f32; 4]>,
+    /// The depth-offset rim's settings (M1 C5), any of them.
+    #[serde(default)]
+    rim: RimExtras,
+    /// Per region from region 0: `[rim strength, rim width, rim overlap]` scales (M1 C5).
+    #[serde(default)]
+    rim_regions: Vec<[f32; 3]>,
+}
+
+/// The `rim` material extra: any of [`Rim`](sapphire_assets::material::Rim)'s settings. Its
+/// strength wins over `character_shading`'s.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RimExtras {
+    width: Option<f32>,
+    strength: Option<f32>,
+    threshold: Option<f32>,
+    fresnel: Option<f32>,
+    light_gate: Option<f32>,
+    back_light: Option<f32>,
 }
 
 /// Accepts RGB (opaque) or RGBA, since Blender color properties can be either.
@@ -1169,6 +1194,33 @@ fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial,
         generated.light_split.softness = softness;
         generated.rim.strength = rim;
         generated.outline.width = outline_width;
+    }
+    let RimExtras { width, strength, threshold, fresnel, light_gate, back_light } = extras.rim;
+    let rim = &mut generated.rim;
+    for (field, value) in [
+        (&mut rim.width, width),
+        (&mut rim.strength, strength),
+        (&mut rim.threshold, threshold),
+        (&mut rim.fresnel, fresnel),
+        (&mut rim.light_gate, light_gate),
+        (&mut rim.back_light, back_light),
+    ] {
+        if let Some(value) = value {
+            *field = value;
+        }
+    }
+    if !extras.rim_regions.is_empty() {
+        let first = generated.regions[0];
+        generated.regions = extras
+            .rim_regions
+            .iter()
+            .map(|&[rim_strength, rim_width, rim_overlap]| CharacterRegion {
+                rim_strength,
+                rim_width,
+                rim_overlap,
+                ..first
+            })
+            .collect();
     }
     Ok(generated)
 }

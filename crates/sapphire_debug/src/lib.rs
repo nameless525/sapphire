@@ -11,10 +11,11 @@
 //! - **Drawing**: egui's meshes as a frame-graph pass after post, over the finished frame, in
 //!   the target's format (sRGB targets get linearized colors, so they show as egui means them).
 //! - **Panels**: stats and budgets (frame time, CPU stages against spec §3.2, the GPU frame,
-//!   temporal AA's passes and post's (bloom, tonemap and LUT, M1 P2) against §3.3, allocations,
-//!   the quality tier with the render scale and dynamic resolution's state, `RenderStats` with
-//!   temporal AA's sizes, jitter and history resets, the compositing layers post drew and the
-//!   fog's layers and cards (M1 W3),
+//!   the prepasses (M1 C5), temporal AA's passes and post's (bloom, tonemap and LUT, M1 P2)
+//!   against §3.3, allocations, the quality tier with the render scale and dynamic resolution's
+//!   state, `RenderStats` with the character prepass's draws and readers (M1 C5), temporal AA's
+//!   sizes, jitter and history resets, the compositing layers post drew and the fog's layers and
+//!   cards (M1 W3),
 //!   `GraphStats` and the transient pool, the last-used input device, the asset server's
 //!   `AssetStats` against its budgets, hot reload's state and the errors of its last change,
 //!   M1 A8, and live link's, M1 A9), the

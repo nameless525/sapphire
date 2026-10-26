@@ -46,8 +46,9 @@ pub struct Scene {
 /// empty effect stack draws exactly what it drew before, so nothing earlier needs pinning.
 /// Every scene from before fog (M1 W3) pins it off (`--fog off`: no fog in any frame and no fog
 /// cards in the courtyard), so it stays pixel-identical as well; the fog scenes pin plain post and
-/// no shadows, so they show fog alone.
-pub fn scenes() -> [Scene; 43] {
+/// no shadows, so they show fog alone. The rim and hair scenes (M1 C5) pin the plain sky and post,
+/// 4× MSAA, no shadows and no fog, so they show the character prepass's readers alone.
+pub fn scenes() -> [Scene; 49] {
     [
         Scene {
             name: "turntable-start",
@@ -963,6 +964,130 @@ pub fn scenes() -> [Scene; 43] {
                 "--capture-frames",
                 "32",
                 "--shadows",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The depth-offset rim (M1 C5): figures before dark and light panels, keys from the front,
+        // the side, behind to the side and across, so the light gate shows on the shadow sides;
+        // the arms keep theirs off the torso (their region's overlap).
+        Scene {
+            name: "rim-angles",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--rim-rig",
+                "angles",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Back-lit, where ZZZ's back-light weighting strengthens the outfit's rim.
+        Scene {
+            name: "rim-backlit",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--rim-rig",
+                "backlit",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The cap's angel ring holding its height on screen as heads nod, and the bangs' painted
+        // band.
+        Scene {
+            name: "hair-highlights",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "highlights",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The bangs' shadow on faces, moving away from keys round the front and above.
+        Scene {
+            name: "hair-shadow",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "hair",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same on Mobile-Low, whose character prepass is a render pass of its own before the
+        // main pass's tile-memory MSAA.
+        Scene {
+            name: "hair-shadow-mobile",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "hair",
+                "--tier",
+                "mobile-low",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Eyes and brows through the bangs, front to three-quarter and past the fade, and nodding.
+        Scene {
+            name: "eyes-through-hair",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "turn",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
                 "off",
             ],
             thresholds: Thresholds::default(),

@@ -1,9 +1,14 @@
 // The prepasses (M1 R2, spec §5.12): passes over the frame's opaque meshes that draw nothing
 // visible, for later passes to read.
 //
-// - Character prepass (`vs_character_prepass`, no fragment stage): skinned and morphed instances
-//   of the anime character family only, into a depth target of their own. That character-only depth is what rim light, hair
-//   shadow on the face and eyes over the bangs read (C2, C5), on every tier.
+// - Character prepass (`vs_character_prepass`, `fs_character_prepass`; M1 C5): the opaque and
+//   alpha-tested anime character surfaces of the instances the frame lists as characters, static
+//   or skinned, into a depth target and an ID target of their own (the `character_prepass`
+//   module): each pixel's character entry and part (`character_id`, frame.wgsl). The anime
+//   character shader's depth-offset rim, the bangs' shadow on faces and eyes through the bangs
+//   read them, on every tier, and temporal AA's responsive mask reads the depth. Its layout has
+//   no group 0, which binds both targets; the ID is the vertex stage's, from the instance and the
+//   material block.
 // - Scene prepass (`vs_scene_prepass`, `fs_scene_prepass`): every opaque instance, into depth,
 //   world normals and velocity, for TAA (R7, outlines M1 P1), GTAO and screen-space
 //   edges. Characters move by their skinned positions, this frame's and the last drawn one's
@@ -21,11 +26,24 @@
 // `ScenePrepassVaryings` and `ScenePrepassTargets` are frame.wgsl's: the outline hull's prepass
 // (outline.wgsl, M1 C4) writes the same targets.
 
+struct CharacterPrepassVaryings {
+    @builtin(position) @invariant clip_position: vec4<f32>,
+    @location(0) @interpolate(flat) id: u32,
+}
+
 @vertex
-fn vs_character_prepass(@location(0) position: vec4<f32>, draw: DrawRecord) -> @invariant @builtin(position) vec4<f32> {
+fn vs_character_prepass(@location(0) position: vec4<f32>, draw: DrawRecord) -> CharacterPrepassVaryings {
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(object_position(position, draw), 1.0);
-    return view.clip_from_world * world_position;
+    var out: CharacterPrepassVaryings;
+    out.clip_position = view.clip_from_world * world_position;
+    out.id = character_id(instance.character, materials[draw.material].modes.z);
+    return out;
+}
+
+@fragment
+fn fs_character_prepass(in: CharacterPrepassVaryings) -> @location(0) u32 {
+    return in.id;
 }
 
 @vertex

@@ -1,18 +1,30 @@
-//! The face look-dev rig (`--faces`, M1 C3): rows of the face test head, each facing the camera
-//! and lit by a key light of its own from an angle in head space, the way an artist checks a face
-//! map: a yaw sweep across both sides, top light, and expressions.
+//! The face look-dev rig (`--faces`, M1 C3 and C5): rows of the face test head, each lit by a key
+//! light of its own from an angle in head space, the way an artist checks a face map and hair: a
+//! yaw sweep across both sides, top light and expressions; the bangs' shadow; the hair's
+//! highlights; eyes and brows through the bangs.
 //!
 //! - **The head** is content: the pipeline's face sample (`samples::face`), loaded by ID with
-//!   its face material and maps through the asset server ([`Content::face_head`]).
+//!   its face, hair, bangs and brow materials and their maps through the asset server
+//!   ([`Content::face_head`]).
 //! - **Each head is a character**, lit by the character light rig (M1 C2) like the turntable's:
 //!   [`Scene::frame_packet`] lists every head with the default preset's lighting resolved for
 //!   it, its key light turned to the head's [`FaceRig`] angles in head space, and its face, the
-//!   head's pose and the rig's expression ([`character`]). The meshes all face the camera, so the
-//!   face map's shapes read as a light moving around still heads, and no nose line shows: it
-//!   appears only as a head turns from the camera.
-//! - **Rows**, left to right as the camera sees them ([`ROWS`]): the sweep from light behind the
-//!   heads' right (lighting the image's left) round to behind their left, then a top light, one
-//!   from above and to the side, a blush, and a gloom with a blush.
+//!   head's pose and the rig's expression ([`character`]).
+//! - **Layouts** (`--face-layout`, [`FaceLayout`]), each rows left to right as the camera sees
+//!   them ([`FaceLayout::rows`]):
+//!   - `lights` (the default, M1 C3): the heads face the camera, so the face map's shapes read
+//!     as a light moving around still heads and no nose line shows (it appears only as a head
+//!     turns from the camera). The sweep from light behind the heads' right (lighting the image's
+//!     left) round to behind their left, then a top light, one from above and to the side, a
+//!     blush, and a gloom with a blush.
+//!   - `hair` (M1 C5): heads facing the camera under keys from their right round the front and
+//!     above to their left, so the bangs' shadow on the face moves away from the light.
+//!   - `highlights` (M1 C5): heads nodding from up to down under a key from the front and above:
+//!     the cap's angel ring keeps its height on screen while the bangs' painted band follows the
+//!     light and the view.
+//!   - `turn` (M1 C5): heads turning from the camera, front to three-quarter to past the eyes'
+//!     fade, then nodding up and down past it: eyes and brows show through the bangs, fading as
+//!     the camera leaves the face.
 //!
 //! The heads never move, so their instances are extracted once; their characters are listed
 //! every frame, as every character's are.
@@ -32,12 +44,18 @@ use crate::orbit::OrbitCamera;
 pub(crate) const HEAD: AssetId = AssetId::from_text("cff436cc-9604-4a9f-8d3a-3bc8b5b6637e");
 
 /// One head of the rig: the key light's angles in head space, in degrees (yaw toward the head's
-/// right, negative to its left, and elevation above its horizontal plane), and its expression.
+/// right, negative to its left, and elevation above its horizontal plane), its expression, and
+/// its pose: where the camera lies in head space, in degrees, `turn` around the head toward its
+/// right (the head turned toward its left; negative the other way) and `nod` above its level
+/// (the head nodding down; negative up). The eyes' fade through the bangs measures the same two
+/// angles.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FaceRig {
     pub yaw: f32,
     pub elevation: f32,
     pub expression: FaceExpression,
+    pub turn: f32,
+    pub nod: f32,
 }
 
 impl FaceRig {
@@ -48,14 +66,66 @@ impl FaceRig {
         let right = forward.cross(up);
         right * (yaw.sin() * elevation.cos()) + up * elevation.sin() + forward * (yaw.cos() * elevation.cos())
     }
+
+    /// The head's rotation from facing the camera, in its own space, that puts the camera at
+    /// the pose's angles.
+    fn pose(&self) -> Quat {
+        Quat::from_rotation_x(self.nod.to_radians()) * Quat::from_rotation_y(self.turn.to_radians())
+    }
 }
 
+/// A head facing the camera, lit from `yaw` and `elevation`, with an expression.
 const fn rig(yaw: f32, elevation: f32, blush: f32, gloom: f32) -> FaceRig {
-    FaceRig { yaw, elevation, expression: FaceExpression { blush, gloom } }
+    FaceRig { yaw, elevation, expression: FaceExpression { blush, gloom }, turn: 0.0, nod: 0.0 }
 }
 
-/// The rig's rows, top to bottom, each left to right as the camera sees it.
-pub(crate) const ROWS: [&[FaceRig]; 2] = [
+/// A head turned and nodding from the camera, lit from `yaw` and `elevation` in its own space.
+const fn posed(turn: f32, nod: f32, yaw: f32, elevation: f32) -> FaceRig {
+    FaceRig { yaw, elevation, expression: FaceExpression { blush: 0.0, gloom: 0.0 }, turn, nod }
+}
+
+/// Which heads the rig shows (`--face-layout`): see the module docs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FaceLayout {
+    #[default]
+    Lights,
+    Hair,
+    Highlights,
+    Turn,
+}
+
+impl FaceLayout {
+    #[cfg(test)]
+    pub const ALL: [Self; 4] = [Self::Lights, Self::Hair, Self::Highlights, Self::Turn];
+
+    /// The layout `--face-layout` names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "lights" => Some(Self::Lights),
+            "hair" => Some(Self::Hair),
+            "highlights" => Some(Self::Highlights),
+            "turn" => Some(Self::Turn),
+            _ => None,
+        }
+    }
+
+    /// The layout's rows, top to bottom, each left to right as the camera sees it.
+    pub fn rows(self) -> &'static [&'static [FaceRig]] {
+        match self {
+            Self::Lights => &LIGHTS,
+            Self::Hair => &HAIR,
+            Self::Highlights => &HIGHLIGHTS,
+            Self::Turn => &TURN,
+        }
+    }
+
+    /// Heads in the layout.
+    pub fn heads(self) -> usize {
+        self.rows().iter().map(|row| row.len()).sum()
+    }
+}
+
+const LIGHTS: [&[FaceRig]; 2] = [
     &[
         rig(135.0, 0.0, 0.0, 0.0),
         rig(90.0, 0.0, 0.0, 0.0),
@@ -72,8 +142,36 @@ pub(crate) const ROWS: [&[FaceRig]; 2] = [
     ],
 ];
 
-/// Heads in the rig.
-pub(crate) const HEADS: usize = ROWS[0].len() + ROWS[1].len();
+const HAIR: [&[FaceRig]; 1] = [&[
+    rig(65.0, 20.0, 0.0, 0.0),
+    rig(30.0, 40.0, 0.0, 0.0),
+    rig(0.0, 60.0, 0.0, 0.0),
+    rig(-30.0, 40.0, 0.0, 0.0),
+    rig(-65.0, 20.0, 0.0, 0.0),
+]];
+
+const HIGHLIGHTS: [&[FaceRig]; 1] = [&[
+    posed(0.0, -30.0, 20.0, 35.0),
+    posed(0.0, -12.0, 20.0, 35.0),
+    posed(0.0, 6.0, 20.0, 35.0),
+    posed(0.0, 24.0, 20.0, 35.0),
+]];
+
+const TURN: [&[FaceRig]; 2] = [
+    &[
+        posed(0.0, 0.0, 30.0, 30.0),
+        posed(25.0, 0.0, 30.0, 30.0),
+        posed(45.0, 0.0, 30.0, 30.0),
+        posed(-60.0, 0.0, 30.0, 30.0),
+        posed(80.0, 0.0, 30.0, 30.0),
+    ],
+    &[
+        posed(0.0, -25.0, 30.0, 30.0),
+        posed(0.0, 20.0, 30.0, 30.0),
+        posed(-35.0, 15.0, 30.0, 30.0),
+        posed(0.0, 55.0, 30.0, 30.0),
+    ],
+];
 
 /// Meters between neighbors in a row, and between rows.
 const SPACING: f32 = 0.34;
@@ -81,11 +179,15 @@ const ROW_SPACING: f32 = 0.38;
 /// Half the head's width and height, in meters, for framing.
 const HEAD_HALF_EXTENTS: (f32, f32) = (0.14, 0.16);
 
+/// Half the height of `layout`'s rows, in meters.
+fn half_height(layout: FaceLayout) -> f32 {
+    0.5 * (layout.rows().len() as f32 - 1.0) * ROW_SPACING + HEAD_HALF_EXTENTS.1
+}
+
 /// The rig's center beside a character whose object-space bounds are `bounds`, and half its
-/// height: what the stage (`--stage`) shades it to.
-pub(crate) fn rig_center(bounds: [[f32; 3]; 2]) -> (Vec3, f32) {
-    let half_height = 0.5 * (ROWS.len() as f32 - 1.0) * ROW_SPACING + HEAD_HALF_EXTENTS.1;
-    (center(bounds), half_height)
+/// height in `layout`: what the stage (`--stage`) shades it to.
+pub(crate) fn rig_center(bounds: [[f32; 3]; 2], layout: FaceLayout) -> (Vec3, f32) {
+    (center(bounds), half_height(layout))
 }
 
 /// Where the rig stands beside a character whose object-space bounds are `bounds`: well to its
@@ -96,24 +198,24 @@ fn center(bounds: [[f32; 3]; 2]) -> Vec3 {
     Vec3::new(min.x - 1.6 * height, min.y + 0.55 * height, (min.z + max.z) * 0.5)
 }
 
-/// The camera framing the rig.
-pub(crate) fn camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
-    let widest = ROWS.iter().map(|row| row.len()).max().unwrap_or(1) as f32;
+/// The camera framing the rig in `layout`.
+pub(crate) fn camera(bounds: [[f32; 3]; 2], layout: FaceLayout) -> OrbitCamera {
+    let widest = layout.rows().iter().map(|row| row.len()).max().unwrap_or(1) as f32;
     let half_width = 0.5 * (widest - 1.0) * SPACING + HEAD_HALF_EXTENTS.0;
-    let half_height = 0.5 * (ROWS.len() as f32 - 1.0) * ROW_SPACING + HEAD_HALF_EXTENTS.1;
-    OrbitCamera::fitting(center(bounds), (half_width, half_height))
+    OrbitCamera::fitting(center(bounds), (half_width, half_height(layout)))
 }
 
-/// Every head's rig and placement, in [`ROWS`] order: rows across the camera's view, each head
-/// facing the camera, so the rig's angles (which take the camera as straight ahead) hold for
-/// heads at the edges of the view too, and turned about that line so its eyes stay level in the
-/// image.
-pub(crate) fn heads(bounds: [[f32; 3]; 2], camera: &OrbitCamera) -> [(FaceRig, Mat4); HEADS] {
+/// Every head's rig and placement in `layout`, in its rows' order: rows across the camera's view,
+/// each head facing the camera, so the rig's angles (which take the camera as straight ahead)
+/// hold for heads at the edges of the view too, and turned about that line so its eyes stay
+/// level in the image; then turned and nodding by its pose.
+pub(crate) fn heads(bounds: [[f32; 3]; 2], layout: FaceLayout, camera: &OrbitCamera) -> Vec<(FaceRig, Mat4)> {
     let view = camera.facing_rotation();
     let (right, up) = (view * Vec3::X, view * Vec3::Y);
-    let mut heads = Vec::with_capacity(HEADS);
-    for (row, rigs) in ROWS.iter().enumerate() {
-        let y = (0.5 * (ROWS.len() as f32 - 1.0) - row as f32) * ROW_SPACING;
+    let rows = layout.rows();
+    let mut heads = Vec::with_capacity(layout.heads());
+    for (row, rigs) in rows.iter().enumerate() {
+        let y = (0.5 * (rows.len() as f32 - 1.0) - row as f32) * ROW_SPACING;
         for (column, &rig) in rigs.iter().enumerate() {
             let x = (column as f32 - 0.5 * (rigs.len() as f32 - 1.0)) * SPACING;
             let at = center(bounds) + right * x + up * y;
@@ -123,10 +225,10 @@ pub(crate) fn heads(bounds: [[f32; 3]; 2], camera: &OrbitCamera) -> [(FaceRig, M
             // across the line of sight.
             let across = (right - forward * right.dot(forward)).normalize();
             let facing = Quat::from_mat3(&Mat3::from_cols(across, forward.cross(across), forward));
-            heads.push((rig, Mat4::from_rotation_translation(facing, at)));
+            heads.push((rig, Mat4::from_rotation_translation(facing * rig.pose(), at)));
         }
     }
-    heads.try_into().expect("HEADS counts every row")
+    heads
 }
 
 /// A rig head's character data this frame, from `lighting` resolved for it: the key light turned
@@ -150,6 +252,8 @@ mod tests {
 
     use super::*;
 
+    const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
+
     /// `light` in a head's basis: right, up, forward.
     fn in_head(face: CharacterFace, light: Vec3) -> Vec3 {
         let (forward, up) = face.head.orthonormalized().expect("a basis");
@@ -158,44 +262,63 @@ mod tests {
 
     #[test]
     fn each_head_is_lit_from_its_angles_in_its_own_space() {
-        let bounds = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
-        let camera = camera(bounds);
         let sun = DirectionalLight { direction: Vec3::new(0.55, -0.7, -0.45), ..DirectionalLight::default() };
         let resolved = CharacterLighting::unstyled(sun);
-        for (rig, transform) in heads(bounds, &camera) {
-            let (lighting, face) = character(&rig, transform, resolved);
-            let (yaw, elevation) = (rig.yaw.to_radians(), rig.elevation.to_radians());
-            let expected =
-                Vec3::new(yaw.sin() * elevation.cos(), elevation.sin(), yaw.cos() * elevation.cos());
-            let seen = in_head(face, -lighting.key.direction);
-            assert!(seen.abs_diff_eq(expected, 1e-5), "{rig:?}: {seen}");
-            assert_eq!(face.expression, rig.expression);
-            assert_eq!(lighting.key.color, sun.color, "only the direction is the rig's");
-            let toward_camera = (camera.eye() - transform.transform_point3(Vec3::ZERO)).normalize();
-            assert!(face.head.forward.abs_diff_eq(toward_camera, 1e-5), "the head faces the camera");
+        for layout in FaceLayout::ALL {
+            let camera = camera(BOUNDS, layout);
+            for (rig, transform) in heads(BOUNDS, layout, &camera) {
+                let (lighting, face) = character(&rig, transform, resolved);
+                let (yaw, elevation) = (rig.yaw.to_radians(), rig.elevation.to_radians());
+                let expected =
+                    Vec3::new(yaw.sin() * elevation.cos(), elevation.sin(), yaw.cos() * elevation.cos());
+                let seen = in_head(face, -lighting.key.direction);
+                assert!(seen.abs_diff_eq(expected, 1e-5), "{rig:?}: {seen}");
+                assert_eq!(face.expression, rig.expression);
+                assert_eq!(lighting.key.color, sun.color, "only the direction is the rig's");
+            }
         }
     }
 
     #[test]
-    fn heads_stand_in_rows_facing_the_camera() {
-        let bounds = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
-        let camera = camera(bounds);
-        let heads = heads(bounds, &camera);
-        for (_, transform) in &heads {
-            let forward = transform.transform_vector3(Vec3::Z);
-            let toward_camera = (camera.eye() - transform.transform_point3(Vec3::ZERO)).normalize();
-            assert!(forward.abs_diff_eq(toward_camera, 1e-5), "facing the camera: {forward} {toward_camera}");
-            let across = transform.transform_vector3(Vec3::X);
-            assert!(
-                across.dot(camera.eye() - transform.transform_point3(Vec3::ZERO)).abs() < 1e-4,
-                "across the line of sight"
-            );
-            let at = transform.transform_point3(Vec3::ZERO);
-            assert!(at.x < -2.5, "clear of the character: {at}");
+    fn heads_stand_in_rows_facing_the_camera_then_turn_and_nod() {
+        for layout in FaceLayout::ALL {
+            let camera = camera(BOUNDS, layout);
+            let heads = heads(BOUNDS, layout, &camera);
+            assert_eq!(heads.len(), layout.heads());
+            for (rig, transform) in &heads {
+                let at = transform.transform_point3(Vec3::ZERO);
+                let toward_camera = (camera.eye() - at).normalize();
+                let forward = transform.transform_vector3(Vec3::Z);
+                // The camera's direction in the head's space: its yaw toward the head's right and
+                // its pitch above the head's level.
+                let up = transform.transform_vector3(Vec3::Y);
+                let right = forward.cross(up);
+                let level = (toward_camera - up * toward_camera.dot(up)).normalize();
+                let turned = level.dot(right).atan2(level.dot(forward)).to_degrees();
+                let raised = toward_camera.dot(up).asin().to_degrees();
+                assert!((turned - rig.turn).abs() < 1e-3, "{layout:?} {rig:?}: turned {turned}");
+                assert!((raised - rig.nod).abs() < 1e-3, "{layout:?} {rig:?}: raised {raised}");
+                assert!(at.x < -2.5, "clear of the character: {at}");
+            }
+            // Neighbors don't overlap.
+            let first_row: Vec<Vec3> =
+                heads[..layout.rows()[0].len()].iter().map(|(_, t)| t.transform_point3(Vec3::ZERO)).collect();
+            assert!(first_row.windows(2).all(|pair| pair[0].distance(pair[1]) > 2.0 * HEAD_HALF_EXTENTS.0));
         }
-        // Neighbors don't overlap.
-        let first_row: Vec<Vec3> =
-            heads[..ROWS[0].len()].iter().map(|(_, t)| t.transform_point3(Vec3::ZERO)).collect();
-        assert!(first_row.windows(2).all(|pair| pair[0].distance(pair[1]) > 2.0 * HEAD_HALF_EXTENTS.0));
+        // Facing the camera, a head's +X lies across the line of sight.
+        let camera = camera(BOUNDS, FaceLayout::Lights);
+        for (_, transform) in heads(BOUNDS, FaceLayout::Lights, &camera) {
+            let across = transform.transform_vector3(Vec3::X);
+            assert!(across.dot(camera.eye() - transform.transform_point3(Vec3::ZERO)).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn layouts_are_named_as_the_command_line_spells_them() {
+        for (name, layout) in ["lights", "hair", "highlights", "turn"].into_iter().zip(FaceLayout::ALL) {
+            assert_eq!(FaceLayout::from_name(name), Some(layout));
+        }
+        assert_eq!(FaceLayout::from_name("bangs"), None);
+        assert_eq!(FaceLayout::default(), FaceLayout::Lights, "C3's rig, as `--faces` alone draws it");
     }
 }

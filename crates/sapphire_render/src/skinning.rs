@@ -40,13 +40,28 @@
 //! workgroup. Per-frame data (jobs, palettes, weights) is one storage buffer written through the
 //! staging belt, so the pass binds three storage buffers in all (budget: crate docs).
 //!
+//! # Outline normals (M1 C4)
+//!
+//! Meshes store the outline normal in the tangent frame of the shading normal, a frame derived
+//! from the normal alone (`sapphire_assets::mesh::outline_frame`), and the outputs do the same
+//! with the deformed normal, so every pass decodes static and deformed vertices alike. The frame
+//! turns about the normal as the normal moves, so the pass carries the outline normal across
+//! itself: decoded to object space, turned by the rotation that takes the bind normal to the
+//! morphed one (it follows the morphed surface), transformed by the blended matrix with the
+//! normal, and stored in the output normal's frame. Transforming the outline normal by the same
+//! matrix, rather than rebuilding it from the deformed normal's frame, keeps the hull closed where
+//! linear blending isn't a rotation (a bent joint): a hard edge's split vertices share one outline
+//! normal and one matrix, so they get one result.
+//!
 //! # Later milestones
 //!
 //! - Joints with non-uniform scale skew normals slightly, since normals take the blended
 //!   linear part (renormalized), as most engines do. Squash-and-stretch rigs that need exact
 //!   normals would add a cofactor matrix per palette entry.
-//! - The outline normal follows the skin but not morph targets (the hull stays closed). C4's
-//!   tangent-space outline normals will follow the morphed shading normal's frame instead.
+//! - A morph target that bends a hard edge turns each split vertex's outline normal with its own
+//!   normal, so the hull can open there by the bend's angle × the outline's width. Character
+//!   morphs (faces) move smooth surfaces, whose split vertices (UV seams) share a normal; if
+//!   hard-edged morphs need it, the cooker can bake outline-normal deltas per target.
 //! - Culling: skin only visible instances, and select their LOD prefix. Bounds of the posed
 //!   instance (from its joints) then replace the bind-pose mesh bounds, which per-object light
 //!   lists use today.
@@ -721,12 +736,13 @@ impl SkinningPipeline {
 /// The CPU reference: what `shaders/skinning.wgsl` computes, step for step, for the tests.
 #[cfg(test)]
 pub(crate) mod reference {
-    use glam::{Affine3A, Vec3};
-    use sapphire_assets::mesh::{Mesh, Vertex, oct_decode, oct_encode};
+    use glam::{Affine3A, Quat, Vec3};
+    use sapphire_assets::mesh::{Mesh, Vertex, VertexShading, oct_decode, oct_encode};
 
     /// `mesh`'s vertices morphed by `weights` (dense, per target) and skinned by `palette` (empty
     /// for a mesh without a skin), as the skinning pass writes them: positions, and both normals
-    /// after their snorm16 round trip.
+    /// after their snorm16 round trip, the outline normal through the tangent frame of the normal
+    /// as written.
     pub(crate) fn deform(mesh: &Mesh, palette: &[Affine3A], weights: &[f32]) -> Vec<Vertex> {
         let mut vertices: Vec<Vertex> =
             (0..mesh.streams.len()).map(|v| mesh.streams.vertex(v).expect("in range")).collect();
@@ -748,12 +764,17 @@ pub(crate) mod reference {
                 }
             }
         }
+        let skinned = mesh.skin.is_some() && !palette.is_empty();
         for (v, vertex) in vertices.iter_mut().enumerate() {
-            let mut normal = if morphs { round_trip(normals[v]) } else { Vec3::from(vertex.normal) };
+            let mut normal = Vec3::from(vertex.normal);
             let mut outline = Vec3::from(vertex.outline_normal);
-            if let Some(skin) = &mesh.skin
-                && !palette.is_empty()
-            {
+            if morphs {
+                // The outline normal turns as the normal does.
+                let morphed = normals[v].normalize_or(Vec3::Z);
+                outline = Quat::from_rotation_arc(normal, morphed) * outline;
+                normal = round_trip(morphed);
+            }
+            if let Some(skin) = mesh.skin.as_ref().filter(|_| skinned) {
                 let influence = skin.influences.get(v).expect("one per vertex");
                 let mut blended = Affine3A::ZERO;
                 for (bind, weight) in influence.binds.iter().zip(influence.weights) {
@@ -764,7 +785,11 @@ pub(crate) mod reference {
                 }
                 vertex.position = blended.transform_point3(Vec3::from(vertex.position)).to_array();
                 normal = round_trip(blended.matrix3 * normal);
-                outline = round_trip(blended.matrix3 * outline);
+                outline = blended.matrix3 * outline;
+            }
+            if morphs || skinned {
+                outline =
+                    Vec3::from(VertexShading::new(normal.to_array(), outline.to_array()).outline_normal());
             }
             vertex.normal = normal.to_array();
             vertex.outline_normal = outline.to_array();

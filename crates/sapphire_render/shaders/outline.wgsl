@@ -1,98 +1,295 @@
-// Pass 2: inverted-hull outline. The pipeline culls front faces, so only the back of a hull
-// pushed outward along the smoothed outline normal survives, peeking out around the
-// silhouette.
+// Pass 2: inverted-hull outlines, outlines v2 (M1 C4, spec §5.12 "Outlines"): the anime line art.
+// The pipeline culls front faces, so only the back of a hull pushed outward along the smoothed
+// outline normal survives, peeking out around the silhouette and over the parts a character's
+// other parts overlap. The outline program is frame.wgsl, materials.wgsl, lights.wgsl and
+// anime_character.wgsl, then this file: lines are lit through the anime character shader's own
+// functions, and its group 3.
 //
-// The hull is pushed in clip space by a width in pixels, so the outline is equally thick at
-// any field of view and any resolution:
+// Width, in pixels on a 1080-row target, scaled with the target's height:
 //
-//   width_px = edges.z × region scale × vertex color g × (target height / 1080) × distance curve
+//   width × region scale × vertex color G × model scale × curve(d) × fade(d)
 //
-// The material's outline width (`AnimeCharacterParams::edges.z`) is authored in pixels at a
-// 1080-pixel-high target; the region's (the vertex's material ID) scales it and gives the color.
-// The distance curve keeps the width constant between OUTLINE_NEAR_DEPTH and OUTLINE_FAR_DEPTH,
-// thins it beyond (so distant characters don't turn into outlines), and lets it grow in extreme
-// close-ups. The hull is also pushed away from the camera along the view ray by the material's
-// Z offset (`edges.w`, meters) × the vertex color's b, which hides it behind nearby surfaces
-// without moving it on screen. Outlines v2 (C4) replaces the curve with an authored one and
-// adds the view-space flattening.
+// The material's width (`AnimeCharacterParams::edges.z`) is the width at the curve's mid
+// distance; the region (the vertex's material ID) scales it. `d` is the effective distance: the
+// view depth × tan(fov_y / 2) / tan(22.5°), the distance at which the model would look as large
+// through a 45° lens, so a line keeps its width wherever a character looks the same size, however
+// it got there (zooming in is moving closer). The curve (`outline_curve`) has two linear segments
+// between its near, mid and far knots and keeps the line's width in the world outside them:
+// readable in close-ups, thinning with distance without vanishing early. Over the last quarter of
+// the material's LOD cutoff the width fades to nothing; past it the renderer draws no hull.
+//
+// Extrusion, in view space: the outline normal's part across the screen, with the material's
+// flattening behind it (away from the camera) in place of its own depth, normalized (view-space Z
+// flattening), times the width in meters at the vertex's depth. Normals across the screen extrude
+// the full width; normals facing the camera extrude less and sink behind the surface instead of
+// poking through it at grazing angles. The hull is also pushed away from the camera along the
+// view ray by the material's Z offset × the vertex color's B (meters of view depth), which hides
+// it behind nearby surfaces without moving it on screen. All of it goes through one unjittered
+// matrix into clip space (`outline_clip`), so the prepass places a hull vertex in the last frame
+// as exactly as in this one.
+//
+// Color: the region's outline color, blended toward that color × the albedo by the material's
+// albedo weight (a darker shade of the surface, as anime color lines are), then lit as the
+// surface it outlines is: the character's key light through the material's light split (on the
+// outline normal) and its diffuse mode's shadow color (`shade_tint`, bands or ramp), plus the
+// rig's stylized GI flattened toward the camera (`character_gi` at the view direction), by the
+// material's lighting weight. Lines darken at night and take the light's tint. Local lights don't
+// reach them. Where the material has a control map its material ID picks the region's color per
+// pixel, as on the surface; the width scale is the vertex's region's (the vertex stage reads no
+// textures). Alpha is the character's, post's character mask (M1 P2): 0 on a character's line,
+// as on the character it outlines, so the line belongs to the character's bloom, and 1 on an
+// unlisted instance's.
+//
+// Velocity: the scene prepass draws the hulls too (`vs_outline_prepass`), after the surfaces,
+// with this frame's and the last frame's clip positions, so temporal AA reprojects a hull pixel
+// by the motion of the hull itself, and its depth is the main pass's. A hull vertex moves with
+// its surface vertex (the last drawn pose, slot 4), its instance's last transform and the last
+// frame's camera. A skinned outline normal is this frame's in both: the skinning outputs keep
+// last frame's positions, not normals. The hulls also write the prepass's outline mask, which
+// keeps lines responsive under temporal AA.
 //
 // The alpha-tested permutation discards the hull where the base color map's coverage is below
-// the material's cutoff, so cutouts get no outline across their holes. Transparent materials
-// draw no hull.
+// the material's cutoff, so cutouts get no outline across their holes; its prepass doesn't, as
+// the surfaces' doesn't. Transparent materials draw no hull.
 
 const OUTLINE_REFERENCE_HEIGHT: f32 = 1080.0;
-const OUTLINE_NEAR_DEPTH: f32 = 0.5;
-const OUTLINE_FAR_DEPTH: f32 = 25.0;
-
-// Static permutation bits (`pipelines::Permutation`), set per pipeline.
-override PERMUTATION_ALPHA_TEST: bool = false;
-
-// The anime character family's group 3 (see anime_character.wgsl): the hull reads the base color
-// map's coverage alone.
-@group(3) @binding(0) var base_color_map: texture_2d<f32>;
-@group(3) @binding(8) var material_sampler: sampler;
+// tan(22.5°): widths are normalized to a 45° vertical field of view.
+const OUTLINE_REFERENCE_TAN_HALF_FOV: f32 = 0.41421356;
+// The share of the cutoff distance, at its end, over which the width fades out
+// (`OutlineCurve::FADE`).
+const OUTLINE_CUTOFF_FADE: f32 = 0.25;
 
 struct OutlineVaryings {
-    @builtin(position) clip_position: vec4<f32>,
+    // Invariant, so the hull's prepass (`vs_outline_prepass`) computes the same depth.
+    @builtin(position) @invariant clip_position: vec4<f32>,
     @location(0) @interpolate(flat) material: u32,
     // The region the vertex's material ID picks, clamped to the material's.
     @location(1) @interpolate(flat) region: u32,
-    // The base color map's coordinates, for the alpha-tested permutation.
+    // The material textures' coordinates.
     @location(2) uv: vec2<f32>,
+    // The instance's entry in the frame's characters: its light rig.
+    @location(3) @interpolate(flat) character: u32,
+    @location(4) world_position: vec3<f32>,
+    // The outline normal in world space, which the line's light split reads.
+    @location(5) world_normal: vec3<f32>,
+    // The vertex color's ambient occlusion.
+    @location(6) occlusion: f32,
+}
+
+// A hull vertex before it is extruded: where its surface vertex is, in world space, and its
+// outline normal, of any length.
+struct HullVertex {
+    position: vec3<f32>,
+    normal: vec3<f32>,
+}
+
+// What sets a hull vertex's extrusion, the same in every frame.
+struct HullWidth {
+    // Pixels on a 1080-row target at the curve's mid distance: the material's width × the
+    // region's scale × the vertex color's G × the model scale.
+    pixels: f32,
+    // Meters of view depth away from the camera, along the view ray: the material's Z offset ×
+    // the vertex color's B.
+    z_offset: f32,
+    material: u32,
+}
+
+// The vertex's region: its material ID, clamped to the material's regions.
+fn outline_region(vertex: MeshVertex, material: u32) -> u32 {
+    let regions = max(materials[material].modes.y, 1u);
+    return min(vertex.flags & VERTEX_MATERIAL_ID_MASK, regions - 1u);
+}
+
+fn hull_width(vertex: MeshVertex, material: u32, region: u32) -> HullWidth {
+    // Read field by field rather than copying the whole block.
+    var width: HullWidth;
+    width.pixels = materials[material].edges.z * materials[material].regions[region].outline.w
+        * vertex.color.g * materials[material].outline_shape.z;
+    width.z_offset = materials[material].edges.w * vertex.color.b;
+    width.material = material;
+    return width;
+}
+
+// The hull vertex of an instance placed by `world_from_object`. Normals take the inverse
+// transpose of its linear part; the cofactor matrix points them the same way without an inverse
+// (the extrusion normalizes), and computing it from the transform alone, in this frame and the
+// last, gives a still instance's hull exactly no motion.
+fn hull_vertex(world_from_object: mat4x4<f32>, position: vec3<f32>, outline_normal: vec3<f32>) -> HullVertex {
+    let x = world_from_object[0].xyz;
+    let y = world_from_object[1].xyz;
+    let z = world_from_object[2].xyz;
+    let cofactor = mat3x3<f32>(cross(y, z), cross(z, x), cross(x, y));
+    var hull: HullVertex;
+    hull.position = (world_from_object * vec4<f32>(position, 1.0)).xyz;
+    hull.normal = cofactor * outline_normal;
+    return hull;
+}
+
+// How far `x` lies from `start` to `end`, clamped to 0..=1; 1 for an empty range.
+fn outline_segment(start: f32, end: f32, x: f32) -> f32 {
+    return select(1.0, saturate((x - start) / (end - start)), end > start);
+}
+
+// The width's scale at the effective distance `distance`, with the cutoff's fade:
+// `OutlineCurve::scale × OutlineCurve::fade`.
+fn outline_curve(material: u32, distance: f32) -> f32 {
+    let knots = materials[material].outline_curve;
+    let scales = materials[material].outline_shape.xy;
+    let near = scales.x * knots.x / max(distance, 1e-6);
+    let first = mix(scales.x, 1.0, outline_segment(knots.x, knots.y, distance));
+    let second = mix(1.0, scales.y, outline_segment(knots.y, knots.z, distance));
+    let far = scales.y * knots.z / max(distance, 1e-6);
+    var scale = select(far, second, distance <= knots.z);
+    scale = select(scale, first, distance <= knots.y);
+    scale = select(scale, near, distance < knots.x);
+    // The renderer's scale on the cutoff (`r.outline_distance`) applies to every material.
+    let cutoff = knots.w * frame.outline_distance;
+    let fade = saturate((cutoff - distance) / max(cutoff * OUTLINE_CUTOFF_FADE, 1e-6));
+    return scale * fade;
+}
+
+// Where `hull` lands, extruded, through `clip_from_world`: an unjittered matrix into clip space
+// whose projection is CameraData's (perspective, infinite reverse-Z, so clip x and y are the
+// focal lengths × view x and y, clip z the near plane's distance and clip w the view depth).
+// Everything is read from the matrix, so last frame's places last frame's hull.
+//
+// The extrusion's part across the screen moves the vertex at its own depth; its depth part (the
+// flattening's) and the Z offset push it back along the view ray, which scales clip x, y and w
+// together and so never moves it on screen. Pushing along view −z instead would pull vertices
+// toward the screen's center by their distance from it, thinning lines at the edges of a wide
+// field of view.
+fn outline_clip(clip_from_world: mat4x4<f32>, hull: HullVertex, width: HullWidth) -> vec4<f32> {
+    let clip = clip_from_world * vec4<f32>(hull.position, 1.0);
+    let direction = clip_from_world * vec4<f32>(hull.normal, 0.0);
+    // The rows of clip x and y have the focal lengths' lengths: the view is rigid.
+    let focal = vec2<f32>(
+        length(vec3<f32>(clip_from_world[0].x, clip_from_world[1].x, clip_from_world[2].x)),
+        length(vec3<f32>(clip_from_world[0].y, clip_from_world[1].y, clip_from_world[2].y)),
+    );
+    // The outline normal in view space (x right, y up, z toward the camera), then flattened: its
+    // part across the screen, with the material's flattening away from the camera as its depth.
+    let normal = safe_normalize(vec3<f32>(direction.xy / focal, -direction.w));
+    let extrusion = safe_normalize(vec3<f32>(normal.xy, -materials[width.material].outline_shape.w));
+    let depth = max(clip.w, 1e-4);
+    let distance = depth / (focal.y * OUTLINE_REFERENCE_TAN_HALF_FOV);
+    let pixels = width.pixels * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT) * outline_curve(width.material, distance);
+    // Pixels to view-space meters at this depth: the target's height spans 2 × depth / focal y.
+    let meters = pixels * 2.0 * depth / (focal.y * view.viewport.y);
+    let across = clip.xy + extrusion.xy * focal * meters;
+    // Back along the view ray by the Z offset and the extrusion's depth, in meters of depth.
+    let back = 1.0 + max(width.z_offset - extrusion.z * meters, -0.5 * depth) / depth;
+    return vec4<f32>(across * back, clip.z, clip.w * back);
+}
+
+// `clip` with this frame's jitter (M1 R7), as the jittered projection would have it.
+fn jittered(clip: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(clip.xy + view.jitter.zw * clip.w, clip.zw);
 }
 
 @vertex
 fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
-    // Read field by field rather than copying the whole block.
-    let regions = max(materials[draw.material].modes.y, 1u);
-    let region = min(vertex.flags & VERTEX_MATERIAL_ID_MASK, regions - 1u);
-    let width = materials[draw.material].edges.z * materials[draw.material].regions[region].outline.w;
-    let z_offset = materials[draw.material].edges.w * vertex.color.b;
-
-    let world_position = instance.world_from_object * vec4<f32>(vertex.position, 1.0);
-    let away = safe_normalize(world_position.xyz - view.position.xyz) * z_offset;
-    var clip = view.clip_from_world * vec4<f32>(world_position.xyz + away, 1.0);
-
-    // The outline normal's direction on screen, in pixels: project it to view space, scale by
-    // the projection's x/y focal lengths (aspect) and by the target size, then normalize.
-    let world_normal = instance.normal_from_object * vertex.outline_normal;
-    let view_normal = (view.view_from_world * vec4<f32>(world_normal, 0.0)).xy;
-    let focal = vec2<f32>(view.clip_from_view[0][0], view.clip_from_view[1][1]);
-    let screen_direction = safe_normalize2(view_normal * focal * view.viewport.xy);
-
-    // Perspective projection: clip.w is the view depth.
-    let depth = max(clip.w, 1e-4);
-    let distance_curve = clamp(depth, OUTLINE_NEAR_DEPTH, OUTLINE_FAR_DEPTH) / depth;
-    let width_px = width * vertex.color.g * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT)
-        * distance_curve;
-
-    // Pixels to NDC is 2 / size per axis; multiplying by w undoes the perspective divide.
-    clip = vec4<f32>(clip.xy + screen_direction * width_px * 2.0 * view.viewport.zw * clip.w, clip.zw);
-
+    let region = outline_region(vertex, draw.material);
+    let hull = hull_vertex(instance.world_from_object, vertex.position, vertex.outline_normal);
     var out: OutlineVaryings;
-    out.clip_position = clip;
+    out.clip_position =
+        jittered(outline_clip(view.unjittered_clip_from_world, hull, hull_width(vertex, draw.material, region)));
     out.material = draw.material;
     out.region = region;
     out.uv = vertex.uv;
+    out.character = instance.character;
+    out.world_position = hull.position;
+    out.world_normal = hull.normal;
+    out.occlusion = vertex.color.r;
     return out;
 }
 
 @fragment
 fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
-    // Taken in uniform control flow; the sample sits on a branch the block decides.
+    let material = in.material;
+    let modes = materials[material].modes;
+    let swizzles = materials[material].swizzles;
+    let style = materials[material].outline_color;
+    // Derivatives first, in uniform control flow: the base color map is sampled on a branch.
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
-    if PERMUTATION_ALPHA_TEST {
-        let modes = materials[in.material].modes;
-        var alpha = materials[in.material].base_color.a;
-        if material_has_texture(modes, CHARACTER_BASE_COLOR) {
-            let sampled = textureSampleGrad(base_color_map, material_sampler, uv.uv, uv.dx, uv.dy);
-            alpha *= material_swizzle(sampled, materials[in.material].swizzles, CHARACTER_BASE_COLOR).a;
-        }
-        if alpha < materials[in.material].split.w {
-            discard;
-        }
+    let rig = characters[in.character].rig;
+    let x = split_input(dot(safe_normalize(in.world_normal), rig.key_direction.xyz), in.occlusion, SHADOW_BIAS_NEUTRAL);
+    let split = materials[material].split.xy;
+    let width = max(split.y, 0.5 * fwidth(x));
+
+    // The albedo, for the alpha test and the line's color: one sample serves both.
+    var base = materials[material].base_color;
+    if material_has_texture(modes, CHARACTER_BASE_COLOR) && (PERMUTATION_ALPHA_TEST || style.x > 0.0) {
+        base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv);
     }
-    return vec4<f32>(materials[in.material].regions[in.region].outline.rgb, 1.0);
+    if PERMUTATION_ALPHA_TEST && base.a < materials[material].split.w {
+        discard;
+    }
+    var region = in.region;
+    if material_has_texture(modes, CHARACTER_CONTROL) {
+        region = control_material_id(swizzles, in.uv);
+    }
+    var surface: CharacterSurface;
+    surface.region = materials[material].regions[min(region, max(modes.y, 1u) - 1u)];
+    let line = surface.region.outline.rgb * mix(vec3<f32>(1.0), base.rgb, style.x);
+    // The world's share of the pixel, as the surface writes it (anime_character.wgsl).
+    let world = select(1.0, 0.0, in.character != 0u);
+    if style.y <= 0.0 {
+        return vec4<f32>(line, world);
+    }
+
+    // Lit as the surface is: the key light through the split and the shadow color on the
+    // outline normal, plus the GI flattened toward the camera.
+    let view_dir = safe_normalize(view.position.xyz - in.world_position);
+    surface.albedo = base.rgb;
+    surface.normal = view_dir;
+    surface.view_dir = view_dir;
+    surface.occlusion = in.occlusion;
+    surface.shadow_bias = SHADOW_BIAS_NEUTRAL;
+    surface.split = split;
+    let lit = light_step(split.x, width, x);
+    let tone = mix(shade_tint(surface, material, x, width), vec3<f32>(1.0), lit);
+    let lit_line = line * (tone * rig.key_radiance.rgb + character_gi(surface, rig, in.world_position));
+    return vec4<f32>(mix(line, lit_line, style.y), world);
+}
+
+// The hull in the scene prepass: depth, its outline normal and its velocity.
+@vertex
+fn vs_outline_prepass(
+    packed: PackedVertex,
+    // Slot 4: where the vertex was when last drawn, in slot 1's format. Static meshes bind
+    // their own positions again.
+    @location(10) previous_position: vec4<f32>,
+    draw: DrawRecord,
+) -> ScenePrepassVaryings {
+    let vertex = decode_vertex(packed, draw);
+    let instance = instances[draw.instance];
+    let width = hull_width(vertex, draw.material, outline_region(vertex, draw.material));
+    let hull = hull_vertex(instance.world_from_object, vertex.position, vertex.outline_normal);
+    let previous = hull_vertex(
+        instance.previous_world_from_object,
+        object_position(previous_position, draw),
+        vertex.outline_normal,
+    );
+    var out: ScenePrepassVaryings;
+    out.current = outline_clip(view.unjittered_clip_from_world, hull, width);
+    out.clip_position = jittered(out.current);
+    out.previous = outline_clip(view.previous_clip_from_world, previous, width);
+    out.world_normal = hull.normal;
+    return out;
+}
+
+// The scene prepass's targets as the hull writes them: its normal and velocity, and the outline
+// mask, which the responsive mask takes in (temporal.wgsl).
+struct OutlinePrepassTargets {
+    @location(0) normal: vec2<f32>,
+    @location(1) velocity: vec2<f32>,
+    @location(2) outline: f32,
+}
+
+@fragment
+fn fs_outline_prepass(in: ScenePrepassVaryings) -> OutlinePrepassTargets {
+    let targets = scene_prepass_targets(in);
+    return OutlinePrepassTargets(targets.normal, targets.velocity, 1.0);
 }

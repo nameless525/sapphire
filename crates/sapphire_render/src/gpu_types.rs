@@ -33,8 +33,11 @@ pub(crate) struct FrameUniforms {
     pub clusters: [f32; 4],
     /// 0 by day, 1 at night (`FramePacket::day_night`).
     pub day_night: f32,
-    /// Pads `day_night` to the next vector, as WGSL aligns it.
-    pub padding: [f32; 3],
+    /// The scale on materials' outline LOD cutoffs ([`crate::Renderer::set_outline_distance`],
+    /// M1 C4).
+    pub outline_distance: f32,
+    /// Pads to the next vector, as WGSL aligns it.
+    pub padding: [f32; 2],
     /// rgb: ambient light from above (`FramePacket::ambient`, sky × intensity).
     pub ambient_sky: [f32; 4],
     /// rgb: ambient light from below (ground × intensity).
@@ -46,7 +49,7 @@ pub(crate) struct FrameUniforms {
 }
 
 impl FrameUniforms {
-    pub(crate) fn new(frame: &FramePacket, lights: LightUniforms) -> Self {
+    pub(crate) fn new(frame: &FramePacket, lights: LightUniforms, outline_distance: f32) -> Self {
         let toward_sun = (-frame.sun.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
             sun_direction: toward_sun.extend(0.0).to_array(),
@@ -59,7 +62,8 @@ impl FrameUniforms {
             lights: lights.lights,
             clusters: lights.clusters,
             day_night: frame.day_night,
-            padding: [0.0; 3],
+            outline_distance,
+            padding: [0.0; 2],
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),

@@ -8,7 +8,8 @@
 //   world normals and velocity, for TAA (R7), outlines under TAA (P1), GTAO and screen-space
 //   edges. Characters move by their skinned positions, this frame's and the last drawn one's
 //   (vertex slot 4); static meshes by their instance's transform since it was last drawn; both
-//   by the camera's.
+//   by the camera's. The outline hulls follow the surfaces into the same targets
+//   (`vs_outline_prepass` in outline.wgsl, M1 C4), with velocity of their own.
 //
 // Both compute the clip position exactly as the main pass's vertex stages do (`object_position`,
 // then the instance transform, then the view), and mark it invariant, so a prepass's depth is
@@ -17,22 +18,8 @@
 // Under temporal AA (M1 R7) the view's projection is jittered; velocity compares unjittered clip
 // positions, so geometry that holds still has exactly zero velocity whatever the jitter.
 
-struct ScenePrepassVaryings {
-    @builtin(position) @invariant clip_position: vec4<f32>,
-    @location(0) world_normal: vec3<f32>,
-    // Unjittered clip positions now and when last drawn, divided per pixel so velocity is
-    // perspective-correct.
-    @location(1) current: vec4<f32>,
-    @location(2) previous: vec4<f32>,
-}
-
-struct ScenePrepassTargets {
-    // World-space unit normal, octahedral (`oct_encode`).
-    @location(0) normal: vec2<f32>,
-    // Motion since the last drawn frame in texture coordinates (x right, y down): the pixel was
-    // at `uv - velocity`.
-    @location(1) velocity: vec2<f32>,
-}
+// `ScenePrepassVaryings` and `ScenePrepassTargets` are frame.wgsl's: the outline hull's prepass
+// (outline.wgsl, M1 C4) writes the same targets.
 
 @vertex
 fn vs_character_prepass(@location(0) position: vec4<f32>, draw: DrawRecord) -> @invariant @builtin(position) vec4<f32> {
@@ -64,22 +51,5 @@ fn vs_scene_prepass(
 
 @fragment
 fn fs_scene_prepass(in: ScenePrepassVaryings) -> ScenePrepassTargets {
-    let current = in.current.xy / in.current.w;
-    let previous = in.previous.xy / in.previous.w;
-    var out: ScenePrepassTargets;
-    out.normal = oct_encode(safe_normalize(in.world_normal));
-    // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
-    out.velocity = (current - previous) * vec2<f32>(0.5, -0.5);
-    return out;
-}
-
-// The octahedral encoding of a unit vector (Cigolle et al., JCGT 2014), the inverse of
-// `oct_decode`; a zero vector encodes +Z.
-fn oct_encode(n: vec3<f32>) -> vec2<f32> {
-    let l1 = abs(n.x) + abs(n.y) + abs(n.z);
-    var e = select(vec2<f32>(0.0), n.xy / l1, l1 > 0.0);
-    if n.z < 0.0 {
-        e = (1.0 - abs(e.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), e >= vec2<f32>(0.0));
-    }
-    return e;
+    return scene_prepass_targets(in);
 }

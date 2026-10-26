@@ -273,7 +273,9 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     let new_sky = corner(&pixels);
     assert!(new_sky[0] == 0 && new_sky[1] == 0 && new_sky[2] > 150, "{new_sky:?} (was {sky:?})");
 
-    // The anime character shader: its opaque pipeline for quantized meshes, the one built.
+    // The anime character shader: its opaque pipeline for quantized meshes, the one built, and
+    // the outline program, which lights lines through its functions (M1 C4): the opaque outline
+    // and the outline prepass.
     let swapped = edited(
         &blue_sky,
         ShaderFile::AnimeCharacter,
@@ -281,18 +283,18 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
         "return vec4<f32>(color.bgr, select(world, base.a, PERMUTATION_TRANSPARENT));",
     );
     let update = frames.renderer.set_shader_sources(&swapped).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 1 });
+    assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 3 });
     let pixels = frames.render(&gpu);
     assert_eq!(center(&pixels), [sphere_red[2], sphere_red[1], sphere_red[0], 255], "red and blue swapped");
     assert_eq!(corner(&pixels), new_sky);
 
     // A shared file: every program that includes it (the environment's too, with no pipeline
     // built from it yet), and every pipeline built from them (the sky's six, surface, outline,
-    // scene prepass, light clusters).
+    // scene prepass, outline prepass, light clusters).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 10 });
+    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 11 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -428,22 +430,22 @@ fn a_pipeline_built_later_that_fails_goes_back_to_the_compiled_in_shaders() {
     let mesh = upload(&mut frames.renderer, &sphere(1.0, red));
     frames.show(mesh);
     frames.render(&gpu);
-    // Good for the pipelines built so far (opaque surfaces), but an alpha-tested surface sets
-    // the permutation constant this edit renames.
+    // Good for the pipelines built so far (opaque surfaces and their outlines, whose program
+    // includes this file), but a transparent surface sets the permutation constant this edit
+    // renames.
     let compiled_in = ShaderSources::compiled_in();
     let mut renamed = compiled_in.clone();
     let text =
-        compiled_in.get(ShaderFile::AnimeCharacter).replace("PERMUTATION_ALPHA_TEST", "PERMUTATION_CUTOUT");
+        compiled_in.get(ShaderFile::AnimeCharacter).replace("PERMUTATION_TRANSPARENT", "PERMUTATION_BLENDED");
     renamed.set(ShaderFile::AnimeCharacter, text);
-    assert_eq!(frames.renderer.set_shader_sources(&renamed).unwrap().programs, 1);
-    let cutout =
-        AnimeCharacterMaterial { alpha: AlphaMode::Mask { cutoff: 0.5 }, ..flat([0.0, 0.8, 0.0], None) };
-    let cutout = upload(&mut frames.renderer, &sphere(1.0, SlotMaterial::Embedded(cooked(&cutout))));
+    assert_eq!(frames.renderer.set_shader_sources(&renamed).unwrap().programs, 2);
+    let blended = AnimeCharacterMaterial { alpha: AlphaMode::Blend, ..flat([0.0, 0.8, 0.0], None) };
+    let blended = upload(&mut frames.renderer, &sphere(1.0, SlotMaterial::Embedded(cooked(&blended))));
     // The renderer went back to the compiled-in shaders rather than keep an invalid pipeline,
-    // and draws the alpha-tested sphere without a validation error.
+    // and draws the transparent sphere (opaque in coverage) without a validation error.
     assert!(frames.renderer.shader_sources().is_compiled_in());
     assert_eq!(frames.renderer.stats().shader_rebuilds, 2);
-    frames.added.push(MeshInstance { id: InstanceId(1), mesh: cutout, transform: Mat4::IDENTITY });
+    frames.added.push(MeshInstance { id: InstanceId(1), mesh: blended, transform: Mat4::IDENTITY });
     let green = center(&frames.render(&gpu));
     assert!(green[1] > 150 && green[0] < 10, "{green:?}");
 }
@@ -504,19 +506,21 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
         edited.set(file, format!("{}\n// edited\n", sources.get(file)));
         edited
     };
+    // The anime character shader rebuilds the outline program too, which lights lines through
+    // its functions (M1 C4): four surfaces, two outlines and the outline prepass.
     let character = comment(&ShaderSources::compiled_in(), ShaderFile::AnimeCharacter);
     let update = frames.renderer.set_shader_sources(&character).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 4 });
+    assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 7 });
     assert_eq!(frames.render(&gpu), before);
     let outline = comment(&character, ShaderFile::Outline);
     let update = frames.renderer.set_shader_sources(&outline).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 2 });
+    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 3 });
     assert_eq!(frames.render(&gpu), before);
-    // The shared file: the sky's six, four surfaces, two outlines, the scene prepass and the
-    // light clusters (and the environment's program, which built no pipeline).
+    // The shared file: the sky's six, four surfaces, two outlines, the scene and outline
+    // prepasses and the light clusters (and the environment's program, which built no pipeline).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 14 });
+    assert_eq!(update, ShaderUpdate { programs: 6, pipelines: 15 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 6, "the same set, rebuilt");
 }

@@ -37,6 +37,14 @@ fn documents() -> Vec<AnyMaterialDocument> {
             },
         ],
         matcap: Some(Matcap { map: id(TEXTURE), strength: 0.8, shadow_strength: 0.2 }),
+        outline: Outline {
+            curve: OutlineCurve { near: (0.25, 1.5), mid: 2.0, far: (12.0, 0.5), cutoff: 60.0 },
+            model_scale: 0.6,
+            flatten: 0.05,
+            albedo: 0.75,
+            lighting: 0.5,
+            ..Outline::default()
+        },
         ..AnimeCharacterMaterial::default()
     };
     let environment = EnvironmentMaterial {
@@ -112,7 +120,7 @@ fn documents_may_leave_fields_out() {
     assert_eq!(material.regions[0].outline_color, CharacterRegion::default().outline_color);
     assert_eq!(material.regions[0].gi, RegionGi { sphere: 1.0, skin: 0.0 }, "a face region's GI");
     assert_eq!(material.rim, Rim::default());
-    assert_eq!(material.outline, Outline { width: 4.0, z_offset: 0.0 });
+    assert_eq!(material.outline, Outline { width: 4.0, ..Outline::default() }, "outlines v2's settings too");
     let CharacterSurface::Face(face) = &material.surface else { panic!("a face") };
     assert_eq!(face, &FaceShading::new(id(RAMP)), "a face's settings may be left out too");
     assert_eq!((face.mask_map, face.expression_map, face.softness), (None, None, 0.02));
@@ -156,6 +164,14 @@ fn validation_names_the_field() {
             .starts_with("diffuse.mix")
     );
     assert!(error(character(|m| m.outline.width = -1.0)).starts_with("outline.width"));
+    assert!(error(character(|m| m.outline.curve.mid = 30.0)).starts_with("outline.curve "));
+    assert!(error(character(|m| m.outline.curve.far.0 = f32::INFINITY)).starts_with("outline.curve "));
+    assert!(error(character(|m| m.outline.curve.cutoff = 0.0)).starts_with("outline.curve.cutoff"));
+    assert!(error(character(|m| m.outline.curve.near.1 = -1.0)).starts_with("outline.curve.near scale"));
+    assert!(error(character(|m| m.outline.model_scale = f32::NAN)).starts_with("outline.model_scale"));
+    assert!(error(character(|m| m.outline.flatten = -0.1)).starts_with("outline.flatten"));
+    assert!(error(character(|m| m.outline.albedo = 1.5)).starts_with("outline.albedo"));
+    assert!(error(character(|m| m.outline.lighting = -0.5)).starts_with("outline.lighting"));
     assert!(
         error(character(|m| m.regions[0].night_ramp_row = Some(16))).starts_with("regions[0].night_ramp_row")
     );
@@ -218,7 +234,7 @@ fn cooked_materials_that_break_the_format_are_rejected() {
         let error = Material::read(&material.to_cooked().unwrap()).unwrap_err();
         assert!(expected(&error), "{error}");
     };
-    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 897, .. }));
+    check(|m| m.params.push(0), |e| matches!(e, MaterialError::ParamsSize { found: 945, .. }));
     check(
         |m| m.family = MaterialFamily::Sky,
         |e| matches!(e, MaterialError::ParamsSize { expected: 96, .. }),
@@ -267,7 +283,7 @@ fn swizzles_pack_two_slots_to_a_word() {
 #[test]
 fn gpu_blocks_have_their_documented_sizes() {
     let sizes = MaterialFamily::ALL.map(MaterialFamily::params_size);
-    assert_eq!(sizes, [896, 144, 160, 96, 80]);
+    assert_eq!(sizes, [944, 144, 160, 96, 80]);
     assert!(sizes.iter().all(|size| size % 16 == 0), "WGSL storage arrays stride by 16");
     assert_eq!(size_of::<AnimeCharacterRegion>(), 96);
     for family in MaterialFamily::ALL {
@@ -302,11 +318,47 @@ fn the_anime_character_block_carries_every_field() {
     assert_eq!((params.regions[1].subsurface[3], params.regions[1].rim[3]), (1.0, 0.75), "GI weights");
     assert_eq!((params.regions[0].subsurface[3], params.regions[0].rim[3]), (0.0, 0.0), "none by default");
     assert_eq!(params.regions[2], AnimeCharacterRegion::default(), "unused regions stay zero");
+    // Outlines v2's settings follow the regions.
+    assert_eq!(params.outline_curve, [0.25, 2.0, 12.0, 60.0]);
+    assert_eq!(params.outline_shape, [1.5, 0.5, 0.6, 0.05]);
+    assert_eq!(params.outline_color, [0.75, 0.5, 0.0, 0.0]);
+    assert_eq!(std::mem::offset_of!(AnimeCharacterParams, outline_curve), 128 + 8 * 96);
     assert_eq!(params.swizzles[0] & 0xfff, swizzle_code(RA01), "slot 0 is bound");
     assert_eq!(params.swizzles[0] >> SWIZZLE_BITS, 0x688, "slot 1 is not");
     let expected = MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE | MaterialFlags::HAIR;
     assert_eq!(material.material_flags(), expected);
     assert!(expected.contains(MaterialFlags::HAIR) && !expected.contains(MaterialFlags::FACE));
+}
+
+#[test]
+fn the_outline_curve_holds_world_width_outside_its_two_segments() {
+    let curve = OutlineCurve { near: (0.5, 1.6), mid: 3.0, far: (20.0, 0.4), cutoff: 80.0 };
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+    // The knots, and halfway along each segment.
+    assert!(close(curve.scale(0.5), 1.6) && close(curve.scale(3.0), 1.0) && close(curve.scale(20.0), 0.4));
+    assert!(close(curve.scale(1.75), 1.3) && close(curve.scale(11.5), 0.7));
+    // Outside them the width in the world holds: pixels × distance is constant.
+    assert!(close(curve.scale(0.25) * 0.25, 1.6 * 0.5) && close(curve.scale(0.05) * 0.05, 0.8));
+    assert!(close(curve.scale(40.0) * 40.0, 0.4 * 20.0) && close(curve.scale(75.0) * 75.0, 8.0));
+    // The cutoff's fade over its last quarter.
+    assert_eq!(
+        (curve.fade(10.0), curve.fade(60.0), curve.fade(80.0), curve.fade(500.0)),
+        (1.0, 1.0, 0.0, 0.0)
+    );
+    assert!(close(curve.fade(70.0), 0.5));
+    // Empty segments: a pixel width kept close up with `near` at 0, a world width everywhere
+    // with all three equal (MToon's world-space outlines).
+    let pixels = OutlineCurve { near: (0.0, 1.0), ..curve };
+    assert!(close(pixels.scale(0.01), 1.0) && close(pixels.scale(0.0), 1.0));
+    let world = OutlineCurve { near: (2.0, 1.0), mid: 2.0, far: (2.0, 1.0), cutoff: 80.0 };
+    for distance in [0.25, 1.0, 2.0, 7.0, 60.0] {
+        assert!(close(world.scale(distance) * distance, 2.0), "{distance}");
+    }
+    // The default keeps C1's constant pixel width from half a meter to the mid distance, where
+    // the sandbox's character stands.
+    let default = OutlineCurve::default();
+    assert!([0.5, 1.0, 2.5, 3.0].iter().all(|&d| close(default.scale(d), 1.0)));
+    assert!(default.scale(10.0) < 1.0 && default.scale(40.0) < default.scale(20.0));
 }
 
 #[test]

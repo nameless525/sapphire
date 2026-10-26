@@ -110,7 +110,7 @@ fn flat(rgb: [f32; 3], outline_px: f32) -> AnimeCharacterMaterial {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: outline_px, z_offset: 0.0 },
+        outline: Outline { width: outline_px, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }
@@ -407,7 +407,12 @@ fn left_outline_width(pixels: &[[u8; 4]], (width, height): (u32, u32)) -> f32 {
 fn outline_width_is_independent_of_fov_and_resolution() {
     let gpu = gpu();
     let mut frames = Frames::new(&gpu, FORMAT, Msaa::X4).expect("renderer");
-    let mesh = upload(&mut frames.renderer, &sphere(flat(GREY, 10.0)));
+    // A curve that holds the pixel width from half a meter to 20 m (outlines v2, M1 C4): the
+    // sphere looks the same size at every field of view, so its effective distance stays within
+    // it (2.6 to 4 m); `tests/outline.rs` follows the default curve's slope.
+    let mut material = flat(GREY, 10.0);
+    material.outline.curve.far.1 = 1.0;
+    let mesh = upload(&mut frames.renderer, &sphere(material));
     // Added by the first frame; the scene keeps it for the rest.
     let mut add = vec![instance(0, mesh, Mat4::IDENTITY)];
     for size in [(960, 540), (1920, 1080)] {
@@ -416,8 +421,6 @@ fn outline_width_is_independent_of_fov_and_resolution() {
         // 10 px at 1080p.
         let expected = 10.0 * size.1 as f32 / 1080.0;
         for fov in [8.0, 38.0, 90.0] {
-            // Filling 60% of the height keeps the camera inside the distance curve's flat range
-            // (0.5–25 m) even at 8°.
             let error =
                 frames.render(&gpu, &view, framing_camera(fov, size, 0.6), &std::mem::take(&mut add), &[]);
             assert!(error.is_none(), "{error:?}");
@@ -552,7 +555,7 @@ fn quantized_meshes_match_their_f32_reference() {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.4, ..Rim::default() },
-        outline: Outline { width: 6.0, z_offset: 0.0 },
+        outline: Outline { width: 6.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     };
     let render = |format| {
@@ -728,7 +731,7 @@ fn posed_skins_and_morphs_match_the_same_mesh_deformed_on_the_cpu() {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.4, ..Rim::default() },
-        outline: Outline { width: 3.0, z_offset: 0.0 },
+        outline: Outline { width: 3.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     };
     let skinned = skinned_sphere(material.clone());

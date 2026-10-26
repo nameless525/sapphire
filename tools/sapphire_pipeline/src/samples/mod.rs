@@ -13,10 +13,13 @@
 //!   the sky material that draws them (M1 W2);
 //! - the environment's test content ([`environment`], in `environment/`): a courtyard on rolling
 //!   ground, its environment materials, a terminator band and a painted ground map, for the
-//!   sandbox's `--environment` (M1 W4).
+//!   sandbox's `--environment` (M1 W4);
+//! - the hard-edged outline sample ([`hard_edges`], `hard_edges.glb`): flat-shaded shapes for the
+//!   sandbox's `--hard-edges`, whose hulls must stay closed at every corner (M1 C4).
 
 pub mod environment;
 pub mod face;
+pub mod hard_edges;
 mod noise;
 mod shapes;
 pub mod sky;
@@ -55,6 +58,7 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
         (sky::STARS_FILE_NAME, sky::stars_png()?),
         (sky::MILKY_WAY_FILE_NAME, sky::milky_way_png()?),
         (sky::MATERIAL_FILE_NAME, sky::material_document().into_bytes()),
+        (hard_edges::FILE_NAME, hard_edges::glb()),
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
     let mut paths = Vec::new();
@@ -353,6 +357,7 @@ mod tests {
             sky::STARS_FILE_NAME,
             sky::MILKY_WAY_FILE_NAME,
             sky::MATERIAL_FILE_NAME,
+            hard_edges::FILE_NAME,
         ];
         assert_eq!(written[..names.len()], names.map(|name| nested.join(name)));
         let faces: Vec<_> = face::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();

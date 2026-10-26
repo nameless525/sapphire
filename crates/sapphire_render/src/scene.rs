@@ -189,9 +189,9 @@ impl GpuScene {
         SurfaceVariant::ALL.map(|variant| to_u32(self.draw_list.len(variant)))
     }
 
-    /// Outline hulls drawn.
-    pub(crate) fn outline_count(&self) -> u32 {
-        to_u32(self.draw_list.outlines())
+    /// The draws of the live instances, as the last `prepare` left them.
+    pub(crate) fn draw_list(&self) -> &DrawList {
+        &self.draw_list
     }
 
     /// Instances the last packet added or changed.
@@ -382,6 +382,13 @@ impl InstanceSlots {
     /// The mesh of the live instance in `slot`.
     pub(crate) fn mesh(&self, slot: u32) -> Option<MeshHandle> {
         self.slots.get(slot as usize).filter(|entry| entry.id.is_some()).map(|entry| entry.mesh)
+    }
+
+    /// The current transform of the instance in `slot` (identity for a slot never used).
+    pub(crate) fn transform(&self, slot: u32) -> Mat4 {
+        self.data
+            .get(slot as usize)
+            .map_or(Mat4::IDENTITY, |data| Mat4::from_cols_array_2d(&data.world_from_object))
     }
 
     /// Slots the last [`Self::apply`] freed.

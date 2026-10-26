@@ -23,6 +23,10 @@
 //! - **The courtyard** (`--environment`): the environment shader's test scene around the
 //!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
 //!   to show it ([`Scene::spawn_environment`], [`crate::environment`]).
+//! - **The outline row** (`--outline-row`): more of the character behind it, out to past the
+//!   outline cutoff, each a character with the default light rig; and **the hard-edged sample**
+//!   (`--hard-edges`), which the camera frames instead of the character
+//!   ([`Scene::spawn_outline_row`], [`Scene::spawn_hard_edges`], [`crate::outlines`]).
 //! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
@@ -66,6 +70,7 @@ use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransfo
 use crate::faces::{self, FaceRig, HEADS};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
+use crate::outlines::{self, ROW};
 use crate::skinned::{self, Sway};
 use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
@@ -105,6 +110,10 @@ pub(crate) struct Scene {
     faces: Option<[Entity; HEADS]>,
     /// The courtyard, with `--environment`.
     courtyard: Option<Entity>,
+    /// The outline row, with `--outline-row`.
+    outline_row: Option<[Entity; ROW.len()]>,
+    /// The hard-edged outline sample, with `--hard-edges`.
+    hard_edges: Option<Entity>,
     /// The character's object-space bounds, which demo lights, swatches and the face rig are
     /// placed around.
     bounds: [[f32; 3]; 2],
@@ -168,6 +177,8 @@ impl Scene {
             swatches: None,
             faces: None,
             courtyard: None,
+            outline_row: None,
+            hard_edges: None,
             bounds,
             characters,
             heads,
@@ -356,6 +367,41 @@ impl Scene {
         debug_assert!(self.courtyard.is_some(), "no courtyard was spawned");
         if let Some(courtyard) = self.courtyard {
             self.ecs.world_mut().entity_mut(courtyard).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
+    /// character's), each a character lit by the default light rig, and lowers the camera to
+    /// see them all. They never move, so they are extracted once.
+    pub fn spawn_outline_row(&mut self, mesh: MeshHandle) {
+        let places = outlines::row(self.bounds);
+        let world = self.ecs.world_mut();
+        world.insert_resource(outlines::row_camera(self.bounds));
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
+        self.outline_row =
+            Some(places.map(|place| world.spawn((RenderMesh(mesh), RenderTransform(place), rig)).id()));
+    }
+
+    /// Sets the mesh the outline row draws again: after GPU device loss.
+    pub fn set_outline_row_mesh(&mut self, mesh: MeshHandle) {
+        for entity in self.outline_row.into_iter().flatten() {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the hard-edged outline sample (`--hard-edges`) well beside the character, drawing
+    /// `mesh`, and frames it with the camera instead of the character.
+    pub fn spawn_hard_edges(&mut self, mesh: MeshHandle) {
+        let world = self.ecs.world_mut();
+        world.insert_resource(outlines::hard_edges_camera(self.bounds));
+        let place = RenderTransform(outlines::hard_edges(self.bounds));
+        self.hard_edges = Some(world.spawn((RenderMesh(mesh), place)).id());
+    }
+
+    /// Sets the mesh the hard-edged sample draws again: after GPU device loss.
+    pub fn set_hard_edges_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(entity) = self.hard_edges {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
         }
     }
 

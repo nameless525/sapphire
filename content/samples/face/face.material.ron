@@ -54,6 +54,16 @@
         outline: (
             width: 3.0,
             z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.0),
+                mid: 3.0,
+                far: (20.0, 0.35),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
         ),
     ),
 )

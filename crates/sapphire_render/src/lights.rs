@@ -66,6 +66,7 @@ use crate::scene::InstanceSlots;
 use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
 use clusters::ClusterPass;
+pub(crate) use objects::Sphere;
 use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
 
 /// The most local lights any frame can draw, whatever

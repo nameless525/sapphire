@@ -34,7 +34,8 @@ struct AnimeCharacterParams {
     // x: light-split threshold on N·L; y: split softness; z: deep shade threshold; w: alpha cutoff.
     split: vec4<f32>,
     // x: rim width (fraction of N·V in from the silhouette); y: rim strength; z: outline width
-    // in pixels at a 1080-pixel-high target; w: outline Z offset in meters.
+    // in pixels at a 1080-pixel-high target at the outline curve's mid distance; w: outline Z
+    // offset in meters.
     edges: vec4<f32>,
     // x: ramp mix; y: specular softness; z, w: matcap strength lit and in shadow.
     terms: vec4<f32>,
@@ -51,6 +52,13 @@ struct AnimeCharacterParams {
     // region borders, or by the vertex's material ID without a control map. Regions from
     // `modes.y` on are zero, so the shaders clamp the ID below `modes.y`.
     regions: array<AnimeCharacterRegion, 8>,
+    // Outlines v2 (M1 C4; `OutlineCurve`): the width's distance curve in effective meters, x near,
+    // y mid, z far, w the LOD cutoff.
+    outline_curve: vec4<f32>,
+    // x: the curve's near scale; y: its far scale; z: model scale; w: view-space flattening.
+    outline_shape: vec4<f32>,
+    // x: how much of the albedo the line takes; y: how much it is lit.
+    outline_color: vec4<f32>,
 }
 
 // Texture slots (`AnimeCharacterMaterial::TEXTURE_SLOTS`).

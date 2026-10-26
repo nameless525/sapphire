@@ -19,6 +19,8 @@ const HALF_LIFE: f32 = 0.06;
 #[derive(Resource)]
 pub(crate) struct OrbitCamera {
     target: Vec3,
+    /// The vertical field of view, radians.
+    fov_y: f32,
     min_distance: f32,
     max_distance: f32,
     goal_yaw: f32,
@@ -38,6 +40,7 @@ impl OrbitCamera {
         let (yaw, pitch) = (0.35, 0.18);
         Self {
             target: (min + max) * 0.5,
+            fov_y: FOV_Y,
             min_distance: radius * 0.6,
             max_distance: radius * 8.0,
             goal_yaw: yaw,
@@ -87,6 +90,29 @@ impl OrbitCamera {
         self.pitch = SpringDamper::new(pitch, HALF_LIFE);
     }
 
+    /// Moves straight to `pitch` radians, keeping the yaw: a starting view.
+    pub fn set_pitch(&mut self, pitch: f32) {
+        self.look_from(self.goal_yaw, pitch);
+    }
+
+    /// Sets the vertical field of view to `fov_y` radians and moves the camera so what it frames
+    /// keeps its size in the image: a narrow lens from farther away, a wide one from closer.
+    pub fn set_fov(&mut self, fov_y: f32) {
+        let factor = (self.fov_y * 0.5).tan() / (fov_y * 0.5).tan();
+        self.fov_y = fov_y;
+        self.min_distance *= factor;
+        self.max_distance *= factor;
+        self.goal_distance *= factor;
+        self.distance = SpringDamper::new(self.goal_distance, HALF_LIFE);
+    }
+
+    /// Moves straight to `factor` times the distance, without easing (within the zoom's limits):
+    /// a starting view.
+    pub fn set_zoom(&mut self, factor: f32) {
+        self.goal_distance = (self.goal_distance * factor).clamp(self.min_distance, self.max_distance);
+        self.distance = SpringDamper::new(self.goal_distance, HALF_LIFE);
+    }
+
     /// Orbits by the given angles in radians. Positive yaw orbits to the right.
     pub fn rotate(&mut self, yaw: f32, pitch: f32) {
         self.goal_yaw += yaw;
@@ -106,7 +132,7 @@ impl OrbitCamera {
     }
 
     pub fn camera_data(&self, aspect: f32) -> CameraData {
-        CameraData::look_at(self.eye(), self.target, Vec3::Y, FOV_Y, aspect, NEAR)
+        CameraData::look_at(self.eye(), self.target, Vec3::Y, self.fov_y, aspect, NEAR)
     }
 
     /// Where the camera is, in world space.
@@ -137,5 +163,20 @@ mod tests {
         }
         let eye = camera.camera_data(16.0 / 9.0).position;
         assert!((eye.distance(camera.target) - camera.min_distance).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_new_field_of_view_keeps_the_framing() {
+        let mut camera = OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
+        let before = camera.goal_distance;
+        let size = |camera: &OrbitCamera| 1.0 / (camera.goal_distance * (camera.fov_y * 0.5).tan());
+        let framed = size(&camera);
+        camera.set_fov(15f32.to_radians());
+        assert!((size(&camera) - framed).abs() < 1e-5 * framed, "the same size in the image");
+        assert!(camera.goal_distance > 2.5 * before, "a narrow lens from farther away");
+        let proj = camera.camera_data(1.0).proj;
+        assert!((proj.y_axis.y - 1.0 / 7.5f32.to_radians().tan()).abs() < 1e-3, "the new lens");
+        camera.set_zoom(0.5);
+        assert!((camera.eye().distance(camera.target) - camera.goal_distance).abs() < 1e-4, "no easing");
     }
 }

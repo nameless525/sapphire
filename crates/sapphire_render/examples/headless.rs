@@ -195,7 +195,7 @@ fn material(
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: rim, ..Rim::default() },
-        outline: Outline { width: 7.8, z_offset: 0.0 },
+        outline: Outline { width: 7.8, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     };
     let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];

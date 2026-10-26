@@ -448,27 +448,163 @@ impl Matcap {
     }
 }
 
-/// The inverted-hull outline.
+/// The inverted-hull outline (outlines v2, M1 C4; spec §5.12 "Outlines"): the anime line art
+/// around the silhouette and over overlapping parts, at an art-directed width that holds at any
+/// distance and field of view, in a color the character's light reaches.
+///
+/// The width in pixels at a 1080-row target is
+/// `width × region scale × vertex color G × model_scale × curve(distance)`, scaled with the
+/// target's height. The curve reads the *effective distance*: the view depth times
+/// `tan(fov_y / 2) / tan(22.5°)`, the distance at which the model would look as large through a
+/// 45° lens, so zooming in is moving closer and a line keeps its width wherever a character looks
+/// the same size (the reference games' FOV normalization).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Outline {
-    /// Pixels at a 1080-pixel-high target, scaled with resolution and independent of the field
-    /// of view; the vertex color's G and the distance curve also apply. 0 turns it off.
+    /// Pixels at a 1080-pixel-high target at the curve's `mid` distance, scaled with resolution;
+    /// the region's scale, the vertex color's G, the model scale and the curve also apply. 0
+    /// turns the outline off.
     pub width: f32,
     /// Pushes the hull away from the camera along the view ray, in meters, times the vertex
     /// color's B, so it doesn't poke through nearby surfaces.
     pub z_offset: f32,
+    /// How the width follows the effective distance.
+    pub curve: OutlineCurve,
+    /// Scales the width: the model's size relative to the character the line style was tuned
+    /// for, so a chibi (0.6) and an adult (1) keep the same weight of line for their size
+    /// (StarRailNPR's `_ModelScale`).
+    pub model_scale: f32,
+    /// The depth the hull's extrusion direction takes, away from the camera, in place of the
+    /// outline normal's own (view-space Z flattening): the direction is the outline normal's
+    /// part across the screen with this behind it, normalized. 0 extrudes across the screen
+    /// alone, the full width wherever the normal points; larger values narrow and push back the
+    /// extrusion where the normal faces the camera, where a hull could otherwise poke through
+    /// the surface at grazing angles. Genshin uses about 0.01, StarRailNPR 0.1.
+    pub flatten: f32,
+    /// How much of the surface's albedo the line takes: 0 the region's outline color as it is,
+    /// 1 that color times the albedo, a darker shade of the color it outlines, as anime color
+    /// lines are. In between blends the two.
+    pub albedo: f32,
+    /// How much the line is lit: 1 as the surface it outlines is (the character's key light
+    /// through the material's light split and shadow color, plus its stylized GI flattened
+    /// toward the camera), so lines darken at night and take the light's tint; 0 the color as
+    /// it is, unlit (MToon's `outlineLightingMixFactor`).
+    pub lighting: f32,
 }
 
 impl Default for Outline {
     fn default() -> Self {
-        Self { width: 5.5, z_offset: 0.0 }
+        Self {
+            width: 5.5,
+            z_offset: 0.0,
+            curve: OutlineCurve::default(),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        }
     }
 }
 
+impl Outline {
+    fn validate(&self) -> Result<(), MaterialError> {
+        non_negative("outline.width", self.width)?;
+        finite("outline.z_offset", self.z_offset)?;
+        self.curve.validate()?;
+        non_negative("outline.model_scale", self.model_scale)?;
+        non_negative("outline.flatten", self.flatten)?;
+        unit("outline.albedo", self.albedo)?;
+        unit("outline.lighting", self.lighting)
+    }
+}
+
+/// The outline width's two-segment curve over effective distance ([`Outline`]), in meters, and
+/// its LOD cutoff.
+///
+/// Between `near` and `mid` the width scale runs linearly from `near`'s scale to 1, and between
+/// `mid` and `far` from 1 to `far`'s. Outside them the line keeps its width in the world: closer
+/// than `near` it widens in pixels as the camera closes in (readable in close-ups), and past
+/// `far` it thins with distance, so a crowd doesn't turn into outlines, without vanishing early.
+/// Past `cutoff` there is no hull at all, and over its last quarter the width fades to nothing.
+/// With `near` at 0 a line keeps its pixel width close up; with `near`, `mid` and `far` equal, it
+/// keeps its world width everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct OutlineCurve {
+    /// The effective distance closer than which the width holds in the world, and the scale on
+    /// the width there.
+    pub near: (f32, f32),
+    /// Where the width is the material's own.
+    pub mid: f32,
+    /// The effective distance past which the width holds in the world, and the scale there.
+    pub far: (f32, f32),
+    /// The LOD cutoff: the effective distance past which instances draw no hull.
+    pub cutoff: f32,
+}
+
+impl Default for OutlineCurve {
+    /// Lines at their full width from half a meter to 3 m (a full-length character about 740
+    /// px tall at 1080 rows), thinning to 35% by 20 m (about 110 px tall), then with the
+    /// character; gone past 80 m, fading from 60.
+    fn default() -> Self {
+        Self { near: (0.5, 1.0), mid: 3.0, far: (20.0, 0.35), cutoff: 80.0 }
+    }
+}
+
+impl OutlineCurve {
+    /// The share of the cutoff distance, at its end, over which the width fades out.
+    pub const FADE: f32 = 0.25;
+
+    /// The width scale at `distance` (effective meters), before the cutoff's fade: what the
+    /// outline shader computes (`outline_curve` in `outline.wgsl`).
+    pub fn scale(&self, distance: f32) -> f32 {
+        let ((near, near_scale), mid, (far, far_scale)) = (self.near, self.mid, self.far);
+        if distance < near {
+            near_scale * near / distance.max(1e-6)
+        } else if distance <= mid {
+            lerp(near_scale, 1.0, ramp(near, mid, distance))
+        } else if distance <= far {
+            lerp(1.0, far_scale, ramp(mid, far, distance))
+        } else {
+            far_scale * far / distance
+        }
+    }
+
+    /// The cutoff's fade at `distance`: 1 up to three quarters of the cutoff, 0 at and past it.
+    pub fn fade(&self, distance: f32) -> f32 {
+        ((self.cutoff - distance) / (self.cutoff * Self::FADE)).clamp(0.0, 1.0)
+    }
+
+    fn validate(&self) -> Result<(), MaterialError> {
+        let ((near, near_scale), mid, (far, far_scale)) = (self.near, self.mid, self.far);
+        non_negative("outline.curve.near", near)?;
+        non_negative("outline.curve.near scale", near_scale)?;
+        non_negative("outline.curve.far scale", far_scale)?;
+        finite("outline.curve.cutoff", self.cutoff)?;
+        if !(near <= mid && mid <= far && far.is_finite()) {
+            return Err(invalid("outline.curve", "needs near ≤ mid ≤ far, all finite"));
+        }
+        if self.cutoff <= 0.0 {
+            return Err(invalid("outline.curve.cutoff", "must be positive"));
+        }
+        Ok(())
+    }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Where `x` lies from `from` to `to`, clamped to 0..=1; 1 for an empty range.
+fn ramp(from: f32, to: f32, x: f32) -> f32 {
+    if to > from { ((x - from) / (to - from)).clamp(0.0, 1.0) } else { 1.0 }
+}
+
 /// The anime character family's GPU block (WGSL `AnimeCharacterParams`,
-/// `shaders/materials.wgsl` in `sapphire_render`). 896 bytes.
+/// `shaders/materials.wgsl` in `sapphire_render`). 944 bytes: a 128-byte header, the regions,
+/// then outlines v2's settings (M1 C4), after the regions so every earlier offset holds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct AnimeCharacterParams {
@@ -494,6 +630,13 @@ pub struct AnimeCharacterParams {
     pub swizzles: [u32; 4],
     /// Per region; the first `modes.y` are set.
     pub regions: [AnimeCharacterRegion; AnimeCharacterParams::MAX_REGIONS],
+    /// The outline's distance curve ([`OutlineCurve`]): x near distance, y mid distance, z far
+    /// distance, w cutoff, in effective meters.
+    pub outline_curve: [f32; 4],
+    /// x: the curve's near scale; y: its far scale; z: model scale; w: flattening.
+    pub outline_shape: [f32; 4],
+    /// x: how much of the albedo the line takes; y: how much it is lit; z, w: zero.
+    pub outline_color: [f32; 4],
 }
 
 /// One region of [`AnimeCharacterParams`] (WGSL `AnimeCharacterRegion`). 96 bytes.
@@ -523,7 +666,8 @@ impl GpuBlock for AnimeCharacterParams {
             .regions
             .iter()
             .flat_map(|r| [r.shade, r.deep_shade, r.subsurface, r.specular, r.rim, r.outline]);
-        header.into_iter().chain(regions).collect()
+        let outline = [self.outline_curve, self.outline_shape, self.outline_color];
+        header.into_iter().chain(regions).chain(outline).collect()
     }
 
     fn modes(&self) -> [u32; 4] {
@@ -641,6 +785,7 @@ impl AnimeCharacterMaterial {
             SpecularModel::Ggx => AnimeCharacterParams::SPECULAR_GGX,
         };
         let (matcap, matcap_shadow) = self.matcap.map_or((0.0, 0.0), |m| (m.strength, m.shadow_strength));
+        let (outline, curve) = (&self.outline, &self.outline.curve);
         let mut regions = [AnimeCharacterRegion::default(); AnimeCharacterParams::MAX_REGIONS];
         for ((gpu, region), id) in regions.iter_mut().zip(&self.regions).zip(MaterialId::ALL) {
             let row = |row: Option<u16>, half| row.map_or(ramp::row(id, half), u32::from) as f32;
@@ -663,6 +808,9 @@ impl AnimeCharacterMaterial {
             modes: [flags, self.regions.len() as u32, surface_kind, specular_model | highlight << 8],
             swizzles: pack_swizzles(swizzles),
             regions,
+            outline_curve: [curve.near.0, curve.mid, curve.far.0, curve.cutoff],
+            outline_shape: [curve.near.1, curve.far.1, outline.model_scale, outline.flatten],
+            outline_color: [outline.albedo, outline.lighting, 0.0, 0.0],
         }
     }
 }
@@ -712,8 +860,7 @@ impl MaterialDocument for AnimeCharacterMaterial {
             non_negative("matcap.strength", matcap.strength)?;
             non_negative("matcap.shadow_strength", matcap.shadow_strength)?;
         }
-        non_negative("outline.width", self.outline.width)?;
-        finite("outline.z_offset", self.outline.z_offset)?;
+        self.outline.validate()?;
         match &self.surface {
             CharacterSurface::Body => Ok(()),
             CharacterSurface::Face(face) => {

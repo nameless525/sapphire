@@ -14,7 +14,8 @@
 //! spheres they draw on are procedural. With `--faces` it loads the face test head
 //! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
 //! SDF face map, a face mask and an expression map: all of it cooked content
-//! ([`Content::face_head`]).
+//! ([`Content::face_head`]). With `--hard-edges` it loads the hard-edged outline sample
+//! ([`outlines::HARD_EDGES`], [`Content::hard_edges`]).
 //!
 //! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), loaded with its cloud,
 //! cirrus, moon, star and Milky Way maps ([`Content::sky_material`]).
@@ -65,6 +66,7 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::environment;
 use crate::faces;
+use crate::outlines;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
 
@@ -224,6 +226,8 @@ pub(crate) struct Content {
     face_head: Option<Handle<Mesh>>,
     /// The courtyard, once asked for (`--environment`).
     courtyard: Option<Handle<Mesh>>,
+    /// The hard-edged outline sample, once asked for (`--hard-edges`).
+    hard_edges: Option<Handle<Mesh>>,
     /// The sky material, once asked for.
     sky: Option<Handle<Material>>,
     server: AssetServer,
@@ -263,6 +267,7 @@ impl Content {
             swatches: Vec::new(),
             face_head: None,
             courtyard: None,
+            hard_edges: None,
             sky: None,
             server,
             #[cfg(feature = "dev")]
@@ -386,6 +391,26 @@ impl Content {
             .expect("a ready mesh was uploaded here")
             .object
             .handle)
+    }
+
+    /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,
+    /// and returns its mesh: the load screen of `--hard-edges`. It stays loaded from then on.
+    pub fn hard_edges(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<MeshHandle, AppInitError> {
+        // Asking again tries a sample that failed before, as the character does.
+        let mesh =
+            self.server.load_with(outlines::HARD_EDGES, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&mesh, |upload| assets.upload(upload, renderer, gpu));
+        self.hard_edges = Some(mesh);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the hard-edged sample didn't load: {error}")))?;
+        Ok(self.gpu.meshes.get(&outlines::HARD_EDGES).expect("a ready mesh was uploaded here").object.handle)
     }
 
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its

@@ -7,7 +7,8 @@
 //! only when the next draw's mesh (or deformed instance) differs, so a mesh's submeshes share
 //! one binding. Passes that shade bind each draw's material (group 3) the same way: only when
 //! it changes. Draws come in groups of one surface variant (the draw list's), each drawn
-//! through its own pipeline; the outline pass draws only the draws that have a hull.
+//! through its own pipeline; outline hulls are drawn for the draws that have one and are within
+//! their material's LOD cutoff this frame (`outlines`).
 
 use std::ops::Range;
 
@@ -36,6 +37,9 @@ pub(crate) struct MeshDraws<'a> {
     pub skinned: SkinnedOutputs<'a>,
     /// Every uploaded material, by handle: their group 3.
     pub materials: &'a [MaterialRecord],
+    /// Per draw record: whether the frame draws its hull, if it has one (the LOD cutoff,
+    /// `outlines::OutlineCull`).
+    pub hulls: &'a [bool],
 }
 
 /// Which of a variant's draws a pass draws.
@@ -43,13 +47,15 @@ pub(crate) struct MeshDraws<'a> {
 pub(crate) enum DrawSet {
     /// Every surface.
     Surfaces,
-    /// Only those with an outline hull.
+    /// The outline hulls the frame draws: of the draws with one, those within their material's
+    /// LOD cutoff.
     Outlines,
 }
 
-impl DrawSet {
-    fn includes(self, outline: bool) -> bool {
-        self == Self::Surfaces || outline
+impl MeshDraws<'_> {
+    /// Whether `set` includes draw record `draw_id`, which has an outline hull or not.
+    fn includes(&self, set: DrawSet, draw_id: u32, outline: bool) -> bool {
+        set == DrawSet::Surfaces || (outline && self.hulls.get(draw_id as usize).copied().unwrap_or(false))
     }
 }
 
@@ -89,7 +95,7 @@ impl MeshDraws<'_> {
         let mut bound_first_vertex = None;
         let mut bound_material = None;
         for command in &self.list.commands[format_index(format)][variant.index()] {
-            if !set.includes(command.outline) {
+            if !self.includes(set, command.draw_id, command.outline) {
                 continue;
             }
             self.bind_material(pass, kind, command.material, &mut bound_material);
@@ -126,7 +132,7 @@ impl MeshDraws<'_> {
         let mut bound_slot = None;
         let mut bound_material = None;
         for command in &self.list.deformed[variant.index()] {
-            if !set.includes(command.outline) {
+            if !self.includes(set, command.draw_id, command.outline) {
                 continue;
             }
             if bound_slot != Some(command.slot) {

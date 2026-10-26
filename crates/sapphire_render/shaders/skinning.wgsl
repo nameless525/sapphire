@@ -10,16 +10,21 @@
 // 1. Decode the bind-space position (unorm16 across the mesh's bounds, or f32) and shading
 //    normal to f32, as the vertex shaders would.
 // 2. Add each morph target's delta times its weight, walking the vertex's deltas (regrouped by
-//    vertex at upload, targets in order), then renormalize the normal. The outline normal isn't
-//    morphed: vertices that share a position share it, so the inverted hull stays closed.
+//    vertex at upload, targets in order), then renormalize the normal. The outline normal turns
+//    with it, by the rotation that takes the bind pose's normal to the morphed one, so it follows
+//    the morphed surface (M1 C4).
 // 3. Blend the palette matrices by the vertex's four unorm8 weights and transform the position,
 //    normal and outline normal (the normals by the blended linear part, renormalized: exact for
-//    rotation and uniform scale).
+//    rotation and uniform scale). The outline normal is transformed itself, not rebuilt from the
+//    deformed normal's frame: where linear blending isn't a rotation (a bending joint), the split
+//    vertices of a hard edge share one outline normal and must get one result, which only the
+//    same matrix applied to the same vector guarantees, so the hull stays closed.
 // 4. Write the position as f32 and both normals octahedral snorm16 (`VertexShading`), the
-//    layouts the f32 mesh pipelines read.
+//    layouts the f32 mesh pipelines read: the outline normal in the tangent frame of the normal
+//    as written (frame.wgsl's `outline_from_tangent_space` undoes it).
 //
-// Standalone, not prefixed with frame.wgsl: it binds its own group 0. `oct_decode` and
-// `oct_encode` mirror frame.wgsl's and prepass.wgsl's until WESL imports share them (§5.12).
+// Standalone, not prefixed with frame.wgsl: it binds its own group 0. `oct_decode`, `oct_encode`
+// and the outline frame mirror frame.wgsl's until WESL imports share them (§5.12).
 
 // Mirrors `skinning::WORKGROUP_SIZE`.
 const SKINNING_WORKGROUP: u32 = 64u;
@@ -125,6 +130,38 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
     return e;
 }
 
+// The outline frame (frame.wgsl, `sapphire_assets::mesh::outline_frame`).
+const OUTLINE_FRAME_AXIS: vec3<f32> = vec3<f32>(0.4, 0.55, 0.73);
+const OUTLINE_FRAME_FALLBACK: vec3<f32> = vec3<f32>(0.83, -0.31, 0.46);
+const OUTLINE_FRAME_MIN_CROSS: f32 = 1e-4;
+
+fn outline_frame_tangent(n: vec3<f32>) -> vec3<f32> {
+    let tangent = cross(OUTLINE_FRAME_AXIS, n);
+    let fallback = cross(OUTLINE_FRAME_FALLBACK, n);
+    return normalize(select(fallback, tangent, dot(tangent, tangent) > OUTLINE_FRAME_MIN_CROSS));
+}
+
+// The outline normal stored as `tangent_space` around the unit normal `n`, in `n`'s space.
+fn outline_from_tangent_space(n: vec3<f32>, tangent_space: vec3<f32>) -> vec3<f32> {
+    let tangent = outline_frame_tangent(n);
+    return normalize(tangent * tangent_space.x + cross(n, tangent) * tangent_space.y + n * tangent_space.z);
+}
+
+// The unit `outline` in the outline frame of the unit normal `n`.
+fn outline_to_tangent_space(n: vec3<f32>, outline: vec3<f32>) -> vec3<f32> {
+    let tangent = outline_frame_tangent(n);
+    return vec3<f32>(dot(outline, tangent), dot(outline, cross(n, tangent)), dot(outline, n));
+}
+
+// `v` turned by the rotation that takes the unit vector `start` to the unit vector `end` along
+// their great circle (Rodrigues' formula), or left as it is where they point opposite ways.
+fn rotate_between(v: vec3<f32>, start: vec3<f32>, end: vec3<f32>) -> vec3<f32> {
+    let axis = cross(start, end);
+    let c = dot(start, end);
+    let turned = v * c + cross(axis, v) + axis * (dot(axis, v) / max(1.0 + c, 1e-6));
+    return select(v, turned, c > -0.9999);
+}
+
 fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
     let length_squared = dot(v, v);
     return select(vec3<f32>(0.0, 0.0, 1.0), v * inverseSqrt(length_squared), length_squared > 1e-24);
@@ -180,9 +217,19 @@ fn cs_skinning(
     }
     var normal_word = sources[job.shading + 2u * vertex];
     var outline_word = sources[job.shading + 2u * vertex + 1u];
+    let deforms = (job.flags & (FLAG_MORPHS | FLAG_SKIN)) != 0u;
+    // The outline normal in object space, while the vertex deforms.
+    var outline = vec3<f32>(0.0, 0.0, 1.0);
+    if deforms {
+        outline = outline_from_tangent_space(
+            oct_decode(unpack2x16snorm(normal_word)),
+            oct_decode(unpack2x16snorm(outline_word)),
+        );
+    }
 
     if (job.flags & FLAG_MORPHS) != 0u {
-        var normal = oct_decode(unpack2x16snorm(normal_word));
+        let bind_normal = oct_decode(unpack2x16snorm(normal_word));
+        var normal = bind_normal;
         let first = sources[job.morph_offsets + vertex];
         let end = sources[job.morph_offsets + vertex + 1u];
         for (var delta = first; delta < end; delta++) {
@@ -196,7 +243,9 @@ fn cs_skinning(
                 normal += weight * vec3<f32>(b.y, c);
             }
         }
-        normal_word = pack2x16snorm(oct_encode(safe_normalize(normal)));
+        let morphed = safe_normalize(normal);
+        normal_word = pack2x16snorm(oct_encode(morphed));
+        outline = rotate_between(outline, bind_normal, morphed);
     }
 
     if (job.flags & FLAG_SKIN) != 0u {
@@ -230,9 +279,13 @@ fn cs_skinning(
         position = vec3<f32>(dot(rows[0], p), dot(rows[1], p), dot(rows[2], p));
         let linear_part = transpose(mat3x3<f32>(rows[0].xyz, rows[1].xyz, rows[2].xyz));
         let normal = linear_part * oct_decode(unpack2x16snorm(normal_word));
-        let outline_normal = linear_part * oct_decode(unpack2x16snorm(outline_word));
         normal_word = pack2x16snorm(oct_encode(safe_normalize(normal)));
-        outline_word = pack2x16snorm(oct_encode(safe_normalize(outline_normal)));
+        outline = linear_part * outline;
+    }
+    if deforms {
+        // In the frame of the normal as the passes after decode it.
+        let written = oct_decode(unpack2x16snorm(normal_word));
+        outline_word = pack2x16snorm(oct_encode(outline_to_tangent_space(written, safe_normalize(outline))));
     }
 
     let out = job.out_positions + 3u * vertex;

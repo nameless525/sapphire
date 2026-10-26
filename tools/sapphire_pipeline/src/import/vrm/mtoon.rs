@@ -30,9 +30,10 @@
 //! | `parametricRimFresnelPowerFactor`, `parametricRimLiftFactor` | `rim.width` | The N·V where MToon's falloff is at half: `1 + lift − 0.5^(1 / power)`, clamped to `[0, 1]`; Sapphire's rim is a hard band there |
 //! | `matcapTexture`, `matcapFactor` | `matcap` | The texture as a color texture; strength the factor's brightest channel |
 //! | `rimLightingMixFactor` | `matcap.shadow_strength` | `strength × (1 − mix)`: how much of the matcap the shadow side keeps. Sapphire's rim always leans to the lit side |
-//! | `outlineWidthMode`, `outlineWidthFactor` | `outline.width` (pixels at 1080p) | None → 0. Screen: `factor × 1080`, the factor being a fraction of the full screen height. World: the width in pixels from [`WORLD_OUTLINE_DISTANCE`] through a [`WORLD_OUTLINE_FOV_DEGREES`] field of view, since Sapphire's outlines are screen-constant (spec §5.12) |
+//! | `outlineWidthMode`, `outlineWidthFactor` | `outline.width` (pixels at 1080p) and `outline.curve` | None → 0. Screen: `factor × 1080`, the factor being a fraction of the full screen height, kept from the camera out to the curve's cutoff (`near` at 0 m, `far` at the cutoff). World: the width in pixels from [`WORLD_OUTLINE_DISTANCE`] through a [`WORLD_OUTLINE_FOV_DEGREES`] field of view, with the curve's three knots at that distance, so the line keeps its width in meters at every distance and field of view (outlines v2, M1 C4) |
 //! | `outlineWidthMultiplyTexture` (G) | vertex color G, the outline-width scale | Sampled at each vertex's UV and baked into the outline-width scale the mesh carries (the research note's mobile-friendly choice). Extracted as a mask too |
 //! | `outlineColorFactor` | `regions[0].outline_color` | As it is |
+//! | `outlineLightingMixFactor` | `outline.lighting` | As it is: MToon multiplies the outline by the light by this much, Sapphire lights it as its surface by this much (key light through the split, plus flattened GI) |
 //! | `normalTexture` (glTF) | `normal_map` | As it is, as a normal map; its `scale` is dropped |
 //!
 //! Dropped, because the anime character family (A3, C1's contract) has nowhere to put them yet;
@@ -43,7 +44,6 @@
 //!   `VRMC_materials_hdr_emissiveMultiplier`: no emission (C7). The texture is extracted as color.
 //! - `uvAnimation*` and its mask: no UV animation. The mask is extracted.
 //! - `giEqualizationFactor`: GI stylization is the character light rig's (C2).
-//! - `outlineLightingMixFactor`: C4 lights outlines itself.
 //! - `transparentWithZWrite`, `renderQueueOffsetNumber`: no sort control; `Blend` materials draw
 //!   in the transparent pass after the sky (C1), back to front once draws sort.
 //! - `doubleSided` (glTF): materials carry no cull mode; characters draw back-face culled.
@@ -60,7 +60,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::ilm;
 use sapphire_assets::material::{
     AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, DiffuseMode, LightSplit, Matcap,
-    Outline, Rim,
+    Outline, OutlineCurve, Rim,
 };
 use vrm_spec::vrm_0_0::VRMMaterial;
 use vrm_spec::vrmc_materials_mtoon_1_0::{OutlineWidthMode, VrmcMaterialsMtoonSchema};
@@ -186,6 +186,7 @@ pub struct Mtoon {
     pub outline_width: OutlineWidth,
     pub outline_width_multiply_texture: Option<TextureRef>,
     pub outline_color: [f32; 3],
+    pub outline_lighting_mix: f32,
     pub emissive_texture: Option<TextureRef>,
     pub uv_animation_mask_texture: Option<TextureRef>,
 }
@@ -273,6 +274,7 @@ impl Mtoon {
         outline_width: OutlineWidth::None,
         outline_width_multiply_texture: None,
         outline_color: [0.0; 3],
+        outline_lighting_mix: 1.0,
         emissive_texture: None,
         uv_animation_mask_texture: None,
     };
@@ -326,6 +328,7 @@ impl Mtoon {
         mtoon.outline_width_multiply_texture =
             texture("outlineWidthMultiplyTexture", &schema.outline_width_multiply_texture, Channel::G)?;
         mtoon.outline_color = rgb(schema.outline_color_factor, defaults.outline_color);
+        mtoon.outline_lighting_mix = f(schema.outline_lighting_mix_factor, defaults.outline_lighting_mix);
         mtoon.uv_animation_mask_texture =
             texture("uvAnimationMaskTexture", &schema.uv_animation_mask_texture, Channel::B)?;
         Ok(mtoon)
@@ -361,13 +364,14 @@ impl Mtoon {
     /// - **Outline:** `_OutlineWidthMode` 1 (world) and 2 (screen). `_OutlineWidth` is
     ///   centimeters in world mode, and in screen mode a percentage of half the screen's height
     ///   (MToon 0.x offsets clip space by `0.01 × width`): ×0.01 and ×0.005. The width texture
-    ///   is read from its R channel, as 0.x reads it.
+    ///   is read from its R channel, as 0.x reads it. `_OutlineLightingMix` is 1.0's lighting
+    ///   mix.
     /// - **Alpha:** `_BlendMode` 0 opaque, 1 cutout at `_Cutoff`, 2 and 3 (with Z write) blend.
     /// - **Textures:** `_MainTex`, `_ShadeTexture`, `_BumpMap`, `_EmissionMap` and
     ///   `_UvAnimMaskTexture` (R). `_MainTex`'s scale and offset, `_ReceiveShadow*`,
     ///   `_LightColorAttenuation`, `_IndirectLightIntensity`, `_OutlineScaledMaxDistance`,
-    ///   `_OutlineColorMode`, `_OutlineLightingMix`, `_CullMode` and the UV animation speeds
-    ///   are dropped, as their 1.0 counterparts are.
+    ///   `_OutlineColorMode`, `_CullMode` and the UV animation speeds are dropped, as their 1.0
+    ///   counterparts are.
     ///
     /// Missing properties take MToon 0.x's shader defaults.
     pub(super) fn from_v0(
@@ -446,6 +450,7 @@ impl Mtoon {
             outline_width,
             outline_width_multiply_texture: texture("_OutlineWidthTexture", Channel::R)?,
             outline_color: rgb("_OutlineColor", [0.0, 0.0, 0.0, 1.0]),
+            outline_lighting_mix: float("_OutlineLightingMix", 1.0),
             emissive_texture: texture("_EmissionMap", Channel::Rgba)?,
             uv_animation_mask_texture: texture("_UvAnimMaskTexture", Channel::R)?,
         })
@@ -497,16 +502,27 @@ impl Mtoon {
         let half = 0.5f32.powf(1.0 / self.rim_fresnel_power.max(1e-4));
         let rim_width = (1.0 + self.rim_lift - half).clamp(0.0, 1.0);
         let matcap_strength = brightest(self.matcap_factor);
-        let outline_width = match self.outline_width {
-            OutlineWidth::None => 0.0,
-            OutlineWidth::Screen(fraction) => fraction * OUTLINE_REFERENCE_HEIGHT,
+        let default_curve = OutlineCurve::default();
+        let (outline_width, curve) = match self.outline_width {
+            OutlineWidth::None => (0.0, default_curve),
+            // Screen widths hold from the camera to the cutoff.
+            OutlineWidth::Screen(fraction) => {
+                let cutoff = default_curve.cutoff;
+                let curve = OutlineCurve { near: (0.0, 1.0), far: (cutoff, 1.0), ..default_curve };
+                (fraction * OUTLINE_REFERENCE_HEIGHT, curve)
+            }
+            // World widths hold everywhere: every knot at the distance the pixel width is
+            // measured from, beyond which the curve keeps the width in meters.
             OutlineWidth::World(meters) => {
                 let view_height =
                     2.0 * WORLD_OUTLINE_DISTANCE * (0.5 * WORLD_OUTLINE_FOV_DEGREES).to_radians().tan();
-                meters / view_height * OUTLINE_REFERENCE_HEIGHT
+                let knot = (WORLD_OUTLINE_DISTANCE, 1.0);
+                let curve =
+                    OutlineCurve { near: knot, mid: WORLD_OUTLINE_DISTANCE, far: knot, ..default_curve };
+                (meters / view_height * OUTLINE_REFERENCE_HEIGHT, curve)
             }
-        }
-        .max(0.0);
+        };
+        let outline_width = outline_width.max(0.0);
         let control_map = self.shading_shift_texture.and_then(|_| bind(TextureUse::ShadingShift));
         // Without its control map, the shading shift texture's mean offset applies everywhere:
         // 0.x's grade folds `−rate` into the shift for the texture to give back.
@@ -538,7 +554,12 @@ impl Mtoon {
                 strength: matcap_strength,
                 shadow_strength: matcap_strength * (1.0 - self.rim_lighting_mix.clamp(0.0, 1.0)),
             }),
-            outline: Outline { width: outline_width, z_offset: 0.0 },
+            outline: Outline {
+                width: outline_width,
+                curve,
+                lighting: self.outline_lighting_mix.clamp(0.0, 1.0),
+                ..Outline::default()
+            },
             ..AnimeCharacterMaterial::default()
         }
     }

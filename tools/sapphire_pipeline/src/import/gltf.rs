@@ -67,8 +67,9 @@
 //! Position deltas take the static node's linear transform; normal deltas become the
 //! difference of the transformed, normalized normals, exact at full weight. Vertices a target
 //! moves by less than [`MORPH_POSITION_EPSILON`] and turns by less than
-//! [`MORPH_NORMAL_EPSILON`] are left out. Tangent deltas are ignored until meshes carry
-//! tangents; outline normals are not morphed.
+//! [`MORPH_NORMAL_EPSILON`] are left out. Tangent deltas are ignored: meshes carry no tangents.
+//! Outline normals have no deltas of their own: the skinning pass turns each with its vertex's
+//! morphed normal (M1 C4).
 //!
 //! glTF textures and animation are ignored: textures are separate sources (M1 A2) that material
 //! documents reference, and VRM import (A6) extracts a file's embedded images as such sources.
@@ -102,8 +103,9 @@ use crate::mesh::{
 const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file.
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 5 };
+/// for the same file. 6: generated materials carry outlines v2's settings, and VRM's MToon maps
+/// its outline widths onto the width's curve and its outline lighting mix (M1 C4).
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 6 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below

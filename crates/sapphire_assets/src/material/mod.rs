@@ -5,7 +5,7 @@
 //!
 //! | Family | Document | GPU block | Texture slots | Shaders |
 //! |---|---|---|---|---|
-//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 896 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader and its outlines (C1 grows it) |
+//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 944 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader and its outlines (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
@@ -98,7 +98,7 @@ use serde::de::DeserializeOwned;
 pub use self::character::{
     AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterRegion,
     CharacterSurface, DiffuseMode, EyeShading, FaceShading, HairHighlight, HairShading, HighlightStyle,
-    LightSplit, Matcap, Outline, RampDiffuse, RegionGi, Rim, Specular, SpecularModel,
+    LightSplit, Matcap, Outline, OutlineCurve, RampDiffuse, RegionGi, Rim, Specular, SpecularModel,
 };
 pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};
 use self::common::{GpuBlock, bound_bits, pack_swizzles};
@@ -325,14 +325,16 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 3: the anime character family's face settings and its eighth texture slot, the
+    /// 4: the anime character family's outline settings (M1 C4: the width's distance curve and
+    /// LOD cutoff, model scale, flattening, and the line's albedo and lighting), three vectors
+    /// after the regions. 3: the anime character family's face settings and its eighth texture slot, the
     /// expression map (M1 C3). 2: anime character regions pack the character light rig's GI
     /// weights (M1 C2) into their subsurface and rim vectors' fourth components. 1: M1 A3's
     /// blocks. Bump it whenever a family's block layout, its packing (`gpu_params`) or its
     /// texture slots change: the cache key holds it, so every material recooks, and meshes,
     /// whose generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 3;
+    const VERSION: u32 = 4;
 }
 
 /// What one texture slot binds.

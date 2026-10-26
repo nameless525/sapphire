@@ -270,6 +270,14 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     let expected = 0.002 / (4.0 * 22.5f32.to_radians().tan()) * 1080.0;
     assert!(close(material.outline.width, expected), "{}", material.outline.width);
     assert_eq!(material.outline.z_offset, 0.0);
+    // A world width holds in meters at every distance (outlines v2, M1 C4): the curve's three
+    // knots at the 2 m the pixel width is measured from.
+    let curve = material.outline.curve;
+    assert_eq!((curve.near, curve.mid, curve.far), ((2.0, 1.0), 2.0, (2.0, 1.0)));
+    for distance in [0.5, 2.0, 10.0] {
+        assert!(close(curve.scale(distance) * distance, 2.0), "{distance} m");
+    }
+    assert_eq!(material.outline.lighting, 1.0, "MToon's outlineLightingMixFactor, 1 by default");
     assert_eq!(material.specular, AnimeCharacterMaterial::default().specular, "MToon has no specular");
 
     // The import binds no textures, so the generated material draws with factors alone.
@@ -284,6 +292,12 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     let hair = import.slots[1].clone().unwrap().to_material(|usage| Some(use_id(usage)));
     assert_eq!((hair.base_color_map, hair.control_map, hair.matcap), (None, None, None));
     assert!(close(hair.outline.width, 0.004 * 1080.0));
+    // A screen width holds in pixels from the camera out to the cutoff.
+    let cutoff = hair.outline.curve.cutoff;
+    assert_eq!((hair.outline.curve.near, hair.outline.curve.far), ((0.0, 1.0), (cutoff, 1.0)));
+    assert!([0.05, 3.0, 50.0].iter().all(|&distance| close(hair.outline.curve.scale(distance), 1.0)));
+    let unlit_lines = Mtoon { outline_lighting_mix: 0.25, ..import.slots[1].clone().unwrap() };
+    assert_eq!(unlit_lines.to_material(|_| None).outline.lighting, 0.25);
     assert!(close3(hair.regions[0].shade_color, [0.25, 0.25, 1.0]));
     assert_eq!(hair.alpha, AlphaMode::Mask { cutoff: 0.3 });
     // Unlit: both sides the same color, no rim, no outline, a hard split.

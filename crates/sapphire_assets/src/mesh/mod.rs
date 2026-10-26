@@ -22,7 +22,7 @@
 //! |---|---|---|---|
 //! | positions | 8 | xyz unorm16 across [`VertexStreams::bounds`] ([`QuantizedPosition`]) | `extent / 131 070` per axis: 16 µm on a 2.1 m character |
 //! | positions (alternative) | 12 | f32 xyz ([`FloatPosition`]) | none |
-//! | shading | 8 | normal and outline normal, octahedral snorm16 × 2 each ([`VertexShading`]) | < 0.008° |
+//! | shading | 8 | normal (object space) and outline normal (in the normal's tangent frame, [`outline_frame`]), octahedral snorm16 × 2 each ([`VertexShading`]) | < 0.008° (outline < 0.016°) |
 //! | surface | 8 | UV unorm16 × 2 across [`VertexStreams::uv_bounds`], vertex color RGB unorm8, [`VertexFlags`] u8 ([`VertexSurface`]) | `range / 131 070`: 0.016 texels of a 2K map |
 //!
 //! That is 24 bytes a vertex where M0 read 48. The element docs give the reasons for each
@@ -86,8 +86,8 @@ use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
 pub use encoding::{
-    FloatPosition, QuantizedPosition, VERTEX_COLOR_NEUTRAL, VertexFlags, VertexShading, VertexSurface,
-    oct_decode, oct_encode,
+    FloatPosition, OUTLINE_FRAME_AXIS, OUTLINE_FRAME_FALLBACK, OUTLINE_FRAME_MIN_CROSS, QuantizedPosition,
+    VERTEX_COLOR_NEUTRAL, VertexFlags, VertexShading, VertexSurface, oct_decode, oct_encode, outline_frame,
 };
 pub use morph::{ArchivedMorphTarget, MorphDelta, MorphTarget};
 pub use skin::{
@@ -122,20 +122,22 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 6: embedded materials of `Material::VERSION` 3 (M1 C3's face settings and expression
+    /// 7: the outline normal is stored in the tangent frame of the shading normal
+    /// ([`outline_frame`], M1 C4), and embedded materials are `Material::VERSION` 4 (outlines
+    /// v2's settings). 6: embedded materials of `Material::VERSION` 3 (M1 C3's face settings and expression
     /// slot). 5: embedded materials pack the character light rig's region GI weights (M1 C2,
     /// `Material::VERSION` 2). 4: the anime character vertex contract (M1 C1): vertex color RGB
     /// is linear data (AO, outline width, outline Z offset) instead of an sRGB tint, and the
     /// outline-width scale moved from alpha to G, whose byte holds [`VertexFlags`] now. 3 added
     /// material slots (M1 A3); 2 embedded M0's fixed 64-byte material parameters; 1 was M0's
     /// flat `SPMS` layout of 48-byte float vertices.
-    const VERSION: u32 = 6;
+    const VERSION: u32 = 7;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 6 && Material::VERSION == 3,
+    Mesh::VERSION == 7 && Material::VERSION == 4,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 
@@ -295,8 +297,9 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Unit shading normal (may be split at hard edges).
     pub normal: [f32; 3],
-    /// Unit normal averaged over every vertex sharing this position. Inverted-hull outlines
-    /// extrude along it so hard edges don't open gaps.
+    /// Unit normal averaged over every vertex sharing this position, in object space as the
+    /// shading normal is. Inverted-hull outlines extrude along it so hard edges don't open gaps.
+    /// The shading stream stores it in the shading normal's tangent frame ([`VertexShading`]).
     pub outline_normal: [f32; 3],
     pub uv: [f32; 2],
     /// Character data, linear (255 = 1.0): R ambient occlusion, G outline-width scale, B

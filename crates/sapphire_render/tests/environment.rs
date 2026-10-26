@@ -1060,7 +1060,7 @@ fn flat_character(rgb: Vec3) -> AnimeCharacterMaterial {
         light_split: LightSplit { threshold: 0.0, softness: 0.02 },
         regions: vec![CharacterRegion { shade_color: [0.4; 3], ..CharacterRegion::default() }],
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: 0.0, z_offset: 0.0 },
+        outline: Outline { width: 0.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }

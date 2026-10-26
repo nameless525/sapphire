@@ -36,8 +36,9 @@ pub struct Scene {
 /// drew with until then, for the same reason. Those from before post's compositing layers (M1 P2)
 /// pin post as it was, `--plain-post` (no diffusion glow, character bloom, gradient layers, lens
 /// flare or vignette tint), which the post scenes show; the environment's (M1 W4) among them, which
-/// draw the world as the desktop tiers do, under the whole sky and temporal AA.
-pub fn scenes() -> [Scene; 22] {
+/// draw the world as the desktop tiers do, under the whole sky and temporal AA. The outline scenes
+/// (M1 C4) pin all three, so they show the lines alone.
+pub fn scenes() -> [Scene; 26] {
     [
         Scene {
             name: "turntable-start",
@@ -327,6 +328,60 @@ pub fn scenes() -> [Scene; 22] {
         Scene {
             name: "post-flare",
             args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa"],
+            thresholds: Thresholds::default(),
+        },
+        // Outline width over distance (M1 C4): more of the character from 4 m to 90 m behind it,
+        // seen from nearly level. Their lines thin along the width's two-segment curve, hold
+        // their width in the world far away, and are gone on the last, past the LOD cutoff.
+        Scene {
+            name: "outlines-distance",
+            args: &["--capture-ticks", "90", "--outline-row", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            thresholds: Thresholds::default(),
+        },
+        // The same row through a 20° lens from farther away, the character framed as before:
+        // its lines keep their width, and the row's, nearer in effective distance, widen.
+        Scene {
+            name: "outlines-telephoto",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--outline-row",
+                "--fov",
+                "20",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The hard-edged sample (M1 C4): flat-shaded shapes with every edge split, whose cooked
+        // smoothed outline normals keep each corner's hull closed.
+        Scene {
+            name: "outlines-hard-edges",
+            args: &["--capture-ticks", "90", "--hard-edges", "--plain-post", "--plain-sky", "--aa", "msaa"],
+            thresholds: Thresholds::default(),
+        },
+        // A close-up of the character turning at 3 rad/s under temporal AA (M1 C4): its hulls
+        // write velocity in the prepass, so the lines stay as crisp as 4× MSAA draws them.
+        Scene {
+            name: "outlines-turning-taa",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--zoom",
+                "0.6",
+                "--aa",
+                "taa",
+                "--spin",
+                "3",
+                "--capture-frames",
+                "32",
+                "--capture-step",
+                "1",
+                "--plain-post",
+                "--plain-sky",
+            ],
             thresholds: Thresholds::default(),
         },
     ]

@@ -419,7 +419,7 @@ pub fn material_document() -> String {
             ..CharacterRegion::default()
         }],
         rim: Rim { width: 0.2, strength: 0.12 },
-        outline: Outline { width: 3.0, z_offset: 0.0 },
+        outline: Outline { width: 3.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     };
     use sapphire_assets::material::MaterialDocument;

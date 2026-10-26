@@ -26,7 +26,9 @@
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{ArchivedMaterial, MaterialFamily, MaterialFlags, TextureUsage};
+use sapphire_assets::material::{
+    AnimeCharacterParams, ArchivedMaterial, MaterialFamily, MaterialFlags, TextureUsage,
+};
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
@@ -307,6 +309,14 @@ impl Materials {
         let buffer = &self.families[record.family.index()];
         let start = record.slot as usize * buffer.stride();
         buffer.mirror.get(start..start + buffer.stride())
+    }
+
+    /// The anime character block in `slot` of that family's buffer, as the GPU will hold it: what
+    /// draw records name materials by.
+    pub(crate) fn anime_character(&self, slot: u32) -> Option<AnimeCharacterParams> {
+        let buffer = &self.families[MaterialFamily::AnimeCharacter.index()];
+        let start = slot as usize * buffer.stride();
+        buffer.mirror.get(start..start + buffer.stride()).map(bytemuck::pod_read_unaligned)
     }
 
     /// The parameter buffer of `family`.

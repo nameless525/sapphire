@@ -26,11 +26,16 @@
 //!   with.
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
+//! One more knob is a cvar rather than a tier's: `r.outline_distance`, a scale on every
+//! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
+//! the sandbox's `--outline-distance`). Every tier draws the same lines today, within its budget.
+//!
 //! Plain data until their packages read them: shadow cascades, their resolution and the
 //! per-character shadow (R4, C2), capsule AO and GTAO (W5), volumetric fog (after W3's distance and
-//! height fog, which every tier has), screen-space environment outlines (C4's desktop option), the
-//! particle cap (`sapphire_vfx`, M2) and the LOD bias (LOD selection, with culling). The frame rate
-//! is also what frame pacing (§6.2, F7) will hold.
+//! height fog, which every tier has), screen-space environment outlines (the desktop option beside
+//! C4's character hulls, which no M1 package builds), the particle cap (`sapphire_vfx`, M2) and
+//! the LOD bias (LOD selection, with culling). The frame rate is also what frame pacing (§6.2, F7)
+//! will hold.
 //!
 //! # Choosing a tier
 //!
@@ -195,7 +200,7 @@ pub struct QualityTier {
     /// is desktop-only and later).
     pub volumetric_fog: bool,
     /// The screen-space edge pass for the environment, from the prepass's normals and IDs: a
-    /// desktop option beside the characters' inverted-hull outlines (C4).
+    /// desktop option beside the characters' inverted-hull outlines (C4) that no M1 package builds.
     pub screen_space_outlines: bool,
     /// Live GPU particles at most (§3.4), for `sapphire_vfx` (M2).
     pub max_particles: u32,
@@ -666,8 +671,17 @@ pub static DYNAMIC_RESOLUTION: Cvar<Switch> = Cvar::new(
     "Dynamic resolution, lowering the render scale to hold the tier's GPU budget: auto is the player's setting (off).",
 );
 
+/// The reach of outline hulls (M1 C4): a scale on every material's outline LOD cutoff.
+pub static OUTLINE_DISTANCE: Cvar<f32> = Cvar::with_range(
+    "r.outline_distance",
+    1.0,
+    0.0,
+    4.0,
+    "Scales every material's outline LOD cutoff: below 1 lines stop nearer, fading out as always; 0 draws none (profiling).",
+);
+
 /// This module's cvars, for the app's registry.
-pub static CVARS: [&dyn AnyCvar; 3] = [&TIER, &RENDER_SCALE, &DYNAMIC_RESOLUTION];
+pub static CVARS: [&dyn AnyCvar; 4] = [&TIER, &RENDER_SCALE, &DYNAMIC_RESOLUTION, &OUTLINE_DISTANCE];
 
 /// The player's quality settings: a settings screen's, saved with the player's settings later
 /// (M3); the sandbox takes them from its command line.
@@ -836,6 +850,14 @@ impl Quality {
         self.base_scale = base;
         self.render_scale = (base * factor).clamp(MIN_RENDER_SCALE, 1.0);
         self.render_scale
+    }
+
+    /// The scale on materials' outline LOD cutoffs (`r.outline_distance`, 1 unless tuned): pass it
+    /// to [`Renderer::set_outline_distance`](crate::Renderer::set_outline_distance) before
+    /// recording.
+    pub fn outline_distance(&self) -> f32 {
+        let scale = OUTLINE_DISTANCE.get();
+        if scale.is_finite() { scale.max(0.0) } else { 1.0 }
     }
 
     pub fn stats(&self) -> QualityStats {

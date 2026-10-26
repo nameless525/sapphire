@@ -262,15 +262,150 @@ fn gpu_skinning_matches_the_cpu_reference() {
     }
 }
 
+/// Skins and morphs `mesh` once with `palette` and `weights`, and returns its output vertices'
+/// shading as the passes after decode it.
+fn deformed_shading(mesh: &Mesh, palette: Vec<Affine3A>, weights: Vec<f32>) -> Vec<VertexShading> {
+    let gpu = gpu();
+    let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
+        .expect("renderer");
+    let handle = upload(&mut renderer, mesh);
+    let texture = target(&gpu, (64, 64));
+    let view = texture.create_view(&Default::default());
+    let mut packets = FramePacketRing::new();
+    let packet = packets.begin();
+    packet.views.push(ViewData::new(camera(1.0)));
+    packet.instances.changed.push(MeshInstance {
+        id: InstanceId(1),
+        mesh: handle,
+        transform: Mat4::IDENTITY,
+    });
+    packet.push_skinned(InstanceId(1), palette, weights);
+    renderer.prepare(&gpu, packets.current());
+    let outputs = renderer.skinning().outputs().buffer().clone();
+    let copy = readback(&gpu, outputs.size());
+    let mut graph = FrameGraph::new();
+    let target_id = graph.import_texture("target", &view);
+    renderer.record(&mut graph, target_id);
+    let (outputs_ref, copy_ref) = (&outputs, &copy);
+    graph.add_pass("read outputs").side_effect().record(move |ctx| {
+        ctx.encoder.copy_buffer_to_buffer(outputs_ref, 0, copy_ref, 0, outputs_ref.size());
+    });
+    GraphExecutor::new().execute(&gpu, graph).expect("a valid graph");
+    let words = read_words(&gpu, &copy);
+    let shading = (renderer.skinning().outputs().get(0).expect("deformed").shading / 4) as usize;
+    (0..mesh.streams.len())
+        .map(|v| {
+            VertexShading::from_bytes(bytemuck::cast([words[shading + 2 * v], words[shading + 2 * v + 1]]))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn outline_normals_stay_shared_by_split_vertices_and_turn_with_morphs() {
+    // Groups of three split vertices, as at a hard-edged corner: one position, one set of
+    // influences, one welded outline normal, three shading normals. Linear blend skinning of
+    // random palettes is no rotation, yet each group keeps one outline normal (M1 C4): the pass
+    // transforms the outline normal itself, not the deformed normals' frames.
+    let mut rng = Rng(23);
+    let mut vertices = Vec::new();
+    let mut influences = Vec::new();
+    for _ in 0..400 {
+        let position = [rng.range(-1.0, 1.0), rng.range(0.0, 2.0), rng.range(-0.5, 0.5)];
+        let outline = rng.direction();
+        let count = 1 + rng.index(4);
+        let mut binds = [0u16; 4];
+        let mut weights = [0.0f32; 4];
+        for slot in 0..count {
+            binds[slot] = rng.index(8) as u16;
+            weights[slot] = rng.range(0.05, 1.0);
+        }
+        for _ in 0..3 {
+            vertices.push(Vertex {
+                position,
+                normal: (outline + 0.8 * rng.direction()).normalize().to_array(),
+                outline_normal: outline.to_array(),
+                uv: [0.0; 2],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
+            });
+            influences.push(VertexInfluence { binds, weights: quantize_weights(weights) });
+        }
+    }
+    let indices: Vec<u32> = (0..vertices.len() as u32).collect();
+    let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
+    let mut mesh = Mesh::from_vertices(
+        &vertices,
+        indices,
+        submeshes,
+        vec![slot(&AnimeCharacterMaterial::default())],
+        PositionFormat::Unorm16,
+    );
+    mesh.skin = Some(Skin {
+        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        binds: (0..8)
+            .map(|_| SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
+            .collect(),
+        influences: Influences::pack(&influences, 8),
+    });
+    let palette = (0..8).map(|_| rng.affine()).collect();
+    let shading = deformed_shading(&mesh, palette, Vec::new());
+    let mut worst = 0.0f32;
+    for group in shading.as_chunks::<3>().0 {
+        let first = Vec3::from(group[0].outline_normal());
+        for other in &group[1..] {
+            worst = worst.max(first.angle_between(Vec3::from(other.outline_normal())).to_degrees());
+        }
+    }
+    eprintln!("split vertices' outline normals after skinning: {worst:.4}° apart at worst");
+    assert!(worst < 0.05, "{worst}°");
+
+    // A morph that turns a smooth vertex's normal turns its outline normal with it.
+    let smooth = |normal: Vec3| Vertex {
+        position: [0.0, 1.0, 0.0],
+        normal: normal.to_array(),
+        outline_normal: normal.to_array(),
+        uv: [0.0; 2],
+        color: VERTEX_COLOR_NEUTRAL,
+        flags: VertexFlags::NONE,
+    };
+    let normals = [Vec3::Z, Vec3::new(0.3, 0.5, 0.8).normalize(), Vec3::NEG_X];
+    let vertices: Vec<Vertex> = normals.iter().map(|&n| smooth(n)).collect();
+    let submeshes = vec![Submesh { first_index: 0, index_count: 3, material: 0 }];
+    let mut morphed = Mesh::from_vertices(
+        &vertices,
+        vec![0, 1, 2],
+        submeshes,
+        vec![slot(&AnimeCharacterMaterial::default())],
+        PositionFormat::Unorm16,
+    );
+    // Each normal turns 35° about a different axis at full weight.
+    let turned: Vec<Vec3> = normals
+        .iter()
+        .zip([Vec3::X, Vec3::Y, Vec3::Z])
+        .map(|(&n, axis)| Quat::from_axis_angle(axis, 35f32.to_radians()) * n)
+        .collect();
+    morphed.morph_deltas =
+        (0..3).map(|v| MorphDelta::new(v as u32, [0.0; 3], (turned[v] - normals[v]).to_array())).collect();
+    morphed.morph_targets =
+        vec![MorphTarget { name: "turn".into(), default_weight: 0.0, first_delta: 0, delta_count: 3 }];
+    for (v, shading) in deformed_shading(&morphed, Vec::new(), vec![1.0]).iter().enumerate() {
+        let (normal, outline) = (Vec3::from(shading.normal()), Vec3::from(shading.outline_normal()));
+        let off = normal.angle_between(outline).to_degrees();
+        eprintln!("morphed vertex {v}: outline normal {off:.4}° from the morphed normal");
+        assert!(normal.angle_between(turned[v]).to_degrees() < 0.05 && off < 0.05, "vertex {v}: {off}°");
+    }
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn prepass_depth_equals_the_main_pass_depth() {
     let gpu = gpu();
     let size = (161, 97);
-    // No outlines: the hull would write depth in the main pass only.
+    // Outlined: the hulls draw into the scene prepass too, at the main pass's depths (M1 C4).
     let material = slot(&AnimeCharacterMaterial {
         rim: Rim { strength: 0.3, ..Rim::default() },
-        outline: Outline { width: 0.0, z_offset: 0.0 },
+        outline: Outline { width: 8.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     });
     let sphere = |center: Vec3, radius: f32| {
@@ -389,7 +524,10 @@ fn prepass_depth_equals_the_main_pass_depth() {
         .collect();
     let [main, character, scene] = [&depths[0], &depths[1], &depths[2]];
 
-    assert_eq!(scene, main, "the scene prepass's depth is the main pass's, bit for bit");
+    assert_eq!(
+        scene, main,
+        "the scene prepass's depth is the main pass's, bit for bit, outline hulls included"
+    );
     let covered = character.iter().filter(|&&depth| depth > 0.0).count();
     let (mut equal, mut behind_prop) = (0, 0);
     for (&character, &main) in character.iter().zip(main) {

@@ -112,7 +112,7 @@ fn face_material(face: FaceShading) -> AnimeCharacterMaterial {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: 0.0, z_offset: 0.0 },
+        outline: Outline { width: 0.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }

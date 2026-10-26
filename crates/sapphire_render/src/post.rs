@@ -54,10 +54,10 @@
 //! - **The character mask** ([`CharacterBloom`]): characters bloom with their own threshold and
 //!   strength, relative to the world's. The bloom prefilter tells them apart by scene color's
 //!   alpha, which holds the world's share of each pixel: the anime character shader writes 0 for
-//!   the instances [`FramePacket::characters`](crate::FramePacket::characters) lists, and every
-//!   other pass writes 1 (the clear value, the sky, outlines, every surface that isn't a
-//!   character's; transparent surfaces keep what is under them), so a world pass needs nothing
-//!   new. MSAA's resolve averages it, so edges are partial. The same texture serves every tier:
+//!   the instances [`FramePacket::characters`](crate::FramePacket::characters) lists, and so do
+//!   their outline hulls (M1 C4: the line is the character's), and every other pass writes 1
+//!   (the clear value, the sky, every surface and outline that isn't a character's; transparent
+//!   surfaces keep what is under them), so a world pass needs nothing new. MSAA's resolve averages it, so edges are partial. The same texture serves every tier:
 //!   under temporal AA the resolve's history keeps its weight in alpha, so the prefilter reads
 //!   the mask from the frame's own scene color, before the resolve, at the same coordinates (it
 //!   is jittered, which the half-size bloom doesn't show). Temporal AA's responsive mask is not

@@ -62,6 +62,7 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/environment/lantern.material.ron",
     "samples/environment/terminator_band.png",
     "samples/environment/ground.png",
+    "samples/hard_edges.glb",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

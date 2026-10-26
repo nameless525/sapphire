@@ -19,7 +19,8 @@
 //!    inputs, so the frame graph runs both prepasses under TAA (it culls them otherwise).
 //! 3. **The responsive mask** (`responsive mask` pass, `R8Unorm` at the scene's size): 1 where a
 //!    character (a skinned or morphed instance) is the nearest surface, from the character
-//!    prepass's depth against the scene prepass's.
+//!    prepass's depth against the scene prepass's, or an outline hull is, from the scene
+//!    prepass's outline mask (M1 C4).
 //! 4. **The resolve** (`taa` pass), a compute pass at the output's size, on HDR scene color
 //!    before bloom and the tone curve, in a tonemap-weighted space (see `shaders/temporal.wgsl`,
 //!    whose header also says how it is kept fast):
@@ -30,9 +31,11 @@
 //!    - velocity dilation: a pixel follows the nearest surface of those 3 × 3 when that one is
 //!      clearly nearer than its own, so silhouette edges move with the object in front;
 //!    - reprojection from depth where no geometry is (the sky): the camera's motion at infinity;
-//!    - the outline hull, which writes no velocity until C4: where the main pass's depth is
-//!      nearer than the scene prepass's, the pixel takes the velocity of the nearest surface
-//!      matching its depth within an outline's width, and counts as responsive;
+//!    - pixels the main pass drew without velocity: where its depth is nearer than the scene
+//!      prepass's, the pixel takes the velocity of the nearest surface matching its depth within
+//!      an outline's width, and counts as responsive. R7 built it for the outline hull, which
+//!      drew no velocity; since M1 C4 the scene prepass draws the hulls with their own velocity
+//!      and the main pass's depth, so it finds no pixels (P1 removes it);
 //!    - disocclusion rejection: what the main pass drew (hulls included) against the farthest
 //!      of last frame's depths around where the pixel came from;
 //!    - an accumulation weight in the history's alpha, capped lower for moving pixels (or ones
@@ -59,20 +62,20 @@
 //! color, depth, velocity in texture coordinates (zero where none is: reproject from depth), the
 //! responsive mask (FSR's reactive mask, DLSS's bias-current-color mask, MetalFX's
 //! `reactiveMaskTexture`), the jitter in pixels, the exposure and a reset flag, plus the output
-//! size (`TemporalInputs`). Only the main pass's depth, for the outline hull, is its own; an
-//! upscaler does without it, or gets the hull in its reactive mask. One of them replaces the
-//! `taa` pass behind the same inputs.
+//! size (`TemporalInputs`). Only the main pass's depth, for disocclusion, is its own; an upscaler
+//! does without it. Outline hulls are in the velocity and the responsive mask (M1 C4). One of
+//! them replaces the `taa` pass behind the same inputs.
 //!
 //! # Later milestones
 //!
 //! - **External upscalers:** DLSS (`dlss_wgpu`, NVIDIA on Vulkan) and MetalFX temporal behind
 //!   `TemporalInputs`, chosen by `GpuCaps` and the tier; FSR 3 or Arm ASR where neither runs.
-//! - **Outlines under TAA (C4, P1):** C4 draws the hull into the scene prepass with its own
-//!   velocity (it reuses the skinned positions of both frames). That replaces the resolve's
-//!   search for the surface a hull pixel belongs to, and fixes what no surface pixel can give:
-//!   on a body turning about its own axis the outline holds still while the surface slides, so
-//!   such outlines soften in motion today. P1 then decides whether hulls stay responsive, are
-//!   drawn into the mask for external upscalers, or composite after the resolve.
+//! - **Outlines under TAA (P1):** since C4 the scene prepass draws the hulls with their own
+//!   velocity (from the skinned positions of both frames) and writes an outline mask the
+//!   responsive mask takes in, so a line on a body turning about its own axis holds still with
+//!   its hull rather than sliding with the surface. The resolve's search for the surface a hull
+//!   pixel belongs to finds nothing since, and P1 removes it with `OUTLINE_REACH`, then decides
+//!   whether hulls stay responsive or composite after the resolve.
 //! - **Transparent surfaces and particles** write the responsive mask (or FSR's
 //!   transparency-and-composition mask) as they draw, since they write no velocity.
 //! - **The character mask through the resolve:** post (M1 P2) reads its character mask, scene
@@ -147,10 +150,11 @@ mod tuning {
     /// frame disoccluded. Wide enough for one surface's own curvature across a few pixels and
     /// for objects' motion in depth between frames.
     pub const DEPTH_MARGIN: f32 = 0.1;
-    /// How far a pixel the main pass drew without velocity (the outline hull) looks for the
-    /// surface it moves with, in pixels at 1080 rows (outline widths are too): the default
-    /// width of 5.5 px, plus the jitter and the surface's antialiased edge, with room for
-    /// wider lines. The outer part of wider outlines lags in motion until C4.
+    /// How far a pixel the main pass drew without velocity looks for the surface it moves with,
+    /// in pixels at 1080 rows (outline widths are too): the default width of 5.5 px, plus the
+    /// jitter and the surface's antialiased edge, with room for wider lines. Built for the
+    /// outline hull (R7); since C4 the hull is in the scene prepass with its own velocity, and
+    /// the search finds no pixels.
     pub const OUTLINE_REACH: f32 = 8.0;
 }
 
@@ -243,13 +247,23 @@ pub(crate) struct TemporalInputs {
     pub depth: TextureId,
     /// The scene prepass's velocity, in texture coordinates; 0 where no geometry is.
     pub velocity: TextureId,
-    /// The responsive mask: 1 where a character is the nearest surface.
+    /// The responsive mask: 1 where a character or an outline hull is the nearest surface.
     pub responsive: TextureId,
     /// What the main pass drew: its depth, single-sampled ([`TemporalTargets::depth`]), outline
     /// hulls included. Where it is nearer than the scene prepass's, the main pass drew something
-    /// without velocity (the hull); disocclusion compares it with last frame's. Under MSAA, whose
-    /// depth this can't read, the scene prepass's depth. External upscalers do without it.
+    /// without velocity (the hull, until M1 C4 drew it into the prepass); disocclusion compares
+    /// it with last frame's. Under MSAA, whose depth this can't read, the scene prepass's depth.
+    /// External upscalers do without it.
     pub drawn_depth: TextureId,
+}
+
+/// What the responsive mask is made from, at the scene's size.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TemporalMasks {
+    /// The character prepass's depth: characters alone.
+    pub characters: TextureId,
+    /// The scene prepass's outline mask: 1 where an outline hull is the nearest surface.
+    pub outlines: TextureId,
 }
 
 /// The persistent textures one frame's graph imports (see [`TemporalTextures::import`]).
@@ -375,7 +389,7 @@ pub(crate) struct TemporalPasses {
     /// Group 0: the constants and the sampler.
     shared: wgpu::BindGroup,
     /// Group 1 of each pass, one per write slot: the persistent textures alternate.
-    mask_groups: [CachedBindGroup<2>; 2],
+    mask_groups: [CachedBindGroup<3>; 2],
     resolve_groups: [CachedBindGroup<8>; 2],
     /// What the last `begin` computed for the uploads.
     uniforms: TemporalUniforms,
@@ -612,8 +626,14 @@ impl TemporalPasses {
             "temporal",
             &[entry(0, both, uniforms), entry(1, both, linear), entry(2, S::COMPUTE, nearest)],
         );
-        let mask_layout =
-            layout(MASK_PASS, &[texture(0, S::FRAGMENT, depth), texture(1, S::FRAGMENT, depth)]);
+        let mask_layout = layout(
+            MASK_PASS,
+            &[
+                texture(0, S::FRAGMENT, depth),
+                texture(1, S::FRAGMENT, depth),
+                texture(2, S::FRAGMENT, loaded),
+            ],
+        );
         let resolve_layout = layout(
             RESOLVE_PASS,
             &[
@@ -700,15 +720,16 @@ impl TemporalPasses {
         (self.uniforms, &self.uniform_buffer)
     }
 
-    /// Adds the frame's two passes: the responsive mask (`inputs.responsive`, from
-    /// `character_depth` against the scene prepass's depth), then the resolve, a compute pass,
+    /// Adds the frame's two passes: the responsive mask (`inputs.responsive`, from the
+    /// character prepass's depth against the scene prepass's, and the outline mask: `masks`),
+    /// then the resolve, a compute pass,
     /// from `inputs` and last frame's history and depth into `targets.output`. `slot` is the
     /// frame's write slot ([`TemporalTextures::write_slot`]), which picks the bind groups for
     /// its textures.
     pub(crate) fn record<'f>(
         &'f mut self,
         graph: &mut FrameGraph<'f>,
-        character_depth: TextureId,
+        masks: TemporalMasks,
         inputs: TemporalInputs,
         targets: TemporalTargets,
         slot: usize,
@@ -727,9 +748,11 @@ impl TemporalPasses {
 
         let mask_group = &mut mask_groups[slot];
         let (depth, mask) = (inputs.depth, inputs.responsive);
-        graph.add_pass(MASK_PASS).read(character_depth).read(depth).write(mask).record(move |ctx| {
+        let TemporalMasks { characters, outlines } = masks;
+        let pass = graph.add_pass(MASK_PASS).read(characters).read(depth).read(outlines);
+        pass.write(mask).record(move |ctx| {
             let label = labels.then_some(MASK_PASS);
-            let views = [ctx.view(character_depth), ctx.view(depth)];
+            let views = [ctx.view(characters), ctx.view(depth), ctx.view(outlines)];
             let group = mask_group.get(device, label, mask_layout, &views);
             draw_fullscreen(ctx, label, mask, mask_pipeline, shared, group);
         });

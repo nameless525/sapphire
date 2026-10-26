@@ -31,6 +31,21 @@ pub(crate) const NORMALS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16
 /// fraction of a pixel at 4K up to about half the screen per frame.
 pub(crate) const VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
+/// The scene prepass's outline mask (M1 C4): 1 where an outline hull is the nearest surface.
+pub(crate) const OUTLINES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+
+/// The scene prepass's color targets: normals, velocity and the outline mask, which only the
+/// hulls write (`outlines`); surfaces leave it as cleared, drawn before the hulls.
+fn scene_prepass_targets(outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] {
+    let mask = if outlines { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
+    [
+        (NORMALS_FORMAT, wgpu::ColorWrites::ALL),
+        (VELOCITY_FORMAT, wgpu::ColorWrites::ALL),
+        (OUTLINES_FORMAT, mask),
+    ]
+    .map(|(format, write_mask)| Some(wgpu::ColorTargetState { format, blend: None, write_mask }))
+}
+
 /// Vertex buffer slots. Every mesh pass binds the draw record and positions; a position-only
 /// pass (shadows, the character prepass) needs nothing more, so the streams it skips come last.
 pub(crate) mod slot {
@@ -111,6 +126,9 @@ pub(crate) enum MeshPass {
     CharacterPrepass,
     /// Positions, shading and previous positions.
     ScenePrepass,
+    /// The outline hulls in the scene prepass (M1 C4): every stream, the surface stream for the
+    /// width's vertex color and the previous positions for velocity.
+    OutlinePrepass,
 }
 
 impl MeshPass {
@@ -120,11 +138,11 @@ impl MeshPass {
     }
 
     pub(crate) fn reads_surface(self) -> bool {
-        self == Self::Main
+        matches!(self, Self::Main | Self::OutlinePrepass)
     }
 
     pub(crate) fn reads_previous(self) -> bool {
-        self == Self::ScenePrepass
+        matches!(self, Self::ScenePrepass | Self::OutlinePrepass)
     }
 
     /// Whether the pass shades with materials, binding each draw's group 3: only the main pass;
@@ -586,6 +604,10 @@ pub(crate) struct MeshPipelines {
     /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`), whatever its
     /// family.
     pub scene_prepass: wgpu::RenderPipeline,
+    /// The outline hulls into the scene prepass's targets (`outline.wgsl`), built with the
+    /// format's first outline: one for every coverage, since the prepass doesn't cut
+    /// alpha-tested surfaces out.
+    outline_prepass: Option<wgpu::RenderPipeline>,
 }
 
 impl MeshPipelines {
@@ -601,6 +623,11 @@ impl MeshPipelines {
             return None;
         }
         self.outline.get(variant.coverage.index())?.as_ref()
+    }
+
+    /// The outline hulls' scene prepass pipeline, once a draw with an outline was prepared.
+    pub(crate) fn outline_prepass(&self) -> Option<&wgpu::RenderPipeline> {
+        self.outline_prepass.as_ref()
     }
 
     /// Pipelines built of `family`: its surfaces, and the anime character family's outlines.
@@ -763,8 +790,15 @@ impl Pipelines {
             let scene_prepass = rebuild(Program::Prepass, &old.scene_prepass, &|| {
                 build_scene_prepass(device, target, &modules, format)
             });
-            let mut pipelines =
-                MeshPipelines { surfaces: Default::default(), outline: Default::default(), scene_prepass };
+            let outline_prepass = old.outline_prepass.as_ref().map(|old| {
+                rebuild(Program::Outline, old, &|| build_outline_prepass(device, target, &modules, format))
+            });
+            let mut pipelines = MeshPipelines {
+                surfaces: Default::default(),
+                outline: Default::default(),
+                scene_prepass,
+                outline_prepass,
+            };
             for variant in SurfaceVariant::ALL {
                 if let Some(old) = old.surface(variant) {
                     let (_, program) = modules.surface(variant.shading);
@@ -793,13 +827,18 @@ impl Pipelines {
             return;
         }
         let scene_prepass = build_scene_prepass(device, &self.target, &self.modules, format);
-        self.mesh[format_index(format)] =
-            Some(MeshPipelines { surfaces: Default::default(), outline: Default::default(), scene_prepass });
+        self.mesh[format_index(format)] = Some(MeshPipelines {
+            surfaces: Default::default(),
+            outline: Default::default(),
+            scene_prepass,
+            outline_prepass: None,
+        });
         self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
     }
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
-    /// and for anime characters the outline pipeline of its coverage, unless they do already.
+    /// and for anime characters the outline pipeline of its coverage and the outline hulls'
+    /// prepass pipeline, unless they do already.
     pub(crate) fn prepare_variant(
         &mut self,
         device: &wgpu::Device,
@@ -811,16 +850,23 @@ impl Pipelines {
         if mesh.surface(variant).is_some() {
             return;
         }
-        let needs_outline = SurfaceVariant::OUTLINED.contains(&variant) && mesh.outline(variant).is_none();
+        let outlined = SurfaceVariant::OUTLINED.contains(&variant);
+        let needs_outline = outlined && mesh.outline(variant).is_none();
+        let needs_outline_prepass = outlined && mesh.outline_prepass.is_none();
         let surface = build_surface(device, &self.target, &self.modules, format, variant);
         // Transparent surfaces and the environment have no outline; every part shares its
         // coverage's.
         let outline = needs_outline
             .then(|| build_outline(device, &self.target, &self.modules, format, variant.coverage));
+        let outline_prepass =
+            needs_outline_prepass.then(|| build_outline_prepass(device, &self.target, &self.modules, format));
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
         mesh.surfaces[variant.index()] = Some(surface);
         if let Some(outline) = outline {
             mesh.outline[variant.coverage.index()] = Some(outline);
+        }
+        if outline_prepass.is_some() {
+            mesh.outline_prepass = outline_prepass;
         }
     }
 
@@ -919,15 +965,31 @@ fn build_scene_prepass(
     modules: &MeshModules,
     format: PositionFormat,
 ) -> wgpu::RenderPipeline {
-    let normals_and_velocity = [NORMALS_FORMAT, VELOCITY_FORMAT].map(|format| {
-        Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })
-    });
     target.build_prepass(
         device,
         "scene prepass",
         &modules.prepass,
         &MeshPass::ScenePrepass.buffers(format),
-        &normals_and_velocity,
+        wgpu::Face::Back,
+        &scene_prepass_targets(false),
+    )
+}
+
+/// The outline hulls' scene prepass pipeline for meshes in `format`: the scene prepass's
+/// targets, the outline mask included, with the hulls' front faces culled as in the main pass.
+fn build_outline_prepass(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+) -> wgpu::RenderPipeline {
+    target.build_prepass(
+        device,
+        "outline prepass",
+        &modules.outline,
+        &MeshPass::OutlinePrepass.buffers(format),
+        wgpu::Face::Front,
+        &scene_prepass_targets(true),
     )
 }
 
@@ -938,11 +1000,11 @@ fn build_character_prepass(
     modules: &MeshModules,
 ) -> wgpu::RenderPipeline {
     let buffers = MeshPass::CharacterPrepass.buffers(PositionFormat::Float32);
-    target.build_prepass(device, "character prepass", &modules.prepass, &buffers, &[])
+    target.build_prepass(device, "character prepass", &modules.prepass, &buffers, wgpu::Face::Back, &[])
 }
 
 impl PipelineTarget {
-    /// A prepass pipeline: back faces culled, reverse-Z depth written, no multisampling (the
+    /// A prepass pipeline: `cull` faces culled, reverse-Z depth written, no multisampling (the
     /// targets are sampled by later passes), and `color_targets` written by the
     /// `fs_<entry>` entry point when there are any. `name` is the entry points' suffix with
     /// spaces as underscores.
@@ -952,6 +1014,7 @@ impl PipelineTarget {
         name: &'static str,
         module: &wgpu::ShaderModule,
         vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+        cull: wgpu::Face,
         color_targets: &[Option<wgpu::ColorTargetState>],
     ) -> wgpu::RenderPipeline {
         let entry = name.replace(' ', "_");
@@ -968,7 +1031,7 @@ impl PipelineTarget {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: Some(cull),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {

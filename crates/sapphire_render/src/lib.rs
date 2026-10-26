@@ -110,7 +110,8 @@
 //!   plane, 0 at infinity, cleared to 0 and tested with `Greater` (better float precision).
 //! - Shading is linear HDR light, unclamped, into `Rgba16Float` scene color. Post tone maps
 //!   and grades it into the target, whose sRGB format encodes on write.
-//! - Outline widths (`AnimeCharacterParams::edges.z`) are pixels at a 1080-pixel-high target.
+//! - Outline widths (`AnimeCharacterParams::edges.z`) are pixels at a 1080-pixel-high target,
+//!   at the width curve's mid distance through a 45° lens (see "Outlines").
 //!
 //! # Submission paths
 //!
@@ -136,9 +137,9 @@
 //! |---|---|---|---|
 //! | 0 | draw record: instance, material, the mesh's dequantization | 48, per instance | every mesh pass |
 //! | 1 | positions: unorm16 across the bounds, or f32 | 8 or 12 | every mesh pass, and alone by shadow passes and the character prepass |
-//! | 2 | shading: octahedral normal and outline normal | 8 | surface shading, outline, scene prepass |
-//! | 3 | surface: unorm16 UV, vertex color (AO, outline width, outline Z offset) and flags as unorm8 × 4 | 8 | surface shading, outline (width and Z offset) |
-//! | 4 | previous positions: where the vertex was when last drawn, in slot 1's format | 8 or 12 | scene prepass (velocity) |
+//! | 2 | shading: octahedral normal, and the outline normal in the normal's tangent frame (M1 C4) | 8 | surface shading, outline, scene prepass |
+//! | 3 | surface: unorm16 UV, vertex color (AO, outline width, outline Z offset) and flags as unorm8 × 4 | 8 | surface shading, outline and its prepass (width and Z offset) |
+//! | 4 | previous positions: where the vertex was when last drawn, in slot 1's format | 8 or 12 | scene prepass (velocity, surfaces and hulls) |
 //!
 //! The dequantization travels in the draw record rather than a mesh table, so decoding costs
 //! no binding (see the budget below). Both position formats share the shaders: f32 positions
@@ -185,14 +186,15 @@
 //! - **Character prepass** (every tier): depth of the skinned and morphed instances alone,
 //!   position-only. Rim light, hair shadow on the face and eyes over the bangs read it (C2, C5).
 //! - **Scene prepass**: depth, world normals (octahedral, `Rg16Float`) and velocity
-//!   (`Rg16Float`, texture coordinates) of every opaque instance. Characters move by their
-//!   skinned positions, static meshes by their instance transform, and both by the camera's,
-//!   never by temporal AA's jitter. TAA (R7), outlines under TAA (P1), GTAO and screen-space
-//!   edges read it.
+//!   (`Rg16Float`, texture coordinates) of every opaque instance, then of their outline hulls
+//!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest).
+//!   Characters move by their skinned positions, static meshes by their instance transform, and
+//!   both by the camera's, never by temporal AA's jitter; a hull moves with its surface's
+//!   vertices, so its depth and velocity are the main pass's hull's. TAA (R7), outlines under
+//!   TAA (P1), GTAO and screen-space edges read it.
 //!
 //! Temporal AA reads both (its depth, velocity and responsive mask). Without it nothing reads
 //! them yet, so the frame graph culls both passes: two boxed closures a frame and no GPU time.
-//! The outline hull isn't in the scene prepass: outlines v2 (C4) adds its velocity.
 //!
 //! # Render scale
 //!
@@ -210,7 +212,7 @@
 //!
 //! | Group | Binding | Stages | Contents | Written |
 //! |---|---|---|---|---|
-//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather | `prepare` |
+//! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
 //! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs and faces, 128 bytes each | the uploads pass, when they changed |
@@ -222,7 +224,8 @@
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
 //! prepasses bind groups 0–2 like the main pass, with the anime character family's scene group
-//! for every family's draws, and read no storage buffer beyond the instances.
+//! for every family's draws, and read no storage buffer beyond that group's: the instances, and
+//! the anime character blocks for the outline hulls' widths (M1 C4).
 //!
 //! The view group's buffer holds every view at a stride of the device's uniform offset
 //! alignment: the main view (offset 0, written every frame), then the sky cube's six faces
@@ -399,6 +402,36 @@
 //!   skinned and morphed instances of the anime character family alone, so a skinned prop in
 //!   environment materials is never taken for a character.
 //!
+//! # Outlines (M1 C4)
+//!
+//! Outlines v2 (`shaders/outline.wgsl`, whose header gives the formulas; spec §5.12
+//! "Outlines") draw the anime line art as inverted hulls, one per outlined draw, after the
+//! opaque surfaces in the main pass and again in the scene prepass:
+//!
+//! - **Outline normals** are smoothed normals the cooker bakes or the artist authors, stored in
+//!   the tangent frame of the vertex's own normal, a frame derived from the normal alone
+//!   (`sapphire_assets::mesh::outline_frame`), so split vertices at a hard edge share one hull
+//!   direction and the hull stays closed. Compute skinning carries them across with the normal
+//!   (see the `skinning` module).
+//! - **Width:** the material's width in pixels at 1080 rows × the region's scale × vertex color
+//!   G × the material's model scale × a two-segment curve over the *effective distance*, the
+//!   view depth normalized to a 45° field of view, so a line keeps its width wherever a
+//!   character looks the same size. Outside the curve the line keeps its width in the world.
+//! - **Extrusion** in view space, with the normal's depth replaced by the material's flatten
+//!   amount, and a push-back along the view ray (Z offset × vertex color B), both through one
+//!   unjittered matrix so the prepass's hull lands where the main pass's does.
+//! - **Color:** the region's outline color, blended toward it × albedo, lit as the surface is:
+//!   the rig's key light through the light split and shadow tone, plus its GI flattened toward
+//!   the camera, by the material's lighting weight.
+//! - **LOD cutoff:** past a material's cutoff (effective meters, × `r.outline_distance`,
+//!   [`Renderer::set_outline_distance`]) the frame drops the hull, per draw, on the instance's
+//!   bounding sphere (the `outlines` module); the width fades out over the cutoff's last
+//!   quarter first. [`RenderStats::outline_draws`] and [`RenderStats::outlines_culled`] count
+//!   both.
+//! - **Velocity:** the scene prepass draws each hull with this frame's and the last drawn
+//!   frame's clip positions and writes the outline mask, which the responsive mask takes in
+//!   ([`temporal`]), so lines follow their own motion under TAA.
+//!
 //! # The sky (M1 W2)
 //!
 //! `shaders/sky.wgsl` draws the sky over a fullscreen triangle at the far plane, in the main pass
@@ -429,8 +462,8 @@
 //! # Material buffers
 //!
 //! Each material family has a parameter buffer of its own, an array of its block
-//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 896 bytes for the anime
-//! character family, 80 to 160 for the others. One shared array would pad every slot to the
+//! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 944 bytes for the anime
+//! character family (896 until outlines v2, M1 C4), 80 to 160 for the others. One shared array would pad every slot to the
 //! largest block, and a pipeline only reads its own family, so each family's pipelines bind
 //! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. The sky
 //! draws one material at a time and reads its block from the CPU mirror into its frame uniforms
@@ -456,10 +489,10 @@
 //!   feed it: VFX, UI and debug draws, plus shadow-cascade and UI-inset views.
 //! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
-//!   non-uniformly scaled joints; morphed outline normals with C4's tangent-space outline
-//!   normals; vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their other consumers (rim and hair shadow, outlines under TAA); the outline
-//!   hull's velocity (C4); and, now that TAA turns MSAA off on desktop, letting the main pass
+//!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
+//!   vertex pulling for multi-draw-indirect of skinned instances.
+//! - **Prepasses:** their other consumers (rim and hair shadow, outlines under TAA (P1)); and,
+//!   now that TAA turns MSAA off on desktop, letting the main pass
 //!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
 //!   the prepass to cut alpha-tested surfaces out first.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
@@ -488,11 +521,10 @@
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
 //! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
 //!   permutation bits, and specular, matcaps and stockings (C7) over the control map channels it
-//!   already reads. Shadows (R4) fill `cast_shadow`. Outlines v2 (C4) take each pixel's region
-//!   from the control map as the surface does (today the vertex's), add the authored width curve
-//!   and view-space flattening, and make group 3 visible to the vertex stage if a width texture
-//!   needs it. Cooked MikkTSpace tangents, with C4's tangent-space outline normals, replace the
-//!   normal map's screen-derivative frame.
+//!   already reads. Shadows (R4) fill `cast_shadow`. Outlines take their width's region per
+//!   vertex (the vertex stage reads no textures): a width texture would make group 3 visible to
+//!   it. Cooked MikkTSpace tangents replace the normal map's screen-derivative frame (outline
+//!   normals need none: their frame is derived from the normal).
 //! - **Faces** (see above): hair shadow on the face and eyes over the bangs (C5); light layers,
 //!   so local lights split on faces by the face map or not at all (today they split on the
 //!   face's normals, as on the body); a face-SDF threshold debug view (F5's views); environment
@@ -516,6 +548,7 @@ pub mod graph;
 mod lights;
 mod materials;
 mod mesh_pool;
+mod outlines;
 mod pipelines;
 pub mod post;
 pub mod quality;

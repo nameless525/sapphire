@@ -111,6 +111,12 @@ impl Stage {
         if options.environment {
             scene.spawn_environment(content.courtyard(&mut renderer, &gpu)?);
         }
+        if options.outline_row {
+            scene.spawn_outline_row(character);
+        }
+        if options.hard_edges {
+            scene.spawn_hard_edges(content.hard_edges(&mut renderer, &gpu)?);
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
@@ -195,6 +201,7 @@ impl Stage {
         self.renderer.prepare(&self.gpu, packet);
         let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
+        self.renderer.set_outline_distance(self.quality.outline_distance());
         let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
         #[cfg(not(feature = "dev"))]
         self.graph.set_gpu_timing(&self.gpu, gpu_timing);

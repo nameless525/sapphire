@@ -96,7 +96,7 @@ fn plain() -> AnimeCharacterMaterial {
         base_color: [ALBEDO, ALBEDO, ALBEDO, 1.0],
         light_split: LightSplit { threshold: 0.0, softness: 0.0 },
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: 0.0, z_offset: 0.0 },
+        outline: Outline { width: 0.0, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }
@@ -793,7 +793,7 @@ fn alpha_tested_and_transparent_materials() {
         base_color_map: Some(id(BASE)),
         alpha,
         regions: vec![CharacterRegion { outline_color: [0.0; 3], ..CharacterRegion::default() }],
-        outline: Outline { width: 30.0, z_offset: 0.0 },
+        outline: Outline { width: 30.0, ..Outline::default() },
         ..plain()
     };
     let material = harness.material(&outlined(AlphaMode::Opaque), &[(BASE, &coverage)]).unwrap();
@@ -842,7 +842,8 @@ fn permutations_choose_pipelines_and_passes() {
     let mut harness = Harness::new(64);
     let stats = |harness: &Harness| harness.renderer.stats();
     assert_eq!(stats(&harness).character_pipelines, 2, "opaque surface and outline, quantized meshes");
-    let outlined = AnimeCharacterMaterial { outline: Outline { width: 4.0, z_offset: 0.0 }, ..plain() };
+    let outlined =
+        AnimeCharacterMaterial { outline: Outline { width: 4.0, ..Outline::default() }, ..plain() };
     let documents = [
         outlined.clone(),
         AnimeCharacterMaterial { alpha: AlphaMode::Mask { cutoff: 0.5 }, ..outlined.clone() },
@@ -918,7 +919,7 @@ fn vertex_colors_carry_occlusion_outline_width_and_z_offset() {
             outline_color: [0.0; 3],
             ..CharacterRegion::default()
         }],
-        outline: Outline { width: 40.0, z_offset: 0.0 },
+        outline: Outline { width: 40.0, ..Outline::default() },
         ..plain()
     };
     let material = harness.material(&outlined, &[]).unwrap();
@@ -955,7 +956,7 @@ fn vertex_colors_carry_occlusion_outline_width_and_z_offset() {
     for (z_offset, b) in [(0.0, 255u8), (1.0, 255), (1.0, 0)] {
         let document = AnimeCharacterMaterial {
             regions: vec![CharacterRegion { outline_color: [0.0; 3], ..CharacterRegion::default() }],
-            outline: Outline { width: 30.0, z_offset },
+            outline: Outline { width: 30.0, z_offset, ..Outline::default() },
             ..plain()
         };
         let material = harness.material(&document, &[]).unwrap();

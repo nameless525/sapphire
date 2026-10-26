@@ -24,16 +24,17 @@ use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, PoolMoves, SubmeshMaterial};
+use crate::outlines::OutlineCull;
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, NORMALS_FORMAT, Part, Pipelines,
-    SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT,
+    Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{self, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
-use crate::temporal::{self, Temporal, TemporalInputs, TemporalPipelines, TemporalStats};
+use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalPipelines, TemporalStats};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -192,8 +193,12 @@ pub struct RenderStats {
     /// Of [`Self::draws`], those of environment materials (M1 W4), through the environment
     /// shader.
     pub environment_draws: u32,
-    /// Outline hulls drawn in the last prepared frame.
+    /// Outline hulls drawn in the last prepared frame (in the main pass, and in the scene
+    /// prepass when it runs).
     pub outline_draws: u32,
+    /// Outline hulls the last prepared frame didn't draw: their instances were past their
+    /// materials' LOD cutoff (M1 C4, `OutlineCurve::cutoff`).
+    pub outlines_culled: u32,
     /// Anime character pipelines built (surface and outline variants, across position
     /// formats): each static permutation's are built when the first draw needs them.
     pub character_pipelines: u32,
@@ -267,21 +272,28 @@ pub struct PrepassTargets {
     /// The character prepass: depth of the skinned and morphed instances alone, every tier
     /// (`Depth32Float`, reverse-Z, cleared to 0).
     pub character_depth: TextureId,
-    /// The scene prepass: depth of every opaque instance (`Depth32Float`). Under temporal AA
-    /// with MSAA it is one of a pair of persistent textures, since the next frame reads it as
-    /// its last (without MSAA the main pass's depth is kept instead).
+    /// The scene prepass: depth of every opaque instance and its outline hull (`Depth32Float`),
+    /// bit for bit the main pass's. Under temporal AA with MSAA it is one of a pair of
+    /// persistent textures, since the next frame reads it as its last (without MSAA the main
+    /// pass's depth is kept instead).
     pub depth: TextureId,
-    /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0).
+    /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0); a
+    /// hull's are its outline normals.
     pub normals: TextureId,
     /// The scene prepass: each pixel's motion since the last drawn frame, in texture
     /// coordinates (x right, y down; it was at `uv - velocity`), from the camera's motion, the
     /// instance's transform and, for skinned and morphed instances, their skinned positions
     /// (`Rg16Float`). Pixels no geometry covers stay 0; TAA reprojects those from depth. It
-    /// ignores the jitter, so geometry that holds still has exactly 0.
+    /// ignores the jitter, so geometry that holds still has exactly 0. Outline hulls write their
+    /// own (M1 C4).
     pub velocity: TextureId,
+    /// The scene prepass: 1 where an outline hull is the nearest surface, else 0 (`R8Unorm`, M1
+    /// C4). Temporal AA's responsive mask takes it in, so lines in motion keep less history.
+    pub outlines: TextureId,
     /// With temporal AA, the responsive mask (`R8Unorm`): 1 where a character is the nearest
-    /// surface, from the two prepasses' depths. The resolve keeps less history there and clips
-    /// it tighter; an external upscaler takes it as its reactive mask.
+    /// surface, from the two prepasses' depths, or an outline hull is, from [`Self::outlines`].
+    /// The resolve keeps less history there and clips it tighter; an external upscaler takes it
+    /// as its reactive mask.
     pub responsive: Option<TextureId>,
     /// The main pass's depth, stored for the tests that compare it with the prepasses'.
     #[cfg(test)]
@@ -306,6 +318,8 @@ pub struct Renderer {
     settings: RenderSettings,
     /// The scene's size as a fraction of the target's, clamped as [`scaled_size`] does.
     render_scale: f32,
+    /// The scale on materials' outline LOD cutoffs ([`Self::set_outline_distance`]).
+    outline_distance: f32,
     labels: bool,
     layouts: Layouts,
     pipelines: Pipelines,
@@ -328,6 +342,8 @@ pub struct Renderer {
     materials: Materials,
     /// Instances, draw records and the draw list, persistent across frames.
     scene: GpuScene,
+    /// Which draws' outline hulls the frame draws, by their LOD cutoff.
+    outlines: OutlineCull,
     /// Group 2 per [`MESH_FAMILIES`] entry: the instances and that family's materials.
     scene_bind_groups: [wgpu::BindGroup; MESH_FAMILIES.len()],
     /// Skinned and morphed instances' outputs and the pass that writes them.
@@ -466,6 +482,7 @@ impl Renderer {
             queue: gpu.queue().clone(),
             settings,
             render_scale: 1.0,
+            outline_distance: 1.0,
             labels: gpu.label("").is_some(),
             layouts,
             pipelines,
@@ -480,6 +497,7 @@ impl Renderer {
             meshes,
             materials,
             scene,
+            outlines: OutlineCull::default(),
             scene_bind_groups,
             skinning,
             post,
@@ -613,6 +631,7 @@ impl Renderer {
         self.prepare_mesh(handle, &materials, moves);
         let bounds = mesh.streams.bounds.to_native();
         self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
+        self.outlines.mesh_uploaded(handle, [bounds.min, bounds.max]);
         self.scene.meshes_changed();
         self.update_pool_stats();
         Ok(handle)
@@ -700,6 +719,7 @@ impl Renderer {
         self.prepare_mesh(handle, &materials, moves);
         let bounds = mesh.streams.bounds.to_native();
         self.lights.mesh_replaced(handle, [bounds.min, bounds.max]);
+        self.outlines.mesh_uploaded(handle, [bounds.min, bounds.max]);
         self.scene.mesh_replaced(handle);
         self.update_pool_stats();
         Ok(())
@@ -921,8 +941,14 @@ impl Renderer {
         self.prepared = packet.main_view().map(|view| PreparedFrame {
             camera: view.camera,
             cut: view.cut || unrecorded_cut,
-            constants: FrameUniforms::new(packet, lights),
+            constants: FrameUniforms::new(packet, lights, self.outline_distance),
         });
+        if let Some(view) = packet.main_view() {
+            let materials = &self.materials;
+            let params = |slot| materials.anime_character(slot);
+            let (list, slots) = (self.scene.draw_list(), self.scene.slots());
+            self.outlines.prepare(&view.camera, self.outline_distance, list, slots, params);
+        }
         self.sky.prepare(packet, &self.materials);
         // The lens flare follows the sun's disc as the main view sees it.
         let camera = packet.main_view().map(|view| view.camera);
@@ -942,7 +968,8 @@ impl Renderer {
         self.stats.transparent_draws = draws(|variant| variant.coverage == Coverage::Transparent);
         self.stats.face_draws = draws(|variant| variant.shading == Shading::Character(Part::Face));
         self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
-        self.stats.outline_draws = self.scene.outline_count();
+        let outlines = self.outlines.counts();
+        (self.stats.outline_draws, self.stats.outlines_culled) = (outlines.drawn, outlines.culled);
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
@@ -1059,6 +1086,7 @@ impl Renderer {
             ref meshes,
             ref mut materials,
             ref mut scene,
+            ref outlines,
             ref scene_bind_groups,
             ref skinning,
             ref mut post,
@@ -1085,6 +1113,7 @@ impl Renderer {
             },
             normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
             velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
+            outlines: graph.create_texture("outline mask", prepass_target(OUTLINES_FORMAT)),
             responsive: temporal
                 .is_some()
                 .then(|| graph.create_texture("responsive mask", temporal::responsive_desc(size))),
@@ -1103,6 +1132,7 @@ impl Renderer {
             records,
             skinned: skinning.outputs(),
             materials: material_records,
+            hulls: outlines.visible(),
         };
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
         let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
@@ -1193,8 +1223,9 @@ impl Renderer {
             .write(targets.depth)
             .write(targets.normals)
             .write(targets.velocity)
+            .write(targets.outlines)
             .record(move |ctx| {
-                let colors = [targets.normals, targets.velocity];
+                let colors = [targets.normals, targets.velocity, targets.outlines];
                 let mut pass = begin_prepass(ctx, "scene prepass", targets.depth, &colors, labels);
                 bind(&mut pass);
                 // Opaque and alpha-tested surfaces of every family, through one pipeline per
@@ -1221,6 +1252,33 @@ impl Renderer {
                     pass.set_pipeline(&pipelines.scene_prepass);
                     for variant in SurfaceVariant::DEPTH_WRITING {
                         mesh_draws.draw_deformed(&mut pass, prepass, variant, DrawSet::Surfaces);
+                    }
+                }
+                // Then the outline hulls, after every surface as in the main pass and with the
+                // same depths, writing their own velocity (M1 C4): temporal AA reprojects a line
+                // by its own motion. Every outlined variant shares one pipeline per format.
+                let hulls = MeshPass::OutlinePrepass;
+                for format in PositionFormat::ALL {
+                    let Some(pipeline) = pipelines.mesh(format).and_then(MeshPipelines::outline_prepass)
+                    else {
+                        continue;
+                    };
+                    if SurfaceVariant::OUTLINED.iter().any(|&variant| mesh_draws.has_static(format, variant))
+                    {
+                        pass.set_pipeline(pipeline);
+                        for variant in SurfaceVariant::OUTLINED {
+                            mesh_draws.draw_static(&mut pass, hulls, format, variant, DrawSet::Outlines);
+                        }
+                    }
+                }
+                let deformed_hulls =
+                    pipelines.mesh(PositionFormat::Float32).and_then(MeshPipelines::outline_prepass);
+                if let Some(pipeline) = deformed_hulls
+                    && SurfaceVariant::OUTLINED.iter().any(|&variant| mesh_draws.has_deformed(variant))
+                {
+                    pass.set_pipeline(pipeline);
+                    for variant in SurfaceVariant::OUTLINED {
+                        mesh_draws.draw_deformed(&mut pass, hulls, variant, DrawSet::Outlines);
                     }
                 }
             });
@@ -1305,8 +1363,9 @@ impl Renderer {
                     responsive,
                     drawn_depth: temporal_targets.depth,
                 };
+                let masks = TemporalMasks { characters: targets.character_depth, outlines: targets.outlines };
                 let slot = textures.write_slot();
-                passes.record(graph, targets.character_depth, inputs, temporal_targets, slot, labels);
+                passes.record(graph, masks, inputs, temporal_targets, slot, labels);
                 temporal_targets.output
             }
             _ => scene_color,
@@ -1355,6 +1414,15 @@ impl Renderer {
     /// (dynamic resolution moves in 5% steps).
     pub fn set_render_scale(&mut self, scale: f32) {
         self.render_scale = clamp_render_scale(scale);
+    }
+
+    /// Scales every material's outline LOD cutoff (M1 C4, `OutlineCurve::cutoff`) from the next
+    /// [`Self::prepare`]: below 1 lines stop nearer, fading out over the cutoff's last quarter as
+    /// always; 0 draws no hulls at all. The hook for the `r.outline_distance` cvar
+    /// ([`Quality::outline_distance`](crate::quality::Quality::outline_distance)), for tuning and
+    /// profiling. Clamped to at least 0, and 1 when it isn't finite.
+    pub fn set_outline_distance(&mut self, scale: f32) {
+        self.outline_distance = if scale.is_finite() { scale.max(0.0) } else { 1.0 };
     }
 
     /// The render scale the next [`Self::record`] uses.
@@ -1454,7 +1522,7 @@ fn begin_prepass<'p>(
     colors: &[TextureId],
     labels: bool,
 ) -> wgpu::RenderPass<'p> {
-    let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 2] = std::array::from_fn(|index| {
+    let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 3] = std::array::from_fn(|index| {
         colors.get(index).map(|&color| wgpu::RenderPassColorAttachment {
             view: ctx.view(color),
             depth_slice: None,

@@ -141,7 +141,7 @@ fn swatch_material(regions: [CharacterRegion; 4]) -> AnimeCharacterMaterial {
             .zip(outlines)
             .map(|(region, outline_color)| CharacterRegion { outline_color, ..region })
             .collect(),
-        outline: Outline { width: 3.5, z_offset: 0.0 },
+        outline: Outline { width: 3.5, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }

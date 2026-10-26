@@ -106,6 +106,67 @@ pub(crate) fn cuboid(half_extents: [f32; 3]) -> Geometry {
     geometry
 }
 
+/// A prism of `sides` flat faces around Y, its corners `radius` from the axis, `half_height`
+/// above and below the origin, capped: every edge hard, each face its own vertices.
+pub(crate) fn prism(sides: u32, radius: f32, half_height: f32) -> Geometry {
+    let corner = |k: u32, y: f32| {
+        let (sin, cos) = (TAU * k as f32 / sides as f32).sin_cos();
+        [radius * sin, y, radius * cos]
+    };
+    let mut geometry = Geometry::default();
+    for k in 0..sides {
+        // Counter-clockwise from outside: bottom k, bottom k + 1, top k + 1, top k.
+        let quad = [
+            corner(k, -half_height),
+            corner(k + 1, -half_height),
+            corner(k + 1, half_height),
+            corner(k, half_height),
+        ];
+        let middle = (k as f32 + 0.5) / sides as f32 * TAU;
+        flat_polygon(&mut geometry, &quad, [middle.sin(), 0.0, middle.cos()]);
+    }
+    let top: Vec<[f32; 3]> = (0..sides).map(|k| corner(k, half_height)).collect();
+    flat_polygon(&mut geometry, &top, [0.0, 1.0, 0.0]);
+    let bottom: Vec<[f32; 3]> = (0..sides).rev().map(|k| corner(k, -half_height)).collect();
+    flat_polygon(&mut geometry, &bottom, [0.0, -1.0, 0.0]);
+    geometry
+}
+
+/// A bipyramid (a cut gem): `sides` corners on a ring of `radius` at the origin, joined to
+/// apexes `half_height` above and below by flat faces, every edge hard.
+pub(crate) fn bipyramid(sides: u32, radius: f32, half_height: f32) -> Geometry {
+    let ring = |k: u32| {
+        let (sin, cos) = (TAU * k as f32 / sides as f32).sin_cos();
+        glam::Vec3::new(radius * sin, 0.0, radius * cos)
+    };
+    let mut geometry = Geometry::default();
+    for k in 0..sides {
+        for apex in [glam::Vec3::Y * half_height, glam::Vec3::NEG_Y * half_height] {
+            let (a, b) = (ring(k), ring(k + 1));
+            // Counter-clockwise from outside.
+            let triangle = if apex.y > 0.0 { [a, b, apex] } else { [b, a, apex] };
+            let normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]).normalize();
+            flat_polygon(&mut geometry, &triangle.map(|p| p.to_array()), normal.to_array());
+        }
+    }
+    geometry
+}
+
+/// Appends the convex polygon `corners` (counter-clockwise from outside) as a fan of its own
+/// vertices, all with the face's `normal`, and planar UVs.
+fn flat_polygon(geometry: &mut Geometry, corners: &[[f32; 3]], normal: [f32; 3]) {
+    let base = geometry.positions.len() as u32;
+    for (index, &corner) in corners.iter().enumerate() {
+        geometry.positions.push(corner);
+        geometry.normals.push(normal);
+        let angle = TAU * index as f32 / corners.len() as f32;
+        geometry.uvs.push([0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()]);
+    }
+    for k in 1..corners.len() as u32 - 1 {
+        geometry.indices.extend([base, base + k, base + k + 1]);
+    }
+}
+
 /// Points on a circular arc of `radius` centered at height `center_y`, by polar angle
 /// from +Y, inclusive of both ends.
 fn arc(radius: f32, center_y: f32, from: f32, to: f32, steps: u32) -> Vec<ProfilePoint> {
@@ -200,6 +261,9 @@ mod tests {
         assert_well_formed(&cuboid([1.0, 0.5, 2.0]), Vec3::ZERO);
         assert_well_formed(&sphere_cap(0.5, 1.8, 16, 8), Vec3::ZERO);
         assert_well_formed(&cylinder(0.5, 2.0, 16), Vec3::new(0.0, 1.0, 0.0));
+        assert_well_formed(&prism(6, 0.3, 0.4), Vec3::ZERO);
+        assert_well_formed(&prism(3, 0.3, 0.4), Vec3::ZERO);
+        assert_well_formed(&bipyramid(8, 0.3, 0.4), Vec3::ZERO);
     }
 
     #[test]

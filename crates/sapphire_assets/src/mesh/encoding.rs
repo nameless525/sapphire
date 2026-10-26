@@ -112,21 +112,27 @@ impl FloatPosition {
 
 packed!(
     /// The shading normal and the outline normal, each octahedral-encoded as snorm16 × 2
-    /// ([`oct_encode`]). 8 bytes, read as two `Snorm16x2`.
+    /// ([`oct_encode`]). 8 bytes, read as two `Snorm16x2`. The shading normal is in object
+    /// space; the outline normal in its tangent frame ([`outline_frame`], M1 C4).
     ///
-    /// Both directions are within 0.008° of the source. The two-tone light split is a hard
-    /// threshold on N·L, so normal error moves the terminator line directly: 8-bit octahedral
-    /// (about 1°) makes it wobble across a smooth face. The outline normal sets the hull's
-    /// extrusion and must stay as smooth as it was baked; 8 bits would save nothing anyway,
-    /// since the stream would be padded to 8 bytes.
+    /// Both directions are within 0.008° of the source (the outline normal within 0.016°, its
+    /// frame's normal being the encoded one). The two-tone light split is a hard threshold on
+    /// N·L, so normal error moves the terminator line directly: 8-bit octahedral (about 1°)
+    /// makes it wobble across a smooth face. The outline normal sets the hull's extrusion and
+    /// must stay as smooth as it was baked; 8 bits would save nothing anyway, since the stream
+    /// would be padded to 8 bytes.
     VertexShading,
     8
 );
 
 impl VertexShading {
+    /// Packs a shading normal and an outline normal, both in object space (need not be unit
+    /// length). The outline normal is stored in the tangent frame of the shading normal as the
+    /// shaders decode it.
     pub fn new(normal: [f32; 3], outline_normal: [f32; 3]) -> Self {
         let [a, b] = oct_encode(normal);
-        let [c, d] = oct_encode(outline_normal);
+        let tangent_space = to_outline_frame(oct_decode([a, b]), outline_normal);
+        let [c, d] = oct_encode(tangent_space);
         Self(pack_u16([a, b, c, d].map(|v| v as u16)))
     }
 
@@ -136,11 +142,77 @@ impl VertexShading {
         oct_decode([a as i16, b as i16])
     }
 
-    /// The unit outline normal.
+    /// The unit outline normal, in object space, as the shaders decode it.
     pub fn outline_normal(self) -> [f32; 3] {
+        from_outline_frame(self.normal(), self.outline_tangent_space())
+    }
+
+    /// The unit outline normal as stored: in the tangent frame of [`Self::normal`]
+    /// ([`outline_frame`]), so `[0, 0, 1]` is the shading normal itself.
+    pub fn outline_tangent_space(self) -> [f32; 3] {
         let [_, _, c, d] = unpack_u16(self.0);
         oct_decode([c as i16, d as i16])
     }
+}
+
+/// The axis outline tangent frames are built around ([`outline_frame`]; `OUTLINE_FRAME_AXIS` in
+/// `frame.wgsl`): a direction no modeled surface is likely to face exactly, far from the axes,
+/// their diagonals and common angles, since a frame built by crossing with it turns quickly for
+/// normals near it.
+pub const OUTLINE_FRAME_AXIS: [f32; 3] = [0.4, 0.55, 0.73];
+
+/// The axis used instead for normals within about 0.6° of ±[`OUTLINE_FRAME_AXIS`], 60° from it.
+pub const OUTLINE_FRAME_FALLBACK: [f32; 3] = [0.83, -0.31, 0.46];
+
+/// The squared length `OUTLINE_FRAME_AXIS × n` must exceed for the axis to build the frame.
+pub const OUTLINE_FRAME_MIN_CROSS: f32 = 1e-4;
+
+/// The tangent frame an outline normal is stored in (M1 C4, spec §5.12 "Outlines"): `(tangent,
+/// bitangent)` around the unit shading normal `n`, right-handed (`tangent × bitangent = n`).
+///
+/// The tangent is derived from `n` alone, `normalize(OUTLINE_FRAME_AXIS × n)`, so meshes carry
+/// no tangent stream: the shaders build the same frame from the normal they decode. A frame
+/// derived from the normal turns about it as the normal moves, so whatever deforms a mesh (compute
+/// skinning, morph targets) carries the outline normal from the bind pose's frame to the deformed
+/// one explicitly (`skinning.wgsl`), rather than the frame following by itself as a cooked tangent
+/// would. The axis is far from every direction meshes commonly face, and the frame's only
+/// sensitivity is near ±the axis: there a rounding difference of 1e-7 between the cooker's and a
+/// GPU's decode turns the frame by 1e-7 / sin(angle to the axis), under 0.001° beyond the
+/// fallback's 0.57°.
+pub fn outline_frame(n: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let mut tangent = cross(OUTLINE_FRAME_AXIS, n);
+    if dot(tangent, tangent) <= OUTLINE_FRAME_MIN_CROSS {
+        tangent = cross(OUTLINE_FRAME_FALLBACK, n);
+    }
+    let tangent = normalize(tangent);
+    (tangent, cross(n, tangent))
+}
+
+/// `outline_normal` (object space) in the tangent frame of the unit shading normal `n`.
+fn to_outline_frame(n: [f32; 3], outline_normal: [f32; 3]) -> [f32; 3] {
+    let (tangent, bitangent) = outline_frame(n);
+    [dot(outline_normal, tangent), dot(outline_normal, bitangent), dot(outline_normal, n)]
+}
+
+/// The inverse of [`to_outline_frame`] for a unit `tangent_space`, normalized, as `frame.wgsl`'s
+/// `outline_from_tangent_space` computes it.
+fn from_outline_frame(n: [f32; 3], tangent_space: [f32; 3]) -> [f32; 3] {
+    let (tangent, bitangent) = outline_frame(n);
+    let [x, y, z] = tangent_space;
+    normalize(std::array::from_fn(|i| tangent[i] * x + bitangent[i] * y + n[i] * z))
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let length = dot(v, v).sqrt();
+    if length > 0.0 { v.map(|c| c / length) } else { [0.0, 0.0, 1.0] }
 }
 
 packed!(
@@ -440,10 +512,79 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn outline_frames_are_orthonormal_and_right_handed_everywhere() {
+        let mut random = Random::new(13);
+        let mut normals: Vec<[f32; 3]> = (0..100_000).map(|_| random.direction()).collect();
+        // The axes, the frame's axis and fallback, and normals just either side of the switch
+        // between them.
+        let axis = normalize(OUTLINE_FRAME_AXIS);
+        let off_axis = normalize(cross(axis, [0.0, 0.0, 1.0]));
+        for tilt in [0.0f32, 0.005, 0.0099, 0.0101, 0.02] {
+            let tilted = std::array::from_fn(|i| axis[i] * tilt.cos() + off_axis[i] * tilt.sin());
+            normals.extend([tilted, tilted.map(|c: f32| -c)]);
+        }
+        normals.extend([
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            normalize(OUTLINE_FRAME_FALLBACK),
+        ]);
+        for n in normals {
+            let (t, b) = outline_frame(n);
+            let unit = |v: [f32; 3]| (dot(v, v) - 1.0).abs() < 1e-5;
+            assert!(unit(t) && unit(b), "{n:?}: {t:?} {b:?}");
+            assert!(dot(t, n).abs() < 1e-5 && dot(b, n).abs() < 1e-5 && dot(t, b).abs() < 1e-5, "{n:?}");
+            assert!(dot(cross(t, b), n) > 0.9999, "{n:?}: left-handed");
+        }
+    }
+
+    #[test]
+    fn outline_normals_are_stored_in_the_shading_normals_frame() {
+        let mut random = Random::new(17);
+        let mut worst = 0.0f64;
+        for _ in 0..100_000 {
+            let normal = random.direction();
+            // Outline normals up to about 70° from the shading normal, as at sharp creases.
+            let outline = normalize(std::array::from_fn(|i| normal[i] + 1.5 * random.direction()[i]));
+            let shading = VertexShading::new(normal, outline);
+            worst = worst.max(angle_degrees(shading.outline_normal(), outline));
+            let stored = shading.outline_tangent_space();
+            let along_normal = dot(outline, shading.normal());
+            assert!((stored[2] - along_normal).abs() < 1e-3, "z holds the part along the normal");
+        }
+        assert!(worst < 0.016, "worst outline normal error {worst:.5}°");
+        // An outline normal equal to the shading normal is the frame's +Z.
+        let smooth = VertexShading::new([0.3, -0.5, 0.81], [0.3, -0.5, 0.81]);
+        assert!(angle_degrees(smooth.outline_tangent_space(), [0.0, 0.0, 1.0]) < 0.008);
+    }
+
+    #[test]
+    fn split_vertices_decode_one_outline_normal() {
+        // A cube's corner: three split vertices, one per face, sharing the welded diagonal. Each
+        // stores it in its own face normal's frame; all three decode to the same direction, so
+        // the hull's corner stays closed. Likewise for random creases.
+        let diagonal = normalize([1.0, 1.0, 1.0]);
+        let faces = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let decoded = faces.map(|face| VertexShading::new(face, diagonal).outline_normal());
+        for pair in [(0, 1), (1, 2), (0, 2)] {
+            assert!(angle_degrees(decoded[pair.0], decoded[pair.1]) < 0.02, "{decoded:?}");
+        }
+        let mut random = Random::new(19);
+        let mut worst = 0.0f64;
+        for _ in 0..20_000 {
+            let welded = random.direction();
+            let split = [0, 1].map(|_| normalize(std::array::from_fn(|i| welded[i] + random.direction()[i])));
+            let [a, b] = split.map(|n| VertexShading::new(n, welded).outline_normal());
+            worst = worst.max(angle_degrees(a, b));
+        }
+        assert!(worst < 0.03, "split vertices' outline normals {worst:.5}° apart");
+    }
+
+    #[test]
     fn shading_and_surface_keep_their_parts() {
         let shading = VertexShading::new([0.0, 1.0, 0.0], [0.6, 0.0, -0.8]);
         assert_eq!(shading.normal(), [0.0, 1.0, 0.0]);
-        assert!(angle_degrees(shading.outline_normal(), [0.6, 0.0, -0.8]) < 0.008);
+        assert!(angle_degrees(shading.outline_normal(), [0.6, 0.0, -0.8]) < 0.016);
 
         let bounds = UvBounds { min: [0.0, -1.0], max: [1.0, 3.0] };
         let flags = VertexFlags::with_material_id(MaterialId::new(5).unwrap());

@@ -154,7 +154,7 @@ impl Program {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
             Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
             Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Environment],
-            Self::Outline => &[F::Frame, F::Materials, F::Outline],
+            Self::Outline => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter, F::Outline],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
@@ -335,7 +335,7 @@ mod tests {
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
         (Program::Environment, &["vs_environment", "fs_environment"]),
-        (Program::Outline, &["vs_outline", "fs_outline"]),
+        (Program::Outline, &["vs_outline", "fs_outline", "vs_outline_prepass", "fs_outline_prepass"]),
         (Program::Clusters, &["cs_clusters"]),
         (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
         (Program::Skinning, &["cs_skinning"]),
@@ -355,10 +355,11 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 5] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 6] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
+        (Program::Outline, "vs_outline_prepass", MeshPass::OutlinePrepass),
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
     ];
@@ -521,9 +522,10 @@ mod tests {
                         "{vertex_entry} location {location}: {shader:?} can't take {attribute:?} ({format:?})"
                     );
                 }
-                // The main pass's shaders read every stream they bind; a prepass may bind a
-                // stream for one of its attributes (the scene prepass ignores outline normals).
-                if pass == MeshPass::Main {
+                // The main pass's shaders read every stream they bind, as the hull's prepass
+                // does; a prepass may bind a stream for one of its attributes (the scene prepass
+                // ignores outline normals).
+                if pass == MeshPass::Main || pass == MeshPass::OutlinePrepass {
                     assert_eq!(
                         inputs.keys().collect::<Vec<_>>(),
                         attributes.keys().collect::<Vec<_>>(),
@@ -619,6 +621,9 @@ mod tests {
                     modes,
                     swizzles,
                     regions,
+                    outline_curve,
+                    outline_shape,
+                    outline_color,
                 }),
             ),
             (
@@ -690,6 +695,7 @@ mod tests {
                     lights,
                     clusters,
                     day_night,
+                    outline_distance,
                     ambient_sky,
                     ambient_ground,
                     shadow_tint,
@@ -1105,6 +1111,43 @@ mod tests {
         assert_eq!(wgsl_f32(&character, "MATERIAL_ID_LEVELS"), f32::from(MATERIAL_IDS));
         assert_eq!(wgsl_f32(&character, "FACE_MIRROR_BLEND"), face_sdf::MIRROR_BLEND);
         assert_eq!(wgsl_f32(&character, "PI"), std::f32::consts::PI);
+    }
+
+    /// The value of the WGSL `const` called `name`, a `vec3<f32>` of literals.
+    fn wgsl_vec3(module: &naga::Module, name: &str) -> [f32; 3] {
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no WGSL const {name}"));
+        let naga::Expression::Compose { ref components, .. } = module.global_expressions[constant.init]
+        else {
+            panic!("{name} is not a vector");
+        };
+        let value = |&handle: &naga::Handle<naga::Expression>| match module.global_expressions[handle] {
+            naga::Expression::Literal(naga::Literal::F32(value)) => value,
+            ref other => panic!("{name}: {other:?} is not an f32 literal"),
+        };
+        let values: Vec<f32> = components.iter().map(value).collect();
+        values.try_into().unwrap_or_else(|values| panic!("{name}: {values:?}"))
+    }
+
+    /// Outlines v2's numbers (M1 C4): the outline frame that frame.wgsl and skinning.wgsl build
+    /// as `sapphire_assets::mesh` does, and the outline curve's fade.
+    #[test]
+    fn wgsl_outline_constants_match_rust() {
+        use sapphire_assets::material::OutlineCurve;
+        use sapphire_assets::mesh::{OUTLINE_FRAME_AXIS, OUTLINE_FRAME_FALLBACK, OUTLINE_FRAME_MIN_CROSS};
+        for program in [Program::Outline, Program::AnimeCharacter, Program::Skinning] {
+            let module = validate(program);
+            assert_eq!(wgsl_vec3(&module, "OUTLINE_FRAME_AXIS"), OUTLINE_FRAME_AXIS, "{program:?}");
+            assert_eq!(wgsl_vec3(&module, "OUTLINE_FRAME_FALLBACK"), OUTLINE_FRAME_FALLBACK, "{program:?}");
+            assert_eq!(wgsl_f32(&module, "OUTLINE_FRAME_MIN_CROSS"), OUTLINE_FRAME_MIN_CROSS, "{program:?}");
+        }
+        let outline = validate(Program::Outline);
+        assert_eq!(wgsl_f32(&outline, "OUTLINE_CUTOFF_FADE"), OutlineCurve::FADE);
+        let tan = wgsl_f32(&outline, "OUTLINE_REFERENCE_TAN_HALF_FOV");
+        assert!((tan - 22.5f32.to_radians().tan()).abs() < 1e-7, "{tan}");
     }
 
     /// Every static permutation of every mesh pass specializes and validates: what each variant's

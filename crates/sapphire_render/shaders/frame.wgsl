@@ -37,6 +37,8 @@ struct FrameUniforms {
     clusters: vec4<f32>,
     // 0 by day, 1 at night, from time of day: the day/night ramp blend.
     day_night: f32,
+    // The scale on materials' outline LOD cutoffs (M1 C4, outline.wgsl).
+    outline_distance: f32,
     // Ambient light (time of day's `FramePacket::ambient`), color × intensity: rgb from the
     // sky above and from the ground below (see `ambient_light`).
     ambient_sky: vec4<f32>,
@@ -130,6 +132,37 @@ struct CharacterData {
 // unstyled GI, for instances that aren't characters.
 @group(0) @binding(3) var<storage, read> characters: array<CharacterData>;
 
+// What the scene prepass's vertex stages pass on (prepass.wgsl, and the outline hull's in
+// outline.wgsl).
+struct ScenePrepassVaryings {
+    @builtin(position) @invariant clip_position: vec4<f32>,
+    @location(0) world_normal: vec3<f32>,
+    // Unjittered clip positions now and when last drawn, divided per pixel so velocity is
+    // perspective-correct.
+    @location(1) current: vec4<f32>,
+    @location(2) previous: vec4<f32>,
+}
+
+// The scene prepass's color targets.
+struct ScenePrepassTargets {
+    // World-space unit normal, octahedral (`oct_encode`).
+    @location(0) normal: vec2<f32>,
+    // Motion since the last drawn frame in texture coordinates (x right, y down): the pixel was
+    // at `uv - velocity`.
+    @location(1) velocity: vec2<f32>,
+}
+
+// The scene prepass's targets for a pixel of a surface or hull.
+fn scene_prepass_targets(in: ScenePrepassVaryings) -> ScenePrepassTargets {
+    let current = in.current.xy / in.current.w;
+    let previous = in.previous.xy / in.previous.w;
+    var out: ScenePrepassTargets;
+    out.normal = oct_encode(safe_normalize(in.world_normal));
+    // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
+    out.velocity = (current - previous) * vec2<f32>(0.5, -0.5);
+    return out;
+}
+
 // A mesh vertex as stored: the packed streams of `sapphire_assets::mesh::VertexStreams`, in
 // vertex buffer slots 1–3 (`pipelines::{POSITION_*, SHADING, SURFACE}_ATTRIBUTES`), each bound
 // at the mesh's first vertex because indices are mesh-relative. `decode_vertex` unpacks it.
@@ -138,8 +171,9 @@ struct PackedVertex {
     // skinned or morphed instances (their skinning outputs, `skinning.wgsl`): xyz as they are,
     // w = 1 from the vertex fetch.
     @location(0) position: vec4<f32>,
-    // Slot 2: octahedral snorm16 × 2 each. The outline normal is averaged over every vertex
-    // sharing a position; outlines extrude along it.
+    // Slot 2: octahedral snorm16 × 2 each. The normal is in object space. The outline normal,
+    // averaged over every vertex sharing a position (outlines extrude along it), is in the
+    // normal's tangent frame (`outline_from_tangent_space`, M1 C4).
     @location(1) normal: vec2<f32>,
     @location(2) outline_normal: vec2<f32>,
     // Slot 3: unorm16 × 2 across the mesh's UV bounds, then the vertex color's character data
@@ -182,7 +216,7 @@ fn decode_vertex(packed: PackedVertex, draw: DrawRecord) -> MeshVertex {
     var vertex: MeshVertex;
     vertex.position = object_position(packed.position, draw);
     vertex.normal = oct_decode(packed.normal);
-    vertex.outline_normal = oct_decode(packed.outline_normal);
+    vertex.outline_normal = outline_from_tangent_space(vertex.normal, oct_decode(packed.outline_normal));
     vertex.uv = draw.uv_transform.xy + draw.uv_transform.zw * packed.uv;
     vertex.color = packed.color.rgb;
     // Unorm8 n arrives as n / 255, which rounds back exactly.
@@ -204,6 +238,41 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     let t = max(-z, 0.0);
     let xy = e + select(vec2<f32>(t), vec2<f32>(-t), e >= vec2<f32>(0.0));
     return normalize(vec3<f32>(xy, z));
+}
+
+// The octahedral encoding of a unit vector (Cigolle et al., JCGT 2014), the inverse of
+// `oct_decode`; a zero vector encodes +Z.
+fn oct_encode(n: vec3<f32>) -> vec2<f32> {
+    let l1 = abs(n.x) + abs(n.y) + abs(n.z);
+    var e = select(vec2<f32>(0.0), n.xy / l1, l1 > 0.0);
+    if n.z < 0.0 {
+        e = (1.0 - abs(e.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), e >= vec2<f32>(0.0));
+    }
+    return e;
+}
+
+// The tangent frame outline normals are stored in (M1 C4; `sapphire_assets::mesh::outline_frame`,
+// whose constants these mirror): the normal, and a tangent derived from it alone by crossing
+// with a fixed axis no modeled surface is likely to face, or a fallback axis within about 0.6°
+// of it. Meshes carry no tangents; deformations carry outline normals between frames themselves
+// (skinning.wgsl).
+const OUTLINE_FRAME_AXIS: vec3<f32> = vec3<f32>(0.4, 0.55, 0.73);
+const OUTLINE_FRAME_FALLBACK: vec3<f32> = vec3<f32>(0.83, -0.31, 0.46);
+const OUTLINE_FRAME_MIN_CROSS: f32 = 1e-4;
+
+// The outline frame's unit tangent for the unit normal `n`; the bitangent is `cross(n, tangent)`.
+fn outline_frame_tangent(n: vec3<f32>) -> vec3<f32> {
+    let tangent = cross(OUTLINE_FRAME_AXIS, n);
+    let fallback = cross(OUTLINE_FRAME_FALLBACK, n);
+    return normalize(select(fallback, tangent, dot(tangent, tangent) > OUTLINE_FRAME_MIN_CROSS));
+}
+
+// The unit outline normal stored as `tangent_space` in the outline frame of the unit normal `n`,
+// in `n`'s space.
+fn outline_from_tangent_space(n: vec3<f32>, tangent_space: vec3<f32>) -> vec3<f32> {
+    let tangent = outline_frame_tangent(n);
+    let bitangent = cross(n, tangent);
+    return normalize(tangent * tangent_space.x + bitangent * tangent_space.y + n * tangent_space.z);
 }
 
 // Normalizes, mapping a zero vector to zero instead of NaN.

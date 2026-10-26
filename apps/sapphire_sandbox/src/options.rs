@@ -75,6 +75,19 @@ pub(crate) struct Options {
     pub view: Option<(f32, f32)>,
     /// `--spin <radians per second>`: the turntable's speed instead of its default.
     pub spin: Option<f32>,
+    /// `--fov <degrees>`: the camera's vertical field of view instead of 43°, keeping the
+    /// framing (a narrow lens from farther away).
+    pub fov: Option<f32>,
+    /// `--zoom <factor>`: the camera's starting distance as a factor of the framing's.
+    pub zoom: Option<f32>,
+    /// `--outline-row`: place more of the character behind it, out to past the outline cutoff
+    /// (M1 C4).
+    pub outline_row: bool,
+    /// `--hard-edges`: show the hard-edged outline sample instead of the character (M1 C4).
+    pub hard_edges: bool,
+    /// `--outline-distance <scale>`: the scale on outlines' LOD cutoffs (`r.outline_distance`)
+    /// instead of 1; 0 draws none, for profiling.
+    pub outline_distance: Option<f32>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -191,6 +204,17 @@ impl Options {
         if let Some(speed) = self.spin {
             scene.set_spin(speed);
         }
+        if let Some(fov) = self.fov {
+            scene.camera_mut().set_fov(fov.to_radians());
+        }
+        if let Some(zoom) = self.zoom {
+            scene.camera_mut().set_zoom(zoom);
+        }
+        if let Some(scale) = self.outline_distance
+            && let Err(error) = sapphire_render::quality::OUTLINE_DISTANCE.set(scale)
+        {
+            tracing::warn!(target: crate::LOG_TARGET, %error, "--outline-distance");
+        }
     }
 
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
@@ -301,6 +325,29 @@ impl Options {
                     options.cloud_cover = Some(cover);
                 }
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
+                "--fov" => {
+                    let degrees: f32 = number(&value("--fov")?, "--fov")?;
+                    if !(5.0..=120.0).contains(&degrees) {
+                        return Err(format!("--fov expects 5 to 120 degrees, got {degrees}"));
+                    }
+                    options.fov = Some(degrees);
+                }
+                "--zoom" => {
+                    let factor: f32 = number(&value("--zoom")?, "--zoom")?;
+                    if !(factor.is_finite() && factor > 0.0) {
+                        return Err(format!("--zoom expects a positive factor, got {factor}"));
+                    }
+                    options.zoom = Some(factor);
+                }
+                "--outline-row" => options.outline_row = true,
+                "--hard-edges" => options.hard_edges = true,
+                "--outline-distance" => {
+                    let scale: f32 = number(&value("--outline-distance")?, "--outline-distance")?;
+                    if !(0.0..=4.0).contains(&scale) {
+                        return Err(format!("--outline-distance expects 0 to 4, got {scale}"));
+                    }
+                    options.outline_distance = Some(scale);
+                }
                 "--plain-sky" => options.plain_sky = true,
                 "--plain-post" => options.plain_post = true,
                 "--sharpening" => {
@@ -526,6 +573,23 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().0.sharpening, None);
         assert!(parse(&["--sharpening", "1.5"]).is_err());
         assert!(parse(&["--sharpening", "NaN"]).is_err());
+    }
+
+    #[test]
+    fn outline_options_set_the_scenes_the_lens_and_the_cutoff_scale() {
+        let args = ["--outline-row", "--hard-edges", "--fov", "20", "--zoom=0.6", "--outline-distance", "0"];
+        let (options, _) = parse(&args).unwrap();
+        assert!(options.outline_row && options.hard_edges);
+        assert_eq!((options.fov, options.zoom, options.outline_distance), (Some(20.0), Some(0.6), Some(0.0)));
+        let defaults = Options::default();
+        assert!(!defaults.outline_row && !defaults.hard_edges);
+        assert_eq!((defaults.fov, defaults.zoom, defaults.outline_distance), (None, None, None));
+        assert!(parse(&["--fov", "2"]).is_err());
+        assert!(parse(&["--fov", "150"]).is_err());
+        assert!(parse(&["--zoom", "0"]).is_err());
+        assert!(parse(&["--zoom", "inf"]).is_err());
+        assert!(parse(&["--outline-distance", "-1"]).is_err());
+        assert!(parse(&["--outline-distance", "5"]).is_err());
     }
 
     #[test]

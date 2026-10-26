@@ -62,7 +62,7 @@ fn flat(rgb: [f32; 3], outline_px: f32) -> AnimeCharacterMaterial {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: outline_px, z_offset: 0.0 },
+        outline: Outline { width: outline_px, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     }
 }
@@ -138,7 +138,7 @@ fn rectangles(rects: &[[[f32; 2]; 2]], material: &AnimeCharacterMaterial) -> Mes
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     let material =
-        AnimeCharacterMaterial { outline: Outline { width: 0.0, z_offset: 0.0 }, ..material.clone() };
+        AnimeCharacterMaterial { outline: Outline { width: 0.0, ..Outline::default() }, ..material.clone() };
     mesh(&vertices, indices, &material)
 }
 

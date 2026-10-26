@@ -143,6 +143,12 @@ impl App for SandboxApp {
         if let Some(courtyard) = renderer.courtyard {
             scene.spawn_environment(courtyard);
         }
+        if options.outline_row {
+            scene.spawn_outline_row(renderer.character);
+        }
+        if let Some(mesh) = renderer.hard_edges {
+            scene.spawn_hard_edges(mesh);
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
@@ -347,6 +353,7 @@ impl SandboxApp {
             if let Some(frame) = frame {
                 let timing = FrameTiming::new(&self.graph, self.frame_time);
                 self.renderer.set_render_scale(self.quality.render_scale(frame.size(), &timing));
+                self.renderer.set_outline_distance(self.quality.outline_distance());
                 // The overlay's own frame is no stage of the game's; its panel shows its cost.
                 #[cfg(feature = "dev")]
                 let overlay = {
@@ -625,6 +632,8 @@ struct SceneRenderer {
     face_head: Option<MeshHandle>,
     /// The courtyard, with `--environment`.
     courtyard: Option<MeshHandle>,
+    /// The hard-edged outline sample, with `--hard-edges`.
+    hard_edges: Option<MeshHandle>,
     /// The zone's sky material.
     sky: MaterialHandle,
 }
@@ -645,6 +654,10 @@ impl Scene {
         }
         if let Some(courtyard) = renderer.courtyard {
             self.set_courtyard_mesh(courtyard);
+        }
+        self.set_outline_row_mesh(renderer.character);
+        if let Some(mesh) = renderer.hard_edges {
+            self.set_hard_edges_mesh(mesh);
         }
     }
 }
@@ -691,20 +704,24 @@ fn create_renderer(
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
         let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
+        let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let sky = content.sky_material(&mut renderer, gpu)?;
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, sky))
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, sky))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, sky)) => Ok(SceneRenderer {
-            renderer,
-            character,
-            character_bounds,
-            stalk,
-            swatches,
-            face_head,
-            courtyard,
-            sky,
-        }),
+        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, sky)) => {
+            Ok(SceneRenderer {
+                renderer,
+                character,
+                character_bounds,
+                stalk,
+                swatches,
+                face_head,
+                courtyard,
+                hard_edges,
+                sky,
+            })
+        }
         Err(error) => {
             content.keep_renderer(previous);
             Err(error)

@@ -78,7 +78,7 @@ fn sphere(rgb: [f32; 3], outline_px: f32) -> Mesh {
             ..CharacterRegion::default()
         }],
         rim: Rim { strength: 0.0, ..Rim::default() },
-        outline: Outline { width: outline_px, z_offset: 0.0 },
+        outline: Outline { width: outline_px, ..Outline::default() },
         ..AnimeCharacterMaterial::default()
     };
     let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];

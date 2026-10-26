@@ -28,11 +28,11 @@
 //! game's input, applies its time and time-of-day controls before each fixed step and draws after
 //! post; the cvar registry it edits, holding the sandbox's cvars (`cvars.rs`, compiled in every
 //! build so they read their defaults) and the renderer's quality cvars (`r.tier`,
-//! `r.render_scale`, `r.dynamic_resolution`); hot reload (`reload.rs`, M1 A8), on by default on
-//! desktop: rewritten packs in the content root are remounted and their changed assets replaced
-//! in place, edited WGSL rebuilds the renderer's pipelines, an edited `default_day.ron` replaces
-//! time of day's timeline and an edited `default_light_rigs.ron` the character light rig
-//! presets, all without a restart; and live link (`link.rs`, M1 A9), on by default on every
+//! `r.render_scale`, `r.dynamic_resolution`, `r.outline_distance`); hot reload (`reload.rs`, M1
+//! A8), on by default on desktop: rewritten packs in the content root are remounted and their
+//! changed assets replaced in place, edited WGSL rebuilds the renderer's pipelines, an edited
+//! `default_day.ron` replaces time of day's timeline and an edited `default_light_rigs.ron` the
+//! character light rig presets, all without a restart; and live link (`link.rs`, M1 A9), on by default on every
 //! platform, listening on the loopback interface (127.0.0.1:7811): `cargo xtask link` pushes
 //! the same edits from the desktop (packs, sending only the assets that changed; the two
 //! documents; WGSL sources) and sets cvars, on a phone as on the desktop.
@@ -65,6 +65,15 @@
 //! - `--environment`: place the character in the courtyard, the environment shader's test scene
 //!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
 //!   M1 W4), seen from farther back.
+//! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
+//!   the outline cutoff, showing the outline width's distance curve (M1 C4).
+//! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
+//!   shapes whose cooked outline normals keep every corner's hull closed (M1 C4).
+//! - `--outline-distance <0..4>`: the scale on every material's outline LOD cutoff
+//!   (`r.outline_distance`, 1 by default); 0 draws no outlines, for profiling.
+//! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
+//!   a narrow lens from farther away.
+//! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
@@ -128,6 +137,7 @@ mod link;
 mod offscreen;
 mod options;
 mod orbit;
+mod outlines;
 #[cfg(feature = "dev")]
 mod reload;
 mod scene;

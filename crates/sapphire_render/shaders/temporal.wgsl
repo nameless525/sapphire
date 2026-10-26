@@ -8,7 +8,8 @@
 //   1  pass      the textures one pass reads and writes:
 //
 //      pass        bindings
-//      mask        0 character depth, 1 scene depth (both the scene's size, from the prepasses)
+//      mask        0 character depth, 1 scene depth, 2 the outline mask (all the scene's size,
+//                  from the prepasses)
 //      resolve     0 scene color, 1 scene depth, 2 velocity, 3 responsive mask, 4 this frame's
 //                  drawn depth (all the scene's size), 5 history (the output's size), 6 last
 //                  frame's drawn depth (last frame's scene size), 7 the resolved frame (written,
@@ -60,6 +61,7 @@ struct TemporalUniforms {
 // The mask pass's textures.
 @group(1) @binding(0) var character_depth: texture_depth_2d;
 @group(1) @binding(1) var mask_scene_depth: texture_depth_2d;
+@group(1) @binding(2) var outline_mask: texture_2d<f32>;
 
 // The resolve's textures (the same group, another layout).
 @group(1) @binding(0) var scene_color: texture_2d<f32>;
@@ -86,15 +88,18 @@ fn vs_fullscreen(@builtin(vertex_index) index: u32) -> FullscreenVaryings {
     return out;
 }
 
-// The responsive mask (R8Unorm, the scene's size): 1 where a character is the nearest surface.
-// The character prepass writes the same depth as the scene prepass there, bit for bit, and less
-// where something stands in front; it is cleared to 0 where no character is.
+// The responsive mask (R8Unorm, the scene's size): 1 where a character or an outline hull is the
+// nearest surface. The character prepass writes the same depth as the scene prepass there, bit
+// for bit, and less where something stands in front; it is cleared to 0 where no character is.
+// The scene prepass's outline mask is 1 where a hull is nearest (M1 C4): lines, whatever they
+// outline, keep less history in motion, as Blue Protocol protects its outlines from blur.
 @fragment
 fn fs_responsive_mask(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(in.position.xy);
     let character = textureLoad(character_depth, pixel, 0);
     let scene = textureLoad(mask_scene_depth, pixel, 0);
-    return vec4<f32>(select(0.0, 1.0, character > 0.0 && character >= scene), 0.0, 0.0, 0.0);
+    let outline = textureLoad(outline_mask, pixel, 0).r;
+    return vec4<f32>(select(0.0, 1.0, (character > 0.0 && character >= scene) || outline > 0.5), 0.0, 0.0, 0.0);
 }
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -367,15 +372,16 @@ fn cs_temporal_resolve(
     }
     var source_pixel = clamp(tile_origin + vec2<i32>(vec2<u32>(source % TILE, source / TILE)), vec2<i32>(0), last);
     // Where the main pass drew something clearly nearer than the scene prepass saw, that
-    // something writes no velocity: the outline hull, until C4 draws it into the prepass. It
-    // moves with the edge it outlines, which no surface pixel's velocity quite gives: on a body
-    // turning about its own axis the surface slides a pixel inside the silhouette while the
-    // silhouette, and so its outline, holds still. So outlines are responsive, as Blue Protocol
-    // protects its outlines from blur: the current frame's opaque line outweighs a history
-    // fetched from slightly the wrong place. Pixels a hull covers part of the neighborhood of,
-    // in front of their own surface, follow it too, as a silhouette's edge pixels follow the
-    // silhouette: the outline's antialiased edges, which this frame's jittered hull may miss,
-    // would otherwise keep a still history of what the outline is moving over.
+    // something writes no velocity: the outline hull, until M1 C4 drew it into the prepass with
+    // its own velocity and depth, so since then hull pixels don't take this branch (P1 removes
+    // it). It moves with the edge it outlines, which no surface pixel's velocity quite gives: on
+    // a body turning about its own axis the surface slides a pixel inside the silhouette while
+    // the silhouette, and so its outline, holds still. So outlines are responsive, as Blue
+    // Protocol protects its outlines from blur: the current frame's opaque line outweighs a
+    // history fetched from slightly the wrong place. Pixels a hull covers part of the
+    // neighborhood of, in front of their own surface, follow it too, as a silhouette's edge
+    // pixels follow the silhouette: the outline's antialiased edges, which this frame's jittered
+    // hull may miss, would otherwise keep a still history of what the outline is moving over.
     let drawn = tile_other[center_index].y;
     let hull = neighborhood.hull_depth;
     if hull > own_depth * (1.0 + taa.jitter.w) {

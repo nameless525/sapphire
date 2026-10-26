@@ -90,6 +90,10 @@ pub(crate) struct Options {
     pub outline_distance: Option<f32>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
+    /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
+    /// GPU after it, logging each at debug level, so a GPU crash, hang or device loss names its
+    /// pass (`GraphExecutor::set_serial`). Slow; for debugging.
+    pub serial_passes: bool,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
     /// default ones). Only `dev` builds have it.
     pub debug_overlay: Option<String>,
@@ -358,6 +362,7 @@ impl Options {
                     options.sharpening = Some(amount);
                 }
                 "--no-hot-reload" => options.no_hot_reload = true,
+                "--serial-passes" => options.serial_passes = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {
                     let speed: f32 = number(&value("--spin")?, "--spin")?;
@@ -595,6 +600,7 @@ mod tests {
     #[test]
     fn hot_reload_is_on_unless_turned_off() {
         assert!(!parse(&[]).unwrap().0.no_hot_reload);
+        assert!(parse(&["--serial-passes"]).unwrap().0.serial_passes && !Options::default().serial_passes);
         let (options, unknown) = parse(&["--no-hot-reload", "--bench", "10"]).unwrap();
         assert!(options.no_hot_reload && unknown.is_empty());
     }

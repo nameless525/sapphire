@@ -9,6 +9,7 @@ use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
+use crate::LOG_TARGET;
 use crate::characters::GpuCharacter;
 use crate::environment::{self, EnvironmentSettings};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
@@ -1019,7 +1020,9 @@ impl PipelineTarget {
     ) -> wgpu::RenderPipeline {
         let entry = name.replace(' ', "_");
         let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let targets = color_targets.len();
+        tracing::debug!(target: LOG_TARGET, pipeline = name, targets, "building a mesh pipeline");
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(name),
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
@@ -1050,7 +1053,9 @@ impl PipelineTarget {
             }),
             multiview_mask: None,
             cache: self.cache.as_ref(),
-        })
+        });
+        tracing::debug!(target: LOG_TARGET, pipeline = name, "built a mesh pipeline");
+        pipeline
     }
 
     fn build_with(
@@ -1068,7 +1073,9 @@ impl PipelineTarget {
         let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
         let compilation_options =
             wgpu::PipelineCompilationOptions { constants: pass.constants, ..Default::default() };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let (pipeline, samples) = (pass.name, self.sample_count);
+        tracing::debug!(target: LOG_TARGET, pipeline, samples, constants = ?pass.constants, "building a mesh pipeline");
+        let built = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(pass.name),
             layout: Some(layout),
             vertex: wgpu::VertexState {
@@ -1099,7 +1106,9 @@ impl PipelineTarget {
             }),
             multiview_mask: None,
             cache: self.cache.as_ref(),
-        })
+        });
+        tracing::debug!(target: LOG_TARGET, pipeline, "built a mesh pipeline");
+        built
     }
 }
 

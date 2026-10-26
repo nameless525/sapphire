@@ -133,7 +133,11 @@ impl Stage {
             stages: None,
             renderer,
             content,
-            graph: GraphExecutor::new(),
+            graph: {
+                let mut graph = GraphExecutor::new();
+                graph.set_serial(options.serial_passes);
+                graph
+            },
             scene,
             quality,
             measure_gpu: false,

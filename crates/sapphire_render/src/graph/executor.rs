@@ -6,6 +6,7 @@ use super::plan::{Access, PassNode, Plan};
 use super::report::GraphReport;
 use super::timing::{self, FrameQueries, FrameTimer, GpuTimings, PassTimestamps};
 use super::{FrameGraph, GraphError, GraphStats, PassContext, RecordFn, Resolved};
+use crate::LOG_TARGET;
 
 /// Below this many passes, everything is recorded into one encoder on the calling thread:
 /// a job scope costs more than recording a few passes.
@@ -29,6 +30,8 @@ pub struct GraphExecutor {
     report: Option<GraphReport>,
     /// Present while GPU timing is on ([`Self::set_gpu_timing`]).
     timer: Option<Box<dyn FrameTimer>>,
+    /// Each pass submitted and waited for on its own ([`Self::set_serial`]).
+    serial: bool,
 }
 
 /// A running pass, handed to whichever thread records it.
@@ -84,6 +87,18 @@ impl GraphExecutor {
                 timed: false,
             })
             .collect();
+        // The first frame's passes, for a crash or a device loss before anything is drawn: the
+        // log then shows what was about to run.
+        if self.frames == 1 {
+            let passes: Vec<&str> = jobs.iter().map(|job| job.pass.name).collect();
+            let culled = shape.passes.len() - jobs.len();
+            tracing::debug!(target: LOG_TARGET, ?passes, culled, serial = self.serial, "first frame graph");
+        }
+        if self.serial {
+            self.execute_serially(gpu, &textures, &shape.accesses, &mut jobs);
+            self.stats = self.frame_stats(shape.passes.len(), jobs.len());
+            return Ok(());
+        }
 
         let encoders = if jobs.len() < PARALLEL_MIN_PASSES {
             1
@@ -115,14 +130,7 @@ impl GraphExecutor {
             })
         };
         let timed = recorder.queries.is_some();
-        self.stats = GraphStats {
-            passes: self.plan.passes.len() as u32,
-            culled: (shape.passes.len() - self.plan.passes.len()) as u32,
-            transients: self.plan.slots.iter().flatten().count() as u32,
-            transient_slots: self.plan.slot_descs.len() as u32,
-            command_buffers: command_buffers.len() as u32,
-            pool: self.pool.stats(),
-        };
+        self.stats = self.frame_stats(shape.passes.len(), command_buffers.len());
         if let Some(report) = &mut self.report {
             report.fill(&shape, &self.plan, chunk_len);
         }
@@ -135,6 +143,56 @@ impl GraphExecutor {
             timer.submitted();
         }
         Ok(())
+    }
+
+    /// This frame's counters, for a graph of `passes` passes recorded into `command_buffers`.
+    fn frame_stats(&self, passes: usize, command_buffers: usize) -> GraphStats {
+        GraphStats {
+            passes: self.plan.passes.len() as u32,
+            culled: (passes - self.plan.passes.len()) as u32,
+            transients: self.plan.slots.iter().flatten().count() as u32,
+            transient_slots: self.plan.slot_descs.len() as u32,
+            command_buffers: command_buffers as u32,
+            pool: self.pool.stats(),
+        }
+    }
+
+    /// Records `jobs` one per command buffer, submitting each and waiting for the GPU to finish
+    /// it before recording the next, with a debug-level log line before and after each: which
+    /// pass a GPU crash, hang or device loss comes from ([`Self::set_serial`]). Untimed.
+    fn execute_serially(
+        &self,
+        gpu: &GpuContext,
+        textures: &[Option<Resolved<'_>>],
+        accesses: &[Access],
+        jobs: &mut [Job<'_, '_>],
+    ) {
+        let recorder = Recorder {
+            device: gpu.device(),
+            labels: gpu.label("").is_some(),
+            textures,
+            accesses,
+            queries: None,
+        };
+        let frame = self.frames;
+        for job in jobs.iter_mut() {
+            let pass = job.pass.name;
+            tracing::debug!(target: LOG_TARGET, frame, pass, "pass: recording and submitting");
+            let buffer = recorder.record(std::slice::from_mut(job));
+            gpu.queue().submit([buffer]);
+            if let Err(error) = gpu.device().poll(wgpu::PollType::wait_indefinitely()) {
+                tracing::warn!(target: LOG_TARGET, frame, pass, %error, "pass: waiting for the GPU failed");
+            }
+            tracing::debug!(target: LOG_TARGET, frame, pass, "pass: finished on the GPU");
+        }
+    }
+
+    /// Submits each pass on its own and waits for the GPU to finish it before the next, logging
+    /// each at debug level (off by default). For debugging only: it serializes the CPU and the
+    /// GPU and turns GPU timing off for the frames it runs, but a GPU crash, hang or device loss
+    /// then names its pass in the log, even on drivers that report nothing (CPU rasterizers).
+    pub fn set_serial(&mut self, serial: bool) {
+        self.serial = serial;
     }
 
     /// Counters from the last [`Self::execute`].

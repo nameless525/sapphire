@@ -111,6 +111,9 @@
 //!     the scene holds still at tick N; 1: it plays at 60 fps up to tick N).
 //!   - `--bench <frames>`: run the per-frame CPU path that many times and log CPU time and
 //!     allocations per frame, then GPU pass times.
+//!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
+//!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
+//!     log, even on drivers that report nothing. Slow; for debugging.
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 //!

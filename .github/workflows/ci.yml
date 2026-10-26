@@ -177,6 +177,32 @@ jobs:
           Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
       - name: Golden images
         run: cargo --locked xtask --locked golden
+      # When a scene fails, what explains a crash goes up with the captures: the sandbox's
+      # minidumps (its crash capture writes them under the platform's cache directory) with the
+      # Windows executable's debug info, and the first scene re-run with the backend's validation
+      # on and every frame graph pass submitted on its own (`--serial-passes`), whose debug log
+      # names the pass a GPU crash or device loss comes from.
+      - name: Gather crash diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          out=target/golden/crashes
+          mkdir -p "$out"
+          # Metal's validation is broken on the paravirtual device (above).
+          debug=validation
+          content="$PWD/target/content/desktop"
+          case "$RUNNER_OS" in
+            Windows) cache="$(cygpath -u "$LOCALAPPDATA")"; content="$(cygpath -w "$content")" ;;
+            macOS) cache="$HOME/Library/Caches"; debug=none ;;
+            *) cache="${XDG_CACHE_HOME:-$HOME/.cache}" ;;
+          esac
+          cp -R "$cache/Sapphire/Sapphire Sandbox/crashes/." "$out/" 2>/dev/null || echo "no crash reports"
+          cp target/debug/sapphire_sandbox.pdb "$out/" 2>/dev/null || true
+          SAPPHIRE_GPU_DEBUG=$debug SAPPHIRE_CONTENT_DIR="$content" target/debug/sapphire_sandbox \
+            --capture "$out/serial-passes.png" --size 640x360 --capture-ticks 0 --plain-post --plain-sky \
+            --aa msaa --serial-passes > "$out/serial-passes.log" 2>&1 \
+            || echo "the serial-passes run failed with exit code $?"
+          tail -n 30 "$out/serial-passes.log"
       # Every run keeps its captures briefly, not just failing ones, so drift within the gates
       # (shader codegen rounding on llvmpipe, say) can be re-baselined from a passing run.
       - name: Upload captures and diffs

@@ -189,3 +189,66 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
     executor.set_gpu_timing(&gpu, false);
     assert!(executor.gpu_timings().is_none(), "turning timing off drops it");
 }
+
+#[test]
+#[ignore = "needs a GPU"]
+fn serial_passes_submit_one_command_buffer_each_and_draw_the_same() {
+    let gpu = gpu();
+    let target_texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: USAGE,
+        view_formats: &[],
+    });
+    let target_view = target_texture.create_view(&Default::default());
+    let padded = (SIZE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let readback = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(padded * SIZE),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let mut executor = GraphExecutor::new();
+    executor.set_serial(true);
+    let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", &target_view);
+    let mut previous = graph.create_texture("source", desc());
+    clear(&mut graph, "clear source", previous, wgpu::Color::BLUE);
+    for name in ["copy 1", "copy 2", "copy 3", "copy 4", "copy 5"] {
+        let next = graph.create_texture(name, desc());
+        copy(&mut graph, name, previous, next);
+        previous = next;
+    }
+    copy(&mut graph, "to target", previous, target);
+    let readback_buffer = &readback;
+    graph.add_pass("readback").read(target).side_effect().record(move |ctx| {
+        let texture = ctx.texture(target);
+        ctx.encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: readback_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(SIZE),
+                },
+            },
+            texture.size(),
+        );
+    });
+    executor.execute(&gpu, graph).expect("a valid graph");
+    assert!(pollster::block_on(scope.pop()).is_none());
+
+    readback.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+    gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let pixels = readback.get_mapped_range(..).expect("mapped");
+    assert_eq!(pixels[..4], [0, 0, 255, 255], "the source's blue reached the target");
+    let stats = executor.stats();
+    assert_eq!((stats.passes, stats.command_buffers), (8, 8), "one command buffer a pass: {stats:?}");
+}

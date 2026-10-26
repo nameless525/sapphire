@@ -247,8 +247,7 @@ fn upload(renderer: &mut Renderer, mesh: &Mesh) -> MeshHandle {
 }
 
 const SKY_RETURN: &str = "return vec4<f32>(fogged_sky(color, dir), 1.0);";
-const CHARACTER_RETURN: &str =
-    "return vec4<f32>(fogged_color, select(world, shaded.alpha, PERMUTATION_TRANSPARENT));";
+const CHARACTER_RETURN: &str = "return vec4<f32>(fogged_color, alpha);";
 
 #[test]
 #[ignore = "needs a GPU"]
@@ -281,7 +280,7 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
         &blue_sky,
         ShaderFile::AnimeCharacter,
         CHARACTER_RETURN,
-        "return vec4<f32>(shaded.color.bgr, select(world, shaded.alpha, PERMUTATION_TRANSPARENT));",
+        "return vec4<f32>(shaded.color.bgr, alpha);",
     );
     let update = frames.renderer.set_shader_sources(&swapped).expect("a valid edit");
     assert_eq!(update, ShaderUpdate { programs: 2, pipelines: 3 });
@@ -293,11 +292,12 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     // too, with no pipeline built from them yet, the shadow passes', M1 R4, which build nothing
     // with shadows off, and the ambient pass's, M1 W5, which builds nothing without a grid or
     // GTAO), and every pipeline built from them (the sky's six, surface, outline, scene prepass,
-    // outline prepass, character prepass, light clusters).
+    // outline prepass, the character prepass's two (hair's writes one ID, M1 C6), light
+    // clusters).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 12 });
+    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 13 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -519,13 +519,14 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     let update = frames.renderer.set_shader_sources(&outline).unwrap();
     assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 3 });
     assert_eq!(frames.render(&gpu), before);
-    // The shared file: the sky's six, four surfaces, two outlines, the scene, outline and
-    // character prepasses and the light clusters (and the environment's, fog cards' and
-    // foliage's programs, which built no pipeline, the shadow passes', unbuilt with shadows off,
-    // and the ambient pass's, unbuilt without a grid or GTAO, M1 W5).
+    // The shared file: the sky's six, four surfaces, two outlines, the scene and outline
+    // prepasses, the character prepass's two (hair's writes one ID, M1 C6) and the light
+    // clusters (and the environment's, fog cards' and foliage's programs, which built no
+    // pipeline, the shadow passes', unbuilt with shadows off, and the ambient pass's, unbuilt
+    // without a grid or GTAO, M1 W5).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 16 });
+    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 17 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 6, "the same set, rebuilt");
 }

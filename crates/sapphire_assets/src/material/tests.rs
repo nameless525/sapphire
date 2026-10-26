@@ -523,3 +523,95 @@ fn version_1_documents_upgrade() {
     let written = AnyMaterialDocument::AnimeCharacter(material).to_ron().unwrap();
     assert!(written.contains("version: 2"), "{written}");
 }
+
+/// Eye layers (M1 C6): the layer and its settings pack into the block's eye fields, overlays
+/// blend and the eye doesn't, and an eye document from before the layers cooks to the same
+/// block it did.
+#[test]
+fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
+    let eye = |layer, alpha| AnimeCharacterMaterial {
+        surface: CharacterSurface::Eye(EyeShading {
+            layer,
+            parallax: 0.002,
+            iris: Some(IrisShape { center: [0.4, 0.55], radius: [0.3, 0.35] }),
+            through_hair: Some(ThroughHair::default()),
+            ..EyeShading::default()
+        }),
+        alpha,
+        outline: Outline { width: 0.0, ..Outline::default() },
+        ..Default::default()
+    };
+    let identity = [Swizzle::IDENTITY; 8];
+    let params = eye(EyeLayer::Iris, AlphaMode::Blend).gpu_params(&identity);
+    assert_eq!(params.surface, [0.002, 0.0, 0.0, 0.0]);
+    assert_eq!(params.surface_color, [0.4, 0.55, 0.3, 0.35]);
+    assert_eq!(AnimeCharacterParams::eye_layer(params.modes), AnimeCharacterParams::EYE_LAYER_IRIS);
+    let motion = HighlightMotion { drift: 0.001, drift_rate: 0.5, sparkle: 0.25, sparkle_rate: 2.0 };
+    let highlight = eye(EyeLayer::Highlight(motion), AlphaMode::Blend);
+    let params = highlight.gpu_params(&identity);
+    assert_eq!(params.surface_color, [0.001, 0.5, 0.25, 2.0], "a highlight's motion, not the iris");
+    assert_eq!(params.modes[3], AnimeCharacterParams::EYE_LAYER_HIGHLIGHT << 16);
+    // Overlays are transparent eyes that draw through hair over their eye; the eye isn't.
+    assert_eq!(
+        highlight.flags(),
+        MaterialFlags::EYE | MaterialFlags::TRANSPARENT | MaterialFlags::THROUGH_HAIR
+    );
+    let shadow = eye(EyeLayer::Shadow, AlphaMode::Blend).gpu_params(&identity);
+    assert_eq!((shadow.surface_color, AnimeCharacterParams::eye_layer(shadow.modes)), ([0.0; 4], 1));
+    // Drawing order is the layers' order.
+    let order =
+        [EyeLayer::Eye, EyeLayer::Shadow, EyeLayer::Iris, EyeLayer::Highlight(motion)].map(EyeLayer::index);
+    assert_eq!(order, [0, 1, 2, 3]);
+    // Another surface reads as the eye itself, whatever its high bits hold.
+    let hair = AnimeCharacterMaterial {
+        surface: CharacterSurface::Hair(HairShading {
+            highlight: HairHighlight { style: HighlightStyle::KajiyaKay, ..HairHighlight::default() },
+            ..HairShading::default()
+        }),
+        ..Default::default()
+    };
+    let params = hair.gpu_params(&identity);
+    assert_eq!((params.modes[3] >> 8, AnimeCharacterParams::eye_layer(params.modes)), (2, 0));
+
+    // An eye material from before C6 (the eye layer, no iris) packs as it did: nothing in the
+    // eye's new fields, so its cooked block is unchanged.
+    let before = AnimeCharacterMaterial {
+        surface: CharacterSurface::Eye(EyeShading { parallax: 0.0, ..EyeShading::default() }),
+        ..Default::default()
+    };
+    let params = before.gpu_params(&identity);
+    assert_eq!((params.surface, params.surface_color, params.modes[3]), ([0.0; 4], [0.0; 4], 0));
+    let text = r#"(type: "sapphire::render::AnimeCharacterMaterial", version: 2, data: (
+        surface: Eye((mask_map: None, parallax: 0.0, through_hair: None)),
+    ))"#;
+    let AnyMaterialDocument::AnimeCharacter(read) = AnyMaterialDocument::from_ron(text).unwrap() else {
+        panic!("an anime character material");
+    };
+    assert_eq!(read.surface, before.surface, "C5's eye documents read as the eye layer");
+
+    // Overlays must blend and the eye mustn't; the iris needs a positive size and the depth
+    // and motion can't be negative.
+    let error = |material: AnimeCharacterMaterial| material.validate().unwrap_err().to_string();
+    assert!(error(eye(EyeLayer::Iris, AlphaMode::Opaque)).starts_with("alpha"));
+    assert!(error(eye(EyeLayer::Eye, AlphaMode::Blend)).starts_with("alpha"));
+    assert!(eye(EyeLayer::Eye, AlphaMode::Mask { cutoff: 0.5 }).validate().is_ok());
+    let edited = |edit: fn(&mut EyeShading)| {
+        let mut material = eye(EyeLayer::Iris, AlphaMode::Blend);
+        let CharacterSurface::Eye(shading) = &mut material.surface else { unreachable!() };
+        edit(shading);
+        error(material)
+    };
+    assert!(edited(|e| e.parallax = -0.001).starts_with("surface.parallax"));
+    assert!(
+        edited(|e| e.iris = Some(IrisShape { radius: [0.0, 0.2], ..IrisShape::default() }))
+            .starts_with("surface.iris.radius")
+    );
+    assert!(
+        edited(|e| e.iris = Some(IrisShape { center: [f32::NAN, 0.5], ..IrisShape::default() }))
+            .starts_with("surface.iris.center")
+    );
+    assert!(
+        edited(|e| e.layer = EyeLayer::Highlight(HighlightMotion { sparkle: -1.0, ..Default::default() }))
+            .starts_with("surface.layer.sparkle")
+    );
+}

@@ -4,8 +4,10 @@
 // - Character prepass (`vs_character_prepass`, `fs_character_prepass`; M1 C5): the opaque and
 //   alpha-tested anime character surfaces of the instances the frame lists as characters, static
 //   or skinned, into a depth target and an ID target of their own (the `character_prepass`
-//   module): each pixel's character entry and part (`character_id`, frame.wgsl). The anime
-//   character shader's depth-offset rim, the bangs' shadow on faces and eyes through the bangs
+//   module): each pixel's character entry and part (`character_id`, frame.wgsl), twice. Hair
+//   draws last through a pipeline that writes the first alone, so the second keeps the nearest
+//   surface that isn't hair: the eye depth mask (M1 C6). The anime character shader's
+//   depth-offset rim, the bangs' shadow on faces, eyes through the bangs and the eyes' layers
 //   read them, on every tier, and temporal AA's responsive mask reads the depth. Its layout has
 //   no group 0, which binds both targets; the ID is the vertex stage's, from the instance and the
 //   material block.
@@ -41,9 +43,10 @@ fn vs_character_prepass(@location(0) position: vec4<f32>, draw: DrawRecord) -> C
     return out;
 }
 
+// R the nearest surface's ID, G the nearest non-hair surface's: hair's pipeline writes R alone.
 @fragment
-fn fs_character_prepass(in: CharacterPrepassVaryings) -> @location(0) u32 {
-    return in.id;
+fn fs_character_prepass(in: CharacterPrepassVaryings) -> @location(0) vec2<u32> {
+    return vec2<u32>(in.id);
 }
 
 @vertex

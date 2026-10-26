@@ -24,7 +24,8 @@
 //! differ, and within a format by surface variant ([`SurfaceVariant`]: the material's family and
 //! its static permutation), each its own pipeline, so draws sort by pipeline (§5.12) whatever
 //! order their instances and submeshes come in, and families mix freely within a mesh; within a
-//! group they come in slot order. Draws of skinned or morphed meshes form groups of their own,
+//! group they come in slot order, except that an eye's layers (M1 C6) come in their layers'
+//! order, each over the ones before it. Draws of skinned or morphed meshes form groups of their own,
 //! per variant: each instance draws from its own skinning outputs (f32 positions), so they bind
 //! by instance slot rather than by mesh. Each draw record carries its mesh's dequantization, so
 //! the vertex shaders decode any mesh without another binding. Sorting by material and mesh
@@ -100,8 +101,9 @@ impl GpuScene {
     }
 
     /// Applies packet `frame`'s instance deltas, rebuilds the draw list if the drawn set
-    /// changed, and makes room in the buffers. Returns `true` when the instance buffer was
-    /// replaced, so bind groups that reference it must be rebuilt.
+    /// changed, and makes room in the buffers. `material` gives a material's family, flags and
+    /// eye layer (`DrawList::build`'s `material_kind` and `layer`). Returns `true` when the
+    /// instance buffer was replaced, so bind groups that reference it must be rebuilt.
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -109,7 +111,7 @@ impl GpuScene {
         frame: u64,
         deltas: &InstanceDeltas,
         meshes: &[MeshRecord],
-        material_kind: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags),
+        material: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags, u32),
     ) -> bool {
         profiling::scope!("GpuScene::prepare");
         debug_assert!(
@@ -128,7 +130,11 @@ impl GpuScene {
         let replaced =
             self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded);
         if self.draws_stale {
-            self.draw_list.build(meshes, material_kind, &self.slots);
+            let material_kind = |handle| {
+                let (family, flags, _) = material(handle);
+                (family, flags)
+            };
+            self.draw_list.build(meshes, material_kind, |handle| material(handle).2, &self.slots);
             // The records are uploaded whole after every rebuild, so nothing needs keeping.
             self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
             self.draws_stale = false;
@@ -512,10 +518,12 @@ pub(crate) struct DrawList {
 impl DrawList {
     /// Rebuilds the list from the live `slots`, drawing each submesh with the surface variant
     /// of its material's family and flags (`material_kind`) on its mesh (`pipelines::mesh_draw`).
+    /// Eye layers then go in their `layer`'s order (M1 C6), and in slot order within a layer.
     pub(crate) fn build(
         &mut self,
         meshes: &[MeshRecord],
         material_kind: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags),
+        layer: impl Fn(MaterialHandle) -> u32,
         slots: &InstanceSlots,
     ) {
         profiling::scope!("DrawList::build");
@@ -578,6 +586,14 @@ impl DrawList {
             }
             self.foliage_instances += u32::from(foliage);
         }
+        // An eye's shadow, iris and highlight layers each blend over the ones before them,
+        // whatever order a mesh lists them in. Draw IDs keep slot order within a layer; the
+        // sort is in place, so a rebuild allocates nothing new.
+        let layers = SurfaceVariant::EYE_LAYERS.index();
+        for commands in &mut self.commands {
+            commands[layers].sort_unstable_by_key(|command| (layer(command.material), command.draw_id));
+        }
+        self.deformed[layers].sort_unstable_by_key(|draw| (layer(draw.material), draw.draw_id));
     }
 
     /// Surface draws of `variant`.
@@ -882,7 +898,7 @@ mod tests {
             (MaterialFamily::AnimeCharacter, flags)
         };
         let mut list = DrawList::default();
-        list.build(&meshes, flags, &slots);
+        list.build(&meshes, flags, |_| 0, &slots);
 
         // Slot 0 is free; draws refer to instances by slot, carry their mesh's dequantization,
         // and draw LOD0.
@@ -941,7 +957,7 @@ mod tests {
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
-        list.build(&meshes, flags, &slots);
+        list.build(&meshes, flags, |_| 0, &slots);
         assert_eq!(list.draws.len(), 3);
         assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), lens([0, 1, 1, 1]));
     }
@@ -996,7 +1012,7 @@ mod tests {
         let mut slots = InstanceSlots::default();
         slots.apply(&deltas(&[instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 1.0)], &[]));
         let mut list = DrawList::default();
-        list.build(&meshes, kind, &slots);
+        list.build(&meshes, kind, |_| 0, &slots);
 
         // Each variant is a pipeline: its draws gather from every instance and submesh, in slot
         // order, whatever order the submeshes alternate in.
@@ -1078,7 +1094,7 @@ mod tests {
         let trees = [instance(1, 0, 0.0), instance(2, 0, 5.0)];
         slots.apply(&deltas(&[trees[0], trees[1], instance(3, 1, 0.0), instance(4, 2, 0.0)], &[]));
         let mut list = DrawList::default();
-        list.build(&meshes, kind, &slots);
+        list.build(&meshes, kind, |_| 0, &slots);
         let draws = |variant: SurfaceVariant| -> Vec<(u32, u32, u32)> {
             list.commands[format_index(PositionFormat::Unorm16)][variant.index()]
                 .iter()
@@ -1091,7 +1107,7 @@ mod tests {
         assert_eq!(list.foliage_instances, 3, "two trees and the grass");
         assert_eq!(list.outlines(), 0, "foliage draws no hull");
         slots.apply(&deltas(&[], &[1]));
-        list.build(&meshes, kind, &slots);
+        list.build(&meshes, kind, |_| 0, &slots);
         assert_eq!(list.foliage_instances, 2);
     }
 

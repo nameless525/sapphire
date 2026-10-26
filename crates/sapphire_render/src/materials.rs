@@ -54,6 +54,20 @@ impl MaterialHandle {
     }
 }
 
+/// The draw order of `material`'s draws within their surface variant: an anime character eye's
+/// layer, 0 for anything else ([`MaterialRecord::layer`]).
+fn layer(material: &ArchivedMaterial) -> u32 {
+    if material.family != MaterialFamily::AnimeCharacter {
+        return 0;
+    }
+    let offset = std::mem::offset_of!(AnimeCharacterParams, modes);
+    // Validated materials hold a whole block.
+    material
+        .params()
+        .get(offset..offset + 16)
+        .map_or(0, |bytes| AnimeCharacterParams::eye_layer(bytemuck::pod_read_unaligned(bytes)))
+}
+
 /// Room in each family's buffer before it first grows, in slots.
 const INITIAL_SLOTS: u64 = 64;
 
@@ -81,6 +95,10 @@ pub(crate) struct MaterialRecord {
     /// The material's slot in its family's buffer: what draw records name it by.
     pub slot: u32,
     pub flags: MaterialFlags,
+    /// Where its draws go among their surface variant's: an eye's layer (M1 C6,
+    /// `AnimeCharacterParams::EYE_LAYER_*`), each drawn over the ones before it; 0 for anything
+    /// else.
+    pub layer: u32,
     /// Group 3.
     pub bind_group: wgpu::BindGroup,
 }
@@ -212,7 +230,8 @@ impl Materials {
         // mirror, so a GPU copy of the old buffer keeps everything.
         let replaced = buffer.buffer.reserve(device, queue, needed, buffer.buffer.buffer().size());
         buffer.push(material.params());
-        self.records.push(MaterialRecord { family, slot, flags: material.flags(), bind_group });
+        let layer = layer(material);
+        self.records.push(MaterialRecord { family, slot, flags: material.flags(), layer, bind_group });
         Ok((handle, replaced))
     }
 
@@ -236,6 +255,7 @@ impl Materials {
         let record = &mut self.records[handle.index()];
         record.bind_group = bind_group;
         record.flags = material.flags();
+        record.layer = layer(material);
         self.families[record.family.index()].write(record.slot, material.params());
         Ok(())
     }

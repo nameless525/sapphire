@@ -236,7 +236,7 @@ pub(crate) mod material_binding {
 /// | outline | the material ([`MaterialFlags::OUTLINE`]) | whether the draw is in the outline pass |
 /// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; the bangs' shadow on it (C5); outlines are the body's |
 /// | hair | the material ([`MaterialFlags::HAIR`]) | [`Part::Hair`] (M1 C5): the hair mask's occlusion and the highlight band, painted, angel ring or Kajiya-Kay by a branch on the block |
-/// | eye | the material ([`MaterialFlags::EYE`]) | [`Part::Eye`] (M1 C5): always lit, no rim; C6 layers it |
+/// | eye | the material ([`MaterialFlags::EYE`]) | [`Part::Eye`] (M1 C5): always lit, no rim. Its layers (M1 C6) are a branch on the block: the eye itself writes depth and the eye depth mask; its shadow, iris and highlights are transparent eyes ([`SurfaceVariant::EYE_LAYERS`]), blended within that mask in their layers' order, with the iris's parallax and the highlights' motion |
 /// | transparent | the material ([`MaterialFlags::TRANSPARENT`]) | [`Coverage::Transparent`]: blended over the frame after the sky, depth-tested without writing, with no outline and in no prepass |
 ///
 /// Eyes through hair ([`MaterialFlags::THROUGH_HAIR`], M1 C5) is no permutation bit: like the
@@ -349,7 +349,7 @@ impl Coverage {
 }
 
 /// Which part of a character a surface shades, each a shader variant of its own: the body, faces
-/// (M1 C3), hair and eyes (M1 C5; C6 layers eyes). In the order of the material's
+/// (M1 C3), hair and eyes (M1 C5; layered by M1 C6). In the order of the material's
 /// `AnimeCharacterParams::SURFACE_*`, which the character prepass writes as the pixel's part.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Part {
@@ -540,13 +540,18 @@ impl SurfaceVariant {
     /// Fog cards (M1 W3).
     pub(crate) const FOG_CARD: Self = Self { coverage: Coverage::Transparent, shading: Shading::FogCard };
     /// The variants whose draws can draw eyes through the character's hair
-    /// ([`MaterialFlags::THROUGH_HAIR`]): faces and eyes that write depth.
-    pub(crate) const THROUGH_HAIR: [Self; 4] = [
+    /// ([`MaterialFlags::THROUGH_HAIR`]): faces and eyes that write depth, then the eyes' layers
+    /// over them (M1 C6).
+    pub(crate) const THROUGH_HAIR: [Self; 5] = [
         Self::character(Coverage::Opaque, Part::Face),
         Self::character(Coverage::Opaque, Part::Eye),
         Self::character(Coverage::AlphaTest, Part::Face),
         Self::character(Coverage::AlphaTest, Part::Eye),
+        Self::EYE_LAYERS,
     ];
+    /// Transparent eyes: an eye's shadow, iris and highlight layers (M1 C6), which blend over
+    /// their eye within the eye depth mask, in their layers' order.
+    pub(crate) const EYE_LAYERS: Self = Self::character(Coverage::Transparent, Part::Eye);
     /// Opaque anime character bodies: what a material with no permutation bits draws with.
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
@@ -844,8 +849,12 @@ pub(crate) struct MeshPipelines {
     /// format's first outline: one for every coverage, since the prepass doesn't cut
     /// alpha-tested surfaces out.
     outline_prepass: Option<wgpu::RenderPipeline>,
-    /// The characters' depth and IDs (`prepass.wgsl`, M1 C5), whatever their variant.
+    /// The characters' depth and IDs (`prepass.wgsl`, M1 C5), whatever their variant but hair.
     pub character_prepass: wgpu::RenderPipeline,
+    /// The same for hair, which draws after the other parts and writes only the nearest
+    /// surface's ID, so the other keeps the nearest that isn't hair (M1 C6,
+    /// `character_prepass::HAIR_ID_WRITES`).
+    pub character_prepass_hair: wgpu::RenderPipeline,
     /// Eyes and brows through the character's hair (M1 C5), per [`SurfaceVariant::THROUGH_HAIR`]
     /// entry, built with the first draw of a face or eye material that draws through.
     through_hair: [Option<wgpu::RenderPipeline>; SurfaceVariant::THROUGH_HAIR.len()],
@@ -886,6 +895,11 @@ impl MeshPipelines {
     /// The outline hulls' scene prepass pipeline, once a draw with an outline was prepared.
     pub(crate) fn outline_prepass(&self) -> Option<&wgpu::RenderPipeline> {
         self.outline_prepass.as_ref()
+    }
+
+    /// The character prepass's pipeline for hair, or for every other part.
+    pub(crate) fn character_prepass_of(&self, hair: bool) -> &wgpu::RenderPipeline {
+        if hair { &self.character_prepass_hair } else { &self.character_prepass }
     }
 
     /// The eyes-through-hair pipeline of `variant`, once it was prepared.
@@ -1118,7 +1132,10 @@ impl Pipelines {
                 rebuild(Program::Outline, old, &|| build_outline_prepass(device, target, &modules, format))
             });
             let character_prepass = rebuild(Program::Prepass, &old.character_prepass, &|| {
-                build_character_prepass(device, target, &modules, format)
+                build_character_prepass(device, target, &modules, format, false)
+            });
+            let character_prepass_hair = rebuild(Program::Prepass, &old.character_prepass_hair, &|| {
+                build_character_prepass(device, target, &modules, format, true)
             });
             let mut pipelines = MeshPipelines {
                 surfaces: Default::default(),
@@ -1126,6 +1143,7 @@ impl Pipelines {
                 scene_prepass,
                 outline_prepass,
                 character_prepass,
+                character_prepass_hair,
                 through_hair: Default::default(),
                 foliage_prepass: Default::default(),
                 foliage_casters: Default::default(),
@@ -1176,13 +1194,16 @@ impl Pipelines {
             return;
         }
         let scene_prepass = build_scene_prepass(device, &self.target, &self.modules, format);
-        let character_prepass = build_character_prepass(device, &self.target, &self.modules, format);
+        let character_prepass = build_character_prepass(device, &self.target, &self.modules, format, false);
+        let character_prepass_hair =
+            build_character_prepass(device, &self.target, &self.modules, format, true);
         self.mesh[format_index(format)] = Some(MeshPipelines {
             surfaces: Default::default(),
             outline: Default::default(),
             scene_prepass,
             outline_prepass: None,
             character_prepass,
+            character_prepass_hair,
             through_hair: Default::default(),
             foliage_prepass: Default::default(),
             foliage_casters: Default::default(),
@@ -1355,9 +1376,14 @@ fn build_surface(
             vertex_buffers: &variant.shading.main_pass().buffers(format),
             cull,
             // Transparent surfaces are depth-tested against the opaque frame but don't hide
-            // what lies behind them.
+            // what lies behind them. Eye layers may lie on their eye (M1 C6): their mask, not
+            // depth, keeps them to it.
             depth_write: !transparent,
-            depth_compare: wgpu::CompareFunction::Greater,
+            depth_compare: if variant == SurfaceVariant::EYE_LAYERS {
+                wgpu::CompareFunction::GreaterEqual
+            } else {
+                wgpu::CompareFunction::Greater
+            },
             blend: transparent.then_some(TRANSPARENT_BLEND),
             constants: &constants,
         },
@@ -1508,18 +1534,20 @@ fn build_outline_prepass(
 }
 
 /// The character prepass pipeline for meshes in `format` (skinning outputs are f32): depth, and
-/// each pixel's character ID (M1 C5), on a layout without group 0, which binds what it writes.
+/// each pixel's character IDs (M1 C5), on a layout without group 0, which binds what it writes.
+/// `hair`'s writes the nearest surface's ID alone (M1 C6).
 fn build_character_prepass(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
     format: PositionFormat,
+    hair: bool,
 ) -> wgpu::RenderPipeline {
     let buffers = MeshPass::CharacterPrepass.buffers(format);
     let ids = [Some(wgpu::ColorTargetState {
         format: character_prepass::IDS_FORMAT,
         blend: None,
-        write_mask: wgpu::ColorWrites::ALL,
+        write_mask: if hair { character_prepass::HAIR_ID_WRITES } else { wgpu::ColorWrites::ALL },
     })];
     target.build_prepass(
         device,
@@ -1532,8 +1560,9 @@ fn build_character_prepass(
     )
 }
 
-/// The eyes-through-hair pipeline of `variant` (a face or eye that writes depth) for meshes in
-/// `format` (M1 C5): the anime character shader's own vertex stage and its `fs_through_hair`,
+/// The eyes-through-hair pipeline of `variant` (a face or eye that writes depth, or an eye's
+/// layers, M1 C6) for meshes in `format` (M1 C5): the anime character shader's own vertex stage
+/// and its `fs_through_hair`,
 /// with the variant's constants, blended by coverage over the hair. It writes the hair's depth
 /// from the character prepass, nudged nearer, and tests it with greater-or-equal against the
 /// main pass's, so nothing that hides the hair is drawn over, and writes no depth.
@@ -1715,6 +1744,14 @@ mod tests {
         }
         let eye = Permutation::new(MaterialFlags::EYE | MaterialFlags::ALPHA_TEST, true, false).surface();
         assert_eq!(eye, SurfaceVariant::character(Coverage::AlphaTest, Part::Eye));
+        // An eye's blended layers (M1 C6) are the eye × transparent variant, through hair too.
+        for flags in [MaterialFlags::empty(), MaterialFlags::THROUGH_HAIR] {
+            let layers =
+                Permutation::new(MaterialFlags::EYE | MaterialFlags::TRANSPARENT | flags, true, true);
+            assert_eq!(layers.surface(), SurfaceVariant::EYE_LAYERS, "{flags:?}");
+        }
+        assert!(SurfaceVariant::EYE_LAYERS.through_hair_index().is_some());
+        assert!(!SurfaceVariant::CHARACTER_DEPTH_WRITING.contains(&SurfaceVariant::EYE_LAYERS));
         assert!(SurfaceVariant::THROUGH_HAIR.iter().all(|variant| variant.through_hair_index().is_some()));
         assert_eq!(SurfaceVariant::ALL.len(), 3 * Shading::SURFACES.len() + 1, "and fog cards");
     }

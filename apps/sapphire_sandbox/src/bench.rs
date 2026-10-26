@@ -236,6 +236,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_character_prepass_duration_us =
             format_args!("{:.1}", micros(character_prepass.1, character_prepass.2)),
         character_prepass_draws = stage.renderer.stats().character_prepass.draws,
+        eye_layer_draws = stage.renderer.stats().character_prepass.eye_layer_draws,
         gpu_taa_us = format_args!("{:.1}", micros(taa.0, taa.2)),
         gpu_taa_duration_us = format_args!("{:.1}", micros(taa.1, taa.2)),
         taa_frames = taa.2,

@@ -1418,10 +1418,10 @@ mod tests {
     }
 
     /// The anime character contract's numbers, as the shaders and `sapphire_assets` both state
-    /// them: the vertex flags, the control map's encodings and the ramp rows.
+    /// them: the vertex flags, the control map's encodings, the ramp rows and the eye layers.
     #[test]
     fn wgsl_character_contract_matches_rust() {
-        use sapphire_assets::character_maps::{MATERIAL_IDS, face_sdf, hair_mask, ilm, ramp};
+        use sapphire_assets::character_maps::{MATERIAL_IDS, eye_mask, face_sdf, hair_mask, ilm, ramp};
         use sapphire_assets::material::AnimeCharacterParams;
 
         use crate::character_prepass;
@@ -1451,6 +1451,22 @@ mod tests {
             wgsl_u32(&character, "CHARACTER_HIGHLIGHT_PAINTED_BAND"),
             AnimeCharacterParams::HIGHLIGHT_PAINTED_BAND
         );
+        // The eye layers and their motion (M1 C6).
+        let layers = ["EYE", "SHADOW", "IRIS", "HIGHLIGHT", "SHIFT"]
+            .map(|name| wgsl_u32(&character, &format!("CHARACTER_EYE_LAYER_{name}")));
+        assert_eq!(
+            layers,
+            [
+                AnimeCharacterParams::EYE_LAYER_EYE,
+                AnimeCharacterParams::EYE_LAYER_SHADOW,
+                AnimeCharacterParams::EYE_LAYER_IRIS,
+                AnimeCharacterParams::EYE_LAYER_HIGHLIGHT,
+                AnimeCharacterParams::EYE_LAYER_SHIFT,
+            ]
+        );
+        assert_eq!(wgsl_f32(&character, "EYE_DRIFT_RATIO"), eye_mask::DRIFT_RATIO);
+        assert_eq!(wgsl_f32(&character, "EYE_PHASE_STEP"), eye_mask::PHASE_STEP);
+        assert_eq!(eye_mask::SPARKLE_SHARPNESS, 6, "`highlight_sparkle` cubes the wave's square");
         // The character prepass's IDs (M1 C5), which the prepass writes and the surface reads.
         let prepass = validate(Program::Prepass);
         for module in [&character, &prepass] {

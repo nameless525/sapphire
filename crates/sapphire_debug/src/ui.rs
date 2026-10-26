@@ -380,8 +380,8 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Character prepass",
             format!(
-                "{} draws, {} faces under bangs, {} eye draws through hair",
-                prepass.draws, prepass.hair_shadow_characters, prepass.through_hair_draws
+                "{} draws, {} faces under bangs, {} eye draws through hair, {} eye layers",
+                prepass.draws, prepass.hair_shadow_characters, prepass.through_hair_draws, prepass.eye_layer_draws
             ),
         );
         row(ui, "Character pipelines", render.character_pipelines.to_string());

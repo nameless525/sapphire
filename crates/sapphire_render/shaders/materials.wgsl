@@ -39,12 +39,14 @@ struct AnimeCharacterParams {
     // x: ramp mix; y: specular softness; z, w: matcap strength lit and in shadow.
     terms: vec4<f32>,
     // Face: x shadow softness, y nose line threshold, z highlight strength, w highlight reveal.
-    // Hair: x highlight strength, y width, z shift. Eye: x parallax.
+    // Hair: x highlight strength, y width, z shift. Eye: x the parallax's depth in meters (M1 C6).
     surface: vec4<f32>,
-    // Face: rgb blush color. Hair: rgb highlight color.
+    // Face: rgb blush color. Hair: rgb highlight color. Eye (M1 C6), by layer: the eye and iris
+    // layers' iris ellipse, xy its center and zw its radii in texture coordinates (zero for
+    // none); a highlight's motion, x drift in meters, y its rate, z sparkle, w its rate.
     surface_color: vec4<f32>,
-    // x: flags; y: region count; z: surface (CHARACTER_SURFACE_*); w: specular model | highlight
-    // style << 8.
+    // x: flags; y: region count; z: surface (CHARACTER_SURFACE_*); w: specular model | a hair's
+    // highlight style << 8 | an eye's layer << 16 (CHARACTER_EYE_LAYER_*).
     modes: vec4<u32>,
     swizzles: vec4<u32>,
     // Picked per pixel by the control map's alpha, read unfiltered so IDs never blend across
@@ -96,6 +98,19 @@ const CHARACTER_SURFACE_EYE: u32 = 3u;
 const CHARACTER_HIGHLIGHT_PAINTED_BAND: u32 = 0u;
 const CHARACTER_HIGHLIGHT_ANGEL_RING: u32 = 1u;
 const CHARACTER_HIGHLIGHT_KAJIYA_KAY: u32 = 2u;
+
+// Eye layers (M1 C6), in `modes.w`'s third byte: also the order they draw in.
+const CHARACTER_EYE_LAYER_EYE: u32 = 0u;
+const CHARACTER_EYE_LAYER_SHADOW: u32 = 1u;
+const CHARACTER_EYE_LAYER_IRIS: u32 = 2u;
+const CHARACTER_EYE_LAYER_HIGHLIGHT: u32 = 3u;
+const CHARACTER_EYE_LAYER_SHIFT: u32 = 16u;
+
+// The eye layer of a block with `modes`: an eye's, 0 (the eye itself) for any other surface
+// (`AnimeCharacterParams::eye_layer`).
+fn character_eye_layer(modes: vec4<u32>) -> u32 {
+    return select(0u, (modes.w >> CHARACTER_EYE_LAYER_SHIFT) & 0xffu, modes.z == CHARACTER_SURFACE_EYE);
+}
 
 // --- Environment (`EnvironmentParams`): stylized GGX, the environment shader (M1 W4).
 

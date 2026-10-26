@@ -10,12 +10,16 @@
 //!   depth is the main pass's bit for bit.
 //! - **Targets:** persistent textures the renderer owns at the scene's size, made again when the
 //!   size changes, single-sampled, and imported into each frame's graph. The depth is
-//!   `Depth32Float` (reverse-Z, cleared to 0); the IDs are `R16Uint` ([`encode_id`]): the
-//!   character's entry in the frame's character buffer in the low 14 bits (0 for none) and its
-//!   part in the top 2 (body, face, hair, eye/brow: the material's `CharacterSurface`). The part
-//!   bits do the work of the stencil bits a hardware stencil would hold for eyes over hair: which
-//!   pixels are hair the eyes may show through, and which are eyes and brows (the hook C6's
-//!   layered eyes take). A frame has at most 16,383 characters, so no entry's bits alias
+//!   `Depth32Float` (reverse-Z, cleared to 0); the IDs are `Rg16Uint`, two IDs ([`encode_id`]):
+//!   the character's entry in the frame's character buffer in the low 14 bits (0 for none) and
+//!   its part in the top 2 (body, face, hair, eye: the material's `CharacterSurface`). R is the
+//!   nearest surface's; G the nearest that isn't hair (M1 C6), since hair draws last and writes
+//!   R alone ([`HAIR_ID_WRITES`]). The part bits do the work of the stencil bits a hardware
+//!   stencil would hold for eyes over hair: R says which pixels are hair the eyes may show
+//!   through, and G whether the character's eye would be the nearest surface there but for hair,
+//!   the **eye depth mask**: a layered eye's iris, shadow and highlights draw only within it,
+//!   and eyes draw through hair only where it holds them, so a lid closed over an eye hides it
+//!   under the bangs too. A frame has at most 16,383 characters, so no entry's bits alias
 //!   another's or none: the character list ignores and counts the rest
 //!   ([`RenderStats::ignored_characters`](crate::RenderStats::ignored_characters)).
 //! - **Who reads them:** the main pass, through group 0 (bindings 8 and 9, with a nearest clamped
@@ -24,8 +28,9 @@
 //!   frame with a view, clearing both when no character is listed.
 //! - **Mobile:** the main pass keeps MSAA color and depth in tile memory, so the prepass can't
 //!   share it: it is a render pass of its own before the main pass, whose two targets are stored
-//!   (6 bytes a pixel, about 4.5 MB a frame at Mobile-Low's 1280 × 590) and sampled by the main
-//!   pass. Its draws are position-only, about one per character part.
+//!   (8 bytes a pixel, about 6 MB a frame at Mobile-Low's 1280 × 590; 6 and 4.5 MB before M1
+//!   C6's second ID) and sampled by the main pass. Its draws are position-only, about one per
+//!   character part.
 //!
 //! # Later milestones
 //!
@@ -44,8 +49,12 @@ use crate::materials::{MaterialHandle, Materials};
 use crate::pipelines::{DEPTH_FORMAT, Part, Shading, SurfaceVariant};
 use crate::scene::DrawList;
 
-/// The character IDs' format.
-pub(crate) const IDS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Uint;
+/// The character IDs' format: R the nearest surface's ID, G the nearest non-hair surface's.
+pub(crate) const IDS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Uint;
+
+/// What hair writes of the IDs: R alone, drawn after every other part, so G keeps the nearest
+/// surface that isn't hair (M1 C6).
+pub(crate) const HAIR_ID_WRITES: wgpu::ColorWrites = wgpu::ColorWrites::RED;
 
 /// Bits of a character ID that hold the character's entry (WGSL `CHARACTER_ID_ENTRY_BITS`).
 pub(crate) const ID_ENTRY_BITS: u32 = 14;
@@ -153,15 +162,18 @@ pub struct CharacterPrepassStats {
     /// Characters with a face whose material casts the bangs' shadow on it.
     pub hair_shadow_characters: u32,
     /// Face and eye draws drawn again through the character's hair (eyes and brows over the
-    /// bangs), after the outlines in the main pass.
+    /// bangs), after the outlines in the main pass; eye layers among them (M1 C6).
     pub through_hair_draws: u32,
+    /// Eye layers over the characters' eyes (M1 C6): their shadows, irises and highlights, drawn
+    /// within the eye depth mask after the sky.
+    pub eye_layer_draws: u32,
 }
 
 impl CharacterPrepassStats {
     /// Counts the frame's: `list`'s opaque and alpha-tested anime character draws of the instances
     /// `entry` gives a character entry (by slot), the characters among them with a face whose
-    /// material casts the bangs' shadow, and the face and eye draws that draw through hair.
-    /// `characters` is scratch, kept so a frame allocates nothing.
+    /// material casts the bangs' shadow, their eye layers, and the face and eye draws that draw
+    /// through hair. `characters` is scratch, kept so a frame allocates nothing.
     pub(crate) fn count(
         list: &DrawList,
         entry: impl Fn(u32) -> u32,
@@ -170,7 +182,9 @@ impl CharacterPrepassStats {
     ) -> Self {
         let mut stats = Self::default();
         characters.clear();
-        for variant in SurfaceVariant::CHARACTER_DEPTH_WRITING {
+        let variants =
+            SurfaceVariant::CHARACTER_DEPTH_WRITING.into_iter().chain([SurfaceVariant::EYE_LAYERS]);
+        for variant in variants {
             let index = variant.index();
             let statics = list.commands.iter().flat_map(|commands| &commands[index]);
             let draws = statics
@@ -181,7 +195,12 @@ impl CharacterPrepassStats {
                 if character == 0 {
                     continue;
                 }
-                stats.draws += 1;
+                // Eye layers blend: they aren't in the prepass.
+                if variant == SurfaceVariant::EYE_LAYERS {
+                    stats.eye_layer_draws += 1;
+                } else {
+                    stats.draws += 1;
+                }
                 let through = materials
                     .record(material)
                     .is_some_and(|record| record.flags.contains(MaterialFlags::THROUGH_HAIR));

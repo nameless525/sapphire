@@ -353,9 +353,10 @@ pub struct PrepassTargets {
     /// alpha-tested surfaces, every tier (`Depth32Float`, reverse-Z, cleared to 0). Persistent:
     /// the renderer's own, imported.
     pub character_depth: TextureId,
-    /// The character prepass: each pixel's character ID (`R16Uint`, cleared to 0): its entry in
-    /// the frame's character buffer in bits 0 to 13 and its part in bits 14 and 15 (0 body, 1
-    /// face, 2 hair, 3 eye or brow; `AnimeCharacterParams::SURFACE_*`).
+    /// The character prepass: each pixel's character IDs (`Rg16Uint`, cleared to 0), each its
+    /// entry in the frame's character buffer in bits 0 to 13 and its part in bits 14 and 15 (0
+    /// body, 1 face, 2 hair, 3 eye or brow; `AnimeCharacterParams::SURFACE_*`): R the nearest
+    /// surface's, G the nearest but for hair, the eye depth mask (M1 C6).
     pub character_ids: TextureId,
     /// The scene prepass: depth of every opaque instance and its outline hull (`Depth32Float`),
     /// bit for bit the main pass's. Under temporal AA it is one of a pair of persistent
@@ -705,11 +706,17 @@ impl Renderer {
         material: &ArchivedMaterial,
         textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
     ) -> Result<(), RenderError> {
-        let before = self.materials.record(handle).map(|record| record.flags);
+        let before = self.materials.record(handle).map(|record| (record.flags, record.layer));
         self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)?;
         let flags = material.flags();
+        let layer = self.materials.record(handle).map_or(0, |record| record.layer);
+        // An eye that moves to another layer keeps its pipelines, but its draws move among the
+        // variant's (M1 C6).
+        if before.is_some_and(|(before, old_layer)| before == flags && old_layer != layer) {
+            self.scene.meshes_changed();
+        }
         // Only the families meshes draw with pick pipelines by their flags.
-        if before != Some(flags)
+        if before.map(|(flags, _)| flags) != Some(flags)
             && let Some(variant) = SurfaceVariant::of_material(material.family, flags)
         {
             // A new static permutation: its draws move to other pipelines, built for every
@@ -1082,19 +1089,15 @@ impl Renderer {
         let (device, queue) = (gpu.device(), gpu.queue());
 
         let materials = &self.materials;
-        let material_kind = |handle: MaterialHandle| {
+        let material = |handle: MaterialHandle| {
             materials
                 .record(handle)
-                .map_or((MaterialFamily::AnimeCharacter, MaterialFlags::empty()), |r| (r.family, r.flags))
+                .map_or((MaterialFamily::AnimeCharacter, MaterialFlags::empty(), 0), |r| {
+                    (r.family, r.flags, r.layer)
+                })
         };
-        if self.scene.prepare(
-            device,
-            queue,
-            packet.frame,
-            &packet.instances,
-            self.meshes.records(),
-            material_kind,
-        ) {
+        if self.scene.prepare(device, queue, packet.frame, &packet.instances, self.meshes.records(), material)
+        {
             self.scene_bind_groups = create_scene_bind_groups(
                 device,
                 &self.layouts,
@@ -1471,38 +1474,43 @@ impl Renderer {
                 let listed =
                     |slot: u32| character_entries.get(slot as usize).is_some_and(|&entry| entry != 0);
                 let prepass = MeshPass::CharacterPrepass;
-                for format in PositionFormat::ALL {
-                    let Some(mesh) = pipelines.mesh(format) else { continue };
-                    let variants = SurfaceVariant::CHARACTER_DEPTH_WRITING;
-                    if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
-                        pass.set_pipeline(&mesh.character_prepass);
-                        for variant in variants {
-                            mesh_draws.draw_static_where(
+                // Every part but hair, then hair, which writes the nearest surface's ID alone, so
+                // the other ID keeps the nearest surface that isn't hair: the eye depth mask (M1
+                // C6).
+                for hair in [false, true] {
+                    let variants = SurfaceVariant::CHARACTER_DEPTH_WRITING
+                        .into_iter()
+                        .filter(move |variant| (variant.shading == Shading::Character(Part::Hair)) == hair);
+                    for format in PositionFormat::ALL {
+                        let Some(mesh) = pipelines.mesh(format) else { continue };
+                        if variants.clone().any(|variant| mesh_draws.has_static(format, variant)) {
+                            pass.set_pipeline(mesh.character_prepass_of(hair));
+                            for variant in variants.clone() {
+                                mesh_draws.draw_static_where(
+                                    &mut pass,
+                                    prepass,
+                                    format,
+                                    variant,
+                                    DrawSet::Surfaces,
+                                    listed,
+                                );
+                            }
+                        }
+                    }
+                    let deformed = pipelines.mesh(PositionFormat::Float32);
+                    if let Some(mesh) = deformed
+                        && variants.clone().any(|variant| mesh_draws.has_deformed(variant))
+                    {
+                        pass.set_pipeline(mesh.character_prepass_of(hair));
+                        for variant in variants.clone() {
+                            mesh_draws.draw_deformed_where(
                                 &mut pass,
                                 prepass,
-                                format,
                                 variant,
                                 DrawSet::Surfaces,
                                 listed,
                             );
                         }
-                    }
-                }
-                let deformed = pipelines.mesh(PositionFormat::Float32);
-                if let Some(mesh) = deformed
-                    && SurfaceVariant::CHARACTER_DEPTH_WRITING
-                        .iter()
-                        .any(|&variant| mesh_draws.has_deformed(variant))
-                {
-                    pass.set_pipeline(&mesh.character_prepass);
-                    for variant in SurfaceVariant::CHARACTER_DEPTH_WRITING {
-                        mesh_draws.draw_deformed_where(
-                            &mut pass,
-                            prepass,
-                            variant,
-                            DrawSet::Surfaces,
-                            listed,
-                        );
                     }
                 }
             },

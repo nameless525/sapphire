@@ -188,7 +188,9 @@ struct CharacterData {
 // The character prepass (M1 C5, prepass.wgsl; the `character_prepass` module): the listed
 // characters' own depth (reverse-Z, 0 where none is) and IDs (`character_id`), single-sampled at
 // the scene's size, which the anime character shader reads for its rim, the bangs' shadow on
-// faces and eyes through the bangs. The pass that writes them binds no group 0.
+// faces, eyes through the bangs and the eyes' layers. The IDs' R is the nearest surface's, G the
+// nearest surface's but for hair (M1 C6): where G is a character's eye, its eye would show but
+// for its bangs, the eye depth mask. The pass that writes them binds no group 0.
 @group(0) @binding(8) var character_depth: texture_depth_2d;
 @group(0) @binding(9) var character_ids: texture_2d<u32>;
 // Nearest, clamped to the edge: gathers of both.

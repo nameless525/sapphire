@@ -202,14 +202,16 @@
 //! scale, and when the scale changes between frames.
 //!
 //! - **Character prepass** ([`CHARACTER_PREPASS`], every tier, M1 C5; the `character_prepass`
-//!   module): the depth (`Depth32Float`) and IDs (`R16Uint`: the character's entry and its part,
-//!   body, face, hair or eye) of the opaque and alpha-tested anime character surfaces of the
-//!   instances the frame lists as characters ([`FramePacket::characters`]), static or deformed,
-//!   position-only. Its targets are the renderer's own, persistent and imported into the graph,
-//!   so it runs every frame with a view, and group 0 binds them (bindings 8–10) for the main
-//!   pass: the rim, the bangs' shadow on faces and eyes through hair read it (see "Rim, hair and
-//!   eyes through hair"), and temporal AA's responsive mask, which gives the characters it holds
-//!   their reactivity (P1's 0.5; [`temporal`]).
+//!   module): the depth (`Depth32Float`) and IDs (`Rg16Uint`: the character's entry and its
+//!   part, body, face, hair or eye; R the nearest surface's, G the nearest but for hair, which
+//!   hair draws last to leave alone, the **eye depth mask** of M1 C6) of the opaque and
+//!   alpha-tested anime character surfaces of the instances the frame lists as characters
+//!   ([`FramePacket::characters`]), static or deformed, position-only. Its targets are the
+//!   renderer's own, persistent and imported into the graph, so it runs every frame with a view,
+//!   and group 0 binds them (bindings 8–10) for the main pass: the rim, the bangs' shadow on
+//!   faces, eyes through hair and the eyes' layers read it (see "Rim, hair and eyes through
+//!   hair"), and temporal AA's responsive mask, which gives the characters it holds their
+//!   reactivity (P1's 0.5; [`temporal`]).
 //! - **Scene prepass** ([`SCENE_PREPASS`]): depth, world normals (octahedral, `Rg16Float`) and velocity
 //!   (`Rg16Float`, texture coordinates) of every opaque instance, then of their outline hulls
 //!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest).
@@ -453,8 +455,37 @@
 //!   anyway. They are also C6's hook: eye and brow pixels are marked, and eyes have their own
 //!   permutation and through-hair pipeline.
 //! - **Counters** ([`CharacterPrepassStats`] in [`RenderStats::character_prepass`]): the
-//!   prepass's draws, the characters with a face under the bangs' shadow, and the eye and face
-//!   draws through hair; [`RenderStats`] counts hair and eye draws by variant too.
+//!   prepass's draws, the characters with a face under the bangs' shadow, the eye and face draws
+//!   through hair, and the eye layers' draws (M1 C6); [`RenderStats`] counts hair and eye draws by
+//!   variant too.
+//!
+//! # Anime eyes (M1 C6)
+//!
+//! Eyes are layered meshes on the eye permutation, built on C5's eye part and its hook, not a
+//! system beside them. `shaders/anime_character.wgsl`'s header has the formulas.
+//!
+//! - **Layers:** each eye material names one (`EyeShading::layer`, the block's `modes.w` third
+//!   byte): the eye itself, opaque or alpha-tested, which writes depth and the prepass's eye part;
+//!   then, blended, the upper lid's shadow on the eye white (in the eye's shadow tone), the iris
+//!   and the highlights. The blended layers are one variant (`SurfaceVariant::EYE_LAYERS`, eye ×
+//!   transparent: no new permutation bit), drawn with the transparents after the sky, sorted by
+//!   layer and then draw (the draw list's sort key, from the material record's layer), with depth
+//!   compared greater-or-equal so a layer modeled on the eye's own surface passes.
+//! - **The eye depth mask** is the prepass's second ID. Hair draws last, through a prepass
+//!   pipeline that writes R alone, so G holds the nearest surface but for hair. A layer blends only
+//!   where G is its character's own eye: a lid (the face) closing over the eye hides the iris and
+//!   highlights whatever their depth, and a gaze carrying the iris past the eye white is clipped
+//!   there. Eyes through hair test G against their own part too, so a closed eye stays hidden
+//!   under the bangs, and the layers draw through by their coverage.
+//!   **Decision: the mask is a second channel, not a stencil or another pass.** The prepass
+//!   already draws every eye; the second channel costs 2 bytes a pixel and one more write mask.
+//! - **Parallax refraction fake** on the eye and iris layers: the base color is read offset along
+//!   the surface by the view's along-surface part × the material's depth × the eye mask's R (or
+//!   a dome over the iris ellipse, or whole), through the gradients of u and v from screen
+//!   derivatives (no tangents). Offset-limited, so it never runs off at grazing angles.
+//! - **Highlights** drift (a 2 : 3 Lissajous across the model's front, in the vertex stage) and
+//!   sparkle (a sharpened sine), on the packet's time (R4), at a phase per instance slot.
+//! - **Fog:** every layer ends in `fogged` with its character's share, as the surface does.
 //!
 //! # The environment shader (M1 W4)
 //!
@@ -665,10 +696,18 @@
 //! - **Rim, hair and eyes through hair** (see above): a rim against the environment's depth
 //!   step too (today anything that isn't a character counts as far behind), from a scene depth
 //!   every tier keeps; a per-character rim scale in `CharacterData` if one material needs two;
-//!   the bangs' shadow from local lights; eyes through hair for transparent eyes; a rim mask
+//!   the bangs' shadow from local lights; faces through hair for transparent faces; a rim mask
 //!   texture (MToon's `rimMultiplyTexture`) if per-region strength proves too coarse; under
 //!   MSAA, a through-hair depth nudge from the hair depth's slope (today a fixed ratio from the
 //!   pixel center's depth, which samples of bangs steeper than about 80° to the view can fail).
+//! - **Anime eyes** (see above): the eye depth mask is single-sampled, so under MSAA a layer's
+//!   edge against a lid steps by whole pixels (a per-sample mask, or a coverage-weighted one from
+//!   a gather, if close-ups show it); through hair, each layer blends over the hair on its own, so
+//!   stacked layers pale the iris a little where the eye white shows under its coverage (a
+//!   composite of the layers in one draw would fix it); highlights share their instance's phase
+//!   (a per-material phase offset if one eye's two highlights should glint apart); a refracted
+//!   ray (an index of refraction) instead of the offset limit, if the shift should grow toward
+//!   grazing angles.
 //! - **Faces** (see above): light layers,
 //!   so local lights split on faces by the face map or not at all (today they split on the
 //!   face's normals, as on the body); a face-SDF threshold debug view (F5's views).

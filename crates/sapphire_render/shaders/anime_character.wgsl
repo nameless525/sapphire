@@ -120,17 +120,37 @@
 //   (root to tip; from screen derivatives, since meshes carry no tangents), tilted along the
 //   normal by the shift.
 //
-// Eyes (M1 C5, the eye permutation; C6 layers them): always lit, going into an environment
-// shadow with the head (`face_shadow`), with no rim and no cast shadow of their own.
+// Eyes (M1 C5, the eye permutation): always lit, going into an environment shadow with the head
+// (`face_shadow`), with no rim and no cast shadow of their own. Anime eyes are layered meshes
+// (M1 C6), each material naming its layer (`character_eye_layer`, materials.wgsl), drawn in
+// order:
+// - The eye itself (opaque or alpha-tested): the eyeball, and lashes or brows modeled as eye
+//   parts. It writes the character prepass's eye part, whose second ID (the nearest surface but
+//   for hair) is the **eye depth mask**.
+// - Over it, transparent and sorted by layer: the upper lid's shadow on the eye white, in the
+//   eye's shadow tone (its region's shade, as on a shadow side); the iris; the highlights. Each
+//   blends only where the mask holds the character's own eye (`eye_mask`), so a lid closing over
+//   the eye takes the layers with it and a gaze carrying the iris past the eye white is clipped
+//   there, whatever their depth.
+// - The parallax refraction fake (`iris_parallax`), on the eye and iris layers: the base color
+//   is read where the view ray through the point would lie the material's depth below the cornea
+//   (× the eye mask's R, or a dome over the iris ellipse, or whole), offset-limited (Welsh: the
+//   view's along-surface part, not divided by N·V, so it never runs off at grazing angles), along
+//   the surface by the gradients of u and v from screen derivatives, as `mapped_normal` finds
+//   them. The pupil shifts against the limbal ring as the view turns.
+// - Highlights live (`highlight_drift`, `highlight_sparkle`): each drifts along a Lissajous curve
+//   across the model's front in the vertex stage and glints brighter in a short pulse, both on
+//   the frame's clock (R4: the packet's time), at a phase per instance slot.
 //
 // Eyes through hair (M1 C5; `fs_through_hair`): faces and eyes whose material says so draw again
-// after the outlines, where the character prepass's ID is the character's own hair and the eye
-// lies at most the material's distance behind it: the face's always-lit mask (B: eyes, brows) or
-// the whole eye, at the material's opacity, faded as the camera turns from head-forward past its
-// yaw and pitch, blended over the hair. The fragment writes the hair's depth, a little nearer, so
-// the main pass's depth test (greater-or-equal) keeps whatever hides the hair. Writing depth
-// turns early depth testing off, so the prepass test comes first and only 2 × 2 quads with a
-// pixel that passes it shade.
+// after the outlines, where the character prepass's ID is the character's own hair, its second ID
+// the drawing part's own (M1 C6: an eye under a closed lid stays hidden), and the eye lies at most
+// the material's distance behind it: the face's always-lit mask (B: eyes, brows) or the whole eye,
+// its layers included by their coverage, at the material's opacity, faded as the camera turns
+// from head-forward past its yaw and pitch, blended over the hair. The fragment writes the hair's
+// depth, a little nearer, so the main pass's depth test (greater-or-equal) keeps whatever hides
+// the hair. Writing depth turns early depth testing off, so the prepass test comes first and only
+// 2 × 2 quads with a pixel that passes it shade.
 //
 // Fog (M1 W3) covers the final color last (`fogged` in frame.wgsl), characters taking time of
 // day's share of it (`fog_share`) and anything else drawn in this family the world's. The rim and
@@ -164,6 +184,12 @@ const HAIR_SHADOW_BIAS: f32 = 0.005;
 // Eyes through hair write the hair's depth × this: a little nearer, so the main pass's depth test
 // passes where the hair is the nearest surface across the pixel's samples.
 const THROUGH_HAIR_DEPTH_NUDGE: f32 = 1.002;
+
+// The eye layers' motion (M1 C6; `character_maps::eye_mask`): the drift's second axis turns this
+// many times as fast as its first, and instance slots step the phase by the golden ratio's
+// fraction of a turn. The sparkle's wave is raised to the sixth power (`highlight_sparkle`).
+const EYE_DRIFT_RATIO: f32 = 1.5;
+const EYE_PHASE_STEP: f32 = 0.618034;
 
 // Widths are pixels on a 1080-row target, through a 45° lens (outlines, and the rim).
 const OUTLINE_REFERENCE_HEIGHT: f32 = 1080.0;
@@ -215,11 +241,16 @@ struct CharacterVaryings {
     @location(7) @interpolate(flat) character: u32,
 }
 
-// A surface vertex, for the surface and the eyes-through-hair entry points alike.
+// A surface vertex, for the surface and the eyes-through-hair entry points alike. An eye's
+// highlight layer drifts (M1 C6).
 fn character_varyings(packed: PackedVertex, draw: DrawRecord) -> CharacterVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
-    let world_position = instance.world_from_object * vec4<f32>(vertex.position, 1.0);
+    var position = vertex.position;
+    if PERMUTATION_EYE && PERMUTATION_TRANSPARENT {
+        position += vec3<f32>(highlight_drift(draw.material, draw.instance), 0.0);
+    }
+    let world_position = instance.world_from_object * vec4<f32>(position, 1.0);
     var out: CharacterVaryings;
     out.clip_position = view.clip_from_world * world_position;
     out.world_position = world_position.xyz;
@@ -231,6 +262,34 @@ fn character_varyings(packed: PackedVertex, draw: DrawRecord) -> CharacterVaryin
     out.vertex_material_id = vertex.flags & VERTEX_MATERIAL_ID_MASK;
     out.character = instance.character;
     return out;
+}
+
+// A highlight's phase in radians, from its instance slot (`character_maps::eye_mask::phase`).
+fn highlight_phase(instance: u32) -> f32 {
+    return 2.0 * PI * fract(f32(instance) * EYE_PHASE_STEP);
+}
+
+// Where an eye's highlight layer has drifted (M1 C6; `character_maps::eye_mask::highlight_drift`):
+// an offset across the model's front (X, Y), in meters; zero for any other layer. The block's
+// `surface_color` holds the motion: x drift, y its rate.
+fn highlight_drift(material: u32, instance: u32) -> vec2<f32> {
+    let motion = materials[material].surface_color;
+    let angle = 2.0 * PI * motion.y * frame.time.x + highlight_phase(instance);
+    let drift = motion.x * vec2<f32>(sin(angle), sin(EYE_DRIFT_RATIO * angle + 1.0));
+    let highlight = character_eye_layer(materials[material].modes) == CHARACTER_EYE_LAYER_HIGHLIGHT;
+    return select(vec2<f32>(0.0), drift, highlight);
+}
+
+// How much brighter an eye's highlight layer glints now (M1 C6;
+// `character_maps::eye_mask::highlight_sparkle`): 1 for any other layer. `surface_color`'s z is
+// the sparkle, w its rate.
+fn highlight_sparkle(material: u32, instance: u32) -> f32 {
+    let motion = materials[material].surface_color;
+    let wave = 0.5 + 0.5 * sin(2.0 * PI * motion.w * frame.time.x + highlight_phase(instance));
+    let squared = wave * wave;
+    let sparkle = 1.0 + motion.z * squared * squared * squared;
+    let highlight = character_eye_layer(materials[material].modes) == CHARACTER_EYE_LAYER_HIGHLIGHT;
+    return select(1.0, sparkle, highlight);
 }
 
 @vertex
@@ -393,6 +452,59 @@ fn hair_visibility(
     let f = fract(at - 0.5);
     let weights = vec4<f32>((1.0 - f.x) * f.y, f.x * f.y, f.x * (1.0 - f.y), (1.0 - f.x) * (1.0 - f.y));
     return 1.0 - dot(covered, weights) * shadow.y;
+}
+
+// The eye and iris layers' parallax refraction fake (M1 C6; see the top of this file): `uv`
+// moved along the surface to where the view ray through the point would lie below the cornea,
+// the material's depth (`surface.x`, meters) × the eye mask's R, or a dome over the iris ellipse
+// (`surface_color`: center, radii), or 1. `normal` is the interpolated one, `position_dx` and
+// `position_dy` the point's screen derivatives. Unchanged for other layers and without depth.
+fn iris_parallax(
+    material: u32,
+    uv: MaterialUv,
+    normal: vec3<f32>,
+    position: vec3<f32>,
+    position_dx: vec3<f32>,
+    position_dy: vec3<f32>,
+) -> MaterialUv {
+    let modes = materials[material].modes;
+    let parallax = materials[material].surface.x;
+    let iris = materials[material].surface_color;
+    var depth = 1.0;
+    if material_has_texture(modes, CHARACTER_SURFACE_MASK) {
+        let swizzles = materials[material].swizzles;
+        depth = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, uv).r;
+    } else if iris.z > 0.0 && iris.w > 0.0 {
+        let q = (uv.uv - iris.xy) / iris.zw;
+        depth = saturate(1.0 - dot(q, q));
+    }
+    let n = safe_normalize(normal);
+    let v = safe_normalize(view.position.xyz - position);
+    // Below the surface, away from the camera: the view's part along the surface, reversed.
+    let along = (n * dot(n, v) - v) * (parallax * depth);
+    // The gradients of u and v along the surface (`mapped_normal`'s, divided by the
+    // determinant): texture coordinates per meter.
+    let dy_perp = cross(position_dy, n);
+    let dx_perp = cross(n, position_dx);
+    let determinant = dot(position_dx, dy_perp);
+    let degenerate = abs(determinant) < 1e-24;
+    let inverse = 1.0 / select(determinant, 1.0, degenerate);
+    let gradient_u = (dy_perp * uv.dx.x + dx_perp * uv.dy.x) * inverse;
+    let gradient_v = (dy_perp * uv.dx.y + dx_perp * uv.dy.y) * inverse;
+    let layer = character_eye_layer(modes);
+    let layered = layer == CHARACTER_EYE_LAYER_EYE || layer == CHARACTER_EYE_LAYER_IRIS;
+    let shift = vec2<f32>(dot(gradient_u, along), dot(gradient_v, along));
+    let shifts = layered && parallax > 0.0 && !degenerate;
+    return MaterialUv(uv.uv + select(vec2<f32>(0.0), shift, shifts), uv.dx, uv.dy);
+}
+
+// The eye depth mask at `pixel` (framebuffer coordinates; M1 C6): 1 where the character
+// prepass's nearest surface but for hair is character `character`'s eye, else 0. 1 for an
+// instance that isn't a character, which the prepass doesn't draw.
+fn eye_mask(character: u32, pixel: vec2<f32>) -> f32 {
+    let nearest = textureLoad(character_ids, vec2<i32>(floor(pixel)), 0).g;
+    let own = nearest == character_id(character, CHARACTER_SURFACE_EYE);
+    return select(1.0, select(0.0, 1.0, own), character != 0u);
 }
 
 // The control map's material ID at `uv`: level 0, unfiltered, so IDs never blend across region
@@ -658,9 +770,15 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     let position_dx = dpdx(in.world_position);
     let position_dy = dpdy(in.world_position);
 
+    // An eye's layer (M1 C6): the same for every pixel of a draw.
+    let eye_layer = character_eye_layer(modes);
+    var base_uv = uv;
+    if PERMUTATION_EYE {
+        base_uv = iris_parallax(material, uv, in.world_normal, in.world_position, position_dx, position_dy);
+    }
     var base = materials[material].base_color;
     if material_has_texture(modes, CHARACTER_BASE_COLOR) {
-        base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv);
+        base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, base_uv);
     }
     var surface: CharacterSurface;
     surface.albedo = base.rgb;
@@ -785,6 +903,10 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         // an environment shadow with the rest of the face.
         lit = max(lit, always_lit * head_visibility);
     }
+    if PERMUTATION_EYE {
+        // The lid's shadow on the eye white is the eye's shadow tone (M1 C6).
+        lit = select(lit, 0.0, eye_layer == CHARACTER_EYE_LAYER_SHADOW);
+    }
     // Taken here for the local lights: after the alpha test below, a discarded pixel's
     // neighbours could no longer rely on them.
     var derivatives: CharacterDerivatives;
@@ -837,10 +959,15 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         let line = smoothstep(edge - nose_line_width, edge + nose_line_width, nose_line);
         color = mix(color, surface.region.outline.rgb, line);
     }
+    if PERMUTATION_EYE && PERMUTATION_TRANSPARENT {
+        // A highlight glints (M1 C6).
+        color *= highlight_sparkle(material, in.instance);
+    }
     var shaded: ShadedCharacter;
     shaded.color = color;
     shaded.alpha = base.a;
-    shaded.through_hair = select(always_lit, 1.0, PERMUTATION_EYE);
+    // An eye's layers draw through by their coverage (M1 C6).
+    shaded.through_hair = select(always_lit, select(1.0, base.a, PERMUTATION_TRANSPARENT), PERMUTATION_EYE);
     return shaded;
 }
 
@@ -852,10 +979,15 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     // for everything else, as every other pass does; transparent ones blend by their coverage,
     // keeping the mask under them.
     let world = select(1.0, 0.0, in.character != 0u);
+    var alpha = select(world, shaded.alpha, PERMUTATION_TRANSPARENT);
+    if PERMUTATION_EYE && PERMUTATION_TRANSPARENT {
+        // An eye's layers blend only over the character's own eye (M1 C6).
+        alpha *= eye_mask(in.character, in.clip_position.xy);
+    }
     // The final color, with the frame's fog over it (M1 W3): characters take their share of it,
     // so they stay readable where the world melts into the sky.
     let fogged_color = fogged(shaded.color, in.world_position, fog_share(in.character));
-    return vec4<f32>(fogged_color, select(world, shaded.alpha, PERMUTATION_TRANSPARENT));
+    return vec4<f32>(fogged_color, alpha);
 }
 
 struct ThroughHairOutput {
@@ -867,8 +999,8 @@ struct ThroughHairOutput {
 
 // Eyes and brows through the character's hair (M1 C5; see the top of this file): the face's or
 // eye's pixel as the surface shades it, where the character prepass says the nearest surface is
-// the character's own hair, at most the material's distance in front of it, fogged as the
-// surface is (M1 W3).
+// the character's own hair, at most the material's distance in front of it, and the nearest but
+// for hair is the drawing part of the character (M1 C6), fogged as the surface is (M1 W3).
 //
 // Writing the depth turns early depth testing off, so every fragment of a face runs this; most
 // lie under no hair. The cheap test (the prepass's ID and depth, the fades) comes first, and
@@ -882,9 +1014,11 @@ fn fs_through_hair(in: CharacterVaryings) -> ThroughHairOutput {
     let through = materials[in.material].through_hair;
     let pixel = vec2<i32>(floor(in.clip_position.xy));
     let hair_depth = textureLoad(character_depth, pixel, 0);
-    let id = textureLoad(character_ids, pixel, 0).r;
+    let ids = textureLoad(character_ids, pixel, 0).rg;
     let behind = view_distance(in.world_position) - distance_at_depth(hair_depth);
-    let under_hair = in.character != 0u && id == character_id(in.character, CHARACTER_SURFACE_HAIR) && behind <= through.w;
+    let hair = character_id(in.character, CHARACTER_SURFACE_HAIR);
+    let own = character_id(in.character, materials[in.material].modes.z);
+    let under_hair = in.character != 0u && ids.x == hair && ids.y == own && behind <= through.w;
     // How far the camera has turned from head-forward around the head's up axis and across it:
     // 1 facing it, 0 at the material's fades (their cosines in y and z).
     let face = characters[in.character].face;

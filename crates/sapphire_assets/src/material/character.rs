@@ -2,8 +2,8 @@
 //! pillar 2). The anime character shader (M1 C1's uber-shader) reads its block: ramp and band
 //! diffuse, the control map's regions and bias, each region's share of the character light
 //! rig's stylized GI (M1 C2), the depth-offset rim and its region mask, hair highlights, the
-//! bangs' shadow on a face and eyes through the bangs (M1 C5), and the static permutations of
-//! its flags.
+//! bangs' shadow on a face and eyes through the bangs (M1 C5), the layered eyes (M1 C6), and the
+//! static permutations of its flags.
 //!
 //! # Versions
 //!
@@ -133,7 +133,7 @@ pub enum CharacterSurface {
     Face(FaceShading),
     /// Hair highlights (C5).
     Hair(HairShading),
-    /// Layered eyes drawn through the bangs (C5, C6).
+    /// A layer of an eye, or lashes or brows modeled as eye parts (C5, C6).
     Eye(EyeShading),
 }
 
@@ -346,18 +346,177 @@ pub enum HighlightStyle {
     KajiyaKay,
 }
 
-/// Eye settings: eyes and brows modeled apart from the face. They are always lit, take no rim,
-/// and draw through the bangs when `through_hair` says so (M1 C5); C6 layers them.
+/// Eye settings: eyes, lashes and brows modeled apart from the face. They are always lit, take
+/// no rim, and draw through the bangs when `through_hair` says so (M1 C5).
+///
+/// Anime eyes are layered meshes (M1 C6; spec §5.12 "Anime character shading"), each with an
+/// eye material of its own, which `layer` names: the eye itself (the eyeball, and lashes and
+/// brows modeled as eye parts), then over it the lid's shadow, the iris and the highlights.
+/// The eye writes the character prepass's eye part, the **eye depth mask**; the layers over it
+/// blend only where that mask shows the character's own eye as its nearest surface but for hair,
+/// so a lid closing over the eye takes its iris and highlights with it, and they never spill
+/// onto the skin around it.
+///
+/// The eye and iris layers can take a **parallax refraction fake**: the iris lies `parallax`
+/// meters below the cornea at its deepest, and each texel shows the iris toward where the view
+/// ray through it would meet that depth (offset-limited: the view's along-surface part times the
+/// depth, so it never runs off at grazing angles), so the iris shifts against the eye's outline
+/// as the view turns, its deepest point (the pupil) most.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct EyeShading {
-    /// Linear RGBA: R highlight, G eye shadow.
+    /// Which layer of the eye the material draws (M1 C6).
+    pub layer: EyeLayer,
+    /// The eye mask (`character_maps::eye_mask`), linear: R the iris's depth below the cornea,
+    /// from 0 to 1 of `parallax`. Without it the depth is a dome over `iris`, or with no iris
+    /// the full depth, so the layer's whole texture shifts as one.
     pub mask_map: Option<AssetId>,
-    /// Depth of the iris's parallax refraction fake, in UV units.
+    /// How far below the cornea the iris lies at its deepest, in meters: the parallax
+    /// refraction fake's depth on the eye and iris layers (M1 C6). 0 turns it off. A few
+    /// millimeters suit an anime eye a few centimeters wide.
     pub parallax: f32,
+    /// Where the iris lies in the layer's texture coordinates, for the parallax's dome.
+    pub iris: Option<IrisShape>,
     /// Draws the eye through the character's hair.
     pub through_hair: Option<ThroughHair>,
+}
+
+/// Which layer of an anime eye a material draws (M1 C6; see [`EyeShading`]). Layers draw in this
+/// order, each over the ones before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum EyeLayer {
+    /// The eye itself: the eyeball (the sclera, with an iris where one is painted on it), and
+    /// lashes and brows modeled as eye parts. Opaque or alpha-tested: it writes depth and the
+    /// character prepass's eye part, the eye depth mask the other layers draw within.
+    #[default]
+    Eye,
+    /// The upper lid's shadow on the eye white, blended over the eye by its coverage in its
+    /// shadow tone (the region's shade over the albedo, as on a shadow side): the eye's own
+    /// authored shadow color, never a darkened white.
+    Shadow,
+    /// The iris and pupil, blended over the eye and its shadow by their coverage: a mesh of its
+    /// own, so gaze (eye joints or look expressions) moves it across the eye white, which clips
+    /// it.
+    Iris,
+    /// Highlights, blended over everything below, lit as the eye is and animated.
+    Highlight(HighlightMotion),
+}
+
+impl EyeLayer {
+    /// The layer's index in the GPU block (`AnimeCharacterParams::EYE_LAYER_*`), which is also
+    /// its drawing order.
+    pub fn index(self) -> u32 {
+        match self {
+            Self::Eye => AnimeCharacterParams::EYE_LAYER_EYE,
+            Self::Shadow => AnimeCharacterParams::EYE_LAYER_SHADOW,
+            Self::Iris => AnimeCharacterParams::EYE_LAYER_IRIS,
+            Self::Highlight(_) => AnimeCharacterParams::EYE_LAYER_HIGHLIGHT,
+        }
+    }
+
+    /// Whether it blends over the eye (the shadow, iris and highlight layers), rather than being
+    /// the eye.
+    pub fn is_overlay(self) -> bool {
+        self != Self::Eye
+    }
+}
+
+/// An ellipse in texture coordinates: where an eye layer's iris lies (M1 C6).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct IrisShape {
+    pub center: [f32; 2],
+    /// The half-extents along U and V: above 0.
+    pub radius: [f32; 2],
+}
+
+impl Default for IrisShape {
+    /// An iris filling its texture.
+    fn default() -> Self {
+        Self { center: [0.5, 0.5], radius: [0.5, 0.5] }
+    }
+}
+
+/// How a highlight layer moves (M1 C6): a slow drift across the eye and a sparkle, both on the
+/// frame's clock, each instance at a phase of its own. A highlight lies on the cornea, so it is
+/// the part of an anime eye that lives: the reference games tremble and pulse theirs.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct HighlightMotion {
+    /// How far the highlight drifts from where it is modeled, in meters across the model's front
+    /// (its X and Y): a Lissajous curve (`character_maps::eye_mask::highlight_drift`). 0 holds
+    /// it still.
+    pub drift: f32,
+    /// The drift's rate, in cycles a second.
+    pub drift_rate: f32,
+    /// How much brighter the highlight glints at the peak of each sparkle: 0 none, 1 twice as
+    /// bright (`character_maps::eye_mask::highlight_sparkle`).
+    pub sparkle: f32,
+    /// Sparkles a second.
+    pub sparkle_rate: f32,
+}
+
+impl Default for HighlightMotion {
+    fn default() -> Self {
+        Self { drift: 0.0003, drift_rate: 0.3, sparkle: 0.6, sparkle_rate: 0.4 }
+    }
+}
+
+impl HighlightMotion {
+    fn validate(&self) -> Result<(), MaterialError> {
+        non_negative("surface.layer.drift", self.drift)?;
+        non_negative("surface.layer.drift_rate", self.drift_rate)?;
+        non_negative("surface.layer.sparkle", self.sparkle)?;
+        non_negative("surface.layer.sparkle_rate", self.sparkle_rate)
+    }
+}
+
+impl EyeShading {
+    fn validate(&self, alpha: AlphaMode) -> Result<(), MaterialError> {
+        non_negative("surface.parallax", self.parallax)?;
+        if let Some(iris) = &self.iris {
+            finite("surface.iris.center[0]", iris.center[0])?;
+            finite("surface.iris.center[1]", iris.center[1])?;
+            if !iris.radius.iter().all(|r| r.is_finite() && *r > 0.0) {
+                return Err(invalid("surface.iris.radius", "must be above 0"));
+            }
+        }
+        match (self.layer.is_overlay(), alpha) {
+            (true, AlphaMode::Blend) | (false, AlphaMode::Opaque | AlphaMode::Mask { .. }) => {}
+            (true, _) => {
+                return Err(invalid(
+                    "alpha",
+                    "must be Blend: an eye's shadow, iris and highlight blend over it",
+                ));
+            }
+            (false, _) => {
+                return Err(invalid("alpha", "can't be Blend for an eye: it writes the eye depth mask"));
+            }
+        }
+        if let EyeLayer::Highlight(motion) = &self.layer {
+            motion.validate()?;
+        }
+        self.through_hair.map_or(Ok(()), |t| t.validate("surface.through_hair"))
+    }
+
+    /// The GPU block's `surface` and `surface_color`: x the parallax's depth, then by layer the
+    /// iris (center, radius) of the eye and iris layers, zero without one, or a highlight's
+    /// motion (drift, its rate, sparkle, its rate).
+    fn gpu(&self) -> ([f32; 4], [f32; 4]) {
+        let surface = [self.parallax, 0.0, 0.0, 0.0];
+        let color = match self.layer {
+            EyeLayer::Eye | EyeLayer::Iris => self
+                .iris
+                .map_or([0.0; 4], |iris| [iris.center[0], iris.center[1], iris.radius[0], iris.radius[1]]),
+            EyeLayer::Shadow => [0.0; 4],
+            EyeLayer::Highlight(m) => [m.drift, m.drift_rate, m.sparkle, m.sparkle_rate],
+        };
+        (surface, color)
+    }
 }
 
 /// The light split: where N·L turns from lit to shadow.
@@ -773,12 +932,17 @@ pub struct AnimeCharacterParams {
     /// x: ramp mix; y: specular softness; z: matcap strength lit; w: matcap strength in shadow.
     pub terms: [f32; 4],
     /// By surface. Face: x shadow softness, y nose line threshold, z highlight strength, w
-    /// highlight reveal. Hair: x highlight strength, y width, z shift. Eye: x parallax depth.
+    /// highlight reveal. Hair: x highlight strength, y width, z shift. Eye: x the parallax's
+    /// depth in meters (M1 C6).
     pub surface: [f32; 4],
-    /// Face: rgb blush color. Hair: rgb highlight color.
+    /// Face: rgb blush color. Hair: rgb highlight color. Eye (M1 C6), by layer: the eye and iris
+    /// layers' iris, xy its center and zw its radii in texture coordinates (zero for none); a
+    /// highlight's motion, x drift in meters, y its rate, z sparkle, w its rate.
     pub surface_color: [f32; 4],
     /// x: flags (bit `i` for texture slot `i`, then `FLAG_*`); y: region count; z: surface
-    /// (`SURFACE_*`); w: specular model (`SPECULAR_*`) | highlight style (`HIGHLIGHT_*`) << 8.
+    /// (`SURFACE_*`); w: specular model (`SPECULAR_*`), | a hair's highlight style
+    /// (`HIGHLIGHT_*`) << [`Self::HIGHLIGHT_STYLE_SHIFT`] | an eye's layer (`EYE_LAYER_*`) <<
+    /// [`Self::EYE_LAYER_SHIFT`].
     pub modes: [u32; 4],
     /// Each texture slot's swizzle code, two to a word ([`super::swizzle_code`]).
     pub swizzles: [u32; 4],
@@ -868,6 +1032,23 @@ impl AnimeCharacterParams {
     pub const HIGHLIGHT_PAINTED_BAND: u32 = 0;
     pub const HIGHLIGHT_ANGEL_RING: u32 = 1;
     pub const HIGHLIGHT_KAJIYA_KAY: u32 = 2;
+    /// Where a hair material's highlight style sits in `modes.w`.
+    pub const HIGHLIGHT_STYLE_SHIFT: u32 = 8;
+
+    /// An eye material's layer ([`EyeLayer`], M1 C6), in `modes.w` from
+    /// [`Self::EYE_LAYER_SHIFT`]: also the order layers draw in.
+    pub const EYE_LAYER_EYE: u32 = 0;
+    pub const EYE_LAYER_SHADOW: u32 = 1;
+    pub const EYE_LAYER_IRIS: u32 = 2;
+    pub const EYE_LAYER_HIGHLIGHT: u32 = 3;
+    /// Where an eye material's layer sits in `modes.w`, eight bits wide.
+    pub const EYE_LAYER_SHIFT: u32 = 16;
+
+    /// The eye layer a block with `modes` draws: an eye's layer, 0 (the eye itself) for any other
+    /// surface.
+    pub const fn eye_layer(modes: [u32; 4]) -> u32 {
+        if modes[2] == Self::SURFACE_EYE { (modes[3] >> Self::EYE_LAYER_SHIFT) & 0xff } else { 0 }
+    }
 }
 
 impl AnimeCharacterMaterial {
@@ -921,7 +1102,9 @@ impl AnimeCharacterMaterial {
             AlphaMode::Mask { .. } => flags |= AnimeCharacterParams::FLAG_ALPHA_TEST,
             AlphaMode::Blend => flags |= AnimeCharacterParams::FLAG_TRANSPARENT,
         }
-        let (surface_kind, surface, surface_color, highlight) = match &self.surface {
+        // The surface's settings, and its bits of `modes.w` above the specular model: a hair
+        // highlight's style, an eye's layer.
+        let (surface_kind, surface, surface_color, style) = match &self.surface {
             CharacterSurface::Body => (AnimeCharacterParams::SURFACE_BODY, [0.0; 4], [0.0; 4], 0),
             CharacterSurface::Face(face) => (
                 AnimeCharacterParams::SURFACE_FACE,
@@ -940,11 +1123,13 @@ impl AnimeCharacterMaterial {
                     AnimeCharacterParams::SURFACE_HAIR,
                     [h.strength, h.width, h.shift, 0.0],
                     rgb_w(h.color, 0.0),
-                    style,
+                    style << AnimeCharacterParams::HIGHLIGHT_STYLE_SHIFT,
                 )
             }
             CharacterSurface::Eye(eye) => {
-                (AnimeCharacterParams::SURFACE_EYE, [eye.parallax, 0.0, 0.0, 0.0], [0.0; 4], 0)
+                let (surface, color) = eye.gpu();
+                let layer = eye.layer.index() << AnimeCharacterParams::EYE_LAYER_SHIFT;
+                (AnimeCharacterParams::SURFACE_EYE, surface, color, layer)
             }
         };
         let (hair_shadow, through_hair) = match &self.surface {
@@ -984,7 +1169,7 @@ impl AnimeCharacterMaterial {
             terms: [ramp_mix, self.specular.softness, matcap, matcap_shadow],
             surface,
             surface_color,
-            modes: [flags, self.regions.len() as u32, surface_kind, specular_model | highlight << 8],
+            modes: [flags, self.regions.len() as u32, surface_kind, specular_model | style],
             swizzles: pack_swizzles(swizzles),
             regions,
             outline_curve: [curve.near.0, curve.mid, curve.far.0, curve.cutoff],
@@ -998,14 +1183,21 @@ impl AnimeCharacterMaterial {
     }
 
     /// Whether it draws anything through the character's hair: a face with a mask (whose B
-    /// says which parts) or an eye, with `through_hair` set and some opacity.
+    /// says which parts) that isn't transparent, or any eye layer, with `through_hair` set and
+    /// some opacity.
     fn draws_through_hair(&self) -> bool {
+        // A transparent face doesn't write depth or the character prepass; an eye's overlay
+        // layers blend by design, over their eye drawn through first (M1 C6).
         let through = match &self.surface {
-            CharacterSurface::Face(face) if face.mask_map.is_some() => face.through_hair,
+            CharacterSurface::Face(face)
+                if face.mask_map.is_some() && !matches!(self.alpha, AlphaMode::Blend) =>
+            {
+                face.through_hair
+            }
             CharacterSurface::Eye(eye) => eye.through_hair,
             _ => None,
         };
-        through.is_some_and(|t| t.opacity > 0.0) && !matches!(self.alpha, AlphaMode::Blend)
+        through.is_some_and(|t| t.opacity > 0.0)
     }
 }
 
@@ -1076,10 +1268,7 @@ impl MaterialDocument for AnimeCharacterMaterial {
                 non_negative("surface.highlight.width", h.width)?;
                 finite("surface.highlight.shift", h.shift)
             }
-            CharacterSurface::Eye(eye) => {
-                finite("surface.parallax", eye.parallax)?;
-                eye.through_hair.map_or(Ok(()), |t| t.validate("surface.through_hair"))
-            }
+            CharacterSurface::Eye(eye) => eye.validate(self.alpha),
         }
     }
 

@@ -1,5 +1,6 @@
 //! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps, SDF face maps,
-//! the face's masks (M1 C3) and the hair mask (M1 C5).
+//! the face's masks (M1 C3), the hair mask (M1 C5) and the eye mask (M1 C6), with the eyes'
+//! layered shading that the shader and its tests share.
 //!
 //! The maps are ordinary cooked textures ([`texture`](crate::texture)) of the ILM, ramp, SDF
 //! and mask classes. This module fixes their channel and row layouts and the encodings inside
@@ -104,6 +105,15 @@
 //! `_HM`): R where the highlight may show and how strongly, G a shift of the highlight's band
 //! (0.5 none), B occlusion that darkens the hair's light between strands (1 none). An unbound
 //! mask reads as a full highlight, no shift and no occlusion.
+//!
+//! # Eye masks
+//!
+//! An eye or iris layer (M1 C6) may bind a linear mask in its surface mask slot, [`eye_mask`]:
+//! R the iris's depth below the cornea, from 0 (level with it: the sclera, the limbal ring's
+//! edge) to 1 (the material's full parallax depth: the pupil), as WuWa's eye mask paints it. An
+//! unbound mask reads as a dome over the material's iris ellipse ([`eye_mask::iris_dome`]), or
+//! with no ellipse as the full depth. [`eye_mask`] also holds the highlights' motion, which the
+//! shader and its tests compute alike.
 
 /// How many material IDs the character maps tell apart: ILM alpha levels, ramp rows per half,
 /// and the per-ID parameter arrays of the anime character shader (C1).
@@ -328,6 +338,53 @@ pub mod hair_mask {
     pub const NO_SHIFT: f32 = 0.5;
 }
 
+/// The eye mask's channel (M1 C6), and the shading of the eye's layers that the anime character
+/// shader and its tests share: the iris's dome and the highlights' drift and sparkle.
+pub mod eye_mask {
+    use std::f32::consts::TAU;
+
+    /// R, the iris's depth below the cornea: 0 level with it, 1 the material's full parallax
+    /// depth.
+    pub const DEPTH: usize = 0;
+
+    /// The drift's second axis turns this many times as fast as its first: a Lissajous figure
+    /// of 2 : 3, which wanders rather than circles.
+    pub const DRIFT_RATIO: f32 = 1.5;
+    /// The sparkle's wave is raised to this power: a short glint in each period rather than a
+    /// slow throb.
+    pub const SPARKLE_SHARPNESS: i32 = 6;
+    /// Instances' phases step by this fraction of a turn per instance slot (the golden ratio's),
+    /// so neighbors never glint together.
+    pub const PHASE_STEP: f32 = 0.618_034;
+
+    /// The iris's depth, 0 to 1, at `uv` without a mask: a dome over the ellipse at `center` with
+    /// half-extents `radius`, 1 at its center and 0 at and past its rim, so the limbal ring
+    /// holds still and the pupil shifts most, as through a cornea.
+    pub fn iris_dome(uv: [f32; 2], center: [f32; 2], radius: [f32; 2]) -> f32 {
+        let q = [(uv[0] - center[0]) / radius[0], (uv[1] - center[1]) / radius[1]];
+        (1.0 - (q[0] * q[0] + q[1] * q[1])).clamp(0.0, 1.0)
+    }
+
+    /// A highlight instance's phase, in radians, from its instance slot.
+    pub fn phase(instance: u32) -> f32 {
+        TAU * (instance as f32 * PHASE_STEP).fract()
+    }
+
+    /// Where a highlight has drifted, at `seconds` on the frame's clock with `phase`: an offset
+    /// across the model's front (X, Y), in meters, `drift` at most on each axis.
+    pub fn highlight_drift(drift: f32, rate: f32, seconds: f32, phase: f32) -> [f32; 2] {
+        let angle = TAU * rate * seconds + phase;
+        [drift * angle.sin(), drift * (DRIFT_RATIO * angle + 1.0).sin()]
+    }
+
+    /// How much brighter a highlight is, at `seconds` with `phase`: 1, rising to `1 + sparkle`
+    /// in a short glint `rate` times a second.
+    pub fn highlight_sparkle(sparkle: f32, rate: f32, seconds: f32, phase: f32) -> f32 {
+        let wave = 0.5 + 0.5 * (TAU * rate * seconds + phase).sin();
+        1.0 + sparkle * wave.powi(SPARKLE_SHARPNESS)
+    }
+}
+
 /// The expression map's channels (M1 C3), each scaled by a weight the frame packet animates
 /// per character (`sapphire_render::FaceExpression`). Linear; 0 changes nothing.
 pub mod face_expression {
@@ -462,5 +519,27 @@ mod tests {
         // Crossing that plane changes the margin smoothly: no side lights up at once.
         let [a, b] = [0.2, -0.2].map(|yaw: f32| HeadLight::new(toward(180.0 + yaw, 50.0)));
         assert!((lit_margin(a, 0.9, 0.2, 1.0) - lit_margin(b, 0.9, 0.2, 1.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_iris_dome_peaks_at_its_center_and_highlights_stay_in_bounds() {
+        use eye_mask::{highlight_drift, highlight_sparkle, iris_dome, phase};
+        let (center, radius) = ([0.5, 0.4], [0.2, 0.3]);
+        assert_eq!(iris_dome(center, center, radius), 1.0);
+        assert!((iris_dome([0.6, 0.4], center, radius) - 0.75).abs() < 1e-6, "half way out");
+        assert!(iris_dome([0.7, 0.4], center, radius) < 1e-6, "the rim holds still");
+        assert_eq!(iris_dome([0.5, 0.95], center, radius), 0.0, "past the rim");
+        let mut peak: f32 = 1.0;
+        for step in 0..2000 {
+            let seconds = step as f32 * 0.01;
+            let [x, y] = highlight_drift(0.001, 0.3, seconds, phase(7));
+            assert!(x.abs() <= 0.001 && y.abs() <= 0.001);
+            let sparkle = highlight_sparkle(0.6, 0.4, seconds, phase(7));
+            assert!((1.0..=1.6).contains(&sparkle));
+            peak = peak.max(sparkle);
+        }
+        assert!(peak > 1.59, "glints reach their peak: {peak}");
+        assert_eq!(highlight_drift(0.0, 0.3, 4.0, 1.0), [0.0, 0.0], "no drift holds it still");
+        assert_ne!(phase(1), phase(2), "neighbors glint apart");
     }
 }

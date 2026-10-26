@@ -16,7 +16,7 @@ use crate::LOG_TARGET;
 use crate::app::SandboxApp;
 use crate::content::Content;
 use crate::options::{OffscreenMode, Options};
-use crate::scene::{self, Scene};
+use crate::scene::Scene;
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 
@@ -92,7 +92,7 @@ impl Stage {
         let mut content = Content::new(platform)?;
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
-        scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
+        scene.set_sky_material(content.sky_material(&mut renderer, &gpu)?);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;
         }
@@ -108,6 +108,9 @@ impl Stage {
         if options.faces {
             scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?);
         }
+        // The day, the sky options and the starting view, last so `--view` holds whatever framing
+        // the scene chose.
+        options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]

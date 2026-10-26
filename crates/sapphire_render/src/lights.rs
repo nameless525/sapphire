@@ -787,7 +787,11 @@ mod gpu_tests {
         let mut executor = GraphExecutor::new();
         executor.execute(&gpu, graph).expect("a valid graph");
         assert!(pollster::block_on(scope.pop()).is_none());
-        assert_eq!(executor.stats().passes, 14, "uploads, light clusters, main, 9 bloom, post, readback");
+        assert_eq!(
+            executor.stats().passes,
+            15,
+            "uploads, light clusters, sky cube, main, 9 bloom, post, readback"
+        );
         readback.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let words: Vec<u32> = bytemuck::cast_slice(&readback.get_mapped_range(..).expect("mapped")).to_vec();

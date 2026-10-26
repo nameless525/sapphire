@@ -6,10 +6,11 @@
 //! frame simulates (§4.2).
 //!
 //! - **Views and scene constants** are rewritten whole every frame; they are small. The scene
-//!   constants are the frame's look: the key light, the sun and moon, the sky gradient, ambient
-//!   light, fog, the shadow tint, the character rig's key light, the day/night factor and
-//!   post-processing. Time of day resolves all of them from one set of keys
-//!   (`sapphire_world::tod`, M1 W1; look pillar 1); the renderer sees only the values.
+//!   constants are the frame's look: the key light, the sun and moon, the sky gradient and the
+//!   sky's layers over it (discs, stars, clouds), ambient light, fog, the shadow tint, the
+//!   character rig's key light, the day/night factor and post-processing. Time of day resolves
+//!   all of them from one set of keys (`sapphire_world::tod`, M1 W1; look pillar 1); the
+//!   renderer sees only the values.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
@@ -35,7 +36,7 @@ use std::ops::Range;
 use glam::camera::rh::{proj::directx, view};
 use glam::{Affine3A, Mat4, Quat, Vec3};
 
-use crate::{MeshHandle, PostParams};
+use crate::{MaterialHandle, MeshHandle, PostParams};
 
 /// Packets in a [`FramePacketRing`]: one extracting, one rendering, one spare.
 const RING_SIZE: usize = 3;
@@ -50,8 +51,8 @@ const RING_SIZE: usize = 3;
 /// camera.
 ///
 /// Some scene constants are carried for the packages that will read them and drawn from
-/// nothing yet: [`Self::celestial`] (the sky's sun and moon, W2), [`Self::fog`] (W3) and
-/// [`Self::shadow_tint`] (R4, W4). Each type's docs name its readers.
+/// nothing yet: [`Self::fog`] (W3) and [`Self::shadow_tint`] (R4, W4). Each type's docs name
+/// its readers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
@@ -64,8 +65,19 @@ pub struct FramePacket {
     /// by day and the moon at night, blended through twilight by time of day.
     pub sun: DirectionalLight,
     pub sky: SkyGradient,
-    /// The sun and the moon themselves, for the sky to draw (W2).
+    /// The sun and the moon themselves, and the turn of the star field: where the sky draws
+    /// its discs and stars (W2).
     pub celestial: Celestial,
+    /// What the sky draws over its gradient (W2): the sun's and moon's discs and glows, the
+    /// stars and the clouds' light. The default draws nothing over the gradient.
+    pub sky_layers: SkyLayers,
+    /// The zone's sky material
+    /// ([`MaterialFamily::Sky`](sapphire_assets::material::MaterialFamily)): the discs' sizes,
+    /// the moon's face, star twinkle and density, the Milky Way, and the cloud and cirrus maps
+    /// with their scale and drift. `None`, or a handle that isn't an uploaded sky material, draws
+    /// with [`SkyMaterial::default`](sapphire_assets::material::SkyMaterial): default disc sizes,
+    /// even stars and no clouds.
+    pub sky_material: Option<MaterialHandle>,
     pub ambient: AmbientLight,
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
@@ -81,11 +93,11 @@ pub struct FramePacket {
     /// "Ramps"), and anything else that has a day and a night look. The frame uniforms carry it
     /// as `day_night`.
     pub day_night: f32,
-    /// Presentation time in seconds, read from the owning clock (rule R2), for shader
-    /// animation. The app wraps it to a fixed period (the sandbox uses an hour) so it keeps
-    /// f32 precision in long sessions; shaders may only use it for effects that are periodic
-    /// or tolerate the jump at the wrap.
-    pub time_seconds: f32,
+    /// Presentation time in seconds, read from the owning clock (rule R2), for animation:
+    /// cloud drift and star twinkle. It is never wrapped: the renderer reduces it as each use
+    /// needs, in `f64`, so motion keeps its precision in long sessions and never jumps. Shaders
+    /// get it wrapped to an hour (the frame uniforms' `time`), for periodic effects.
+    pub time_seconds: f64,
     /// Exposure, bloom, tone curve, grade and vignette. Defaults to Sapphire's default look.
     pub post: PostParams,
     /// Point and spot lights. When more are visible than the renderer's
@@ -149,6 +161,8 @@ impl FramePacket {
             sun,
             sky,
             celestial,
+            sky_layers,
+            sky_material,
             ambient,
             fog,
             shadow_tint,
@@ -168,6 +182,8 @@ impl FramePacket {
         *sun = DirectionalLight::default();
         *sky = SkyGradient::default();
         *celestial = Celestial::default();
+        *sky_layers = SkyLayers::default();
+        *sky_material = None;
         *ambient = AmbientLight::default();
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
@@ -415,26 +431,88 @@ impl Default for DirectionalLight {
     }
 }
 
-/// The sun and the moon as the sky draws them (W2: their discs and halos), each with the light
-/// it gives: where it is (opposite the direction its light travels), its color and intensity.
+/// The sun and the moon, each with the light it gives: where it is (opposite the direction its
+/// light travels), its color and intensity; and the orientation of the celestial sphere the
+/// stars are fixed to. The sky draws the discs and glows where the bodies are, and the stars
+/// and the Milky Way turned by [`Self::sphere`] (W2); how they look is
+/// [`FramePacket::sky_layers`]'.
 ///
-/// The key light ([`FramePacket::sun`]) is resolved from these by time of day: the sun's while
-/// only the sun shines, the moon's while only the moon does, and a blend of the two through
-/// twilight. A body's intensity can be 0 while it is still drawn (the moon by day).
+/// The key light ([`FramePacket::sun`]) is resolved from the bodies by time of day: the sun's
+/// while only the sun shines, the moon's while only the moon does, and a blend of the two
+/// through twilight. A body's intensity can be 0 while its disc is still drawn (the moon by
+/// day, a low sun at dusk): the disc's look is its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Celestial {
     pub sun: DirectionalLight,
     pub moon: DirectionalLight,
+    /// Turns a direction in the celestial sphere's own frame, where the stars and the Milky Way
+    /// stay put, into the world: time of day turns it about the sky's pole as the hours pass, so
+    /// the stars rise and set with the hour.
+    pub sphere: Quat,
 }
 
 impl Default for Celestial {
-    /// The default sun straight overhead, and a dark moon below the horizon.
+    /// The default sun straight overhead, a dark moon below the horizon, and the celestial
+    /// sphere's pole straight up.
     fn default() -> Self {
         Self {
             sun: DirectionalLight::default(),
             moon: DirectionalLight { direction: Vec3::Y, color: Vec3::new(0.6, 0.7, 1.0), intensity: 0.0 },
+            sphere: Quat::IDENTITY,
         }
     }
+}
+
+/// What the sky draws over its gradient (W2; look pillars 1 and 3), resolved by time of day like
+/// the rest of the frame's look: the sun's and the moon's discs and glows, how bright the stars
+/// are, and the clouds' light and cover. Where the discs and stars are comes from
+/// [`Celestial`]; their sizes, the cloud maps and their motion from the sky material
+/// ([`FramePacket::sky_material`]).
+///
+/// The default draws nothing over the gradient (no discs, glows, stars or clouds): the sky as it
+/// was drawn before them (M1 W1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyLayers {
+    pub sun: SkyDisc,
+    pub moon: SkyDisc,
+    /// Star brightness: 0 by day, 1 for a full night sky. It also lights the Milky Way.
+    pub stars: f32,
+    pub clouds: CloudLight,
+}
+
+/// How the sky draws the sun or the moon: a disc and the glow around it, both in HDR so they
+/// bloom. The disc's angular size comes from the sky material.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyDisc {
+    /// The disc's color, linear RGB; its radiance is `color × intensity`.
+    pub color: Vec3,
+    /// 0 hides the disc. The sun's is far above 1, so it blooms into a white-hot core.
+    pub intensity: f32,
+    /// The glow around the disc: linear RGB added at its center, fading smoothly to nothing at
+    /// `glow_radius`. Black for none.
+    pub glow: Vec3,
+    /// The glow's angular radius, in radians.
+    pub glow_radius: f32,
+}
+
+/// The clouds' light and cover (W2), for both cloud layers: the card clouds around the horizon
+/// and the high cirrus. Clouds are painted in the anime way: a lit and a shaded tone split along
+/// the painted terminator, with a rim along their edges toward the key light, never a darkened
+/// albedo.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CloudLight {
+    /// Linear RGB of the clouds' lit sides, facing the key light (the sun by day, the moon at
+    /// night).
+    pub lit: Vec3,
+    /// Linear RGB of their shaded sides: an authored color, usually a sky-ward hue.
+    pub shade: Vec3,
+    /// Linear RGB added along cloud edges, strongest toward the key light: the silver lining.
+    pub rim: Vec3,
+    /// How much of the card clouds shows, 0 (a clear sky) to 1 (the clouds as painted): their
+    /// SDF dissolve threshold, so clouds shrink to their cores and vanish rather than fade.
+    pub coverage: f32,
+    /// The same for the cirrus layer.
+    pub cirrus: f32,
 }
 
 /// Low-frequency ambient light (look pillar 4): a hemisphere of sky light from above and bounce
@@ -721,6 +799,10 @@ mod tests {
         let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
         packet.views.push(ViewData { camera });
         packet.sun.intensity = 2.0;
+        packet.celestial.sphere = Quat::from_rotation_x(0.5);
+        packet.sky_layers.stars = 1.0;
+        packet.sky_layers.clouds.coverage = 0.5;
+        packet.sky_material = Some(MaterialHandle(3));
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
         packet.day_night = 1.0;

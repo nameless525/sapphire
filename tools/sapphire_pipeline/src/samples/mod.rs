@@ -8,10 +8,13 @@
 //!   for the sandbox's `--swatches` spheres (M1 C1);
 //! - the face test head's content ([`face`], in `face/`): a head, its face material, and the
 //!   SDF face map (with its threshold masks), face mask and expression map that material reads,
-//!   for the sandbox's `--faces` (M1 C3).
+//!   for the sandbox's `--faces` (M1 C3);
+//! - the sandbox sky's content ([`sky`]): card cloud, cirrus, moon, star and Milky Way maps and
+//!   the sky material that draws them (M1 W2).
 
 pub mod face;
 mod shapes;
+pub mod sky;
 pub mod swatch;
 
 use std::io;
@@ -41,6 +44,12 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
         (swatch::RAMP_MATERIAL_FILE_NAME, swatch::ramp_material_document().into_bytes()),
         (swatch::SUBSURFACE_MATERIAL_FILE_NAME, swatch::subsurface_material_document().into_bytes()),
         (swatch::BAND_MATERIAL_FILE_NAME, swatch::band_material_document().into_bytes()),
+        (sky::CLOUDS_FILE_NAME, sky::clouds_png()?),
+        (sky::CIRRUS_FILE_NAME, sky::cirrus_png()?),
+        (sky::MOON_FILE_NAME, sky::moon_png()?),
+        (sky::STARS_FILE_NAME, sky::stars_png()?),
+        (sky::MILKY_WAY_FILE_NAME, sky::milky_way_png()?),
+        (sky::MATERIAL_FILE_NAME, sky::material_document().into_bytes()),
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
     let mut paths = Vec::new();
@@ -333,6 +342,12 @@ mod tests {
             swatch::RAMP_MATERIAL_FILE_NAME,
             swatch::SUBSURFACE_MATERIAL_FILE_NAME,
             swatch::BAND_MATERIAL_FILE_NAME,
+            sky::CLOUDS_FILE_NAME,
+            sky::CIRRUS_FILE_NAME,
+            sky::MOON_FILE_NAME,
+            sky::STARS_FILE_NAME,
+            sky::MILKY_WAY_FILE_NAME,
+            sky::MATERIAL_FILE_NAME,
         ];
         assert_eq!(written[..names.len()], names.map(|name| nested.join(name)));
         let faces: Vec<_> = face::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();

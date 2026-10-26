@@ -19,7 +19,8 @@
 //! - Rendering: the renderer sees only the plain scene constants time of day resolves into the
 //!   `FramePacket`, and each character's resolved lighting (rule R4: `sapphire_render` never
 //!   depends on this crate). The sky, fog, ambient, shadow and character packages (W2–W5, R4,
-//!   C1, C2) read those values.
+//!   C1, C2) read those values. The zone's sky material (its maps and the shapes of discs and
+//!   clouds) is content the app hands the renderer beside them.
 //! - The frame loop and extraction: the app ticks time of day in the fixed step
 //!   ([`tod::tick_time_of_day`]), resolves it once per frame and writes the packet.
 //! - Cutscene playback: a track plays on the world's clock, or a sequencer

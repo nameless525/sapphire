@@ -17,9 +17,11 @@
 //!   bound (shaders skip those slots on the block's bound bits), and the three samplers. Each
 //!   bound texture must carry the swizzle the material was cooked with, and slots of linear data
 //!   (normal, control, mask and SDF maps) take no sRGB texture: decoding would bend the data.
-//! - Only the anime character family draws so far, so the scene group (group 2) is built for its
-//!   buffer alone. Each family that gets shaders (W2–W6) gets a scene group of its own, rebuilt
-//!   when the instance buffer or its family's buffer grows.
+//! - Only the anime character family draws meshes so far, so the scene group (group 2) is built
+//!   for its buffer alone. Each family whose meshes get shaders (W3–W6) gets a scene group of its
+//!   own, rebuilt when the instance buffer or its family's buffer grows. The sky (W2) draws one
+//!   material at a time and reads its block from the mirror ([`Materials::params`]), binding
+//!   only its group 3.
 //!
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
 
@@ -38,6 +40,13 @@ use crate::texture::GpuTexture;
 pub struct MaterialHandle(pub(crate) u32);
 
 impl MaterialHandle {
+    /// A handle from its raw index (the order materials were uploaded in), for code that builds
+    /// packets without a renderer, such as extraction tests. A sky material handle the renderer
+    /// doesn't know draws the default sky.
+    pub const fn from_raw(index: u32) -> Self {
+        Self(index)
+    }
+
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
@@ -291,6 +300,15 @@ impl Materials {
         self.records.get(handle.index())
     }
 
+    /// Material `handle`'s block as its family's mirror holds it: what its slot uploads. The sky
+    /// reads its material's on the CPU (see the `sky` module).
+    pub(crate) fn params(&self, handle: MaterialHandle) -> Option<&[u8]> {
+        let record = self.record(handle)?;
+        let buffer = &self.families[record.family.index()];
+        let start = record.slot as usize * buffer.stride();
+        buffer.mirror.get(start..start + buffer.stride())
+    }
+
     /// The parameter buffer of `family`.
     pub(crate) fn buffer(&self, family: MaterialFamily) -> &wgpu::Buffer {
         self.families[family.index()].buffer.buffer()
@@ -361,7 +379,9 @@ impl MaterialUploads<'_> {
 mod gpu_tests {
     use glam::Vec3;
     use sapphire_assets::material::AlignedVec;
-    use sapphire_assets::material::{AnimeCharacterMaterial, AnimeCharacterParams, Material, SkyMaterial};
+    use sapphire_assets::material::{
+        AnimeCharacterMaterial, AnimeCharacterParams, Material, SkyMaterial, SkyParams,
+    };
     use sapphire_assets::texture::Swizzle;
     use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
 
@@ -381,8 +401,11 @@ mod gpu_tests {
         bytemuck::pod_read_unaligned(Material::read(bytes).unwrap().params())
     }
 
+    /// The anime character materials the test uploads.
+    const SLOTS: usize = 3;
+
     /// Prepares and records one frame with no instances, then reads the anime character
-    /// family's buffer back: its slots as the frame's uploads left them.
+    /// family's buffer back: the test's slots as the frame's uploads left them.
     fn frame(
         gpu: &GpuContext,
         renderer: &mut Renderer,
@@ -403,7 +426,7 @@ mod gpu_tests {
         });
         let view = target.create_view(&Default::default());
         let buffer = renderer.materials().buffer(MaterialFamily::AnimeCharacter).clone();
-        let size = u64::from(renderer.materials().len()) * BLOCK as u64;
+        let size = (SLOTS * BLOCK) as u64;
         let readback = gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size,
@@ -435,12 +458,14 @@ mod gpu_tests {
         let handles = materials
             .each_ref()
             .map(|bytes| renderer.upload_material(Material::read(bytes).unwrap(), |_| None).unwrap());
+        // And the sky's default material, which the renderer uploads at creation (M1 W2).
         let stats = renderer.stats();
-        assert_eq!((stats.materials, stats.material_bytes), (3, 3 * BLOCK as u64));
+        let bytes = (SLOTS * BLOCK + size_of::<SkyParams>()) as u64;
+        assert_eq!((stats.materials, stats.material_bytes), (SLOTS as u32 + 1, bytes));
 
-        // The first frame uploads all three.
+        // The first frame uploads all four.
         let slots = frame(&gpu, &mut renderer, &mut packets);
-        assert_eq!(renderer.stats().material_uploads, 3);
+        assert_eq!(renderer.stats().material_uploads, SLOTS as u32 + 1);
         assert_eq!(slots, materials.each_ref().map(|bytes| params(bytes)));
         frame(&gpu, &mut renderer, &mut packets);
         assert_eq!(renderer.stats().material_uploads, 0, "unchanged materials upload nothing");
@@ -448,7 +473,7 @@ mod gpu_tests {
         // Scribble over every slot on the GPU behind the renderer's back: an update that
         // uploaded more than its own slot would repair the others.
         let buffer = renderer.materials().buffer(MaterialFamily::AnimeCharacter);
-        gpu.queue().write_buffer(buffer, 0, &[0xab; 3 * BLOCK]);
+        gpu.queue().write_buffer(buffer, 0, &[0xab; SLOTS * BLOCK]);
         let yellow = cooked([1.0, 1.0, 0.0, 1.0]);
         renderer.update_material(handles[1], Material::read(&yellow).unwrap(), |_| None).unwrap();
         let slots = frame(&gpu, &mut renderer, &mut packets);

@@ -17,7 +17,8 @@
 //!   costs nothing while the hour and the camera stand still, and, while either moves and the
 //!   panel is open, one render and upload a frame: about 55 µs of CPU in a release build on an
 //!   M5, with sRGB encoding through a table (direct encoding took 210 µs).
-//! - **Resolved values:** the key light and where it comes from, the sun and moon, the sky,
+//! - **Resolved values:** the key light and where it comes from, the sun and moon, the sky and its
+//!   layers (the discs and their glows, star brightness, the clouds' tones and coverage; M1 W2),
 //!   ambient, fog, shadow tint, character light, day/night factor and post-processing (with the
 //!   grades post's two LUTs blend), zone volumes and the cutscene, each character's resolved
 //!   light rig, and the resolve's own CPU time against its 0.05 ms budget.
@@ -27,7 +28,7 @@ use std::sync::LazyLock;
 use egui::{Color32, Mesh, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Ui, pos2, vec2};
 use sapphire_math::Vec3;
 use sapphire_math::color::linear_to_srgb;
-use sapphire_render::{CharacterGi, CharacterInstance, CharacterLighting, DirectionalLight};
+use sapphire_render::{CharacterGi, CharacterInstance, CharacterLighting, DirectionalLight, SkyDisc};
 use sapphire_world::tod::{DAY_HOURS, TimeOfDay, TodFrame, TodLook};
 
 use crate::budget::format_ms;
@@ -394,6 +395,27 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
             ui.weak("zenith, horizon, ground");
         });
         ui.end_row();
+        for (name, disc) in [("Sun disc", &look.sun_disc), ("Moon disc", &look.moon_disc)] {
+            ui.label(name);
+            ui.horizontal(|ui| {
+                swatch(ui, disc.color * disc.intensity, exposure);
+                swatch(ui, disc.glow, exposure);
+                ui.monospace(disc_text(disc));
+            });
+            ui.end_row();
+        }
+        ui.label("Stars");
+        ui.monospace(format!("{:.2}", look.stars));
+        ui.end_row();
+        ui.label("Clouds");
+        ui.horizontal(|ui| {
+            let clouds = &look.clouds;
+            for color in [clouds.lit, clouds.shade, clouds.rim] {
+                swatch(ui, color, exposure);
+            }
+            ui.monospace(format!("cover {:.2}, cirrus {:.2}", clouds.coverage, clouds.cirrus));
+        });
+        ui.end_row();
         ui.label("Ambient");
         ui.horizontal(|ui| {
             let ambient = &look.ambient;
@@ -521,6 +543,14 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
     });
 }
 
+/// A disc's readout: its brightness and its glow's size.
+fn disc_text(disc: &SkyDisc) -> String {
+    if disc.intensity <= 0.0 && disc.glow_radius <= 0.0 {
+        return "hidden".to_owned();
+    }
+    format!("{:.1}, glow {:.0}°", disc.intensity, disc.glow_radius.to_degrees())
+}
+
 /// A color swatch: linear light, exposed, as the display would show it untoned.
 fn swatch(ui: &mut Ui, color: Vec3, exposure: f32) {
     let (rect, response) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
@@ -635,6 +665,9 @@ mod tests {
         let setting =
             DirectionalLight { direction: Vec3::new(-1.0, 0.0, 0.0), ..DirectionalLight::default() };
         assert_eq!(position(&setting), "elevation +0°, azimuth +90°", "on the horizon to the right");
+        assert_eq!(disc_text(&SkyDisc::default()), "hidden");
+        let sun = SkyDisc { intensity: 40.0, glow_radius: 22f32.to_radians(), ..SkyDisc::default() };
+        assert_eq!(disc_text(&sun), "40.0, glow 22°");
         assert_eq!(display(Vec3::ONE, 0.0), Color32::WHITE);
         assert_eq!(display(Vec3::splat(0.5), 1.0), Color32::WHITE, "one stop up");
         assert_eq!(display(Vec3::splat(f32::NAN), 0.0), Color32::BLACK);

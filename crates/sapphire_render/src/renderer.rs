@@ -1,7 +1,7 @@
-//! The renderer: compute skinning, the prepasses, a main pass into HDR scene color (anime
-//! character surfaces and outlines per static permutation, the sky, then transparent
-//! surfaces), lit by each character's light rig (or the sun) and the frame's local lights, then
-//! post-processing into the target.
+//! The renderer: compute skinning, the prepasses, the sky cube's face, a main pass into HDR
+//! scene color (anime character surfaces and outlines per static permutation, the sky, then
+//! transparent surfaces), lit by each character's light rig (or the sun) and the frame's local
+//! lights, then post-processing into the target.
 
 use std::num::NonZeroU64;
 
@@ -28,6 +28,7 @@ use crate::pipelines::{
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
 use crate::skinning::{Skinning, SkinningStats};
+use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -81,12 +82,20 @@ pub struct RenderSettings {
     /// (spec §3.4 budgets 64 on desktop and 8 on mobile). 0 turns local lights off; more than
     /// [`MAX_LIGHTS`](crate::MAX_LIGHTS) is clamped.
     pub max_lights: u32,
+    /// The sky cube's size and update rate, and the cirrus layer (see the `sky` module).
+    pub sky: SkySettings,
 }
 
 impl Default for RenderSettings {
     /// The desktop tiers' settings, which every golden image renders with.
     fn default() -> Self {
-        Self { msaa: Msaa::default(), bloom_levels: 5, light_path: LightPath::Clustered, max_lights: 64 }
+        Self {
+            msaa: Msaa::default(),
+            bloom_levels: 5,
+            light_path: LightPath::Clustered,
+            max_lights: 64,
+            sky: SkySettings::default(),
+        }
     }
 }
 
@@ -202,6 +211,8 @@ pub struct RenderStats {
     pub scene_size: (u32, u32),
     /// Skinned and morphed instances and the skinning they need.
     pub skinning: SkinningStats,
+    /// The sky's layers and its cube.
+    pub sky: SkyStats,
 }
 
 /// The prepasses' outputs in a frame's graph, which [`Renderer::record`] returns for passes
@@ -253,8 +264,14 @@ pub struct Renderer {
     pipelines: Pipelines,
     frame_uniforms: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
+    /// Every view's uniforms, one per [`Self::view_stride`]: the main view first, then the sky
+    /// cube's six faces (written once, at creation).
     view_uniforms: wgpu::Buffer,
     view_bind_group: wgpu::BindGroup,
+    /// Bytes between views in [`Self::view_uniforms`]: a view's size, aligned for dynamic offsets.
+    view_stride: u32,
+    /// The sky's pipelines, uniforms, default material and cube.
+    sky: Sky,
     /// The frame's local lights, their lists and the cluster pass.
     lights: Lights,
     /// The frame's characters and their light rigs.
@@ -329,9 +346,18 @@ impl Renderer {
             })
         };
         let frame_uniforms = uniform("frame uniforms", size_of::<FrameUniforms>());
-        // One view slot in M0. M1 sizes this for every view (main camera, shadow cascades) at
-        // a stride of `min_uniform_buffer_offset_alignment` and binds each by offset.
-        let view_uniforms = uniform("view uniforms", size_of::<ViewUniforms>());
+        // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
+        // the main camera, then the sky cube's faces. Shadow cascades (R4) join them.
+        let view_stride = (size_of::<ViewUniforms>() as u32)
+            .next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
+        let view_uniforms = uniform("view uniforms", (view_stride * (1 + sky::CUBE_FACES)) as usize);
+        for face in 0..sky::CUBE_FACES {
+            let camera = cube_face_camera(face as usize);
+            let size = (settings.sky.cube_size, settings.sky.cube_size);
+            let view = ViewUniforms::new(&camera, size, camera.proj * camera.view);
+            let offset = u64::from(view_stride * (1 + face));
+            gpu.queue().write_buffer(&view_uniforms, offset, bytemuck::bytes_of(&view));
+        }
         let lights = Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache());
         let characters = Characters::new(&device);
         let frame_bind_group =
@@ -349,7 +375,8 @@ impl Renderer {
             }],
         });
         let meshes = MeshPool::new(&device);
-        let materials = Materials::new(&device, gpu.queue());
+        let mut materials = Materials::new(&device, gpu.queue());
+        let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples)?;
         let scene = GpuScene::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &materials);
         let skinning = Skinning::new(&device);
@@ -374,6 +401,8 @@ impl Renderer {
             frame_bind_group,
             view_uniforms,
             view_bind_group,
+            view_stride,
+            sky,
             lights,
             characters,
             meshes,
@@ -398,8 +427,9 @@ impl Renderer {
     /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
     /// the next recorded frame.
     ///
-    /// Every family uploads. Only anime character materials draw so far: the other families'
-    /// shaders come with their packages (sky W2, fog cards W3, environment W4, foliage W6).
+    /// Every family uploads. Anime character materials draw on meshes, and a sky material draws
+    /// the sky when a packet names it ([`FramePacket::sky_material`]); the other families' shaders
+    /// come with their packages (fog cards W3, environment W4, foliage W6).
     pub fn upload_material<'t>(
         &mut self,
         material: &ArchivedMaterial,
@@ -580,6 +610,7 @@ impl Renderer {
         self.prepared = packet
             .main_view()
             .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet, lights) });
+        self.sky.prepare(packet, &self.materials);
         self.post.prepare(queue, &packet.post);
         let counts = self.scene.draw_counts();
         let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {
@@ -695,6 +726,8 @@ impl Renderer {
             ref frame_bind_group,
             ref view_uniforms,
             ref view_bind_group,
+            view_stride,
+            ref mut sky,
             ref mut lights,
             ref mut characters,
             ref meshes,
@@ -708,6 +741,7 @@ impl Renderer {
         } = *self;
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
+        let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
         let (light_uploads, cluster_pass) = lights.split_for_record();
         let character_uploads = characters.upload();
         let skinning_frame = skinning.frame();
@@ -728,6 +762,7 @@ impl Renderer {
         graph.add_pass("uploads").side_effect().record(move |ctx| {
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
             upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
+            upload(uploads, ctx.encoder, sky_buffer, bytemuck::bytes_of(&sky_uniforms));
             scene_uploads.write(uploads, ctx.encoder);
             material_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
@@ -748,6 +783,15 @@ impl Renderer {
             graph.add_pass("light clusters").side_effect().record(move |ctx| {
                 let timestamps = ctx.compute_timestamp_writes();
                 cluster_pass.record(ctx.encoder, view_bind_group, labels, timestamps);
+            });
+        }
+        // The sky cube's face (all six on the first frame): persistent, so a side effect too,
+        // before the main pass, whose readers (W4, W5) then see this frame's sky.
+        if let Some(cube) = sky_cube {
+            graph.add_pass("sky cube").side_effect().record(move |ctx| {
+                let timestamps = ctx.timestamp_writes();
+                let offset = |face: u32| view_stride * (1 + face);
+                cube.record(ctx.encoder, frame_bind_group, view_bind_group, offset, labels, timestamps);
             });
         }
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
@@ -856,10 +900,14 @@ impl Renderer {
             for (variant, set) in groups {
                 draw_main(&mut pass, pipelines, &mesh_draws, variant, set);
             }
-            pass.set_pipeline(&pipelines.sky);
-            pass.draw(0..3, 0..1);
-            for variant in SurfaceVariant::TRANSPARENT {
-                draw_main(&mut pass, pipelines, &mesh_draws, variant, DrawSet::Surfaces);
+            sky_draw.draw(&mut pass);
+            if SurfaceVariant::TRANSPARENT.into_iter().any(|variant| mesh_draws.has_any(variant)) {
+                // The sky's pipeline bound its own groups 2 and 3; mesh draws bind group 3 per
+                // draw.
+                pass.set_bind_group(2, scene_bind_group, &[]);
+                for variant in SurfaceVariant::TRANSPARENT {
+                    draw_main(&mut pass, pipelines, &mesh_draws, variant, DrawSet::Surfaces);
+                }
             }
         });
 
@@ -884,9 +932,13 @@ impl Renderer {
     }
 
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
-    /// size.
+    /// size and sky cube faces.
     pub fn stats(&self) -> RenderStats {
-        RenderStats { character_pipelines: self.pipelines.character_pipelines(), ..self.stats }
+        RenderStats {
+            character_pipelines: self.pipelines.character_pipelines(),
+            sky: self.sky.stats(),
+            ..self.stats
+        }
     }
 
     /// Sets the scene's size as a fraction of the target's width and height, from the next
@@ -923,6 +975,12 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn materials(&self) -> &Materials {
         &self.materials
+    }
+
+    /// The sky, for tests that read its cube back.
+    #[cfg(test)]
+    pub(crate) fn sky(&self) -> &Sky {
+        &self.sky
     }
 
     fn update_pool_stats(&mut self) {

@@ -13,7 +13,7 @@ use super::TodError;
 use super::clock::TodClock;
 use super::cutscene::TodCutscene;
 use super::key::TodGroups;
-use super::look::{TodLook, mix};
+use super::look::{TodLook, celestial_sphere, mix};
 use super::timeline::{Segment, TodTimeline};
 use super::volume::{TodVolume, TodVolumeId};
 use crate::light_rig::LightRig;
@@ -112,8 +112,9 @@ impl Default for Segment {
 }
 
 impl TimeOfDay {
-    /// Time of day over the base `timeline`, which must set every group, on `clock` (issued by
-    /// the world clock: [`ScaledClock::new_local_clock`]) at `hours`, with no cycle running.
+    /// Time of day over the base `timeline`, which must be complete
+    /// ([`TodTimeline::is_complete`]), on `clock` (issued by the world clock:
+    /// [`ScaledClock::new_local_clock`]) at `hours`, with no cycle running.
     pub fn new(timeline: TodTimeline, clock: LocalClock, hours: f32) -> Result<Self, TodError> {
         check_complete(&timeline)?;
         let clock = TodClock::new(clock, hours);
@@ -136,7 +137,7 @@ impl TimeOfDay {
         &self.timeline
     }
 
-    /// Replaces the base timeline (hot reload, live link), which must set every group.
+    /// Replaces the base timeline (hot reload, live link), which must be complete.
     pub fn set_timeline(&mut self, timeline: TodTimeline) -> Result<(), TodError> {
         check_complete(&timeline)?;
         self.timeline = timeline;
@@ -273,7 +274,7 @@ impl TimeOfDay {
 
     /// The base timeline and zones at `hours`, and how many volumes weighed in.
     fn look_at(&self, hours: f32, probe: Vec3) -> (TodLook, u32) {
-        let mut look = TodLook::default();
+        let mut look = TodLook { sphere: celestial_sphere(hours), ..TodLook::default() };
         self.timeline.apply(&mut look, hours, 1.0);
         let mut active = 0;
         for (_, volume) in &self.volumes {
@@ -288,7 +289,7 @@ impl TimeOfDay {
 }
 
 fn check_complete(timeline: &TodTimeline) -> Result<(), TodError> {
-    match TodGroups::ALL.first_missing_from(timeline.groups()) {
+    match TodGroups::REQUIRED.first_missing_from(timeline.groups()) {
         Some(group) => Err(TodError::Incomplete(group)),
         None => Ok(()),
     }

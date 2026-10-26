@@ -16,9 +16,10 @@
 //! wait alone is mostly submission latency on a light scene.
 //!
 //! Then, where the device has timestamp queries, it runs [`TIMED_FRAMES`] more frames with the
-//! frame graph's GPU timing on and logs the mean GPU time of the main pass, of the skinning pass
-//! (`--skinned`) and of the whole frame. Timing comes last so it doesn't touch the CPU and
-//! allocation numbers, which stay comparable with builds that have none.
+//! frame graph's GPU timing on and logs the mean GPU time of the main pass (the sky draws in it),
+//! of the skinning pass (`--skinned`), of the sky cube's face pass and of the whole frame. Timing
+//! comes last so it doesn't touch the CPU and allocation numbers, which stay comparable with
+//! builds that have none.
 
 use std::time::Duration;
 
@@ -145,6 +146,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
     stage.measure_gpu = true;
     // Sums of (exclusive, duration) per pass, and frames timed.
     let mut skinning = (Duration::ZERO, Duration::ZERO, 0u32);
+    let mut sky_cube = (Duration::ZERO, Duration::ZERO, 0u32);
     let mut main = (Duration::ZERO, Duration::ZERO, 0u32);
     let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
     for _ in 0..TIMED_FRAMES {
@@ -158,7 +160,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         last = timings.frame;
         timed += 1;
         span += timings.span();
-        for (name, sums) in [("skinning", &mut skinning), ("main", &mut main)] {
+        for (name, sums) in [("skinning", &mut skinning), ("main", &mut main), ("sky cube", &mut sky_cube)] {
             if let Some(pass) = timings.get(name) {
                 *sums = (sums.0 + pass.exclusive, sums.1 + pass.duration, sums.2 + 1);
             }
@@ -174,6 +176,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         gpu_skinning_us = format_args!("{:.1}", micros(skinning.0, skinning.2)),
         gpu_skinning_duration_us = format_args!("{:.1}", micros(skinning.1, skinning.2)),
         skinning_frames = skinning.2,
+        gpu_sky_cube_us = format_args!("{:.1}", micros(sky_cube.0, sky_cube.2)),
+        gpu_sky_cube_duration_us = format_args!("{:.1}", micros(sky_cube.1, sky_cube.2)),
+        sky_cube_frames = sky_cube.2,
         "bench gpu",
     );
     Ok(())

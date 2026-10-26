@@ -6,10 +6,10 @@
 //! - The extract boundary's data (§4.6): the plain-data [`FramePacket`] and the
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
-//!   resolved scene constants (key light, sky, ambient, day/night factor and post, and the fog
-//!   and shadow tint its later packages read), and the character light rig
-//!   (`sapphire_world::light_rig`, M1 C2) only as each character's resolved
-//!   [`CharacterLighting`].
+//!   resolved scene constants (key light, sky gradient and layers, the sun, moon and celestial
+//!   sphere, ambient, day/night factor and post, and the fog and shadow tint its later packages
+//!   read), and the character light rig (`sapphire_world::light_rig`, M1 C2) only as each
+//!   character's resolved [`CharacterLighting`].
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
 //!   material buffers, and instance and draw-record buffers kept across frames and updated from
@@ -25,8 +25,11 @@
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The scene pipelines: the anime character uber-shader and its inverted-hull outline, in
-//!   one pipeline per static permutation (see "The anime character shader" below), and the sky
-//!   gradient.
+//!   one pipeline per static permutation (see "The anime character shader" below).
+//! - The sky (`sky`, M1 W2): the gradient, stars and the Milky Way, the sun's and moon's discs and
+//!   glows, cirrus and the card clouds' band, drawn at the far plane in the main pass from the
+//!   packet's [`SkyLayers`] and its sky material, and a sky-only cubemap updated a face a frame
+//!   for the probes and reflections that will read it (see "The sky" below).
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
 //!   view and capped, then listed for the anime character shader by clustered forward+ (a
 //!   16 × 9 × 24 grid binned by a compute pass, desktop) or per-object lists (at most 4 per
@@ -200,6 +203,13 @@
 //! prepasses bind groups 0–2 like the main pass and read no storage buffer beyond the
 //! instances.
 //!
+//! The view group's buffer holds every view at a stride of the device's uniform offset
+//! alignment: the main view (offset 0, written every frame), then the sky cube's six faces
+//! (written once). The sky's pipelines bind groups 0 and 1 as the scene's, their own group 2 (the
+//! frame's `SkyUniforms`, one uniform at binding 2, past the scene group's bindings
+//! `frame.wgsl` declares) and the sky family's group 3 (five texture slots and the trilinear
+//! sampler), so the sky reads no storage buffer beyond group 0's.
+//!
 //! The skinning pass (`shaders/skinning.wgsl`) binds its own group 0, all compute:
 //!
 //! | Binding | Type | Contents | Written |
@@ -225,7 +235,7 @@
 //! floor allows; the prepasses, which read no material textures, leave it out. The anime
 //! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
 //! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones
-//! (shadow cascades, probes, the sky cubemap); the other families bind 1 to 5. Local lights take
+//! (shadow cascades, probes, the sky cube); the other families bind 1 to 5. Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
 //! then 16-bit light indices, read by cluster index or by instance slot (passed from the vertex
 //! stage as a flat varying). Compute skinning writes
@@ -305,17 +315,47 @@
 //!   environment shadow reaches a face whole, per character: a value in the character's entry
 //!   that the face takes as occlusion (R4), never shadow-map texels on it.
 //!
+//! # The sky (M1 W2)
+//!
+//! `shaders/sky.wgsl` draws the sky over a fullscreen triangle at the far plane, in the main pass
+//! after the opaque surfaces and their outlines (depth test `Equal`, so only uncovered pixels
+//! shade) and before transparent ones, and the same shader without the discs into the sky cube.
+//! The `sky` module has the details:
+//!
+//! - **Layers**, back to front: the gradient (`sky_color()` in `frame.wgsl`, unchanged, which the
+//!   anime character shader reads for ambient), stars and the Milky Way on the turning celestial
+//!   sphere, the glows, the discs, cirrus and the card clouds. A layer at zero is skipped on a
+//!   branch every pixel takes alike, and leaves the gradient exactly as it was.
+//! - **Data:** time of day's [`SkyLayers`] (disc colors and glows, star brightness, cloud tones
+//!   and coverage) and [`Celestial`] (where the bodies are, and the sphere's turn), and the
+//!   packet's sky material ([`FramePacket::sky_material`]), or [`SkyMaterial::default`]
+//!   (`sapphire_assets::material`), which the renderer uploads at creation. The CPU folds them,
+//!   with the clouds' drift reduced in `f64` from the packet's unwrapped time, into one uniform
+//!   block a frame.
+//! - **The sky cube:** the sky without geometry, discs or stars, `Rg11b10Ufloat` (or
+//!   `Rgba16Float`), one level, 256² on desktop, 128² on Mobile-High and 64² on Mobile-Low
+//!   ([`SkySettings`] per tier), all six faces on the first frame and then a face every frame
+//!   (every other one on Mobile-Low), in a side-effect pass before the main pass. Its readers are the ambient probes
+//!   and reflections (W4, W5, C7).
+//! - **Stats:** [`SkyStats`] in [`RenderStats::sky`]: the layers drawn, the cube's faces and
+//!   sky materials that weren't.
+//!
+//! [`SkyMaterial::default`]: sapphire_assets::material::SkyMaterial
+//!
 //! # Material buffers
 //!
 //! Each material family has a parameter buffer of its own, an array of its block
 //! (`shaders/materials.wgsl`, mirroring `sapphire_assets::material`): 896 bytes for the anime
 //! character family, 80 to 160 for the others. One shared array would pad every slot to the
 //! largest block, and a pipeline only reads its own family, so each family's pipelines bind
-//! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. A draw
+//! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. The sky
+//! draws one material at a time and reads its block from the CPU mirror into its frame uniforms
+//! (see "The sky"), so the GPU copy of the sky family's buffer goes unread. A draw
 //! record's `material` is the slot in that buffer; a slot is kept for the renderer's lifetime
 //! and written through a CPU mirror, so editing a material uploads its one block with the next
-//! frame and nothing else. Every family uploads and binds its textures today; only the anime
-//! character family has shaders, so [`Renderer::upload_mesh`] accepts only its materials.
+//! frame and nothing else. Every family uploads and binds its textures today; meshes draw with
+//! the anime character family alone, so [`Renderer::upload_mesh`] accepts only its materials, and
+//! the sky draws with a sky material.
 //!
 //! Material textures are sampled with explicit gradients (taken once per pixel, in uniform
 //! control flow) so that unbound slots can be skipped on a branch, and every sample goes through
@@ -348,9 +388,11 @@
 //!   is upsampled bilinearly. TAA's own upsampling (R7), a spatial upscaler (an FSR1-style EASU
 //!   and RCAS port, or MetalFX spatial) and DLSS or MetalFX temporal take over from it; the
 //!   quality tiers' render scale and dynamic resolution then drive their input size.
-//! - **Material families' shaders:** sky (W2), fog cards (W3), environment (W4) and foliage
-//!   (W6) bring pipelines that bind their family's buffer (in a scene group of their own) and
-//!   group 3.
+//! - **Material families' shaders:** fog cards (W3), environment (W4) and foliage (W6) bring
+//!   pipelines that bind their family's buffer (in a scene group of their own) and group 3. The
+//!   sky (W2) reads its one material's block on the CPU instead (see "The sky").
+//! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
+//!   and the sky cube's readers (W4, W5) with its prefiltered mips.
 //! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
 //!   permutation bits, and specular, matcaps and stockings (C7) over the control map channels it
 //!   already reads. Shadows (R4) fill `cast_shadow`. Outlines v2 (C4) take each pixel's region
@@ -384,13 +426,14 @@ mod renderer;
 mod scene;
 mod shaders;
 mod skinning;
+mod sky;
 pub mod texture;
 
 pub use frame::{
     AmbientLight, CameraData, Celestial, CharacterFace, CharacterGi, CharacterInstance, CharacterLight,
-    CharacterLighting, DirectionalLight, FaceExpression, Fog, FogLayer, FramePacket, FramePacketRing,
-    HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
-    SkinnedInstance, SkyGradient, ViewData,
+    CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer, FramePacket,
+    FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance,
+    PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
@@ -400,6 +443,7 @@ pub use renderer::{
     MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, scaled_size,
 };
 pub use skinning::SkinningStats;
+pub use sky::{SkySettings, SkyStats};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

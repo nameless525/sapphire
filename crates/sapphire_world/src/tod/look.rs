@@ -1,28 +1,39 @@
 //! The resolved look ([`TodLook`]), as the frame packet's plain data, and how looks blend: colors
 //! in OkLab, directions along great circles, scalars linearly, and grades as a pair of LUTs.
 
-use sapphire_math::Vec3;
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
+use sapphire_math::{Quat, Vec3};
 use sapphire_render::{
-    AmbientLight, BloomParams, Celestial, CharacterGi, CharacterLight, CharacterLighting, ColorGrade,
-    DirectionalLight, Fog, FogLayer, FramePacket, HeightFog, PostParams, SkyGradient, Vignette,
+    AmbientLight, BloomParams, Celestial, CharacterGi, CharacterLight, CharacterLighting, CloudLight,
+    ColorGrade, DirectionalLight, Fog, FogLayer, FramePacket, HeightFog, PostParams, SkyDisc, SkyGradient,
+    SkyLayers, Vignette,
 };
 
 use super::key::{
-    AmbientKey, BloomKey, CelestialKey, CharacterKey, FogKey, FogLayerKey, GradeKey, HeightFogKey, SkyKey,
-    TodKey, VignetteKey,
+    AmbientKey, BloomKey, CelestialKey, CharacterKey, CloudsKey, DiscKey, FogKey, FogLayerKey, GradeKey,
+    HeightFogKey, SkyKey, TodKey, VignetteKey,
 };
+use super::timeline::DAY_HOURS;
 
 /// The look at one moment, every group resolved: what time of day hands the frame packet.
 ///
-/// [`Self::default`] is the renderer's defaults, which a complete timeline overwrites whole.
+/// [`Self::default`] is the renderer's defaults, which a complete timeline overwrites whole,
+/// sky layers included if it sets them (a timeline without them draws none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TodLook {
     /// The sun itself; see [`Self::key_light`] for the light that shades the scene.
     pub sun: DirectionalLight,
     pub moon: DirectionalLight,
+    /// The celestial sphere's turn at the look's hour ([`celestial_sphere`]): not keyed, but
+    /// blended like the rest, so a cutscene that sets its own hour turns the stars there.
+    pub sphere: Quat,
     pub sky: SkyGradient,
+    /// The sun's and moon's discs and glows, star brightness and the clouds (the sky's layers).
+    pub sun_disc: SkyDisc,
+    pub moon_disc: SkyDisc,
+    pub stars: f32,
+    pub clouds: CloudLight,
     pub ambient: AmbientLight,
     pub fog: Fog,
     pub shadow_tint: Vec3,
@@ -38,10 +49,16 @@ impl Default for TodLook {
     fn default() -> Self {
         let post = PostParams::default();
         let celestial = Celestial::default();
+        let layers = SkyLayers::default();
         Self {
             sun: celestial.sun,
             moon: celestial.moon,
+            sphere: celestial.sphere,
             sky: SkyGradient::default(),
+            sun_disc: layers.sun,
+            moon_disc: layers.moon,
+            stars: layers.stars,
+            clouds: layers.clouds,
             ambient: AmbientLight::default(),
             fog: Fog::default(),
             shadow_tint: Vec3::ZERO,
@@ -105,12 +122,15 @@ impl TodLook {
         }
     }
 
-    /// Writes the look into `packet`'s scene constants: the key light, the sun and moon, sky,
-    /// ambient, fog, shadow tint, character light, day/night factor and post-processing.
+    /// Writes the look into `packet`'s scene constants: the key light, the sun, moon and
+    /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character light,
+    /// day/night factor and post-processing.
     pub fn write(&self, packet: &mut FramePacket) {
         packet.sun = self.key_light();
-        packet.celestial = Celestial { sun: self.sun, moon: self.moon };
+        packet.celestial = Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere };
         packet.sky = self.sky;
+        packet.sky_layers =
+            SkyLayers { sun: self.sun_disc, moon: self.moon_disc, stars: self.stars, clouds: self.clouds };
         packet.ambient = self.ambient;
         packet.fog = self.fog;
         packet.shadow_tint = self.shadow_tint;
@@ -149,7 +169,26 @@ impl TodLook {
         group(&mut self.grades, from.grade.as_ref(), to.grade.as_ref(), segment, weight);
         group(&mut self.bloom, from.bloom.as_ref(), to.bloom.as_ref(), segment, weight);
         group(&mut self.vignette, from.vignette.as_ref(), to.vignette.as_ref(), segment, weight);
+        let (from_discs, to_discs) = (from.discs.as_ref(), to.discs.as_ref());
+        group(&mut self.sun_disc, from_discs.map(|d| &d.sun), to_discs.map(|d| &d.sun), segment, weight);
+        group(&mut self.moon_disc, from_discs.map(|d| &d.moon), to_discs.map(|d| &d.moon), segment, weight);
+        group(&mut self.stars, from.stars.as_ref(), to.stars.as_ref(), segment, weight);
+        group(&mut self.clouds, from.clouds.as_ref(), to.clouds.as_ref(), segment, weight);
     }
+}
+
+/// The sky's pole: where the celestial sphere turns about, 35° up over the horizon on the far
+/// side from the sandbox's camera (−Z), the default day's north. The stars rise on the left (−X)
+/// and set on the right, as the default day's sun does.
+const SKY_POLE: Vec3 = Vec3::new(0.0, 0.573_576_4, -0.819_152_1);
+
+/// The celestial sphere's turn at `hours`: [`sapphire_render::Celestial::sphere`]. Its frame's
+/// pole (+Y) is [`SKY_POLE`], and it turns about the pole once a day, so a star rises and sets
+/// with the hour as the sun does.
+pub fn celestial_sphere(hours: f32) -> Quat {
+    let tilt = Quat::from_rotation_arc(Vec3::Y, SKY_POLE);
+    let turn = std::f32::consts::TAU * (hours / DAY_HOURS);
+    Quat::from_axis_angle(SKY_POLE, turn) * tilt
 }
 
 /// The height above the horizon, as the sine of the elevation (about 1°), over which a body's
@@ -301,6 +340,35 @@ impl Mix for Fog {
     }
 }
 
+impl Mix for Quat {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        self.slerp(*other, t)
+    }
+}
+
+impl Mix for SkyDisc {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            color: mix_oklab(self.color, other.color, t),
+            intensity: lerp(self.intensity, other.intensity, t),
+            glow: mix_oklab(self.glow, other.glow, t),
+            glow_radius: lerp(self.glow_radius, other.glow_radius, t),
+        }
+    }
+}
+
+impl Mix for CloudLight {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            lit: mix_oklab(self.lit, other.lit, t),
+            shade: mix_oklab(self.shade, other.shade, t),
+            rim: mix_oklab(self.rim, other.rim, t),
+            coverage: lerp(self.coverage, other.coverage, t),
+            cirrus: lerp(self.cirrus, other.cirrus, t),
+        }
+    }
+}
+
 impl Mix for CharacterLight {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
@@ -408,7 +476,12 @@ impl Mix for TodLook {
         Self {
             sun: self.sun.mix(&other.sun, t),
             moon: self.moon.mix(&other.moon, t),
+            sphere: self.sphere.mix(&other.sphere, t),
             sky: self.sky.mix(&other.sky, t),
+            sun_disc: self.sun_disc.mix(&other.sun_disc, t),
+            moon_disc: self.moon_disc.mix(&other.moon_disc, t),
+            stars: self.stars.mix(&other.stars, t),
+            clouds: self.clouds.mix(&other.clouds, t),
             ambient: self.ambient.mix(&other.ambient, t),
             fog: self.fog.mix(&other.fog, t),
             shadow_tint: self.shadow_tint.mix(&other.shadow_tint, t),
@@ -439,6 +512,33 @@ impl Resolve for SkyKey {
 
     fn resolve(&self) -> SkyGradient {
         SkyGradient { zenith: self.zenith.into(), horizon: self.horizon.into(), ground: self.ground.into() }
+    }
+}
+
+impl Resolve for DiscKey {
+    type Value = SkyDisc;
+
+    fn resolve(&self) -> SkyDisc {
+        SkyDisc {
+            color: self.color.into(),
+            intensity: self.intensity,
+            glow: self.glow.into(),
+            glow_radius: self.glow_size.to_radians(),
+        }
+    }
+}
+
+impl Resolve for CloudsKey {
+    type Value = CloudLight;
+
+    fn resolve(&self) -> CloudLight {
+        CloudLight {
+            lit: self.lit.into(),
+            shade: self.shade.into(),
+            rim: self.rim.into(),
+            coverage: self.coverage,
+            cirrus: self.cirrus,
+        }
     }
 }
 
@@ -483,7 +583,7 @@ impl Resolve for CharacterKey {
     }
 }
 
-/// The day/night factor and exposure.
+/// The day/night factor, exposure and star brightness.
 impl Resolve for f32 {
     type Value = f32;
 

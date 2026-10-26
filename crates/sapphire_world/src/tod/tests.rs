@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use sapphire_math::Vec3;
 use sapphire_math::color::linear_srgb_to_oklab;
-use sapphire_render::{ColorGrade, DirectionalLight, FramePacket, PostParams, SkyGradient};
+use sapphire_render::{ColorGrade, DirectionalLight, FramePacket, PostParams, SkyGradient, SkyLayers};
 use sapphire_serialize::DocumentError;
 use sapphire_time::{ScaleSource, ScaledClock};
 
@@ -381,7 +381,10 @@ fn resolving_is_deterministic() {
             let probe = Vec3::new((step as f32 * 0.01).sin() * 8.0, 0.0, 0.0);
             let mut packet = FramePacket::default();
             tod.resolve(probe, 0.5).write(&mut packet);
-            frames.push(format!("{:?}", (packet.sun, packet.celestial, packet.sky, packet.fog, packet.post)));
+            frames.push(format!(
+                "{:?}",
+                (packet.sun, packet.celestial, packet.sky, packet.sky_layers, packet.fog, packet.post)
+            ));
         }
         frames
     };
@@ -398,4 +401,177 @@ fn the_cycle_pauses_with_the_world() {
         tod.tick(&world);
     }
     assert_eq!(tod.resolve(Vec3::ZERO, 1.0).hours, 6.0);
+}
+
+/// A complete timeline as written before the sky's layers (M1 W1): every group it had then, and
+/// none of `discs`, `stars` or `clouds`.
+const TIMELINE_BEFORE_SKY_LAYERS: &str = r#"(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                time: 6.0,
+                sun: (direction: (0.9, -0.1, -0.4), color: (1.0, 0.6, 0.4), intensity: 0.8),
+                moon: (direction: (-0.9, 0.1, 0.4), color: (0.6, 0.7, 1.0), intensity: 0.0),
+                sky: (zenith: (0.1, 0.2, 0.6), horizon: (1.0, 0.7, 0.5), ground: (0.1, 0.1, 0.2)),
+                ambient: (sky: (1.0, 0.7, 0.6), ground: (0.1, 0.1, 0.2), intensity: 0.1),
+                fog: (far: (color: (1.0, 0.7, 0.5), density: 0.005, start: 20.0)),
+                shadow_tint: (0.4, 0.35, 0.5),
+                character: (color: (1.0, 0.7, 0.6), intensity: 1.0),
+                day_night: 0.3,
+                exposure: 0.2,
+                grade: (saturation: 1.1),
+                bloom: (intensity: 0.3),
+                vignette: (intensity: 0.2),
+            ),
+        ],
+    ),
+)"#;
+
+#[test]
+fn timelines_without_sky_layers_load_and_draw_the_sky_as_before() {
+    let old = TodTimeline::from_ron(TIMELINE_BEFORE_SKY_LAYERS).expect("an older document loads");
+    assert!(old.is_complete(), "it can still be the base timeline");
+    for group in TodGroup::SKY_LAYERS {
+        assert!(!old.groups().contains(group), "{group}");
+    }
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(old, clock, 6.0).expect("a complete base");
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.sky_layers, SkyLayers::default(), "no discs, stars or clouds: the gradient alone");
+    assert_eq!(packet.sky.horizon, Vec3::new(1.0, 0.7, 0.5), "its own keys still draw");
+}
+
+#[test]
+fn sky_layer_groups_round_trip_and_are_checked() {
+    let layers = TodKey {
+        discs: Some(DiscsKey {
+            sun: DiscKey { color: [1.0, 0.9, 0.8], intensity: 30.0, glow: [0.5, 0.3, 0.1], glow_size: 35.0 },
+            moon: DiscKey { color: [1.0, 1.0, 0.9], intensity: 2.0, ..DiscKey::default() },
+        }),
+        stars: Some(0.8),
+        clouds: Some(CloudsKey {
+            lit: [1.0, 0.9, 0.8],
+            shade: [0.5, 0.5, 0.7],
+            rim: [1.2, 1.0, 0.8],
+            coverage: 0.7,
+            cirrus: 0.4,
+        }),
+        ..key(3.0)
+    };
+    let timeline = TodTimeline::new(vec![layers]).expect("valid");
+    let text = timeline.to_ron().expect("write");
+    assert!(
+        text.contains("discs:") && text.contains("stars: Some(0.8)") && text.contains("clouds:"),
+        "{text}"
+    );
+    assert_eq!(TodTimeline::from_ron(&text).expect("read"), timeline);
+    // Left-out glow and cloud fields default; left-out groups stay unset.
+    let partial = TodTimeline::from_ron(
+        r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0, discs: (
+            sun: (color: (1.0, 1.0, 1.0), intensity: 10.0), moon: (color: (1.0, 1.0, 1.0), intensity: 0.0)),
+            clouds: (lit: (1.0, 1.0, 1.0), shade: (0.5, 0.5, 0.5)))]))"#,
+    )
+    .expect("valid");
+    let look = partial.evaluate(1.0);
+    assert_eq!((look.sun_disc.glow, look.sun_disc.glow_radius), (Vec3::ZERO, 0.0));
+    assert_eq!((look.clouds.coverage, look.clouds.rim), (0.0, Vec3::ZERO));
+    assert_eq!(partial.groups().iter().collect::<Vec<_>>(), [TodGroup::Discs, TodGroup::Clouds]);
+    // Values out of range name their field.
+    let invalid = |groups: &str| {
+        let text = format!(
+            r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0, {groups})]))"#
+        );
+        TodTimeline::from_ron(&text).expect_err(groups).to_string()
+    };
+    assert!(invalid("stars: -1.0").contains("`stars`"));
+    let cover = "clouds: (lit: (1.0, 1.0, 1.0), shade: (0.0, 0.0, 0.0), coverage: 1.5)";
+    assert!(invalid(cover).contains("clouds.coverage"));
+    assert!(invalid("clouds: (lit: (1.0, 1.0, 1.0), shade: (0.0, -1.0, 0.0))").contains("clouds.shade"));
+    let glow = "discs: (sun: (color: (1.0, 1.0, 1.0), intensity: 1.0, glow_size: 200.0), \
+                moon: (color: (1.0, 1.0, 1.0), intensity: 0.0))";
+    assert!(invalid(glow).contains("discs.sun.glow_size"));
+    let typo = "clouds: (lit: (1.0, 1.0, 1.0), shade: (0.0, 0.0, 0.0), cover: 0.5)";
+    assert!(invalid(typo).contains("cover"), "typos are errors");
+}
+
+#[test]
+fn sky_layers_blend_in_oklab_like_the_rest() {
+    let clouds = |lit: [f32; 3], coverage: f32| {
+        Some(CloudsKey { lit, shade: lit, rim: lit, coverage, cirrus: coverage })
+    };
+    let timeline = TodTimeline::new(vec![
+        TodKey { clouds: clouds([1.0, 0.45, 0.2], 0.2), stars: Some(0.0), ..key(6.0) },
+        TodKey { clouds: clouds([0.1, 0.15, 0.6], 1.0), stars: Some(1.0), ..key(12.0) },
+    ])
+    .expect("valid");
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let look = timeline.evaluate(9.0);
+    let expected = lab(Vec3::new(1.0, 0.45, 0.2)).lerp(lab(Vec3::new(0.1, 0.15, 0.6)), 0.5);
+    assert!(lab(look.clouds.lit).abs_diff_eq(expected, 1e-4), "colors in OkLab");
+    assert!((look.clouds.coverage - 0.6).abs() < 1e-6, "scalars linearly");
+    assert!((look.stars - 0.5).abs() < 1e-6);
+    assert_eq!(timeline.evaluate(6.0).clouds.lit, Vec3::new(1.0, 0.45, 0.2), "exact on a key");
+    // Glow sizes are authored in degrees and drawn in radians.
+    let discs = TodKey {
+        discs: Some(DiscsKey {
+            sun: DiscKey { glow_size: 30.0, ..DiscKey::default() },
+            moon: DiscKey::default(),
+        }),
+        ..key(0.0)
+    };
+    let look = TodTimeline::new(vec![discs]).expect("valid").evaluate(0.0);
+    assert!((look.sun_disc.glow_radius - 30f32.to_radians()).abs() < 1e-6);
+}
+
+#[test]
+fn zones_and_cutscenes_override_the_sky_layers() {
+    let (_, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    // A stormy zone: full cover and grey clouds, its discs and stars the base's.
+    let storm = TodKey {
+        clouds: Some(CloudsKey { lit: [0.4; 3], shade: [0.2; 3], coverage: 1.0, ..CloudsKey::default() }),
+        ..key(0.0)
+    };
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 10.0 };
+    tod.add_volume(TodVolume::new(shape, zone(storm)));
+    let inside = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(inside.look.clouds.coverage, 1.0);
+    assert_eq!(inside.look.clouds.lit, Vec3::splat(0.4));
+    assert_eq!((inside.look.sun_disc, inside.look.stars), (base.look.sun_disc, base.look.stars));
+    // A shot that brings the stars out by day.
+    let stars = vec![TodKey { stars: Some(1.0), ..key(0.0) }];
+    let shot = TodCutscene::new(2.0, 0.0, 0.0, None, stars, None).expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.stars, 1.0);
+}
+
+#[test]
+fn the_stars_turn_with_the_hour_about_the_sky_pole() {
+    let pole = celestial_sphere(0.0) * Vec3::Y;
+    let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+    for hours in [0.0, 5.5, 13.0, 23.9] {
+        assert!((celestial_sphere(hours) * Vec3::Y).abs_diff_eq(pole, 1e-6), "{hours}: the pole stays put");
+    }
+    assert!(pole.y > 0.5 && pole.z < 0.0, "up over the far horizon: {pole}");
+    // A star on the celestial equator turns 15° an hour, and once a day.
+    let at = |hours: f32| celestial_sphere(hours) * Vec3::X;
+    assert!((angle(at(3.0), at(4.0)) - 15.0).abs() < 1e-3);
+    assert!(at(0.0).abs_diff_eq(at(24.0), 1e-5));
+    // Rising on the left (−X) and setting on the right: a star crossing the meridian moves
+    // toward +X.
+    let meridian = (Vec3::Z - pole * pole.z).normalize();
+    let star = celestial_sphere(10.0).inverse() * meridian;
+    assert!((celestial_sphere(11.0) * star).x > 0.0, "it moves toward +X");
+    // The packet carries the hour's turn, and the default day's night has stars and a moon.
+    let (_, mut tod) = time_of_day(22.0);
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.celestial.sphere, celestial_sphere(22.0));
+    assert!(packet.sky_layers.stars > 0.5 && packet.sky_layers.moon.intensity > 0.0);
+    let day = TodTimeline::default_day().evaluate(DAY);
+    assert_eq!(day.stars, 0.0, "none by day");
+    assert!(day.sun_disc.intensity > 1.0 && day.clouds.coverage > 0.0, "a bright sun and clouds by day");
 }

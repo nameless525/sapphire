@@ -1,9 +1,12 @@
-//! The sky family: a zone's painted sky (spec §5.12 "Sky", world_lighting_post.md §5). Its
-//! shader is W2's.
+//! The sky family: a zone's painted sky (spec §5.12 "Sky", world_lighting_post.md §5), drawn by
+//! the renderer's sky shader (M1 W2, `sapphire_render`'s `sky` module).
 //!
-//! Time of day owns the sky's colors (zenith, horizon, ground, the sun halo, cloud tints, star
-//! intensity: `TodKey`, W1); the material owns what stays fixed through the day: the textures
-//! and the shapes and motion of discs and clouds.
+//! Time of day owns the sky's colors and amounts (zenith, horizon, ground, the discs' colors and
+//! glows, cloud tones and coverage, star brightness: `TodKey`, W1 and W2); the material owns what
+//! stays fixed through the day: the textures, and the shapes and motion of discs and clouds.
+//!
+//! The renderer reads the block on the CPU (one sky draws at a time) and folds it into the
+//! frame's sky uniforms, so the family's GPU buffer is never bound.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -25,10 +28,17 @@ pub struct SkyMaterial {
     pub sun: Disc,
     pub moon: Moon,
     pub stars: Stars,
-    /// Card clouds: linear RGBA, R lit amount, G rim, B dissolve threshold, A alpha (the Genshin
-    /// scheme).
+    /// Card clouds: a band of painted cards around the horizon. The map is linear RGBA in the
+    /// Genshin scheme: R the lit amount, whose 0.5 line is the painted terminator; G a painted rim;
+    /// B a signed distance to the cloud's edge, 0.5 on the painted silhouette and rising inward,
+    /// which coverage dissolves along; A opacity. `u` runs around the horizon (`scale` whole
+    /// repeats; the renderer rounds it), `v` down from the band's top to its bottom just under
+    /// the horizon, the band as tall as keeps its texels square at the horizon; only `scroll[0]`
+    /// applies, a drift around the horizon in repeats per second.
     pub clouds: CloudLayer,
-    /// A high scrolling layer (cirrus): linear RGBA as `clouds`.
+    /// A high layer (cirrus) on a plane over the camera, scrolled in both directions by the wind:
+    /// linear RGBA as `clouds`, tiling. `scale` is how many times the map repeats across the plane
+    /// within about 45° of the zenith.
     pub cirrus: CloudLayer,
 }
 
@@ -69,14 +79,18 @@ impl Default for Moon {
     }
 }
 
-/// The night sky, rotating with sidereal time.
+/// The night sky, fixed to the celestial sphere that time of day turns with the hour. The stars
+/// themselves are procedural (a crisp dot each, which no texture keeps stable under sub-pixel
+/// motion); the maps shape them. Both maps are equirectangular on the sphere: `u` around its pole,
+/// `v` from the pole down.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Stars {
-    /// A star field, color or HDR, mapped onto the sky dome.
+    /// Where stars are dense and their tint, color or HDR: luminance 0.5 is the even density,
+    /// twice that doubles it; the color tints them. Without one, stars are even and white.
     pub map: Option<AssetId>,
-    /// The Milky Way band, color or HDR.
+    /// The Milky Way's glow, color or HDR, added under the stars as bright as they are.
     pub milky_way: Option<AssetId>,
     /// How much stars twinkle, 0 to 1.
     pub twinkle: f32,
@@ -88,17 +102,19 @@ impl Default for Stars {
     }
 }
 
-/// A cloud layer.
+/// A cloud layer (see [`SkyMaterial::clouds`] and [`SkyMaterial::cirrus`] for how each maps).
+/// Without a map the layer draws nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct CloudLayer {
     pub map: Option<AssetId>,
-    /// Texture repeats across the dome.
+    /// How many times the map repeats.
     pub scale: f32,
-    /// UV scroll per second, along the wind.
+    /// Drift per second, in repeats, along the wind.
     pub scroll: [f32; 2],
-    /// Width of the dissolve edge as time of day moves coverage.
+    /// Width of the dissolve edge, in B's units: how soft clouds' edges are as coverage moves
+    /// them. The renderer keeps them at least a pixel wide.
     pub dissolve_softness: f32,
 }
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::TodError;
 use super::key::{TodGroups, TodKey};
-use super::look::TodLook;
+use super::look::{TodLook, celestial_sphere};
 
 /// Hours in a day: timeline keys sit in `0 ≤ time < DAY_HOURS`.
 pub const DAY_HOURS: f32 = 24.0;
@@ -18,8 +18,8 @@ const DEFAULT_DAY: &str = include_str!("../../default_day.ron");
 /// A day of looks: [`TodKey`]s at times of day, blended between neighbors and wrapping from the
 /// last key of the day to the first of the next (a `TodTimeline` document, schema 1).
 ///
-/// The base timeline sets every group in every key ([`Self::is_complete`]); a zone's timeline
-/// may set only the groups it overrides. Either way every key sets the same groups, the keys'
+/// The base timeline sets every group in every key but the sky's optional layers
+/// ([`Self::is_complete`]); a zone's timeline may set only the groups it overrides. Either way every key sets the same groups, the keys'
 /// times increase, and every value is in range: a timeline is valid however it was made,
 /// deserialization included. It has a stable type path but no `Reflect`, which could build or
 /// edit one without the checks; an editor edits a [`TodKey`] and makes a new timeline.
@@ -88,9 +88,10 @@ impl TodTimeline {
         self.groups
     }
 
-    /// Whether the keys set every group, as the base timeline must.
+    /// Whether the keys set every group the base timeline must: all but the sky's layers
+    /// ([`TodGroup::SKY_LAYERS`](super::TodGroup::SKY_LAYERS)), which draw nothing where unset.
     pub fn is_complete(&self) -> bool {
-        self.groups == TodGroups::ALL
+        TodGroups::REQUIRED.first_missing_from(self.groups).is_none()
     }
 
     /// Where `hours` falls: the key at or before it, the next key (wrapping at midnight), and
@@ -100,9 +101,9 @@ impl TodTimeline {
     }
 
     /// The look at `hours`: the groups this timeline sets, over the renderer's defaults for the
-    /// rest. A complete timeline sets every group.
+    /// rest, with the celestial sphere turned to the hour.
     pub fn evaluate(&self, hours: f32) -> TodLook {
-        let mut look = TodLook::default();
+        let mut look = TodLook { sphere: celestial_sphere(hours), ..TodLook::default() };
         self.apply(&mut look, hours, 1.0);
         look
     }

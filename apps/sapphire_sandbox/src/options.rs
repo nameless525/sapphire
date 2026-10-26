@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use sapphire_render::quality::{QualitySettings, TierId};
 use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings};
 
+use crate::scene::{self, Scene};
+
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
 pub(crate) const BENCH_FLAG: &str = "--bench";
@@ -51,6 +53,14 @@ pub(crate) struct Options {
     pub swatches: bool,
     /// `--faces`: show the face look-dev rig instead of the character.
     pub faces: bool,
+    /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
+    /// clear sky.
+    pub cloud_cover: Option<f32>,
+    /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
+    pub plain_sky: bool,
+    /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
+    /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
+    pub view: Option<(f32, f32)>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -78,6 +88,17 @@ pub(crate) enum OffscreenMode {
 }
 
 impl Options {
+    /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover and the
+    /// camera's starting view.
+    pub fn apply_to(&self, scene: &mut Scene) {
+        scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
+        scene.set_cloud_cover(self.cloud_cover);
+        scene.set_plain_sky(self.plain_sky);
+        if let Some((yaw, pitch)) = self.view {
+            scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
+        }
+    }
+
     /// The renderer settings: the quality tier's, with the options' overrides.
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
         RenderSettings {
@@ -159,6 +180,15 @@ impl Options {
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
                 "--faces" => options.faces = true,
+                "--cloud-cover" => {
+                    let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
+                    if !(0.0..=1.0).contains(&cover) {
+                        return Err(format!("--cloud-cover expects 0 to 1, got {cover}"));
+                    }
+                    options.cloud_cover = Some(cover);
+                }
+                "--view" => options.view = Some(parse_view(&value("--view")?)?),
+                "--plain-sky" => options.plain_sky = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,
@@ -204,6 +234,17 @@ impl Options {
 
 fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
     raw.parse().map_err(|_| format!("{name} expects a number, got {raw:?}"))
+}
+
+fn parse_view(raw: &str) -> Result<(f32, f32), String> {
+    let invalid = || format!("--view expects YAW,PITCH in degrees, pitch within -85..=85, got {raw:?}");
+    let (yaw, pitch) = raw.split_once(',').ok_or_else(invalid)?;
+    let (yaw, pitch): (f32, f32) =
+        (yaw.trim().parse().map_err(|_| invalid())?, pitch.trim().parse().map_err(|_| invalid())?);
+    if !yaw.is_finite() || !(-85.0..=85.0).contains(&pitch) {
+        return Err(invalid());
+    }
+    Ok((yaw, pitch))
 }
 
 fn parse_size(raw: &str) -> Result<(u32, u32), String> {
@@ -298,6 +339,20 @@ mod tests {
         );
         assert_eq!(parse(&[]).unwrap().0.character_rig, None);
         assert!(parse(&["--character-rig"]).is_err(), "needs a name");
+    }
+
+    #[test]
+    fn sky_options_set_the_cloud_cover_and_the_view() {
+        let (options, _) = parse(&["--cloud-cover", "0", "--view=120,-15", "--plain-sky"]).unwrap();
+        assert_eq!((options.cloud_cover, options.view), (Some(0.0), Some((120.0, -15.0))));
+        assert!(options.plain_sky && !Options::default().plain_sky);
+        assert_eq!(parse(&["--view", " -40.5 , 10 "]).unwrap().0.view, Some((-40.5, 10.0)));
+        assert_eq!(parse(&[]).unwrap().0.cloud_cover, None);
+        assert!(parse(&["--cloud-cover", "1.5"]).is_err());
+        assert!(parse(&["--cloud-cover", "NaN"]).is_err());
+        assert!(parse(&["--view", "120"]).is_err());
+        assert!(parse(&["--view", "0,90"]).is_err(), "the orbit camera stops short of straight up");
+        assert!(parse(&["--view", "inf,0"]).is_err());
     }
 
     #[test]

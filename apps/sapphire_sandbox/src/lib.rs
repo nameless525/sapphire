@@ -60,6 +60,19 @@
 //!   pause and slow motion reach it).
 //! - `--character-rig <preset>`: light the character with this character light rig preset
 //!   (`sapphire_world::light_rig`; `gameplay`, the default, or `portrait`).
+//! - `--cloud-cover <0..1>`: hold both cloud layers at this coverage instead of time of day's;
+//!   `0` is a clear sky.
+//! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
+//!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
+//!   from in front of the character; a negative pitch looks up at the sky).
+//!
+//! # The sky
+//!
+//! The zone's sky is the sky material `samples/sky.material.ron` (`content::SKY`), loaded with its
+//! maps at startup and after every renderer rebuild, and drawn with time of day's sky layers:
+//! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
+//! (spec §5.12, "Sky").
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
 //!   `cvars`, `all`). Offscreen captures draw it too.

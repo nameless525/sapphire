@@ -3,8 +3,10 @@
 // Every number is a Proposal until M2 measures the reference devices at thermally throttled
 // clocks (spec §3).
 //
-// - Drawn from today: `resolution`, `antialiasing.msaa`, `bloom_levels`, `light_path` and
-//   `max_lights`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
+// - Drawn from today: `resolution`, `antialiasing.msaa`, `bloom_levels`, `light_path`,
+//   `max_lights` and `sky`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
+// - `sky` (M1 W2): the sky cube's size and frames between face updates, and the cirrus layer.
+//   Both desktop tiers draw the same sky, so golden images match on every desktop GPU.
 // - Read by later packages: `antialiasing.temporal` (R7), `shadows` (R4, C2),
 //   `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines` (C4),
 //   `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
@@ -43,6 +45,7 @@
                 screen_space_outlines: true,
                 max_particles: 50000,
                 lod_bias: 0.0,
+                sky: (cube_size: 256, cube_interval: 1, cirrus: true),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck). Every desktop
@@ -61,6 +64,7 @@
                 screen_space_outlines: false,
                 max_particles: 50000,
                 lod_bias: 0.5,
+                sky: (cube_size: 256, cube_interval: 1, cirrus: true),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -82,6 +86,7 @@
                 screen_space_outlines: false,
                 max_particles: 8000,
                 lod_bias: 0.0,
+                sky: (cube_size: 128, cube_interval: 1, cirrus: true),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -101,6 +106,9 @@
                 screen_space_outlines: false,
                 max_particles: 8000,
                 lod_bias: 0.5,
+                // A face every other frame is a full cube every 0.4 s at 30 fps; the card clouds
+                // carry the look without the cirrus layer.
+                sky: (cube_size: 64, cube_interval: 2, cirrus: false),
             ),
         ],
     ),

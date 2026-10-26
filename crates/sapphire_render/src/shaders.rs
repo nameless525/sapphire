@@ -213,6 +213,9 @@ mod tests {
             ("sky", SKY, "FoliageParams", size_of::<FoliageParams>()),
             ("sky", SKY, "SkyParams", size_of::<SkyParams>()),
             ("sky", SKY, "FogCardParams", size_of::<FogCardParams>()),
+            ("sky", SKY, "SkyUniforms", size_of::<crate::sky::SkyUniforms>()),
+            ("sky", SKY, "FrameUniforms", size_of::<FrameUniforms>()),
+            ("sky", SKY, "ViewUniforms", size_of::<ViewUniforms>()),
             ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
             ("anime_character", ANIME_CHARACTER, "LocalLight", size_of::<GpuLight>()),
             ("anime_character", ANIME_CHARACTER, "CharacterData", size_of::<GpuCharacter>()),
@@ -457,6 +460,97 @@ mod tests {
         expected.insert(material_binding::RAMP_SAMPLER, "ramp_sampler".into());
         expected.insert(material_binding::ID_SAMPLER, "material_id_sampler".into());
         assert_eq!(bindings, expected);
+    }
+
+    /// The sky's uniform block is written by the CPU every frame, so every field must sit where
+    /// the WGSL struct reads it; its texture slots and group 3 bindings are the sky family's.
+    #[test]
+    fn wgsl_sky_matches_rust() {
+        use sapphire_assets::material::SkyMaterial;
+
+        use crate::pipelines::material_binding;
+        use crate::sky::{CLOUDS_CONSTANT, DISCS_CONSTANT, STARS_CONSTANT, SkyUniforms};
+        let sky = validate("sky", SKY);
+        let rust = offsets!(SkyUniforms {
+            sun,
+            sun_disc,
+            sun_glow,
+            moon,
+            moon_disc,
+            moon_glow,
+            moon_right,
+            moon_up,
+            celestial,
+            stars,
+            cloud_lit,
+            cloud_shade,
+            cloud_rim,
+            clouds,
+            cirrus,
+            modes,
+            swizzles,
+            glow_shape,
+        });
+        let (_, ty) = sky
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("SkyUniforms"))
+            .expect("no WGSL struct SkyUniforms");
+        let naga::TypeInner::Struct { members, .. } = &ty.inner else { panic!("SkyUniforms is a struct") };
+        let wgsl: Vec<(&str, usize)> = members
+            .iter()
+            .map(|member| (member.name.as_deref().unwrap_or_default(), member.offset as usize))
+            .collect();
+        assert_eq!(wgsl, rust, "SkyUniforms: WGSL vs Rust fields");
+        let slots = [
+            ("SKY_SLOT_MOON", SkyMaterial::MOON),
+            ("SKY_SLOT_STARS", SkyMaterial::STARS),
+            ("SKY_SLOT_MILKY_WAY", SkyMaterial::MILKY_WAY),
+            ("SKY_SLOT_CLOUDS", SkyMaterial::CLOUDS),
+            ("SKY_SLOT_CIRRUS", SkyMaterial::CIRRUS),
+        ];
+        assert_eq!(slots.len(), SkyMaterial::TEXTURE_SLOTS.len());
+        for (name, slot) in slots {
+            assert_eq!(wgsl_u32(&sky, name) as usize, slot, "{name}");
+        }
+        let bindings: BTreeMap<u32, String> = sky
+            .global_variables
+            .iter()
+            .filter_map(|(_, global)| {
+                let binding = global.binding.as_ref().filter(|binding| binding.group == 3)?;
+                Some((binding.binding, global.name.clone().unwrap_or_default()))
+            })
+            .collect();
+        let mut expected: BTreeMap<u32, String> = SkyMaterial::TEXTURE_SLOTS
+            .iter()
+            .zip(0..)
+            .map(|(slot, binding)| (binding, format!("{}_map", slot.name)))
+            .collect();
+        expected.insert(material_binding::SAMPLER, "sky_sampler".into());
+        assert_eq!(bindings, expected);
+        let names = [DISCS_CONSTANT, STARS_CONSTANT, CLOUDS_CONSTANT];
+        for name in names {
+            assert!(sky.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
+        }
+        // Every variant specializes: discs on and off, and each set of layers.
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&sky)
+        .expect("validated above");
+        for bits in 0..8u32 {
+            let constants: naga::back::PipelineConstants = names
+                .iter()
+                .zip(0..)
+                .map(|(name, bit)| (name.to_string(), f64::from(bits >> bit & 1)))
+                .collect();
+            for entry_point in &sky.entry_points {
+                let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                naga::back::pipeline_constants::process_overrides(&sky, &info, stage, &constants)
+                    .unwrap_or_else(|error| panic!("sky.wgsl {bits:03b} {}: {error}", entry_point.name));
+            }
+        }
     }
 
     /// The value of the WGSL `const` called `name`, an `f32` (const-evaluated by naga).

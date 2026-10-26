@@ -881,9 +881,9 @@ fn skinning_and_prepasses_run_at_any_size_and_msaa() {
             let camera = framing_camera(38.0, size, 0.3);
             let error = frames.render_reading(&gpu, &view, camera, &std::mem::take(&mut add), &[], &reads);
             assert!(error.is_none(), "{msaa:?} at {size:?}: {error:?}");
-            // Uploads, skinning, both prepasses, main, the composite (no bloom) and the
-            // readback.
-            let expected = 7;
+            // Uploads, skinning, both prepasses, the sky cube's face, main, the composite (no
+            // bloom) and the readback.
+            let expected = 8;
             assert_eq!(frames.graph.stats().passes, expected, "{msaa:?} at {size:?}");
             let stats = frames.renderer.stats().skinning;
             assert_eq!((stats.instances, stats.skinned, stats.ignored_poses), (2, 2, 0));
@@ -1173,9 +1173,9 @@ fn post_runs_at_any_size_bloom_length_and_msaa() {
                 let camera = framing_camera(38.0, size, 0.5);
                 let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
                 assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
-                // Uploads, main, the bloom chain (a prefilter, then a down and an up pass per
-                // further level) and the composite.
-                let expected = 3 + if bloom_levels > 0 { 2 * bloom_levels - 1 } else { 0 };
+                // Uploads, the sky cube's face, main, the bloom chain (a prefilter, then a down
+                // and an up pass per further level) and the composite.
+                let expected = 4 + if bloom_levels > 0 { 2 * bloom_levels - 1 } else { 0 };
                 assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
             }
         }
@@ -1385,8 +1385,9 @@ fn local_lights_run_at_any_size_and_msaa_on_both_paths() {
                 let camera = framing_camera(38.0, size, 0.5);
                 let error = frames.render(&gpu, &view, camera, &std::mem::take(&mut add), &[]);
                 assert!(error.is_none(), "{settings:?} at {size:?}: {error:?}");
-                // Uploads, main and the composite (no bloom), plus the cluster pass.
-                let expected = 3 + u32::from(light_path == LightPath::Clustered);
+                // Uploads, the sky cube's face, main and the composite (no bloom), plus the
+                // cluster pass.
+                let expected = 4 + u32::from(light_path == LightPath::Clustered);
                 assert_eq!(frames.graph.stats().passes, expected, "{settings:?}");
                 let stats = frames.renderer.stats().lights;
                 let capacity = if light_path == LightPath::Clustered { 64 } else { 4 };

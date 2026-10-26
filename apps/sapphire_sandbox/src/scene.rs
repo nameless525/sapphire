@@ -28,11 +28,13 @@
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
-//!   probe, and writes them; the player's filter strength (`post.filter_strength`) goes on top.
-//!   After `Extract` has posed and extracted the instances, it resolves each character's light
-//!   rig for the frame's camera into the packet's characters (M1 C2), with its face (M1 C3): the
-//!   turntable's head turning with it, and each face rig head lit from its own angles. Both run
-//!   there rather than as `Extract` systems, which would cost an allocation a frame each.
+//!   probe, and writes them; the player's filter strength (`post.filter_strength`) goes on top,
+//!   then the zone's sky material, and `--cloud-cover`'s coverage or `--plain-sky`'s bare
+//!   gradient, if set. After `Extract` has posed and extracted the instances, it resolves each
+//!   character's light rig for the frame's camera into the packet's characters (M1 C2), with its
+//!   face (M1 C3): the turntable's head turning with it, and each face rig head lit from its own
+//!   angles. Both run there rather than as `Extract` systems, which would cost an allocation a
+//!   frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -47,7 +49,8 @@ use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_render::{
-    CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight, MeshHandle, ViewData,
+    CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight, MaterialHandle,
+    MeshHandle, SkyLayers, ViewData,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
@@ -66,8 +69,6 @@ use crate::turntable::{self, Turntable};
 const SLOW_MOTION: u32 = 200;
 /// Fixed steps the hitstop action freezes the turntable for.
 const HITSTOP_TICKS: u16 = 8;
-/// Shader time wraps so it keeps f32 precision over long sessions.
-const SHADER_TIME_WRAP_SECONDS: f64 = 3600.0;
 /// The hour the scene starts at unless `--time-of-day` says otherwise: the default day's 10:00
 /// key, which is exactly the look the sandbox drew before time of day, so golden images that
 /// don't choose a time are unchanged.
@@ -103,6 +104,12 @@ pub(crate) struct Scene {
     /// Made once: a query made each frame would allocate.
     characters: Characters,
     heads: FaceHeads,
+    /// The zone's sky material on the current renderer, once loaded.
+    sky_material: Option<MaterialHandle>,
+    /// Both cloud layers' coverage instead of time of day's (`--cloud-cover`).
+    cloud_cover: Option<f32>,
+    /// The sky's gradient alone (`--plain-sky`).
+    plain_sky: bool,
 }
 
 impl Scene {
@@ -143,7 +150,19 @@ impl Scene {
         ecs.startup();
         let characters = ecs.world_mut().query_filtered();
         let heads = ecs.world_mut().query_filtered();
-        Self { ecs, character, stalk, swatches: None, faces: None, bounds, characters, heads }
+        Self {
+            ecs,
+            character,
+            stalk,
+            swatches: None,
+            faces: None,
+            bounds,
+            characters,
+            heads,
+            sky_material: None,
+            cloud_cover: None,
+            plain_sky: false,
+        }
     }
 
     /// [`Self::new`] with the character drawing `mesh`.
@@ -221,6 +240,24 @@ impl Scene {
         Ok(())
     }
 
+    /// Draws the sky with `material` (a sky material on the current renderer): at startup, and
+    /// again after GPU device loss.
+    pub fn set_sky_material(&mut self, material: MaterialHandle) {
+        self.sky_material = Some(material);
+    }
+
+    /// Holds both cloud layers at `cover` (0 to 1; 0 is a clear sky) whatever time of day says,
+    /// or lets time of day drive them again with `None`.
+    pub fn set_cloud_cover(&mut self, cover: Option<f32>) {
+        self.cloud_cover = cover;
+    }
+
+    /// Draws the sky's gradient alone, without the discs, glows, stars and clouds time of day
+    /// gives it: a backdrop that stays the same at any hour, for scenes about something else.
+    pub fn set_plain_sky(&mut self, plain: bool) {
+        self.plain_sky = plain;
+    }
+
     /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
     /// `meshes`, top to bottom. They never move, so they are extracted once.
     pub fn spawn_swatches(&mut self, meshes: [MeshHandle; SWATCHES]) {
@@ -296,6 +333,7 @@ impl Scene {
     /// packets have no view but still carry instance deltas, which the renderer must see.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
+        let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             let camera = world.resource::<OrbitCamera>();
@@ -305,11 +343,18 @@ impl Scene {
             let probe = camera.eye();
             let clock = &world.resource::<WorldClock>().0;
             // Interpolated like everything else drawn this frame.
-            let time =
+            packet.time_seconds =
                 clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
-            packet.time_seconds = (time % SHADER_TIME_WRAP_SECONDS) as f32;
             world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
             packet.post.filter_strength = crate::cvars::filter_strength();
+            packet.sky_material = sky_material;
+            if let Some(cover) = cloud_cover {
+                packet.sky_layers.clouds.coverage = cover;
+                packet.sky_layers.clouds.cirrus = cover;
+            }
+            if plain_sky {
+                packet.sky_layers = SkyLayers::default();
+            }
         });
         self.ecs.extract();
         let (characters, heads) = (&mut self.characters, &mut self.heads);
@@ -571,6 +616,31 @@ mod tests {
 
         // Without a view there is no camera to resolve the rig for, and nothing draws.
         assert!(scene.frame_packet(1.0, None).characters.is_empty());
+        scene.end_frame();
+    }
+
+    #[test]
+    fn the_sky_material_and_cloud_cover_reach_the_packet() {
+        let mut scene = scene();
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_eq!(packet.sky_material, None, "none until loaded");
+        assert!(packet.sky_layers.clouds.coverage > 0.0, "the default day's clouds at 10:00");
+        scene.end_frame();
+        scene.set_sky_material(MaterialHandle::from_raw(4));
+        scene.set_cloud_cover(Some(0.0));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_eq!(packet.sky_material, Some(MaterialHandle::from_raw(4)));
+        assert_eq!(
+            (packet.sky_layers.clouds.coverage, packet.sky_layers.clouds.cirrus),
+            (0.0, 0.0),
+            "a clear sky"
+        );
+        assert_eq!(packet.sky, sapphire_render::SkyGradient::default(), "the gradient is time of day's");
+        scene.end_frame();
+        scene.set_day(22.0, None);
+        scene.set_plain_sky(true);
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_eq!(packet.sky_layers, SkyLayers::default(), "no stars or moon at night either");
         scene.end_frame();
     }
 

@@ -16,6 +16,9 @@
 //! SDF face map, a face mask and an expression map: all of it cooked content
 //! ([`Content::face_head`]).
 //!
+//! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), loaded with its cloud,
+//! cirrus, moon, star and Milky Way maps ([`Content::sky_material`]).
+//!
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
 //! reading meshes and textures from the pack again.
@@ -45,6 +48,8 @@ use crate::swatches::{self, SWATCHES};
 const PACK: &str = "shared";
 /// The sample character: the cooked mannequin (`samples/mannequin.glb`), by its sidecar's ID.
 pub(crate) const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86adf26a1");
+/// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
+pub(crate) const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
 
 /// The platform's IO thread, serving the asset server's pack reads.
 struct PlatformPacks(IoThread);
@@ -157,6 +162,8 @@ pub(crate) struct Content {
     swatches: Vec<Handle<Material>>,
     /// The face test head, once asked for (`--faces`).
     face_head: Option<Handle<Mesh>>,
+    /// The sky material, once asked for.
+    sky: Option<Handle<Material>>,
     server: AssetServer,
 }
 
@@ -178,7 +185,14 @@ impl Content {
         server.mount(PACK).map_err(|error| missing(&error))?;
         let character = server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
-        Ok(Self { gpu: GpuAssets::default(), character, swatches: Vec::new(), face_head: None, server })
+        Ok(Self {
+            gpu: GpuAssets::default(),
+            character,
+            swatches: Vec::new(),
+            face_head: None,
+            sky: None,
+            server,
+        })
     }
 
     /// One frame of loading: applies finished reads and decodes, frees what the server unloaded,
@@ -270,6 +284,26 @@ impl Content {
         loaded.map_err(|error| AppInitError::msg(format!("the face head didn't load: {error}")))?;
         let &(_, mesh, _) = self.gpu.meshes.get(&faces::HEAD).expect("a ready mesh was uploaded here");
         Ok(mesh)
+    }
+
+    /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
+    /// handle: the sky's part of the load screen. It stays loaded from then on.
+    pub fn sky_material(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<MaterialHandle, AppInitError> {
+        // Asking again tries a material that failed before, as the character does.
+        let handle = self.server.load_with(SKY, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu));
+        self.sky = Some(handle);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the sky material didn't load: {error}")))?;
+        let &(_, material) = self.gpu.materials.get(&SKY).expect("a ready material was uploaded here");
+        Ok(material)
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

@@ -64,6 +64,12 @@ impl MeshDraws<'_> {
         !self.list.deformed[variant.index()].is_empty()
     }
 
+    /// Whether there are draws of `variant` at all, static or deformed.
+    pub(crate) fn has_any(&self, variant: SurfaceVariant) -> bool {
+        PositionFormat::ALL.into_iter().any(|format| self.has_static(format, variant))
+            || self.has_deformed(variant)
+    }
+
     /// Whether there are skinned or morphed instances of any variant to draw.
     pub(crate) fn has_any_deformed(&self) -> bool {
         SurfaceVariant::ALL.into_iter().any(|variant| self.has_deformed(variant))

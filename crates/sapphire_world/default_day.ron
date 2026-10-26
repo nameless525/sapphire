@@ -18,6 +18,14 @@
 // - Characters get a key light of their own, brighter than the world's at night so they read
 //   (WuWa fits character brightness across the day); C2 draws it. Until then they are lit by
 //   the world's key light.
+// - The sky's layers (M1 W2): `discs` are the sun's and moon's discs and glows, apart from the
+//   light the bodies give, so a setting sun's disc fades on the horizon after its light, and the
+//   moon shows pale as it rises at sunset. Glows are wide and warm at sunrise and sunset and
+//   spread along the horizon there; the dawn and dusk keys keep a glow where the sun is below
+//   the horizon. `stars` come out through dusk, fullest at midnight. `clouds` are painted in two
+//   tones with a rim: white tops over lavender-blue shade by day, peach and gold over violet at
+//   sunrise and sunset, dark blue with moonlit rims at night; the cirrus is fullest at sunrise and
+//   sunset, where it catches the color.
 // - Every number is a starting point for art direction, not a measurement.
 (
     type: "sapphire::world::TodTimeline",
@@ -43,6 +51,15 @@
                 grade: (temperature: -0.2, contrast: 1.05, saturation: 1.05, lift: (0.0, 0.01, 0.035)),
                 bloom: (threshold: 0.8, knee: 0.5, intensity: 0.3, scatter: 0.75),
                 vignette: (intensity: 0.3, start: 0.4),
+                discs: (
+                    sun: (color: (1.0, 0.55, 0.35), intensity: 0.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 2.0, glow: (0.06, 0.08, 0.14), glow_size: 14.0),
+                ),
+                stars: 1.0,
+                clouds: (
+                    lit: (0.055, 0.07, 0.15), shade: (0.025, 0.033, 0.08), rim: (0.16, 0.2, 0.34),
+                    coverage: 0.55, cirrus: 0.25,
+                ),
             ),
             (
                 // The blue hour before dawn: the moon low on the right, the sky paling.
@@ -63,6 +80,15 @@
                 grade: (temperature: -0.15, tint: 0.04, contrast: 1.05, saturation: 1.1, lift: (0.005, 0.01, 0.035)),
                 bloom: (threshold: 0.85, knee: 0.5, intensity: 0.3, scatter: 0.72),
                 vignette: (intensity: 0.26, start: 0.42),
+                discs: (
+                    sun: (color: (1.0, 0.6, 0.4), intensity: 0.0, glow: (0.22, 0.12, 0.16), glow_size: 50.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.6, glow: (0.05, 0.06, 0.1), glow_size: 12.0),
+                ),
+                stars: 0.6,
+                clouds: (
+                    lit: (0.42, 0.38, 0.6), shade: (0.14, 0.14, 0.3), rim: (0.55, 0.45, 0.65),
+                    coverage: 0.6, cirrus: 0.5,
+                ),
             ),
             (
                 // Sunrise: a low, peach-orange sun on the left, morning mist.
@@ -84,6 +110,15 @@
                 grade: (temperature: 0.06, tint: 0.04, contrast: 1.05, saturation: 1.18, lift: (0.01, 0.005, 0.02)),
                 bloom: (threshold: 0.9, knee: 0.5, intensity: 0.32, scatter: 0.72),
                 vignette: (intensity: 0.2, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.68, 0.45), intensity: 24.0, glow: (0.9, 0.5, 0.28), glow_size: 40.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.6),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.1, 0.72, 0.62), shade: (0.42, 0.36, 0.58), rim: (1.4, 0.85, 0.55),
+                    coverage: 0.65, cirrus: 0.75,
+                ),
             ),
             (
                 // Day: exactly the renderer's default look (see the top of this file).
@@ -104,6 +139,15 @@
                 grade: (contrast: 1.05, saturation: 1.15, lift: (0.0, 0.005, 0.015)),
                 bloom: (threshold: 1.0, knee: 0.5, intensity: 0.25, scatter: 0.7),
                 vignette: (intensity: 0.18, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.97, 0.9), intensity: 40.0, glow: (0.3, 0.28, 0.22), glow_size: 22.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.05, 1.03, 1.0), shade: (0.58, 0.66, 0.86), rim: (0.9, 0.9, 0.85),
+                    coverage: 0.75, cirrus: 0.45,
+                ),
             ),
             (
                 // Afternoon: the sun high on the right, a touch warmer; the day's grade.
@@ -124,6 +168,15 @@
                 grade: (contrast: 1.05, saturation: 1.15, lift: (0.0, 0.005, 0.015)),
                 bloom: (threshold: 1.0, knee: 0.5, intensity: 0.25, scatter: 0.7),
                 vignette: (intensity: 0.18, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.96, 0.88), intensity: 40.0, glow: (0.3, 0.27, 0.2), glow_size: 22.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.05, 1.02, 0.97), shade: (0.6, 0.66, 0.84), rim: (0.95, 0.92, 0.85),
+                    coverage: 0.85, cirrus: 0.55,
+                ),
             ),
             (
                 // Golden hour: a low golden sun on the right, an amber horizon.
@@ -144,6 +197,15 @@
                 grade: (temperature: 0.04, contrast: 1.06, saturation: 1.2, lift: (0.005, 0.0, 0.02), gain: (1.0, 0.98, 0.96)),
                 bloom: (threshold: 0.95, knee: 0.5, intensity: 0.28, scatter: 0.7),
                 vignette: (intensity: 0.2, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.82, 0.55), intensity: 32.0, glow: (0.75, 0.48, 0.22), glow_size: 32.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.15, 0.9, 0.62), shade: (0.55, 0.48, 0.66), rim: (1.6, 1.05, 0.5),
+                    coverage: 0.8, cirrus: 0.7,
+                ),
             ),
             (
                 // Sunset: an orange sun on the horizon, a violet zenith, purple shadows.
@@ -165,6 +227,15 @@
                 grade: (temperature: 0.08, tint: 0.05, contrast: 1.06, saturation: 1.22, lift: (0.01, 0.0, 0.03)),
                 bloom: (threshold: 0.9, knee: 0.5, intensity: 0.32, scatter: 0.72),
                 vignette: (intensity: 0.22, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.56, 0.3), intensity: 22.0, glow: (1.0, 0.42, 0.16), glow_size: 45.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.5),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.2, 0.6, 0.42), shade: (0.36, 0.27, 0.48), rim: (1.8, 0.85, 0.4),
+                    coverage: 0.75, cirrus: 0.85,
+                ),
             ),
             (
                 // Dusk: the sun down, a purple horizon, the moon rising on the left.
@@ -185,6 +256,15 @@
                 grade: (temperature: -0.1, tint: 0.1, contrast: 1.04, saturation: 1.1, lift: (0.01, 0.01, 0.035)),
                 bloom: (threshold: 0.85, knee: 0.5, intensity: 0.3, scatter: 0.72),
                 vignette: (intensity: 0.26, start: 0.42),
+                discs: (
+                    sun: (color: (1.0, 0.45, 0.3), intensity: 0.0, glow: (0.25, 0.08, 0.12), glow_size: 50.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.8, glow: (0.05, 0.06, 0.11), glow_size: 12.0),
+                ),
+                stars: 0.65,
+                clouds: (
+                    lit: (0.1, 0.095, 0.19), shade: (0.045, 0.045, 0.11), rim: (0.2, 0.18, 0.32),
+                    coverage: 0.6, cirrus: 0.3,
+                ),
             ),
         ],
     ),

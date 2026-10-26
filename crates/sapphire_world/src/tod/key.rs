@@ -57,6 +57,15 @@ pub struct TodKey {
     pub bloom: Option<BloomKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vignette: Option<VignetteKey>,
+    /// The sky's sun and moon discs and their glows (M1 W2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discs: Option<DiscsKey>,
+    /// Star brightness: 0 by day, 1 for a full night sky (M1 W2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stars: Option<f32>,
+    /// The clouds' light and cover (M1 W2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clouds: Option<CloudsKey>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -115,6 +124,56 @@ pub struct SkyKey {
     pub zenith: Rgb,
     pub horizon: Rgb,
     pub ground: Rgb,
+}
+
+/// The sun's and the moon's discs and glows at a key, as the sky draws them
+/// ([`sapphire_render::SkyLayers`]). Where they are is the `sun` and `moon` groups'; their sizes
+/// are the sky material's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct DiscsKey {
+    pub sun: DiscKey,
+    pub moon: DiscKey,
+}
+
+/// One body's disc and glow. A disc keeps its own look apart from the light the body gives: the
+/// moon can show by day, a setting sun's disc can fade before its light does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct DiscKey {
+    /// Linear RGB; the disc's radiance is `color × intensity`.
+    pub color: Rgb,
+    /// 0 hides the disc. In HDR, so a bright disc blooms: the sun's is tens.
+    pub intensity: f32,
+    /// The glow around it: linear RGB at its center, fading to nothing at `glow_size`.
+    #[serde(default)]
+    pub glow: Rgb,
+    /// The glow's radius in degrees, 0 to 180.
+    #[serde(default)]
+    pub glow_size: f32,
+}
+
+/// The clouds at a key ([`sapphire_render::CloudLight`]): painted in a lit and a shade tone with
+/// a rim toward the key light, and how much of each cloud layer shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct CloudsKey {
+    /// Linear RGB of their sides facing the key light.
+    pub lit: Rgb,
+    /// Linear RGB of their shaded sides: an authored color, never a darkened `lit`.
+    pub shade: Rgb,
+    /// Linear RGB of their silver lining toward the key light.
+    #[serde(default)]
+    pub rim: Rgb,
+    /// How much of the card clouds shows, 0 (clear) to 1 (as painted).
+    #[serde(default)]
+    pub coverage: f32,
+    /// How much of the cirrus shows, 0 to 1.
+    #[serde(default)]
+    pub cirrus: f32,
 }
 
 /// Hemispherical ambient light at a key: `color × intensity` from above and below.
@@ -298,10 +357,13 @@ pub enum TodGroup {
     Grade,
     Bloom,
     Vignette,
+    Discs,
+    Stars,
+    Clouds,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 15] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -314,7 +376,15 @@ impl TodGroup {
         Self::Grade,
         Self::Bloom,
         Self::Vignette,
+        Self::Discs,
+        Self::Stars,
+        Self::Clouds,
     ];
+
+    /// The sky's layers over its gradient (M1 W2): optional even in the base timeline, where a
+    /// group left out draws nothing ([`sapphire_render::SkyLayers::default`]), so timelines
+    /// written before them draw the sky as they did.
+    pub const SKY_LAYERS: [Self; 3] = [Self::Discs, Self::Stars, Self::Clouds];
 
     /// The group's field name in a key.
     pub fn name(self) -> &'static str {
@@ -331,6 +401,9 @@ impl TodGroup {
             Self::Grade => "grade",
             Self::Bloom => "bloom",
             Self::Vignette => "vignette",
+            Self::Discs => "discs",
+            Self::Stars => "stars",
+            Self::Clouds => "clouds",
         }
     }
 
@@ -352,6 +425,17 @@ pub struct TodGroups(u16);
 impl TodGroups {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self((1 << TodGroup::ALL.len()) - 1);
+    /// What the base timeline must set: every group but the sky's layers
+    /// ([`TodGroup::SKY_LAYERS`]).
+    pub const REQUIRED: Self = {
+        let mut bits = Self::ALL.0;
+        let mut index = 0;
+        while index < TodGroup::SKY_LAYERS.len() {
+            bits &= !(1 << TodGroup::SKY_LAYERS[index] as u16);
+            index += 1;
+        }
+        Self(bits)
+    };
 
     pub fn contains(self, group: TodGroup) -> bool {
         self.0 & group.bit() != 0
@@ -408,6 +492,9 @@ impl TodKey {
             (TodGroup::Grade, self.grade.is_some()),
             (TodGroup::Bloom, self.bloom.is_some()),
             (TodGroup::Vignette, self.vignette.is_some()),
+            (TodGroup::Discs, self.discs.is_some()),
+            (TodGroup::Stars, self.stars.is_some()),
+            (TodGroup::Clouds, self.clouds.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -487,6 +574,26 @@ impl TodKey {
             within(vignette.intensity, 0.0, 1.0, "vignette.intensity", "must be within 0..=1")?;
             within(vignette.start, 0.0, 0.99, "vignette.start", "must be within 0..=0.99")?;
         }
+        if let Some(discs) = &self.discs {
+            disc(
+                &discs.sun,
+                ("discs.sun.color", "discs.sun.intensity", "discs.sun.glow", "discs.sun.glow_size"),
+            )?;
+            disc(
+                &discs.moon,
+                ("discs.moon.color", "discs.moon.intensity", "discs.moon.glow", "discs.moon.glow_size"),
+            )?;
+        }
+        if let Some(stars) = self.stars {
+            non_negative(stars, "stars")?;
+        }
+        if let Some(clouds) = &self.clouds {
+            color(clouds.lit, "clouds.lit")?;
+            color(clouds.shade, "clouds.shade")?;
+            color(clouds.rim, "clouds.rim")?;
+            within(clouds.coverage, 0.0, 1.0, "clouds.coverage", "must be within 0..=1")?;
+            within(clouds.cirrus, 0.0, 1.0, "clouds.cirrus", "must be within 0..=1")?;
+        }
         Ok(())
     }
 }
@@ -503,6 +610,16 @@ fn celestial(
     }
     color(key.color, light)?;
     non_negative(key.intensity, intensity)
+}
+
+fn disc(
+    key: &DiscKey,
+    (light, intensity, glow, glow_size): (&'static str, &'static str, &'static str, &'static str),
+) -> Check {
+    color(key.color, light)?;
+    non_negative(key.intensity, intensity)?;
+    color(key.glow, glow)?;
+    within(key.glow_size, 0.0, 180.0, glow_size, "must be within 0..=180 degrees")
 }
 
 fn color(rgb: Rgb, field: &'static str) -> Check {

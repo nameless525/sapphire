@@ -9,7 +9,7 @@ use sapphire_platform::{
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
-use sapphire_render::{MeshHandle, RenderSettings, Renderer};
+use sapphire_render::{MaterialHandle, MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget, wgpu,
@@ -24,7 +24,7 @@ use crate::content::Content;
 use crate::dev::{DevTools, FrameState};
 use crate::input::SandboxInput;
 use crate::options::Options;
-use crate::scene::{self, Scene};
+use crate::scene::Scene;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
 use crate::{skinned, swatches};
@@ -124,7 +124,7 @@ impl App for SandboxApp {
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
-        scene.set_day(options.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), options.day_length);
+        scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
             scene.set_character_rig(rig).map_err(AppInitError::msg)?;
         }
@@ -140,6 +140,9 @@ impl App for SandboxApp {
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head);
         }
+        // The day, the sky options and the starting view, last so `--view` holds whatever framing
+        // the scene chose.
+        options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]
@@ -610,12 +613,15 @@ struct SceneRenderer {
     swatches: Option<[MeshHandle; SWATCHES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
+    /// The zone's sky material.
+    sky: MaterialHandle,
 }
 
 impl Scene {
     /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
     fn set_meshes(&mut self, renderer: &SceneRenderer) {
         self.set_character_mesh(renderer.character);
+        self.set_sky_material(renderer.sky);
         if let Some(stalk) = renderer.stalk {
             self.set_stalk_mesh(stalk);
         }
@@ -668,11 +674,12 @@ fn create_renderer(
         let swatches =
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
         let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
-        Ok((character, character_bounds, stalk, swatches, face_head))
+        let sky = content.sky_material(&mut renderer, gpu)?;
+        Ok((character, character_bounds, stalk, swatches, face_head, sky))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches, face_head)) => {
-            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches, face_head })
+        Ok((character, character_bounds, stalk, swatches, face_head, sky)) => {
+            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches, face_head, sky })
         }
         Err(error) => {
             content.keep_renderer(previous);

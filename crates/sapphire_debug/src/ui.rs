@@ -321,6 +321,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             )
         };
         row(ui, "Skinning", skinned);
+        row(ui, "Sky", sky_text(&render.sky));
         row(ui, "Buffer growths", render.buffer_growths.to_string());
         row(ui, "LUT bakes", render.lut_bakes.to_string());
         if let Some(tod) = frame.time_of_day {
@@ -488,6 +489,17 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
         };
         row(ui, "Dynamic resolution", state);
     });
+}
+
+/// The sky's layers drawn this frame and its cube (M1 W2).
+fn sky_text(sky: &sapphire_render::SkyStats) -> String {
+    let layers: Vec<&str> = [(sky.stars, "stars"), (sky.clouds, "clouds"), (sky.cirrus, "cirrus")]
+        .into_iter()
+        .filter_map(|(drawn, name)| drawn.then_some(name))
+        .collect();
+    let layers = if layers.is_empty() { "gradient and discs".to_owned() } else { layers.join(", ") };
+    let face = sky.last_face.map_or_else(|| "none".to_owned(), |face| face.to_string());
+    format!("{layers}; cube {}², face {face} ({} drawn)", sky.cube_size, sky.cube_faces)
 }
 
 fn budget_row(ui: &mut Ui, name: &str, used: Duration, budget: Duration) {

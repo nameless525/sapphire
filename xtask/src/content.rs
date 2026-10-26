@@ -48,6 +48,12 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/face/face_mask.png",
     "samples/face/face_expression.png",
     "samples/face/face.material.ron",
+    "samples/sky_clouds.png",
+    "samples/sky_cirrus.png",
+    "samples/sky_moon.png",
+    "samples/sky_stars.png",
+    "samples/sky_milky_way.png",
+    "samples/sky.material.ron",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

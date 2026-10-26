@@ -8,7 +8,7 @@
 //! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 896 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader and its outlines (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | W4 |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
-//! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | W2 |
+//! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
 //! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | W3 |
 //!
 //! Each document is a `Versioned` type with a stable name under `sapphire::render`
@@ -70,7 +70,7 @@
 //!
 //! # Later milestones
 //!
-//! - Shaders for the environment (W4), foliage (W6), sky (W2) and fog card (W3) families: their
+//! - Shaders for the environment (W4), foliage (W6) and fog card (W3) families: their
 //!   blocks are defined and uploaded, and their group 3 layouts exist, but nothing draws them
 //!   yet.
 //! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows

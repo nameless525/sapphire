@@ -506,7 +506,7 @@ impl MeshPipelines {
     }
 }
 
-/// The scene pipelines. Quantized-mesh pipelines are built up front, opaque surfaces only; the
+/// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up front, opaque surfaces only; the
 /// f32 ones when the first f32 mesh, or skinned or morphed mesh, is uploaded
 /// ([`Self::prepare_format`]); the other surface variants when a draw first needs them
 /// ([`Self::prepare_variant`]); and the character prepass's with the first skinned or morphed
@@ -517,7 +517,6 @@ pub(crate) struct Pipelines {
     mesh: [Option<MeshPipelines>; 2],
     /// Depth of skinned and morphed instances, whose skinning outputs are f32.
     character_prepass: Option<wgpu::RenderPipeline>,
-    pub sky: wgpu::RenderPipeline,
     target: PipelineTarget,
     character_module: wgpu::ShaderModule,
     outline_module: wgpu::ShaderModule,
@@ -527,7 +526,7 @@ pub(crate) struct Pipelines {
 /// What every scene pipeline shares, kept to build the f32 ones later.
 #[derive(Debug)]
 struct PipelineTarget {
-    /// Groups 0–2, for passes that read no material textures: the sky and the prepasses.
+    /// Groups 0–2, for passes that read no material textures: the prepasses.
     layout: wgpu::PipelineLayout,
     /// Groups 0–2 and the anime character family's group 3: the passes that shade with it
     /// (its shader and its outlines).
@@ -568,25 +567,9 @@ impl Pipelines {
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             })
         };
-        // A fullscreen triangle at the far plane, drawn after the opaque surfaces: `Equal`
-        // against the cleared depth (0) shades only pixels no geometry covered.
-        let sky = target.build(
-            device,
-            PassDesc {
-                name: "sky",
-                module: &module("sky", shaders::SKY),
-                vertex_buffers: &[],
-                cull: None,
-                depth_write: false,
-                depth_compare: wgpu::CompareFunction::Equal,
-                blend: None,
-                constants: &[],
-            },
-        );
         let mut pipelines = Self {
             mesh: [None, None],
             character_prepass: None,
-            sky,
             target,
             character_module: module("anime character", shaders::ANIME_CHARACTER),
             outline_module: module("outline", shaders::OUTLINE),
@@ -752,11 +735,6 @@ impl PipelineTarget {
             multiview_mask: None,
             cache: self.cache.as_ref(),
         })
-    }
-
-    /// A pipeline on the groups 0–2 layout.
-    fn build(&self, device: &wgpu::Device, pass: PassDesc<'_>) -> wgpu::RenderPipeline {
-        self.build_with(device, &self.layout, pass)
     }
 
     fn build_with(

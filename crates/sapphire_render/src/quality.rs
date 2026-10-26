@@ -17,8 +17,9 @@
 //!   height (the spec's "~1280×590 → native" on any phone), and the floor dynamic resolution may
 //!   lower it to. [`Quality::render_scale`] turns it into [`Renderer::set_render_scale`](crate::Renderer::set_render_scale) every
 //!   frame.
-//! - **MSAA, bloom levels, the light path and the light budget**: [`QualityTier::render_settings`],
-//!   which a renderer is created with.
+//! - **MSAA, bloom levels, the light path, the light budget and the sky** (its cube's size and
+//!   update rate, and the cirrus layer, M1 W2): [`QualityTier::render_settings`], which a
+//!   renderer is created with.
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
 //! Plain data until their packages read them: temporal AA (R7), shadow cascades, their resolution
@@ -85,7 +86,8 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, RenderSettings, scaled_size,
+    LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, RenderSettings, SkySettings,
+    scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -196,6 +198,10 @@ pub struct QualityTier {
     /// Added to each draw's LOD choice, in LOD levels: positive picks coarser LODs sooner. Read
     /// by LOD selection, which arrives with culling.
     pub lod_bias: f32,
+    /// The sky's cube size and update rate and its cirrus layer ([`RenderSettings::sky`]). A
+    /// table without it gets the desktop tiers' sky.
+    #[serde(default)]
+    pub sky: SkySettings,
 }
 
 /// The scene's size relative to the output.
@@ -363,6 +369,7 @@ impl QualityTier {
             bloom_levels: self.bloom_levels,
             light_path: self.light_path,
             max_lights: self.max_lights,
+            sky: self.sky,
         }
     }
 
@@ -418,6 +425,9 @@ impl QualityTier {
         }
         if !(-4.0..=4.0).contains(&self.lod_bias) {
             return invalid("lod_bias", "must be within -4..=4");
+        }
+        if let Err((field, problem)) = self.sky.validate() {
+            return invalid(field, problem);
         }
         Ok(())
     }

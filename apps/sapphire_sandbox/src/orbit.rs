@@ -69,6 +69,15 @@ impl OrbitCamera {
         Quat::from_rotation_y(self.goal_yaw) * Quat::from_rotation_x(-self.goal_pitch)
     }
 
+    /// Moves straight to `yaw` and `pitch` in radians, without easing: a starting view. Pitch is
+    /// held short of straight up and down, as orbiting holds it.
+    pub fn look_from(&mut self, yaw: f32, pitch: f32) {
+        let pitch = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        (self.goal_yaw, self.goal_pitch) = (yaw, pitch);
+        self.yaw = SpringDamper::new(yaw, HALF_LIFE);
+        self.pitch = SpringDamper::new(pitch, HALF_LIFE);
+    }
+
     /// Orbits by the given angles in radians. Positive yaw orbits to the right.
     pub fn rotate(&mut self, yaw: f32, pitch: f32) {
         self.goal_yaw += yaw;

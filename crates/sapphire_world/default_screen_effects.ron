@@ -1,0 +1,133 @@
+// Sapphire's sample screen effect presets (M1 P3), compiled into `sapphire_world`:
+// `EffectLibrary::default_effects`, whose module docs (`screen_effects`) say how a preset plays.
+// One per effect, and `impact_frame`, all of them at once as a heavy hit lands. M2 authors the
+// effects real combat uses; packs (A4) will carry presets as content.
+//
+// - A layer sets exactly one effect: `radial_blur`, `chromatic_aberration`, `inversion`,
+//   `duotone` or `speed_lines`. Fields it leaves out take the effect's defaults.
+// - Envelopes are in seconds: `Pulse(attack, hold, release)`, `Sustain(attack, release)` held
+//   until gameplay releases it, or `Keys([(seconds, weight), ...])`, linear between keys, where
+//   two keys at one time cut. A layer may start after a `delay`.
+// - `clock: Real` plays at full speed through slow motion: impact frames authored in frames
+//   (1/60 s each) last those frames. The default, `World`, slows with the world.
+// - Positions are texture coordinates, (0, 0) the top left; sizes are frame heights; colors are
+//   linear RGB.
+// - `mask: World` leaves characters as they are (an impact frame that keeps them colored, lines
+//   behind them); `Characters` covers them alone.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::EffectLibrary",
+    version: 1,
+    data: (
+        presets: [
+            (
+                // A zoom blur from the middle of the frame: a dash, a heavy swing's weight.
+                name: "radial_blur",
+                layers: [
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.12),
+                        envelope: Pulse(attack: 0.02, hold: 0.08, release: 0.35),
+                    ),
+                ],
+            ),
+            (
+                // An RGB split pulse: the frame shudders as a hit lands.
+                name: "chromatic_aberration",
+                layers: [
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.06),
+                        envelope: Pulse(hold: 0.05, release: 0.3),
+                    ),
+                ],
+            ),
+            (
+                // A negative flash, three frames long.
+                name: "inversion",
+                layers: [
+                    (
+                        inversion: (amount: 1.0),
+                        envelope: Keys([(0.0, 1.0), (0.05, 1.0)]),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // The two-tone impact frame: the world in ink and paper for four frames, the
+                // characters kept in their colors.
+                name: "duotone",
+                layers: [
+                    (
+                        duotone: (
+                            dark: (0.005, 0.004, 0.012),
+                            light: (1.0, 0.95, 0.85),
+                            threshold: 0.45,
+                            softness: 0.04,
+                            mask: World,
+                        ),
+                        envelope: Keys([(0.0, 1.0), (0.067, 1.0)]),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // Focus lines behind the characters, redrawn fifteen times a second: a charge,
+                // an ultimate's wind-up.
+                name: "speed_lines",
+                layers: [
+                    (
+                        speed_lines: (
+                            opacity: 0.85,
+                            count: 120,
+                            width: 0.35,
+                            inner_radius: 0.32,
+                            spread: 0.25,
+                            color: (1.0, 1.0, 1.0),
+                            rate: 15.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.05, hold: 0.6, release: 0.25),
+                    ),
+                ],
+            ),
+            (
+                // A heavy hit: six frames of a two-tone world with the characters in color, ink
+                // focus lines, and a blur and an RGB split that fade out after the flash.
+                name: "impact_frame",
+                layers: [
+                    (
+                        duotone: (
+                            dark: (0.005, 0.004, 0.012),
+                            light: (1.0, 0.95, 0.85),
+                            threshold: 0.45,
+                            softness: 0.04,
+                            mask: World,
+                        ),
+                        envelope: Keys([(0.0, 1.0), (0.1, 1.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        speed_lines: (
+                            opacity: 1.0,
+                            count: 140,
+                            width: 0.4,
+                            inner_radius: 0.3,
+                            spread: 0.3,
+                            color: (0.005, 0.004, 0.012),
+                            rate: 20.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(hold: 0.25, release: 0.3),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.1),
+                        envelope: Pulse(hold: 0.1, release: 0.4),
+                    ),
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.04),
+                        envelope: Pulse(hold: 0.1, release: 0.3),
+                    ),
+                ],
+            ),
+        ],
+    ),
+)

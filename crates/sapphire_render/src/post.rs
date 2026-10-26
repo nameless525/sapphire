@@ -10,10 +10,10 @@
 //!    footprint from five bilinear taps.
 //! 3. **Bloom up** (1/16 back to ½): tent upsamples, each replacing `scatter` of the down
 //!    level of its size, so wider levels add glow while the total light stays the same.
-//! 4. **Post**, the fused full-screen pass: exposure, sharpening, bloom, the lens flare, the
-//!    vignette and the grading LUTs (tone curve and grade), then the diffusion glow and the
-//!    gradient layers over the graded frame, in one pass writing the output target. It is the
-//!    mobile path of spec §3.3, and desktop uses it too.
+//! 4. **Post**, the fused full-screen pass: exposure, sharpening or the lens effects, bloom, the
+//!    lens flare, the vignette and the grading LUTs (tone curve and grade), then the diffusion
+//!    glow, the gradient layers and the color effects over the graded frame, in one pass writing
+//!    the output target. It is the mobile path of spec §3.3, and desktop uses it too.
 //!
 //! [`RenderSettings::bloom_levels`](crate::RenderSettings::bloom_levels) sets the chain's
 //! length (5 reaches 1/32), so quality tiers can shorten it; bloom intensity 0 skips it unless
@@ -98,6 +98,62 @@
 //! calls: wgpu bounds every WGSL loop with a counter, which keeps Metal from unrolling it, and
 //! the loops cost about three times as much (temporal AA found the same).
 //!
+//! # Screen effects (M1 P3; look pillar 8)
+//!
+//! Combat's screen grammar, the radial blurs, impact frames and speed lines of Wuthering Waves'
+//! and Zenless Zone Zero's hits, arrives as [`PostParams::effects`] ([`PostEffects`]): one
+//! resolved value per kind of effect, which the world's effect stack
+//! (`sapphire_world::screen_effects`, spec §5.21) blends from the effects playing, so post sees
+//! values only (rule R4). Post draws them in the fused pass, after P2's layers, on every tier:
+//!
+//! - **The lens effects** read the scene in place of the pixel's own texel, before exposure, so
+//!   the frame is graded as usual. They replace sharpening: a streaked or split frame has nothing
+//!   to sharpen.
+//!   - **The radial blur** ([`RadialBlur`]): the frame averaged along the line from the pixel
+//!     `strength` of the way toward the blur's center, over the tier's taps
+//!     ([`PostEffectSettings::radial_blur_taps`]: 16 on Desktop-High, 12 on Desktop-Low, 8 on
+//!     the phones), unrolled in groups of four. Each pixel's taps start at an interleaved
+//!     gradient noise offset (Jimenez, SIGGRAPH 2014), so few taps read as fine grain rather than
+//!     as copies of the frame.
+//!   - **Chromatic aberration** ([`ChromaticAberration`]): red sampled nearer its center and blue
+//!     farther, by a split growing with the distance from the center, so the fringes grow toward
+//!     the corners; three taps. Under a radial blur each channel instead weighs the blur's taps
+//!     by a tent over its own window of the ray, so the colors spread along the streaks for no
+//!     extra taps.
+//! - **The color effects** act on the display values after the gradient layers, in order:
+//!   **the inversion** ([`Inversion`]); **the duotone** ([`Duotone`]), luma through a smoothstep
+//!   ramp from a dark color to a light one, the impact frame's two tones; and **speed lines**
+//!   ([`SpeedLines`]) in their own color. The lines radiate from a center outside a clear
+//!   radius: the circle is cut into `count` slots of one line each, each line's width, place in
+//!   its slot and tip hashed from the seed (PCG), a wedge from a point at its tip, its edges
+//!   box-filtered across a pixel. The world's stack changes the seed at the preset's rate, which
+//!   redraws them.
+//! - **Coverage** ([`EffectCoverage`]): each color effect weighs characters and the world apart,
+//!   so an impact frame turns the world two-tone and keeps characters in their own colors, or
+//!   speed lines draw behind them. The mask is P2's character mask, scene color's alpha, read only
+//!   when an effect covers the two differently (the pass's sixth texture is then scene color, and
+//!   post's input again otherwise). **Decision: no sharp mask at the output's size.** Under
+//!   temporal AA the fused pass reads the mask from the jittered scene color before the resolve,
+//!   bilinear; against the resolved frame no pixel falls on the wrong side of a character's edge,
+//!   and only edge pixels are partial, as with MSAA (spec §5.12's P3 note). So temporal AA's
+//!   resolve carries nothing new. Cut-ins' hard-edged character cut-outs (M2) may need it.
+//!
+//! **Variants, chosen by their cost on Mobile-Low's settings.** Two more constants pick the fused
+//! pass's variant: `POST_LENS_EFFECTS` and `POST_COLOR_EFFECTS`. That makes 12 composite
+//! variants (the lens effects replace sharpening), 16 post pipelines in all, every one built
+//! with the renderer. Within a variant each effect is a branch every pixel takes alike. With no
+//! effect the frame draws P2's variants, so an empty stack draws exactly what it did before.
+//! Measured at 1080p on an M5: with one variant for all five effects, a lone chromatic
+//! aberration paid 13–15% more for the fused pass than it does with the lens effects in their
+//! own variant, and a lone color effect about 4% more. Compiling each effect's code in only when
+//! it draws would save a lone color effect a further 5–13%, but a variant per effect is 2⁵ of
+//! them per combination of the other switches. Effects mostly play together in a hit anyway,
+//! and those frames need all the code. The radial blur costs most by far, about 70 µs per four
+//! taps at 1080p on an M5; spec §5.12's P3 note has every effect's cost against the budget.
+//!
+//! [`PostStats::effects`] ([`DrawnEffects`], rule R9) says which effects drew and whether they
+//! read the character mask; the stack's own depth is the world's to report.
+//!
 //! # Allocation
 //!
 //! Bind groups for the pooled textures are cached per pass and rebuilt only when the pool
@@ -113,8 +169,14 @@
 //!
 //! - **Bloom masks (C7):** an emissive-driven bloom mask; C7's breathing emission writes the
 //!   character mask (scene color's alpha) where a character glows.
-//! - **The effect stack (P3)** after the layers, with the character mask in the fused pass for
-//!   its "keep characters colored" effects; outlines (C4) then write the mask too.
+//! - **More screen effects (M2):** halftone, desaturation keeping a color, glitches, white
+//!   flashes, and cut-ins with their hard-edged character cut-outs, which may need the mask
+//!   carried sharp through temporal AA's resolve. Effects anchored to a point in the world
+//!   (a hit's position as the blur's center) are the world stack's to resolve.
+//! - **The radial blur through temporal AA:** a noise offset changing every frame would let the
+//!   history smooth the blur's grain, so the desktop tiers could take fewer taps; the history's
+//!   clip box must then accept the grain rather than reject it. Device measurements (X1, M2)
+//!   decide the phones' taps.
 //! - **Lens assets:** per-camera or per-zone flare elements and textures, in place of the
 //!   default lens; a moon flare; the flare's visibility smoothed over frames, and light leaks
 //!   from the screen's edges keyed to the sun.
@@ -143,6 +205,7 @@
 //! - **Dithering** the 8-bit output, if dark gradients band once real content arrives (golden
 //!   images render without it).
 
+mod effects;
 pub(crate) mod layers;
 mod lut;
 mod params;
@@ -159,12 +222,15 @@ use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{CameraData, RenderError, bind_cache};
+pub(crate) use effects::{COLOR_EFFECTS_CONSTANT, GpuEffects, LENS_EFFECTS_CONSTANT, RADIAL_TAPS_CONSTANT};
+pub use effects::{DrawnEffects, MAX_RADIAL_BLUR_TAPS, PostEffectSettings};
 use layers::{FLARE_ELEMENTS, FLARE_VISIBLE_SHARE, GpuFlareElement, GpuGradient, Layers, Variant};
 pub(crate) use layers::{SunDisc, SunOnScreen};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use params::{
-    BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
-    LensFlare, MAX_GRADIENT_LAYERS, PostParams, ToneCurve, Vignette,
+    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,
+    GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects,
+    PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 
 /// The longest bloom chain: ½ down to 1/64 of the target.
@@ -209,7 +275,7 @@ pub fn frame_passes(bloom_levels: u32, bloom_chain: bool) -> impl Iterator<Item 
 }
 
 /// The post constants (WGSL `PostUniforms` in `shaders/post.wgsl`, group 0). The fields after
-/// `vignette` are the compositing layers' (M1 P2), appended.
+/// `vignette` are the compositing layers' (M1 P2), appended, then the screen effects' (M1 P3).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub(crate) struct PostUniforms {
@@ -246,11 +312,12 @@ pub(crate) struct PostUniforms {
     pub counts: [u32; 4],
     pub gradients: [GpuGradient; MAX_GRADIENT_LAYERS],
     pub flare_elements: [GpuFlareElement; FLARE_ELEMENTS],
+    pub effects: GpuEffects,
 }
 
 impl PostUniforms {
     /// Clamps every parameter to its working range, so no frame input can produce NaN.
-    fn new(params: &PostParams, layers: &Layers) -> Self {
+    fn new(params: &PostParams, layers: &Layers, effects: GpuEffects) -> Self {
         let clamp = |value: f32, min: f32, max: f32, fallback: f32| {
             if value.is_finite() { value.clamp(min, max) } else { fallback }
         };
@@ -279,6 +346,7 @@ impl PostUniforms {
             counts: [layers.gradient_count, 0, 0, 0],
             gradients: layers.gradients,
             flare_elements: layers.flare_elements,
+            effects,
         }
     }
 }
@@ -290,7 +358,7 @@ const UP_NAMES: [&str; MAX_BLOOM_LEVELS as usize - 1] =
     ["bloom up 1/2", "bloom up 1/4", "bloom up 1/8", "bloom up 1/16", "bloom up 1/32"];
 
 /// The names of `post.wgsl`'s pipeline-overridable constants: the fused pass's compositing
-/// layers and sharpening, and the prefilter's character mask.
+/// layers and sharpening, and the prefilter's character mask (the effects' are in `effects`).
 pub(crate) const LAYERS_CONSTANT: &str = "POST_LAYERS";
 pub(crate) const SHARPEN_CONSTANT: &str = "POST_SHARPEN";
 pub(crate) const CHARACTERS_CONSTANT: &str = "POST_CHARACTERS";
@@ -314,6 +382,8 @@ pub struct PostStats {
     pub vignette_tint: bool,
     /// Sharpening ran.
     pub sharpening: bool,
+    /// The screen effects that drew (M1 P3).
+    pub effects: DrawnEffects,
 }
 
 /// Post's pipelines, layouts and persistent resources, and the per-pass bind group caches.
@@ -325,6 +395,7 @@ pub(crate) struct PostProcess {
     shared_layout: wgpu::BindGroupLayout,
     output_format: wgpu::TextureFormat,
     cache: Option<wgpu::PipelineCache>,
+    effect_settings: PostEffectSettings,
     layouts: Layouts,
     uniform_buffer: wgpu::Buffer,
     /// Group 0: the uniforms and the sampler.
@@ -364,7 +435,9 @@ impl Pipelines {
     pub(crate) const COUNT: u32 = 4 + Variant::COMPOSITES as u32;
 
     /// The post pipelines, from `module` (`post.wgsl`): bloom passes write `bloom_format`, the
-    /// fused composite `output_format`. Every variant is built now, behind the load.
+    /// fused composite `output_format`, its effect variants with the tier's `effects`. Every
+    /// variant is built now, behind the load.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &wgpu::Device,
         module: &wgpu::ShaderModule,
@@ -372,6 +445,7 @@ impl Pipelines {
         layouts: &Layouts,
         bloom_format: wgpu::TextureFormat,
         output_format: wgpu::TextureFormat,
+        effects: PostEffectSettings,
         cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
         let pipeline = |name: &str,
@@ -428,8 +502,14 @@ impl Pipelines {
         // The plain variant is R3's fused pass; the others composite (and measure the flare's
         // visibility once a frame, in their vertex shader).
         let composite = std::array::from_fn(|index| {
-            let (layers, sharpen) = (index & 1 != 0, index & 2 != 0);
-            let constants = [(LAYERS_CONSTANT, switch(layers)), (SHARPEN_CONSTANT, switch(sharpen))];
+            let (layers, sharpen, lens, color) = Variant::composite(index);
+            let constants = [
+                (LAYERS_CONSTANT, switch(layers)),
+                (SHARPEN_CONSTANT, switch(sharpen)),
+                (LENS_EFFECTS_CONSTANT, switch(lens)),
+                (COLOR_EFFECTS_CONSTANT, switch(color)),
+                (RADIAL_TAPS_CONSTANT, f64::from(effects.radial_blur_taps)),
+            ];
             let (vertex, fragment, constants) = match index {
                 0 => (fullscreen, "fs_post", &[][..]),
                 _ => ("vs_composite", "fs_composite", &constants[..]),
@@ -453,12 +533,13 @@ struct Layouts {
     /// Up: `texture0` and `texture1`; the prefilter: its input and the scene color whose alpha
     /// is the character mask.
     two: wgpu::BindGroupLayout,
-    /// Composite: both, the two LUTs and the diffusion glow's bloom level.
+    /// Composite: both, the two LUTs, the diffusion glow's bloom level and the scene color whose
+    /// alpha is the character mask (the screen effects').
     composite: wgpu::BindGroupLayout,
 }
 
 /// A group 1 bind group, for the most textures a post pass reads.
-type CachedBindGroup = bind_cache::CachedBindGroup<5>;
+type CachedBindGroup = bind_cache::CachedBindGroup<6>;
 
 /// One cache per pass position, so each always sees the same layout.
 #[derive(Debug, Default)]
@@ -487,13 +568,14 @@ struct Fullscreen<'f> {
 }
 
 impl PostProcess {
-    /// Creates the post pipelines, writing `output_format` (the target's). Fails if the device
-    /// can't filter the grading LUTs' format. The scene-color format is the renderer's to
-    /// check: it is the main pass's attachment.
+    /// Creates the post pipelines, writing `output_format` (the target's), with `bloom_levels`
+    /// and the tier's `effects`. Fails if the device can't filter the grading LUTs' format. The
+    /// scene-color format is the renderer's to check: it is the main pass's attachment.
     pub(crate) fn new(
         gpu: &GpuContext,
         output_format: wgpu::TextureFormat,
         bloom_levels: u32,
+        effects: PostEffectSettings,
         sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         if !gpu.format_support(LUT_FORMAT).filterable {
@@ -559,6 +641,7 @@ impl PostProcess {
                     texture(2, fragment, volume),
                     texture(3, fragment, volume),
                     texture(4, fragment, flat),
+                    texture(5, fragment, flat),
                 ],
             ),
         };
@@ -570,6 +653,7 @@ impl PostProcess {
             &layouts,
             bloom_format,
             output_format,
+            effects,
             cache,
         );
 
@@ -626,6 +710,7 @@ impl PostProcess {
             shared_layout,
             output_format,
             cache: cache.cloned(),
+            effect_settings: effects,
             layouts,
             uniform_buffer,
             shared,
@@ -658,6 +743,7 @@ impl PostProcess {
             layouts,
             self.bloom_format,
             self.output_format,
+            self.effect_settings,
             cache,
         )
     }
@@ -679,7 +765,8 @@ impl PostProcess {
     ) {
         profiling::scope!("PostProcess::prepare");
         let layers = Layers::new(params);
-        let mut uniforms = PostUniforms::new(params, &layers);
+        let (effects, drawn) = GpuEffects::new(&params.effects);
+        let mut uniforms = PostUniforms::new(params, &layers, effects);
         let key = |grade| LutKey::new(&params.tone_curve, grade, params.filter_strength);
         let blending = uniforms.composite[2] > 0.0;
         let assignment = self.slots.assign(key(&params.grade_a), blending.then(|| key(&params.grade_b)));
@@ -710,7 +797,12 @@ impl PostProcess {
         }
         self.bloom = self.bloom_levels > 0 && (uniforms.composite[1] > 0.0 || layers.diffusion());
         // The character mask changes only what blooms.
-        self.variant = Variant { characters: layers.variant.characters && self.bloom, ..layers.variant };
+        self.variant = Variant {
+            characters: layers.variant.characters && self.bloom,
+            lens_effects: drawn.lens(),
+            color_effects: drawn.color(),
+            ..layers.variant
+        };
         self.stats = PostStats {
             bloom_chain: self.bloom,
             diffusion: layers.diffusion() && self.bloom,
@@ -719,6 +811,7 @@ impl PostProcess {
             lens_flare: flare_sun.is_some(),
             vignette_tint: layers.vignette_color[..3] != [0.0; 3],
             sharpening: layers.variant.sharpen,
+            effects: drawn,
         };
         self.uniforms = uniforms;
     }
@@ -846,10 +939,14 @@ impl PostProcess {
             Some((bloom, _)) => (Input::Graph(bloom), Input::View(no_bloom)),
             None => (Input::View(no_bloom), Input::View(no_bloom)),
         };
+        // Only effects that tell characters apart read scene color besides the input (under
+        // temporal AA, the frame before its resolve): otherwise the input stands in, so the
+        // frame's graph is what it was without them.
+        let mask = if stats.effects.character_mask { scene_color } else { input };
         add_fullscreen(
             graph,
             COMPOSITE_PASS,
-            [Input::Graph(input), bloom_input, lut_a, lut_b, diffusion_input],
+            [Input::Graph(input), bloom_input, lut_a, lut_b, diffusion_input, Input::Graph(mask)],
             target,
             pass(&pipelines.composite[variant.composite_index()], &layouts.composite, composite),
         );
@@ -916,7 +1013,7 @@ mod tests {
             sharpening: 7.0,
             ..PostParams::default()
         };
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params));
+        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
         assert_eq!(uniforms.composite[0], 1.0, "NaN exposure falls back to ×1");
         assert_eq!(uniforms.bloom[1], params.bloom.threshold, "the knee is at most the threshold");
         assert_eq!((uniforms.bloom[3], uniforms.composite[2]), (0.0, 1.0));
@@ -931,7 +1028,7 @@ mod tests {
     #[test]
     fn the_shader_shaper_matches_the_baked_one() {
         let params = PostParams::default();
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params));
+        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
         // Above the shaper's maximum the sampler clamps, so the shader needn't.
         for x in [0.0, 0.001, 0.18, 1.0, 10.0, lut::SHAPER_MAX] {
             let shader = (1.0 + x * uniforms.lut[0]).log2() * uniforms.lut[1];

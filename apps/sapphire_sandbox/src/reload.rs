@@ -1,6 +1,7 @@
 //! Hot reload in `dev` builds (M1 A8, `sapphire_hot_reload`): the content root's packs, the
-//! renderer's WGSL sources, the default day's timeline and the character light rig presets are
-//! watched, and each frame, before loading runs, what changed is applied:
+//! renderer's WGSL sources, the default day's timeline, the character light rig presets and the
+//! screen effect presets are watched, and each frame, before loading runs, what changed is
+//! applied:
 //!
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
@@ -9,7 +10,9 @@
 //!   has if they don't compile;
 //! - an edited timeline replaces time of day's base timeline;
 //! - edited presets replace the scene's (the `LightRigLibrary` resource); characters keep their
-//!   preset IDs.
+//!   preset IDs;
+//! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
+//!   effects playing keep the layers they were pushed with.
 //!
 //! On by default in `dev` builds; `--no-hot-reload` turns it off. Phones build no file watching
 //! (live link, A9, is their trigger), so it reports itself off there. Errors are logged and
@@ -27,6 +30,7 @@ use sapphire_reflect::stable_name;
 use sapphire_render::{Renderer, ShaderError, ShaderSources};
 use sapphire_time::Stopwatch;
 use sapphire_world::light_rig::LightRigLibrary;
+use sapphire_world::screen_effects::EffectLibrary;
 use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
@@ -42,10 +46,13 @@ pub(crate) enum Document {
     /// The character light rig presets (`default_light_rigs.ron`): they replace the scene's
     /// library, if they parse and are valid; characters keep their preset IDs.
     LightRigs,
+    /// The screen effect presets (`default_screen_effects.ron`, M1 P3): they replace the scene's
+    /// library, if they parse and are valid.
+    ScreenEffects,
 }
 
 impl Document {
-    const ALL: [Self; 2] = [Self::DefaultDay, Self::LightRigs];
+    const ALL: [Self; 3] = [Self::DefaultDay, Self::LightRigs, Self::ScreenEffects];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -56,6 +63,7 @@ impl Document {
         match self {
             Self::DefaultDay => stable_name::<TodTimeline>(),
             Self::LightRigs => stable_name::<LightRigLibrary>(),
+            Self::ScreenEffects => stable_name::<EffectLibrary>(),
         }
     }
 
@@ -64,6 +72,7 @@ impl Document {
         match self {
             Self::DefaultDay => "default day",
             Self::LightRigs => "light rigs",
+            Self::ScreenEffects => "screen effects",
         }
     }
 
@@ -78,6 +87,11 @@ impl Document {
             Self::LightRigs => {
                 let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_light_rigs(rigs);
+                Ok(())
+            }
+            Self::ScreenEffects => {
+                let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
+                scene.set_effect_library(effects);
                 Ok(())
             }
         }
@@ -101,9 +115,9 @@ pub(crate) struct Reload {
 }
 
 impl Reload {
-    /// Watches the packs in `content_root`, the shaders, the default day and the light rig
-    /// presets, unless `enabled` is false. A source that can't be watched is left out, with a
-    /// warning.
+    /// Watches the packs in `content_root`, the shaders, the default day, the light rig presets
+    /// and the screen effect presets, unless `enabled` is false. A source that can't be watched
+    /// is left out, with a warning.
     pub fn start(enabled: bool, content_root: &Path) -> Self {
         let mut reload = Self {
             hot: None,
@@ -141,6 +155,7 @@ impl Reload {
         for (document, path, what) in [
             (Document::DefaultDay, sources::default_day(), "the default day"),
             (Document::LightRigs, sources::default_light_rigs(), "the light rigs"),
+            (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
         ] {
             match hot.watch_document(&path) {
                 Ok(id) => {

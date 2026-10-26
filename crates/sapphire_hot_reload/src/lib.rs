@@ -29,7 +29,8 @@
 //!   handles (`sapphire_assets::AssetServer::remount`); the renderer rebuilds pipelines from
 //!   shader sources (`sapphire_render::Renderer::set_shader_sources`); the app parses documents
 //!   and hands them to their owners (time of day's `TimeOfDay::set_timeline`, the light rig
-//!   presets' `LightRigLibrary` resource). Live link (A9)
+//!   presets' `LightRigLibrary` resource, the screen effect presets' `EffectLibrary` resource).
+//!   Live link (A9)
 //!   drives the same three from a device's side.
 //! - Cooking: `cargo xtask content` writes packs, and hot reload sees them land.
 //!
@@ -150,8 +151,9 @@ impl HotReload {
 
     /// Watches the document at `path`, reporting its text when it changes: a document compiled
     /// in, whose source development builds edit (the default day's timeline,
-    /// [`sources::default_day`], and the character light rig presets,
-    /// [`sources::default_light_rigs`]).
+    /// [`sources::default_day`], the character light rig presets,
+    /// [`sources::default_light_rigs`], and the screen effect presets,
+    /// [`sources::default_screen_effects`]).
     pub fn watch_document(&mut self, path: &Path) -> Result<DocumentId, WatchError> {
         let missing = || WatchError::Io {
             path: path.to_owned(),

@@ -1039,12 +1039,16 @@ mod tests {
     }
 
     /// Post's constants are written by the CPU every frame, so every field must sit where the
-    /// WGSL struct reads it, the compositing layers' structs included; their enumerations are
-    /// the WGSL constants', and every variant of the three overridable constants specializes.
+    /// WGSL struct reads it, the compositing layers' and the effects' structs included; their
+    /// enumerations are the WGSL constants', and every variant of the five switches specializes,
+    /// with every tap count the radial blur takes.
     #[test]
     fn wgsl_post_matches_rust() {
         use crate::post::layers::{BlendKind, FLARE_ELEMENTS, FlareKind, GpuFlareElement, GpuGradient};
-        use crate::post::{CHARACTERS_CONSTANT, LAYERS_CONSTANT, MAX_GRADIENT_LAYERS, SHARPEN_CONSTANT};
+        use crate::post::{
+            CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, GpuEffects, LAYERS_CONSTANT, LENS_EFFECTS_CONSTANT,
+            MAX_GRADIENT_LAYERS, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
+        };
         let post = validate(Program::Post);
         let fields = |name: &str| -> Vec<(String, usize)> {
             let (_, ty) = post
@@ -1076,8 +1080,22 @@ mod tests {
             counts,
             gradients,
             flare_elements,
+            effects,
         });
         assert_eq!(fields("PostUniforms"), owned(uniforms), "PostUniforms: WGSL vs Rust fields");
+        let effects = offsets!(GpuEffects {
+            lens,
+            chromatic,
+            inversion,
+            duotone,
+            duotone_dark,
+            duotone_light,
+            lines,
+            lines_shape,
+            lines_color,
+            flags,
+        });
+        assert_eq!(fields("PostEffects"), owned(effects), "PostEffects: WGSL vs Rust fields");
         assert_eq!(
             fields("GradientLayer"),
             owned(offsets!(GpuGradient { color, geometry, mode, scale, offset }))
@@ -1103,8 +1121,14 @@ mod tests {
             assert_eq!(wgsl_u32(&post, name), kind as u32, "{name}");
         }
         assert_eq!((wgsl_u32(&post, "GRADIENT_LINEAR"), wgsl_u32(&post, "GRADIENT_RADIAL")), (0, 1));
-        let names = [LAYERS_CONSTANT, SHARPEN_CONSTANT, CHARACTERS_CONSTANT];
-        for name in names {
+        let names = [
+            LAYERS_CONSTANT,
+            SHARPEN_CONSTANT,
+            CHARACTERS_CONSTANT,
+            LENS_EFFECTS_CONSTANT,
+            COLOR_EFFECTS_CONSTANT,
+        ];
+        for name in names.into_iter().chain([RADIAL_TAPS_CONSTANT]) {
             assert!(post.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
         }
         let info = naga::valid::Validator::new(
@@ -1113,16 +1137,19 @@ mod tests {
         )
         .validate(&post)
         .expect("validated above");
-        for bits in 0..8u32 {
+        for (bits, taps) in (0..32u32).flat_map(|bits| [4, 8, 12, 16].map(|taps| (bits, taps))) {
             let constants: naga::back::PipelineConstants = names
                 .iter()
                 .zip(0..)
                 .map(|(name, bit)| (name.to_string(), f64::from(bits >> bit & 1)))
+                .chain([(RADIAL_TAPS_CONSTANT.to_owned(), f64::from(taps))])
                 .collect();
             for entry_point in &post.entry_points {
                 let stage = Some((entry_point.stage, entry_point.name.as_str()));
                 naga::back::pipeline_constants::process_overrides(&post, &info, stage, &constants)
-                    .unwrap_or_else(|error| panic!("post.wgsl {bits:03b} {}: {error}", entry_point.name));
+                    .unwrap_or_else(|error| {
+                        panic!("post.wgsl {bits:05b} {taps} {}: {error}", entry_point.name)
+                    });
             }
         }
     }

@@ -1,9 +1,11 @@
-//! Post's compositing layers (M1 P2), rendered and read back. They need a GPU: run them with
-//! `cargo test -p sapphire_render --lib -- --ignored post::`.
+//! Post's compositing layers (M1 P2) and screen effects (M1 P3, [`effects`]), rendered and read
+//! back. They need a GPU: run them with `cargo test -p sapphire_render --lib -- --ignored post::`.
 //!
 //! Frames go through post with a tone curve that is linear up to about 0.98, a neutral grade and
 //! no bloom or vignette unless a test sets them, so the target holds the scene's own values,
 //! sRGB-encoded, to within the LUT's precision, and each layer's effect can be predicted.
+
+mod effects;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 

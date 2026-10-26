@@ -6,7 +6,7 @@
 //!   the assets whose bytes changed reload behind their handles, and the push is answered once
 //!   their new versions are uploaded, with each one's generation;
 //! - a document goes to the owner of the type its envelope names ([`Document`]): the default
-//!   day's timeline or the character light rig presets;
+//!   day's timeline, the character light rig presets or the screen effect presets;
 //! - shader sources replace those files in what the renderer builds with;
 //! - a cvar is set through the overlay's registry, as the console does.
 //!

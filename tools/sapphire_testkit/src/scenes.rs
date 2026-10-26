@@ -41,7 +41,10 @@ pub struct Scene {
 /// post and outline scenes included, pin them off (`--shadows off`, the player's quality setting),
 /// so they stay pixel-identical too. The shadow scenes pin their tier, whose shadows they show
 /// (the golden runners select Desktop-Low by device), and plain post, so they show shadows alone.
-pub fn scenes() -> [Scene; 32] {
+/// The screen effect scenes (M1 P3) push the sample presets held on one frame
+/// (`--post-effect <preset>@<seconds>`) over the full look; no earlier scene pushes any, and an
+/// empty effect stack draws exactly what it drew before, so nothing earlier needs pinning.
+pub fn scenes() -> [Scene; 35] {
     [
         Scene {
             name: "turntable-start",
@@ -656,6 +659,58 @@ pub fn scenes() -> [Scene; 32] {
                 "--tier",
                 "mobile-low",
                 "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A dash's screen effects (M1 P3): the radial blur streaking the frame toward its middle
+        // and white speed lines radiating from outside a clear middle, which the character stays
+        // in front of. Through temporal AA, still, on the default day.
+        Scene {
+            name: "effects-blur-lines",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--post-effect",
+                "radial_blur@0.05",
+                "--post-effect",
+                "speed_lines@0.3",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The impact frame (M1 P3): the world in a dark-and-cream duotone with black speed lines
+        // behind the character, which keeps its own colors through the character mask, under the
+        // radial blur and chromatic aberration.
+        Scene {
+            name: "effects-impact-frame",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--post-effect",
+                "impact_frame@0.03",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Chromatic aberration and the inversion through Mobile-Low's settings (M1 P3): red and
+        // blue fringes growing toward the corners of the inverted frame.
+        Scene {
+            name: "effects-chromatic-inversion",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--post-effect",
+                "chromatic_aberration@0.02",
+                "--post-effect",
+                "inversion@0.02",
+                "--tier",
+                "mobile-low",
             ],
             thresholds: Thresholds::default(),
         },

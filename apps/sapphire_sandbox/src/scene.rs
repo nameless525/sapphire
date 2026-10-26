@@ -4,8 +4,9 @@
 //!
 //! - **Resources:** `WorldClock` (from `sapphire_ecs`), the [`OrbitCamera`], the slow-motion
 //!   handle, [`TimeOfDay`] (the default day, on a clock of its own issued by the world clock),
-//!   the character light rig presets ([`LightRigLibrary`], the shipped ones), and the
-//!   [`RenderExtract`] packet ring that extraction fills.
+//!   the character light rig presets ([`LightRigLibrary`], the shipped ones), the screen effects
+//!   (M1 P3: the [`EffectStack`] on a clock the world clock issued, and the sample presets,
+//!   [`EffectLibrary`]), and the [`RenderExtract`] packet ring that extraction fills.
 //! - **The character entity:** a [`Turntable`], its `EntityClock`, the [`RenderMesh`] and
 //!   [`RenderTransform`] it draws with, and its [`CharacterLightRig`]:
 //!   the `gameplay` preset unless `--character-rig` names another.
@@ -30,7 +31,8 @@
 //! - **The stage** (`--stage`): a floor at the character's feet and a pillar beside it, static
 //!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_stage`],
 //!   [`crate::stage`]).
-//! - **Systems:** time of day ticks in `FixedFirst`, after the clocks; turntables spin, and
+//! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
+//!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
 //!   frame's packet (see [`crate::extract`]). The stalk's systems are added only with `--skinned`,
@@ -41,12 +43,13 @@
 //!   probe, and writes them; the player's filter strength and sharpening (`post.filter_strength`,
 //!   `post.sharpening` or `--sharpening`) go on top, then the zone's sky material, and
 //!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient or `--plain-post`'s post without
-//!   its compositing layers (M1 P2), if set. After `Extract` has posed and extracted the instances, it resolves each
-//!   character's light rig for the frame's camera into the packet's characters (M1 C2), with its
-//!   face (M1 C3) and its body (M1 R4): the turntable's head turning with it and its body a
-//!   capsule from its feet to its head, and each face rig head lit from its own angles, its body a
-//!   sphere around it. Both run there rather than as `Extract` systems, which would cost an
-//!   allocation a frame each.
+//!   its compositing layers (M1 P2), if set, and last the effect stack's effects for the frame
+//!   (M1 P3: `--post-effect`, the overlay's effects panel). After `Extract` has posed and
+//!   extracted the instances, it resolves each character's light rig for the frame's camera into
+//!   the packet's characters (M1 C2), with its face (M1 C3) and its body (M1 R4): the
+//!   turntable's head turning with it and its body a capsule from its feet to its head, and each
+//!   face rig head lit from its own angles, its body a sphere around it. Both run there rather
+//!   than as `Extract` systems, which would cost an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -66,6 +69,7 @@ use sapphire_render::{
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
+use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
 use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
 
 use crate::LOG_TARGET;
@@ -161,6 +165,9 @@ impl Scene {
             .expect("the default day sets every group");
         world.insert_resource(time_of_day);
         world.insert_resource(LightRigLibrary::default_rigs());
+        let effects_clock = world.resource_mut::<WorldClock>().0.new_local_clock();
+        world.insert_resource(EffectStack::new(effects_clock));
+        world.insert_resource(EffectLibrary::default_effects());
         let clock = world.resource_mut::<WorldClock>().new_entity_clock();
         let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: CHARACTER_HEAD };
         let character = world.spawn((Turntable::default(), clock, rig)).id();
@@ -169,7 +176,7 @@ impl Scene {
             let place = RenderTransform(skinned::placement(bounds));
             world.spawn((Sway::default(), clock, place, skinned::rest_pose())).id()
         });
-        ecs.add_systems(FixedFirst, tick_time_of_day.after(SimSet::Clocks))
+        ecs.add_systems(FixedFirst, (tick_time_of_day, tick_screen_effects).after(SimSet::Clocks))
             .add_systems(FixedCombat, turntable::spin)
             .add_systems(
                 Extract,
@@ -318,6 +325,45 @@ impl Scene {
     /// with `None`.
     pub fn set_sharpening(&mut self, amount: Option<f32>) {
         self.sharpening = amount;
+    }
+
+    /// Pushes the screen effect preset called `name` onto the effect stack (M1 P3): playing from
+    /// its start, or held `at` seconds into it, which shows that frame of it however long the
+    /// scene runs (`--post-effect <preset>@<seconds>`, for captures and benches). Fails with the
+    /// presets' names if there is none of that name.
+    pub fn push_effect(&mut self, name: &str, at: Option<f32>) -> Result<(), String> {
+        self.with_screen_effects(|stack, library| {
+            let Some(preset) = library.find(name).and_then(|id| library.preset(id)) else {
+                let names: Vec<&str> = library.names().collect();
+                return Err(format!("no screen effect preset {name:?}; presets: {}", names.join(", ")));
+            };
+            let push = stack.push(preset);
+            if at.is_some() {
+                stack.hold(push, at);
+            }
+            Ok(())
+        })
+    }
+
+    /// Runs `f` on the effect stack and the presets.
+    pub fn with_screen_effects<T>(&mut self, f: impl FnOnce(&mut EffectStack, &EffectLibrary) -> T) -> T {
+        self.ecs.world_mut().resource_scope(|world, mut stack: Mut<'_, EffectStack>| {
+            f(&mut stack, world.resource::<EffectLibrary>())
+        })
+    }
+
+    /// The effect stack and the presets, for the overlay.
+    #[cfg(feature = "dev")]
+    pub fn screen_effects(&self) -> (&EffectStack, &EffectLibrary) {
+        let world = self.ecs.world();
+        (world.resource(), world.resource())
+    }
+
+    /// Replaces the screen effect presets (hot reload, `dev` builds). Effects playing keep the
+    /// layers they were pushed with.
+    #[cfg(feature = "dev")]
+    pub fn set_effect_library(&mut self, library: EffectLibrary) {
+        self.ecs.world_mut().insert_resource(library);
     }
 
     /// Replaces the character light rig presets (hot reload, `dev` builds). Characters keep their
@@ -528,6 +574,8 @@ impl Scene {
             if plain_post {
                 packet.post = packet.post.plain();
             }
+            // The effects gameplay pushed, over whatever post's look is (M1 P3).
+            packet.post.effects = world.resource_mut::<EffectStack>().resolve(alpha);
         });
         self.ecs.extract();
         let (characters, heads) = (&mut self.characters, &mut self.heads);
@@ -873,6 +921,44 @@ mod tests {
             assert!(head.forward.abs_diff_eq(spun.transform_vector3(Vec3::Z), 1e-6));
             scene.end_frame();
         }
+    }
+
+    #[test]
+    fn screen_effects_reach_the_packet_and_end() {
+        let mut scene = scene();
+        scene.step();
+        let effects = |scene: &mut Scene| scene.frame_packet(1.0, Some((64, 36))).post.effects;
+        assert_eq!(effects(&mut scene), sapphire_render::PostEffects::NONE, "an empty stack draws nothing");
+        scene.end_frame();
+
+        let error = scene.push_effect("impact", None).expect_err("no such preset");
+        assert!(error.contains("impact_frame"), "names the presets: {error}");
+
+        // Held, the impact frame stays on its frame however long the scene runs, plain post or not.
+        scene.push_effect("impact_frame", Some(0.03)).expect("a sample preset");
+        scene.set_plain_post(true);
+        let held = effects(&mut scene);
+        assert!(
+            held.duotone.amount > 0.0 && held.speed_lines.opacity > 0.0 && held.radial_blur.strength > 0.0
+        );
+        scene.end_frame();
+        for _ in 0..TICK_HZ {
+            scene.step();
+        }
+        assert_eq!(effects(&mut scene), held);
+        scene.end_frame();
+
+        // Played, the radial blur rises, then ends within half a second, leaving the held one.
+        scene.with_screen_effects(|stack, _| stack.clear());
+        scene.push_effect("radial_blur", None).expect("a sample preset");
+        scene.step();
+        assert!(effects(&mut scene).radial_blur.strength > 0.0);
+        scene.end_frame();
+        for _ in 0..TICK_HZ / 2 {
+            scene.step();
+        }
+        assert_eq!(effects(&mut scene), sapphire_render::PostEffects::NONE);
+        scene.end_frame();
     }
 
     #[test]

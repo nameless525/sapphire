@@ -27,8 +27,9 @@
 //!
 //! - Applying documents and shaders: the app hands a document to the owner of the type its
 //!   envelope names (time of day's `TimeOfDay::set_timeline`, the character light rig presets'
-//!   library), and shader sources to `Renderer::set_shader_sources`, as its hot reload does; each
-//!   keeps what it has if the new one doesn't parse, validate or compile.
+//!   library, the screen effect presets' library), and shader sources to
+//!   `Renderer::set_shader_sources`, as its hot reload does; each keeps what it has if the new
+//!   one doesn't parse, validate or compile.
 //! - Reloading assets: the asset server's remount (`sapphire_assets::AssetServer::remount`) and
 //!   the app's uploader, which replaces each new version in place by its generation.
 //! - Watching files: A8's `sapphire_hot_reload::FileWatcher`, which the tool's `watch` uses, with

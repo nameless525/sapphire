@@ -122,7 +122,7 @@ impl Stage {
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
-        options.apply_to(&mut scene);
+        options.apply_to(&mut scene).map_err(AppInitError::msg)?;
         // The stage after the hour, which places its pillars.
         if let Some(layout) = options.stage {
             let character =

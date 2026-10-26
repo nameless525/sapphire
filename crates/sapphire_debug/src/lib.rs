@@ -21,10 +21,12 @@
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,
 //!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the
 //!   resolved values and a character preview, which shows the first character's light rig, M1
-//!   C2).
+//!   C2), and the screen effects panel (`effects`, M1 P3: fire a preset, watch the stack).
 //! - **[`TimeControls`]**: pause, single-step and speed on the world clock's time-scale stack.
 //! - **[`TodControls`]**: scrubbing the hour, pausing the cycle and setting the day's length on
 //!   the world's `sapphire_world::tod::TimeOfDay`.
+//! - **[`EffectControls`]**: pushing screen effect presets onto the world's
+//!   `sapphire_world::screen_effects::EffectStack`, releasing and clearing them.
 //! - **Its own cvars** ([`CVARS`]): `debug.ui_scale` and `debug.gpu_timing`.
 //!
 //! # Does not own
@@ -33,7 +35,8 @@
 //!   on this crate (the facade of spec §5.20).
 //! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`], time of day
 //!   included (the world's `TimeOfDay`, read-only: the panel changes it through
-//!   [`TodControls`]), and the frame packet's characters with their resolved light rigs. The frame
+//!   [`TodControls`]), the frame packet's characters with their resolved light rigs, and the
+//!   effect stack with its presets (read-only too: [`EffectControls`]). The frame
 //!   graph's report and GPU timings are `sapphire_render::graph`'s; the overlay turns them on
 //!   while it shows them, and keeps GPU timing on while the app reads it too
 //!   ([`DebugOverlay::configure_graph`]). Quality tiers are `sapphire_render::quality`'s.
@@ -55,6 +58,7 @@
 //! for _ in 0..steps {
 //!     overlay.time_controls().before_fixed_step(&mut world_clock);
 //!     overlay.tod_controls().apply(&mut time_of_day);
+//!     overlay.effect_controls().apply(&mut effect_stack, &effect_library);
 //!     simulation.step();
 //! }
 //! // GPU timing stays on while dynamic resolution reads it, shown or not.
@@ -93,6 +97,7 @@
 
 mod budget;
 mod console;
+mod effects;
 mod history;
 pub mod input;
 mod overlay;
@@ -105,6 +110,7 @@ mod ui;
 use sapphire_core::cvar::{AnyCvar, Cvar};
 
 pub use budget::{BudgetTier, CpuStage, CpuStages, budget_use, format_bytes, format_ms};
+pub use effects::EffectControls;
 pub use history::{FrameSummary, FrameTimes, HISTORY};
 pub use input::WindowMetrics;
 pub use overlay::{

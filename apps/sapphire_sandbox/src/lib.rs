@@ -98,6 +98,10 @@
 //!   which the golden scenes from before them pin (M1 P2).
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
+//! - `--post-effect <preset>[@<seconds>]`, repeatable: push a screen effect preset (M1 P3:
+//!   `radial_blur`, `chromatic_aberration`, `inversion`, `duotone`, `speed_lines`,
+//!   `impact_frame`) at the start, playing, or held that many seconds into it for captures and
+//!   benches. An unknown name fails with the presets' names.
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't
@@ -107,8 +111,8 @@
 //!   beyond loopback, such as `0.0.0.0:7811`, takes pushes from the network: an opt-in, logged as
 //!   a warning), dialing a tool listening at `<addr>` (behind `adb reverse`), or not at all.
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
-//!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
-//!   `cvars`, `all`). Offscreen captures draw it too.
+//!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `effects`,
+//!   `console`, `cvars`, `all`). Offscreen captures draw it too.
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default

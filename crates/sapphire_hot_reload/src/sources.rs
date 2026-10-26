@@ -30,10 +30,17 @@ pub fn default_light_rigs() -> PathBuf {
     crates_dir().join("sapphire_world").join("default_light_rigs.ron")
 }
 
+/// The screen effect presets' document, which
+/// `sapphire_world::screen_effects::EffectLibrary::default_effects` compiles in.
+pub fn default_screen_effects() -> PathBuf {
+    crates_dir().join("sapphire_world").join("default_screen_effects.ron")
+}
+
 #[cfg(test)]
 mod tests {
     use sapphire_render::{ShaderFile, ShaderSources};
     use sapphire_world::light_rig::LightRigLibrary;
+    use sapphire_world::screen_effects::EffectLibrary;
     use sapphire_world::tod::TodTimeline;
 
     use super::*;
@@ -60,5 +67,13 @@ mod tests {
         let text = std::fs::read_to_string(default_light_rigs()).expect("the light rig presets' document");
         let rigs = LightRigLibrary::from_ron(&text).expect("a valid library");
         assert_eq!(rigs, LightRigLibrary::default_rigs());
+    }
+
+    #[test]
+    fn the_screen_effects_are_the_presets_the_library_compiles_in() {
+        let text =
+            std::fs::read_to_string(default_screen_effects()).expect("the screen effect presets' document");
+        let effects = EffectLibrary::from_ron(&text).expect("a valid library");
+        assert_eq!(effects, EffectLibrary::default_effects());
     }
 }

@@ -607,8 +607,10 @@ pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;
 pub use post::{
-    BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
-    LensFlare, MAX_BLOOM_LEVELS, MAX_GRADIENT_LAYERS, PostParams, PostStats, ToneCurve, Vignette,
+    BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, DrawnEffects, Duotone,
+    EffectCoverage, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_BLOOM_LEVELS,
+    MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams, PostStats,
+    RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use renderer::{
     MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, ShaderUpdate,

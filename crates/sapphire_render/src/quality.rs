@@ -22,8 +22,9 @@
 //!   whose resolve also upsamples to the output; 4× MSAA kept in tile memory on phones.
 //! - **MSAA and temporal AA, bloom levels, the light path, the light budget, the sky** (its
 //!   cube's size and update rate, and the cirrus layer, M1 W2), **the environment shader's
-//!   specular model** (M1 W4) **and the shadows** (cascades, their resolution, distance and
-//!   caching, the characters' maps or capsules and the filter, M1 R4):
+//!   specular model** (M1 W4), **the shadows** (cascades, their resolution, distance and
+//!   caching, the characters' maps or capsules and the filter, M1 R4) **and the screen effects'
+//!   cost** (the radial blur's taps, [`PostEffectSettings`], M1 P3):
 //!   [`QualityTier::render_settings`], which a renderer is created with. The player's settings
 //!   can turn the shadows off ([`QualitySettings::shadows`]).
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
@@ -97,7 +98,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     EnvironmentSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
-    RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    PostEffectSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -214,6 +215,10 @@ pub struct QualityTier {
     /// without it gets the desktop tiers' full specular.
     #[serde(default)]
     pub environment: EnvironmentSettings,
+    /// What the screen effects spend ([`RenderSettings::post_effects`], M1 P3). A table without
+    /// it gets Desktop-Low's.
+    #[serde(default)]
+    pub post_effects: PostEffectSettings,
 }
 
 /// The scene's size relative to the output.
@@ -374,6 +379,7 @@ impl QualityTier {
             sky: self.sky,
             environment: self.environment,
             shadows: Some(self.shadows),
+            post_effects: self.post_effects,
         }
     }
 
@@ -427,6 +433,9 @@ impl QualityTier {
             return invalid("lod_bias", "must be within -4..=4");
         }
         if let Err((field, problem)) = self.sky.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.post_effects.validate() {
             return invalid(field, problem);
         }
         Ok(())
@@ -904,13 +913,20 @@ mod tests {
     fn desktop_tiers_resolve_with_taa_and_phones_with_msaa() {
         // Desktop tiers: temporal AA with MSAA off, otherwise the default settings, which the
         // golden scenes from before M1 R7 pin with 4× MSAA instead (`--aa msaa`). At 640×360 and
-        // 1920×1080 (the goldens' and the bench's sizes) both render at native height.
+        // 1920×1080 (the goldens' and the bench's sizes) both render at native height. The
+        // radial blur takes 16 taps on Desktop-High and the default 12 on Desktop-Low (M1 P3).
         let table = TierTable::shipped();
-        for id in [TierId::DesktopHigh, TierId::DesktopLow] {
+        for (id, taps) in [(TierId::DesktopHigh, 16), (TierId::DesktopLow, 12)] {
             let tier = table.get(id);
             let shadows = Some(tier.shadows);
-            let expected =
-                RenderSettings { msaa: Msaa::Off, temporal: true, shadows, ..RenderSettings::default() };
+            let post_effects = PostEffectSettings { radial_blur_taps: taps };
+            let expected = RenderSettings {
+                msaa: Msaa::Off,
+                temporal: true,
+                shadows,
+                post_effects,
+                ..RenderSettings::default()
+            };
             assert_eq!(tier.render_settings(), expected, "{id}");
             assert_eq!(tier.resolution.base_scale(360), 1.0, "{id}");
             assert_eq!(tier.resolution.base_scale(1080), 1.0, "{id}: the bench's size");
@@ -925,6 +941,7 @@ mod tests {
                 (LightPath::PerObject, 8),
                 "{id}: spec §3.4's mobile budget"
             );
+            assert_eq!(settings.post_effects.radial_blur_taps, 8, "{id}");
         }
     }
 

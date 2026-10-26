@@ -75,6 +75,10 @@ pub(crate) struct Options {
     pub plain_post: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
+    /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
+    /// (M1 P3), each playing from its start, or held that many seconds into it (for captures and
+    /// benches). The scene checks the names against its presets.
+    pub post_effects: Vec<(String, Option<f32>)>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
     pub view: Option<(f32, f32)>,
@@ -200,8 +204,9 @@ pub(crate) enum Antialiasing {
 
 impl Options {
     /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover, the
-    /// sky's and post's layers, sharpening, the camera's starting view and the turntable's speed.
-    pub fn apply_to(&self, scene: &mut Scene) {
+    /// sky's and post's layers, sharpening, the screen effects, the camera's starting view and
+    /// the turntable's speed. Fails if a screen effect preset is unknown.
+    pub fn apply_to(&self, scene: &mut Scene) -> Result<(), String> {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
@@ -224,6 +229,10 @@ impl Options {
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--outline-distance");
         }
+        for (preset, at) in &self.post_effects {
+            scene.push_effect(preset, *at)?;
+        }
+        Ok(())
     }
 
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
@@ -381,6 +390,7 @@ impl Options {
                     }
                     options.sharpening = Some(amount);
                 }
+                "--post-effect" => options.post_effects.push(parse_post_effect(&value("--post-effect")?)?),
                 "--no-hot-reload" => options.no_hot_reload = true,
                 "--serial-passes" => options.serial_passes = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
@@ -472,6 +482,25 @@ fn parse_view(raw: &str) -> Result<(f32, f32), String> {
         return Err(invalid());
     }
     Ok((yaw, pitch))
+}
+
+/// `<preset>` or `<preset>@<seconds>`.
+fn parse_post_effect(raw: &str) -> Result<(String, Option<f32>), String> {
+    let invalid = || format!("--post-effect expects PRESET or PRESET@SECONDS, got {raw:?}");
+    let (name, at) = match raw.split_once('@') {
+        Some((name, seconds)) => {
+            let seconds: f32 = seconds.parse().map_err(|_| invalid())?;
+            if !(seconds.is_finite() && seconds >= 0.0) {
+                return Err(invalid());
+            }
+            (name, Some(seconds))
+        }
+        None => (raw, None),
+    };
+    if name.is_empty() {
+        return Err(invalid());
+    }
+    Ok((name.to_owned(), at))
 }
 
 fn parse_size(raw: &str) -> Result<(u32, u32), String> {
@@ -787,6 +816,29 @@ mod tests {
         assert!(parse(&["--capture", "a.png", "--bench", "10"]).is_err(), "exclusive");
         assert!(parse(&["--capture", "a.png", "--size", "0x10"]).is_err());
         assert!(parse(&["--bench", "10", "--size", "wide"]).is_err());
+    }
+
+    #[test]
+    fn post_effects_repeat_and_may_be_held() {
+        let (options, _) = parse(&[
+            "--post-effect",
+            "impact_frame@0.03",
+            "--post-effect=speed_lines",
+            "--post-effect",
+            "a@0",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.post_effects,
+            [
+                ("impact_frame".to_owned(), Some(0.03)),
+                ("speed_lines".to_owned(), None),
+                ("a".to_owned(), Some(0.0))
+            ]
+        );
+        for bad in ["@0.1", "radial_blur@", "radial_blur@-1", "radial_blur@soon", "radial_blur@inf"] {
+            assert!(parse(&["--post-effect", bad]).is_err(), "{bad}");
+        }
     }
 
     #[test]

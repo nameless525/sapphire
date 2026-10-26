@@ -1,15 +1,16 @@
-//! Time of day allocates nothing per step or per frame: ticking runs inside the fixed step (rule
-//! R6), and resolving runs every frame, as does resolving characters' light rigs. Installs
-//! `CountingAllocator` as this test binary's global allocator.
+//! Time of day and the screen effects allocate nothing per step or per frame: ticking runs inside
+//! the fixed step (rule R6), and resolving runs every frame, as does resolving characters' light
+//! rigs. Installs `CountingAllocator` as this test binary's global allocator.
 
 use std::alloc::System;
 use std::sync::Arc;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_math::Vec3;
+use sapphire_math::{Vec2, Vec3};
 use sapphire_render::{CameraData, CharacterBody, CharacterFace, CharacterInstance, FramePacket, InstanceId};
 use sapphire_time::ScaledClock;
 use sapphire_world::light_rig::{LightRigId, LightRigLibrary};
+use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
 use sapphire_world::tod::{ShotTime, TimeOfDay, TodCutscene, TodKey, TodTimeline, TodVolume, VolumeShape};
 
 #[global_allocator]
@@ -67,4 +68,29 @@ fn ticking_and_resolving_allocate_nothing() {
         assert_eq!(counts.allocations, 0, "rule R6");
     }
     assert!(tod.stats().resolves >= 3600);
+}
+
+#[test]
+fn pushing_ticking_and_resolving_screen_effects_allocate_nothing() {
+    let mut world = ScaledClock::new();
+    let mut stack = EffectStack::new(world.new_local_clock());
+    let library = EffectLibrary::default_effects();
+    let mut packet = FramePacket::default();
+    let ((), counts) = alloc::count_in_scope(|| {
+        // A minute of frames with a preset pushed every other frame, so the stack fills and
+        // drops layers.
+        for frame in 0..3600_usize {
+            world.tick();
+            stack.tick(&world);
+            if frame % 2 == 0 {
+                let preset = &library.presets()[frame / 2 % library.presets().len()];
+                stack.push_at(preset, Vec2::new(0.4, 0.5));
+            }
+            packet.post.effects = stack.resolve(0.5);
+        }
+    });
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "rule R6");
+    }
+    assert!(stack.stats().pushed > 0 && stack.stats().dropped > 0, "{:?}", stack.stats());
 }

@@ -1,5 +1,6 @@
 //! The overlay's panels, in egui: a bar of toggles, then stats and budgets with the frame-time
-//! graph, the frame graph, time controls, time of day, the console and the cvar list.
+//! graph, the frame graph, time controls, time of day, the screen effects, the console and the
+//! cvar list.
 
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
 use crate::console::{Completion, Console, LineKind};
+use crate::effects::{self, EffectControls};
 use crate::history::{FrameTimes, HISTORY};
 use crate::overlay::{HotReloadStatus, LiveLinkStatus, OverlayCost, OverlayFrame};
 use crate::time::{SPEEDS, TimeControls};
@@ -32,6 +34,8 @@ pub struct Panels {
     pub time: bool,
     /// Time of day.
     pub day: bool,
+    /// The screen effects (M1 P3).
+    pub effects: bool,
     pub console: bool,
     pub cvars: bool,
 }
@@ -44,11 +48,19 @@ impl Default for Panels {
 }
 
 impl Panels {
-    pub const NAMES: [&'static str; 6] = ["stats", "graph", "time", "day", "console", "cvars"];
+    pub const NAMES: [&'static str; 7] = ["stats", "graph", "time", "day", "effects", "console", "cvars"];
 
-    const NONE: Self =
-        Self { stats: false, graph: false, time: false, day: false, console: false, cvars: false };
-    const ALL: Self = Self { stats: true, graph: true, time: true, day: true, console: true, cvars: true };
+    const NONE: Self = Self {
+        stats: false,
+        graph: false,
+        time: false,
+        day: false,
+        effects: false,
+        console: false,
+        cvars: false,
+    };
+    const ALL: Self =
+        Self { stats: true, graph: true, time: true, day: true, effects: true, console: true, cvars: true };
 
     /// A comma-separated list of [`Self::NAMES`], or `all`.
     pub fn parse(list: &str) -> Result<Self, String> {
@@ -60,6 +72,7 @@ impl Panels {
                 "graph" => panels.graph = true,
                 "time" => panels.time = true,
                 "day" => panels.day = true,
+                "effects" => panels.effects = true,
                 "console" => panels.console = true,
                 "cvars" => panels.cvars = true,
                 _ => {
@@ -129,6 +142,7 @@ pub(crate) fn show(
     memory: &mut UiMemory,
     time: &mut TimeControls,
     day: &mut TodControls,
+    effects: &mut EffectControls,
     view: &View<'_>,
 ) -> bool {
     let hide = bar(ctx, &mut memory.panels, view);
@@ -156,6 +170,9 @@ pub(crate) fn show(
         .show(ctx, |ui| {
             time_of_day::panel(ui, day_panel, day, view.frame.time_of_day, view.frame.characters)
         });
+    panel("Screen effects", &mut panels.effects, at(1010.0, 180.0), safe)
+        .default_width(360.0)
+        .show(ctx, |ui| effects::panel(ui, effects, view.frame.screen_effects));
     panel("Cvars", &mut panels.cvars, right(380.0, (safe.height() - 250.0).max(44.0)), safe)
         .default_width(380.0)
         .show(ctx, |ui| cvars(ui, view.frame.cvars));
@@ -194,6 +211,7 @@ fn bar(ctx: &egui::Context, panels: &mut Panels, view: &View<'_>) -> bool {
                     ui.toggle_value(&mut panels.graph, "Graph");
                     ui.toggle_value(&mut panels.time, "Time");
                     ui.toggle_value(&mut panels.day, "Day");
+                    ui.toggle_value(&mut panels.effects, "Effects");
                     ui.toggle_value(&mut panels.console, "Console");
                     ui.toggle_value(&mut panels.cvars, "Cvars");
                     ui.separator();
@@ -349,6 +367,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Skinning", skinned);
         row(ui, "Sky", sky_text(&render.sky));
         row(ui, "Post layers", post_text(&render.post));
+        row(ui, "Screen effects", effects_text(&render.post.effects, view.frame.screen_effects));
         let taa = &render.temporal;
         let taa = if taa.enabled {
             let ((input_w, input_h), (output_w, output_h)) = (taa.input_size, taa.output_size);
@@ -643,6 +662,36 @@ fn post_text(post: &sapphire_render::PostStats) -> String {
         format!("none (plain); {bloom}")
     } else {
         format!("{}; {bloom}", layers.join(", "))
+    }
+}
+
+/// The screen effects post drew this frame and the effect stack's depth (M1 P3).
+fn effects_text(
+    drawn: &sapphire_render::DrawnEffects,
+    stack: Option<(
+        &sapphire_world::screen_effects::EffectStack,
+        &sapphire_world::screen_effects::EffectLibrary,
+    )>,
+) -> String {
+    let effects: Vec<&str> = [
+        (drawn.radial_blur, "radial blur"),
+        (drawn.chromatic_aberration, "chromatic aberration"),
+        (drawn.inversion, "inversion"),
+        (drawn.duotone, "duotone"),
+        (drawn.speed_lines, "speed lines"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    let drawn_text = if effects.is_empty() {
+        "none".to_owned()
+    } else {
+        let mask = if drawn.character_mask { ", by the character mask" } else { "" };
+        format!("{}{mask}", effects.join(", "))
+    };
+    match stack {
+        Some((stack, _)) => format!("{drawn_text}; {} layers playing", stack.stats().depth),
+        None => drawn_text,
     }
 }
 

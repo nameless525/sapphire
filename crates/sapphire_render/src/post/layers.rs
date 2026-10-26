@@ -302,14 +302,28 @@ pub(crate) struct Variant {
     pub sharpen: bool,
     /// `POST_CHARACTERS`: the bloom prefilter tells characters apart.
     pub characters: bool,
+    /// `POST_LENS_EFFECTS` (M1 P3): the radial blur or chromatic aberration, which read the
+    /// scene in place of sharpening.
+    pub lens_effects: bool,
+    /// `POST_COLOR_EFFECTS` (M1 P3): the inversion, the duotone or speed lines.
+    pub color_effects: bool,
 }
 
 impl Variant {
-    /// Fused-pass variants, by [`Self::composite_index`].
-    pub(crate) const COMPOSITES: usize = 4;
+    /// Fused-pass variants, by [`Self::composite_index`]: with or without the layers and the
+    /// color effects, reading the scene as it is, sharpened or through the lens effects.
+    pub(crate) const COMPOSITES: usize = 12;
 
     pub(crate) fn composite_index(self) -> usize {
-        usize::from(self.layers) | usize::from(self.sharpen) << 1
+        let scene = if self.lens_effects { 2 } else { usize::from(self.sharpen) };
+        usize::from(self.layers) | usize::from(self.color_effects) << 1 | scene << 2
+    }
+
+    /// The variant [`Self::composite_index`] gives `index`: its layers, sharpening, lens effects
+    /// and color effects.
+    pub(crate) fn composite(index: usize) -> (bool, bool, bool, bool) {
+        let scene = index >> 2;
+        (index & 1 != 0, scene == 1, scene == 2, index & 2 != 0)
     }
 }
 
@@ -357,6 +371,9 @@ impl Layers {
                 layers: tinted || diffusion_on || gradient_count > 0 || flare != Vec3::ZERO,
                 sharpen: sharpening > 0.0,
                 characters: character.is_some(),
+                // The effects' own packing decides (`post::effects`).
+                lens_effects: false,
+                color_effects: false,
             },
         }
     }
@@ -388,18 +405,18 @@ fn character_bloom(character: &CharacterBloom, params: &PostParams) -> Option<[f
     Some([threshold, knee, 1.0 / (4.0 * knee + 1e-5), strength])
 }
 
-fn finite(value: f32, fallback: f32) -> f32 {
+pub(super) fn finite(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
 /// `color` with negative and non-finite channels replaced by 0.
-fn finite_color(color: Vec3) -> Vec3 {
+pub(super) fn finite_color(color: Vec3) -> Vec3 {
     let color = color.max(Vec3::ZERO);
     if color.is_finite() { color } else { Vec3::ZERO }
 }
 
 /// Linear `color`, sRGB-encoded and clamped to display range.
-fn encoded(color: Vec3) -> Vec3 {
+pub(super) fn encoded(color: Vec3) -> Vec3 {
     let encode = |c: f32| {
         let c = finite(c, 0.0).clamp(0.0, 1.0);
         if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
@@ -442,6 +459,23 @@ mod tests {
             ..PostParams::default()
         };
         assert_eq!(Layers::new(&dark).variant, Variant::default());
+    }
+
+    #[test]
+    fn every_fused_pass_variant_has_its_own_pipeline_and_the_lens_effects_replace_sharpening() {
+        let mut seen = [false; Variant::COMPOSITES];
+        for bits in 0..16u8 {
+            let [layers, sharpen, lens_effects, color_effects] = [0, 1, 2, 3].map(|bit| bits >> bit & 1 != 0);
+            let variant = Variant { layers, sharpen, lens_effects, color_effects, characters: false };
+            let index = variant.composite_index();
+            seen[index] = true;
+            assert_eq!(
+                Variant::composite(index),
+                (layers, sharpen && !lens_effects, lens_effects, color_effects)
+            );
+        }
+        assert!(seen.iter().all(|&seen| seen), "every pipeline is drawn with");
+        assert_eq!(Variant::default().composite_index(), 0, "the plain pass, R3's");
     }
 
     #[test]

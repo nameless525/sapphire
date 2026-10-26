@@ -12,9 +12,11 @@ use sapphire_render::quality::QualityStats;
 use sapphire_render::{CharacterInstance, RenderStats};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
+use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
 use sapphire_world::tod::TimeOfDay;
 
 use crate::budget::CpuStages;
+use crate::effects::EffectControls;
 use crate::history::FrameTimes;
 use crate::input::{EguiInput, WindowMetrics};
 use crate::render::OverlayRenderer;
@@ -69,6 +71,9 @@ pub struct OverlayFrame<'a> {
     /// This frame's characters with their resolved light rigs (M1 C2), as the frame packet
     /// carries them: the time-of-day panel shows them and previews the first.
     pub characters: &'a [CharacterInstance],
+    /// The world's screen effects and their presets, if the app runs them (M1 P3): the effects
+    /// panel's.
+    pub screen_effects: Option<(&'a EffectStack, &'a EffectLibrary)>,
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
     /// Hot reload, if the app runs it.
@@ -150,6 +155,7 @@ pub struct DebugOverlay {
     memory: UiMemory,
     time: TimeControls,
     day: TodControls,
+    effects: EffectControls,
     cost: OverlayCost,
     gpu_timing: bool,
     max_texture_side: usize,
@@ -178,6 +184,7 @@ impl DebugOverlay {
             memory: UiMemory::new(config.panels),
             time: TimeControls::default(),
             day: TodControls::default(),
+            effects: EffectControls::default(),
             cost: OverlayCost::default(),
             gpu_timing: false,
             max_texture_side: gpu.caps().limits.max_texture_dimension_2d as usize,
@@ -276,6 +283,12 @@ impl DebugOverlay {
         &mut self.day
     }
 
+    /// The screen effects' developer controls. The app calls [`EffectControls::apply`] before
+    /// every fixed step, shown or not.
+    pub fn effect_controls(&mut self) -> &mut EffectControls {
+        &mut self.effects
+    }
+
     /// Turns the executor's graph report and GPU timing on while the overlay shows them, and GPU
     /// timing also while `app_timing` says the app reads it (dynamic resolution,
     /// `Quality::wants_gpu_timing`), so the two never switch it off under each other. Call it
@@ -330,9 +343,10 @@ impl DebugOverlay {
             gpu_timing: self.gpu_timing,
         };
         let ctx = self.ctx.clone();
-        let (memory, time, day) = (&mut self.memory, &mut self.time, &mut self.day);
+        let (memory, time, day, effects) =
+            (&mut self.memory, &mut self.time, &mut self.day, &mut self.effects);
         let mut hide = false;
-        let output = ctx.run_pass(raw, |ctx| hide = ui::show(ctx, memory, time, day, &view));
+        let output = ctx.run_pass(raw, |ctx| hide = ui::show(ctx, memory, time, day, effects, &view));
 
         self.wants_keyboard = ctx.text_edit_focused();
         // Text input follows focus alone: egui reports the field's area only on frames it lays

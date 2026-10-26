@@ -50,6 +50,11 @@ pub struct PostParams {
     /// pass (M1 P2). Off by default: after temporal AA it moves the image away from 4× MSAA
     /// and draws halos along outlines (spec §5.12, "As built (M1 R7)" and "(M1 P2)").
     pub sharpening: f32,
+    /// Combat's screen effects for this frame (M1 P3; look pillar 8), resolved by the world's
+    /// effect stack from what gameplay pushed: radial blur, chromatic aberration, inversion, a
+    /// duotone and speed lines. [`PostEffects::NONE`], the default, draws none and costs
+    /// nothing.
+    pub effects: PostEffects,
 }
 
 impl Default for PostParams {
@@ -77,6 +82,7 @@ impl Default for PostParams {
             gradients: [GradientLayer::NONE; MAX_GRADIENT_LAYERS],
             lens_flare: LensFlare::NONE,
             sharpening: 0.0,
+            effects: PostEffects::NONE,
         }
     }
 }
@@ -84,8 +90,9 @@ impl Default for PostParams {
 impl PostParams {
     /// These parameters without the compositing layers (M1 P2): no diffusion glow, characters
     /// blooming as the world does, no gradient layers or lens flare, a black vignette and no
-    /// sharpening. Post draws them exactly as it did before the layers existed, through the
-    /// same shader code (the fused pass's plain variant).
+    /// sharpening. Without effects, post draws them exactly as it did before the layers existed,
+    /// through the same shader code (the fused pass's plain variant). The screen effects
+    /// ([`Self::effects`], M1 P3) stay: they are gameplay's, not the look's.
     pub fn plain(self) -> Self {
         Self {
             vignette: Vignette { color: Vec3::ZERO, ..self.vignette },
@@ -352,4 +359,169 @@ pub struct LensFlare {
 impl LensFlare {
     /// No flare.
     pub const NONE: Self = Self { intensity: 0.0, color: Vec3::ONE };
+}
+
+/// Combat's screen effects for one frame (M1 P3; look pillar 8, "combat screen grammar"): the
+/// radial blurs, impact frames and speed lines of Wuthering Waves' and Zenless Zone Zero's hits,
+/// drawn in the fused pass on every tier, over the compositing layers. They are resolved values:
+/// the world's effect stack (`sapphire_world::screen_effects`) plays each effect gameplay pushed
+/// over its own timeline and writes what shows this frame here (rule R4).
+///
+/// Each effect's strength, amount or opacity at 0 turns it off; [`Self::NONE`], the default, has
+/// none, and post then draws exactly what it did before effects existed, through the same
+/// pipelines. Positions are texture coordinates: (0, 0) the top left, (1, 1) the bottom right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostEffects {
+    pub radial_blur: RadialBlur,
+    pub chromatic_aberration: ChromaticAberration,
+    pub inversion: Inversion,
+    pub duotone: Duotone,
+    pub speed_lines: SpeedLines,
+}
+
+impl PostEffects {
+    /// No effect.
+    pub const NONE: Self = Self {
+        radial_blur: RadialBlur::NONE,
+        chromatic_aberration: ChromaticAberration::NONE,
+        inversion: Inversion::NONE,
+        duotone: Duotone::NONE,
+        speed_lines: SpeedLines::NONE,
+    };
+}
+
+impl Default for PostEffects {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// How much of an effect shows on the world and how much on characters: the character mask
+/// (scene color's alpha; the post module's docs) tells them apart per pixel. Each is 0 to 1;
+/// blending effects blends these too.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectCoverage {
+    pub world: f32,
+    pub characters: f32,
+}
+
+impl EffectCoverage {
+    /// On every pixel alike: no mask read.
+    pub const EVERYWHERE: Self = Self { world: 1.0, characters: 1.0 };
+    /// On the world, characters left as they are ("keep characters colored", speed lines behind
+    /// characters).
+    pub const WORLD: Self = Self { world: 1.0, characters: 0.0 };
+    /// On characters alone.
+    pub const CHARACTERS: Self = Self { world: 0.0, characters: 1.0 };
+}
+
+/// A zoom blur toward a point on screen (an impact's center, the camera's heading): each pixel
+/// averages the frame along the line from it toward `center`, so the frame streaks outward from
+/// it, more so farther out. The fused pass's taps per pixel are the tier's
+/// ([`PostEffectSettings::radial_blur_taps`](crate::PostEffectSettings::radial_blur_taps)).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RadialBlur {
+    pub center: Vec2,
+    /// How far toward the center each pixel's taps reach, as a share of its distance from it: 0
+    /// is no blur, 0.1 a strong one; at most 1.
+    pub strength: f32,
+}
+
+impl RadialBlur {
+    pub const NONE: Self = Self { center: Vec2::splat(0.5), strength: 0.0 };
+}
+
+/// Chromatic aberration, a lens's colored fringes or a hit's RGB split: red is sampled nearer to
+/// `center` and blue farther from it than green, by a split growing with the square of the
+/// distance from it, so the middle stays clean and red fringes face outward. With the radial
+/// blur on too, the split spreads the colors along the blur's streaks instead (a spectral zoom).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChromaticAberration {
+    pub center: Vec2,
+    /// The split half a frame's diagonal from the center (at the corners, for a centered one),
+    /// as a share of that distance: 0.02 is a subtle fringe, 0.1 a hard split; at most 0.25.
+    pub strength: f32,
+}
+
+impl ChromaticAberration {
+    pub const NONE: Self = Self { center: Vec2::splat(0.5), strength: 0.0 };
+}
+
+/// The frame's display values inverted, `1 − c`: the negative impact frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inversion {
+    /// 0 is none and 1 fully inverted.
+    pub amount: f32,
+    pub coverage: EffectCoverage,
+}
+
+impl Inversion {
+    pub const NONE: Self = Self { amount: 0.0, coverage: EffectCoverage::EVERYWHERE };
+}
+
+/// A duotone: the frame's display luminance mapped from `dark` to `light`, the two-tone impact
+/// frame (black and white, or black and red), usually with characters kept in color.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Duotone {
+    /// 0 is none and 1 the duotone alone.
+    pub amount: f32,
+    /// Linear RGB for the dark side and the light side.
+    pub dark: Vec3,
+    pub light: Vec3,
+    /// The display luminance (of sRGB-encoded values, 0 to 1) where the frame turns from dark
+    /// to light.
+    pub threshold: f32,
+    /// The width of that turn: near 0 a hard two-tone cut, 1 a smooth gradient map.
+    pub softness: f32,
+    pub coverage: EffectCoverage,
+}
+
+impl Duotone {
+    pub const NONE: Self = Self {
+        amount: 0.0,
+        dark: Vec3::ZERO,
+        light: Vec3::ONE,
+        threshold: 0.5,
+        softness: 0.1,
+        coverage: EffectCoverage::EVERYWHERE,
+    };
+}
+
+/// Speed lines (anime's focus lines): thin wedges radiating from `center`, sharp at their inner
+/// tips, around a clear area, drawn over the frame's display values in their own color.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeedLines {
+    /// 0 is none and 1 the lines in their full color.
+    pub opacity: f32,
+    pub center: Vec2,
+    /// Lines around the center: the circle is split into this many slots, one line in each
+    /// (1 to 1024).
+    pub count: u32,
+    /// A line's width at its outer end, as a share of its slot (0 to 1); each line takes 35% to
+    /// 100% of it.
+    pub width: f32,
+    /// The clear radius around the center, in frame heights, inside which no line reaches.
+    pub inner_radius: f32,
+    /// How far past the clear radius lines' tips scatter, in frame heights.
+    pub spread: f32,
+    /// Linear RGB.
+    pub color: Vec3,
+    /// Picks the lines' widths, places and tips: the effect stack moves it a few times a second,
+    /// as hand-drawn lines are redrawn.
+    pub seed: u32,
+    pub coverage: EffectCoverage,
+}
+
+impl SpeedLines {
+    pub const NONE: Self = Self {
+        opacity: 0.0,
+        center: Vec2::splat(0.5),
+        count: 96,
+        width: 0.3,
+        inner_radius: 0.3,
+        spread: 0.3,
+        color: Vec3::ONE,
+        seed: 0,
+        coverage: EffectCoverage::EVERYWHERE,
+    };
 }

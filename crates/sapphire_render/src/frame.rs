@@ -47,9 +47,8 @@ const RING_SIZE: usize = 3;
 /// # Later milestones
 ///
 /// The packet grows with the systems that feed it (spec §4.6): VFX spawns and emitter
-/// parameters, gameplay-triggered post effects in `post` (P3), the UI draw list, and debug
-/// draws (dev builds). Shadow cascades (R4) and UI 3D insets add views after the main
-/// camera.
+/// parameters, the UI draw list, and debug draws (dev builds). Shadow cascades (R4) and UI 3D
+/// insets add views after the main camera.
 ///
 /// Some scene constants are carried for the packages that will read them and drawn from
 /// nothing yet: [`Self::fog`] (W3) and [`Self::weather`] (the wet surface model). Each type's
@@ -104,8 +103,9 @@ pub struct FramePacket {
     pub time_seconds: f64,
     /// Exposure, bloom, tone curve, grade and vignette, and the compositing layers over them
     /// (M1 P2: the diffusion glow, characters' bloom, gradient layers, the lens flare, the
-    /// vignette's tint and the player's sharpening). Defaults to Sapphire's default look, without
-    /// the layers.
+    /// vignette's tint and the player's sharpening), and the screen effects over them (M1 P3:
+    /// [`PostParams::effects`], the world's effect stack resolved for this frame). Defaults to
+    /// Sapphire's default look, without the layers or any effect.
     pub post: PostParams,
     /// Point and spot lights. When more are visible than the renderer's
     /// [`RenderSettings::max_lights`](crate::RenderSettings::max_lights) allows, it keeps the

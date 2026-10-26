@@ -31,7 +31,7 @@ Commands:
   watch
       Push what changes, until interrupted: the packs of the device's cook in --content when
       `cargo xtask content --cook <cook>` rewrites them, the renderer's WGSL sources, the default
-      day's timeline and the character light rig presets.
+      day's timeline, the character light rig presets and the screen effect presets.
 
 Options:
   --addr <host:port>    The device to connect to.
@@ -281,7 +281,7 @@ fn watch(target: &mut Target, content: Option<&Path>) -> anyhow::Result<()> {
     let shaders = watcher.watch(&shader_dir)?;
     eprintln!("watching {}", shader_dir.display());
     let mut documents: Vec<(WatchId, OsString, PathBuf)> = Vec::new();
-    for path in [sources::default_day(), sources::default_light_rigs()] {
+    for path in [sources::default_day(), sources::default_light_rigs(), sources::default_screen_effects()] {
         let dir = path.parent().context("a document is in a directory")?;
         let name = path.file_name().context("a document is a file")?.to_owned();
         documents.push((watcher.watch(dir)?, name, path.clone()));

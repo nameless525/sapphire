@@ -4,8 +4,11 @@
 // clocks (spec §3).
 //
 // - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`,
-//   `sky`, `environment` and `shadows`, plus `frame_rate` and `gpu_frame_ms` as dynamic
-//   resolution's targets.
+//   `sky`, `environment`, `shadows` and `post_effects`, plus `frame_rate` and `gpu_frame_ms` as
+//   dynamic resolution's targets.
+// - `post_effects` (M1 P3): the radial blur's taps per pixel along its streak, in groups of four.
+//   A pixel's taps start at a per-pixel offset, so fewer taps read as finer grain rather than as
+//   copies of the frame; phones take 8 (spec §5.12's P3 note has the costs).
 // - `sky` (M1 W2): the sky cube's size and frames between face updates, and the cirrus layer.
 //   Both desktop tiers draw the same sky, so golden images match on every desktop GPU.
 // - `environment` (M1 W4): the environment shader's specular model. Desktop tiers take the full
@@ -77,6 +80,7 @@
                 lod_bias: 0.0,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full),
+                post_effects: (radial_blur_taps: 16),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -106,6 +110,7 @@
                 lod_bias: 0.5,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full),
+                post_effects: (radial_blur_taps: 12),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -136,6 +141,7 @@
                 lod_bias: 0.0,
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
                 environment: (specular: Approximate),
+                post_effects: (radial_blur_taps: 8),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -168,6 +174,7 @@
                 // The world's highlights go first: a 30 fps phone spends its budget on the
                 // characters and the frame's atmosphere.
                 environment: (specular: Off),
+                post_effects: (radial_blur_taps: 8),
             ),
         ],
     ),

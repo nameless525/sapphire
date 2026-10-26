@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_world"
-description = "The world framework. For now, time of day (one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks) and the character light rig's presets."
+description = "The world framework. For now, time of day (one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks), the character light rig's presets, and the stack of combat's screen effects."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

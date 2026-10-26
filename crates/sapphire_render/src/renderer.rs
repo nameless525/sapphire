@@ -30,7 +30,7 @@ use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT,
     Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
 };
-use crate::post::{self, PostProcess, PostStats, SunOnScreen};
+use crate::post::{self, PostEffectSettings, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::shadows::{ShadowSettings, ShadowStats, Shadows};
@@ -107,6 +107,9 @@ pub struct RenderSettings {
     /// and each character's own shadow. `None` draws none: no maps, no passes, and shaders
     /// compiled as they were without shadows.
     pub shadows: Option<ShadowSettings>,
+    /// What the screen effects spend (M1 P3, the [`post`](crate::post) module): the radial
+    /// blur's taps per pixel.
+    pub post_effects: PostEffectSettings,
 }
 
 impl Default for RenderSettings {
@@ -123,6 +126,7 @@ impl Default for RenderSettings {
             sky: SkySettings::default(),
             environment: EnvironmentSettings::default(),
             shadows: None,
+            post_effects: PostEffectSettings::default(),
         }
     }
 }
@@ -421,7 +425,8 @@ impl Renderer {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
         let shaders = ShaderSources::compiled_in();
-        let post = PostProcess::new(gpu, color_format, settings.bloom_levels, &shaders)?;
+        let post =
+            PostProcess::new(gpu, color_format, settings.bloom_levels, settings.post_effects, &shaders)?;
 
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);

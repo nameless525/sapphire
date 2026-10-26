@@ -201,7 +201,7 @@ fn gpu_skinning_matches_the_cpu_reference() {
             })
             .collect();
         let packet = packets.begin();
-        packet.views.push(ViewData { camera: camera(1.0) });
+        packet.views.push(ViewData::new(camera(1.0)));
         for (index, (handle, (palette, weights))) in handles.iter().zip(&poses).enumerate() {
             let id = InstanceId(index as u64);
             if round == 0 {
@@ -329,7 +329,7 @@ fn prepass_depth_equals_the_main_pass_depth() {
     let (character, prop) = (upload(&mut renderer, &character), upload(&mut renderer, &prop));
     let mut packets = FramePacketRing::new();
     let packet = packets.begin();
-    packet.views.push(ViewData { camera: camera(size.0 as f32 / size.1 as f32) });
+    packet.views.push(ViewData::new(camera(size.0 as f32 / size.1 as f32)));
     let tilt = Mat4::from_rotation_z(0.3);
     packet.instances.changed.push(MeshInstance { id: InstanceId(1), mesh: character, transform: tilt });
     packet.instances.changed.push(MeshInstance { id: InstanceId(2), mesh: prop, transform: Mat4::IDENTITY });

@@ -32,6 +32,7 @@ use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
+use crate::temporal::{self, Temporal, TemporalInputs, TemporalPipelines, TemporalStats};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -41,7 +42,8 @@ use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 /// bytes in M0. Bigger frames fall back to a dedicated buffer per upload.
 const UPLOAD_CHUNK_SIZE: u64 = 256 * 1024;
 
-/// Multisampling of the main pass. Hull outlines are only a few pixels wide, so they need it.
+/// Multisampling of the main pass. Hull outlines are only a few pixels wide, so they need it,
+/// or temporal AA ([`RenderSettings::temporal`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub enum Msaa {
@@ -74,6 +76,11 @@ impl Msaa {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSettings {
     pub msaa: Msaa,
+    /// Temporal AA and upsampling (M1 R7, the [`temporal`](crate::temporal) module): the
+    /// projection jitters, and a resolve accumulates the frames at the target's size, which
+    /// also upsamples a scene drawn below render scale 1. The desktop tiers turn it on with MSAA
+    /// off; it composes with MSAA, which then resolves first.
+    pub temporal: bool,
     /// Bloom's half-size levels: 5 runs from ½ to 1/32 of the scene (spec §5.12), and quality
     /// tiers cut it on Mobile-Low. 0 turns bloom off; more than
     /// [`MAX_BLOOM_LEVELS`](crate::MAX_BLOOM_LEVELS) is clamped.
@@ -90,10 +97,13 @@ pub struct RenderSettings {
 }
 
 impl Default for RenderSettings {
-    /// The desktop tiers' settings, which every golden image renders with.
+    /// The desktop tiers' settings with 4× MSAA instead of temporal AA: what the golden scenes
+    /// from before M1 R7 pin (`--aa msaa`) and most GPU tests draw with, since a single frame
+    /// shows them completely.
     fn default() -> Self {
         Self {
             msaa: Msaa::default(),
+            temporal: false,
             bloom_levels: 5,
             light_path: LightPath::Clustered,
             max_lights: 64,
@@ -221,6 +231,8 @@ pub struct RenderStats {
     /// Times new shader sources rebuilt pipelines since the renderer was created
     /// ([`Renderer::set_shader_sources`]).
     pub shader_rebuilds: u32,
+    /// Temporal AA's jitter, sizes and history resets; all zero when it is off.
+    pub temporal: TemporalStats,
 }
 
 /// What [`Renderer::set_shader_sources`] rebuilt.
@@ -237,22 +249,29 @@ pub struct ShaderUpdate {
 /// scale), single-sampled, and can be sampled and copied.
 ///
 /// A prepass runs only if a later pass reads one of its outputs; the frame graph culls it
-/// otherwise, at no GPU cost. Their consumers arrive with rim light and hair shadows (C2, C5),
-/// TAA (R7) and outlines under TAA (P1).
+/// otherwise, at no GPU cost. Temporal AA (M1 R7) reads both; rim light and hair shadows (C2,
+/// C5) and outlines under TAA (P1) come later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepassTargets {
     /// The character prepass: depth of the skinned and morphed instances alone, every tier
     /// (`Depth32Float`, reverse-Z, cleared to 0).
     pub character_depth: TextureId,
-    /// The scene prepass: depth of every opaque instance (`Depth32Float`).
+    /// The scene prepass: depth of every opaque instance (`Depth32Float`). Under temporal AA
+    /// with MSAA it is one of a pair of persistent textures, since the next frame reads it as
+    /// its last (without MSAA the main pass's depth is kept instead).
     pub depth: TextureId,
     /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0).
     pub normals: TextureId,
     /// The scene prepass: each pixel's motion since the last drawn frame, in texture
     /// coordinates (x right, y down; it was at `uv - velocity`), from the camera's motion, the
     /// instance's transform and, for skinned and morphed instances, their skinned positions
-    /// (`Rg16Float`). Pixels no geometry covers stay 0; TAA reprojects those from depth.
+    /// (`Rg16Float`). Pixels no geometry covers stay 0; TAA reprojects those from depth. It
+    /// ignores the jitter, so geometry that holds still has exactly 0.
     pub velocity: TextureId,
+    /// With temporal AA, the responsive mask (`R8Unorm`): 1 where a character is the nearest
+    /// surface, from the two prepasses' depths. The resolve keeps less history there and clips
+    /// it tighter; an external upscaler takes it as its reactive mask.
+    pub responsive: Option<TextureId>,
     /// The main pass's depth, stored for the tests that compare it with the prepasses'.
     #[cfg(test)]
     pub(crate) main_depth: TextureId,
@@ -302,10 +321,12 @@ pub struct Renderer {
     /// Skinned and morphed instances' outputs and the pass that writes them.
     skinning: Skinning,
     post: PostProcess,
+    /// Temporal AA's history and passes, with [`RenderSettings::temporal`].
+    temporal: Option<Temporal>,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
-    /// The main view's `proj × view` in the last recorded frame, for velocity.
+    /// The main view's unjittered `proj × view` in the last recorded frame, for velocity.
     previous_clip_from_world: Option<Mat4>,
     /// Kept for the pipelines built when meshes arrive.
     pipeline_cache: Option<wgpu::PipelineCache>,
@@ -323,6 +344,8 @@ pub struct Renderer {
 #[derive(Debug)]
 struct PreparedFrame {
     camera: CameraData,
+    /// The view cut in this frame, or in a prepared frame that was never recorded since.
+    cut: bool,
     constants: FrameUniforms,
 }
 
@@ -378,7 +401,9 @@ impl Renderer {
         for face in 0..sky::CUBE_FACES {
             let camera = cube_face_camera(face as usize);
             let size = (settings.sky.cube_size, settings.sky.cube_size);
-            let view = ViewUniforms::new(&camera, size, camera.proj * camera.view);
+            // Never jittered: the cube is sampled by direction, and only the main view's samples
+            // are accumulated by temporal AA.
+            let view = ViewUniforms::new(&camera, size, camera.proj * camera.view, [0.0; 2]);
             let offset = u64::from(view_stride * (1 + face));
             gpu.queue().write_buffer(&view_uniforms, offset, bytemuck::bytes_of(&view));
         }
@@ -405,11 +430,13 @@ impl Renderer {
         let scene = GpuScene::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &materials);
         let skinning = Skinning::new(&device);
+        let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         tracing::info!(
             target: LOG_TARGET,
             ?color_format,
             msaa = samples,
+            temporal = settings.temporal,
             light_path = ?settings.light_path,
             max_lights = settings.max_lights,
             "renderer created"
@@ -436,13 +463,17 @@ impl Renderer {
             scene_bind_group,
             skinning,
             post,
+            temporal,
             uploads,
             prepared: None,
             previous_clip_from_world: None,
             pipeline_cache: gpu.pipeline_cache().cloned(),
             shaders,
             edited_shaders: false,
-            stats: RenderStats::default(),
+            stats: RenderStats {
+                temporal: TemporalStats { enabled: settings.temporal, ..TemporalStats::default() },
+                ..RenderStats::default()
+            },
             #[cfg(test)]
             readable_depth: false,
         })
@@ -729,6 +760,11 @@ impl Renderer {
         pipelines += if sky.is_some() { SkyPipelines::COUNT } else { 0 };
         let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
         pipelines += if post.is_some() { 4 } else { 0 };
+        let temporal = changed
+            .contains(&Program::Temporal)
+            .then(|| self.temporal.as_ref().map(|temporal| temporal.rebuilt_pipelines(sources)))
+            .flatten();
+        pipelines += if temporal.is_some() { TemporalPipelines::COUNT } else { 0 };
         let clusters = changed
             .contains(&Program::Clusters)
             .then(|| self.lights.rebuilt_cluster_pipeline(device, sources))
@@ -751,6 +787,9 @@ impl Renderer {
         }
         if let Some(post) = post {
             self.post.set_pipelines(post);
+        }
+        if let (Some(pipelines), Some(temporal)) = (temporal, self.temporal.as_mut()) {
+            temporal.set_pipelines(pipelines);
         }
         if let Some(clusters) = clusters {
             self.lights.set_cluster_pipeline(clusters);
@@ -844,11 +883,15 @@ impl Renderer {
             );
         }
 
-        // Without a main view the frame has nothing to draw.
+        // Without a main view the frame has nothing to draw. A cut in a frame that was prepared
+        // but never recorded still applies to the next one recorded.
         let lights = self.lights.uniforms();
-        self.prepared = packet
-            .main_view()
-            .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet, lights) });
+        let unrecorded_cut = self.prepared.as_ref().is_some_and(|prepared| prepared.cut);
+        self.prepared = packet.main_view().map(|view| PreparedFrame {
+            camera: view.camera,
+            cut: view.cut || unrecorded_cut,
+            constants: FrameUniforms::new(packet, lights),
+        });
         self.sky.prepare(packet, &self.materials);
         self.post.prepare(queue, &packet.post);
         let counts = self.scene.draw_counts();
@@ -889,32 +932,49 @@ impl Renderer {
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
     /// textures (HDR scene color, MSAA color, depth, the prepass targets, the bloom chain) are
     /// transient graph textures sized from it at the render scale ([`Self::set_render_scale`]),
-    /// so any size works, including one that changed since the last frame.
+    /// so any size works, including one that changed since the last frame. Temporal AA's history
+    /// and kept depth are persistent textures of its own, made again when the sizes change.
     ///
     /// The surface, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color and, below
-    /// scale 1, upsamples it to the target in its final pass (see the `post` module). On the
-    /// clustered light path, frames with local lights first bin them in a compute pass (see the
-    /// `lights` module); frames that pose skinned or morphed instances skin them first (see the
-    /// `skinning` module). The prepasses run only if a later pass reads what they write
-    /// ([`PrepassTargets`]).
+    /// scale 1, upsamples it to the target in its final pass (see the `post` module). Under
+    /// temporal AA the projection is jittered, the main pass keeps its depth, and the
+    /// [`temporal`](crate::temporal) resolve accumulates the scene at the target's size before
+    /// post reads it. On the clustered light path, frames with local lights first bin them in a
+    /// compute pass (see the `lights` module); frames that pose skinned or morphed instances skin
+    /// them first (see the `skinning` module). The prepasses run only if a later pass reads what
+    /// they write ([`PrepassTargets`]), as temporal AA does.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
-        let PreparedFrame { camera, constants } = self.prepared.take()?;
+        let PreparedFrame { camera, cut, constants } = self.prepared.take()?;
         let output = graph.size(target);
         if output.0 == 0 || output.1 == 0 {
             return None;
         }
         // The scene renders at the render scale; the views, attachments, prepass targets and
-        // bloom follow it, and only post's final pass writes the target's size.
+        // bloom follow it, and only post's final pass (or temporal AA's resolve, which
+        // upsamples) writes the target's size.
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes);
+        // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
+        // the camera counts as unmoved.
         let clip_from_world = camera.proj * camera.view;
-        let previous_clip_from_world =
-            self.previous_clip_from_world.replace(clip_from_world).unwrap_or(clip_from_world);
+        let previous_clip_from_world = match self.previous_clip_from_world.replace(clip_from_world) {
+            Some(previous) if !cut => previous,
+            _ => clip_from_world,
+        };
+        let temporal_frame = self.temporal.as_mut().map(|temporal| {
+            let reproject = temporal::previous_clip_from_clip(previous_clip_from_world, clip_from_world);
+            temporal.begin(size, output, cut, self.post.exposure(), reproject)
+        });
+        if let Some(temporal) = &self.temporal {
+            self.stats.temporal = temporal.stats();
+        }
+        let jitter = temporal_frame.map_or([0.0; 2], |frame| frame.jitter);
+        let temporal_reset = temporal_frame.is_some_and(|frame| frame.reset.is_some());
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -930,7 +990,6 @@ impl Renderer {
         let msaa_color =
             (samples > 1).then(|| graph.create_texture("msaa color", attachment(SCENE_COLOR_FORMAT)));
         let (depth_desc, depth_store) = self.main_depth(attachment(DEPTH_FORMAT));
-        let depth = graph.create_texture("depth", depth_desc);
         let scene_color = graph.create_texture(
             "scene color",
             TransientDesc {
@@ -947,14 +1006,6 @@ impl Renderer {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             ..attachment(format)
-        };
-        let targets = PrepassTargets {
-            character_depth: graph.create_texture("character depth", prepass_target(DEPTH_FORMAT)),
-            depth: graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
-            normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
-            velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
-            #[cfg(test)]
-            main_depth: depth,
         };
 
         // The uploads need the staging belt exclusively; everything else is shared.
@@ -975,9 +1026,35 @@ impl Renderer {
             ref scene_bind_group,
             ref skinning,
             ref mut post,
+            ref mut temporal,
             ref mut uploads,
             ..
         } = *self;
+        // Temporal AA reads what the main pass drew, and keeps it for the next frame's
+        // disocclusion test, in one of a persistent pair it imports along with its history: the
+        // main pass's depth, single-sampled and outline hulls included, or under MSAA the scene
+        // prepass's.
+        let temporal = temporal.as_mut().map(Temporal::split_for_record);
+        let temporal_targets = temporal.as_ref().map(|(textures, _)| textures.import(graph, temporal_reset));
+        let kept = temporal_targets.map(|temporal| temporal.depth);
+        let (depth, depth_store) = match kept {
+            Some(kept) if samples == 1 => (kept, wgpu::StoreOp::Store),
+            _ => (graph.create_texture("depth", depth_desc), depth_store),
+        };
+        let targets = PrepassTargets {
+            character_depth: graph.create_texture("character depth", prepass_target(DEPTH_FORMAT)),
+            depth: match kept {
+                Some(kept) if samples > 1 => kept,
+                _ => graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
+            },
+            normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
+            velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
+            responsive: temporal
+                .is_some()
+                .then(|| graph.create_texture("responsive mask", temporal::responsive_desc(size))),
+            #[cfg(test)]
+            main_depth: depth,
+        };
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
         let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
@@ -991,10 +1068,15 @@ impl Renderer {
             skinned: skinning.outputs(),
             materials: material_records,
         };
-        let (post_uniforms, post_buffer) = post.uniforms(size != output);
-        // A handle, so `post` can be borrowed mutably for its passes below.
+        // Temporal AA's resolve writes the target's size, so post upsamples only without it.
+        let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output);
+        // Handles, so `post` and `temporal` can be borrowed mutably for their passes below.
         let post_buffer = post_buffer.clone();
-        let view = ViewUniforms::new(&camera, size, previous_clip_from_world);
+        let temporal_upload = temporal.as_ref().map(|(_, passes)| {
+            let (uniforms, buffer) = passes.uniforms();
+            (uniforms, buffer.clone())
+        });
+        let view = ViewUniforms::new(&camera, size, previous_clip_from_world, jitter);
 
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
@@ -1010,6 +1092,9 @@ impl Renderer {
                 skinning.upload(uploads, ctx.encoder);
             }
             upload(uploads, ctx.encoder, &post_buffer, bytemuck::bytes_of(&post_uniforms));
+            if let Some((uniforms, buffer)) = &temporal_upload {
+                upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
+            }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
         // Also side effects: the passes after read the buffers they write.
@@ -1040,8 +1125,8 @@ impl Renderer {
             pass.set_index_buffer(meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
         };
 
-        // The prepasses: nothing reads them yet, so the graph culls them unless a pass added
-        // after the renderer's does (see `PrepassTargets`).
+        // The prepasses: temporal AA reads them; without it the graph culls them unless a pass
+        // added after the renderer's does (see `PrepassTargets`).
         graph.add_pass("character prepass").write(targets.character_depth).record(move |ctx| {
             let mut pass = begin_prepass(ctx, "character prepass", targets.character_depth, &[], labels);
             if let Some(pipeline) = pipelines.character_prepass()
@@ -1150,17 +1235,35 @@ impl Renderer {
             }
         });
 
-        post.record(graph, scene_color, target, labels);
+        // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
+        let resolved = match (temporal, temporal_targets, targets.responsive) {
+            (Some((textures, passes)), Some(temporal_targets), Some(responsive)) => {
+                let inputs = TemporalInputs {
+                    color: scene_color,
+                    depth: targets.depth,
+                    velocity: targets.velocity,
+                    responsive,
+                    drawn_depth: temporal_targets.depth,
+                };
+                let slot = textures.write_slot();
+                passes.record(graph, targets.character_depth, inputs, temporal_targets, slot, labels);
+                temporal_targets.output
+            }
+            _ => scene_color,
+        };
+        post.record(graph, resolved, target, labels);
         Some(targets)
     }
 
-    /// The main pass's depth and how it is stored: kept in tile memory and discarded.
+    /// The main pass's depth, where it is a transient (temporal AA keeps a single-sampled one,
+    /// see `record`), and how it is stored: kept in tile memory and discarded.
     #[cfg(not(test))]
     fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
         (desc, wgpu::StoreOp::Discard)
     }
 
-    /// The main pass's depth and how it is stored: stored and copyable when a test reads it.
+    /// The main pass's depth, where it is a transient, and how it is stored: stored and copyable
+    /// when a test reads it.
     #[cfg(test)]
     fn main_depth(&self, desc: TransientDesc) -> (TransientDesc, wgpu::StoreOp) {
         if !self.readable_depth {
@@ -1208,6 +1311,12 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn skinning(&self) -> &Skinning {
         &self.skinning
+    }
+
+    /// Temporal AA's state, for tests that read its history back.
+    #[cfg(test)]
+    pub(crate) fn temporal(&self) -> Option<&Temporal> {
+        self.temporal.as_ref()
     }
 
     /// The materials, for tests that read their buffers back.

@@ -2,7 +2,7 @@
 //! in `shaders.rs` compare sizes against naga's layout of the real shader source.
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat3, Mat4, Vec3};
+use glam::{Mat3, Mat4, Vec2, Vec3};
 
 use crate::lights::LightUniforms;
 use crate::{CameraData, FramePacket};
@@ -70,41 +70,76 @@ pub(crate) fn wrap_time(seconds: f64) -> f32 {
 
 /// One view: a camera rendering into a target of a given size (WGSL `ViewUniforms`, group 1,
 /// bound with a dynamic offset).
+///
+/// Under temporal AA (M1 R7) the projection is jittered by a sub-pixel offset each frame, and
+/// every matrix that maps to clip space carries it, so every pass rasterizes the same jittered
+/// samples. Velocity must not move with the jitter, so the view also keeps its unjittered
+/// `clip_from_world`, and `previous_clip_from_world` is unjittered too.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct ViewUniforms {
     pub view_from_world: [[f32; 4]; 4],
+    /// Jittered under temporal AA.
     pub clip_from_view: [[f32; 4]; 4],
+    /// Jittered under temporal AA.
     pub clip_from_world: [[f32; 4]; 4],
+    /// The inverse of the jittered `clip_from_world`.
     pub world_from_clip: [[f32; 4]; 4],
-    /// `clip_from_world` in the last frame this view drew, for velocity.
+    /// The unjittered `clip_from_world` in the last frame this view drew, for velocity.
     pub previous_clip_from_world: [[f32; 4]; 4],
     /// xyz: camera position.
     pub position: [f32; 4],
     /// xy: target size in pixels; zw: reciprocals.
     pub viewport: [f32; 4],
+    /// `clip_from_world` without the jitter: what velocity compares with the last frame's.
+    pub unjittered_clip_from_world: [[f32; 4]; 4],
+    /// xy: this frame's jitter in pixels, x right and y down (the image moves by it); zw: the
+    /// same in NDC. Zero without temporal AA.
+    pub jitter: [f32; 4],
 }
 
 impl ViewUniforms {
-    /// The view from `camera`, which drew the last frame with `previous_clip_from_world` (its
-    /// own `proj × view` on the first frame).
+    /// The view from `camera` into a target of `size` pixels, jittered by `jitter` pixels (x
+    /// right, y down; zero without temporal AA), which drew the last frame with the unjittered
+    /// `previous_clip_from_world` (its own `proj × view` on the first frame).
     pub(crate) fn new(
         camera: &CameraData,
         (width, height): (u32, u32),
         previous_clip_from_world: Mat4,
+        jitter: [f32; 2],
     ) -> Self {
-        let clip_from_world = camera.proj * camera.view;
         let (width, height) = (width as f32, height as f32);
+        let clip_from_view = jittered_projection(camera.proj, jitter, (width, height));
+        let clip_from_world = clip_from_view * camera.view;
+        let ndc = jitter_ndc(jitter, (width, height));
         Self {
             view_from_world: camera.view.to_cols_array_2d(),
-            clip_from_view: camera.proj.to_cols_array_2d(),
+            clip_from_view: clip_from_view.to_cols_array_2d(),
             clip_from_world: clip_from_world.to_cols_array_2d(),
             world_from_clip: clip_from_world.inverse().to_cols_array_2d(),
             previous_clip_from_world: previous_clip_from_world.to_cols_array_2d(),
             position: camera.position.extend(1.0).to_array(),
             viewport: [width, height, width.recip(), height.recip()],
+            unjittered_clip_from_world: (camera.proj * camera.view).to_cols_array_2d(),
+            jitter: [jitter[0], jitter[1], ndc.x, ndc.y],
         }
     }
+}
+
+/// `jitter` pixels (x right, y down) in NDC for a target of `size` pixels: NDC spans 2 units
+/// across the target, and its y runs up.
+fn jitter_ndc(jitter: [f32; 2], (width, height): (f32, f32)) -> Vec2 {
+    Vec2::new(2.0 * jitter[0] / width, -2.0 * jitter[1] / height)
+}
+
+/// `proj` with its image moved by `jitter` pixels: a translation in clip space by the NDC offset
+/// times w, which leaves depth and every other entry of a perspective projection alone (its
+/// focal lengths, which outline widths read, included). Exactly `proj` for a zero jitter.
+pub(crate) fn jittered_projection(proj: Mat4, jitter: [f32; 2], size: (f32, f32)) -> Mat4 {
+    if jitter == [0.0, 0.0] {
+        return proj;
+    }
+    Mat4::from_translation(jitter_ndc(jitter, size).extend(0.0)) * proj
 }
 
 /// One mesh instance (WGSL `InstanceData`, storage buffer indexed by instance). 192 bytes.

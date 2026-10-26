@@ -216,6 +216,14 @@ impl Scene {
         }
     }
 
+    /// Sets the turntable's speed in radians per second (`--spin`): fast spins show how edges and
+    /// outlines hold up in motion under temporal AA.
+    pub fn set_spin(&mut self, speed: f32) {
+        if let Some(mut turntable) = self.ecs.world_mut().get_mut::<Turntable>(self.character) {
+            turntable.speed = speed;
+        }
+    }
+
     /// Sets the hour, and runs a day in `day_length` seconds of world time (or stops the cycle
     /// with `None`).
     pub fn set_day(&mut self, hours: f32, day_length: Option<f32>) {
@@ -345,7 +353,7 @@ impl Scene {
             let packet = extract.begin();
             let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
-                packet.views.push(ViewData { camera: camera.camera_data(aspect) });
+                packet.views.push(ViewData::new(camera.camera_data(aspect)));
             }
             let probe = camera.eye();
             let clock = &world.resource::<WorldClock>().0;

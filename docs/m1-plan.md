@@ -106,6 +106,8 @@ Each package is one pull request, or a few, into `main`. Size: **S** is a day or
 | R6 | **Quality tiers:** `tiers.ron` (render scale, cascades, AA, bloom levels, AO, fog, particles, lights) and the dynamic-resolution hook. | S | R1 | |
 | R7 | **AA:** TAA with velocity and a responsive mask on D; transient 4× MSAA on mobile, measured on devices. Upscaler mask plumbing for DLSS, MetalFX and FSR comes later. TAA upsampling restores the desktop tiers' internal-height caps (R6 renders desktop at native height until then). | M | R2 | |
 
+- **As built (M1 R7):** the desktop tiers resolve with TAA and upsampling (MSAA off), phones keep 4× MSAA on tile. Desktop caps are back: 1440 rows on Desktop-High, 1080 on Desktop-Low. The resolve runs on HDR before bloom, tonemap-weighted, with Halton jitter and unjittered velocity, YCoCg clipping, velocity dilation, sky reprojection, disocclusion rejection and a responsive mask from the character prepass, as one compute pass (0.6 ms at 1080p on an M5, against the 0.8 ms budget; 2.3 ms at 4K from 1440 rows). Its inputs are the ones an external upscaler takes. Two deviations: a render-scale change keeps the history; and since outlines write no velocity yet, the resolve finds hull pixels from the main pass's depth and treats them as responsive, which C4 replaces with real hull velocity. Sharpening was measured and left out. Device measurements of the mobile MSAA move to M2. Spec §5.12 has the details.
+
 ### Track C: anime characters
 
 The reference games agree on the core: **light response is authored, not physical**.

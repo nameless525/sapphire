@@ -540,7 +540,7 @@ impl MeshModules {
             Program::AnimeCharacter => &mut self.character,
             Program::Outline => &mut self.outline,
             Program::Prepass => &mut self.prepass,
-            Program::Sky | Program::Clusters | Program::Skinning | Program::Post => {
+            Program::Sky | Program::Clusters | Program::Skinning | Program::Post | Program::Temporal => {
                 unreachable!("not a mesh program")
             }
         }

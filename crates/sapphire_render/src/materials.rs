@@ -412,7 +412,7 @@ mod gpu_tests {
         packets: &mut FramePacketRing,
     ) -> Vec<AnimeCharacterParams> {
         let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 0.9, 1.0, 0.05);
-        packets.begin().views.push(ViewData { camera });
+        packets.begin().views.push(ViewData::new(camera));
         renderer.prepare(gpu, packets.current());
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,

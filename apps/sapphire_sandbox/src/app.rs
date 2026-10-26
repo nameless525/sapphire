@@ -140,8 +140,8 @@ impl App for SandboxApp {
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head);
         }
-        // The day, the sky options and the starting view, last so `--view` holds whatever framing
-        // the scene chose.
+        // The day, the sky options, the starting view and the turntable's speed, last so `--view`
+        // holds whatever framing the scene chose.
         options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
         let dev = DevTools::new(

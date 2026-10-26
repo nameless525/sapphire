@@ -26,6 +26,9 @@
 //! uniform branch samples scene color bilinearly at the pixel's position instead, which is the
 //! upsample. Bloom is sampled by position either way.
 //!
+//! Under temporal AA (M1 R7) post reads the resolved frame instead, which is already at the
+//! target's size, so the whole chain runs there and the fused pass loads it texel for texel.
+//!
 //! # Grading
 //!
 //! The tone curve and grade are baked on the CPU into 32³ LUTs ([`lut`]), only when the
@@ -53,9 +56,12 @@
 //! - **Mobile-Low:** the chain starts at ½ of the scene, and the tier's render scale (M1 R6)
 //!   already puts the scene at about half the output, so the prefilter covers a sixteenth of
 //!   the output's pixels. Starting at ¼ of the scene as well waits for device measurements.
-//! - **A sharper upsample:** below render scale 1 the fused pass upsamples bilinearly. A
-//!   spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial; spec §5.12) or
-//!   TAA's own upsampling (R7) replaces it.
+//! - **A sharper upsample:** without temporal AA (the mobile tiers), below render scale 1 the
+//!   fused pass upsamples bilinearly. A spatial upscaler (an FSR1-style EASU and RCAS port, or
+//!   MetalFX spatial; spec §5.12) replaces it. RCAS after temporal AA was measured and left out
+//!   (spec §5.12, "As built (M1 R7)").
+//! - **Bloom at the scene's size under TAA upsampling:** the chain now starts at half the
+//!   output's size; starting it at half the scene's would save the 4K case its biggest levels.
 //! - **Exposure:** fixed per frame from `PostParams` (later, per time-of-day key); eye
 //!   adaptation, if any, is clamped to ±0.5 EV.
 //! - **HDR output:** when HDR surfaces arrive (spec §5.11), a second output transform that
@@ -78,10 +84,10 @@ use std::num::NonZeroU64;
 use bytemuck::{Pod, Zeroable};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
-use crate::RenderError;
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shaders::{self, Program, ShaderSources};
+use crate::{RenderError, bind_cache};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use params::{BloomParams, ColorGrade, PostParams, ToneCurve, Vignette};
 
@@ -242,6 +248,9 @@ struct Layouts {
     composite: wgpu::BindGroupLayout,
 }
 
+/// A group 1 bind group, for the most textures a post pass reads.
+type CachedBindGroup = bind_cache::CachedBindGroup<4>;
+
 /// One cache per pass position, so each always sees the same layout.
 #[derive(Debug, Default)]
 struct BindGroups {
@@ -249,42 +258,6 @@ struct BindGroups {
     prefilter: CachedBindGroup,
     down: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
     up: [CachedBindGroup; MAX_BLOOM_LEVELS as usize - 1],
-}
-
-/// A group 1 bind group and the views it was made from.
-#[derive(Debug, Default)]
-struct CachedBindGroup {
-    views: [Option<wgpu::TextureView>; 4],
-    bind_group: Option<wgpu::BindGroup>,
-}
-
-impl CachedBindGroup {
-    /// A bind group of `views` at bindings 0, 1, …, reused while they stay the same.
-    fn get(
-        &mut self,
-        device: &wgpu::Device,
-        label: Option<&str>,
-        layout: &wgpu::BindGroupLayout,
-        views: &[&wgpu::TextureView],
-    ) -> &wgpu::BindGroup {
-        let current = self.views.iter().zip(views).all(|(cached, view)| cached.as_ref() == Some(*view));
-        if !current || self.bind_group.is_none() {
-            let entries: [wgpu::BindGroupEntry<'_>; 4] =
-                std::array::from_fn(|binding| wgpu::BindGroupEntry {
-                    binding: binding as u32,
-                    resource: wgpu::BindingResource::TextureView(views[binding.min(views.len() - 1)]),
-                });
-            self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label,
-                layout,
-                entries: &entries[..views.len()],
-            }));
-            for (cached, view) in self.views.iter_mut().zip(views) {
-                *cached = Some((*view).clone());
-            }
-        }
-        self.bind_group.as_ref().expect("created above")
-    }
 }
 
 /// A texture a fullscreen pass samples: one from the frame graph or a persistent one.
@@ -508,6 +481,11 @@ impl PostProcess {
         let mut uniforms = self.uniforms;
         uniforms.composite[3] = if upsample { 1.0 } else { 0.0 };
         (uniforms, &self.uniform_buffer)
+    }
+
+    /// The frame's exposure multiplier (2^EV), which temporal AA weights its resolve by.
+    pub(crate) fn exposure(&self) -> f32 {
+        self.uniforms.composite[0]
     }
 
     /// Grading LUTs baked since creation.

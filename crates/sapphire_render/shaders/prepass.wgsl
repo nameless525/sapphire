@@ -13,12 +13,15 @@
 // Both compute the clip position exactly as the main pass's vertex stages do (`object_position`,
 // then the instance transform, then the view), and mark it invariant, so a prepass's depth is
 // the main pass's for the same geometry.
+//
+// Under temporal AA (M1 R7) the view's projection is jittered; velocity compares unjittered clip
+// positions, so geometry that holds still has exactly zero velocity whatever the jitter.
 
 struct ScenePrepassVaryings {
     @builtin(position) @invariant clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
-    // Clip positions now and when last drawn, divided per pixel so velocity is perspective-
-    // correct.
+    // Unjittered clip positions now and when last drawn, divided per pixel so velocity is
+    // perspective-correct.
     @location(1) current: vec4<f32>,
     @location(2) previous: vec4<f32>,
 }
@@ -53,7 +56,7 @@ fn vs_scene_prepass(
         instance.previous_world_from_object * vec4<f32>(object_position(previous_position, draw), 1.0);
     var out: ScenePrepassVaryings;
     out.clip_position = view.clip_from_world * world_position;
-    out.current = out.clip_position;
+    out.current = view.unjittered_clip_from_world * world_position;
     out.previous = view.previous_clip_from_world * previous_world;
     out.world_normal = instance.normal_from_object * oct_decode(normal);
     return out;

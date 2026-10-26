@@ -157,7 +157,7 @@ impl Frames {
         let fov = 40f32.to_radians();
         let distance = 1.0 / (0.5 * (fov * 0.5).tan());
         let camera = CameraData::look_at(Vec3::new(0.0, 0.0, distance), Vec3::ZERO, Vec3::Y, fov, 1.0, 0.05);
-        packet.views.push(ViewData { camera });
+        packet.views.push(ViewData::new(camera));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
         packet.sky =
             SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };

@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_render"
-description = "Sapphire's renderer: anime character shading under per-character light rigs with stylized GI, clustered or per-object local lights, inverted-hull outlines, sky gradient, HDR bloom and grading."
+description = "Sapphire's renderer: anime character shading under per-character light rigs with stylized GI, clustered or per-object local lights, inverted-hull outlines, sky gradient, temporal AA and upsampling, HDR bloom and grading."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

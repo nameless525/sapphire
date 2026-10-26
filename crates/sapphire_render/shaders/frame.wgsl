@@ -41,17 +41,27 @@ struct FrameUniforms {
     ambient_ground: vec4<f32>,
 }
 
+// Under temporal AA (M1 R7) every matrix into clip space carries the frame's sub-pixel jitter,
+// so all passes rasterize the same jittered samples; velocity compares the unjittered ones.
 struct ViewUniforms {
     view_from_world: mat4x4<f32>,
+    // Jittered under temporal AA.
     clip_from_view: mat4x4<f32>,
+    // Jittered under temporal AA.
     clip_from_world: mat4x4<f32>,
+    // The inverse of the jittered `clip_from_world`.
     world_from_clip: mat4x4<f32>,
-    // `clip_from_world` in the last frame this view drew, for velocity.
+    // The unjittered `clip_from_world` in the last frame this view drew, for velocity.
     previous_clip_from_world: mat4x4<f32>,
     // xyz: world-space camera position.
     position: vec4<f32>,
     // xy: target size in pixels; zw: reciprocals.
     viewport: vec4<f32>,
+    // `clip_from_world` without the jitter, for velocity.
+    unjittered_clip_from_world: mat4x4<f32>,
+    // xy: this frame's jitter in pixels (x right, y down: the image moves by it); zw: in NDC.
+    // Zero without temporal AA.
+    jitter: vec4<f32>,
 }
 
 struct InstanceData {

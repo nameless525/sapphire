@@ -166,7 +166,7 @@ impl Stage {
     /// its center). Post shows linear light as it is, and there's no ambient light.
     fn render(&mut self, frame: &TodFrame, rigs: &[LightRig]) -> Frame {
         let packet = self.packets.begin();
-        packet.views.push(ViewData { camera: self.camera });
+        packet.views.push(ViewData::new(self.camera));
         frame.write(packet);
         packet.post = passthrough();
         packet.ambient = AmbientLight { intensity: 0.0, ..AmbientLight::default() };

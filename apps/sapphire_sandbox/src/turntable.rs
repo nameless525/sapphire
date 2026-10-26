@@ -11,26 +11,37 @@ use sapphire_math::Mat4;
 
 use crate::extract::RenderTransform;
 
-/// Radians per second of turntable time.
-const SPEED: f32 = 0.35;
+/// Radians per second of turntable time, unless `--spin` says otherwise.
+pub(crate) const SPEED: f32 = 0.35;
 
-#[derive(Component, Debug, Default)]
+#[derive(Component, Debug)]
 pub(crate) struct Turntable {
     /// Angle after the latest fixed step, kept in [0, TAU).
     angle: f32,
     /// Angle after the step before, possibly negative after wrapping, so interpolation never
     /// sweeps the long way round.
     previous: f32,
+    /// Radians per second of turntable time.
+    pub speed: f32,
+}
+
+impl Default for Turntable {
+    fn default() -> Self {
+        Self { angle: 0.0, previous: 0.0, speed: SPEED }
+    }
 }
 
 impl Turntable {
     /// Advances by `seconds` of turntable time.
     fn advance(&mut self, seconds: f32) {
         self.previous = self.angle;
-        self.angle += SPEED * seconds;
+        self.angle += self.speed * seconds;
         if self.angle >= TAU {
             self.angle -= TAU;
             self.previous -= TAU;
+        } else if self.angle < 0.0 {
+            self.angle += TAU;
+            self.previous += TAU;
         }
     }
 

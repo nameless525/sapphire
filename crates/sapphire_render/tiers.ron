@@ -3,27 +3,34 @@
 // Every number is a Proposal until M2 measures the reference devices at thermally throttled
 // clocks (spec §3).
 //
-// - Drawn from today: `resolution`, `antialiasing.msaa`, `bloom_levels`, `light_path`,
-//   `max_lights` and `sky`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
+// - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`
+//   and `sky`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
 // - `sky` (M1 W2): the sky cube's size and frames between face updates, and the cirrus layer.
 //   Both desktop tiers draw the same sky, so golden images match on every desktop GPU.
-// - Read by later packages: `antialiasing.temporal` (R7), `shadows` (R4, C2),
-//   `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines` (C4),
-//   `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
+// - Read by later packages: `shadows` (R4, C2), `ambient_occlusion` (W5), `volumetric_fog`,
+//   `screen_space_outlines` (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD
+//   selection).
 //
-// Both desktop tiers draw today's frame exactly (the golden images), so they differ only in what
-// later packages read. They render at native height until R7 brings an upscaler: a bilinear
-// upscale would soften the inverted-hull outlines and hard two-tone edges the anime look depends
-// on. R7 restores §3.1's caps with it (Desktop-High 1440 rows, 4K upscaled; Desktop-Low 1080).
-// The mobile tiers keep theirs: phones need the lower internal resolution now.
+// Antialiasing (M1 R7, look pillar 6): desktop tiers resolve with temporal AA and MSAA off.
+// TAA's jittered history resolves edges inside a surface (painted shadow-bias steps, the
+// unfiltered material-ID borders of control maps, thin highlights) as well as silhouettes and
+// outlines, where MSAA resolves only geometry, and the scene prepass it reads holds
+// single-sampled depth and velocity. 4× MSAA on top would quadruple the main pass's attachments
+// for edges TAA already resolves. Phones keep 4× MSAA in tile memory instead (transient
+// attachments, cleared and discarded on tile): no history, no prepasses, and nothing to smear.
+//
+// Resolution: TAA also upsamples, so the desktop tiers keep spec §3.1's internal heights:
+// Desktop-High renders at most 1440 rows (1440p native, 4K from 1440), Desktop-Low 1080. Below
+// those heights they render at native height. The mobile tiers' caps upsample in post's final
+// pass, bilinearly, until a spatial upscaler arrives.
 (
     type: "sapphire::render::TierTable",
     version: 1,
     data: (
         tiers: [
             (
-                // RTX 3070 / RX 6700 XT, M2 Pro: 1440p native, or 4K upscaled from 1440 rows once
-                // R7's upscaler exists; native height until then (see the top of this file).
+                // RTX 3070 / RX 6700 XT, M2 Pro: 1440p native, or 4K upsampled by TAA from 1440
+                // rows.
                 id: DesktopHigh,
                 // A discrete GPU, or Apple silicon (an integrated GPU on Metal), with 16 GB:
                 // §3.1 budgets 10 GB of RAM. RAM can't tell a GTX 1060 machine apart; a device
@@ -34,8 +41,8 @@
                 ],
                 frame_rate: 60,
                 gpu_frame_ms: 12.0,
-                resolution: (scale: 1.0, dynamic_floor: 0.7),
-                antialiasing: (msaa: X4, temporal: false),
+                resolution: (scale: 1.0, max_height: 1440, dynamic_floor: 0.7),
+                antialiasing: (msaa: Off, temporal: true),
                 bloom_levels: 5,
                 light_path: Clustered,
                 max_lights: 64,
@@ -48,13 +55,14 @@
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
             ),
             (
-                // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck). Every desktop
-                // qualifies, software and paravirtual GPUs included.
+                // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
+                // TAA on taller displays. Every desktop qualifies, software and paravirtual GPUs
+                // included.
                 id: DesktopLow,
                 frame_rate: 60,
                 gpu_frame_ms: 14.0,
-                resolution: (scale: 1.0, dynamic_floor: 0.7),
-                antialiasing: (msaa: X4, temporal: false),
+                resolution: (scale: 1.0, max_height: 1080, dynamic_floor: 0.7),
+                antialiasing: (msaa: Off, temporal: true),
                 bloom_levels: 5,
                 light_path: Clustered,
                 max_lights: 64,

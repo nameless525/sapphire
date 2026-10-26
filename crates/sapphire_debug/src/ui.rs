@@ -9,6 +9,7 @@ use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
+use sapphire_render::temporal;
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -256,7 +257,18 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         budget_row(ui, "CPU critical path", stages.total(), tier.cpu_critical_path());
         let gpu = frame.graph.gpu_timings();
         match gpu {
-            Some(timings) => budget_row(ui, "GPU frame (pass span)", timings.span(), tier.gpu_frame()),
+            Some(timings) => {
+                budget_row(ui, "GPU frame (pass span)", timings.span(), tier.gpu_frame());
+                // Temporal AA's two passes (the renderer's `responsive mask` and `taa`), what
+                // each added to the frame.
+                if frame.render.temporal.enabled {
+                    let taa = temporal::PASSES
+                        .iter()
+                        .filter_map(|name| timings.get(name))
+                        .map(|pass| pass.exclusive);
+                    budget_row(ui, "  TAA / upsampling", taa.sum(), tier.taa_upscaling());
+                }
+            }
             None => {
                 ui.label("GPU frame");
                 ui.weak(gpu_timing_state(view));
@@ -322,6 +334,22 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         };
         row(ui, "Skinning", skinned);
         row(ui, "Sky", sky_text(&render.sky));
+        let taa = &render.temporal;
+        let taa = if taa.enabled {
+            let ((input_w, input_h), (output_w, output_h)) = (taa.input_size, taa.output_size);
+            let [jx, jy] = taa.jitter();
+            let reset = taa.reset.map_or(String::new(), |reason| format!(" ({reason:?} now)"));
+            format!(
+                "{input_w}×{input_h} → {output_w}×{output_h}, jitter {}/{} ({jx:+.2}, {jy:+.2}), {} reset{}{reset}",
+                taa.jitter_index + 1,
+                taa.jitter_phases,
+                taa.resets,
+                if taa.resets == 1 { "" } else { "s" }
+            )
+        } else {
+            "off".to_owned()
+        };
+        row(ui, "Temporal AA", taa);
         row(ui, "Buffer growths", render.buffer_growths.to_string());
         row(ui, "LUT bakes", render.lut_bakes.to_string());
         if let Some(tod) = frame.time_of_day {

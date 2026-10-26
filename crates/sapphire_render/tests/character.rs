@@ -290,7 +290,7 @@ impl Harness {
     /// validation error.
     fn render(&mut self) -> Frame {
         let packet = self.packets.begin();
-        packet.views.push(ViewData { camera: self.camera });
+        packet.views.push(ViewData::new(self.camera));
         packet.sun = self.sun;
         packet.sky = self.sky;
         packet.ambient = self.ambient;

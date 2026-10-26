@@ -46,6 +46,11 @@ impl BudgetTier {
         self.pick(13.5, 23.5)
     }
 
+    /// TAA and upscaling (§3.3's row): temporal AA on desktop, a spatial upscaler on phones.
+    pub fn taa_upscaling(self) -> Duration {
+        self.pick(0.8, 1.0)
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {
@@ -192,6 +197,7 @@ mod tests {
         assert_eq!(mobile.stage(CpuStage::Simulation, 2), ms(3.0), "1.5 ms × 2 steps at 30 fps");
         assert_eq!(mobile.stage(CpuStage::Extract, 2), ms(1.2));
         assert_eq!((mobile.game_side(), mobile.gpu_frame()), (ms(13.6), ms(23.5)));
+        assert_eq!((desktop.taa_upscaling(), mobile.taa_upscaling()), (ms(0.8), ms(1.0)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));
         assert_eq!(BudgetTier::CURRENT == mobile, FormFactor::CURRENT == FormFactor::Mobile);
     }

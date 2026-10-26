@@ -155,7 +155,7 @@ impl Scene {
     ) -> Vec<[u8; 4]> {
         let size = (texture.width(), texture.height());
         let packet = self.packets.begin();
-        packet.views.push(ViewData { camera: camera(size, fraction) });
+        packet.views.push(ViewData::new(camera(size, fraction)));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
         packet.sky =
             SkyGradient { zenith: Vec3::splat(0.5), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.5) };

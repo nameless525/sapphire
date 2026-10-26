@@ -3,7 +3,7 @@
 //! `materials.wgsl` (the material families' blocks, which frame.wgsl's material binding names)
 //! followed by the files it uses, its own last, joined by newlines; M1 replaces the
 //! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
-//! skinning has `skinning.wgsl`; both stand alone.
+//! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -19,7 +19,7 @@
 //! A new shader file joins [`ShaderFile`] (its name and its compiled-in text) and the programs
 //! that use it (`Program::files`); a new program also needs its pipelines' owner to build them
 //! from [`ShaderSources`] and rebuild them in `Renderer::set_shader_sources`, as the mesh
-//! pipelines, the sky, post, the light clusters and skinning do.
+//! pipelines, the sky, post, temporal AA, the light clusters and skinning do.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -46,10 +46,12 @@ pub enum ShaderFile {
     Skinning,
     /// Every post pass: the bloom chain and the fused composite.
     Post,
+    /// Temporal AA: the responsive mask and the resolve, which binds its own groups.
+    Temporal,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -60,6 +62,7 @@ impl ShaderFile {
         Self::Prepass,
         Self::Skinning,
         Self::Post,
+        Self::Temporal,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -75,6 +78,7 @@ impl ShaderFile {
             Self::Prepass => "prepass.wgsl",
             Self::Skinning => "skinning.wgsl",
             Self::Post => "post.wgsl",
+            Self::Temporal => "temporal.wgsl",
         }
     }
 
@@ -96,6 +100,7 @@ impl ShaderFile {
             Self::Prepass => include_str!("../shaders/prepass.wgsl"),
             Self::Skinning => include_str!("../shaders/skinning.wgsl"),
             Self::Post => include_str!("../shaders/post.wgsl"),
+            Self::Temporal => include_str!("../shaders/temporal.wgsl"),
         }
     }
 
@@ -120,10 +125,11 @@ pub(crate) enum Program {
     Prepass,
     Skinning,
     Post,
+    Temporal,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Outline,
@@ -131,6 +137,7 @@ impl Program {
         Self::Prepass,
         Self::Skinning,
         Self::Post,
+        Self::Temporal,
     ];
 
     /// Its files, in order.
@@ -144,6 +151,7 @@ impl Program {
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
             Self::Skinning => &[F::Skinning],
             Self::Post => &[F::Post],
+            Self::Temporal => &[F::Temporal],
         }
     }
 
@@ -157,6 +165,7 @@ impl Program {
             Self::Prepass => "prepass",
             Self::Skinning => "skinning",
             Self::Post => "post",
+            Self::Temporal => "temporal",
         }
     }
 
@@ -311,8 +320,9 @@ mod tests {
         previous_position_attributes,
     };
     use crate::post::PostUniforms;
+    use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 7] = [
+    const PASSES: [(Program, &[&str]); 8] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
         (Program::Outline, &["vs_outline", "fs_outline"]),
@@ -320,6 +330,7 @@ mod tests {
         (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
         (Program::Skinning, &["cs_skinning"]),
         (Program::Post, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
+        (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
@@ -542,6 +553,7 @@ mod tests {
             (Program::Clusters, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::Prepass, "InstanceData", size_of::<InstanceData>()),
             (Program::Prepass, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Temporal, "TemporalUniforms", size_of::<TemporalUniforms>()),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);

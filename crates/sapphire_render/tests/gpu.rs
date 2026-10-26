@@ -246,7 +246,7 @@ impl Frames {
         reads: &[PrepassRead<'_>],
     ) -> Option<wgpu::Error> {
         let packet = self.packets.begin();
-        packet.views.push(ViewData { camera });
+        packet.views.push(ViewData::new(camera));
         packet.sun = self.sun;
         packet.lights.extend_from_slice(&self.lights);
         packet.sky = self.sky;

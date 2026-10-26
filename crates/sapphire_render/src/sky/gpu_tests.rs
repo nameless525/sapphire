@@ -125,7 +125,7 @@ impl Harness {
     /// Renders one frame whose packet `fill` sets up, and reads the target back as linear RGB.
     fn render(&mut self, fill: impl FnOnce(&mut FramePacket)) -> Vec<Vec3> {
         let packet = self.packets.begin();
-        packet.views.push(ViewData { camera: self.camera });
+        packet.views.push(ViewData::new(self.camera));
         packet.sky = self.sky;
         packet.post = passthrough();
         fill(packet);

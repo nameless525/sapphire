@@ -49,6 +49,10 @@
 //! - The prepasses (M1 R2): a character-only depth prepass, and a scene prepass of depth, world
 //!   normals and velocity, as frame-graph transients for later passes to read
 //!   ([`PrepassTargets`]); the graph culls them while nothing does.
+//! - Temporal AA and upsampling ([`temporal`], M1 R7): the projection's sub-pixel jitter, the
+//!   responsive mask, and a resolve that accumulates frames in a history at the target's size,
+//!   upsampling a smaller scene, before bloom and grading. The desktop tiers resolve with it;
+//!   phones keep 4× MSAA in tile memory ([`RenderSettings::temporal`]).
 //! - Shader sources (`shaders`, M1 A8): the WGSL files compiled in ([`ShaderFile`]), the
 //!   programs built from them, and rebuilding pipelines from edited text
 //!   ([`Renderer::set_shader_sources`]: hot reload and live link), checked with naga first so an
@@ -176,22 +180,25 @@
 //!   position-only. Rim light, hair shadow on the face and eyes over the bangs read it (C2, C5).
 //! - **Scene prepass**: depth, world normals (octahedral, `Rg16Float`) and velocity
 //!   (`Rg16Float`, texture coordinates) of every opaque instance. Characters move by their
-//!   skinned positions, static meshes by their instance transform, and both by the camera's.
-//!   TAA (R7), outlines under TAA (P1), GTAO and screen-space edges read it.
+//!   skinned positions, static meshes by their instance transform, and both by the camera's,
+//!   never by temporal AA's jitter. TAA (R7), outlines under TAA (P1), GTAO and screen-space
+//!   edges read it.
 //!
-//! Nothing reads them yet, so the frame graph culls both passes: they cost two boxed closures
-//! a frame and no GPU time until a consumer lands. The outline hull isn't in the scene prepass:
-//! outlines v2 (C4) adds its velocity.
+//! Temporal AA reads both (its depth, velocity and responsive mask). Without it nothing reads
+//! them yet, so the frame graph culls both passes: two boxed closures a frame and no GPU time.
+//! The outline hull isn't in the scene prepass: outlines v2 (C4) adds its velocity.
 //!
 //! # Render scale
 //!
 //! Every pass before post's final one renders at the scene's size, [`scaled_size`] of the target
 //! at the render scale: the main pass's attachments and the prepass targets, the views (whose
-//! viewport sizes outline widths and light-cluster tiles) and the bloom chain. Post's fused pass writes the target and
-//! upsamples bilinearly where the scene is smaller; at scale 1 it loads texel for texel, so
-//! frames are exactly what they were without a render scale. Passes added after the renderer's
-//! (the debug overlay, UI) draw at the target's size. Each new size is one new set of transients
-//! in the frame graph's pool, which is why dynamic resolution moves in steps.
+//! viewport sizes outline widths and light-cluster tiles) and the bloom chain. Post's fused pass
+//! writes the target and upsamples bilinearly where the scene is smaller; at scale 1 it loads
+//! texel for texel, so frames are exactly what they were without a render scale. Under temporal
+//! AA the resolve writes the target's size instead, upsampling from jittered frames (TAAU), and
+//! bloom and the fused pass follow it at that size. Passes added after the renderer's (the debug
+//! overlay, UI) draw at the target's size. Each new size is one new set of transients in the
+//! frame graph's pool, which is why dynamic resolution moves in steps.
 //!
 //! # Binding budget
 //!
@@ -227,7 +234,11 @@
 //! | 2 | storage, read-write | every deformed instance's outputs: positions twice and normals | the skinning pass |
 //!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
-//! and a sampler, 1 the textures the pass reads. The light-cluster pass (`shaders/clusters.wgsl`)
+//! and a sampler, 1 the textures the pass reads. Temporal AA's two passes do the same
+//! (`shaders/temporal.wgsl`, two samplers): the resolve, a compute pass, reads seven textures,
+//! writes the history as a storage texture and binds no storage buffer. The view
+//! group's uniforms carry the jitter (appended in M1 R7: the unjittered `clip_from_world` and
+//! the jitter itself). The light-cluster pass (`shaders/clusters.wgsl`)
 //! binds its own group 0 (the frame constants, the lights read-only and the cluster lists
 //! read-write: the same buffers) and the view group as group 1.
 //!
@@ -381,9 +392,10 @@
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
 //!   non-uniformly scaled joints; morphed outline normals with C4's tangent-space outline
 //!   normals; vertex pulling for multi-draw-indirect of skinned instances.
-//! - **Prepasses:** their consumers (rim and hair shadow, TAA, outlines under TAA); the outline
-//!   hull's velocity (C4); jitter-free velocity once TAA jitters the projection (R7); and, when
-//!   TAA turns MSAA off, letting the main pass reuse the scene prepass's depth.
+//! - **Prepasses:** their other consumers (rim and hair shadow, outlines under TAA); the outline
+//!   hull's velocity (C4); and, now that TAA turns MSAA off on desktop, letting the main pass
+//!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
+//!   the prepass to cut alpha-tested surfaces out first.
 //! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
 //!   layers (VFX lights kept off faces), a rim from the strongest local light (C5), local-light
 //!   shadows, and two-level culling for hundreds of lights. Mesh bounds move from the
@@ -393,10 +405,11 @@
 //!   then draws use LOD0.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured
 //!   on a real phone first (spec open question Q14).
-//! - **Upscaling** (spec §5.12, "Anti-aliasing and upscaling"): below render scale 1 the scene
-//!   is upsampled bilinearly. TAA's own upsampling (R7), a spatial upscaler (an FSR1-style EASU
-//!   and RCAS port, or MetalFX spatial) and DLSS or MetalFX temporal take over from it; the
-//!   quality tiers' render scale and dynamic resolution then drive their input size.
+//! - **Upscaling** (spec §5.12, "Anti-aliasing and upscaling"): temporal AA upsamples on the
+//!   desktop tiers (M1 R7); elsewhere, below render scale 1, the scene is upsampled bilinearly.
+//!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
+//!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
+//!   the quality tiers' render scale and dynamic resolution drive their input size.
 //! - **Material families' shaders:** fog cards (W3), environment (W4) and foliage (W6) bring
 //!   pipelines that bind their family's buffer (in a scene group of their own) and group 3. The
 //!   sky (W2) reads its one material's block on the CPU instead (see "The sky").
@@ -421,6 +434,7 @@
 //!   with the warm-up (spec §5.12), instead of on the frame that applies an edit; WESL imports
 //!   replace the concatenation.
 
+mod bind_cache;
 mod buffer;
 mod characters;
 mod draw;
@@ -438,6 +452,7 @@ mod scene;
 mod shaders;
 mod skinning;
 mod sky;
+pub mod temporal;
 pub mod texture;
 
 pub use frame::{
@@ -457,6 +472,7 @@ pub use renderer::{
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
+pub use temporal::{HistoryReset, TemporalStats};
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

@@ -772,7 +772,7 @@ mod gpu_tests {
         let mut rng = Rng(5);
         let mut packets = FramePacketRing::new();
         let packet = packets.begin();
-        packet.views.push(ViewData { camera });
+        packet.views.push(ViewData::new(camera));
         packet.lights.extend((0..500).map(|_| random_light(&mut rng)));
         renderer.prepare(&gpu, packets.current());
 

@@ -14,19 +14,22 @@
 //! Every knob names the package that reads it. Drawn from today:
 //!
 //! - **Render scale** ([`Resolution`]): the scene's size as a fraction of the output, capped in
-//!   height (the spec's "~1280×590 → native" on any phone), and the floor dynamic resolution may
-//!   lower it to. [`Quality::render_scale`] turns it into [`Renderer::set_render_scale`](crate::Renderer::set_render_scale) every
-//!   frame.
-//! - **MSAA, bloom levels, the light path, the light budget and the sky** (its cube's size and
-//!   update rate, and the cirrus layer, M1 W2): [`QualityTier::render_settings`], which a
-//!   renderer is created with.
+//!   height (§3.1's internal resolutions: 1440 rows on Desktop-High, 1080 on Desktop-Low, "~1280×590
+//!   → native" on any phone), and the floor dynamic resolution may lower it to.
+//!   [`Quality::render_scale`] turns it into [`Renderer::set_render_scale`](crate::Renderer::set_render_scale)
+//!   every frame.
+//! - **Antialiasing** ([`Antialiasing`], M1 R7): temporal AA with MSAA off on the desktop tiers,
+//!   whose resolve also upsamples to the output; 4× MSAA kept in tile memory on phones.
+//! - **MSAA and temporal AA, bloom levels, the light path, the light budget and the sky** (its
+//!   cube's size and update rate, and the cirrus layer, M1 W2): [`QualityTier::render_settings`],
+//!   which a renderer is created with.
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
-//! Plain data until their packages read them: temporal AA (R7), shadow cascades, their resolution
-//! and the per-character shadow (R4, C2), capsule AO and GTAO (W5), volumetric fog (after W3's
-//! distance and height fog, which every tier has), screen-space environment outlines (C4's
-//! desktop option), the particle cap (`sapphire_vfx`, M2) and the LOD bias (LOD selection, with
-//! culling). The frame rate is also what frame pacing (§6.2, F7) will hold.
+//! Plain data until their packages read them: shadow cascades, their resolution and the
+//! per-character shadow (R4, C2), capsule AO and GTAO (W5), volumetric fog (after W3's distance and
+//! height fog, which every tier has), screen-space environment outlines (C4's desktop option), the
+//! particle cap (`sapphire_vfx`, M2) and the LOD bias (LOD selection, with culling). The frame rate
+//! is also what frame pacing (§6.2, F7) will hold.
 //!
 //! # Choosing a tier
 //!
@@ -230,14 +233,15 @@ impl Resolution {
     }
 }
 
-/// Edge antialiasing (spec §5.12; plan pillar 6).
+/// Edge antialiasing (spec §5.12; plan pillar 6). `tiers.ron` says why each class uses what.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub struct Antialiasing {
-    /// Multisampling of the main pass: 4× on every tier, kept in tile memory on phones.
+    /// Multisampling of the main pass: off on the desktop tiers, whose temporal AA resolves the
+    /// edges; 4× on phones, kept in tile memory (transient attachments).
     pub msaa: Msaa,
-    /// Temporal AA with velocity and a responsive mask (R7), which decides with it what MSAA
-    /// the desktop tiers keep. Off until R7 measures it.
+    /// Temporal AA and upsampling with velocity and a responsive mask (M1 R7,
+    /// [`RenderSettings::temporal`]): the desktop tiers.
     pub temporal: bool,
 }
 
@@ -366,6 +370,7 @@ impl QualityTier {
     pub fn render_settings(&self) -> RenderSettings {
         RenderSettings {
             msaa: self.antialiasing.msaa,
+            temporal: self.antialiasing.temporal,
             bloom_levels: self.bloom_levels,
             light_path: self.light_path,
             max_lights: self.max_lights,
@@ -880,22 +885,29 @@ mod tests {
     }
 
     #[test]
-    fn desktop_tiers_draw_as_the_goldens_do() {
-        // Golden images render with the default settings at 640×360 on whichever desktop tier
-        // their machine selects, so both must give exactly those, at render scale 1.
+    fn desktop_tiers_resolve_with_taa_and_phones_with_msaa() {
+        // Desktop tiers: temporal AA with MSAA off, otherwise the default settings, which the
+        // golden scenes from before M1 R7 pin with 4× MSAA instead (`--aa msaa`). At 640×360 and
+        // 1920×1080 (the goldens' and the bench's sizes) both render at native height.
         let table = TierTable::shipped();
         for id in [TierId::DesktopHigh, TierId::DesktopLow] {
             let tier = table.get(id);
-            assert_eq!(tier.render_settings(), RenderSettings::default(), "{id}");
+            let expected = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+            assert_eq!(tier.render_settings(), expected, "{id}");
             assert_eq!(tier.resolution.base_scale(360), 1.0, "{id}");
             assert_eq!(tier.resolution.base_scale(1080), 1.0, "{id}: the bench's size");
         }
-        let mobile = table.get(TierId::MobileLow).render_settings();
-        assert_eq!(
-            (mobile.light_path, mobile.max_lights),
-            (LightPath::PerObject, 8),
-            "spec §3.4's mobile budget"
-        );
+        // Phones: 4× MSAA kept on tile and no temporal AA (the renderer makes the multisampled
+        // attachments transient: `renderer::tests`).
+        for id in [TierId::MobileHigh, TierId::MobileLow] {
+            let settings = table.get(id).render_settings();
+            assert_eq!((settings.msaa, settings.temporal), (Msaa::X4, false), "{id}");
+            assert_eq!(
+                (settings.light_path, settings.max_lights),
+                (LightPath::PerObject, 8),
+                "{id}: spec §3.4's mobile budget"
+            );
+        }
     }
 
     #[test]
@@ -904,10 +916,15 @@ mod tests {
         // Mobile-Low's ~590 rows on an iPhone 12 in landscape (2532×1170).
         let mobile_low = table.get(TierId::MobileLow).resolution.base_scale(1170);
         assert!((mobile_low * 1170.0 - 590.0).abs() < 1.0, "{mobile_low}");
-        // Desktop tiers render at native height until R7's upscaler (tiers.ron explains why).
+        // Desktop-High: 1440p native, or 4K upsampled from 1440 rows by temporal AA.
         let desktop_high = &table.get(TierId::DesktopHigh).resolution;
-        assert_eq!(desktop_high.base_scale(2160), 1.0);
-        assert_eq!(table.get(TierId::DesktopLow).resolution.base_scale(2160), 1.0);
+        assert_eq!(desktop_high.base_scale(1440), 1.0);
+        assert_eq!(scaled_size((3840, 2160), desktop_high.base_scale(2160)), (2560, 1440));
+        // Desktop-Low: 1080 rows.
+        let desktop_low = &table.get(TierId::DesktopLow).resolution;
+        assert_eq!(desktop_low.base_scale(1080), 1.0);
+        assert_eq!(scaled_size((2560, 1440), desktop_low.base_scale(1440)), (1920, 1080));
+        assert_eq!(scaled_size((3840, 2160), desktop_low.base_scale(2160)), (1920, 1080));
         let tiny = Resolution { scale: 1.0, max_height: Some(10), dynamic_floor: 1.0 };
         assert_eq!(tiny.base_scale(1000), MIN_RENDER_SCALE, "never below the minimum");
     }
@@ -1058,7 +1075,7 @@ mod tests {
         let mut quality = quality(QualitySettings::default());
         assert_eq!(quality.active().id, TierId::DesktopHigh);
         assert_eq!(quality.render_scale((1920, 1080), &timing), 1.0);
-        assert_eq!(quality.render_scale((3840, 2160), &timing), 1.0, "native until R7's upscaler");
+        assert_eq!(quality.render_scale((3840, 2160), &timing), 1440.0 / 2160.0, "4K from 1440 rows");
         assert_eq!(quality.update_tier(), None, "r.tier hasn't changed");
 
         // A tier set through the cvar applies once, and back.

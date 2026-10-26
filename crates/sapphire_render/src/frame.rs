@@ -249,6 +249,17 @@ impl FramePacketRing {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewData {
     pub camera: CameraData,
+    /// The camera cut to a new shot this frame, or jumped (a teleport, a respawn): nothing it
+    /// drew before carries over. Temporal AA drops its history, and velocity counts the camera
+    /// as unmoved. Set it for the first frame of the new shot only.
+    pub cut: bool,
+}
+
+impl ViewData {
+    /// A view from `camera` that continues the last frame's.
+    pub fn new(camera: CameraData) -> Self {
+        Self { camera, cut: false }
+    }
 }
 
 /// Names one mesh instance across packets. The app picks it (the sandbox uses the entity's
@@ -797,7 +808,7 @@ mod tests {
 
     fn fill(packet: &mut FramePacket, instances: u64) {
         let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
-        packet.views.push(ViewData { camera });
+        packet.views.push(ViewData::new(camera));
         packet.sun.intensity = 2.0;
         packet.celestial.sphere = Quat::from_rotation_x(0.5);
         packet.sky_layers.stars = 1.0;

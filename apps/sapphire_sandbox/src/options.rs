@@ -27,7 +27,10 @@ pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
 pub(crate) struct Options {
     /// Exit after this many presented frames.
     pub frame_limit: Option<u64>,
-    /// `--msaa off|2|4|8`: override the quality tier's.
+    /// `--aa off|msaa|taa`: the antialiasing technique instead of the quality tier's, for
+    /// comparisons and golden images.
+    pub aa: Option<Antialiasing>,
+    /// `--msaa off|2|4|8`: override the quality tier's (or `--aa`'s) sample count.
     pub msaa: Option<Msaa>,
     /// `--lights`: place the demo lights around the character.
     pub lights: bool,
@@ -61,6 +64,8 @@ pub(crate) struct Options {
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
     pub view: Option<(f32, f32)>,
+    /// `--spin <radians per second>`: the turntable's speed instead of its default.
+    pub spin: Option<f32>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -82,16 +87,53 @@ pub(crate) struct Offscreen {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OffscreenMode {
-    /// `--capture <png> [--capture-ticks N]`: simulate `ticks` fixed steps, render one frame
-    /// and write it to `path`.
-    Capture { path: PathBuf, ticks: u32 },
+    /// `--capture <png> [--capture-ticks N] [--capture-frames F [--capture-step S]]`: simulate
+    /// to tick `ticks`, render `frames` frames and write the last to `path` (see
+    /// [`CaptureFrames`]).
+    Capture { path: PathBuf, ticks: u32, frames: CaptureFrames },
     /// `--bench <frames>`: run the per-frame CPU path `frames` times and log its cost.
     Bench { frames: u32 },
 }
 
+/// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
+/// earlier frames to build its history from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureFrames {
+    /// `--capture-frames`: how many.
+    pub count: u32,
+    /// `--capture-step`: fixed steps between consecutive frames. 0 draws them all at the
+    /// capture's tick (the scene holds still while TAA converges); 1 plays the scene at 60 fps
+    /// up to it.
+    pub step: u32,
+}
+
+impl Default for CaptureFrames {
+    fn default() -> Self {
+        Self { count: 1, step: 0 }
+    }
+}
+
+impl CaptureFrames {
+    /// The ticks to simulate before the first frame, so the last lands on tick `ticks`.
+    pub fn first_tick(&self, ticks: u32) -> Option<u32> {
+        ticks.checked_sub(self.step * (self.count - 1))
+    }
+}
+
+/// An antialiasing technique (`--aa`), over the quality tier's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Antialiasing {
+    /// Neither: every edge a hard pixel step.
+    Off,
+    /// Multisampling alone: the tier's sample count, or 4× where the tier has none.
+    Msaa,
+    /// Temporal AA alone (the desktop tiers').
+    Taa,
+}
+
 impl Options {
-    /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover and the
-    /// camera's starting view.
+    /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover, the
+    /// camera's starting view and the turntable's speed.
     pub fn apply_to(&self, scene: &mut Scene) {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
         scene.set_cloud_cover(self.cloud_cover);
@@ -99,12 +141,24 @@ impl Options {
         if let Some((yaw, pitch)) = self.view {
             scene.camera_mut().look_from(yaw.to_radians(), pitch.to_radians());
         }
+        if let Some(speed) = self.spin {
+            scene.set_spin(speed);
+        }
     }
 
-    /// The renderer settings: the quality tier's, with the options' overrides.
+    /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
+    /// over `--aa`'s sample count.
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
+        let (msaa, temporal) = match self.aa {
+            None => (tier.msaa, tier.temporal),
+            Some(Antialiasing::Off) => (Msaa::Off, false),
+            Some(Antialiasing::Msaa) if tier.msaa == Msaa::Off => (Msaa::X4, false),
+            Some(Antialiasing::Msaa) => (tier.msaa, false),
+            Some(Antialiasing::Taa) => (Msaa::Off, true),
+        };
         RenderSettings {
-            msaa: self.msaa.unwrap_or(tier.msaa),
+            msaa: self.msaa.unwrap_or(msaa),
+            temporal,
             light_path: self.light_path.unwrap_or(tier.light_path),
             ..tier
         }
@@ -125,6 +179,7 @@ impl Options {
         let mut options = Self::default();
         let mut unknown = Vec::new();
         let (mut capture, mut bench, mut capture_ticks, mut size) = (None, None, None, None);
+        let (mut capture_frames, mut capture_step) = (None, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -137,6 +192,14 @@ impl Options {
             };
             match name {
                 "--frames" => options.frame_limit = Some(number(&value("--frames")?, "--frames")?),
+                "--aa" => {
+                    options.aa = Some(match value("--aa")?.as_str() {
+                        "off" => Antialiasing::Off,
+                        "msaa" => Antialiasing::Msaa,
+                        "taa" => Antialiasing::Taa,
+                        other => return Err(format!("--aa expects off, msaa or taa, got {other:?}")),
+                    });
+                }
                 "--msaa" => {
                     options.msaa = Some(match value("--msaa")?.as_str() {
                         "off" | "1" => Msaa::Off,
@@ -192,6 +255,13 @@ impl Options {
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--plain-sky" => options.plain_sky = true,
                 "--no-hot-reload" => options.no_hot_reload = true,
+                "--spin" => {
+                    let speed: f32 = number(&value("--spin")?, "--spin")?;
+                    if !speed.is_finite() {
+                        return Err(format!("--spin expects radians per second, got {speed}"));
+                    }
+                    options.spin = Some(speed);
+                }
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,
@@ -210,18 +280,43 @@ impl Options {
                 "--capture-ticks" => {
                     capture_ticks = Some(number(&value("--capture-ticks")?, "--capture-ticks")?)
                 }
+                "--capture-frames" => {
+                    let count: u32 = number(&value("--capture-frames")?, "--capture-frames")?;
+                    if count == 0 {
+                        return Err("--capture-frames expects at least 1".to_owned());
+                    }
+                    capture_frames = Some(count);
+                }
+                "--capture-step" => capture_step = Some(number(&value("--capture-step")?, "--capture-step")?),
                 "--size" => size = Some(parse_size(&value("--size")?)?),
                 _ => unknown.push(arg.clone()),
             }
         }
+        let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         let mode = match (capture, bench) {
             (Some(_), Some(_)) => return Err(format!("{CAPTURE_FLAG} and {BENCH_FLAG} are exclusive")),
-            (Some(path), None) => Some(OffscreenMode::Capture { path, ticks: capture_ticks.unwrap_or(90) }),
+            (Some(path), None) => {
+                let ticks = capture_ticks.unwrap_or(90);
+                if frames.first_tick(ticks).is_none() {
+                    return Err(format!(
+                        "--capture-frames {} --capture-step {} start before tick 0 for --capture-ticks {ticks}",
+                        frames.count, frames.step
+                    ));
+                }
+                Some(OffscreenMode::Capture { path, ticks, frames })
+            }
             (None, Some(frames)) => Some(OffscreenMode::Bench { frames }),
             (None, None) => None,
         };
-        if capture_ticks.is_some() && !matches!(mode, Some(OffscreenMode::Capture { .. })) {
-            return Err(format!("--capture-ticks needs {CAPTURE_FLAG}"));
+        let capturing = matches!(mode, Some(OffscreenMode::Capture { .. }));
+        for (given, flag) in [
+            (capture_ticks.is_some(), "--capture-ticks"),
+            (capture_frames.is_some(), "--capture-frames"),
+            (capture_step.is_some(), "--capture-step"),
+        ] {
+            if given && !capturing {
+                return Err(format!("{flag} needs {CAPTURE_FLAG}"));
+            }
         }
         options.offscreen = match mode {
             Some(mode) => {
@@ -382,7 +477,11 @@ mod tests {
         assert_eq!(
             options.offscreen,
             Some(Offscreen {
-                mode: OffscreenMode::Capture { path: "out.png".into(), ticks: 5 },
+                mode: OffscreenMode::Capture {
+                    path: "out.png".into(),
+                    ticks: 5,
+                    frames: CaptureFrames::default()
+                },
                 width: 640,
                 height: 360
             })
@@ -391,7 +490,11 @@ mod tests {
         assert_eq!(
             options.offscreen,
             Some(Offscreen {
-                mode: OffscreenMode::Capture { path: "a.png".into(), ticks: 90 },
+                mode: OffscreenMode::Capture {
+                    path: "a.png".into(),
+                    ticks: 90,
+                    frames: CaptureFrames::default()
+                },
                 width: 1920,
                 height: 1080
             })
@@ -402,6 +505,73 @@ mod tests {
             Some(Offscreen { mode: OffscreenMode::Bench { frames: 300 }, width: 1920, height: 1080 })
         );
         assert_eq!(options.msaa, Some(Msaa::X2));
+    }
+
+    #[test]
+    fn captures_draw_frames_up_to_their_tick() {
+        let (options, _) = parse(&[
+            "--capture",
+            "a.png",
+            "--capture-frames",
+            "32",
+            "--capture-step=1",
+            "--capture-ticks",
+            "90",
+        ])
+        .unwrap();
+        let Some(Offscreen { mode: OffscreenMode::Capture { ticks, frames, .. }, .. }) = options.offscreen
+        else {
+            panic!("a capture");
+        };
+        assert_eq!((ticks, frames), (90, CaptureFrames { count: 32, step: 1 }));
+        assert_eq!(frames.first_tick(ticks), Some(59), "the last of 32 frames a tick apart is tick 90");
+        assert_eq!(CaptureFrames { count: 32, step: 0 }.first_tick(90), Some(90), "still frames");
+        assert_eq!(CaptureFrames::default().first_tick(0), Some(0));
+        assert!(parse(&["--capture", "a.png", "--capture-frames", "0"]).is_err());
+        assert!(
+            parse(&[
+                "--capture",
+                "a.png",
+                "--capture-ticks",
+                "10",
+                "--capture-frames",
+                "12",
+                "--capture-step",
+                "1"
+            ])
+            .is_err(),
+            "would start before tick 0"
+        );
+        assert!(parse(&["--bench", "10", "--capture-frames", "4"]).is_err(), "needs --capture");
+        assert!(parse(&["--capture-step", "1"]).is_err(), "needs --capture");
+    }
+
+    #[test]
+    fn antialiasing_options_pick_the_technique() {
+        let taa_tier = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+        let mobile = RenderSettings { msaa: Msaa::X4, ..RenderSettings::default() };
+        let settings = |args: &[&str], tier| parse(args).unwrap().0.render_settings(tier);
+        let aa = |settings: RenderSettings| (settings.msaa, settings.temporal);
+        assert_eq!(aa(settings(&[], taa_tier)), (Msaa::Off, true), "the tier's");
+        assert_eq!(
+            aa(settings(&["--aa", "msaa"], taa_tier)),
+            (Msaa::X4, false),
+            "4× where the tier has none"
+        );
+        assert_eq!(aa(settings(&["--aa=msaa", "--msaa", "8"], taa_tier)), (Msaa::X8, false));
+        assert_eq!(aa(settings(&["--aa", "taa"], mobile)), (Msaa::Off, true));
+        assert_eq!(aa(settings(&["--aa", "taa", "--msaa", "4"], mobile)), (Msaa::X4, true), "both");
+        assert_eq!(aa(settings(&["--aa", "off"], mobile)), (Msaa::Off, false));
+        assert_eq!(
+            aa(settings(&["--msaa", "2"], taa_tier)),
+            (Msaa::X2, true),
+            "--msaa alone keeps the tier's TAA"
+        );
+        assert!(parse(&["--aa", "fxaa"]).is_err());
+
+        let (options, _) = parse(&["--spin", "3"]).unwrap();
+        assert_eq!(options.spin, Some(3.0));
+        assert!(parse(&["--spin", "inf"]).is_err());
     }
 
     #[test]

@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     // One frame, so one packet: it adds the scene's only instance.
     let mut packet = FramePacket {
-        views: vec![ViewData { camera }],
+        views: vec![ViewData::new(camera)],
         sun: DirectionalLight {
             direction: Vec3::new(0.7, -0.6, -0.35),
             color: Vec3::new(1.0, 0.97, 0.92),

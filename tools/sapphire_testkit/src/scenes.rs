@@ -29,39 +29,41 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-/// Scenes from before the sky's layers (M1 W2) pin the sky's gradient alone, `--plain-sky` (no
-/// discs, glows, stars or clouds), so they stay pixel-identical to their goldens: they are about
-/// the character, and the sky has scenes of its own.
-pub fn scenes() -> [Scene; 13] {
+/// The scenes, in the order they were added. Those from before the sky's layers (M1 W2) pin the
+/// sky's gradient alone, `--plain-sky` (no discs, glows, stars or clouds), so they stay
+/// pixel-identical to their goldens: they are about the character, and the sky has scenes of its
+/// own. Those from before temporal AA (M1 R7) pin 4× MSAA (`--aa msaa`), which the desktop tiers
+/// drew with until then, for the same reason.
+pub fn scenes() -> [Scene; 16] {
     [
         Scene {
             name: "turntable-start",
-            args: &["--capture-ticks", "0", "--plain-sky"],
+            args: &["--capture-ticks", "0", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         Scene {
             name: "turntable",
-            args: &["--capture-ticks", "90", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
-        // Without MSAA every outline and terminator edge is a hard pixel step, the case most
-        // sensitive to precision differences.
+        // Without MSAA or TAA every outline and terminator edge is a hard pixel step, the case
+        // most sensitive to precision differences.
         Scene {
             name: "turntable-msaa-off",
-            args: &["--capture-ticks", "90", "--msaa", "off", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--aa", "off", "--plain-sky"],
             thresholds: Thresholds::default(),
         },
         // Three colored local lights through the clustered path (M1 R5): their splits on the
         // head and arm, and a spot's pool on the pedestal.
         Scene {
             name: "turntable-lights",
-            args: &["--capture-ticks", "90", "--lights", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--lights", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The scene at render scale 0.7 (448×252), upsampled by post's final pass (M1 R6).
         Scene {
             name: "turntable-render-scale",
-            args: &["--capture-ticks", "90", "--render-scale", "0.7", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--render-scale", "0.7", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The procedural stalk beside the character (M1 R2): compute skinning bends it and its
@@ -69,7 +71,7 @@ pub fn scenes() -> [Scene; 13] {
         // with shading and outline.
         Scene {
             name: "turntable-skinned",
-            args: &["--capture-ticks", "90", "--skinned", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--skinned", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Sunset from the default day (M1 W1), between its golden-hour and sunset keys: a low
@@ -77,7 +79,7 @@ pub fn scenes() -> [Scene; 13] {
         // post's two grading LUTs blended (80% toward sunset's).
         Scene {
             name: "turntable-sunset",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The anime character shader swatches beside the character (M1 C1): ramp mode over the
@@ -86,7 +88,7 @@ pub fn scenes() -> [Scene; 13] {
         // material IDs.
         Scene {
             name: "turntable-swatches",
-            args: &["--capture-ticks", "90", "--swatches", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--swatches", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Night from the default day (M1 C2), halfway from dusk to midnight: the character lit by
@@ -95,7 +97,7 @@ pub fn scenes() -> [Scene; 13] {
         // the night sky and two blended grading LUTs.
         Scene {
             name: "turntable-night",
-            args: &["--capture-ticks", "90", "--time-of-day", "22", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--time-of-day", "22", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The face look-dev rig (M1 C3): the cooked face test head in two rows, each lit by the
@@ -104,7 +106,7 @@ pub fn scenes() -> [Scene; 13] {
         // light, light from above and to the side, a blush, and a gloom with a blush.
         Scene {
             name: "faces",
-            args: &["--capture-ticks", "90", "--faces", "--plain-sky"],
+            args: &["--capture-ticks", "90", "--faces", "--plain-sky", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // The sky by day (M1 W2), looking up past the character toward the morning sun: its
@@ -112,7 +114,7 @@ pub fn scenes() -> [Scene; 13] {
         // horizon, two-tone (white tops over lavender shade) with a rim, at 9:00's coverage.
         Scene {
             name: "sky-day",
-            args: &["--capture-ticks", "90", "--time-of-day", "9", "--view", "99,-22"],
+            args: &["--capture-ticks", "90", "--time-of-day", "9", "--view", "99,-22", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Sunset (M1 W2): the sun low in a gap of the card clouds, its glow spread along the
@@ -120,14 +122,58 @@ pub fn scenes() -> [Scene; 13] {
         // catching the color.
         Scene {
             name: "sky-sunset",
-            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6"],
+            args: &["--capture-ticks", "90", "--time-of-day", "18.5", "--view", "-100,-6", "--aa", "msaa"],
             thresholds: Thresholds::default(),
         },
         // Night (M1 W2): the moon's disc and halo, procedural stars and the Milky Way on the
         // turning celestial sphere, and dark clouds with moonlit rims.
         Scene {
             name: "sky-night",
-            args: &["--capture-ticks", "90", "--time-of-day", "21", "--view", "112,-20"],
+            args: &["--capture-ticks", "90", "--time-of-day", "21", "--view", "112,-20", "--aa", "msaa"],
+            thresholds: Thresholds::default(),
+        },
+        // Temporal AA (M1 R7), the desktop tiers' antialiasing: the turntable held still while
+        // 32 jittered frames converge, so outlines and light splits are antialiased as 4× MSAA
+        // draws them.
+        Scene {
+            name: "turntable-taa",
+            args: &["--capture-ticks", "90", "--aa", "taa", "--capture-frames", "32", "--plain-sky"],
+            thresholds: Thresholds::default(),
+        },
+        // The turntable spinning at 3 rad/s, about 8 times its usual speed, for the 32 frames up
+        // to the capture: outlines and two-tone edges must follow without ghost trails or smears.
+        Scene {
+            name: "turntable-taa-motion",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--aa",
+                "taa",
+                "--spin",
+                "3",
+                "--capture-frames",
+                "32",
+                "--capture-step",
+                "1",
+                "--plain-sky",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Temporal upsampling: the scene at two thirds of the output's size (427×240), resolved
+        // to 640×360 over 32 still frames.
+        Scene {
+            name: "turntable-taa-upsampled",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--aa",
+                "taa",
+                "--render-scale",
+                "0.667",
+                "--capture-frames",
+                "32",
+                "--plain-sky",
+            ],
             thresholds: Thresholds::default(),
         },
     ]

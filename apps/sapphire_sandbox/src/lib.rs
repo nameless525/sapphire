@@ -45,7 +45,11 @@
 //! - `--render-scale <0.25..1>`: the player's base render scale instead of the tier's.
 //! - `--dynamic-resolution`: let dynamic resolution lower the render scale to hold the tier's
 //!   GPU budget (off by default; `r.dynamic_resolution` overrides it).
-//! - `--msaa off|2|4|8`: override the tier's MSAA.
+//! - `--aa off|msaa|taa`: the antialiasing technique instead of the tier's (temporal AA on the
+//!   desktop tiers, 4× MSAA on mobile ones; M1 R7): `msaa` is the tier's sample count or 4×,
+//!   `taa` turns MSAA off. For comparisons and golden images.
+//! - `--msaa off|2|4|8`: override the sample count the tier or `--aa` gives.
+//! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
@@ -78,9 +82,11 @@
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default
-//!     90), write a PNG and exit.
+//!     90), write a PNG and exit. `--capture-frames F` draws F frames and writes the last, for
+//!     temporal AA's history; `--capture-step S` puts S ticks between them (0, the default:
+//!     the scene holds still at tick N; 1: it plays at 60 fps up to tick N).
 //!   - `--bench <frames>`: run the per-frame CPU path that many times and log CPU time and
-//!     allocations per frame.
+//!     allocations per frame, then GPU pass times.
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 //!

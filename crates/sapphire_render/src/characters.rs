@@ -278,7 +278,7 @@ mod tests {
                 face: CharacterFace::default(),
             })
             .collect();
-        FramePacket { views: vec![ViewData { camera }], characters, ..FramePacket::default() }
+        FramePacket { views: vec![ViewData::new(camera)], characters, ..FramePacket::default() }
     }
 
     fn slots(ids: std::ops::Range<u64>) -> InstanceSlots {

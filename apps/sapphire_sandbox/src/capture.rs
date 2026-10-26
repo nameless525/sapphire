@@ -1,6 +1,11 @@
 //! `--capture <png>`: renders the sandbox scene after a fixed number of simulation ticks into
 //! an offscreen target and writes it as a PNG (see [`crate::offscreen`]).
 //!
+//! With `--capture-frames` it draws several frames and writes the last, as temporal AA needs: a
+//! still scene redrawn while the history converges (`--capture-step 0`), or the scene playing at
+//! 60 fps up to the capture's tick (`--capture-step 1`). The jitter follows the renderer's frame
+//! count, so every run draws the same frames.
+//!
 //! Next to the PNG it writes `<name>.adapter.txt` (`backend=`, `adapter=`, `device_type=`,
 //! `driver=` lines) naming the GPU that rendered it, so golden-image tests
 //! (`cargo xtask golden`) compare against the right backend's reference.
@@ -15,6 +20,7 @@ use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
+use crate::options::CaptureFrames;
 
 /// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its
 /// first frames, and the frame graph's report and GPU timings come back a frame or two late.
@@ -24,26 +30,46 @@ pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
     ticks: u32,
+    frames: CaptureFrames,
     width: u32,
     height: u32,
 ) -> Result<(), AppInitError> {
-    for _ in 0..ticks {
+    let first =
+        frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
+    for _ in 0..first {
         stage.step();
     }
-    if stage.overlay_visible() {
-        // Redrawing the same scene state: the capture still shows the scene after `ticks`.
+    // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
+    // shown, at least its warm-up, redrawing the same scene state at the end.
+    let earlier = (frames.count - 1).max(if stage.overlay_visible() { OVERLAY_WARMUP_FRAMES } else { 0 });
+    if earlier > 0 {
         let target = stage.target(width, height, wgpu::TextureUsages::empty());
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        for _ in 0..OVERLAY_WARMUP_FRAMES {
+        for frame in 0..earlier {
             stage.render(&view, 1.0, |_, _| {})?;
             stage.scene.end_frame();
             stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
+            // The frames still to come, the captured one included, each this many ticks later.
+            if earlier - frame < frames.count {
+                for _ in 0..frames.step {
+                    stage.step();
+                }
+            }
         }
     }
     let pixels = render(stage, width, height)?;
     write_png(path, width, height, &pixels)?;
     write_adapter_info(path, &stage.gpu.caps().adapter)?;
-    tracing::info!(target: LOG_TARGET, path = %path.display(), width, height, ticks, "captured frame");
+    tracing::info!(
+        target: LOG_TARGET,
+        path = %path.display(),
+        width,
+        height,
+        ticks,
+        frames = frames.count,
+        step = frames.step,
+        "captured frame"
+    );
     Ok(())
 }
 

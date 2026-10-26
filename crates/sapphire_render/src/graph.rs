@@ -51,7 +51,9 @@
 //!   declaring one would never cull a pass, since it outlives the frame as an imported texture
 //!   does, and wgpu already orders accesses to it. Passes that write buffers other passes read
 //!   (uploads, skinning, light clusters) are side effects added before their readers.
-//! - Textures kept into the next frame (TAA history).
+//! - Textures kept into the next frame as graph resources. Temporal AA (M1 R7) keeps its history
+//!   and depth in persistent textures of its own and imports them every frame, which is enough
+//!   for one owner; a graph-managed history would pool them once several passes keep textures.
 //! - A per-pass cost hint, so parallel recording splits by work instead of pass count. GPU
 //!   timings could seed it.
 

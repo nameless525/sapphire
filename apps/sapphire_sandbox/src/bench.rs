@@ -17,14 +17,16 @@
 //!
 //! Then, where the device has timestamp queries, it runs [`TIMED_FRAMES`] more frames with the
 //! frame graph's GPU timing on and logs the mean GPU time of the main pass (the sky draws in it),
-//! of the skinning pass (`--skinned`), of the sky cube's face pass and of the whole frame. Timing
-//! comes last so it doesn't touch the CPU and allocation numbers, which stay comparable with
-//! builds that have none.
+//! the prepasses, temporal AA (its mask and resolve, against spec §3.3's 0.8 ms), post's
+//! composite, the skinning pass (`--skinned`), the sky cube's face pass and the whole frame.
+//! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
+//! with builds that have none.
 
 use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
+use sapphire_render::temporal;
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -96,6 +98,7 @@ pub(crate) fn run(
     let micros = |duration: Duration| duration.as_secs_f64() * 1e6;
     let quality = stage.quality.stats();
     let (scene_width, scene_height) = stage.renderer.stats().scene_size;
+    let settings = options.render_settings(stage.quality.render_settings());
     let gpu_span = match timed {
         0 => "untimed".to_owned(),
         timed => format!("{:.1}", micros(gpu_span / timed)),
@@ -109,7 +112,8 @@ pub(crate) fn run(
         render_scale = format_args!("{:.3}", quality.render_scale),
         scene = format_args!("{scene_width}x{scene_height}"),
         dynamic_resolution = quality.dynamic.enabled,
-        msaa = options.render_settings(stage.quality.render_settings()).msaa.sample_count(),
+        msaa = settings.msaa.sample_count(),
+        taa = settings.temporal,
         lights = options.lights,
         skinned = options.skinned,
         faces = options.faces,
@@ -144,10 +148,11 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         return Ok(());
     }
     stage.measure_gpu = true;
-    // Sums of (exclusive, duration) per pass, and frames timed.
-    let mut skinning = (Duration::ZERO, Duration::ZERO, 0u32);
-    let mut sky_cube = (Duration::ZERO, Duration::ZERO, 0u32);
-    let mut main = (Duration::ZERO, Duration::ZERO, 0u32);
+    // Sums of (exclusive, duration) per group of passes, and the frames it ran in.
+    type Sums = (Duration, Duration, u32);
+    let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
+    let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut post) =
+        (zero, zero, zero, zero, zero, zero);
     let (mut span, mut timed, mut last) = (Duration::ZERO, 0u32, 0);
     for _ in 0..TIMED_FRAMES {
         stage.step();
@@ -160,10 +165,24 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         last = timings.frame;
         timed += 1;
         span += timings.span();
-        for (name, sums) in [("skinning", &mut skinning), ("main", &mut main), ("sky cube", &mut sky_cube)] {
-            if let Some(pass) = timings.get(name) {
-                *sums = (sums.0 + pass.exclusive, sums.1 + pass.duration, sums.2 + 1);
+        // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
+        // runs are its inputs, timed apart; post's composite runs at the output's size either way.
+        let groups: [(&[&str], &mut Sums); 6] = [
+            (&["skinning"], &mut skinning),
+            (&["sky cube"], &mut sky_cube),
+            (&["main"], &mut main),
+            (&["character prepass", "scene prepass"], &mut prepasses),
+            (&temporal::PASSES, &mut taa),
+            (&["post"], &mut post),
+        ];
+        for (names, sums) in groups {
+            let mut ran = false;
+            for pass in names.iter().filter_map(|name| timings.get(name)) {
+                sums.0 += pass.exclusive;
+                sums.1 += pass.duration;
+                ran = true;
             }
+            sums.2 += u32::from(ran);
         }
     }
     let micros = |total: Duration, count: u32| total.as_secs_f64() * 1e6 / f64::from(count.max(1));
@@ -173,6 +192,11 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView) -> Result<(), AppInitE
         gpu_frame_us = format_args!("{:.1}", micros(span, timed)),
         gpu_main_us = format_args!("{:.1}", micros(main.0, main.2)),
         gpu_main_duration_us = format_args!("{:.1}", micros(main.1, main.2)),
+        gpu_prepasses_us = format_args!("{:.1}", micros(prepasses.0, prepasses.2)),
+        gpu_taa_us = format_args!("{:.1}", micros(taa.0, taa.2)),
+        gpu_taa_duration_us = format_args!("{:.1}", micros(taa.1, taa.2)),
+        taa_frames = taa.2,
+        gpu_post_us = format_args!("{:.1}", micros(post.0, post.2)),
         gpu_skinning_us = format_args!("{:.1}", micros(skinning.0, skinning.2)),
         gpu_skinning_duration_us = format_args!("{:.1}", micros(skinning.1, skinning.2)),
         skinning_frames = skinning.2,

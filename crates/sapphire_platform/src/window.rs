@@ -152,6 +152,9 @@ impl Window {
         let id = WindowId(unsafe { SDL_GetWindowID(raw.as_ptr()) }.0);
         // From here on, `Drop` cleans up if a later step fails.
         let mut inner = WindowInner { raw, id, metal_view: None, metal_layer: None };
+        // SDL's own display link for the window would hold a ProMotion panel at 120 Hz.
+        #[cfg(target_os = "ios")]
+        crate::ios_loop::stop_window_link(raw);
 
         if apple {
             // SAFETY: the window was created with SDL_WINDOW_METAL.

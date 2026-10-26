@@ -2,8 +2,10 @@
 
 use std::ffi::c_char;
 use std::marker::PhantomData;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::filesystem::SDL_GetBasePath;
@@ -23,6 +25,7 @@ use sdl3_sys::video::SDL_GetCurrentVideoDriver;
 use crate::content::{self, ContentFs};
 use crate::dirs;
 use crate::event::{self, Event, GamepadEvent, GamepadId, GamepadType, Keycode, LifecycleEvent, Timestamp};
+use crate::frame_clock::{FrameClock, FramePacing};
 use crate::system::SystemInfo;
 use crate::window::{Window, WindowDesc};
 use crate::{AppMetadata, LOG_TARGET, sdl};
@@ -58,6 +61,7 @@ pub struct Platform {
     /// Gamepads opened on `GAMEPAD_ADDED`; SDL only reports input for open gamepads.
     gamepads: Vec<(GamepadId, NonNull<SDL_Gamepad>)>,
     last_background_transition: Option<LifecycleEvent>,
+    frame_clock: FrameClock,
     _main_thread_only: PhantomData<*mut ()>,
 }
 
@@ -113,6 +117,7 @@ impl Platform {
             system_info,
             gamepads: Vec::new(),
             last_background_transition: None,
+            frame_clock: FrameClock::new(),
             _main_thread_only: PhantomData,
         })
     }
@@ -155,6 +160,36 @@ impl Platform {
         Timestamp::from_nanos(unsafe { SDL_GetTicksNS() })
     }
 
+    /// Sets the frame rate the app is built for (spec §6.2), normally its quality tier's; `None`
+    /// for the display's own rate. Takes effect from the next frame.
+    ///
+    /// On iOS the engine's display link asks the display for exactly this rate, so a ProMotion
+    /// panel can run at it rather than 120 Hz, and starts each frame on a vsync, holding back any
+    /// vsync that comes before the frame is due (ADR 0003). On desktop and Android,
+    /// where presentation paces frames, it is what [`Self::frame_pacing`] measures against.
+    pub fn set_frame_rate(&mut self, rate: Option<NonZeroU32>) {
+        self.frame_clock.set_frame_rate(rate);
+    }
+
+    /// How frames are paced and how evenly they have come (rule R9).
+    pub fn frame_pacing(&self) -> FramePacing {
+        self.frame_clock.pacing()
+    }
+
+    /// The current frame's interval since the frame before where a display link paces frames
+    /// (iOS): the time between the vsyncs the two are shown at, so steady frames advance the
+    /// simulation and animation by exactly the target interval. In the background it is at most
+    /// one target interval. `None` where presentation paces frames; measure with
+    /// `sapphire_time`'s `RealClock` there.
+    pub fn frame_delta(&self) -> Option<Duration> {
+        self.frame_clock.display_interval()
+    }
+
+    /// Runs before each [`App::iterate`](crate::App::iterate): whether this tick becomes a frame.
+    pub(crate) fn begin_frame(&mut self) -> bool {
+        self.frame_clock.begin_frame()
+    }
+
     /// A human-readable name for a key under the current layout (for rebinding UI and
     /// prompts), or an empty string if it has none.
     pub fn key_name(&self, key: Keycode) -> String {
@@ -166,6 +201,7 @@ impl Platform {
 
     /// Translates an SDL event and keeps platform-owned state in step with it.
     pub(crate) fn translate_event(&mut self, raw: &SDL_Event) -> Option<Event> {
+        self.frame_clock.observe(raw);
         let event = event::translate(raw)?;
         match event {
             // A gamepad that fails to open sends no input, so it isn't announced.
@@ -177,6 +213,10 @@ impl Platform {
             Event::Lifecycle { event: transition, .. } if self.repeats_last_transition(transition) => {
                 return None;
             }
+            // Frames between leaving the foreground and coming back may stall or sleep, so their
+            // intervals aren't measured.
+            Event::Lifecycle { event: LifecycleEvent::WillEnterBackground, .. } => self.frame_clock.pause(),
+            Event::Lifecycle { event: LifecycleEvent::DidEnterForeground, .. } => self.frame_clock.resume(),
             _ => {}
         }
         Some(event)

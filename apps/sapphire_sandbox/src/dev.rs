@@ -16,7 +16,9 @@ use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
     CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels, WindowMetrics,
 };
-use sapphire_platform::{AppInitError, Event, Platform, TextInputKind, Timestamp, Window, WindowEvent};
+use sapphire_platform::{
+    AppInitError, Event, FramePacing, Platform, TextInputKind, Timestamp, Window, WindowEvent,
+};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::Quality;
 use sapphire_render::{RenderStats, Renderer};
@@ -38,6 +40,8 @@ pub(crate) struct DevTools {
     /// Frames begun, and the last one's length, for live link's status.
     frames: u64,
     frame_time: Duration,
+    /// The frame's pacing, for the stats panel.
+    pacing: Option<FramePacing>,
     /// Process-wide allocation totals when the current frame began.
     allocations_at: AllocCounts,
     /// The previous frame's allocations.
@@ -95,6 +99,7 @@ impl DevTools {
             link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
             frames: 0,
             frame_time: Duration::ZERO,
+            pacing: None,
             allocations_at: process_allocations(),
             last_frame: AllocCounts::default(),
             now: Timestamp::default(),
@@ -160,10 +165,17 @@ impl DevTools {
         self.overlay.is_visible()
     }
 
-    /// Starts a frame of real length `frame_time` (and the CPU stages measured for it).
-    pub fn begin_frame(&mut self, frame_time: Duration, stages: Option<&Stages>) {
+    /// Starts a frame of real length `frame_time` (and the CPU stages measured for it), paced as
+    /// `pacing` says where a display paces frames.
+    pub fn begin_frame(
+        &mut self,
+        frame_time: Duration,
+        stages: Option<&Stages>,
+        pacing: Option<FramePacing>,
+    ) {
         self.frames += 1;
         self.frame_time = frame_time;
+        self.pacing = pacing;
         let now = process_allocations();
         self.last_frame = AllocCounts {
             allocations: now.allocations - self.allocations_at.allocations,
@@ -200,6 +212,7 @@ impl DevTools {
             allocations: self.last_frame,
             render: frame.render,
             quality: Some(frame.quality.stats()),
+            pacing: self.pacing,
             graph: executor,
             gpu: frame.gpu,
             input_device: frame.input.and_then(SandboxInput::last_device),

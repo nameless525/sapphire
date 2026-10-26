@@ -6,7 +6,7 @@ use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_input::DeviceKind;
-use sapphire_platform::{Event, Scancode, Timestamp, TouchEvent, TouchPhase};
+use sapphire_platform::{Event, FramePacing, Scancode, Timestamp, TouchEvent, TouchPhase};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
 use sapphire_render::{CharacterInstance, RenderStats};
@@ -58,6 +58,8 @@ pub struct OverlayFrame<'a> {
     pub render: RenderStats,
     /// The quality tier, render scale and dynamic resolution, if the app runs tiers.
     pub quality: Option<QualityStats>,
+    /// How the platform paces frames and how evenly they come (M1 F7), if a display paces them.
+    pub pacing: Option<FramePacing>,
     /// The executor that ran the previous frame: its stats, report and GPU timings.
     pub graph: &'a GraphExecutor,
     pub gpu: &'a GpuContext,

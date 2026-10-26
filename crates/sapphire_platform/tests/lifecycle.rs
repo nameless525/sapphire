@@ -6,10 +6,13 @@
 //! needs no display or GPU.
 
 use std::cell::RefCell;
+use std::num::NonZeroU32;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, LifecycleEvent, Platform, run};
+use sapphire_platform::{
+    App, AppControl, AppInitError, AppMetadata, Event, LifecycleEvent, PacingSource, Platform, run,
+};
 use sdl3_sys::events::{
     SDL_EVENT_DID_ENTER_FOREGROUND, SDL_EVENT_LOW_MEMORY, SDL_EVENT_WILL_ENTER_BACKGROUND, SDL_Event,
     SDL_PushEvent,
@@ -158,6 +161,35 @@ impl App for ReentrantLifecycle {
     }
 }
 
+/// Sets a frame rate, then checks on its fifth frame that SDL's loop ran every frame: on desktop
+/// presentation paces frames, and the target is only measured against (M1 F7).
+struct PacedByPresentation(u32);
+
+impl App for PacedByPresentation {
+    const METADATA: AppMetadata = METADATA;
+
+    fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
+        platform.set_frame_rate(NonZeroU32::new(60));
+        Ok(Self(0))
+    }
+    fn event(&mut self, _: &mut Platform, _: &Event) -> AppControl {
+        AppControl::Continue
+    }
+    fn iterate(&mut self, platform: &mut Platform) -> AppControl {
+        self.0 += 1;
+        if self.0 < 5 {
+            return AppControl::Continue;
+        }
+        let pacing = platform.frame_pacing();
+        assert_eq!(pacing.source, PacingSource::Presentation);
+        assert_eq!(pacing.target, NonZeroU32::new(60));
+        assert_eq!((pacing.stats.frames, pacing.stats.held), (5, 0));
+        assert_eq!(platform.frame_delta(), None, "only a display link's intervals are vsync-exact");
+        record("paced");
+        AppControl::Exit
+    }
+}
+
 fn main() {
     // SAFETY: nothing else runs yet; this is the only thread.
     unsafe { std::env::set_var("SDL_VIDEO_DRIVER", "dummy") };
@@ -175,6 +207,9 @@ fn main() {
 
     assert_eq!(run::<FailsInit>(), ExitCode::FAILURE);
     assert_eq!(take_trace(), ["init"]);
+
+    assert_eq!(run::<PacedByPresentation>(), ExitCode::SUCCESS);
+    assert_eq!(take_trace(), ["paced"]);
 
     // Keep the expected panic's message out of the test output.
     let default_hook = panic::take_hook();

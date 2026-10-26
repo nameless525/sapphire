@@ -5,7 +5,7 @@
 //!
 //! - **Entry and lifecycle** through SDL's main callbacks on every platform: [`run`]
 //!   from `fn main` on desktop and iOS, [`export_android_main!`] on Android. The app
-//!   implements [`App`].
+//!   implements [`App`]. On iOS the engine's display link drives them (see "Frame pacing").
 //! - **The OS window** ([`Window`]) and the [`SurfaceHandle`] the renderer builds its
 //!   surface from: a `CAMetalLayer` on Apple platforms, `raw-window-handle` 0.6 handles
 //!   elsewhere, kept alive for as long as the surface needs them.
@@ -22,6 +22,8 @@
 //!   with cancellation and completion callbacks (spec §4.3). The asset server reads packs
 //!   through it; decoding happens on the job system's workers, not here.
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
+//! - **Frame pacing** (M1 F7): when [`App::iterate`] runs, at the rate the app sets with
+//!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below.
 //!
 //! # Does not own
 //!
@@ -35,6 +37,9 @@
 //! - Memory-mapping pack files where the OS allows (desktop, iOS, and packs downloaded into
 //!   Android's internal storage, spec §6.4), so raw blocks are read in place; and the IO
 //!   thread's priority above normal, with the job system's thread priorities (spec §5.5).
+//! - Frame pacing beyond iOS's display link (spec §6.2): desktop's player frame cap and Android's
+//!   limiter with `ANativeWindow_setFrameRate`, both on the same pacer; and timed presentation
+//!   once wgpu can present at a chosen time.
 //!
 //! # Threading
 //!
@@ -44,13 +49,32 @@
 //! SDL types or raw SDL pointers; the only pointers it hands out are the native surface
 //! handles.
 //!
-//! # Frame pacing (known gap)
+//! # Frame pacing
 //!
-//! SDL decides when [`App::iterate`] runs. On iOS that is SDL's own `CADisplayLink`, which
-//! runs at the display's full rate (up to 120 Hz on ProMotion) and ignores
-//! `SDL_HINT_MAIN_CALLBACK_RATE`, so a 30 / 60 fps cap (spec §6.2) can't be set here yet.
-//! Whether the engine owns a display link or paces through presentation is an open M1 / M4
-//! decision.
+//! The app sets the frame rate it is built for (the quality tier's) with
+//! [`Platform::set_frame_rate`]; what that does depends on what starts frames (spec §6.2,
+//! ADR 0003):
+//!
+//! - **iOS:** the engine's `CADisplayLink` drives SDL's main callbacks in place of SDL's own link,
+//!   which ran at the display's full rate (up to 120 Hz on ProMotion). The link asks the display
+//!   for exactly the target rate, so a ProMotion panel can drop to it, and each frame starts on a
+//!   vsync; a tick that comes before a frame is due is held back. SDL's link for each window,
+//!   which asked for 80–120 Hz, is stopped. Event dispatch, lifecycle events and quitting stay
+//!   SDL's, through SDL's own main-callback functions. [`Platform::frame_delta`] is the time
+//!   between the vsyncs frames are shown at, for the simulation and animation.
+//! - **Desktop and Android:** SDL's loop runs frames back to back and presentation (FIFO) waits
+//!   for vsync, as before; the target is what the stats measure against.
+//!
+//! [`Platform::frame_pacing`] reports the source, the target, the display's refresh and the
+//! counters (on time, missed, doubled, held back) for stats panels.
+//!
+//! The decisions are a pure function of the ticks' vsync times (`pacing.rs`), unit-tested with
+//! injected timestamps. They count whole refreshes, so the target rate holds, never exceeded, on
+//! panels it doesn't divide (60 fps at 90 or 144 Hz), as Android's will need. Frames start on
+//! time; when each is shown is presentation's (FIFO's)
+//! call. Presenting at a chosen time (Metal's minimum present duration, `CAMetalDisplayLink`,
+//! Vulkan's present timing) would hold intervals even for a frame that finishes early on a panel
+//! faster than the target, and waits for wgpu to expose it.
 //!
 //! # Android packaging
 //!
@@ -94,8 +118,12 @@ mod app;
 mod content;
 mod dirs;
 mod event;
+mod frame_clock;
 mod io;
+#[cfg(target_os = "ios")]
+mod ios_loop;
 mod log;
+mod pacing;
 mod platform;
 mod sdl;
 mod system;
@@ -111,8 +139,10 @@ pub use event::{
     LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,
     TextEvent, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
+pub use frame_clock::FramePacing;
 pub use io::{ContentReader, IoFile, IoPriority, IoThread, IoTicket, ReadCallback, ReadError};
 pub use log::sdl_log;
+pub use pacing::{PacingSource, PacingStats};
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;
 pub use system::{DeviceClass, Os, SystemInfo};

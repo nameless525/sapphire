@@ -41,6 +41,13 @@ sdl3-sys = { workspace = true, features = [
     "sdl-sensor",
 ] }
 
+# iOS frame pacing (M1 F7, ADR 0003): the engine's CADisplayLink, which drives SDL's main
+# callbacks at the target frame rate, and the Objective-C class it calls.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString"] }
+objc2-quartz-core = { workspace = true, features = ["objc2-core-foundation", "CADisplayLink", "CAFrameRateRange"] }
+
 [dev-dependencies]
 # The lifecycle test injects raw SDL events to exercise re-entrant dispatch.
 sdl3-sys.workspace = true

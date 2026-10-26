@@ -86,6 +86,7 @@
 
 pub mod dynamic;
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use bevy_reflect::{Reflect, TypePath};
@@ -178,8 +179,8 @@ pub struct QualityTier {
     /// device of the class gets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub select_when: Vec<TierRule>,
-    /// Frames per second the tier is built for (§3.1): dynamic resolution's frame-time target
-    /// now, and what frame pacing will hold (§6.2).
+    /// Frames per second the tier is built for (§3.1): dynamic resolution's frame-time target,
+    /// and the rate frame pacing holds (§6.2, M1 F7).
     pub frame_rate: u32,
     /// The GPU frame budget in milliseconds (§3.1), which dynamic resolution holds frames under.
     pub gpu_frame_ms: f32,
@@ -782,6 +783,12 @@ impl Quality {
     /// The active tier's knobs.
     pub fn tier(&self) -> &QualityTier {
         self.table.get(self.active.id)
+    }
+
+    /// The frame rate the active tier is built for, which the platform paces frames to (spec
+    /// §6.2, M1 F7). Tables are validated, so it is never zero.
+    pub fn frame_rate(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.tier().frame_rate)
     }
 
     pub fn active(&self) -> ActiveTier {

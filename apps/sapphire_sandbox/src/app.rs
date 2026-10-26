@@ -116,6 +116,9 @@ impl App for SandboxApp {
         // The tier comes from the device the GPU stack runs on; the renderer is made for it.
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
+        // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
+        // the display for it.
+        platform.set_frame_rate(quality.frame_rate());
         let mut content = Content::new(platform)?;
         // The stage and the rim rig draw the character without its pedestal.
         if options.stage.is_some() || options.rim_rig.is_some() {
@@ -232,12 +235,16 @@ impl App for SandboxApp {
     }
 
     fn iterate(&mut self, platform: &mut Platform) -> AppControl {
-        let frame_time = self.real.update();
+        let measured = self.real.update();
+        // Where a display link paces frames (iOS), the frame's time is its interval in whole
+        // vsyncs, so steady frames run whole fixed steps whatever the scheduler's jitter.
+        let frame_time = platform.frame_delta().unwrap_or(measured);
+        let pacing = platform.frame_pacing();
         self.frame_time = if self.steady { frame_time } else { Duration::ZERO };
         self.steady = true;
         // The previous frame's stages go with its length.
         #[cfg(feature = "dev")]
-        self.dev.begin_frame(frame_time, Some(&self.stages));
+        self.dev.begin_frame(frame_time, Some(&self.stages), Some(pacing));
         let mut stopwatch = Stopwatch::start();
         // On the clock event timestamps use, so every trigger is judged on one timeline.
         #[cfg(feature = "dev")]
@@ -259,7 +266,7 @@ impl App for SandboxApp {
             self.rebuild_surface();
         }
         if !self.gpu.is_lost() {
-            self.follow_tier();
+            self.follow_tier(platform);
             // Packs, shaders and documents changed on disk, swapped in before loading.
             #[cfg(feature = "dev")]
             self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
@@ -300,7 +307,7 @@ impl App for SandboxApp {
         }
 
         self.scene.end_frame();
-        self.stats.record(frame_time, steps.dropped, presented, &self.stages);
+        self.stats.record(frame_time, steps.dropped, presented, &self.stages, &pacing);
         profiling::finish_frame!();
         self.frame_limit_control().unwrap_or(AppControl::Continue)
     }
@@ -543,8 +550,8 @@ impl SandboxApp {
     }
 
     /// Follows `r.tier`: a new tier gets a new renderer with its settings, on the same device,
-    /// as after device loss. If that fails the old tier and renderer stay.
-    fn follow_tier(&mut self) {
+    /// as after device loss, and its frame rate. If that fails the old tier and renderer stay.
+    fn follow_tier(&mut self, platform: &mut Platform) {
         let Some(previous) = self.quality.update_tier() else { return };
         self.steady = false;
         let settings = self.render_settings();
@@ -563,6 +570,7 @@ impl SandboxApp {
                 self.quality.restore(previous);
             }
         }
+        platform.set_frame_rate(self.quality.frame_rate());
     }
 
     /// `--frames N`: exit successfully once N frames were presented, or fail once the run's

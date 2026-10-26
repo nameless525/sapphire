@@ -2,7 +2,9 @@
 //!
 //! SDL owns the main loop on every platform: it calls `SDL_AppInit` once,
 //! `SDL_AppEvent` per event, `SDL_AppIterate` once per frame and `SDL_AppQuit` once at
-//! the end. The `extern "C"` trampolines here adapt those calls to the [`App`] trait.
+//! the end. The `extern "C"` trampolines here adapt those calls to the [`App`] trait. On iOS
+//! the engine's display link, not SDL's, starts each iteration (`ios_loop.rs`, ADR 0003), and
+//! everywhere the platform's frame clock may turn an iteration down before the app sees it.
 //!
 //! Panics never unwind into SDL's C frames. Each callback catches them, stashes the
 //! first payload and reports failure, so SDL winds down and calls `SDL_AppQuit`. What
@@ -10,9 +12,9 @@
 //!
 //! - **Desktop:** [`run`] gets control back and resumes the panic with
 //!   [`std::panic::resume_unwind`], so it continues from `main` as usual.
-//! - **iOS:** SDL ends the process with `exit()` from inside UIKit's run loop and never
-//!   returns to [`run`]. The quit callback aborts instead, so crash reporting sees a
-//!   crash rather than a clean exit.
+//! - **iOS:** the process ends with `exit()` from inside UIKit's run loop, as SDL's own iOS
+//!   entry ends it, and never returns to [`run`]. The quit callback aborts instead, so crash
+//!   reporting sees a crash rather than a clean exit.
 //! - **Android:** `SDL_main` is called from Java through C, so it can't unwind either;
 //!   it aborts once SDL returns.
 
@@ -29,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::init::{SDL_APP_CONTINUE, SDL_APP_FAILURE, SDL_APP_SUCCESS, SDL_AppResult};
-use sdl3_sys::main::{SDL_EnterAppMainCallbacks, SDL_RunApp};
+use sdl3_sys::main::SDL_RunApp;
 use sdl3_sys::timer::SDL_GetTicksNS;
 
 use crate::event::TextEvent;
@@ -82,9 +84,10 @@ pub trait App: Sized + 'static {
     /// Called for each event, in order, before the next [`iterate`](Self::iterate).
     fn event(&mut self, platform: &mut Platform, event: &Event) -> AppControl;
 
-    /// Called once per frame. SDL paces it: as fast as possible on desktop (the
-    /// renderer's present blocks for vsync), at the display link's rate on iOS, and not
-    /// at all while an Android app is paused.
+    /// Called once per frame. On iOS the engine's display link starts each frame on a vsync at
+    /// the rate set with [`Platform::set_frame_rate`]. On desktop and Android SDL's loop calls
+    /// it as fast as presentation allows (the renderer's present blocks for vsync), and not at
+    /// all while an Android app is paused.
     fn iterate(&mut self, platform: &mut Platform) -> AppControl;
 
     /// Called once before shutdown, unless a callback panicked. Not guaranteed on
@@ -281,10 +284,15 @@ pub mod __private {
 
 /// The C main function SDL runs: hands control to SDL's callback loop.
 unsafe extern "C" fn sdl_main<A: App>(argc: c_int, argv: *mut *mut c_char) -> c_int {
+    // On iOS the engine's display link, not SDL's, drives the callbacks (ADR 0003).
+    #[cfg(target_os = "ios")]
+    use crate::ios_loop::enter_main_callbacks as enter;
+    #[cfg(not(target_os = "ios"))]
+    use sdl3_sys::main::SDL_EnterAppMainCallbacks as enter;
     // SAFETY: `argc` / `argv` are forwarded unchanged from SDL_RunApp or SDLActivity,
     // and the four callbacks match SDL's signatures.
     unsafe {
-        SDL_EnterAppMainCallbacks(
+        enter(
             argc,
             argv,
             Some(app_init::<A>),
@@ -356,7 +364,7 @@ unsafe extern "C" fn app_quit<A: App>(appstate: *mut c_void, _result: SDL_AppRes
         }
     }
     if cfg!(target_os = "ios") && has_panicked() {
-        // SDL calls exit() right after this; see the module docs.
+        // The process exits right after this; see the module docs.
         abort_after_panic();
     }
 }
@@ -407,7 +415,13 @@ impl<A: App> Runtime<A> {
             // A frame requested from inside another callback is skipped, not nested.
             return SDL_APP_CONTINUE;
         }
-        self.exclusive(|state| state.app.iterate(&mut state.platform))
+        self.exclusive(|state| {
+            // The frame clock turns down a display tick that came sooner than the target interval.
+            if !state.platform.begin_frame() {
+                return AppControl::Continue;
+            }
+            state.app.iterate(&mut state.platform)
+        })
     }
 
     fn event(&self, raw: &SDL_Event) -> SDL_AppResult {

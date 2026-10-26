@@ -91,8 +91,15 @@ profiling = { version = "1.0.18", default-features = false }
 tracing-log = { version = "0.2.0", default-features = false, features = ["log-tracer", "std"] }
 
 # --- Platform ---
-sdl3-sys = { version = "0.7.2", default-features = false }
+# Pinned exactly (SDL 3.4.18; sdl3-sys pins its sdl3-src): sapphire_platform's iOS loop calls SDL's
+# internal main-callback functions, so an SDL upgrade, patch releases included, is a deliberate step
+# that re-checks them (ADR 0003, and the version assertion in `ios_loop.rs`).
+sdl3-sys = { version = "=0.7.2", default-features = false }
 raw-window-handle = "0.6.2"
+# iOS frame pacing (M1 F7, ADR 0003): sapphire_platform's display link and the class it calls.
+# Both were already in the tree through wgpu's Metal backend, at these versions.
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
 
 # --- ECS (spec §5.6) ---
 # Pinned per milestone and re-exported through sapphire_ecs. Its `bevy_reflect` feature
@@ -153,7 +160,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parki
 pollster = "1.0"
 # PNG output for the sandbox's offscreen captures.
 png = "0.18"
-# Dev-only: a detached CAMetalLayer lets sapphire_rhi test surfaces without a window.
+# Dev-only in sapphire_rhi: a detached CAMetalLayer lets it test surfaces without a window. On iOS,
+# sapphire_platform's display link (M1 F7) adds the features it needs.
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 
 # --- Dev tooling (dev-only crates: never in a shipping build) ---

@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use sapphire_platform::{FramePacing, PacingStats};
 use sapphire_rhi::SkipReason;
 
 use crate::LOG_TARGET;
@@ -41,6 +42,7 @@ pub(crate) struct FrameStats {
     frames: u32,
     /// Frames actually presented.
     presented: u32,
+    best: Option<Duration>,
     worst: Duration,
     skipped: u32,
     /// The latest skip reason, so a run of identical skips logs once.
@@ -50,6 +52,8 @@ pub(crate) struct FrameStats {
     stages: Stages,
     /// Process allocation total at the start of the window.
     allocations_at_start: u64,
+    /// The platform's pacing counters at the start of the window.
+    pacing_at_start: PacingStats,
 }
 
 impl FrameStats {
@@ -64,14 +68,22 @@ impl FrameStats {
         }
     }
 
-    /// Records one frame; logs and resets once per [`REPORT_INTERVAL`].
-    pub fn record(&mut self, frame_time: Duration, dropped: Duration, presented: bool, stages: &Stages) {
+    /// Records one frame, paced as `pacing` says; logs and resets once per [`REPORT_INTERVAL`].
+    pub fn record(
+        &mut self,
+        frame_time: Duration,
+        dropped: Duration,
+        presented: bool,
+        stages: &Stages,
+        pacing: &FramePacing,
+    ) {
         if presented {
             self.presented += 1;
             self.last_skip = None;
         }
         self.window += frame_time;
         self.frames += 1;
+        self.best = Some(self.best.map_or(frame_time, |best| best.min(frame_time)));
         self.worst = self.worst.max(frame_time);
         self.dropped += dropped;
         self.stages.add(stages);
@@ -84,12 +96,24 @@ impl FrameStats {
         let seconds = self.window.as_secs_f64();
         let average_ms = seconds * 1e3 / f64::from(frames);
         let stage_ms = |total: Duration| format!("{:.3}", total.as_secs_f64() * 1e3 / f64::from(frames));
+        let (now, start) = (pacing.stats, self.pacing_at_start);
         tracing::info!(
             target: LOG_TARGET,
             fps = format_args!("{:.1}", f64::from(self.presented) / seconds),
             loop_hz = format_args!("{:.1}", f64::from(frames) / seconds),
             avg_ms = format_args!("{average_ms:.2}"),
+            best_ms = format_args!("{:.2}", self.best.unwrap_or_default().as_secs_f64() * 1e3),
             worst_ms = format_args!("{:.2}", self.worst.as_secs_f64() * 1e3),
+            // The window's frames against the target rate (spec §6.2).
+            pacing = format_args!(
+                "{:?} at {} fps: {} on time, {} missed, {} doubled, {} ticks held",
+                pacing.source,
+                pacing.target.map_or(0, |rate| rate.get()),
+                now.on_time - start.on_time,
+                now.missed - start.missed,
+                now.doubled - start.doubled,
+                now.held - start.held,
+            ),
             input_ms = stage_ms(self.stages.input),
             sim_ms = stage_ms(self.stages.simulation),
             extract_ms = stage_ms(self.stages.extract),
@@ -101,6 +125,7 @@ impl FrameStats {
         );
         *self = Self {
             allocations_at_start: sapphire_core::alloc::stats().total_allocations,
+            pacing_at_start: pacing.stats,
             last_skip: self.last_skip,
             ..Self::default()
         };

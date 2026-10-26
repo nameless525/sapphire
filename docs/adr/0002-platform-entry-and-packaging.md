@@ -46,4 +46,4 @@ M0 has to run the same app crate on macOS, Windows, Linux, iOS and Android. The 
 - **The Android emulator needs adjustments:**
   - Its Vulkan driver crashes on debug object labels, so the app turns labels off when `SystemInfo::is_emulator` is true.
   - Only `-gpu host` gives hardware Vulkan; it goes through MoltenVK.
-- **iOS frame pacing is SDL's.** With main callbacks, SDL's private display link drives `iterate` at up to 120 Hz on ProMotion. Open question Q13 tracks this.
+- **iOS frame pacing was SDL's.** With main callbacks, SDL's private display link drove `iterate` at up to 120 Hz on ProMotion (Q13). Since M1 F7 the engine's display link drives SDL's main callbacks at the quality tier's rate (ADR 0003).

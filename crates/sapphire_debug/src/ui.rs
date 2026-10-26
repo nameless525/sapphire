@@ -8,6 +8,7 @@ use egui::{Align2, Color32, FontId, Id, Order, RichText, Sense, Stroke, Ui, pos2
 use sapphire_assets::AssetKind;
 use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
+use sapphire_platform::PacingSource;
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
 use sapphire_render::{PREPASSES, post, shadows, temporal};
@@ -252,6 +253,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         ui.end_row();
     });
     frame_time_graph(ui, view.history, frame_budget);
+    pacing(ui, frame);
 
     ui.separator();
     egui::Grid::new("cpu").num_columns(3).striped(true).show(ui, |ui| {
@@ -617,6 +619,42 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
             (true, ..) => format!("on, waiting for timings; ×{:.2}", dynamic.factor),
         };
         row(ui, "Dynamic resolution", state);
+    });
+}
+
+/// How the platform paces frames against the tier's rate, and how evenly they have come (M1 F7).
+fn pacing(ui: &mut Ui, frame: &OverlayFrame<'_>) {
+    let Some(pacing) = frame.pacing else { return };
+    egui::Grid::new("pacing").num_columns(2).show(ui, |ui| {
+        let row = |ui: &mut Ui, name: &str, value: String| {
+            ui.label(name);
+            ui.monospace(value);
+            ui.end_row();
+        };
+        let display = pacing.refresh_hz.map_or_else(String::new, |hz| format!(" on a {hz:.0} Hz display"));
+        let how = match (pacing.source, pacing.target) {
+            (PacingSource::DisplayLink, Some(rate)) => format!("display link at {rate} fps{display}"),
+            (PacingSource::DisplayLink, None) => format!("display link at the display's rate{display}"),
+            (PacingSource::Presentation, Some(rate)) => {
+                format!("presentation (FIFO), against {rate} fps{display}")
+            }
+            (PacingSource::Presentation, None) => format!("presentation (FIFO){display}"),
+        };
+        row(ui, "Frame pacing", how);
+        let stats = pacing.stats;
+        let held = match pacing.source {
+            PacingSource::DisplayLink => format!(", {} ticks held", stats.held),
+            PacingSource::Presentation => String::new(),
+        };
+        row(
+            ui,
+            "  frames",
+            format!(
+                "{}: {} on time, {} missed, {} doubled{held}",
+                stats.frames, stats.on_time, stats.missed, stats.doubled
+            ),
+        );
+        row(ui, "  last interval", format_ms(pacing.interval));
     });
 }
 

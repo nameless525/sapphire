@@ -232,7 +232,8 @@ impl Stage {
         let overlay = {
             let started = sapphire_time::Stopwatch::start();
             // Offscreen frames have no real length; the overlay is told each is a 60 Hz frame.
-            self.dev.begin_frame(OFFSCREEN_FRAME, self.stages.as_ref());
+            // No display paces offscreen frames.
+            self.dev.begin_frame(OFFSCREEN_FRAME, self.stages.as_ref(), None);
             self.dev.advance_offscreen(OFFSCREEN_FRAME);
             // Drawn as on a display 720 points high, so text stays legible at any size.
             let scale = (height as f32 / 720.0).max(1.0);

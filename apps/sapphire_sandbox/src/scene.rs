@@ -66,6 +66,7 @@
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
 use sapphire_assets::mesh::ArchivedMesh;
+use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::{
@@ -120,6 +121,12 @@ type Characters = QueryState<
 /// The face rig's heads, each a character lit from its own angles (see [`crate::faces`]).
 type FaceHeads = QueryState<(Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
 
+/// The effect stack and its presets, borrowed together in place. `World::resource_scope` would
+/// take the stack off its resource entity and put it back, two archetype moves whose first use
+/// builds archetypes and tables (allocating), and the overlay's effect controls run before every
+/// fixed step, which must not allocate (rule R6).
+type ScreenEffects = SystemState<(ResMut<'static, EffectStack>, Res<'static, EffectLibrary>)>;
+
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
@@ -154,6 +161,8 @@ pub(crate) struct Scene {
     /// Made once: a query made each frame would allocate.
     characters: Characters,
     heads: FaceHeads,
+    /// Made once, like the queries: [`Self::with_screen_effects`] runs inside fixed steps.
+    screen_effects: ScreenEffects,
     /// The zone's sky material on the current renderer, once loaded.
     sky_material: Option<MaterialHandle>,
     /// Both cloud layers' coverage instead of time of day's (`--cloud-cover`).
@@ -209,6 +218,7 @@ impl Scene {
         ecs.startup();
         let characters = ecs.world_mut().query_filtered();
         let heads = ecs.world_mut().query_filtered();
+        let screen_effects = SystemState::new(ecs.world_mut());
         Self {
             ecs,
             character,
@@ -226,6 +236,7 @@ impl Scene {
             bounds,
             characters,
             heads,
+            screen_effects,
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
@@ -374,11 +385,14 @@ impl Scene {
         })
     }
 
-    /// Runs `f` on the effect stack and the presets.
+    /// Runs `f` on the effect stack and the presets. Allocation-free, so it may run inside fixed
+    /// steps (the overlay's effect controls do, rule R6).
     pub fn with_screen_effects<T>(&mut self, f: impl FnOnce(&mut EffectStack, &EffectLibrary) -> T) -> T {
-        self.ecs.world_mut().resource_scope(|world, mut stack: Mut<'_, EffectStack>| {
-            f(&mut stack, world.resource::<EffectLibrary>())
-        })
+        let (mut stack, library) = self
+            .screen_effects
+            .get_mut(self.ecs.world_mut())
+            .expect("the scene inserts the effect stack and its presets");
+        f(&mut stack, &library)
     }
 
     /// The effect stack and the presets, for the overlay.
@@ -842,6 +856,38 @@ mod tests {
             let _ = scene.frame_packet(0.5, Some((1, 1)));
             scene.end_frame();
         }
+        assert_eq!(allocations, 0, "rule R6");
+    }
+
+    #[test]
+    fn screen_effect_controls_before_fixed_steps_do_not_allocate_from_the_first() {
+        // As `dev` builds run the steps: the overlay's screen effect controls reach the stack
+        // before every one (`DevTools::before_fixed_step`), from the very first, and one fires a
+        // preset partway through.
+        let mut scene = scene();
+        let library = EffectLibrary::default_effects();
+        let name = library.names().next().expect("the default presets");
+        let fire = library.find(name).expect("a preset of that name");
+        let layers = library.preset(fire).expect("a preset").layers.len() as u64;
+        let mut allocations = 0;
+        for frame in 0..30 {
+            let ((), steps) = sapphire_core::alloc::count_in_scope(|| {
+                for step in 0..2 {
+                    scene.with_screen_effects(|stack, library| {
+                        if (frame, step) == (10, 0)
+                            && let Some(preset) = library.preset(fire)
+                        {
+                            stack.push(preset);
+                        }
+                    });
+                    scene.step();
+                }
+            });
+            allocations += steps.allocations;
+            let _ = scene.frame_packet(0.5, Some((1, 1)));
+            scene.end_frame();
+        }
+        assert_eq!(scene.with_screen_effects(|stack, _| stack.stats().pushed), layers, "the preset fired");
         assert_eq!(allocations, 0, "rule R6");
     }
 

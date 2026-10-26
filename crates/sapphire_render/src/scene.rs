@@ -784,9 +784,10 @@ mod tests {
         ];
         slots.apply(&deltas(&instances, &[]));
         slots.apply(&deltas(&[], &[1]));
-        // Handle 12 (slot 2) is alpha-tested, 13 transparent with an outline it won't draw, and
-        // 14 has no outline.
+        // Handle 12 (slot 2) is alpha-tested, 13 transparent with an outline it won't draw, 14
+        // has no outline, and 11 is a face.
         let flags = |handle: MaterialHandle| match handle.0 {
+            11 => MaterialFlags::FACE | MaterialFlags::OUTLINE,
             12 => MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
             13 => MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE,
             14 => MaterialFlags::empty(),
@@ -809,8 +810,9 @@ mod tests {
             ]
         );
         // Grouped by format, then by surface variant, in slot order within each group.
-        let [[unorm16, unorm16_alpha_test, unorm16_transparent], [float32, _, float32_transparent]] =
-            &list.commands;
+        let [unorm16_variants, float32_variants] = &list.commands;
+        let [unorm16, unorm16_face, unorm16_alpha_test, _, unorm16_transparent, _] = unorm16_variants;
+        let [float32, _, _, _, float32_transparent, _] = float32_variants;
         let command = |indices, first_vertex, draw_id, slot: u32, outline| DrawCommand {
             indices,
             first_vertex,
@@ -818,7 +820,8 @@ mod tests {
             material: MaterialHandle(slot + 10),
             outline,
         };
-        assert_eq!(unorm16[..], [command(9..12, 24, 0, 1, true), command(0..6, 0, 2, 0, true)]);
+        assert_eq!(unorm16[..], [command(0..6, 0, 2, 0, true)]);
+        assert_eq!(unorm16_face[..], [command(9..12, 24, 0, 1, true)], "a face of its own");
         assert_eq!(unorm16_alpha_test[..], [command(12..24, 24, 1, 2, true)]);
         assert!(unorm16_transparent.is_empty());
         assert!(float32.is_empty());
@@ -830,13 +833,13 @@ mod tests {
             [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
         );
         let lens = SurfaceVariant::ALL.map(|variant| list.len(variant));
-        assert_eq!((lens, list.outlines()), ([3, 1, 1], 3));
+        assert_eq!((lens, list.outlines()), ([2, 1, 1, 0, 1, 0], 3));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
         list.build(&meshes, flags, &slots);
         assert_eq!(list.draws.len(), 3);
-        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [1, 1, 1]);
+        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 1, 0, 1, 0]);
     }
 
     #[test]

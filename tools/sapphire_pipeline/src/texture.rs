@@ -13,7 +13,7 @@
 //! | Mask, 1 / 2 / 3–4 channels | linear | BC4 / BC5 / BC7 | ASTC (`r001` / `ra01` / —) | data | the first 1–4 |
 //! | Ramp | sRGB | RGBA8 sRGB | RGBA8 sRGB | none unless asked | RGBA |
 //! | ILM | linear | BC7 | ASTC 4×4 | data | RGBA |
-//! | SDF, 1 / 2 channels | linear | R16 or R8 / RG16 or RG8 | R8 / RG8 | data | the first 1–2 |
+//! | SDF, 1 / 2 channels | linear | R16 or R8 / RG16 or RG8 | R8 / RG8 | data | R and G as 1 (swizzle `r101`) / R, G |
 //! | HDR | sRGB | BC6H | RGB9E5 or RGBA16F | data | RGB(A), clamped to `[0, 65504]` |
 //!
 //! - **Color alpha is coverage:** mips weight color by it, so color under transparent texels
@@ -25,7 +25,9 @@
 //!   (spec §5.27).
 //! - **SDF face maps** are 16-bit on desktop by default, since the face shadow sweeps through
 //!   their whole range, and 8-bit on mobile (spec §5.27), where 16-bit normalized formats
-//!   aren't guaranteed. A two-channel map holds the horizontal and vertical thresholds (A7).
+//!   aren't guaranteed. A two-channel map holds the horizontal and vertical thresholds (A7);
+//!   a one-channel map's swizzle reads G as 1, the threshold of a texel no rising light
+//!   shadows, so the face shader treats both alike (C3).
 //! - **HDR** has no ASTC on mobile: ctt has no HDR ASTC encoder (its issue #74), and ASTC
 //!   HDR isn't guaranteed on phones either. RGB9E5 (the default) is 4 bytes per texel and has
 //!   no alpha; RGBA16F keeps alpha at twice the size.
@@ -67,6 +69,7 @@ mod encode;
 
 use std::path::Path;
 
+use sapphire_assets::character_maps::face_sdf;
 use sapphire_assets::texture::{
     AstcBlock, Component, Swizzle, Texture, TextureDesc, TextureFormat, TextureFormatError, full_mip_count,
 };
@@ -85,7 +88,7 @@ use crate::import::image::{
 /// output the cook embeds, and a test keeps it in step with `Cargo.lock`: every `ctt*` crate
 /// (the encoders are separate crates on caret ranges, so `cargo update` can move them alone)
 /// and `ktx2`, whose generated descriptors the reader compares byte for byte.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.0)", version: 1 };
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.0)", version: 2 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;
@@ -339,6 +342,10 @@ enum Texel {
     /// The first `n` logical channels, the rest as a GPU samples a format without them
     /// (RGB 0, alpha 1).
     Channels(usize),
+    /// A one-channel SDF face map: R, then G 1 as its swizzle reads it
+    /// (`character_maps::face_sdf::ONE_CHANNEL_SWIZZLE`), so nothing shadows by the vertical
+    /// channel.
+    SdfHorizontal,
     /// X and Y in `[0, 1]` → a unit vector, Z rebuilt.
     Normal { flip_y: bool },
     /// RGB clamped to what half floats hold; alpha kept unless the format has none.
@@ -447,7 +454,11 @@ pub fn plan(class: &TextureClass, cook: Cook, layout: ChannelLayout) -> Result<P
                 (_, false) => TextureFormat::Rg8Unorm,
                 (_, true) => TextureFormat::Rg16Unorm,
             };
-            make(format, Encoding::Uncompressed, identity, MipFilter::Data, Texel::Channels(channels))
+            let (swizzle, texel) = match channels {
+                1 => (face_sdf::ONE_CHANNEL_SWIZZLE, Texel::SdfHorizontal),
+                _ => (identity, Texel::Channels(channels)),
+            };
+            make(format, Encoding::Uncompressed, swizzle, MipFilter::Data, texel)
         }
         (TextureClass::Hdr(_), Cook::Desktop) => make(
             TextureFormat::Bc6hRgbUfloat,
@@ -585,6 +596,10 @@ fn prepare_texel(texel: Texel, layout: ChannelLayout, pixel: [f32; 4]) -> [f32; 
                 }
             })
         }
+        Texel::SdfHorizontal => {
+            let [r, ..] = layout.logical(pixel);
+            face_sdf::ONE_CHANNEL_SWIZZLE.apply([r, 0.0, 0.0, 1.0])
+        }
         Texel::Normal { flip_y } => {
             let [x, y, ..] = layout.logical(pixel);
             let (x, y) = (x * 2.0 - 1.0, y * 2.0 - 1.0);
@@ -675,10 +690,11 @@ mod tests {
         assert_eq!(format(ilm, Mobile, Rgba), (astc(AstcBlock::B4x4, false), id));
 
         let sdf = |channels, precision| TextureClass::Sdf(SdfSettings { channels, precision, mips: true });
-        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm16), Desktop, Gray), (F::R16Unorm, id));
-        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm8), Desktop, Gray), (F::R8Unorm, id));
+        let r101 = face_sdf::ONE_CHANNEL_SWIZZLE;
+        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm16), Desktop, Gray), (F::R16Unorm, r101));
+        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm8), Desktop, Gray), (F::R8Unorm, r101));
         assert_eq!(format(sdf(SdfChannels::Two, SdfPrecision::Unorm16), Desktop, Rgb), (F::Rg16Unorm, id));
-        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm16), Mobile, Gray), (F::R8Unorm, id));
+        assert_eq!(format(sdf(SdfChannels::One, SdfPrecision::Unorm16), Mobile, Gray), (F::R8Unorm, r101));
         assert_eq!(
             format(sdf(SdfChannels::Two, SdfPrecision::Unorm16), Mobile, GrayAlpha),
             (F::Rg8Unorm, id)

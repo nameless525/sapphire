@@ -1,12 +1,13 @@
-//! Per-character data on the GPU (spec §5.12 "Character light rig", M1 C2): the light rig of
-//! every character the frame lists ([`FramePacket::characters`]), for the anime character
-//! shader.
+//! Per-character data on the GPU (spec §5.12 "Character light rig" and "Faces", M1 C2 and C3):
+//! the light rig and the face of every character the frame lists ([`FramePacket::characters`]),
+//! for the anime character shader.
 //!
 //! - **The buffer** (group 0 binding 3, fragment-visible) holds one [`GpuCharacter`] per
 //!   character this frame, after entry 0: the fallback every other instance reads, the world's
-//!   key light with unstyled GI ([`CharacterLighting::unstyled`]). It is rewritten whole when
-//!   any entry changes (while the hour runs, or the camera moves for a rig whose key or GI
-//!   depends on it): 80 bytes a character.
+//!   key light with unstyled GI ([`CharacterLighting::unstyled`]) and a face at rest
+//!   ([`CharacterFace::default`]). It is rewritten whole when any entry changes (while the hour
+//!   runs, the camera moves for a rig whose key or GI depends on it, or a head or expression
+//!   moves): 128 bytes a character.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
@@ -16,9 +17,10 @@
 //! # Per-character data of later packages
 //!
 //! Each package's per-character data is a struct of its own inside [`GpuCharacter`] (WGSL
-//! `CharacterData` in `frame.wgsl`): C2's is the rig, and faces (C3) add theirs beside it. A
-//! character's data is then found through one index and one binding: the fragment stage's
-//! fourth and last storage buffer (see the crate docs, "Binding budget").
+//! `CharacterData` in `frame.wgsl`): C2's is the rig, C3's the face beside it. Later ones (R4's
+//! per-character shadow, C4's outline lighting) add theirs the same way. A character's data is
+//! then found through one index and one binding: the fragment stage's fourth and last storage
+//! buffer (see the crate docs, "Binding budget").
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -26,7 +28,7 @@ use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::scene::InstanceSlots;
-use crate::{CharacterLighting, FramePacket};
+use crate::{CharacterFace, CharacterLighting, FramePacket};
 
 const ENTRY_BYTES: u64 = size_of::<GpuCharacter>() as u64;
 
@@ -35,6 +37,7 @@ const ENTRY_BYTES: u64 = size_of::<GpuCharacter>() as u64;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct GpuCharacter {
     pub rig: GpuRig,
+    pub face: GpuFace,
 }
 
 /// A character's light rig as the shader reads it (WGSL `CharacterRig`). 80 bytes.
@@ -54,8 +57,34 @@ pub(crate) struct GpuRig {
     pub skin_tint: [f32; 4],
 }
 
+/// A character's face as the shader reads it (WGSL `CharacterFace`, M1 C3). 48 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuFace {
+    /// xyz: unit head-forward, world space; w: 0.
+    pub forward: [f32; 4],
+    /// xyz: unit head-up, world space, perpendicular to forward; w: 0.
+    pub up: [f32; 4],
+    /// x: blush; y: gloom; zw: 0.
+    pub expression: [f32; 4],
+}
+
+impl GpuFace {
+    /// `face` packed, its head orthonormalized: at rest if it has no basis, which valid faces
+    /// do.
+    fn new(face: &CharacterFace) -> Self {
+        let (forward, up) = face.head.orthonormalized().unwrap_or((Vec3::Z, Vec3::Y));
+        let expression = face.expression;
+        Self {
+            forward: forward.extend(0.0).to_array(),
+            up: up.extend(0.0).to_array(),
+            expression: [expression.blush, expression.gloom, 0.0, 0.0],
+        }
+    }
+}
+
 impl GpuCharacter {
-    fn new(lighting: &CharacterLighting) -> Self {
+    fn new(lighting: &CharacterLighting, face: &CharacterFace) -> Self {
         let CharacterLighting { key, rim, local_light_ceiling, gi } = *lighting;
         let toward_key = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
@@ -73,6 +102,7 @@ impl GpuCharacter {
                 ],
                 skin_tint: gi.skin_tint.extend(0.0).to_array(),
             },
+            face: GpuFace::new(face),
         }
     }
 }
@@ -128,7 +158,7 @@ impl Characters {
     }
 
     /// Entries the last frame with a view ignored: for instances it doesn't draw, or with
-    /// lighting that isn't valid.
+    /// lighting or a face that isn't valid.
     pub(crate) fn ignored(&self) -> u32 {
         self.list.ignored
     }
@@ -183,14 +213,15 @@ struct CharacterList {
 }
 
 impl CharacterList {
-    /// Builds the entries for `packet`: the fallback from its key light, then each valid
-    /// character of an instance in `slots`, in packet order. Points each of those instances at
-    /// its entry, and every instance the last frame listed but this one doesn't back at the
-    /// fallback. Returns whether the entries changed.
+    /// Builds the entries for `packet`: the fallback from its key light, with a face at rest,
+    /// then each valid character of an instance in `slots`, in packet order. Points each of
+    /// those instances at its entry, and every instance the last frame listed but this one
+    /// doesn't back at the fallback. Returns whether the entries changed.
     fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
-        self.entries.push(GpuCharacter::new(&CharacterLighting::unstyled(packet.sun)));
+        let fallback = CharacterLighting::unstyled(packet.sun);
+        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default()));
         // Slots are never given back, so the last frame's are all below this.
         self.next.resize(slots.len(), 0);
         for &slot in &self.listed {
@@ -199,7 +230,7 @@ impl CharacterList {
         self.listing.clear();
         (self.lit, self.ignored) = (0, 0);
         for character in &packet.characters {
-            let slot = slots.slot(character.id).filter(|_| character.lighting.is_valid());
+            let slot = slots.slot(character.id).filter(|_| character.is_valid());
             let Some(slot) = slot else {
                 self.ignored += 1;
                 continue;
@@ -211,7 +242,7 @@ impl CharacterList {
                 self.listing.push(slot);
             }
             self.next[slot as usize] = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
-            self.entries.push(GpuCharacter::new(&character.lighting));
+            self.entries.push(GpuCharacter::new(&character.lighting, &character.face));
         }
         for &slot in self.listed.iter().chain(&self.listing) {
             slots.set_character(slot, self.next[slot as usize]);
@@ -227,8 +258,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        CameraData, CharacterGi, CharacterInstance, DirectionalLight, InstanceDeltas, InstanceId, MeshHandle,
-        MeshInstance, ViewData,
+        CameraData, CharacterGi, CharacterInstance, DirectionalLight, FaceExpression, HeadBasis,
+        InstanceDeltas, InstanceId, MeshHandle, MeshInstance, ViewData,
     };
 
     fn lighting(intensity: f32) -> CharacterLighting {
@@ -241,7 +272,11 @@ mod tests {
         let camera = CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.1);
         let characters = characters
             .iter()
-            .map(|&(id, intensity)| CharacterInstance { id: InstanceId(id), lighting: lighting(intensity) })
+            .map(|&(id, intensity)| CharacterInstance {
+                id: InstanceId(id),
+                lighting: lighting(intensity),
+                face: CharacterFace::default(),
+            })
             .collect();
         FramePacket { views: vec![ViewData { camera }], characters, ..FramePacket::default() }
     }
@@ -278,14 +313,29 @@ mod tests {
                 skin_tint: Vec3::new(1.1, 0.9, 0.8),
             },
         };
-        let GpuCharacter { rig } = GpuCharacter::new(&lighting);
+        let GpuCharacter { rig, face } = GpuCharacter::new(&lighting, &CharacterFace::default());
         assert_eq!(rig.key_direction, [0.0, 1.0, 0.0, 0.5], "toward the key, unit length; the rim");
         assert_eq!(rig.key_radiance, [2.0, 1.0, 0.5, 1.5]);
         assert_eq!(rig.head, [1.0, 2.0, 3.0, 0.8]);
         assert_eq!(rig.gi, [0.3, 0.6, f32::MAX, 1.0], "no value ceiling is the largest finite one");
-        let headless = GpuCharacter::new(&CharacterLighting { gi: CharacterGi::default(), ..lighting }).rig;
+        let headless = CharacterLighting { gi: CharacterGi::default(), ..lighting };
+        let headless = GpuCharacter::new(&headless, &CharacterFace::default()).rig;
         assert_eq!((headless.head, headless.gi[3]), ([0.0, 0.0, 0.0, 1.0], 0.0), "nothing spherizes");
         assert_eq!(rig.skin_tint, [1.1, 0.9, 0.8, 0.0]);
+        assert_eq!(face.forward, [0.0, 0.0, 1.0, 0.0], "a face at rest");
+        assert_eq!((face.up, face.expression), ([0.0, 1.0, 0.0, 0.0], [0.0; 4]));
+    }
+
+    #[test]
+    fn entries_pack_the_face_orthonormalized() {
+        let face = CharacterFace {
+            head: HeadBasis { forward: Vec3::new(3.0, 0.0, 0.0), up: Vec3::new(1.0, 2.0, 0.0) },
+            expression: FaceExpression { blush: 0.25, gloom: 2.0 },
+        };
+        let packed = GpuCharacter::new(&lighting(1.0), &face).face;
+        assert_eq!(packed.forward, [1.0, 0.0, 0.0, 0.0], "unit length");
+        assert_eq!(packed.up, [0.0, 1.0, 0.0, 0.0], "square to forward");
+        assert_eq!(packed.expression, [0.25, 2.0, 0.0, 0.0], "as given: the shader clamps");
     }
 
     #[test]
@@ -339,6 +389,20 @@ mod tests {
         let mut list = CharacterList::default();
         let mut frame = packet(&[(0, 1.0)]);
         frame.characters[0].lighting.rim = -1.0;
+        list.update(&frame, &mut slots);
+        assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
+    }
+
+    #[test]
+    fn an_invalid_face_falls_back_and_a_new_face_is_a_change() {
+        let mut slots = slots(0..1);
+        let mut list = CharacterList::default();
+        let mut frame = packet(&[(0, 1.0)]);
+        assert!(list.update(&frame, &mut slots));
+        frame.characters[0].face.expression.blush = 0.5;
+        assert!(list.update(&frame, &mut slots), "an expression moved");
+        assert_eq!(list.entries[1].face.expression[0], 0.5);
+        frame.characters[0].face.head = HeadBasis { forward: Vec3::ZERO, up: Vec3::Y };
         list.update(&frame, &mut slots);
         assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
     }

@@ -114,7 +114,8 @@ fn documents_may_leave_fields_out() {
     assert_eq!(material.rim, Rim::default());
     assert_eq!(material.outline, Outline { width: 4.0, z_offset: 0.0 });
     let CharacterSurface::Face(face) = &material.surface else { panic!("a face") };
-    assert_eq!((face.shadow_map, face.mask_map, face.softness), (id(RAMP), None, 0.02));
+    assert_eq!(face, &FaceShading::new(id(RAMP)), "a face's settings may be left out too");
+    assert_eq!((face.mask_map, face.expression_map, face.softness), (None, None, 0.02));
 
     let empty = r#"(type: "sapphire::render::SkyMaterial", version: 1, data: ())"#;
     assert_eq!(
@@ -222,7 +223,7 @@ fn cooked_materials_that_break_the_format_are_rejected() {
         |m| m.family = MaterialFamily::Sky,
         |e| matches!(e, MaterialError::ParamsSize { expected: 96, .. }),
     );
-    check(|m| m.textures.pop().map_or((), drop), |e| matches!(e, MaterialError::SlotCount { found: 6, .. }));
+    check(|m| m.textures.pop().map_or((), drop), |e| matches!(e, MaterialError::SlotCount { found: 7, .. }));
     check(
         |m| m.textures[0].swizzle = *b"rgbx",
         |e| matches!(e, MaterialError::InvalidSwizzle { slot: 0, .. }),
@@ -306,4 +307,49 @@ fn the_anime_character_block_carries_every_field() {
     let expected = MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE | MaterialFlags::HAIR;
     assert_eq!(material.material_flags(), expected);
     assert!(expected.contains(MaterialFlags::HAIR) && !expected.contains(MaterialFlags::FACE));
+}
+
+#[test]
+fn face_materials_bind_their_maps_and_pack_their_settings() {
+    let face = FaceShading {
+        mask_map: Some(id(TEXTURE)),
+        expression_map: Some(id(TEXTURE)),
+        softness: 0.03,
+        nose_line: 0.5,
+        highlight: 0.25,
+        highlight_reveal: 0.1,
+        blush_color: [1.0, 0.5, 0.6],
+        ..FaceShading::new(id(RAMP))
+    };
+    let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..Default::default() };
+    let textures = document.textures();
+    assert_eq!(textures[AnimeCharacterMaterial::FACE_SHADOW], Some(id(RAMP)));
+    assert_eq!(textures[AnimeCharacterMaterial::SURFACE_MASK], Some(id(TEXTURE)));
+    assert_eq!(textures[AnimeCharacterMaterial::EXPRESSION], Some(id(TEXTURE)));
+    assert_eq!(
+        AnimeCharacterMaterial::TEXTURE_SLOTS[AnimeCharacterMaterial::EXPRESSION].usage,
+        TextureUsage::Mask
+    );
+    let any = AnyMaterialDocument::AnimeCharacter(document.clone());
+    let material = Material::from_document(&document, &swizzles(&any)).unwrap();
+    let params: AnimeCharacterParams = bytemuck::pod_read_unaligned(&material.params);
+    assert_eq!(params.modes[2], AnimeCharacterParams::SURFACE_FACE);
+    assert_eq!(params.surface, [0.03, 0.5, 0.25, 0.1]);
+    assert_eq!(params.surface_color, [1.0, 0.5, 0.6, 0.0]);
+    let bound = 1 << AnimeCharacterMaterial::FACE_SHADOW
+        | 1 << AnimeCharacterMaterial::SURFACE_MASK
+        | 1 << AnimeCharacterMaterial::EXPRESSION;
+    assert_eq!(params.modes[0], bound);
+    assert_eq!(params.swizzles[3] >> SWIZZLE_BITS, swizzle_code(RA01), "slot 7, the expression map's");
+    assert!(material.material_flags().contains(MaterialFlags::FACE));
+
+    let invalid = |edit: fn(&mut FaceShading)| {
+        let mut face = FaceShading::new(id(RAMP));
+        edit(&mut face);
+        let document = AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..Default::default() };
+        document.validate().unwrap_err().to_string()
+    };
+    assert!(invalid(|f| f.nose_line = -0.1).starts_with("surface.nose_line"));
+    assert!(invalid(|f| f.highlight_reveal = f32::NAN).starts_with("surface.highlight_reveal"));
+    assert!(invalid(|f| f.blush_color = [2.0, -1.0, 0.0]).starts_with("surface.blush_color"));
 }

@@ -33,9 +33,10 @@
 //!   instance, chosen on the CPU, mobile), as [`RenderSettings::light_path`] says. Both paths
 //!   run on every backend. The anime character shader lights by each local light in the key
 //!   light's two-tone model.
-//! - Characters' light rigs on the GPU (`characters`, M1 C2): each frame's
+//! - Characters' light rigs and faces on the GPU (`characters`, M1 C2 and C3): each frame's
 //!   [`CharacterInstance`]s, one entry per character in a per-frame buffer that the anime
-//!   character shader finds through the instance (see "The anime character shader" below).
+//!   character shader finds through the instance (see "The anime character shader" and "Faces"
+//!   below).
 //! - Post-processing (`post`, M1 R3): HDR scene color, bloom, the tone curve and grade baked
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`].
@@ -188,12 +189,12 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, 80 bytes each | the uploads pass, when they changed |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs and faces, 128 bytes each | the uploads pass, when they changed |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot | the uploads pass, changed slots only |
-//! | 3 material | 0–7: textures | fragment | one material's texture slots, white 1×1 where unbound | material upload or update |
-//! | 3 material | 8, 9: samplers | fragment | trilinear repeating; linear clamped for ramps | — |
+//! | 3 material | 0–7: textures | fragment | one material's texture slots (the anime character family's eight), white 1×1 where unbound | material upload or update |
+//! | 3 material | 8–10: samplers | fragment | trilinear repeating; linear clamped for ramps; nearest for material IDs | — |
 //!
 //! Vertex buffers: slot 0 is the draw records, slots 1–4 a mesh's streams (above). The
 //! prepasses bind groups 0–2 like the main pass and read no storage buffer beyond the
@@ -218,15 +219,16 @@
 //! skinning pass (sources, frame data, outputs). That leaves none in the fragment stage, two in
 //! the vertex stage and one in the skinning pass. The fragment stage's last went to per-character
 //! data (M1 C2) because every later per-character need joins it rather than taking a binding:
-//! faces' head basis and expressions (C3), the per-character shadow's matrices (R4), outlines lit
-//! by the rig (C4). Frame-wide data that is not per character goes into uniforms or textures
-//! (shadow cascades, probes). Group 3 is the last of the 4 bind groups the floor allows;
-//! the prepasses, which read no material textures, leave it out. The anime character family
-//! binds 7 of the 16 sampled textures and 3 of the 16 samplers a fragment stage gets (trilinear,
-//! ramp, and nearest for material IDs), leaving 9 textures for frame-wide ones (shadow cascades,
-//! probes, the sky cubemap); the other families bind 1 to 5. Local lights take only two fragment bindings because both light paths share one
-//! list buffer layout, a count and then 16-bit light indices, read by cluster index or by
-//! instance slot (passed from the vertex stage as a flat varying). Compute skinning writes
+//! faces' head basis and expressions (C3, beside the rig), the per-character shadow's matrices
+//! (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
+//! uniforms or textures (shadow cascades, probes). Group 3 is the last of the 4 bind groups the
+//! floor allows; the prepasses, which read no material textures, leave it out. The anime
+//! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
+//! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones
+//! (shadow cascades, probes, the sky cubemap); the other families bind 1 to 5. Local lights take
+//! only two fragment bindings because both light paths share one list buffer layout, a count and
+//! then 16-bit light indices, read by cluster index or by instance slot (passed from the vertex
+//! stage as a flat varying). Compute skinning writes
 //! vertex buffers and adds nothing to the vertex stage, and packs a mesh's streams, skin and
 //! morphs into one buffer, and a frame's jobs, palettes and weights into another, to stay within
 //! its four. Draw records are vertex data rather than a third vertex-stage storage buffer for the
@@ -242,9 +244,9 @@
 //! without a control map. The file's header has the details.
 //!
 //! - **Static permutations** are at most eight bits (`pipelines::Permutation`): of
-//!   them, alpha test and transparency are shader variants today, through pipeline-overridable
-//!   constants, and each variant's pipelines are built when a mesh or a material edit first
-//!   needs them. Everything
+//!   them, alpha test, transparency and faces are shader variants today, through
+//!   pipeline-overridable constants, and each
+//!   variant's pipelines are built when a mesh or a material edit first needs them. Everything
 //!   else (ramp or bands, a deep band, which maps are bound) is a branch on the block that every
 //!   pixel of a draw takes alike.
 //! - **Draw order** within the main pass: opaque surfaces, alpha-tested ones, their outlines
@@ -272,7 +274,36 @@
 //!   returns 1 (lit) until then. Its contract with the light rig: it returns how much of the
 //!   world's key light (the sun or the moon) reaches the point past environment casters alone,
 //!   never the character's own geometry (characters don't self-shadow), however the rig turns
-//!   the character's key; the split takes it as it takes vertex AO.
+//!   the character's key; the split takes it as it takes vertex AO. The face permutation never
+//!   calls it (see "Faces").
+//!
+//! # Faces (M1 C3)
+//!
+//! A face material (`CharacterSurface::Face`) draws through the face permutation
+//! (`PERMUTATION_FACE`), whose light split comes from the face's SDF map and the character's key
+//! light in head space instead of N·L (the shader's header and
+//! `sapphire_assets::character_maps`, "Head space", give the rules):
+//!
+//! - **The head** is the character's: each [`CharacterInstance`] carries a [`CharacterFace`]
+//!   beside its lighting, a [`HeadBasis`] in world space (the head bone's pose this frame) and
+//!   [`FaceExpression`] weights, which the renderer packs beside the rig in the instance's
+//!   per-character entry (WGSL `CharacterData::face`). The fragment shader reads it through the
+//!   same index as the rig. An instance the packet doesn't list reads entry 0's: a head at rest,
+//!   facing +Z with +Y up, with no expression.
+//! - **The key light** is the rig's, read once with the body's as `key_direction` and
+//!   `key_radiance`: face code reads no light of its own.
+//! - **The split** reads the map at the pixel's `u` and mirrored, intersects the horizontal and
+//!   vertical channels, and turns the lit margin into the N·L of a sphere whose terminator
+//!   follows the map, so occlusion, the control map's bias and locks, the threshold and the
+//!   diffuse mode apply as on the body: a face's shadow tones are the body's. So does the rig's
+//!   stylized GI, which spherizes a face by its regions' sphere weight.
+//! - **Masks:** always-lit eyes and brows, a face highlight, and a nose line that appears as the
+//!   head turns from the camera (the face mask); blush and gloom scaled per character (the
+//!   expression map).
+//! - **No cast shadow:** shadow maps are too coarse and unstable at face scale, so the face
+//!   permutation doesn't call `cast_shadow`, and R4 adds no shadow-map reads to it. An
+//!   environment shadow reaches a face whole, per character: a value in the character's entry
+//!   that the face takes as occlusion (R4), never shadow-map texels on it.
 //!
 //! # Material buffers
 //!
@@ -320,14 +351,17 @@
 //! - **Material families' shaders:** sky (W2), fog cards (W3), environment (W4) and foliage
 //!   (W6) bring pipelines that bind their family's buffer (in a scene group of their own) and
 //!   group 3.
-//! - **The anime character shader** (see above) grows faces (C3), hair and eyes (C5, C6) with
-//!   their permutation bits, and specular,
-//!   matcaps and stockings (C7) over the control map channels it already reads. Shadows (R4)
-//!   fill `cast_shadow`. Outlines v2 (C4) take each pixel's region from the control map as the
-//!   surface does (today the vertex's), add the authored width curve and view-space flattening,
-//!   and make group 3 visible to the vertex stage if a width texture needs it. Cooked
-//!   MikkTSpace tangents, with C4's tangent-space outline normals, replace the normal map's
-//!   screen-derivative frame.
+//! - **The anime character shader** (see above) grows hair and eyes (C5, C6) with their
+//!   permutation bits, and specular, matcaps and stockings (C7) over the control map channels it
+//!   already reads. Shadows (R4) fill `cast_shadow`. Outlines v2 (C4) take each pixel's region
+//!   from the control map as the surface does (today the vertex's), add the authored width curve
+//!   and view-space flattening, and make group 3 visible to the vertex stage if a width texture
+//!   needs it. Cooked MikkTSpace tangents, with C4's tangent-space outline normals, replace the
+//!   normal map's screen-derivative frame.
+//! - **Faces** (see above): hair shadow on the face and eyes over the bangs (C5); light layers,
+//!   so local lights split on faces by the face map or not at all (today they split on the
+//!   face's normals, as on the body); a face-SDF threshold debug view (F5's views); environment
+//!   shadow reaching a face whole, per character (R4).
 //! - **Permutations' remaining passes:** the prepasses cut alpha-tested materials out (a variant
 //!   binding group 3) once something reads them; transparent surfaces sort back to front with
 //!   draw sorting; alpha-to-coverage for alpha-tested surfaces under MSAA.
@@ -353,9 +387,10 @@ mod skinning;
 pub mod texture;
 
 pub use frame::{
-    AmbientLight, CameraData, Celestial, CharacterGi, CharacterInstance, CharacterLight, CharacterLighting,
-    DirectionalLight, Fog, FogLayer, FramePacket, FramePacketRing, HeightFog, InstanceDeltas, InstanceId,
-    LightKind, LocalLight, MeshInstance, PacketRange, SkinnedInstance, SkyGradient, ViewData,
+    AmbientLight, CameraData, Celestial, CharacterFace, CharacterGi, CharacterInstance, CharacterLight,
+    CharacterLighting, DirectionalLight, FaceExpression, Fog, FogLayer, FramePacket, FramePacketRing,
+    HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
+    SkinnedInstance, SkyGradient, ViewData,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;

@@ -111,6 +111,7 @@ pub(crate) fn run(
         msaa = options.render_settings(stage.quality.render_settings()).msaa.sample_count(),
         lights = options.lights,
         skinned = options.skinned,
+        faces = options.faces,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),

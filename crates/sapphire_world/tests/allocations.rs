@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_math::Vec3;
-use sapphire_render::{CameraData, CharacterInstance, FramePacket, InstanceId};
+use sapphire_render::{CameraData, CharacterFace, CharacterInstance, FramePacket, InstanceId};
 use sapphire_time::ScaledClock;
 use sapphire_world::light_rig::{LightRigId, LightRigLibrary};
 use sapphire_world::tod::{ShotTime, TimeOfDay, TodCutscene, TodKey, TodTimeline, TodVolume, VolumeShape};
@@ -53,7 +53,8 @@ fn ticking_and_resolving_allocate_nothing() {
             packet.characters.clear();
             for id in 0..2 {
                 let lighting = resolved.character_lighting(gameplay, &camera, Vec3::new(id as f32, 1.6, 0.0));
-                packet.characters.push(CharacterInstance { id: InstanceId(id), lighting });
+                let face = CharacterFace::default();
+                packet.characters.push(CharacterInstance { id: InstanceId(id), lighting, face });
             }
         }
     });

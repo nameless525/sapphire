@@ -19,9 +19,9 @@ use sapphire_assets::texture::Swizzle;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    AmbientLight, BloomParams, CameraData, CharacterInstance, CharacterLight, CharacterLighting, ColorGrade,
-    DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance, PostParams, RenderSettings,
-    Renderer, ToneCurve, ViewData, Vignette,
+    AmbientLight, BloomParams, CameraData, CharacterFace, CharacterInstance, CharacterLight,
+    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MeshHandle, MeshInstance,
+    PostParams, RenderSettings, Renderer, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_time::ScaledClock;
@@ -178,7 +178,11 @@ impl Stage {
                 packet.instances.changed.push(MeshInstance { id, mesh: self.mesh, transform });
             }
             let resolved = frame.character_lighting(rig, &self.camera, *center);
-            packet.characters.push(CharacterInstance { id, lighting: resolved });
+            packet.characters.push(CharacterInstance {
+                id,
+                lighting: resolved,
+                face: CharacterFace::default(),
+            });
             lighting.push(resolved);
         }
         self.added = true;

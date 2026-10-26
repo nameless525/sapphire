@@ -7,7 +7,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use sapphire_ecs::prelude::Resource;
-use sapphire_math::{SpringDamper, Vec3};
+use sapphire_math::{Quat, SpringDamper, Vec3};
 use sapphire_render::CameraData;
 
 const FOV_Y: f32 = 0.75;
@@ -47,6 +47,26 @@ impl OrbitCamera {
             pitch: SpringDamper::new(pitch, HALF_LIFE),
             distance: SpringDamper::new(distance, HALF_LIFE),
         }
+    }
+
+    /// A camera framing a flat arrangement `half_extents` (width, height) across around
+    /// `target`, facing it from the default angles, so it fills a 16:9 view: rows of heads
+    /// rather than one figure, which [`Self::framing`]'s bounding sphere would leave small.
+    pub fn fitting(target: Vec3, half_extents: (f32, f32)) -> Self {
+        let tan = (FOV_Y * 0.5).tan();
+        let distance = (half_extents.1 / tan).max(half_extents.0 / (tan * 16.0 / 9.0)) * 1.08;
+        let mut camera = Self::framing([target.to_array(); 2]);
+        camera.min_distance = distance * 0.3;
+        camera.max_distance = distance * 4.0;
+        camera.goal_distance = distance;
+        camera.distance = SpringDamper::new(distance, HALF_LIFE);
+        camera
+    }
+
+    /// The camera's default angles, as a rotation turning +Z toward it: what a model facing +Z
+    /// turns by to face the camera, upright.
+    pub fn facing_rotation(&self) -> Quat {
+        Quat::from_rotation_y(self.goal_yaw) * Quat::from_rotation_x(-self.goal_pitch)
     }
 
     /// Orbits by the given angles in radians. Positive yaw orbits to the right.

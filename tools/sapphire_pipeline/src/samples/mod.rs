@@ -5,8 +5,12 @@
 //!
 //! - the mannequin, `mannequin.glb`;
 //! - the shader swatches' content ([`swatch`]): a ramp, a control map and three materials
-//!   for the sandbox's `--swatches` spheres (M1 C1).
+//!   for the sandbox's `--swatches` spheres (M1 C1);
+//! - the face test head's content ([`face`], in `face/`): a head, its face material, and the
+//!   SDF face map (with its threshold masks), face mask and expression map that material reads,
+//!   for the sandbox's `--faces` (M1 C3).
 
+pub mod face;
 mod shapes;
 pub mod swatch;
 
@@ -25,9 +29,9 @@ pub const MANNEQUIN_FILE_NAME: &str = "mannequin.glb";
 /// with a finer line than clothing does.
 pub const HEAD_OUTLINE_WIDTH: u8 = 140;
 
-/// Writes every sample source asset into `dir` (creating it) and returns their paths.
+/// Writes every sample source asset into `dir` (creating it and the subdirectories they sit
+/// in) and returns their paths.
 pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    std::fs::create_dir_all(dir)?;
     let files = [
         (MANNEQUIN_FILE_NAME, mannequin_glb()),
         (swatch::RAMP_FILE_NAME, swatch::ramp_document().into_bytes()),
@@ -37,10 +41,12 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
         (swatch::RAMP_MATERIAL_FILE_NAME, swatch::ramp_material_document().into_bytes()),
         (swatch::SUBSURFACE_MATERIAL_FILE_NAME, swatch::subsurface_material_document().into_bytes()),
         (swatch::BAND_MATERIAL_FILE_NAME, swatch::band_material_document().into_bytes()),
-    ];
-    let mut paths = Vec::with_capacity(files.len());
-    for (name, bytes) in files {
+    ]
+    .map(|(name, bytes)| (name.to_owned(), bytes));
+    let mut paths = Vec::new();
+    for (name, bytes) in files.into_iter().chain(face::files()?) {
         let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
         std::fs::write(&path, bytes)?;
         paths.push(path);
     }
@@ -328,7 +334,10 @@ mod tests {
             swatch::SUBSURFACE_MATERIAL_FILE_NAME,
             swatch::BAND_MATERIAL_FILE_NAME,
         ];
-        assert_eq!(written, names.map(|name| nested.join(name)));
+        assert_eq!(written[..names.len()], names.map(|name| nested.join(name)));
+        let faces: Vec<_> = face::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        assert_eq!(written[names.len()..], faces, "then the face's, in their directory");
+        assert!(written.iter().all(|path| path.is_file()));
         assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }
 }

@@ -82,7 +82,7 @@ Open the masks in any editor that keeps 8-bit grayscale PNGs (Krita, Photoshop, 
 - Anti-aliased brushes are fine: masks are lit where they are at least 50% white.
 - **Masks can sit at any angles.** Add masks where the shape changes quickly (around the nose) and fewer where it doesn't; edit the angles in the document to match. The sweep between two masks is linear, so more masks give a smoother turn.
 - With the light exactly behind the head (180°) the map lights nothing, so a mask at 180° only shapes the sweep toward it; texels it lights are dark at that one angle.
-- Eyes and brows that never take shadow are a separate always-lit mask of the face material (C3), not part of these masks.
+- Eyes and brows that never take shadow are painted in the face material's face mask (B, always lit; `character_maps::face_mask`), not in these masks. The face mask also holds the nose line (R) and the face highlight (G); blush and gloom go in the expression map (M1 C3).
 
 For the ILM inputs, paint a specular mask (white where highlights may appear) and add `specular_mask: Image(path: "body_spec.png")`; adjust the AO's `range`, or paint the shadow bias directly (0.5 neutral, at least 0.95 always lit, at most 0.05 always in shadow). Paint material IDs in flat gray levels; a document whose painted levels differ from `ID / 7` lists them: `material_id: Image(path: "ids.png", levels: [0.0, 0.3, 0.5, 0.7, 1.0])`.
 

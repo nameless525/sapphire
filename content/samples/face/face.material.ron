@@ -1,0 +1,59 @@
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 1,
+    data: (
+        surface: Face((
+            shadow_map: "79309b71-b35f-4ce6-9d53-b629493934e7",
+            mask_map: Some("90ed14c3-385b-4e76-a292-6ed48ec740f2"),
+            expression_map: Some("9568c99c-8fff-4718-af5b-3f13bac18c59"),
+            softness: 0.012,
+            nose_line: 0.45,
+            highlight: 0.22,
+            highlight_reveal: 0.12,
+            blush_color: (1.0, 0.5, 0.52),
+        )),
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("475593e0-710a-47ae-8e4a-bbf06c182b5c"),
+        alpha: Opaque,
+        control_map: None,
+        normal_map: None,
+        light_split: (
+            threshold: 0.0,
+            softness: 0.0,
+        ),
+        diffuse: Bands((
+            deep_threshold: None,
+        )),
+        regions: [
+            (
+                shade_color: (0.93, 0.66, 0.64),
+                deep_shade_color: (0.4, 0.35, 0.55),
+                ramp_row: None,
+                night_ramp_row: None,
+                subsurface_color: (1.0, 1.0, 1.0),
+                specular_color: (0.0, 0.0, 0.0),
+                specular_size: 32.0,
+                rim_color: (1.0, 0.86, 0.8),
+                outline_color: (0.36, 0.15, 0.14),
+                outline_width: 1.0,
+                gi: (
+                    sphere: 1.0,
+                    skin: 1.0,
+                ),
+            ),
+        ],
+        rim: (
+            width: 0.2,
+            strength: 0.12,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.05,
+        ),
+        matcap: None,
+        outline: (
+            width: 3.0,
+            z_offset: 0.0,
+        ),
+    ),
+)

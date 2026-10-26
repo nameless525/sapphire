@@ -105,6 +105,9 @@ impl Stage {
         if options.swatches {
             scene.spawn_swatches(crate::swatches::upload_swatches(&mut content, &gpu, &mut renderer)?);
         }
+        if options.faces {
+            scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?);
+        }
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]

@@ -38,9 +38,10 @@ struct AnimeCharacterParams {
     edges: vec4<f32>,
     // x: ramp mix; y: specular softness; z, w: matcap strength lit and in shadow.
     terms: vec4<f32>,
-    // Face: x shadow softness. Hair: x highlight strength, y width, z shift. Eye: x parallax.
+    // Face: x shadow softness, y nose line threshold, z highlight strength, w highlight reveal.
+    // Hair: x highlight strength, y width, z shift. Eye: x parallax.
     surface: vec4<f32>,
-    // Hair: rgb highlight color.
+    // Face: rgb blush color. Hair: rgb highlight color.
     surface_color: vec4<f32>,
     // x: flags; y: region count; z: surface (CHARACTER_SURFACE_*); w: specular model | highlight
     // style << 8.
@@ -60,6 +61,7 @@ const CHARACTER_RAMP: u32 = 3u;
 const CHARACTER_FACE_SHADOW: u32 = 4u;
 const CHARACTER_SURFACE_MASK: u32 = 5u;
 const CHARACTER_MATCAP: u32 = 6u;
+const CHARACTER_EXPRESSION: u32 = 7u;
 
 // Flags in `modes.x` above the slot bits.
 const CHARACTER_FLAG_RAMP: u32 = 256u;

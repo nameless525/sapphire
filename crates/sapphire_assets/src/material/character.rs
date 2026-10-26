@@ -122,7 +122,10 @@ pub enum CharacterSurface {
     Eye(EyeShading),
 }
 
-/// Face settings.
+/// Face settings (M1 C3). A face's light split comes from its SDF map and the light in head
+/// space rather than from N·L, then takes the material's diffuse mode as the body does, so a
+/// face's shadow tones are the body's. What the maps hold is `character_maps`' (face SDF, face
+/// mask and expression layouts).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub struct FaceShading {
@@ -130,17 +133,67 @@ pub struct FaceShading {
     /// G for vertical ones (WuWa's top light). Authored for light from one side and mirrored
     /// for the other.
     pub shadow_map: AssetId,
-    /// Linear RGBA: R nose line, G face highlight, B always lit (eyes, brows), A blush.
+    /// The face mask, linear: R nose line, G face highlight, B always lit (eyes, brows).
     #[serde(default)]
     pub mask_map: Option<AssetId>,
-    /// Width of the shadow edge, in threshold units.
+    /// The expression map, linear: R blush, G gloom, each scaled by the character's expression
+    /// weights.
+    #[serde(default)]
+    pub expression_map: Option<AssetId>,
+    /// Half-width of the shadow edge, in threshold units (light angle / 180°), where it is
+    /// wider than the one-pixel edge every split gets.
     #[serde(default = "FaceShading::default_softness")]
     pub softness: f32,
+    /// The nose line shows where its mask × the sine of the camera's turn from head-forward
+    /// exceeds this: a fully painted line appears once the head turns `asin` of it from the
+    /// camera (24° at the default). Above 1 hides it.
+    #[serde(default = "FaceShading::default_nose_line")]
+    pub nose_line: f32,
+    /// How much the face highlight brightens the lit tone at full mask.
+    #[serde(default = "FaceShading::default_highlight")]
+    pub highlight: f32,
+    /// How far into the lit side, in threshold units, the face highlight takes to fade in from
+    /// the shadow's edge.
+    #[serde(default = "FaceShading::default_highlight_reveal")]
+    pub highlight_reveal: f32,
+    /// Linear RGB the albedo is multiplied toward at full blush.
+    #[serde(default = "FaceShading::default_blush_color")]
+    pub blush_color: [f32; 3],
 }
 
 impl FaceShading {
+    /// A face shaded by `shadow_map`, with every other setting at its default.
+    pub fn new(shadow_map: AssetId) -> Self {
+        Self {
+            shadow_map,
+            mask_map: None,
+            expression_map: None,
+            softness: Self::default_softness(),
+            nose_line: Self::default_nose_line(),
+            highlight: Self::default_highlight(),
+            highlight_reveal: Self::default_highlight_reveal(),
+            blush_color: Self::default_blush_color(),
+        }
+    }
+
     fn default_softness() -> f32 {
         0.02
+    }
+
+    fn default_nose_line() -> f32 {
+        0.4
+    }
+
+    fn default_highlight() -> f32 {
+        0.3
+    }
+
+    fn default_highlight_reveal() -> f32 {
+        0.15
+    }
+
+    fn default_blush_color() -> [f32; 3] {
+        [1.0, 0.55, 0.58]
     }
 }
 
@@ -429,10 +482,10 @@ pub struct AnimeCharacterParams {
     pub edges: [f32; 4],
     /// x: ramp mix; y: specular softness; z: matcap strength lit; w: matcap strength in shadow.
     pub terms: [f32; 4],
-    /// By surface. Face: x shadow softness. Hair: x highlight strength, y width, z shift. Eye:
-    /// x parallax depth.
+    /// By surface. Face: x shadow softness, y nose line threshold, z highlight strength, w
+    /// highlight reveal. Hair: x highlight strength, y width, z shift. Eye: x parallax depth.
     pub surface: [f32; 4],
-    /// Hair: rgb highlight color.
+    /// Face: rgb blush color. Hair: rgb highlight color.
     pub surface_color: [f32; 4],
     /// x: flags (bit `i` for texture slot `i`, then `FLAG_*`); y: region count; z: surface
     /// (`SURFACE_*`); w: specular model (`SPECULAR_*`) | highlight style (`HIGHLIGHT_*`) << 8.
@@ -520,6 +573,8 @@ impl AnimeCharacterMaterial {
     /// Texture slot of the face, hair or eye mask.
     pub const SURFACE_MASK: usize = 5;
     pub const MATCAP: usize = 6;
+    /// Texture slot of a face's expression map.
+    pub const EXPRESSION: usize = 7;
 
     /// The family's texture slots, in binding order (group 3 in the renderer).
     pub const TEXTURE_SLOTS: &[TextureSlot] = &[
@@ -530,6 +585,7 @@ impl AnimeCharacterMaterial {
         TextureSlot { name: "face_shadow", usage: TextureUsage::FaceShadow },
         TextureSlot { name: "surface_mask", usage: TextureUsage::Mask },
         TextureSlot { name: "matcap", usage: TextureUsage::Light },
+        TextureSlot { name: "expression", usage: TextureUsage::Mask },
     ];
 
     /// The GPU block, given the swizzle of each slot's texture (identity where none is bound).
@@ -557,9 +613,12 @@ impl AnimeCharacterMaterial {
         }
         let (surface_kind, surface, surface_color, highlight) = match &self.surface {
             CharacterSurface::Body => (AnimeCharacterParams::SURFACE_BODY, [0.0; 4], [0.0; 4], 0),
-            CharacterSurface::Face(face) => {
-                (AnimeCharacterParams::SURFACE_FACE, [face.softness, 0.0, 0.0, 0.0], [0.0; 4], 0)
-            }
+            CharacterSurface::Face(face) => (
+                AnimeCharacterParams::SURFACE_FACE,
+                [face.softness, face.nose_line, face.highlight, face.highlight_reveal],
+                rgb_w(face.blush_color, 0.0),
+                0,
+            ),
             CharacterSurface::Hair(hair) => {
                 let h = &hair.highlight;
                 let style = match h.style {
@@ -657,7 +716,13 @@ impl MaterialDocument for AnimeCharacterMaterial {
         finite("outline.z_offset", self.outline.z_offset)?;
         match &self.surface {
             CharacterSurface::Body => Ok(()),
-            CharacterSurface::Face(face) => non_negative("surface.softness", face.softness),
+            CharacterSurface::Face(face) => {
+                non_negative("surface.softness", face.softness)?;
+                non_negative("surface.nose_line", face.nose_line)?;
+                non_negative("surface.highlight", face.highlight)?;
+                non_negative("surface.highlight_reveal", face.highlight_reveal)?;
+                color("surface.blush_color", &face.blush_color)
+            }
             CharacterSurface::Hair(hair) => {
                 let h = &hair.highlight;
                 color("surface.highlight.color", &h.color)?;
@@ -674,11 +739,11 @@ impl MaterialDocument for AnimeCharacterMaterial {
             DiffuseMode::Ramp(ramp) => Some(ramp.map),
             DiffuseMode::Bands(_) => None,
         };
-        let (face_shadow, surface_mask) = match &self.surface {
-            CharacterSurface::Body => (None, None),
-            CharacterSurface::Face(face) => (Some(face.shadow_map), face.mask_map),
-            CharacterSurface::Hair(hair) => (None, hair.mask_map),
-            CharacterSurface::Eye(eye) => (None, eye.mask_map),
+        let (face_shadow, surface_mask, expression) = match &self.surface {
+            CharacterSurface::Body => (None, None, None),
+            CharacterSurface::Face(face) => (Some(face.shadow_map), face.mask_map, face.expression_map),
+            CharacterSurface::Hair(hair) => (None, hair.mask_map, None),
+            CharacterSurface::Eye(eye) => (None, eye.mask_map, None),
         };
         vec![
             self.base_color_map,
@@ -688,6 +753,7 @@ impl MaterialDocument for AnimeCharacterMaterial {
             face_shadow,
             surface_mask,
             self.matcap.map(|matcap| matcap.map),
+            expression,
         ]
     }
 

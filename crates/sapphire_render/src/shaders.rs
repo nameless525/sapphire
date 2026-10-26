@@ -42,7 +42,7 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
-    use crate::characters::{GpuCharacter, GpuRig};
+    use crate::characters::{GpuCharacter, GpuFace, GpuRig};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
@@ -217,6 +217,7 @@ mod tests {
             ("anime_character", ANIME_CHARACTER, "LocalLight", size_of::<GpuLight>()),
             ("anime_character", ANIME_CHARACTER, "CharacterData", size_of::<GpuCharacter>()),
             ("anime_character", ANIME_CHARACTER, "CharacterRig", size_of::<GpuRig>()),
+            ("anime_character", ANIME_CHARACTER, "CharacterFace", size_of::<GpuFace>()),
             ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
             ("prepass", PREPASS, "InstanceData", size_of::<InstanceData>()),
             ("prepass", PREPASS, "ViewUniforms", size_of::<ViewUniforms>()),
@@ -342,8 +343,9 @@ mod tests {
                     character,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
+            ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
         ];
         let module = validate("anime_character", ANIME_CHARACTER);
         for (name, rust) in structs {
@@ -418,6 +420,7 @@ mod tests {
             ("CHARACTER_FACE_SHADOW", M::FACE_SHADOW),
             ("CHARACTER_SURFACE_MASK", M::SURFACE_MASK),
             ("CHARACTER_MATCAP", M::MATCAP),
+            ("CHARACTER_EXPRESSION", M::EXPRESSION),
         ];
         assert_eq!(slots.len(), M::TEXTURE_SLOTS.len());
         for (name, slot) in slots {
@@ -473,7 +476,7 @@ mod tests {
     /// them: the vertex flags, the control map's encodings and the ramp rows.
     #[test]
     fn wgsl_character_contract_matches_rust() {
-        use sapphire_assets::character_maps::{MATERIAL_IDS, ilm, ramp};
+        use sapphire_assets::character_maps::{MATERIAL_IDS, face_sdf, ilm, ramp};
         use sapphire_assets::mesh::VertexFlags;
         let character = validate("anime_character", ANIME_CHARACTER);
         let outline = validate("outline", OUTLINE);
@@ -485,17 +488,23 @@ mod tests {
         assert_eq!(wgsl_f32(&character, "SHADOW_BIAS_SHADOWED"), ilm::SHADOW_BIAS_SHADOWED);
         assert_eq!(wgsl_f32(&character, "RAMP_ROWS"), ramp::ROWS as f32);
         assert_eq!(wgsl_f32(&character, "MATERIAL_ID_LEVELS"), f32::from(MATERIAL_IDS));
+        assert_eq!(wgsl_f32(&character, "FACE_MIRROR_BLEND"), face_sdf::MIRROR_BLEND);
+        assert_eq!(wgsl_f32(&character, "PI"), std::f32::consts::PI);
     }
 
     /// Every static permutation of every mesh pass specializes and validates: what each variant's
     /// pipeline compiles (the GPU tests build them on the device too).
     #[test]
     fn every_permutation_specializes_and_validates() {
-        use crate::pipelines::{SurfaceVariant, override_constant};
-        let passes = [
-            ("anime_character", ANIME_CHARACTER, SurfaceVariant::ALL.as_slice()),
-            ("outline", OUTLINE, SurfaceVariant::DEPTH_WRITING.as_slice()),
-        ];
+        use crate::pipelines::{Coverage, SurfaceVariant, override_constant};
+        type Constants = &'static [(&'static str, f64)];
+        let surfaces: Vec<(String, Constants)> =
+            SurfaceVariant::ALL.iter().map(|variant| (format!("{variant:?}"), variant.constants())).collect();
+        let outlines: Vec<(String, Constants)> = Coverage::DEPTH_WRITING
+            .iter()
+            .map(|coverage| (format!("{coverage:?}"), coverage.constants()))
+            .collect();
+        let passes = [("anime_character", ANIME_CHARACTER, surfaces), ("outline", OUTLINE, outlines)];
         for (name, source, variants) in passes {
             let module = validate(name, source);
             let info = naga::valid::Validator::new(
@@ -507,9 +516,9 @@ mod tests {
             // Every permutation constant the module declares, by name.
             let overrides: Vec<&str> =
                 module.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
-            for &variant in variants {
+            for (variant, variant_constants) in variants {
                 let constants: naga::back::PipelineConstants =
-                    variant.constants().iter().map(|&(key, value)| (key.to_owned(), value)).collect();
+                    variant_constants.iter().map(|&(key, value)| (key.to_owned(), value)).collect();
                 for key in constants.keys() {
                     assert!(overrides.contains(&key.as_str()), "{name}.wgsl has no override {key}");
                 }
@@ -524,11 +533,11 @@ mod tests {
             assert!(overrides.contains(&override_constant::ALPHA_TEST), "{name}.wgsl");
         }
         let character = validate("anime_character", ANIME_CHARACTER);
-        assert!(
-            character
-                .overrides
-                .iter()
-                .any(|(_, o)| o.name.as_deref() == Some(override_constant::TRANSPARENT))
-        );
+        for constant in [override_constant::TRANSPARENT, override_constant::FACE] {
+            assert!(
+                character.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),
+                "{constant}"
+            );
+        }
     }
 }

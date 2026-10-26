@@ -17,7 +17,8 @@
 //!   tools (live link, the overlay) can do as well as the cooker.
 //! - What the anime character maps' texels mean ([`character_maps`], M1 A7): the ILM channel
 //!   assignment and material-ID and shadow-bias encodings, the ramp rows, and the SDF
-//!   face-map angle encoding, for the same reason.
+//!   face-map angle encoding, for the same reason; and since M1 C3 the light in head space the
+//!   face map is compared with, and the face mask and expression map's channels.
 //! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
 //!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
 //!   for animation (M2) to read.

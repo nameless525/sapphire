@@ -1,8 +1,8 @@
-//! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps and SDF face
-//! maps.
+//! What the texels of the anime character maps mean (M1 A7): ILM maps, ramps, SDF face maps
+//! and the face's masks (M1 C3).
 //!
-//! The maps are ordinary cooked textures ([`texture`](crate::texture)) of the ILM, ramp and
-//! SDF classes. This module fixes their channel and row layouts and the encodings inside
+//! The maps are ordinary cooked textures ([`texture`](crate::texture)) of the ILM, ramp, SDF
+//! and mask classes. This module fixes their channel and row layouts and the encodings inside
 //! them, both directions, so the pipeline's map tools (which write them) and the anime
 //! character shader (C1 and C3, which read them) can't drift apart, as the mesh element
 //! encodings do for vertex data.
@@ -52,11 +52,51 @@
 //!   head-forward (0°) toward overhead (90°): WuWa's vertical channel for top light.
 //!
 //! A texel is lit while the light's angle is below its value ([`face_sdf::is_lit`]): 0 is
-//! never lit, 1 is lit until the light is directly behind. The shader takes the light's angle
-//! from its direction projected into head space; equal steps of angle are equal steps of
-//! value, so masks can be authored at any angles. Maps are authored for light on the head's
+//! never lit, 1 is lit until the light is directly behind. Equal steps of angle are equal steps
+//! of value, so masks can be authored at any angles. Maps are authored for light on the head's
 //! right; light on its left samples them mirrored (`u → 1 − u`), which needs face UVs that are
-//! mirror-symmetric about `u = 0.5`.
+//! mirror-symmetric about `u = 0.5`. A one-channel map reads G as 1 (its texture's swizzle is
+//! `r101`, A2's SDF class): nothing on it turns to shadow as the light rises.
+//!
+//! **Head space** (M1 C3). The shader expresses the light in the head's basis: head-right
+//! `R = forward × up` (the character's own right; models face +Z with +Y up, so it is −X at
+//! rest), head-up `U` and head-forward `F`. For the unit vector toward the light, with
+//! `x = L·R`, `y = L·U`, `z = L·F` ([`face_sdf::HeadLight::new`]):
+//!
+//! - **The horizontal angle** is the yaw of the light's projection on the head's horizontal
+//!   plane, `atan2(|x|, z)`, scaled by `cos(elevation) = |(x, z)|`. In the horizontal plane that
+//!   is the yaw itself, so a light turning around the head reproduces the R masks exactly; as
+//!   the light rises toward overhead the angle fades to 0, so a light passing over the top
+//!   never flips the face from one side to the other.
+//! - **The vertical angle** is the light's elevation above the horizontal plane,
+//!   `asin(y)`, 0 for a light below it.
+//! - **The two channels intersect:** a texel is lit while it is lit by both, with the margin
+//!   `min(R − horizontal, G − vertical)` ([`face_sdf::lit_margin`]). A light in the horizontal
+//!   plane has a vertical angle of 0, which lights the whole face in G; a light rising straight
+//!   in front has a horizontal angle of 0, which lights it in R. So each channel reproduces its
+//!   own masks exactly, and a light from above and to the side shadows what either would.
+//! - **The mirror** is chosen by the sign of `x`. Within `|x| < MIRROR_BLEND × |y|`
+//!   ([`face_sdf::MIRROR_BLEND`]) the R channel blends from the light's side toward the darker
+//!   of both sides, `min(R(u), R(1 − u))`, which is symmetric: a light behind and above the
+//!   head, whose faded horizontal angle lies between 0 and 180°, darkens the face evenly instead
+//!   of lighting one side and flipping to the other as it crosses the mirror. The blend vanishes
+//!   in the horizontal plane, where crossing the mirror is seamless anyway (in front both sides
+//!   are lit, behind neither), so the R masks hold exactly there.
+//! - **G is never mirrored:** the vertical masks are authored for lights in the head's
+//!   symmetric forward–up plane, so a painted asymmetry (a parting's shadow) stays in place.
+//!
+//! # Face masks
+//!
+//! A face material (C3) binds two masks besides its SDF map, both linear:
+//!
+//! - **The face mask** (the material's surface mask slot), [`face_mask`]: R the nose line,
+//!   G the face highlight, B always lit (eyes, brows, lashes); A unused. These are the face's
+//!   fixed features.
+//! - **The expression map** ([`face_expression`]): R blush, G gloom; B and A unused. Each
+//!   channel is scaled by a weight the frame packet animates per character, so one material
+//!   serves every expression of every character wearing it.
+//!
+//! Neutral values are 0 everywhere: an unpainted mask changes nothing.
 
 /// How many material IDs the character maps tell apart: ILM alpha levels, ramp rows per half,
 /// and the per-ID parameter arrays of the anime character shader (C1).
@@ -169,10 +209,31 @@ pub mod ramp {
     }
 }
 
-/// SDF face-map values: see the [module docs](self).
+/// SDF face-map values, and the light in head space they are compared with: see the
+/// [module docs](self).
 pub mod face_sdf {
+    use std::f32::consts::PI;
+
+    use crate::texture::{Component, Swizzle};
+
     /// The light angle a value of 1 stands for, in degrees: directly behind the head.
     pub const MAX_ANGLE_DEGREES: f32 = 180.0;
+
+    /// Index of the horizontal channel (R).
+    pub const HORIZONTAL: usize = 0;
+    /// Index of the vertical channel (G).
+    pub const VERTICAL: usize = 1;
+
+    /// The swizzle of a one-channel map: G reads 1, so the vertical channel never shadows.
+    pub const ONE_CHANNEL_SWIZZLE: Swizzle =
+        Swizzle([Component::R, Component::One, Component::Zero, Component::One]);
+
+    /// How far from the head's forward–up plane the horizontal channel blends from the light's
+    /// side toward the darker of both sides (see the [module docs](super)): within
+    /// `MIRROR_BLEND × |L·U|` of it, in `|L·R|`. The blend widens as the light leaves the
+    /// horizontal plane, where the faded horizontal angle could light one side alone, and
+    /// vanishes in it, where the R masks hold exactly.
+    pub const MIRROR_BLEND: f32 = 0.25;
 
     /// The stored value of a light angle in degrees, clamped to `[0, 1]`.
     pub fn encode_angle(degrees: f32) -> f32 {
@@ -183,6 +244,77 @@ pub mod face_sdf {
     pub fn is_lit(value: f32, degrees: f32) -> bool {
         value > encode_angle(degrees)
     }
+
+    /// A light in head space, as the face shader compares the map with it.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct HeadLight {
+        /// The horizontal channel's angle, as a stored value: the yaw, faded toward 0 as the
+        /// light rises or sinks out of the horizontal plane.
+        pub horizontal: f32,
+        /// The vertical channel's angle, as a stored value: the elevation, 0 below the horizon.
+        pub vertical: f32,
+        /// The light is on the head's left, so the horizontal channel reads the map mirrored.
+        pub mirrored: bool,
+        /// How much the horizontal channel reads the light's side alone (1) rather than the
+        /// darker of both sides (0): `|L·R| / (MIRROR_BLEND × |L·U|)`, at most 1.
+        pub side: f32,
+    }
+
+    impl HeadLight {
+        /// The light whose unit direction (toward the light) has `toward_light = [L·R, L·U,
+        /// L·F]` in the head's basis.
+        pub fn new(toward_light: [f32; 3]) -> Self {
+            let [x, y, z] = toward_light;
+            let level = x.hypot(z);
+            // Straight above or below, the yaw is undefined and fades out anyway.
+            let yaw = if level > 1e-6 { x.abs().atan2(z) } else { 0.0 };
+            Self {
+                horizontal: yaw * level / PI,
+                vertical: y.clamp(0.0, 1.0).asin() / PI,
+                mirrored: x < 0.0,
+                // In the horizontal plane only `x = 0` reads both sides, where they agree: in
+                // front both are lit, and behind neither.
+                side: (x.abs() / (MIRROR_BLEND * y.abs()).max(1e-6)).min(1.0),
+            }
+        }
+    }
+
+    /// How far a texel is lit by `light`, in stored-value units: positive while lit. `r` and
+    /// `vertical` are the map's channels at the texel's `u`, `r_mirrored` its R at `1 − u`.
+    pub fn lit_margin(light: HeadLight, r: f32, r_mirrored: f32, vertical: f32) -> f32 {
+        let (own, other) = if light.mirrored { (r_mirrored, r) } else { (r, r_mirrored) };
+        let both = own.min(other);
+        let horizontal = both + (own - both) * light.side - light.horizontal;
+        horizontal.min(vertical - light.vertical)
+    }
+}
+
+/// The face mask's channels (M1 C3): the fixed features a face material paints, in its
+/// surface mask slot. Linear; 0 changes nothing.
+pub mod face_mask {
+    /// R, the nose line, painted where it is drawn for a camera on the head's right (on the
+    /// nose's far side from it) and mirrored for one on its left. It shows in the region's
+    /// outline color where `mask × |sin(turn)|` exceeds the material's nose line threshold,
+    /// `turn` being the camera's angle from head-forward around the head: a fully painted line
+    /// appears as the head turns from the camera, a fainter one later.
+    pub const NOSE_LINE: usize = 0;
+    /// G, the face highlight: painted shapes (the nose tip, the cheeks) that brighten the lit
+    /// tone and fade out near the shadow's edge, over the material's highlight reveal.
+    pub const HIGHLIGHT: usize = 1;
+    /// B, always lit: eyes, brows and lashes, which the light split never shadows.
+    pub const ALWAYS_LIT: usize = 2;
+}
+
+/// The expression map's channels (M1 C3), each scaled by a weight the frame packet animates
+/// per character (`sapphire_render::FaceExpression`). Linear; 0 changes nothing.
+pub mod face_expression {
+    /// R, blush: tints the albedo toward the material's blush color, lit and shadow tones
+    /// alike.
+    pub const BLUSH: usize = 0;
+    /// G, gloom: pushes the face into its shadow tones as ambient occlusion does, toward the
+    /// deepest at full weight: the anime "shadowed brow". Always-lit texels stay lit and keep
+    /// their ambient light.
+    pub const GLOOM: usize = 1;
 }
 
 #[cfg(test)]
@@ -243,5 +375,69 @@ mod tests {
         assert!(!face_sdf::is_lit(0.5, 90.0));
         assert!(!face_sdf::is_lit(0.0, 0.0), "0 is never lit");
         assert!(face_sdf::is_lit(1.0, 179.9), "1 is lit until the light is behind");
+    }
+
+    /// The unit vector toward a light at `yaw` degrees toward head-right (negative: left) and
+    /// `elevation` degrees up, as `[L·R, L·U, L·F]`.
+    fn toward(yaw: f32, elevation: f32) -> [f32; 3] {
+        let (yaw, elevation) = (yaw.to_radians(), elevation.to_radians());
+        [yaw.sin() * elevation.cos(), elevation.sin(), yaw.cos() * elevation.cos()]
+    }
+
+    #[test]
+    fn head_lights_in_the_horizontal_plane_reproduce_the_masks_exactly() {
+        use face_sdf::{HeadLight, lit_margin};
+        for degrees in [15.0, 30.0, 60.0, 90.0, 135.0, 170.0] {
+            let right = HeadLight::new(toward(degrees, 0.0));
+            assert!((right.horizontal - degrees / 180.0).abs() < 1e-6, "{degrees}°");
+            assert_eq!((right.vertical, right.mirrored), (0.0, false));
+            let left = HeadLight::new(toward(-degrees, 0.0));
+            assert!(left.mirrored && (left.horizontal - right.horizontal).abs() < 1e-6);
+            for value in [0.05, 0.2, 0.4, 0.6, 0.8, 0.95] {
+                // Whatever the mirrored texel holds, and with any vertical value above 0.
+                for (mirror, vertical) in [(0.0, 0.01), (1.0, 1.0), (value, 0.5)] {
+                    let lit = face_sdf::is_lit(value, degrees);
+                    assert_eq!(lit_margin(right, value, mirror, vertical) > 0.0, lit, "{degrees}° {value}");
+                    assert_eq!(lit_margin(left, mirror, value, vertical) > 0.0, lit, "mirrored");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn head_lights_rising_in_front_reproduce_the_vertical_masks_exactly() {
+        use face_sdf::{HeadLight, lit_margin};
+        for degrees in [10.0, 45.0, 75.0, 90.0] {
+            let light = HeadLight::new(toward(0.0, degrees));
+            assert!(light.horizontal.abs() < 1e-6 && (light.vertical - degrees / 180.0).abs() < 1e-6);
+            for value in [0.05, 0.2, 0.4, 0.6] {
+                // Any texel the horizontal channel lights from the front.
+                let lit = face_sdf::is_lit(value, degrees);
+                assert_eq!(lit_margin(light, 0.3, 0.7, value) > 0.0, lit, "{degrees}° {value}");
+            }
+        }
+        // Below the horizon only the horizontal channel applies.
+        assert_eq!(HeadLight::new(toward(0.0, -40.0)).vertical, 0.0);
+    }
+
+    #[test]
+    fn head_lights_pass_over_the_top_and_behind_without_flipping_sides() {
+        use face_sdf::{HeadLight, lit_margin};
+        // Over the top, from the right to the left: the horizontal angle fades to nothing.
+        let near_top = [HeadLight::new(toward(90.0, 89.0)), HeadLight::new(toward(-90.0, 89.0))];
+        for light in near_top {
+            assert!(light.horizontal < 0.01, "{light:?}");
+        }
+        // A light behind and above the head, on its forward–up plane: the two sides are lit
+        // alike, so a texel and its mirror image get the same margin.
+        let behind = HeadLight::new(toward(180.0, 50.0));
+        assert!((0.3..0.7).contains(&behind.horizontal) && behind.side < 1e-6, "{behind:?}");
+        for (r, mirrored) in [(0.9, 0.2), (0.6, 0.55), (0.1, 1.0)] {
+            let margin = lit_margin(behind, r, mirrored, 1.0);
+            assert!((margin - lit_margin(behind, mirrored, r, 1.0)).abs() < 1e-6);
+        }
+        // Crossing that plane changes the margin smoothly: no side lights up at once.
+        let [a, b] = [0.2, -0.2].map(|yaw: f32| HeadLight::new(toward(180.0 + yaw, 50.0)));
+        assert!((lit_margin(a, 0.9, 0.2, 1.0) - lit_margin(b, 0.9, 0.2, 1.0)).abs() < 0.01);
     }
 }

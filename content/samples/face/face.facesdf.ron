@@ -1,0 +1,114 @@
+(
+    type: "sapphire::pipeline::FaceSdfMap",
+    version: 1,
+    data: (
+        horizontal: [
+            (
+                angle: 0.0,
+                path: "masks/h_000.png",
+            ),
+            (
+                angle: 10.0,
+                path: "masks/h_010.png",
+            ),
+            (
+                angle: 20.0,
+                path: "masks/h_020.png",
+            ),
+            (
+                angle: 30.0,
+                path: "masks/h_030.png",
+            ),
+            (
+                angle: 40.0,
+                path: "masks/h_040.png",
+            ),
+            (
+                angle: 50.0,
+                path: "masks/h_050.png",
+            ),
+            (
+                angle: 60.0,
+                path: "masks/h_060.png",
+            ),
+            (
+                angle: 70.0,
+                path: "masks/h_070.png",
+            ),
+            (
+                angle: 80.0,
+                path: "masks/h_080.png",
+            ),
+            (
+                angle: 90.0,
+                path: "masks/h_090.png",
+            ),
+            (
+                angle: 100.0,
+                path: "masks/h_100.png",
+            ),
+            (
+                angle: 110.0,
+                path: "masks/h_110.png",
+            ),
+            (
+                angle: 120.0,
+                path: "masks/h_120.png",
+            ),
+            (
+                angle: 130.0,
+                path: "masks/h_130.png",
+            ),
+            (
+                angle: 140.0,
+                path: "masks/h_140.png",
+            ),
+            (
+                angle: 150.0,
+                path: "masks/h_150.png",
+            ),
+            (
+                angle: 160.0,
+                path: "masks/h_160.png",
+            ),
+            (
+                angle: 170.0,
+                path: "masks/h_170.png",
+            ),
+            (
+                angle: 180.0,
+                path: "masks/h_180.png",
+            ),
+        ],
+        vertical: [
+            (
+                angle: 0.0,
+                path: "masks/v_000.png",
+            ),
+            (
+                angle: 15.0,
+                path: "masks/v_015.png",
+            ),
+            (
+                angle: 30.0,
+                path: "masks/v_030.png",
+            ),
+            (
+                angle: 45.0,
+                path: "masks/v_045.png",
+            ),
+            (
+                angle: 60.0,
+                path: "masks/v_060.png",
+            ),
+            (
+                angle: 75.0,
+                path: "masks/v_075.png",
+            ),
+            (
+                angle: 90.0,
+                path: "masks/v_090.png",
+            ),
+        ],
+    ),
+)

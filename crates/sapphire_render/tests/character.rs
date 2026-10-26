@@ -21,10 +21,10 @@ use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat, ful
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::texture::{GpuTexture, check_format};
 use sapphire_render::{
-    AmbientLight, BloomParams, CameraData, CharacterGi, CharacterInstance, CharacterLighting, ColorGrade,
-    DirectionalLight, FramePacketRing, InstanceId, LightKind, LocalLight, MaterialHandle, MeshHandle,
-    MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient, ToneCurve, ViewData,
-    Vignette,
+    AmbientLight, BloomParams, CameraData, CharacterFace, CharacterGi, CharacterInstance, CharacterLighting,
+    ColorGrade, DirectionalLight, FramePacketRing, InstanceId, LightKind, LocalLight, MaterialHandle,
+    MeshHandle, MeshInstance, Msaa, PostParams, RenderError, RenderSettings, Renderer, SkyGradient,
+    ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -283,7 +283,7 @@ impl Harness {
     /// Lights instance `id` with `lighting` from the next frame on, in place of the sun.
     fn light_rig(&mut self, id: InstanceId, lighting: CharacterLighting) {
         self.characters.retain(|character| character.id != id);
-        self.characters.push(CharacterInstance { id, lighting });
+        self.characters.push(CharacterInstance { id, lighting, face: CharacterFace::default() });
     }
 
     /// Prepares, records and submits one frame and reads the target back. Fails on any

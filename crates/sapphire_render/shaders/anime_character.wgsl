@@ -54,9 +54,34 @@
 // mobile. Local lights add no rim; the rim stays the key light's (C5 revisits it).
 //
 // Static permutations (`pipelines::Permutation`) are pipeline-overridable constants, so each
-// variant compiles only its own code: alpha-tested materials discard below their cutoff, and
-// transparent ones write their coverage for blending. Faces (C3), hair (C5) and eyes (C6) add
-// theirs.
+// variant compiles only its own code: alpha-tested materials discard below their cutoff,
+// transparent ones write their coverage for blending, and faces shade by their SDF map. Hair
+// (C5) and eyes (C6) add theirs.
+//
+// Faces (M1 C3, the face permutation). The light split comes from the face's SDF map and the
+// character's key light in head space instead of N·L, as `sapphire_assets::character_maps`
+// ("Head space") defines it:
+// - The head is the character's: its entry's face (`CharacterData::face` in frame.wgsl), the
+//   head's forward and up in world space and its expression weights, read through the same
+//   index as the rig. Instances that aren't characters read entry 0's, a head at rest.
+// - The key light is the rig's, read once with the body's (`key_direction`, `key_radiance`):
+//   face code reads no light of its own.
+// - In head space (right = forward × up) the light has a horizontal angle (its yaw, faded as it
+//   rises) and a vertical one (its elevation). The map is sampled at u and mirrored at 1 - u:
+//   R on the light's side (blending toward the darker side near the head's forward–up plane),
+//   G always unmirrored; the texel's margin is min(R - horizontal, G - vertical), lit while
+//   positive. A one-channel map's G reads 1.
+// - The margin becomes the split's input as the N·L of a sphere whose terminator follows the
+//   face map (`face_n_dot_l`), so the body's occlusion, shadow bias and locks, threshold and
+//   diffuse mode (`shade_tint`) apply as they do to N·L, and the face's shadow tones are the
+//   body's. So is the rig's stylized GI, which spherizes the face by its regions' sphere weight.
+//   Faces never take the cast shadow (`cast_shadow`): shadow maps are too coarse at face scale,
+//   so a face's shadow is the SDF's alone.
+// - Masks (`character_maps::face_mask`, `face_expression`): always-lit eyes and brows; a face
+//   highlight that brightens the lit tone away from the shadow's edge; a nose line in the
+//   region's outline color that appears as the head turns from the camera; blush tinting the
+//   albedo and gloom pushing toward the deepest shadow as occlusion does (its GI too, except
+//   where always lit), each scaled by the character's expression weight.
 
 const LUMINANCE: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // The narrowest light split, in N·L: far below a pixel's change on any curved surface.
@@ -72,16 +97,23 @@ const RAMP_ROWS: f32 = 16.0;
 // The control map's material IDs, k stored as k / (MATERIAL_ID_LEVELS - 1).
 const MATERIAL_ID_LEVELS: f32 = 8.0;
 
+const PI: f32 = 3.14159265358979;
+// `character_maps::face_sdf::MIRROR_BLEND`: within this × |L·U| of the head's forward–up plane,
+// in |L·R|, the horizontal channel blends toward the darker of both sides.
+const FACE_MIRROR_BLEND: f32 = 0.25;
+// The narrowest face highlight reveal and nose line edge, in their own units.
+const MIN_FACE_EDGE: f32 = 1e-4;
+
 // Static permutation bits (`pipelines::Permutation`), set per pipeline.
 override PERMUTATION_ALPHA_TEST: bool = false;
 override PERMUTATION_TRANSPARENT: bool = false;
+override PERMUTATION_FACE: bool = false;
 
 // The frame's light lists: a list per cluster or per instance slot (see lights.wgsl).
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
 
 // The anime character family's group 3 (`AnimeCharacterMaterial::TEXTURE_SLOTS`): slot `i` at
-// binding `i`, each unbound one a white 1×1 fallback. Face, surface mask and matcap reads join
-// with C3, C5 and C7.
+// binding `i`, each unbound one a white 1×1 fallback. Matcap reads join with C7.
 @group(3) @binding(0) var base_color_map: texture_2d<f32>;
 @group(3) @binding(1) var control_map: texture_2d<f32>;
 @group(3) @binding(2) var normal_map: texture_2d<f32>;
@@ -89,6 +121,7 @@ override PERMUTATION_TRANSPARENT: bool = false;
 @group(3) @binding(4) var face_shadow_map: texture_2d<f32>;
 @group(3) @binding(5) var surface_mask_map: texture_2d<f32>;
 @group(3) @binding(6) var matcap_map: texture_2d<f32>;
+@group(3) @binding(7) var expression_map: texture_2d<f32>;
 @group(3) @binding(8) var material_sampler: sampler;
 @group(3) @binding(9) var ramp_sampler: sampler;
 @group(3) @binding(10) var material_id_sampler: sampler;
@@ -193,9 +226,53 @@ fn bias_locks(lit: f32, bias: f32) -> f32 {
 // the point into the authored shadow tones instead of darkening them. Shadows (R4) fill it from
 // the cascades, which hold environment casters only: characters never self-shadow, and the
 // rig's key direction, which may differ from the sun's, shades but never casts. Until then
-// nothing casts.
+// nothing casts. The face permutation never calls it: a face's shadow is its SDF map's alone,
+// so R4 adds no shadow-map reads to faces; an environment shadow reaches a face whole, per
+// character (a value in its entry that the face takes as occlusion).
 fn cast_shadow(in: CharacterVaryings) -> f32 {
     return 1.0;
+}
+
+// How far the face map lights the point for a light toward `toward_light`, in threshold units
+// (light angle / 180°), positive while lit: `character_maps::face_sdf::lit_margin` for the light
+// in head space (`HeadLight::new`). Two taps of the face map: at uv, and mirrored.
+fn face_margin(face: CharacterFace, toward_light: vec3<f32>, swizzles: vec4<u32>, uv: MaterialUv) -> f32 {
+    let forward = face.forward.xyz;
+    let up = face.up.xyz;
+    // The character's own right: models face +Z with +Y up, so -X at rest.
+    let right = cross(forward, up);
+    let l = vec3<f32>(dot(toward_light, right), dot(toward_light, up), dot(toward_light, forward));
+    let level = length(l.xz);
+    // Straight above or below, the yaw is undefined and fades out anyway.
+    let yaw = select(0.0, atan2(abs(l.x), l.z), level > 1e-6);
+    let horizontal = yaw * level / PI;
+    let vertical = asin(saturate(l.y)) / PI;
+    let side = min(abs(l.x) / max(FACE_MIRROR_BLEND * abs(l.y), 1e-6), 1.0);
+
+    let flip = vec2<f32>(-1.0, 1.0);
+    let mirrored_uv = MaterialUv(vec2<f32>(1.0 - uv.uv.x, uv.uv.y), uv.dx * flip, uv.dy * flip);
+    let at_uv = sample_material(face_shadow_map, swizzles, CHARACTER_FACE_SHADOW, uv);
+    let at_mirror = sample_material(face_shadow_map, swizzles, CHARACTER_FACE_SHADOW, mirrored_uv).r;
+    // Maps are authored for light on the head's right; light on its left reads them mirrored.
+    let own = select(at_uv.r, at_mirror, l.x < 0.0);
+    let both = min(at_uv.r, at_mirror);
+    return min(mix(both, own, side) - horizontal, at_uv.g - vertical);
+}
+
+// The face's N·L: that of a sphere whose terminator follows the face map, turned so the map's
+// edge (margin 0) falls on the material's `threshold`. A quarter turn of light past the edge,
+// plus the threshold's own angle, is the deepest shadow (-1), as on the sphere. The body's
+// occlusion, bias, locks and diffuse mode then apply to it as they do to N·L.
+fn face_n_dot_l(margin: f32, threshold: f32) -> f32 {
+    let offset = asin(clamp(threshold, -1.0, 1.0));
+    return sin(clamp(PI * margin + offset, -0.5 * PI, 0.5 * PI));
+}
+
+// The face's light split edge in N·L units: the material's face softness (threshold units) at
+// the edge, where face_n_dot_l changes by π·cos(asin(threshold)) per threshold unit.
+fn face_softness(softness: f32, threshold: f32) -> f32 {
+    let t = clamp(threshold, -1.0, 1.0);
+    return PI * sqrt(1.0 - t * t) * softness;
 }
 
 // The normal map's tangent-space normal in world space, by a tangent frame built from the
@@ -417,15 +494,61 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     surface.split = materials[material].split.xy;
     surface.rim = materials[material].edges.xy;
 
-    // The key light, from the character's rig: every key-light term reads it here.
+    // The key light, from the character's rig: every key-light term reads it here, a face's
+    // included.
     let rig = characters[in.character].rig;
     let key_direction = rig.key_direction.xyz;
     let key_radiance = rig.key_radiance.rgb;
 
-    let n_dot_l = dot(surface.normal, key_direction);
-    let x = split_input(n_dot_l, surface.occlusion * cast_shadow(in), surface.shadow_bias);
-    let width = max(surface.split.y, 0.5 * fwidth(x));
-    let lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
+    // A face's head, masks and expression (`character_maps::face_mask`, `face_expression`),
+    // before anything reads the albedo or occlusion. Zero for the body.
+    var face: CharacterFace;
+    var nose_line = 0.0;
+    var face_highlight = 0.0;
+    var always_lit = 0.0;
+    if PERMUTATION_FACE {
+        face = characters[in.character].face;
+        // The camera's turn from head-forward: its side picks the nose line's mirror (masks are
+        // authored for a camera on the head's right), and its sine reveals the line.
+        let turn = dot(surface.view_dir, cross(face.forward.xyz, face.up.xyz));
+        if material_has_texture(modes, CHARACTER_SURFACE_MASK) {
+            let mask = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, uv);
+            let flip = vec2<f32>(-1.0, 1.0);
+            let mirrored_uv = MaterialUv(vec2<f32>(1.0 - uv.uv.x, uv.uv.y), uv.dx * flip, uv.dy * flip);
+            let mirrored = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, mirrored_uv).r;
+            nose_line = select(mask.r, mirrored, turn < 0.0) * abs(turn);
+            face_highlight = mask.g;
+            always_lit = mask.b;
+        }
+        if material_has_texture(modes, CHARACTER_EXPRESSION) {
+            let painted = sample_material(expression_map, swizzles, CHARACTER_EXPRESSION, uv).rg;
+            let expression = painted * saturate(face.expression.xy);
+            surface.albedo *= mix(vec3<f32>(1.0), materials[material].surface_color.rgb, expression.x);
+            // Gloom darkens as occlusion does: toward the deepest of the authored shadow tones,
+            // and out of the GI. Always-lit texels (eyes, brows) keep both.
+            surface.occlusion *= 1.0 - expression.y * (1.0 - always_lit);
+        }
+    }
+    // The nose line's edge, a pixel wide, in uniform control flow.
+    let nose_line_width = max(0.5 * fwidth(nose_line), MIN_FACE_EDGE);
+
+    var x: f32;
+    var softness = surface.split.y;
+    var face_lit_margin = 0.0;
+    if PERMUTATION_FACE {
+        // The face map alone shadows a face: no cast shadow.
+        face_lit_margin = face_margin(face, key_direction, swizzles, uv);
+        x = split_input(face_n_dot_l(face_lit_margin, surface.split.x), surface.occlusion, surface.shadow_bias);
+        softness = face_softness(materials[material].surface.x, surface.split.x);
+    } else {
+        let n_dot_l = dot(surface.normal, key_direction);
+        x = split_input(n_dot_l, surface.occlusion * cast_shadow(in), surface.shadow_bias);
+    }
+    let width = max(softness, 0.5 * fwidth(x));
+    var lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
+    if PERMUTATION_FACE {
+        lit = max(lit, always_lit);
+    }
     let rim = rim_light(surface, key_radiance, rig.key_direction.w, lit);
     // Taken here for the local lights: after the alpha test below, a discarded pixel's
     // neighbours could no longer rely on them.
@@ -448,6 +571,18 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = pixel_light_list(in);
         color += local_lighting(surface, rig.key_radiance.w, list, in.world_position, derivatives);
+    }
+    if PERMUTATION_FACE {
+        // The face highlight brightens the lit tone, fading in from the shadow's edge over the
+        // material's reveal (surface.w), by its strength (surface.z).
+        let reveal = smoothstep(0.0, max(materials[material].surface.w, MIN_FACE_EDGE), face_lit_margin);
+        let highlight = face_highlight * reveal * lit * materials[material].surface.z;
+        color += surface.albedo * key_radiance * highlight;
+        // The nose line is drawn, not lit: the region's outline color over everything, where
+        // the mask × the turn passes the material's threshold (surface.y).
+        let edge = max(materials[material].surface.y, nose_line_width);
+        let line = smoothstep(edge - nose_line_width, edge + nose_line_width, nose_line);
+        color = mix(color, surface.region.outline.rgb, line);
     }
     // Opaque passes keep alpha 1 for the character bloom mask (C7); transparent ones blend by
     // their coverage.

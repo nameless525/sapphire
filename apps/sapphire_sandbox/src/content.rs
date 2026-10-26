@@ -11,7 +11,10 @@
 //!
 //! With `--swatches` it loads the shader swatches' three materials too, by the IDs in
 //! [`swatches::MATERIALS`], each with the maps it names ([`Content::swatch_materials`]); the
-//! spheres they draw on are procedural.
+//! spheres they draw on are procedural. With `--faces` it loads the face test head
+//! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
+//! SDF face map, a face mask and an expression map: all of it cooked content
+//! ([`Content::face_head`]).
 //!
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
@@ -34,6 +37,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::faces;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
 
@@ -151,6 +155,8 @@ pub(crate) struct Content {
     character: Handle<Mesh>,
     /// The shader swatches' materials, once asked for (`--swatches`).
     swatches: Vec<Handle<Material>>,
+    /// The face test head, once asked for (`--faces`).
+    face_head: Option<Handle<Mesh>>,
     server: AssetServer,
 }
 
@@ -172,7 +178,7 @@ impl Content {
         server.mount(PACK).map_err(|error| missing(&error))?;
         let character = server.load_with(CHARACTER, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
-        Ok(Self { gpu: GpuAssets::default(), character, swatches: Vec::new(), server })
+        Ok(Self { gpu: GpuAssets::default(), character, swatches: Vec::new(), face_head: None, server })
     }
 
     /// One frame of loading: applies finished reads and decodes, frees what the server unloaded,
@@ -244,6 +250,26 @@ impl Content {
             let &(_, handle) = self.gpu.materials.get(&id).expect("a ready material was uploaded here");
             handle
         }))
+    }
+
+    /// Loads until the face test head is on `renderer`, with its materials and the maps they
+    /// name, and returns its mesh: the load screen of `--faces`. It stays loaded from then on.
+    pub fn face_head(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<MeshHandle, AppInitError> {
+        // Asking again tries a head that failed before, as the character does.
+        let head = self.server.load_with(faces::HEAD, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&head, |upload| assets.upload(upload, renderer, gpu));
+        self.face_head = Some(head);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the face head didn't load: {error}")))?;
+        let &(_, mesh, _) = self.gpu.meshes.get(&faces::HEAD).expect("a ready mesh was uploaded here");
+        Ok(mesh)
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

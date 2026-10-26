@@ -30,7 +30,9 @@ use crate::workspace::{self, CargoBuild};
 /// Source assets live here, relative to the workspace root.
 pub const SOURCE_DIR: &str = "content";
 
-/// Generated sample sources, relative to [`SOURCE_DIR`]. `gen-samples` writes all of them.
+/// Generated sample sources, relative to [`SOURCE_DIR`]. `gen-samples` writes all of them, and
+/// the face map's threshold masks (`samples/face/masks/`), which its document names: a cook
+/// missing one fails, naming it.
 const SAMPLE_SOURCES: &[&str] = &[
     "samples/mannequin.glb",
     "samples/swatch.ramp.ron",
@@ -40,6 +42,12 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/swatch_ramp.material.ron",
     "samples/swatch_subsurface.material.ron",
     "samples/swatch_bands.material.ron",
+    "samples/face/face_head.glb",
+    "samples/face/face.facesdf.ron",
+    "samples/face/face_base.png",
+    "samples/face/face_mask.png",
+    "samples/face/face_expression.png",
+    "samples/face/face.material.ron",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

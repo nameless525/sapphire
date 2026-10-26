@@ -295,10 +295,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Draws",
             format!(
-                "{} surfaces ({} alpha-tested, {} transparent), {} outlines, {} instances",
+                "{} surfaces ({} alpha-tested, {} transparent, {} faces), {} outlines, {} instances",
                 render.draws,
                 render.alpha_tested_draws,
                 render.transparent_draws,
+                render.face_draws,
                 render.outline_draws,
                 render.instances
             ),

@@ -29,7 +29,7 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
-pub fn scenes() -> [Scene; 9] {
+pub fn scenes() -> [Scene; 10] {
     [
         Scene { name: "turntable-start", args: &["--capture-ticks", "0"], thresholds: Thresholds::default() },
         Scene { name: "turntable", args: &["--capture-ticks", "90"], thresholds: Thresholds::default() },
@@ -85,6 +85,15 @@ pub fn scenes() -> [Scene; 9] {
         Scene {
             name: "turntable-night",
             args: &["--capture-ticks", "90", "--time-of-day", "22"],
+            thresholds: Thresholds::default(),
+        },
+        // The face look-dev rig (M1 C3): the cooked face test head in two rows, each lit by the
+        // key light from its own angle in head space. A yaw sweep from 135° on the heads' right
+        // round to 135° on their left (mirror-image SDF shadows, eyes and brows lit), then a top
+        // light, light from above and to the side, a blush, and a gloom with a blush.
+        Scene {
+            name: "faces",
+            args: &["--capture-ticks", "90", "--faces"],
             thresholds: Thresholds::default(),
         },
     ]

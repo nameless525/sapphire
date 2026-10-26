@@ -179,10 +179,11 @@ pub(crate) mod material_binding {
 /// | Bit | From | What it selects today |
 /// |---|---|---|
 /// | skinned, morph | the mesh | the f32-position pipelines, which read the compute skinning pass's outputs (M1 R2); no shader variant, since skinning and morphs no longer run in the vertex stage |
-/// | alpha test | the material ([`MaterialFlags::ALPHA_TEST`]) | [`SurfaceVariant::AlphaTest`]: the surface and outline shaders discard below the cutoff |
+/// | alpha test | the material ([`MaterialFlags::ALPHA_TEST`]) | [`Coverage::AlphaTest`]: the surface and outline shaders discard below the cutoff |
 /// | outline | the material ([`MaterialFlags::OUTLINE`]) | whether the draw is in the outline pass |
-/// | face, hair, eye | the material | nothing yet: faces (C3), hair (C5) and eyes (C6) add their variants |
-/// | transparent | the material ([`MaterialFlags::TRANSPARENT`]) | [`SurfaceVariant::Transparent`]: blended over the frame after the sky, depth-tested without writing, with no outline and in no prepass |
+/// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; outlines are the body's |
+/// | hair, eye | the material | nothing yet: hair (C5) and eyes (C6) add their parts |
+/// | transparent | the material ([`MaterialFlags::TRANSPARENT`]) | [`Coverage::Transparent`]: blended over the frame after the sky, depth-tested without writing, with no outline and in no prepass |
 ///
 /// A variant's pipelines are built for a position format when a mesh in that format is uploaded
 /// with a material that needs them, or a material edit moves to the variant (for every format
@@ -225,13 +226,15 @@ impl Permutation {
 
     /// The surface pipelines it draws with.
     pub(crate) fn surface(self) -> SurfaceVariant {
-        if self.contains(Self::TRANSPARENT) {
-            SurfaceVariant::Transparent
+        let coverage = if self.contains(Self::TRANSPARENT) {
+            Coverage::Transparent
         } else if self.contains(Self::ALPHA_TEST) {
-            SurfaceVariant::AlphaTest
+            Coverage::AlphaTest
         } else {
-            SurfaceVariant::Opaque
-        }
+            Coverage::Opaque
+        };
+        let part = if self.contains(Self::FACE) { Part::Face } else { Part::Body };
+        SurfaceVariant { coverage, part }
     }
 
     /// Whether it draws an outline hull: transparent surfaces never do.
@@ -240,32 +243,24 @@ impl Permutation {
     }
 }
 
-/// The anime character pipelines one [`PositionFormat`] can draw with: the permutation bits that
-/// change the shader or its render state today (see [`Permutation`]).
+/// How a surface covers what lies behind it: its render state, and the alpha test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum SurfaceVariant {
+pub(crate) enum Coverage {
     Opaque,
     AlphaTest,
     Transparent,
 }
 
-impl SurfaceVariant {
-    /// Every variant, in drawing order.
-    pub(crate) const ALL: [Self; 3] = [Self::Opaque, Self::AlphaTest, Self::Transparent];
-    /// The variants that write depth and can draw an outline.
+impl Coverage {
+    /// The coverages that write depth and can draw an outline.
     pub(crate) const DEPTH_WRITING: [Self; 2] = [Self::Opaque, Self::AlphaTest];
 
     pub(crate) fn index(self) -> usize {
         self as usize
     }
 
-    /// The variant a material with `flags` draws with, on any mesh.
-    pub(crate) fn of_material(flags: MaterialFlags) -> Self {
-        Permutation::new(flags, false, false).surface()
-    }
-
-    /// The shaders' pipeline-overridable constants for the variant (`PERMUTATION_*` in
-    /// `anime_character.wgsl` and `outline.wgsl`).
+    /// The pipeline-overridable constants the coverage sets, in `anime_character.wgsl` and in
+    /// `outline.wgsl` (which has the alpha test's alone, since it draws no transparent hulls).
     pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
         match self {
             Self::Opaque => &[],
@@ -275,10 +270,80 @@ impl SurfaceVariant {
     }
 }
 
+/// Which part of a character a surface shades, among those with shader variants of their own:
+/// the body, and faces (M1 C3). Hair (C5) and eyes (C6) join with theirs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Part {
+    Body,
+    Face,
+}
+
+impl Part {
+    pub(crate) const ALL: [Self; 2] = [Self::Body, Self::Face];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The anime character surface pipelines one [`PositionFormat`] can draw with: the permutation
+/// bits that change the shader or its render state today (see [`Permutation`]), a coverage and
+/// a part. Outline hulls depend on the coverage alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SurfaceVariant {
+    pub coverage: Coverage,
+    pub part: Part,
+}
+
+impl SurfaceVariant {
+    /// Every variant, in drawing order: by coverage, then part.
+    pub(crate) const ALL: [Self; 6] = [
+        Self::new(Coverage::Opaque, Part::Body),
+        Self::new(Coverage::Opaque, Part::Face),
+        Self::new(Coverage::AlphaTest, Part::Body),
+        Self::new(Coverage::AlphaTest, Part::Face),
+        Self::new(Coverage::Transparent, Part::Body),
+        Self::new(Coverage::Transparent, Part::Face),
+    ];
+    /// The variants that write depth and can draw an outline.
+    pub(crate) const DEPTH_WRITING: [Self; 4] = [Self::ALL[0], Self::ALL[1], Self::ALL[2], Self::ALL[3]];
+    /// The variants blended over the frame after the sky.
+    pub(crate) const TRANSPARENT: [Self; 2] = [Self::ALL[4], Self::ALL[5]];
+    /// Opaque bodies: what a material with no permutation bits draws with.
+    pub(crate) const OPAQUE: Self = Self::new(Coverage::Opaque, Part::Body);
+
+    pub(crate) const fn new(coverage: Coverage, part: Part) -> Self {
+        Self { coverage, part }
+    }
+
+    /// Its position in [`Self::ALL`].
+    pub(crate) fn index(self) -> usize {
+        self.coverage.index() * Part::ALL.len() + self.part.index()
+    }
+
+    /// The variant a material with `flags` draws with, on any mesh.
+    pub(crate) fn of_material(flags: MaterialFlags) -> Self {
+        Permutation::new(flags, false, false).surface()
+    }
+
+    /// The surface shader's pipeline-overridable constants for the variant (`PERMUTATION_*` in
+    /// `anime_character.wgsl`). Outlines take their coverage's ([`Coverage::constants`]).
+    pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
+        use override_constant::{ALPHA_TEST, FACE, TRANSPARENT};
+        match (self.coverage, self.part) {
+            (coverage, Part::Body) => coverage.constants(),
+            (Coverage::Opaque, Part::Face) => &[(FACE, 1.0)],
+            (Coverage::AlphaTest, Part::Face) => &[(ALPHA_TEST, 1.0), (FACE, 1.0)],
+            (Coverage::Transparent, Part::Face) => &[(TRANSPARENT, 1.0), (FACE, 1.0)],
+        }
+    }
+}
+
 /// The names of the shaders' permutation constants.
 pub(crate) mod override_constant {
     pub const ALPHA_TEST: &str = "PERMUTATION_ALPHA_TEST";
     pub const TRANSPARENT: &str = "PERMUTATION_TRANSPARENT";
+    pub const FACE: &str = "PERMUTATION_FACE";
 }
 
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
@@ -415,8 +480,9 @@ pub(crate) struct MeshPipelines {
     /// The anime character surfaces, per [`SurfaceVariant::ALL`] entry; each is built with the
     /// first draw that needs it ([`Pipelines::prepare_variant`]).
     character: [Option<wgpu::RenderPipeline>; SurfaceVariant::ALL.len()],
-    /// Their outline hulls, per [`SurfaceVariant::DEPTH_WRITING`] entry.
-    outline: [Option<wgpu::RenderPipeline>; SurfaceVariant::DEPTH_WRITING.len()],
+    /// Their outline hulls, per [`Coverage::DEPTH_WRITING`] entry: every part's outline is the
+    /// same.
+    outline: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
     /// Depth, world normals and velocity of every opaque instance (`prepass.wgsl`).
     pub scene_prepass: wgpu::RenderPipeline,
 }
@@ -427,9 +493,10 @@ impl MeshPipelines {
         self.character[variant.index()].as_ref()
     }
 
-    /// The outline pipeline of `variant`, once it was prepared; transparent surfaces have none.
+    /// The outline pipeline of `variant`'s coverage, once it was prepared; transparent surfaces
+    /// have none.
     pub(crate) fn outline(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
-        self.outline.get(variant.index())?.as_ref()
+        self.outline.get(variant.coverage.index())?.as_ref()
     }
 
     /// Anime character pipelines built: surfaces and outlines.
@@ -546,12 +613,12 @@ impl Pipelines {
             &normals_and_velocity,
         );
         self.mesh[format_index(format)] =
-            Some(MeshPipelines { character: [None, None, None], outline: [None, None], scene_prepass });
-        self.prepare_variant(device, format, SurfaceVariant::Opaque);
+            Some(MeshPipelines { character: Default::default(), outline: Default::default(), scene_prepass });
+        self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
     }
 
-    /// Builds the surface and outline pipelines of `variant` for `format`, whose mesh
-    /// pipelines must exist, unless they do already.
+    /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
+    /// and the outline pipeline of its coverage, unless they do already.
     pub(crate) fn prepare_variant(
         &mut self,
         device: &wgpu::Device,
@@ -563,9 +630,10 @@ impl Pipelines {
         if mesh.character(variant).is_some() {
             return;
         }
+        let needs_outline = mesh.outline(variant).is_none();
         let buffers = MeshPass::Main.buffers(format);
         let layout = &self.target.character_layout;
-        let transparent = variant == SurfaceVariant::Transparent;
+        let transparent = variant.coverage == Coverage::Transparent;
         let character = self.target.build_with(
             device,
             layout,
@@ -583,7 +651,7 @@ impl Pipelines {
             },
         );
         // Inverted hull: keep only the back faces of the extruded shell.
-        let outline = (!transparent).then(|| {
+        let outline = (!transparent && needs_outline).then(|| {
             self.target.build_with(
                 device,
                 layout,
@@ -595,14 +663,14 @@ impl Pipelines {
                     depth_write: true,
                     depth_compare: wgpu::CompareFunction::Greater,
                     blend: None,
-                    constants: variant.constants(),
+                    constants: variant.coverage.constants(),
                 },
             )
         });
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
         mesh.character[variant.index()] = Some(character);
         if let Some(outline) = outline {
-            mesh.outline[variant.index()] = Some(outline);
+            mesh.outline[variant.coverage.index()] = Some(outline);
         }
     }
 

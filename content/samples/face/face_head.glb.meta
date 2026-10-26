@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "cff436cc-9604-4a9f-8d3a-3bc8b5b6637e",
+        importer: Gltf((
+            materials: {
+                "Face": "27736276-a00e-49a7-ac82-4c52b151b8a3",
+            },
+        )),
+    ),
+)

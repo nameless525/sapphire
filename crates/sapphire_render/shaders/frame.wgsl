@@ -82,10 +82,23 @@ struct CharacterRig {
     skin_tint: vec4<f32>,
 }
 
+// A character's face (M1 C3) for the frame (`sapphire_render::CharacterFace`): its head's pose,
+// which the face permutation takes the key light into (anime_character.wgsl), and its
+// expression weights.
+struct CharacterFace {
+    // xyz: unit head-forward, world space.
+    forward: vec4<f32>,
+    // xyz: unit head-up, world space, perpendicular to forward.
+    up: vec4<f32>,
+    // x: blush; y: gloom (unclamped).
+    expression: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
-// own here: the light rig (C2), and faces' (C3).
+// own here: the light rig (C2) and the face (C3).
 struct CharacterData {
     rig: CharacterRig,
+    face: CharacterFace,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

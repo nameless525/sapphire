@@ -137,6 +137,9 @@ impl App for SandboxApp {
         if let Some(meshes) = renderer.swatches {
             scene.spawn_swatches(meshes);
         }
+        if let Some(head) = renderer.face_head {
+            scene.spawn_face_rig(head);
+        }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
         #[cfg(not(feature = "dev"))]
@@ -605,6 +608,8 @@ struct SceneRenderer {
     stalk: Option<MeshHandle>,
     /// The shader swatches, with `--swatches`.
     swatches: Option<[MeshHandle; SWATCHES]>,
+    /// The face test head, with `--faces`.
+    face_head: Option<MeshHandle>,
 }
 
 impl Scene {
@@ -616,6 +621,9 @@ impl Scene {
         }
         if let Some(meshes) = renderer.swatches {
             self.set_swatch_meshes(meshes);
+        }
+        if let Some(head) = renderer.face_head {
+            self.set_face_mesh(head);
         }
     }
 }
@@ -642,8 +650,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 }
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
-/// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk
-/// and the shader swatches, whose materials `content` uploads too.
+/// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
+/// the shader swatches, whose materials `content` uploads too, and the face test head.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -659,11 +667,12 @@ fn create_renderer(
         let stalk = options.skinned.then(|| skinned::upload_stalk(&mut renderer)).transpose()?;
         let swatches =
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
-        Ok((character, character_bounds, stalk, swatches))
+        let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
+        Ok((character, character_bounds, stalk, swatches, face_head))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches)) => {
-            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches })
+        Ok((character, character_bounds, stalk, swatches, face_head)) => {
+            Ok(SceneRenderer { renderer, character, character_bounds, stalk, swatches, face_head })
         }
         Err(error) => {
             content.keep_renderer(previous);

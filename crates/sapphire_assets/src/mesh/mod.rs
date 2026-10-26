@@ -122,19 +122,20 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 5: embedded materials pack the character light rig's region GI weights (M1 C2,
+    /// 6: embedded materials of `Material::VERSION` 3 (M1 C3's face settings and expression
+    /// slot). 5: embedded materials pack the character light rig's region GI weights (M1 C2,
     /// `Material::VERSION` 2). 4: the anime character vertex contract (M1 C1): vertex color RGB
     /// is linear data (AO, outline width, outline Z offset) instead of an sRGB tint, and the
     /// outline-width scale moved from alpha to G, whose byte holds [`VertexFlags`] now. 3 added
     /// material slots (M1 A3); 2 embedded M0's fixed 64-byte material parameters; 1 was M0's
     /// flat `SPMS` layout of 48-byte float vertices.
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 5 && Material::VERSION == 2,
+    Mesh::VERSION == 6 && Material::VERSION == 3,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

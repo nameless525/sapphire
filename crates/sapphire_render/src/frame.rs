@@ -14,7 +14,9 @@
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
 //!   instance its character light rig ([`CharacterLighting`], M1 C2), resolved by the world for
-//!   this frame's camera and time of day, which changes whenever either moves.
+//!   this frame's camera and time of day, which changes whenever either moves, and its face
+//!   ([`CharacterFace`], M1 C3): the head's pose and the expression weights, which animation
+//!   moves.
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
 //!   packet carries only the instances added, changed or removed since the previous one. The
 //!   renderer must therefore see every packet, in order (see [`crate::Renderer::prepare`]).
@@ -31,7 +33,7 @@
 use std::ops::Range;
 
 use glam::camera::rh::{proj::directx, view};
-use glam::{Affine3A, Mat4, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 
 use crate::{MeshHandle, PostParams};
 
@@ -94,7 +96,7 @@ pub struct FramePacket {
     /// its rig resolved for this frame. Instances not listed draw with the world's key light
     /// and unstyled GI ([`CharacterLighting::unstyled`]); an instance listed twice takes its
     /// last entry. The renderer ignores, and counts, an entry for an instance it doesn't draw or
-    /// whose lighting isn't valid ([`CharacterLighting::is_valid`]).
+    /// whose lighting or face isn't valid ([`CharacterInstance::is_valid`]).
     pub characters: Vec<CharacterInstance>,
     /// Mesh instances added, changed or removed since the previous packet.
     pub instances: InstanceDeltas,
@@ -284,6 +286,79 @@ pub struct SkinnedInstance {
     pub morph_weights: PacketRange,
 }
 
+/// A character's face this frame (spec §5.12 "Faces"; M1 C3): what the face permutation of the
+/// anime character shader reads beside the character's lighting, through the same entry.
+///
+/// Instances of a character that draw no face material (its body, hair) may carry any valid
+/// face, the default included; the renderer packs it all the same. An invalid one drops the
+/// whole entry, lighting included ([`CharacterInstance::is_valid`]). A face drawn by an instance the frame
+/// doesn't list faces +Z with +Y up, as models do at rest, with every weight 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CharacterFace {
+    pub head: HeadBasis,
+    pub expression: FaceExpression,
+}
+
+impl CharacterFace {
+    /// Whether the shader can read it: a head basis that orthonormalizes
+    /// ([`HeadBasis::orthonormalized`]) and finite weights.
+    pub fn is_valid(&self) -> bool {
+        let FaceExpression { blush, gloom } = self.expression;
+        self.head.orthonormalized().is_some() && blush.is_finite() && gloom.is_finite()
+    }
+}
+
+/// Which way a head faces this frame, in world space: the face shader takes the key light in
+/// this basis (`sapphire_assets::character_maps`, "Head space"), its right being
+/// `forward × up`.
+///
+/// For a skinned character it is the model's forward and up (+Z and +Y, as glTF and VRM models
+/// face) turned by the head joint's world rotation relative to its rest pose ([`Self::turned`]):
+/// the head bone of the rig's humanoid mapping. Neither vector need be unit length, nor `up`
+/// exactly perpendicular to `forward`: the renderer orthonormalizes them, keeping `forward`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeadBasis {
+    pub forward: Vec3,
+    pub up: Vec3,
+}
+
+impl HeadBasis {
+    /// A head at rest in a model at the world's origin: facing +Z with +Y up.
+    pub const REST: Self = Self { forward: Vec3::Z, up: Vec3::Y };
+
+    /// The rest basis turned by `rotation`: for a head joint, its world-space rotation in the
+    /// current pose times the inverse of its model-space rotation at rest.
+    pub fn turned(rotation: Quat) -> Self {
+        Self { forward: rotation * Vec3::Z, up: rotation * Vec3::Y }
+    }
+
+    /// Forward and up as a unit basis, up made perpendicular to forward; `None` if the vectors
+    /// aren't finite or don't span a plane.
+    pub fn orthonormalized(self) -> Option<(Vec3, Vec3)> {
+        let forward = self.forward.try_normalize()?;
+        let up = (self.up - forward * self.up.dot(forward)).try_normalize()?;
+        Some((forward, up))
+    }
+}
+
+impl Default for HeadBasis {
+    fn default() -> Self {
+        Self::REST
+    }
+}
+
+/// A face's expression weights, each scaling a channel of its material's expression map
+/// (`sapphire_assets::character_maps::face_expression`): 0 is none, 1 the full painted effect.
+/// Driven by facial animation curves, never by material swaps, so every character wearing a
+/// material animates its own. The shader clamps them to `[0, 1]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FaceExpression {
+    /// Tints the painted cheeks toward the material's blush color.
+    pub blush: f32,
+    /// Pushes the painted region (the brow, the upper face) into its shadow tones.
+    pub gloom: f32,
+}
+
 /// A range of one of a [`FramePacket`]'s flat arrays. `Copy`, unlike `Range<u32>`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PacketRange {
@@ -452,12 +527,21 @@ impl Default for CharacterLight {
     }
 }
 
-/// One character's data for a frame (M1 C2): the character light rig that lights the instance
-/// `id`. A character drawn as several instances (body, hair, a weapon) lists each.
+/// One character's data for a frame: the character light rig that lights the instance `id`
+/// (M1 C2) and the character's face (M1 C3). A character drawn as several instances (body,
+/// face, hair, a weapon) lists each, with the same lighting and face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterInstance {
     pub id: InstanceId,
     pub lighting: CharacterLighting,
+    pub face: CharacterFace,
+}
+
+impl CharacterInstance {
+    /// Whether the renderer can draw by it: its lighting and its face are both valid.
+    pub fn is_valid(&self) -> bool {
+        self.lighting.is_valid() && self.face.is_valid()
+    }
 }
 
 /// A character's light rig resolved for one frame (spec §5.12 "Character light rig" and
@@ -649,7 +733,11 @@ mod tests {
             kind: LightKind::Point,
         });
         let lighting = CharacterLighting::unstyled(DirectionalLight::default());
-        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting });
+        let face = CharacterFace {
+            expression: FaceExpression { blush: 0.5, gloom: 0.0 },
+            ..CharacterFace::default()
+        };
+        packet.characters.push(CharacterInstance { id: InstanceId(0), lighting, face });
         for id in 0..instances {
             packet.instances.changed.push(MeshInstance {
                 id: InstanceId(id),
@@ -703,6 +791,50 @@ mod tests {
         }
         let reused: Vec<_> = ring.packets.iter().map(storage).collect();
         assert_eq!(warm, reused, "no packet vector was reallocated");
+    }
+
+    #[test]
+    fn head_bases_turn_with_the_head_and_orthonormalize() {
+        let turned = HeadBasis::turned(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+        assert!(turned.forward.abs_diff_eq(Vec3::X, 1e-6) && turned.up.abs_diff_eq(Vec3::Y, 1e-6));
+        let (forward, up) = HeadBasis { forward: Vec3::new(0.0, 0.0, 3.0), up: Vec3::new(0.0, 2.0, 1.0) }
+            .orthonormalized()
+            .expect("a basis");
+        assert_eq!((forward, up), (Vec3::Z, Vec3::Y), "up loses its forward part");
+        assert_eq!(HeadBasis { forward: Vec3::ZERO, up: Vec3::Y }.orthonormalized(), None);
+        assert_eq!(HeadBasis { forward: Vec3::Y, up: Vec3::NEG_Y }.orthonormalized(), None, "parallel");
+        assert_eq!(HeadBasis { forward: Vec3::Z, up: Vec3::splat(f32::NAN) }.orthonormalized(), None);
+    }
+
+    #[test]
+    fn faces_are_valid_with_a_basis_and_finite_weights() {
+        assert!(CharacterFace::default().is_valid(), "at rest");
+        let tilted = HeadBasis { forward: Vec3::new(0.0, 0.0, 3.0), up: Vec3::new(0.0, 2.0, 1.0) };
+        assert!(CharacterFace { head: tilted, ..CharacterFace::default() }.is_valid());
+        let broken = [
+            CharacterFace { head: HeadBasis { forward: Vec3::Y, up: Vec3::Y }, ..CharacterFace::default() },
+            CharacterFace {
+                expression: FaceExpression { blush: f32::NAN, gloom: 0.0 },
+                ..CharacterFace::default()
+            },
+            CharacterFace {
+                expression: FaceExpression { blush: 0.0, gloom: f32::INFINITY },
+                ..CharacterFace::default()
+            },
+        ];
+        for face in broken {
+            assert!(!face.is_valid(), "{face:?}");
+        }
+        // Weights outside [0, 1] are valid: the shader clamps them.
+        let strong = CharacterFace {
+            expression: FaceExpression { blush: 2.0, gloom: -1.0 },
+            ..CharacterFace::default()
+        };
+        assert!(strong.is_valid());
+        let lighting = CharacterLighting::unstyled(DirectionalLight::default());
+        let character = CharacterInstance { id: InstanceId(0), lighting, face: broken[0] };
+        assert!(!character.is_valid(), "a broken face makes the entry invalid");
+        assert!(CharacterInstance { face: strong, ..character }.is_valid());
     }
 
     #[test]

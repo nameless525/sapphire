@@ -5,7 +5,7 @@
 //!
 //! | Family | Document | GPU block | Texture slots | Shaders |
 //! |---|---|---|---|---|
-//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 896 B | base color, control, normal, ramp, face shadow, surface mask, matcap | the anime character shader and its outlines (C1 grows it) |
+//! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 896 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader and its outlines (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | W4 |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | W2 |
@@ -324,12 +324,14 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 2: anime character regions pack the character light rig's GI weights (M1 C2) into their
-    /// subsurface and rim vectors' fourth components. 1: M1 A3's blocks. Bump it whenever a
-    /// family's block layout or its packing (`gpu_params`) changes: the cache key holds it, so
-    /// every material recooks, and meshes, whose generated materials embed blocks, must bump
+    /// 3: the anime character family's face settings and its eighth texture slot, the
+    /// expression map (M1 C3). 2: anime character regions pack the character light rig's GI
+    /// weights (M1 C2) into their subsurface and rim vectors' fourth components. 1: M1 A3's
+    /// blocks. Bump it whenever a family's block layout, its packing (`gpu_params`) or its
+    /// texture slots change: the cache key holds it, so every material recooks, and meshes,
+    /// whose generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
 }
 
 /// What one texture slot binds.

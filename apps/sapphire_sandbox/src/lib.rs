@@ -48,6 +48,9 @@
 //! - `--swatches`: place three spheres on the character's other side that show the anime
 //!   character shader's diffuse modes over cooked maps (ramp mode, ramp mode with a subsurface
 //!   mix, three bands; M1 C1).
+//! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
+//!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
+//!   across both sides, top light), and two with blush and gloom (M1 C3).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the
@@ -77,6 +80,7 @@ mod cvars;
 #[cfg(feature = "dev")]
 mod dev;
 mod extract;
+mod faces;
 mod input;
 mod offscreen;
 mod options;

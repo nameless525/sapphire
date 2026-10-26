@@ -22,8 +22,8 @@ use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, SubmeshMaterial};
 use crate::pipelines::{
-    DEPTH_FORMAT, Layouts, MeshPass, NORMALS_FORMAT, Pipelines, SCENE_COLOR_FORMAT, SurfaceVariant,
-    VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, Layouts, MeshPass, NORMALS_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT,
+    SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
@@ -159,6 +159,8 @@ pub struct RenderStats {
     pub alpha_tested_draws: u32,
     /// Of [`Self::draws`], those of transparent materials, blended after the sky.
     pub transparent_draws: u32,
+    /// Of [`Self::draws`], those of face materials (M1 C3), through the face variants.
+    pub face_draws: u32,
     /// Outline hulls drawn in the last prepared frame.
     pub outline_draws: u32,
     /// Anime character pipelines built (surface and outline variants, across position
@@ -193,7 +195,7 @@ pub struct RenderStats {
     /// ([`FramePacket::characters`]); one listed twice counts once.
     pub characters: u32,
     /// Entries of [`FramePacket::characters`] that frame ignored: for instances it doesn't draw,
-    /// or with lighting that isn't valid.
+    /// or with lighting or a face that isn't valid.
     pub ignored_characters: u32,
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
@@ -579,10 +581,19 @@ impl Renderer {
             .main_view()
             .map(|view| PreparedFrame { camera: view.camera, constants: FrameUniforms::new(packet, lights) });
         self.post.prepare(queue, &packet.post);
-        let [opaque, alpha_tested, transparent] = self.scene.draw_counts();
-        self.stats.draws = opaque + alpha_tested + transparent;
-        self.stats.alpha_tested_draws = alpha_tested;
-        self.stats.transparent_draws = transparent;
+        let counts = self.scene.draw_counts();
+        let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {
+            SurfaceVariant::ALL
+                .iter()
+                .zip(counts)
+                .filter(|&(&variant, _)| include(variant))
+                .map(|(_, n)| n)
+                .sum()
+        };
+        self.stats.draws = draws(|_| true);
+        self.stats.alpha_tested_draws = draws(|variant| variant.coverage == Coverage::AlphaTest);
+        self.stats.transparent_draws = draws(|variant| variant.coverage == Coverage::Transparent);
+        self.stats.face_draws = draws(|variant| variant.part == Part::Face);
         self.stats.outline_draws = self.scene.outline_count();
         self.stats.instances = self.scene.live_instances();
         self.stats.changed_instances = self.scene.changed_instances();
@@ -836,8 +847,8 @@ impl Renderer {
             // Opaque and alpha-tested surfaces, then their outlines, after them so depth rejects
             // the hull wherever a surface covers it, then the sky where no geometry wrote depth,
             // then transparent surfaces over all of it. Each static permutation draws through
-            // its own pipeline; skinned and morphed instances draw last in each group, through
-            // the f32 pipelines.
+            // its own pipeline (a face's outline is its coverage's); skinned and morphed
+            // instances draw last in each group, through the f32 pipelines.
             let groups = SurfaceVariant::DEPTH_WRITING
                 .map(|variant| (variant, DrawSet::Surfaces))
                 .into_iter()
@@ -847,7 +858,9 @@ impl Renderer {
             }
             pass.set_pipeline(&pipelines.sky);
             pass.draw(0..3, 0..1);
-            draw_main(&mut pass, pipelines, &mesh_draws, SurfaceVariant::Transparent, DrawSet::Surfaces);
+            for variant in SurfaceVariant::TRANSPARENT {
+                draw_main(&mut pass, pipelines, &mesh_draws, variant, DrawSet::Surfaces);
+            }
         });
 
         post.record(graph, scene_color, target, labels);

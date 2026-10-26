@@ -49,6 +49,8 @@ pub(crate) struct Options {
     pub character_rig: Option<String>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
+    /// `--faces`: show the face look-dev rig instead of the character.
+    pub faces: bool,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
@@ -156,6 +158,7 @@ impl Options {
                 }
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
+                "--faces" => options.faces = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,

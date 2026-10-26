@@ -50,9 +50,17 @@
 //! - `doubleSided` (glTF): materials carry no cull mode; characters draw back-face culled.
 //! - `KHR_texture_transform` and `texCoord`: meshes carry one UV set and materials no UV
 //!   transform.
-//! - `surface` stays `Body`: MToon doesn't say which material is a face, hair or eyes, and
-//!   those need maps (SDF face maps, hair masks) that an artist authors on the extracted
-//!   document.
+//! - `surface` stays `Body`, but for VRoid Studio's eye materials: MToon doesn't say which
+//!   material is a face, hair or eyes, and faces and hair need maps (SDF face maps, hair masks)
+//!   that an artist authors on the extracted document.
+//!
+//! Eyes need no map, and VRoid Studio names their materials, so the import maps those onto anime
+//! eyes' layers (M1 C6, `EyeShading`; [`Mtoon::eye`], from the names by
+//! [`super::vroid_eye_layer`]): `EyeWhite`, `FaceEyeline`, `FaceEyelash` and `FaceBrow` are the
+//! eye itself (blending ones alpha-tested instead); `EyeIris` the iris and `EyeHighlight` the
+//! highlights, both blended over the eye within its depth mask, the iris behind the cornea over
+//! the ellipse its texture coordinates span, the highlights drifting and glinting at the
+//! defaults. All draw through the bangs at half, and without an outline.
 //!
 //! A material with `KHR_materials_unlit` (or a VRM 0.x unlit shader) maps as an MToon whose
 //! shade side is its lit side, without rim or outline ([`Mtoon::unlit`]).
@@ -60,8 +68,8 @@
 use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::ilm;
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, DiffuseMode, LightSplit, Matcap,
-    Outline, OutlineCurve, Rim,
+    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, CharacterSurface, DiffuseMode,
+    EyeShading, LightSplit, Matcap, Outline, OutlineCurve, Rim,
 };
 use vrm_spec::vrm_0_0::VRMMaterial;
 use vrm_spec::vrmc_materials_mtoon_1_0::{OutlineWidthMode, VrmcMaterialsMtoonSchema};
@@ -190,6 +198,9 @@ pub struct Mtoon {
     pub outline_lighting_mix: f32,
     pub emissive_texture: Option<TextureRef>,
     pub uv_animation_mask_texture: Option<TextureRef>,
+    /// The eye layer the material draws (M1 C6): set on import from VRoid Studio's name for it
+    /// ([`super::vroid_eye_layer`]), none for anything else.
+    pub eye: Option<EyeShading>,
 }
 
 /// Where a material's textures are checked against the document, and its shading shift
@@ -278,6 +289,7 @@ impl Mtoon {
         outline_lighting_mix: 1.0,
         emissive_texture: None,
         uv_animation_mask_texture: None,
+        eye: None,
     };
 
     /// A VRM 1.0 MToon material: the glTF material's core properties and its
@@ -454,6 +466,7 @@ impl Mtoon {
             outline_lighting_mix: float("_OutlineLightingMix", 1.0),
             emissive_texture: texture("_EmissionMap", Channel::Rgba)?,
             uv_animation_mask_texture: texture("_UvAnimMaskTexture", Channel::R)?,
+            eye: None,
         })
     }
 
@@ -531,7 +544,7 @@ impl Mtoon {
             (Some(shift), None) => shift.scale * shift.mean,
             _ => 0.0,
         };
-        AnimeCharacterMaterial {
+        let mut material = AnimeCharacterMaterial {
             base_color: self.base_color,
             base_color_map: self.base_color_texture.and_then(|_| bind(TextureUse::BaseColor)),
             alpha: self.alpha,
@@ -567,6 +580,18 @@ impl Mtoon {
                 ..Outline::default()
             },
             ..AnimeCharacterMaterial::default()
+        };
+        // An eye's layer (M1 C6): those over the eye blend, the eye itself doesn't, and eyes
+        // draw no outline.
+        if let Some(eye) = self.eye {
+            material.surface = CharacterSurface::Eye(eye);
+            material.alpha = match (eye.layer.is_overlay(), self.alpha) {
+                (true, _) => AlphaMode::Blend,
+                (false, AlphaMode::Blend) => AlphaMode::Mask { cutoff: 0.5 },
+                (false, alpha) => alpha,
+            };
+            material.outline.width = 0.0;
         }
+        material
     }
 }

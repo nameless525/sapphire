@@ -877,3 +877,54 @@ fn vrm_cooks_are_deterministic() {
     assert_eq!(first.len(), 4);
     assert!(first == second, "two cooks of one source write the same bytes");
 }
+
+#[test]
+fn vroid_eye_materials_map_onto_eye_layers() {
+    use sapphire_assets::material::{EyeLayer, HighlightMotion};
+    const IRIS: &str = "N00_000_00_EyeIris_00_EYE (Instance)";
+    const EYE_LINE: &str = "N00_000_00_FaceEyeline_00_FACE (Instance)";
+    assert_eq!(vroid_eye_layer(IRIS), Some(EyeLayer::Iris));
+    assert_eq!(vroid_eye_layer("N00_000_00_EyeWhite_00_EYE (Instance)"), Some(EyeLayer::Eye));
+    assert_eq!(
+        vroid_eye_layer("N00_000_00_EyeHighlight_00_EYE (Instance)"),
+        Some(EyeLayer::Highlight(HighlightMotion::default()))
+    );
+    for eye in [EYE_LINE, "N00_000_00_FaceEyelash_00_FACE", "N00_000_00_FaceBrow_00_FACE (Instance)"] {
+        assert_eq!(vroid_eye_layer(eye), Some(EyeLayer::Eye), "{eye}");
+    }
+    for other in [
+        "N00_000_00_Face_00_SKIN (Instance)",
+        "N00_000_00_FaceMouth_00_FACE (Instance)",
+        "N00_000_00_HairBack_00_HAIR (Instance)",
+        "Skin",
+        "EyeIrisDark",
+    ] {
+        assert_eq!(vroid_eye_layer(other), None, "{other}");
+    }
+
+    // The 1.0 sample with its hair and lashes named as VRoid names an iris and an eye line.
+    let mut sample = samples::vrm1();
+    let materials = sample.document["materials"].as_array_mut().expect("materials");
+    materials[material::HAIR]["name"] = json!(IRIS);
+    materials[material::LASHES]["name"] = json!(EYE_LINE);
+    let import = import(&sample.to_glb(), Some(VrmVersion::V1)).expect("the renamed sample imports");
+    let generated = |name: &str| &import.mesh.materials[slot(&import, name) as usize].generated;
+    let iris = generated(IRIS);
+    let CharacterSurface::Eye(eye) = iris.surface else { panic!("an eye: {:?}", iris.surface) };
+    assert_eq!(eye.layer, EyeLayer::Iris);
+    let shape = eye.iris.expect("the ellipse its texture coordinates span");
+    assert!(shape.radius.iter().all(|&r| r > 0.0) && shape.center.iter().all(|c| (0.0..=1.0).contains(c)));
+    assert!(eye.parallax > 0.0 && eye.through_hair.is_some());
+    assert_eq!(iris.alpha, AlphaMode::Blend, "a layer over the eye blends, though the hair was alpha-tested");
+    assert_eq!(iris.outline.width, 0.0, "no outline");
+    iris.validate().expect("a valid eye layer");
+    let line = generated(EYE_LINE);
+    let CharacterSurface::Eye(eye) = line.surface else { panic!("an eye: {:?}", line.surface) };
+    assert_eq!((eye.layer, eye.iris, eye.parallax), (EyeLayer::Eye, None, 0.0));
+    assert_eq!(line.alpha, AlphaMode::Mask { cutoff: 0.4 }, "the eye itself keeps its alpha test");
+    line.validate().expect("a valid eye");
+    assert_eq!(generated("Skin").surface, CharacterSurface::Body, "everything else stays a body");
+    // Extraction writes the same mapping out (`Mtoon::to_material` with textures bound).
+    let mtoon = import.slots[slot(&import, IRIS) as usize].as_ref().expect("MToon");
+    assert_eq!(mtoon.to_material(|_| None), *iris);
+}

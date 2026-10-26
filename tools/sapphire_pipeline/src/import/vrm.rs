@@ -58,6 +58,7 @@ use std::collections::hash_map::Entry;
 use gltf::image::Source;
 use gltf::texture::WrappingMode;
 use gltf::{Document, Gltf};
+use sapphire_assets::material::{EyeLayer, EyeShading, HighlightMotion, IrisShape, ThroughHair};
 use sapphire_assets::mesh::VERTEX_COLOR_NEUTRAL;
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION};
 use sapphire_reflect::Versioned;
@@ -78,9 +79,13 @@ use crate::meta::MeshSettings;
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// the mesh is that importer's, so a bump there must recook VRM files too. Bump the high bits
-/// whenever the VRM part of the output changes for the same file. 2: MToon's rim maps onto the
-/// depth-offset rim's Fresnel gate and light gate (M1 C5).
-pub const IMPORTER: Stage = Stage { name: "vrm", version: (2 << 16) | gltf_import::IMPORTER.version };
+/// whenever the VRM part of the output changes for the same file. 3: VRoid Studio's eye
+/// materials map onto anime eyes' layers (M1 C6). 2: MToon's rim maps onto the depth-offset
+/// rim's Fresnel gate and light gate (M1 C5).
+pub const IMPORTER: Stage = Stage { name: "vrm", version: (3 << 16) | gltf_import::IMPORTER.version };
+
+/// An iris's parallax depth (M1 C6): this share of its height, in meters.
+const IRIS_PARALLAX: f32 = 0.1;
 
 /// Packing a rig. Bump the version whenever it changes output for the same import.
 pub const RIG_COOKER: Stage = Stage { name: "srig", version: 1 };
@@ -241,7 +246,8 @@ pub fn import(bytes: &[u8], version: Option<VrmVersion>) -> Result<VrmImport, Vr
     };
     let mut slots = vec![None; mesh.materials.len()];
     for (material, slot) in slot_of_material {
-        if let Some(mtoon) = material.and_then(|material| materials[material].clone()) {
+        if let Some(mut mtoon) = material.and_then(|material| materials[material].clone()) {
+            mtoon.eye = vroid_eye(&mesh, slot);
             mesh.materials[slot as usize].generated = mtoon.to_material(|_| None);
             slots[slot as usize] = Some(mtoon);
         }
@@ -252,6 +258,52 @@ pub fn import(bytes: &[u8], version: Option<VrmVersion>) -> Result<VrmImport, Vr
         turn_to_face_forward(&mut import.mesh);
     }
     Ok(import)
+}
+
+/// The eye layer VRoid Studio's name for a material says it draws (M1 C6), from the name's parts:
+/// VRoid names materials `<model>_<Part>_<nn>_<GROUP>`, as `N00_000_00_EyeIris_00_EYE
+/// (Instance)`. The eye white, eye line, lashes and brows are the eye itself; then the iris and
+/// the highlights. Faces (`Face_00_SKIN`), mouths and everything else draw no eye.
+pub fn vroid_eye_layer(name: &str) -> Option<EyeLayer> {
+    name.split(|c: char| c == '_' || c.is_whitespace()).find_map(|part| match part {
+        "EyeWhite" | "FaceEyeline" | "FaceEyelash" | "FaceBrow" => Some(EyeLayer::Eye),
+        "EyeIris" => Some(EyeLayer::Iris),
+        "EyeHighlight" => Some(EyeLayer::Highlight(HighlightMotion::default())),
+        _ => None,
+    })
+}
+
+/// The eye settings of `mesh`'s slot `slot` (M1 C6), if VRoid Studio's name for it says it draws
+/// eyes ([`vroid_eye_layer`]): drawn through the bangs at the default opacity. An iris takes the
+/// ellipse its vertices' texture coordinates span, and a parallax depth of [`IRIS_PARALLAX`] of
+/// their height.
+fn vroid_eye(mesh: &ImportedMesh, slot: u32) -> Option<EyeShading> {
+    let layer = vroid_eye_layer(&mesh.materials[slot as usize].name)?;
+    let mut eye = EyeShading { layer, through_hair: Some(ThroughHair::default()), ..EyeShading::default() };
+    if layer == EyeLayer::Iris {
+        let (mut uv_min, mut uv_max) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
+        let submeshes = mesh.lods[0].submeshes.iter().filter(|submesh| submesh.material == slot);
+        for submesh in submeshes {
+            let range = submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;
+            for &index in &mesh.indices[range] {
+                let vertex = &mesh.vertices[index as usize];
+                for axis in 0..2 {
+                    uv_min[axis] = uv_min[axis].min(vertex.uv[axis]);
+                    uv_max[axis] = uv_max[axis].max(vertex.uv[axis]);
+                }
+                low = low.min(vertex.position[1]);
+                high = high.max(vertex.position[1]);
+            }
+        }
+        if uv_max[0] > uv_min[0] && uv_max[1] > uv_min[1] {
+            let center = [0.5 * (uv_min[0] + uv_max[0]), 0.5 * (uv_min[1] + uv_max[1])];
+            let radius = [0.5 * (uv_max[0] - uv_min[0]), 0.5 * (uv_max[1] - uv_min[1])];
+            eye.iris = Some(IrisShape { center, radius });
+            eye.parallax = IRIS_PARALLAX * (high - low);
+        }
+    }
+    Some(eye)
 }
 
 /// Imports only a VRM file's rig: [`import`] without its materials and vertex work.

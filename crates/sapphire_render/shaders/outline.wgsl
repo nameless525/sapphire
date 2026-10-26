@@ -235,12 +235,11 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     let line = surface.region.outline.rgb * mix(vec3<f32>(1.0), base.rgb, style.x);
     // The world's share of the pixel, as the surface writes it (anime_character.wgsl).
     let world = select(1.0, 0.0, in.character != 0u);
-    if style.y <= 0.0 {
-        return vec4<f32>(line, world);
-    }
 
     // Lit as the surface is: the key light through the split and the shadow color on the
-    // outline normal, plus the GI flattened toward the camera.
+    // outline normal, plus the GI flattened toward the camera. Always computed, and then
+    // weighed, rather than returned early for unlit lines: an early return here crashed WARP's
+    // shader compiler (D3D12; M1 C4's dx12-warp goldens).
     let view_dir = safe_normalize(view.position.xyz - in.world_position);
     surface.albedo = base.rgb;
     surface.normal = view_dir;
@@ -251,7 +250,8 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     let lit = light_step(split.x, width, x);
     let tone = mix(shade_tint(surface, material, x, width), vec3<f32>(1.0), lit);
     let lit_line = line * (tone * rig.key_radiance.rgb + character_gi(surface, rig, in.world_position));
-    return vec4<f32>(mix(line, lit_line, style.y), world);
+    // Unlit lines are their color exactly.
+    return vec4<f32>(select(mix(line, lit_line, style.y), line, style.y <= 0.0), world);
 }
 
 // The hull in the scene prepass: depth, its outline normal and its velocity.

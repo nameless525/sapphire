@@ -1,0 +1,29 @@
+// Written by tools/blender/bake_character_masks.py from the shading normals of
+// 'FaceSkin'. Paint over the masks, keeping each inside the one before it, then cook.
+(
+    type: "sapphire::pipeline::FaceSdfMap",
+    version: 1,
+    data: (
+        horizontal: [
+            (angle: 0.0, path: "masks/h_000.00.png"),
+            (angle: 10.0, path: "masks/h_010.00.png"),
+            (angle: 20.0, path: "masks/h_020.00.png"),
+            (angle: 30.0, path: "masks/h_030.00.png"),
+            (angle: 40.0, path: "masks/h_040.00.png"),
+            (angle: 50.0, path: "masks/h_050.00.png"),
+            (angle: 60.0, path: "masks/h_060.00.png"),
+            (angle: 70.0, path: "masks/h_070.00.png"),
+            (angle: 80.0, path: "masks/h_080.00.png"),
+            (angle: 90.0, path: "masks/h_090.00.png"),
+            (angle: 100.0, path: "masks/h_100.00.png"),
+            (angle: 110.0, path: "masks/h_110.00.png"),
+            (angle: 120.0, path: "masks/h_120.00.png"),
+            (angle: 130.0, path: "masks/h_130.00.png"),
+            (angle: 140.0, path: "masks/h_140.00.png"),
+            (angle: 150.0, path: "masks/h_150.00.png"),
+            (angle: 160.0, path: "masks/h_160.00.png"),
+            (angle: 170.0, path: "masks/h_170.00.png"),
+            (angle: 180.0, path: "masks/h_180.00.png"),
+        ],
+    ),
+)

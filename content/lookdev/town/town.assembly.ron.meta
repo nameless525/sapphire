@@ -1,0 +1,40 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f",
+        importer: Assembly((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [],
+                mobile_skip: 0,
+            ),
+            position_format: Float32,
+            materials: {
+                "bark": "90553fa0-0afb-4b3e-ab20-efc2b2dff1fe",
+                "canvas": "60875f21-b926-4f39-9e77-9c272583cd67",
+                "cliff": "9495cffe-3a3b-496a-9494-ec2579f5b431",
+                "cloth_blue": "21a3ef31-3fb2-41b0-8469-381e5af0915f",
+                "cloth_red": "623a6d5c-5b35-41e5-9a14-23940301d252",
+                "cobbles": "787a93b6-a3ee-4fa9-9ef1-f2a551baf740",
+                "foliage": "50285c71-e8a8-4160-9c1c-1a0ae7782c3d",
+                "grass": "efad99d1-047c-48ba-9ad2-6a5613aae957",
+                "interior": "f90bfe82-73d3-44c9-a998-46de760b236a",
+                "iron": "c532189a-26a8-424b-81a8-edc34f3b8440",
+                "lamp": "70931a0b-e624-44c7-86c4-e70089531d57",
+                "plaster": "69f1c04a-e9bb-4b40-a0fa-69002b86ecac",
+                "plaster_rose": "6121ee7b-eb64-4cfa-904a-1468296fc787",
+                "plaster_sky": "2e6278c2-646e-4ab8-ba48-60acdbd93ec6",
+                "roof_slate": "9de4341b-3e9a-4ec0-bdfb-38058f59bf0f",
+                "roof_terracotta": "f47cb5f2-b0aa-43f7-ac85-05358cf0ace0",
+                "stone": "e87ea5a6-0988-4bda-9367-b3602ee9dac2",
+                "stone_trim": "30ccc7f0-62ba-410e-9d3d-1d3e77ee1d1e",
+                "timber": "35094271-5e44-4a97-aab3-817227b49287",
+                "timber_dark": "d903cad0-7676-421e-89a0-c5d621d349f4",
+                "water": "bb002939-f443-4c26-bce3-9b1aafe5c68d",
+            },
+        )),
+    ),
+)

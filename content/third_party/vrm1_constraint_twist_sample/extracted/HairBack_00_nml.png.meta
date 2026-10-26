@@ -1,0 +1,14 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "6f93cec1-ff7c-4a3b-805b-961f5484ecdb",
+        importer: Texture((
+            class: Normal((
+                mips: true,
+                flip_y: false,
+                astc_block: B4x4,
+            )),
+        )),
+    ),
+)

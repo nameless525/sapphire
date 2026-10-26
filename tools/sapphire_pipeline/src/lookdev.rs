@@ -350,6 +350,103 @@ pub fn hair_mask_png(highlight: &[u8]) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// The look-dev directory in the repository.
+    fn lookdev_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev")
+    }
+
+    /// The hair mask keeps the model's painted band in R, and neither shifts the band nor
+    /// occludes; the committed mask is what the generator makes of the committed highlight.
+    #[test]
+    fn the_hair_mask_keeps_the_painted_band() {
+        let highlight_bytes = std::fs::read(lookdev_dir().join(HAIR_HIGHLIGHT)).unwrap();
+        let bytes = hair_mask_png(&highlight_bytes).unwrap();
+        assert_eq!(bytes, hair_mask_png(&highlight_bytes).unwrap(), "byte for byte");
+        assert_eq!(bytes, std::fs::read(lookdev_dir().join(HAIR_MASK)).unwrap(), "the committed mask");
+        let highlight = image::load_from_memory(&highlight_bytes).unwrap().to_rgb8();
+        let mask = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(mask.dimensions(), highlight.dimensions());
+        let mut painted = 0;
+        for (texel, painted_texel) in mask.pixels().zip(highlight.pixels()) {
+            assert_eq!(texel.0[hair_mask::HIGHLIGHT], *painted_texel.0.iter().max().unwrap());
+            assert_eq!(texel.0[hair_mask::SHIFT], 128, "0.5 within 8 bits: no shift");
+            assert_eq!(texel.0[hair_mask::OCCLUSION], 255);
+            painted += usize::from(texel.0[hair_mask::HIGHLIGHT] > 128);
+        }
+        assert!(painted > 1000, "the band is there: {painted} bright texels");
+    }
+
+    /// The character's look-dev materials name its parts, which MToon doesn't, so the character
+    /// prepass's IDs tell its face, hair and eyes from its body (M1 C5); they are written as the
+    /// anime character document's current version, and the strands read the generated hair mask.
+    #[test]
+    fn the_character_materials_name_its_parts() {
+        use sapphire_assets::material::{AnimeCharacterMaterial, AnyMaterialDocument, CharacterSurface};
+        use sapphire_reflect::Versioned;
+
+        let hair_mask = crate::meta::read(&lookdev_dir().join(format!("{HAIR_MASK}.meta"))).unwrap().id;
+        let version = format!("    version: {},\n", AnimeCharacterMaterial::VERSION);
+        let mut parts = Vec::new();
+        for entry in std::fs::read_dir(lookdev_dir().join("character/materials")).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_str().unwrap().to_owned();
+            let Some(name) = file.strip_suffix(".material.ron") else { continue };
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(std::str::from_utf8(&bytes).unwrap().contains(&version), "{name}: {version}");
+            let AnyMaterialDocument::AnimeCharacter(material) = crate::material::read(&bytes).unwrap() else {
+                panic!("{name} isn't an anime character material");
+            };
+            let part = match &material.surface {
+                CharacterSurface::Body => "body",
+                CharacterSurface::Face(_) => "face",
+                CharacterSurface::Hair(hair) => {
+                    let strands = name == "Hair_00_HAIR";
+                    assert_eq!(hair.mask_map, strands.then_some(hair_mask), "{name}");
+                    "hair"
+                }
+                CharacterSurface::Eye(eye) => {
+                    assert_eq!(eye.through_hair.is_some(), name != "EyeWhite_00_EYE", "{name}");
+                    "eye"
+                }
+            };
+            parts.push((name.to_owned(), part));
+        }
+        parts.sort();
+        let expected = [
+            ("Body_00_SKIN", "body"),
+            ("Bottoms_01_CLOTH", "body"),
+            ("EyeHighlight_00_EYE", "eye"),
+            ("EyeIris_00_EYE", "eye"),
+            ("EyeWhite_00_EYE", "eye"),
+            ("FaceBrow_00_FACE", "eye"),
+            ("FaceEyeline_00_FACE", "eye"),
+            ("FaceMouth_00_FACE", "body"),
+            ("Face_00_SKIN", "face"),
+            ("HairBack_00_HAIR", "hair"),
+            ("Hair_00_HAIR", "hair"),
+            ("Shoes_01_CLOTH", "body"),
+            ("Tops_01_CLOTH", "body"),
+        ];
+        assert_eq!(parts, expected.map(|(name, part)| (name.to_owned(), part)));
+    }
+
+    /// The committed town assembles: every triangle of every piece claimed by a rule, every slot
+    /// drawn. Its size is the scene's budget line (spec §3.4's draw calls are one per slot).
+    #[test]
+    fn the_town_assembles_in_its_own_slots() {
+        let path = lookdev_dir().join("town/town.assembly.ron");
+        let bytes = std::fs::read(&path).unwrap();
+        let mesh = crate::assembly::import(&path, &bytes).unwrap();
+        let triangles = mesh.indices.len() / 3;
+        let slots = mesh.lods[0].submeshes.len();
+        assert_eq!(slots, mesh.materials.len(), "every slot draws");
+        assert!(
+            (50_000..150_000).contains(&triangles),
+            "{triangles} triangles, {} vertices",
+            mesh.vertices.len()
+        );
+    }
+
     /// The look-dev stage loads the character's rig by this ID (`sapphire_sandbox`'s
     /// `lookdev::RIG`), derived from the VRM's sidecar ID.
     #[test]

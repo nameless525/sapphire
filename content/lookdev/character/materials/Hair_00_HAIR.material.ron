@@ -1,0 +1,76 @@
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Hair((
+            mask_map: Some("604741b4-370f-41f3-910e-fc78656c1a1e"),
+            highlight: (
+                style: PaintedBand,
+                color: (1.0, 0.86, 0.72),
+                strength: 1.2,
+                width: 0.35,
+                shift: 0.0,
+            ),
+        )),
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("f0300806-9eda-4319-a018-3b39e9e42c39"),
+        alpha: Opaque,
+        control_map: None,
+        normal_map: Some("98b094fa-9cb5-437c-97fe-54b1473809ed"),
+        light_split: (
+            threshold: 0.05,
+            softness: 0.100000024,
+        ),
+        diffuse: Bands((
+            deep_threshold: None,
+        )),
+        regions: [
+            (
+                shade_color: (1.0, 1.0, 1.0),
+                deep_shade_color: (0.4, 0.35, 0.55),
+                ramp_row: None,
+                night_ramp_row: None,
+                subsurface_color: (1.0, 1.0, 1.0),
+                specular_color: (0.0, 0.0, 0.0),
+                specular_size: 32.0,
+                rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
+                outline_color: (0.061245974, 0.0085681, 0.014443802),
+                outline_width: 1.0,
+                gi: (
+                    sphere: 1.0,
+                    skin: 0.0,
+                ),
+            ),
+        ],
+        rim: (
+            width: 4.0,
+            strength: 0.35,
+            threshold: 0.1,
+            fresnel: 0.5,
+            light_gate: 0.75,
+            back_light: 0.0,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.05,
+        ),
+        matcap: None,
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (2.0, 1.0),
+                mid: 2.0,
+                far: (2.0, 1.0),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+    ),
+)

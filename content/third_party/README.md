@@ -9,6 +9,8 @@ Each source lives in its own folder with:
 
 Files are committed byte for byte as downloaded unless `MODIFIED.md` says otherwise. Cooked outputs are never committed; `.meta` sidecars are Sapphire's own (IDs and import settings).
 
+Third-party bytes live only here. Files extracted byte for byte from a source (a model's embedded images) stay in its folder, under `extracted/`; files derived from it with changes (edited materials, baked or generated maps) live where the project uses them. Its `MODIFIED.md` lists both.
+
 | Folder | What | Author | License | Used by |
 |---|---|---|---|---|
 | [vrm1_constraint_twist_sample](vrm1_constraint_twist_sample/) | VRM 1.0 anime character (VRoid-style, MToon materials) | pixiv Inc. | VRM Public License 1.0 | M1 X1, the look-dev character |

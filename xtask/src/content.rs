@@ -85,6 +85,21 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/foliage/grass.png",
 ];
 
+/// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps and
+/// the character's hair mask. `gen-lookdev` writes all of them.
+const LOOKDEV_SOURCES: &[&str] = &[
+    "lookdev/town/textures/plaster.png",
+    "lookdev/town/textures/stone.png",
+    "lookdev/town/textures/cobbles.png",
+    "lookdev/town/textures/roof.png",
+    "lookdev/town/textures/timber.png",
+    "lookdev/town/textures/grass.png",
+    "lookdev/town/textures/foliage.png",
+    "lookdev/town/textures/rock.png",
+    "lookdev/town/textures/band.png",
+    "lookdev/character/hair_mask.png",
+];
+
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android. Mirrors `sapphire_pipeline::cook::Cook`; xtask runs the pipeline as a
 /// process rather than linking it, since nothing may depend on a tool crate.
@@ -144,7 +159,7 @@ pub struct Cooked {
     _lock: File,
 }
 
-/// Generates missing sample sources, then cooks all of `content/` for `cook`. Keep the
+/// Generates missing sample and look-dev sources, then cooks all of `content/` for `cook`. Keep the
 /// result alive while copying from or running against its directory.
 pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     // Release: cooking is the slow part, and the pipeline itself rarely changes.
@@ -156,6 +171,9 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     let source = workspace::root().join(SOURCE_DIR);
     if SAMPLE_SOURCES.iter().any(|sample| !source.join(sample).exists()) {
         workspace::run(Command::new(&pipeline).arg("gen-samples").arg("--out").arg(source.join("samples")))?;
+    }
+    if LOOKDEV_SOURCES.iter().any(|file| !source.join(file).exists()) {
+        workspace::run(Command::new(&pipeline).arg("gen-lookdev").arg("--out").arg(source.join("lookdev")))?;
     }
 
     let out = cooked_dir(cook);

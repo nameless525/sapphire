@@ -1,0 +1,283 @@
+// The look-dev town (M1 X1): a town square of Kenney's Fantasy Town Kit, re-materialed in the
+// environment family and scaled to the character. See `sapphire_pipeline::assembly` for the
+// format and `apps/sapphire_sandbox/src/lookdev.rs` for the stage that draws it.
+//
+// World space: meters, +Y up. The character stands at the origin facing +Z, where the cameras
+// are; the square opens behind her toward -Z. Kit pieces are 1-unit tiles; buildings are built
+// in tiles inside groups and placed at 3.2 m a tile (3.3 m a storey).
+//
+// Kit walls stand on their tile's +X edge with their dressed side (shutters, banners, eaves)
+// toward -X, so a facade facing +Z turns 90 and stands 0.9 tiles ahead of its tile's center:
+// front `turn: 90, at: (x, y, z + 0.9)`, back `turn: -90, at: (x, y, z - 0.9)`, right
+// `turn: 180, at: (x + 0.9, y, z)`, left `turn: 0, at: (x - 0.9, y, z)`.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {
+            "kenney": "../../third_party/kenney_fantasy_town_kit/glb",
+        },
+        palette: (columns: 16, rows: 4, gradient_columns: [1, 3, 5, 7, 9, 11, 13, 15]),
+        slots: [
+            (name: "plaster", tile: (3.2, 3.2)),
+            (name: "plaster_rose", tile: (3.2, 3.2)),
+            (name: "plaster_sky", tile: (3.2, 3.2)),
+            (name: "timber", tile: (1.0, 1.0)),
+            (name: "timber_dark", tile: (1.0, 1.0)),
+            (name: "stone", tile: (2.0, 2.0), projection: Box),
+            (name: "stone_trim", tile: (1.0, 1.0), projection: Box),
+            (name: "roof_slate", tile: (1.2, 1.2)),
+            (name: "roof_terracotta", tile: (1.2, 1.2)),
+            (name: "cobbles", tile: (3.0, 3.0)),
+            (name: "grass", tile: (6.0, 6.0)),
+            (name: "foliage", tile: (2.0, 2.0), projection: Box),
+            (name: "bark", tile: (1.0, 1.0), projection: Box),
+            (name: "cloth_red", tile: (1.0, 1.0)),
+            (name: "cloth_blue", tile: (1.0, 1.0)),
+            (name: "canvas", tile: (1.0, 1.0)),
+            (name: "water", tile: (2.0, 2.0)),
+            (name: "interior", tile: (1.0, 1.0)),
+            (name: "iron", tile: (1.0, 1.0), projection: Box),
+            (name: "lamp", tile: (1.0, 1.0)),
+            (name: "cliff", tile: (16.0, 16.0), projection: Box),
+        ],
+        surfaces: [
+            // The kit's woods: frames and props in timber, doors and boards darker.
+            (cell: Some((9, 3)), slot: "timber"),
+            (cell: Some((11, 3)), slot: "timber_dark"),
+            (cell: Some((4, 3)), slot: "timber_dark"),
+            (cell: Some((6, 3)), slot: "timber_dark"),
+            (cell: Some((8, 3)), slot: "timber_dark"),
+            // Grey-blue and its gradient: plaster on walls, stone everywhere else.
+            (cell: Some((3, 2)), slot: "stone"),
+            (cell: Some((15, 3)), slot: "stone_trim"),
+            (pieces: ["wall*", "roof*"], cell: Some((3, 2)), slot: "plaster"),
+            (pieces: ["wall*", "roof*"], cell: Some((3, 2)), variant: Some("rose"), slot: "plaster_rose"),
+            (pieces: ["wall*", "roof*"], cell: Some((3, 2)), variant: Some("sky"), slot: "plaster_sky"),
+            (pieces: ["wall*"], cell: Some((3, 2)), variant: Some("stone"), slot: "stone"),
+            // Roofs: slate by default, terracotta on the rose and sky houses.
+            (cell: Some((1, 3)), slot: "roof_terracotta"),
+            (cell: Some((3, 3)), slot: "roof_slate"),
+            (pieces: ["roof*"], cell: Some((1, 3)), slot: "roof_slate"),
+            (pieces: ["roof*"], cell: Some((1, 3)), variant: Some("rose"), slot: "roof_terracotta"),
+            (pieces: ["roof*"], cell: Some((1, 3)), variant: Some("sky"), slot: "roof_terracotta"),
+            // Gable boards in the house's plaster: half-timbered gables, not dark wood.
+            (pieces: ["roof-high-gable*"], cell: Some((11, 3)), slot: "plaster"),
+            (pieces: ["roof-high-gable*"], cell: Some((11, 3)), variant: Some("rose"), slot: "plaster_rose"),
+            (pieces: ["roof-high-gable*"], cell: Some((11, 3)), variant: Some("sky"), slot: "plaster_sky"),
+            // Cloth and canvas.
+            (pieces: ["stall*", "banner*"], cell: Some((1, 3)), slot: "cloth_red"),
+            (pieces: ["stall*", "banner*"], cell: Some((3, 3)), slot: "cloth_blue"),
+            (cell: Some((5, 3)), slot: "canvas"),
+            // Greenery: crowns, hedges and trunks. Placeholders in the environment family until
+            // W6's foliage family (sphere normals, canopy gradient, wind) takes the trees over.
+            (cell: Some((7, 3)), slot: "foliage"),
+            (pieces: ["tree*"], cell: Some((9, 3)), slot: "bark"),
+            // Lanterns: iron with a lit glass.
+            (pieces: ["lantern"], cell: Some((3, 2)), slot: "iron"),
+            (pieces: ["lantern"], cell: Some((15, 3)), slot: "iron"),
+            (pieces: ["lantern"], cell: Some((5, 2)), slot: "lamp"),
+            (pieces: ["cart*"], cell: Some((3, 2)), slot: "iron"),
+            // Rocks: far cliffs.
+            (pieces: ["rock*"], cell: Some((3, 2)), slot: "cliff"),
+            // The fountain's water is its own glTF material.
+            (pieces: ["fountain*"], material: Some("Water"), slot: "water"),
+        ],
+        occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
+        groups: {
+            // A gable-fronted house a tile wide and two deep: a stone ground floor with its door,
+            // plastered storeys over it, a steep gable roof, and the interior windows show.
+            // A round-arched doorway with a plank door in it, in a wall's own space.
+            "door": [
+                (piece: "kenney/wall-doorway-round"),
+                (piece: "#box", at: (0.45, 0.37, 0.0), scale: (0.02, 0.74, 0.42), slot: Some("timber_dark")),
+            ],
+            "storey_ground": [
+                (piece: "@door", at: (0.0, 0.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall", at: (-0.9, 0.0, 0.0)),
+                (piece: "kenney/wall-window-small", at: (-0.9, 0.0, -1.0)),
+                (piece: "kenney/wall-window-small", at: (0.9, 0.0, 0.0), turn: 180.0),
+                (piece: "kenney/wall", at: (0.9, 0.0, -1.0), turn: 180.0),
+                (piece: "kenney/wall", at: (0.0, 0.0, -1.9), turn: -90.0),
+            ],
+            "storey_shutters": [
+                (piece: "kenney/wall-window-shutters", at: (0.0, 0.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall-window-glass", at: (-0.9, 0.0, 0.0)),
+                (piece: "kenney/wall-detail-cross", at: (-0.9, 0.0, -1.0)),
+                (piece: "kenney/wall-window-glass", at: (0.9, 0.0, 0.0), turn: 180.0),
+                (piece: "kenney/wall-detail-cross", at: (0.9, 0.0, -1.0), turn: 180.0),
+                (piece: "kenney/wall-window-glass", at: (0.0, 0.0, -1.9), turn: -90.0),
+            ],
+            "storey_round": [
+                (piece: "kenney/wall-window-round", at: (0.0, 0.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall-detail-diagonal", at: (-0.9, 0.0, 0.0)),
+                (piece: "kenney/wall-window-round", at: (-0.9, 0.0, -1.0)),
+                (piece: "kenney/wall-detail-diagonal", at: (0.9, 0.0, 0.0), turn: 180.0),
+                (piece: "kenney/wall-window-round", at: (0.9, 0.0, -1.0), turn: 180.0),
+                (piece: "kenney/wall", at: (0.0, 0.0, -1.9), turn: -90.0),
+            ],
+            // No two slots share a plane where they overlap (z-fighting): the front segment stands
+            // 1 cm proud (at house scale) of the wall under it, so the gable's trim hanging over
+            // the wall's top clears the plaster, and the back segment's front end sits inside the
+            // front segment's back frame; the back segment sits 2.6 cm lower, under that frame
+            // where its eave overhangs.
+            "gable_roof": [
+                (piece: "kenney/roof-high-gable-detail", at: (0.0, 0.0, 0.003), turn: 90.0),
+                (piece: "kenney/roof-high-gable", at: (0.0, -0.008, -1.0), turn: 90.0),
+            ],
+            "house2": [
+                (piece: "@storey_ground", variant: Some("stone")),
+                (piece: "@storey_shutters", at: (0.0, 1.0, 0.0)),
+                (piece: "@gable_roof", at: (0.0, 2.0, 0.0)),
+                (piece: "#box", at: (0.0, 1.0, -0.5), scale: (0.84, 2.0, 1.84), slot: Some("interior")),
+            ],
+            "house3": [
+                (piece: "@storey_ground", variant: Some("stone")),
+                (piece: "@storey_shutters", at: (0.0, 1.0, 0.0)),
+                (piece: "@storey_round", at: (0.0, 2.0, 0.0)),
+                (piece: "@gable_roof", at: (0.0, 3.0, 0.0)),
+                (piece: "#box", at: (0.0, 1.5, -0.5), scale: (0.84, 3.0, 1.84), slot: Some("interior")),
+            ],
+            // A gatehouse two tiles wide over the street out of the square: a stone arch on both
+            // sides, a storey over it and a roof along the street front.
+            "gate": [
+                (piece: "kenney/wall-arch-top", at: (-0.5, 0.0, 0.9), turn: 90.0, scale: (1.0, 1.0, -1.0), variant: Some("stone")),
+                (piece: "kenney/wall-arch-top", at: (0.5, 0.0, 0.9), turn: 90.0, variant: Some("stone")),
+                (piece: "kenney/wall-arch-top", at: (-0.5, 0.0, -0.9), turn: -90.0, variant: Some("stone")),
+                (piece: "kenney/wall-arch-top", at: (0.5, 0.0, -0.9), turn: -90.0, scale: (1.0, 1.0, -1.0), variant: Some("stone")),
+                (piece: "kenney/planks", at: (-0.5, 0.94, 0.0)),
+                (piece: "kenney/planks", at: (0.5, 0.94, 0.0)),
+                (piece: "kenney/wall-window-shutters", at: (-0.5, 1.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall-window-shutters", at: (0.5, 1.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall-window-glass", at: (-0.5, 1.0, -0.9), turn: -90.0),
+                (piece: "kenney/wall-window-glass", at: (0.5, 1.0, -0.9), turn: -90.0),
+                (piece: "kenney/wall-detail-cross", at: (-1.4, 1.0, 0.0)),
+                (piece: "kenney/wall-detail-cross", at: (1.4, 1.0, 0.0), turn: 180.0),
+                (piece: "kenney/roof-high-gable", at: (-0.5, 2.0, 0.0)),
+                (piece: "kenney/roof-high-gable", at: (0.5, 2.0, 0.0)),
+                // The banner hangs 4 cm proud of the frame beams it would otherwise share a
+                // plane with, its top 1 cm under the wall's.
+                (piece: "kenney/banner-red", at: (0.0, 0.997, 0.9125), turn: 90.0),
+                (piece: "#box", at: (0.0, 1.5, 0.0), scale: (1.84, 0.98, 0.84), slot: Some("interior")),
+            ],
+            // A bell tower over the rooftops: five plastered storeys on a stone one, a spire.
+            "tower": [
+                (piece: "kenney/wall-doorway-round", at: (0.0, 0.0, 0.9), turn: 90.0, variant: Some("stone")),
+                (piece: "kenney/wall", at: (-0.9, 0.0, 0.0), variant: Some("stone")),
+                (piece: "kenney/wall", at: (0.9, 0.0, 0.0), turn: 180.0, variant: Some("stone")),
+                (piece: "kenney/wall", at: (0.0, 0.0, -0.9), turn: -90.0, variant: Some("stone")),
+                (piece: "@tower_storey", at: (0.0, 1.0, 0.0)),
+                (piece: "@tower_storey", at: (0.0, 2.0, 0.0)),
+                (piece: "@tower_storey", at: (0.0, 3.0, 0.0)),
+                (piece: "@tower_storey", at: (0.0, 4.0, 0.0)),
+                (piece: "kenney/roof-high-point", at: (0.0, 5.0, 0.0), scale: (1.0, 2.4, 1.0)),
+                (piece: "#box", at: (0.0, 2.5, 0.0), scale: (0.84, 5.0, 0.84), slot: Some("interior")),
+            ],
+            "tower_storey": [
+                (piece: "kenney/wall-window-round", at: (0.0, 0.0, 0.9), turn: 90.0),
+                (piece: "kenney/wall-window-round", at: (-0.9, 0.0, 0.0)),
+                (piece: "kenney/wall-window-round", at: (0.9, 0.0, 0.0), turn: 180.0),
+                (piece: "kenney/wall-window-round", at: (0.0, 0.0, -0.9), turn: -90.0),
+            ],
+            // The fountain: a round basin, a column and a smaller basin on it.
+            "fountain": [
+                (piece: "kenney/fountain-round-detail", scale: (2.6, 1.8, 2.6)),
+                (piece: "kenney/pillar-stone", scale: (2.4, 1.7, 2.4)),
+                (piece: "kenney/fountain-round", at: (0.0, 1.7, 0.0), scale: (0.75, 1.5, 0.75)),
+                (piece: "kenney/pillar-stone", at: (0.0, 1.7, 0.0), scale: (1.4, 0.7, 1.4)),
+            ],
+            "lantern": [
+                (piece: "kenney/lantern", scale: 1.6),
+            ],
+        },
+        place: [
+            // Ground: the square's paving, the street out of it, lawns beyond.
+            (piece: "#quad", at: (0.0, 0.0, 0.7), scale: (37.2, 1.0, 39.2), slot: Some("cobbles")),
+            (piece: "#quad", at: (3.2, 0.0, -50.0), scale: (6.4, 1.0, 62.6), slot: Some("cobbles")),
+            (piece: "#ground", at: (0.0, -0.03, 0.0), scale: (4000.0, 1.0, 4000.0), slot: Some("grass")),
+
+            // The back row, facing the square across from the cameras, with the gate in it.
+            (piece: "@house3", at: (-14.4, 0.0, -20.0), scale: (3.2, 3.3, 3.2)),
+            (piece: "@house2", at: (-11.2, 0.0, -20.0), scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house3", at: (-8.0, 0.0, -20.4), scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house2", at: (-4.8, 0.0, -20.0), scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (-1.6, 0.0, -20.0), scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@gate", at: (3.2, 0.0, -21.6), scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (8.0, 0.0, -20.0), scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house2", at: (11.2, 0.0, -20.4), scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (14.4, 0.0, -20.0), scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+
+            // The left row, facing +X.
+            (piece: "@house2", at: (-20.0, 0.0, -14.4), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house3", at: (-20.0, 0.0, -11.2), turn: 90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house2", at: (-20.4, 0.0, -8.0), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house3", at: (-20.0, 0.0, -4.8), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house2", at: (-20.0, 0.0, -1.6), turn: 90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (-20.4, 0.0, 1.6), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house2", at: (-20.0, 0.0, 4.8), turn: 90.0, scale: (3.2, 3.3, 3.2)),
+
+            // The right row, facing -X.
+            (piece: "@house3", at: (20.0, 0.0, -14.4), turn: -90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house2", at: (20.4, 0.0, -11.2), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house3", at: (20.0, 0.0, -8.0), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house2", at: (20.0, 0.0, -4.8), turn: -90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (20.4, 0.0, -1.6), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house2", at: (20.0, 0.0, 1.6), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house3", at: (20.0, 0.0, 4.8), turn: -90.0, scale: (3.2, 3.3, 3.2)),
+
+            // The street beyond the gate, its houses facing it.
+            (piece: "@house3", at: (-1.6, 0.0, -30.0), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            (piece: "@house2", at: (-1.6, 0.0, -33.2), turn: 90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house3", at: (-1.6, 0.0, -36.4), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house2", at: (8.0, 0.0, -30.0), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
+            (piece: "@house3", at: (8.0, 0.0, -33.2), turn: -90.0, scale: (3.2, 3.3, 3.2)),
+            (piece: "@house2", at: (8.0, 0.0, -36.4), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+
+            // The bell tower over the back row's roofs.
+            (piece: "@tower", at: (-11.0, 0.0, -30.0), scale: (3.6, 3.4, 3.6), variant: Some("sky")),
+
+            // The square: the fountain off center, market stalls, a cart, benches.
+            (piece: "@fountain", at: (-4.5, 0.0, -7.0)),
+            (piece: "kenney/stall-red", at: (6.0, 0.0, -9.0), turn: 20.0, scale: 2.2),
+            (piece: "kenney/stall-green", at: (9.6, 0.0, -11.0), turn: -10.0, scale: 2.2),
+            (piece: "kenney/stall-red", at: (12.4, 0.0, -6.0), turn: -60.0, scale: 2.2),
+            (piece: "kenney/cart-high", at: (-11.0, 0.0, -14.0), turn: 30.0, scale: 2.2),
+            (piece: "kenney/stall-green", at: (-8.6, 0.0, 0.4), turn: 30.0, scale: 2.2),
+            (piece: "kenney/stall-bench", at: (-9.0, 0.0, -5.0), turn: 70.0, scale: 2.2),
+            (piece: "kenney/stall-bench", at: (0.4, 0.0, -9.5), turn: -20.0, scale: 2.2),
+
+            // Lanterns around the square and along the street (the stage lights their glass).
+            (piece: "@lantern", at: (-8.0, 0.0, -2.0)),
+            (piece: "@lantern", at: (-1.0, 0.0, -13.0)),
+            (piece: "@lantern", at: (8.0, 0.0, -2.5)),
+            (piece: "@lantern", at: (-14.0, 0.0, -10.0)),
+            (piece: "@lantern", at: (14.5, 0.0, -14.0)),
+            (piece: "@lantern", at: (0.6, 0.0, -28.0)),
+            (piece: "@lantern", at: (5.8, 0.0, -38.0)),
+
+            // Trees in the square's corners, and a crown of trees behind the rooftops.
+            (piece: "kenney/tree-high-round", at: (-17.0, 0.0, -17.0), scale: 2.8),
+            (piece: "kenney/tree-high-round", at: (16.8, 0.0, -16.8), turn: 40.0, scale: 3.0),
+            (piece: "kenney/tree-high-crooked", at: (13.0, 0.0, 5.0), turn: 15.0, scale: 2.6),
+            (piece: "kenney/tree-high-round", at: (11.5, 0.0, 1.5), turn: 70.0, scale: 3.2),
+            (piece: "kenney/tree-high-round", at: (-17.0, 0.0, -29.0), scale: 4.0),
+            (piece: "kenney/tree", at: (-20.0, 0.0, -34.0), turn: 60.0, scale: 4.4),
+            (piece: "kenney/tree-high-round", at: (16.0, 0.0, -31.0), turn: 20.0, scale: 4.2),
+            (piece: "kenney/tree", at: (22.0, 0.0, -36.0), scale: 4.6),
+            (piece: "kenney/tree-high-crooked", at: (-1.0, 0.0, -48.0), scale: 4.0),
+            (piece: "kenney/tree-high-round", at: (12.0, 0.0, -50.0), scale: 4.4),
+
+            // Far away: hills, a windmill on one, and mountains in the haze.
+            (piece: "kenney/rock-wide", at: (30.0, -3.0, -120.0), scale: (60.0, 10.0, 40.0), slot: Some("grass")),
+            (piece: "kenney/rock-wide", at: (-50.0, -3.0, -140.0), turn: 40.0, scale: (70.0, 12.0, 50.0), slot: Some("grass")),
+            (piece: "kenney/rock-large", at: (-260.0, -12.0, -900.0), scale: (360.0, 300.0, 300.0)),
+            (piece: "kenney/rock-large", at: (200.0, -12.0, -1000.0), turn: 120.0, scale: (420.0, 380.0, 340.0)),
+            (piece: "kenney/rock-wide", at: (620.0, -12.0, -850.0), turn: 70.0, scale: (400.0, 260.0, 300.0)),
+            (piece: "kenney/rock-large", at: (-680.0, -12.0, -700.0), turn: 200.0, scale: (360.0, 240.0, 300.0)),
+            (piece: "kenney/rock-wide", at: (-20.0, -12.0, -1150.0), turn: 30.0, scale: (600.0, 420.0, 400.0)),
+            (piece: "#box", at: (30.0, 10.0, -118.0), scale: (3.0, 12.0, 3.0), slot: Some("plaster")),
+            (piece: "kenney/roof-high-point", at: (30.0, 16.0, -118.0), scale: (3.4, 4.0, 3.4)),
+            (piece: "kenney/windmill", at: (30.0, 13.5, -116.0), turn: 90.0, scale: 3.4),
+        ],
+    ),
+)

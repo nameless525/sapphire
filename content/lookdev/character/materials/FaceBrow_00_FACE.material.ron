@@ -1,0 +1,76 @@
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Eye((
+            mask_map: None,
+            parallax: 0.0,
+            through_hair: Some((
+                opacity: 0.5,
+                fade_yaw: 70.0,
+                fade_pitch: 45.0,
+                distance: 0.15,
+            )),
+        )),
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("ba4e9f4c-2c30-4b51-939a-379bf20f7ca9"),
+        alpha: Opaque,
+        control_map: None,
+        normal_map: None,
+        light_split: (
+            threshold: 0.05,
+            softness: 0.100000024,
+        ),
+        diffuse: Bands((
+            deep_threshold: None,
+        )),
+        regions: [
+            (
+                shade_color: (1.0, 1.0, 1.0),
+                deep_shade_color: (0.4, 0.35, 0.55),
+                ramp_row: None,
+                night_ramp_row: None,
+                subsurface_color: (1.0, 1.0, 1.0),
+                specular_color: (0.0, 0.0, 0.0),
+                specular_size: 32.0,
+                rim_color: (1.0, 1.0, 1.0),
+                rim_strength: 1.0,
+                rim_width: 1.0,
+                rim_overlap: 1.0,
+                outline_color: (0.0, 0.0, 0.0),
+                outline_width: 1.0,
+                gi: (
+                    sphere: 0.0,
+                    skin: 0.0,
+                ),
+            ),
+        ],
+        rim: (
+            width: 4.0,
+            strength: 0.0,
+            threshold: 0.1,
+            fresnel: 0.12944943,
+            light_gate: 1.0,
+            back_light: 0.0,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.05,
+        ),
+        matcap: None,
+        outline: (
+            width: 0.0,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.0),
+                mid: 3.0,
+                far: (20.0, 0.35),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+    ),
+)

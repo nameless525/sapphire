@@ -15,6 +15,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 
 use super::{CUBE_FACES, SkySettings, cube_face_axes};
 use crate::graph::{FrameGraph, GraphExecutor};
+use crate::shaders::{ShaderFile, ShaderSources};
 use crate::texture::GpuTexture;
 use crate::{
     BloomParams, CameraData, CloudLight, ColorGrade, DirectionalLight, FramePacket, FramePacketRing,
@@ -523,6 +524,72 @@ fn cirrus_drifts_with_time_without_jumping_late_in_a_session() {
         packet.sky_layers.clouds = CloudLight { lit: Vec3::X, cirrus: 1.0, ..CloudLight::default() };
     });
     assert!(image.iter().all(|color| *color == Vec3::ZERO));
+}
+
+/// sky.wgsl with its skips taken out: every layer that is on drawn at every pixel, under the
+/// horizon too, and cloud texels painted where they cover nothing, as the sky first drew.
+fn sources_skipping_nothing() -> ShaderSources {
+    let mut sources = ShaderSources::compiled_in();
+    let mut text = sources.get(ShaderFile::Sky).to_owned();
+    for (skip, draw, count) in [
+        ("SKY_CLOUDS && quad_any(dir.y > -1.001 * footprint)", "SKY_CLOUDS", 1),
+        ("if dir.y > -SKY_GLOW_FRINGE {", "if true {", 1),
+        ("if alpha > 0.0 {", "if true {", 2),
+    ] {
+        assert_eq!(text.matches(skip).count(), count, "{skip:?} in sky.wgsl");
+        text = text.replace(skip, draw);
+    }
+    sources.set(ShaderFile::Sky, text);
+    sources
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn skipping_what_cannot_reach_a_pixel_changes_nothing() {
+    // A view rolled across the horizon, so it cuts the 2 × 2 quads every way, with every layer
+    // on: the sun low with its glow, the moon, stars, card clouds and cirrus.
+    let size = (161, 121);
+    let mut harness = Harness::new(RenderSettings::default(), size);
+    harness.sky = tricolor();
+    // B rises toward the band's foot, so the card clouds cover the horizon.
+    let clouds = harness.texture((64, 16), |u, v| [u, 0.5 * v, v, 1.0]);
+    let cirrus = harness.texture((32, 32), |u, v| [v, 0.0, 0.2 + 0.7 * u, 0.8]);
+    let handle = harness.sky_material(&cloud_material([0.01, 0.02]), Some(&clouds), Some(&cirrus));
+    let up = Vec3::new(0.3, 1.0, 0.0).normalize();
+    harness.camera = Harness::looking(Vec3::new(0.1, 0.05, -1.0), up, 70.0, size);
+    let layers = |packet: &mut FramePacket| {
+        packet.sky_material = Some(handle);
+        packet.celestial.sun.direction = toward(3.0, 12.0);
+        packet.celestial.moon.direction = toward(14.0, -15.0);
+        packet.sky_layers.sun = disc(Vec3::new(1.0, 0.7, 0.4), 4.0, Vec3::new(0.5, 0.3, 0.1), 30.0);
+        packet.sky_layers.moon = disc(Vec3::ONE, 1.5, Vec3::splat(0.1), 10.0);
+        packet.sky_layers.stars = 1.0;
+        packet.sky_layers.clouds = CloudLight {
+            lit: Vec3::new(1.0, 0.9, 0.8),
+            shade: Vec3::new(0.3, 0.3, 0.5),
+            rim: Vec3::splat(0.4),
+            coverage: 0.8,
+            cirrus: 0.7,
+        };
+    };
+    let read_faces = |harness: &Harness| {
+        let cube = harness.renderer.sky().cube_texture();
+        let bytes = cube.format().block_copy_size(None).expect("an uncompressed format");
+        (0..CUBE_FACES).map(|face| read_texture(&harness.gpu, cube, face, bytes)).collect::<Vec<_>>()
+    };
+    // The first frame draws all six cube faces, as does the first after new shaders.
+    let skipping = harness.render(layers);
+    let skipping_faces = read_faces(&harness);
+    harness.renderer.set_shader_sources(&sources_skipping_nothing()).expect("a valid edit");
+    let drawing = harness.render(layers);
+    assert_eq!(harness.renderer.stats().sky.cube_faces, 12, "every face drawn by each");
+    assert!(skipping == drawing, "the frame changed");
+    assert!(skipping_faces == read_faces(&harness), "the cube changed");
+    // The view shows the layers above the horizon, and the gradient alone well under it.
+    let plain = harness.render(|_| {});
+    let changed = plain.iter().zip(&skipping).filter(|(a, b)| a != b).count();
+    let total = plain.len();
+    assert!(changed > total / 4 && changed < total * 3 / 4, "{changed} of {total} pixels drawn over");
 }
 
 /// A cube face texel's color, decoded from `Rg11b10Ufloat` or `Rgba16Float`.

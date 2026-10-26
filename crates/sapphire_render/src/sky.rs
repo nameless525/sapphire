@@ -78,10 +78,15 @@
 //! are linear ramps, the arctangent is a polynomial, and a star cell is hashed once before its
 //! star's reach is known. Stars and clouds are pipeline variants (`Layers`), so a frame pays
 //! nothing for a layer time of day isn't drawing; within one, every layer is a branch every pixel
-//! takes alike, skipped at zero. Mobile-Low drops the cirrus layer. The cube adds one face of at
-//! most 256² per frame, which costs about a render pass. Measured on an Apple M5 (spec §5.12,
-//! "Sky"): 0.12–0.16 ms with Mobile-High's settings, 0.06–0.1 ms with Mobile-Low's, and
-//! 0.23–0.36 ms at 1080p on the desktop tiers.
+//! takes alike, skipped at zero. Pixels also skip what can't reach them, leaving their color
+//! exactly as drawing it would: under the horizon the discs, stars and glows (below the glows'
+//! fringe) and both cloud layers (per 2 × 2 quad, which their texels' derivatives need), and a
+//! cloud layer's shading where its texel covers nothing. Mobile-Low drops the cirrus layer. The
+//! cube adds one face of at most 256² per frame, which costs about a render pass. Measured on an
+//! Apple M5 in the sandbox's default scene (spec §5.12, "Sky"), cube included: 0.16 ms by day and
+//! 0.2 ms at night at 1080p on Desktop-High, 0.09–0.12 ms with Mobile-High's settings and
+//! 0.05–0.08 ms with Mobile-Low's. A sky filling the view above the horizon costs about 0.32 ms
+//! at 1080p, the arithmetic of its layers (see "Later milestones").
 //!
 //! # Later milestones
 //!
@@ -89,6 +94,11 @@
 //!   overrides, and a rain or storm sky.
 //! - **Moon phases** from the sun's direction, and sparkle shapes for the brightest stars.
 //! - **Cloud shadows** on the world from the card clouds' coverage (R4, W4).
+//! - **A sky filling the view** within 0.3 ms at 1080p. Above the horizon every layer is
+//!   arithmetic on every pixel: on an M5 at night, about 0.2 ms of full-screen shading for the
+//!   stars and the Milky Way, 0.15 ms for the two cloud layers and 0.07 ms for the fog. The
+//!   candidates are the star grids' per-pixel cell lookup and shading the smooth layers (the
+//!   Milky Way, the glows, the fog) at a lower rate.
 //! - **A graph resource:** the cube, and the reflection cube its readers prefilter (W5), become
 //!   frame graph resources once textures can outlive a frame in it.
 

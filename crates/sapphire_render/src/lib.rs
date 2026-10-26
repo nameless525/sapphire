@@ -578,7 +578,8 @@
 //! - **Layers**, back to front: the gradient (`sky_color()` in `frame.wgsl`, unchanged, which the
 //!   anime character shader reads for ambient), stars and the Milky Way on the turning celestial
 //!   sphere, the glows, the discs, cirrus and the card clouds. A layer at zero is skipped on a
-//!   branch every pixel takes alike, and leaves the gradient exactly as it was.
+//!   branch every pixel takes alike, and leaves the gradient exactly as it was; under the
+//!   horizon, and where a cloud texel covers nothing, pixels skip the layers that add nothing.
 //! - **Data:** time of day's [`SkyLayers`] (disc colors and glows, star brightness, cloud tones
 //!   and coverage) and [`Celestial`] (where the bodies are, and the sphere's turn), and the
 //!   packet's sky material ([`FramePacket::sky_material`]), or [`SkyMaterial::default`]

@@ -129,7 +129,10 @@ jobs:
     # Metal on the hosted runner's paravirtual GPU is informational until it has run clean
     # for two weeks; wgpu itself still tests on macos-14 (M1 plan §3).
     continue-on-error: ${{ matrix.family == 'metal' }}
-    timeout-minutes: 45
+    # WARP renders on the CPU: W5's ambient scenes (GTAO and the probe grid's compute every
+    # frame) take about 3.5 minutes each there, which put the job past 45 minutes. Splitting the
+    # scenes across runners is the lasting fix.
+    timeout-minutes: 90
     env:
       SAPPHIRE_GPU_BACKEND: ${{ matrix.backend }}
       # Validation slows CPU rasterizers, and Metal's is broken on the paravirtual device.

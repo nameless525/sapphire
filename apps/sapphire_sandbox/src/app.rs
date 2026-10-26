@@ -163,6 +163,9 @@ impl App for SandboxApp {
         if let (Some(view), Some(meshes)) = (options.foliage, renderer.foliage) {
             scene.spawn_foliage(view, meshes);
         }
+        if let Some(arcade) = renderer.arcade {
+            scene.spawn_arcade(arcade, content.probe_hours());
+        }
         if options.outline_row {
             scene.spawn_outline_row(renderer.character);
         }
@@ -276,6 +279,7 @@ impl App for SandboxApp {
             self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
+            self.scene.set_probe_hours(self.content.probe_hours());
         }
         // Recovery, tier changes and loading are no stage of the frame.
         stopwatch.lap();
@@ -668,6 +672,8 @@ struct SceneRenderer {
     fog_cards: Option<[MeshHandle; FOG_CARDS.len()]>,
     /// The plants, with `--foliage`.
     foliage: Option<FoliageMeshes>,
+    /// The arcade, with `--probes`, whose probe grid the renderer holds.
+    arcade: Option<MeshHandle>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
@@ -701,6 +707,9 @@ impl Scene {
         }
         if let Some(meshes) = renderer.foliage {
             self.set_foliage_meshes(meshes);
+        }
+        if let Some(arcade) = renderer.arcade {
+            self.set_arcade_mesh(arcade);
         }
         self.set_outline_row_mesh(renderer.character);
         if let Some(mesh) = renderer.hard_edges {
@@ -742,6 +751,7 @@ struct SceneMeshes {
     courtyard: Option<MeshHandle>,
     fog_cards: Option<[MeshHandle; FOG_CARDS.len()]>,
     foliage: Option<FoliageMeshes>,
+    arcade: Option<MeshHandle>,
     hard_edges: Option<MeshHandle>,
     stage: Option<StageMeshes>,
 }
@@ -749,7 +759,8 @@ struct SceneMeshes {
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
 /// the shader swatches, whose materials `content` uploads too, the face test head, the rim rig,
-/// the courtyard and its fog cards, the plants, the hard-edged outline sample and the stage.
+/// the courtyard, its fog cards, arcade and probe grid, the plants, the hard-edged outline sample
+/// and the stage.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -780,6 +791,7 @@ fn create_renderer(
             .then(|| content.fog_cards(&mut renderer, gpu))
             .transpose()?;
         let foliage = options.foliage.map(|_| content.foliage(&mut renderer, gpu)).transpose()?;
+        let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {
@@ -799,6 +811,7 @@ fn create_renderer(
             courtyard,
             fog_cards,
             foliage,
+            arcade,
             hard_edges,
             stage,
         };
@@ -814,6 +827,7 @@ fn create_renderer(
                 courtyard,
                 fog_cards,
                 foliage,
+                arcade,
                 hard_edges,
                 stage,
             } = meshes;
@@ -828,6 +842,7 @@ fn create_renderer(
                 courtyard,
                 fog_cards,
                 foliage,
+                arcade,
                 hard_edges,
                 stage,
                 sky,

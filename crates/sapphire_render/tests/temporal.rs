@@ -964,11 +964,17 @@ fn mobile_tiers_keep_msaa_in_tile_memory() {
             );
         }
         let running: Vec<&str> = report.running().map(|pass| pass.name).collect();
-        for pass in ["taa", "responsive mask", "scene prepass"] {
+        for pass in ["taa", "responsive mask"] {
             assert!(!running.contains(&pass), "{id} runs {pass}: {running:?}");
         }
         // The character prepass runs on every tier: the main pass reads it (M1 C5).
         assert!(running.contains(&"character prepass"), "{id}: {running:?}");
+        // The scene prepass runs on a phone only for GTAO's depth and normals (Mobile-High, M1
+        // W5), single-sampled beside the main pass's tile memory. Without a grid, the ambient
+        // pass is GTAO's alone.
+        let gtao = table.get(id).ambient_occlusion.gtao.is_some();
+        assert_eq!(running.contains(&"scene prepass"), gtao, "{id}: {running:?}");
+        assert_eq!(running.contains(&"ambient"), gtao, "{id}: {running:?}");
         assert!(!frames.renderer.stats().temporal.enabled);
     }
 }

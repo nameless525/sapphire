@@ -188,7 +188,10 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                 .collect();
             (slots, Some(import))
         }
-        ImportSettings::Texture(_) | ImportSettings::CharacterMap(_) | ImportSettings::Material(_) => {
+        ImportSettings::Texture(_)
+        | ImportSettings::CharacterMap(_)
+        | ImportSettings::Material(_)
+        | ImportSettings::ProbeGrid(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

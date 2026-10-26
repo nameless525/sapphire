@@ -65,11 +65,29 @@ impl EnvironmentSpecular {
     }
 }
 
+/// Where the environment shader reads an ambient probe grid (M1 W5, the
+/// [`ambient`](crate::ambient) module), per tier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+pub enum ProbeLookup {
+    /// At every pixel, along the pixel's normal (desktop, Mobile-High).
+    #[default]
+    PerPixel,
+    /// At every vertex, along the vertex's normal: its irradiance and weight interpolated across
+    /// the triangle, and the ambient specular left to the hemisphere (Mobile-Low, whose specular
+    /// is off). Its cost follows the vertices rather than the pixels, and the mobile cook's grid
+    /// (3 m between probes) is no finer than the world's vertices.
+    PerVertex,
+}
+
 /// The environment shader's settings for a renderer, from its quality tier.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub struct EnvironmentSettings {
     pub specular: EnvironmentSpecular,
+    /// Where the shader reads a probe grid.
+    #[serde(default)]
+    pub probes: ProbeLookup,
 }
 
 /// The name of the shader's specular constant (`environment.wgsl`).

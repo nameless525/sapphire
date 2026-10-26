@@ -6,7 +6,7 @@ use std::time::Duration;
 use bevy_ecs::prelude::{Res, ResMut, Resource};
 use sapphire_ecs::WorldClock;
 use sapphire_math::Vec3;
-use sapphire_render::{CameraData, CharacterLighting, FramePacket};
+use sapphire_render::{CameraData, CharacterLighting, FramePacket, MAX_PROBE_KEYS, ProbeKeys};
 use sapphire_time::{LocalClock, ScaledClock, Stopwatch};
 
 use super::TodError;
@@ -14,7 +14,7 @@ use super::clock::TodClock;
 use super::cutscene::TodCutscene;
 use super::key::TodGroups;
 use super::look::{TodLook, celestial_sphere, mix};
-use super::timeline::{Segment, TodTimeline};
+use super::timeline::{DAY_HOURS, Segment, TodTimeline};
 use super::volume::{TodVolume, TodVolumeId};
 use crate::light_rig::LightRig;
 
@@ -34,6 +34,9 @@ pub struct TimeOfDay {
     /// Seconds of world time the last fixed step took: how far a playing cutscene moved.
     world_step: f64,
     frame: TodFrame,
+    /// The hours whose looks the last resolve blended, with their weights: the clock's, and a
+    /// playing cutscene's own hour by the track's weight (see [`Self::probe_keys`]).
+    probe_hours: [(f32, f32); 2],
     stats: TodStats,
 }
 
@@ -129,6 +132,7 @@ impl TimeOfDay {
             cutscene: None,
             world_step: 0.0,
             frame,
+            probe_hours: [(hours, 1.0), (0.0, 0.0)],
             stats: TodStats::default(),
         })
     }
@@ -236,6 +240,7 @@ impl TimeOfDay {
         let (mut look, active_volumes) = self.look_at(hours, probe);
         let mut cutscene_weight = 0.0;
         let mut shot_rig = None;
+        let mut probe_hours = [(hours, 1.0), (0.0, 0.0)];
         if let Some(playback) = &self.cutscene {
             let seconds = (playback.seconds + f64::from(alpha) * self.world_step) as f32;
             let track = &playback.track;
@@ -244,12 +249,14 @@ impl TimeOfDay {
                 if let Some(shot_hours) = track.hours(seconds) {
                     let (shot, _) = self.look_at(shot_hours, probe);
                     look = mix(&look, &shot, cutscene_weight);
+                    probe_hours = [(hours, 1.0 - cutscene_weight), (shot_hours, cutscene_weight)];
                 }
                 track.apply_values(&mut look, seconds, cutscene_weight);
                 shot_rig = track.light_rig().map(|rig| ShotRig { rig: *rig, weight: cutscene_weight });
             }
         }
         self.frame = TodFrame { hours, look, shot_rig };
+        self.probe_hours = probe_hours;
         self.stats = TodStats {
             resolve_time: stopwatch.elapsed(),
             segment: self.timeline.segment(hours),
@@ -270,6 +277,67 @@ impl TimeOfDay {
 
     pub fn stats(&self) -> TodStats {
         self.stats
+    }
+
+    /// Which of an ambient probe grid's baked keys the last resolve's bounce light blends, and by
+    /// how much (rule R4: the renderer gets the keys and weights alone,
+    /// [`FramePacket::probe_keys`]). `baked` is the hours the grid was baked at, ascending (the
+    /// grid asset's key hours). For the clock's hour, and a playing cutscene's own hour by the
+    /// track's weight, it takes the two baked keys the hour lies between: by the base timeline's
+    /// own eased weight when the grid was baked at that timeline's keys (the cooker bakes every
+    /// key), so the bounce moves with the rest of the look, and linearly by the hour otherwise.
+    /// Zone volumes don't change it: the bake lit the base timeline. Allocates nothing.
+    pub fn probe_keys(&self, baked: &[f32]) -> ProbeKeys {
+        let mut keys = ProbeKeys::default();
+        if baked.is_empty() {
+            return keys;
+        }
+        let mut used = 0;
+        for (hours, weight) in self.probe_hours {
+            if weight <= 0.0 || weight.is_nan() {
+                continue;
+            }
+            for (key, share) in self.baked_segment(hours, baked) {
+                let blended = weight * share;
+                if blended <= 0.0 {
+                    continue;
+                }
+                match keys.keys[..used].iter().position(|&other| other == key) {
+                    Some(slot) => keys.weights[slot] += blended,
+                    None if used < MAX_PROBE_KEYS => {
+                        keys.keys[used] = key;
+                        keys.weights[used] = blended;
+                        used += 1;
+                    }
+                    None => {}
+                }
+            }
+        }
+        keys
+    }
+
+    /// The two baked keys `hours` lies between, with their weights (see [`Self::probe_keys`]).
+    fn baked_segment(&self, hours: f32, baked: &[f32]) -> [(u32, f32); 2] {
+        let timeline = self.timeline.keys();
+        let at_timeline_keys = timeline.len() == baked.len()
+            && timeline.iter().zip(baked).all(|(key, &hours)| (key.time - hours).abs() < 1e-3);
+        if at_timeline_keys {
+            let Segment { from, to, weight } = self.timeline.segment(hours);
+            return [(from as u32, 1.0 - weight), (to as u32, weight)];
+        }
+        let wrapped = if hours.is_finite() { hours.rem_euclid(DAY_HOURS) } else { 0.0 };
+        let wrapped = if wrapped >= DAY_HOURS { 0.0 } else { wrapped };
+        let last = baked.len() - 1;
+        let next = baked.partition_point(|&key| key <= wrapped);
+        let from = if next == 0 { last } else { next - 1 };
+        let to = if next > last { 0 } else { next };
+        let span = (baked[to] - baked[from]).rem_euclid(DAY_HOURS);
+        let t = if from == to || span <= 0.0 {
+            0.0
+        } else {
+            ((wrapped - baked[from]).rem_euclid(DAY_HOURS) / span).clamp(0.0, 1.0)
+        };
+        [(from as u32, 1.0 - t), (to as u32, t)]
     }
 
     /// The base timeline and zones at `hours`, and how many volumes weighed in.

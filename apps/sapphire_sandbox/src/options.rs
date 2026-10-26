@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use sapphire_render::quality::{QualitySettings, Switch, TierId};
+use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
 use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
 
 use crate::faces::FaceLayout;
@@ -49,7 +49,11 @@ pub(crate) struct Options {
     pub dynamic_resolution: bool,
     /// `--shadows on|off`: the player's shadow setting; the tier's without it.
     pub shadows: Option<Switch>,
-    /// `--stage floor|pillar`: a floor under the character, and a pillar shadowing it.
+    /// `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's
+    /// without it.
+    pub ambient_occlusion: Option<OcclusionSetting>,
+    /// `--stage floor|pillar|plinth`: a floor under the character, and a pillar shadowing it or
+    /// a stone plinth in place of its pedestal.
     pub stage: Option<StageLayout>,
     /// `--skinned`: place the skinned stalk beside the character.
     pub skinned: bool,
@@ -77,6 +81,9 @@ pub(crate) struct Options {
     /// `--wind <strength>`: the wind's strength, 0 (calm) to 4, instead of `--foliage`'s breeze
     /// of 1.
     pub wind: Option<f32>,
+    /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
+    /// (M1 W5). Implies `--environment`.
+    pub probes: bool,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -287,6 +294,7 @@ impl Options {
             render_scale: self.render_scale,
             dynamic_resolution: self.dynamic_resolution,
             shadows: self.shadows.unwrap_or_default(),
+            ambient_occlusion: self.ambient_occlusion.unwrap_or_default(),
         }
     }
 
@@ -349,12 +357,20 @@ impl Options {
                         other => return Err(format!("--shadows expects on or off, got {other:?}")),
                     });
                 }
+                "--ao" => {
+                    options.ambient_occlusion = Some(match value("--ao")?.as_str() {
+                        "off" => OcclusionSetting::Off,
+                        "capsule" => OcclusionSetting::Capsules,
+                        "full" => OcclusionSetting::Full,
+                        other => return Err(format!("--ao expects off, capsule or full, got {other:?}")),
+                    });
+                }
                 "--stage" => {
                     let raw = value("--stage")?;
-                    options.stage = Some(
-                        StageLayout::from_name(&raw)
-                            .ok_or_else(|| format!("--stage expects floor or pillar, got {raw:?}"))?,
-                    );
+                    options.stage =
+                        Some(StageLayout::from_name(&raw).ok_or_else(|| {
+                            format!("--stage expects floor, pillar or plinth, got {raw:?}")
+                        })?);
                 }
                 "--lights" => options.lights = true,
                 "--skinned" => options.skinned = true,
@@ -407,6 +423,7 @@ impl Options {
                     }
                     options.wind = Some(strength);
                 }
+                "--probes" => (options.probes, options.environment) = (true, true),
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -634,8 +651,14 @@ mod tests {
                 render_scale: Some(0.7),
                 dynamic_resolution: true,
                 shadows: Switch::Auto,
+                ambient_occlusion: OcclusionSetting::Auto,
             }
         );
+        let (pinned, _) = parse(&["--ao", "off"]).unwrap();
+        assert_eq!(pinned.quality_settings().ambient_occlusion, OcclusionSetting::Off, "a real setting");
+        assert_eq!(parse(&["--ao=capsule"]).unwrap().0.ambient_occlusion, Some(OcclusionSetting::Capsules));
+        assert_eq!(parse(&["--ao", "full"]).unwrap().0.ambient_occlusion, Some(OcclusionSetting::Full));
+        assert!(parse(&["--ao", "ssao"]).is_err());
         let (off, _) = parse(&["--shadows", "off"]).unwrap();
         assert_eq!(off.quality_settings().shadows, Switch::Off, "a real quality setting");
         assert_eq!(parse(&["--shadows=on"]).unwrap().0.shadows, Some(Switch::On));
@@ -681,7 +704,9 @@ mod tests {
     fn the_environment_is_off_unless_asked_for() {
         assert!(!parse(&[]).unwrap().0.environment);
         let (options, unknown) = parse(&["--environment", "--time-of-day", "18.5"]).unwrap();
-        assert!(options.environment && unknown.is_empty());
+        assert!(options.environment && !options.probes && unknown.is_empty());
+        let (options, _) = parse(&["--probes"]).unwrap();
+        assert!(options.probes && options.environment, "the grid lights the courtyard");
     }
 
     #[test]

@@ -1,0 +1,39 @@
+(
+    type: "sapphire::pipeline::ProbeGridDocument",
+    version: 1,
+    data: (
+        bounds: (
+            min: (-22.0, -1.25, -34.0),
+            max: (26.0, 10.75, 10.0),
+        ),
+        spacing: (
+            desktop: 1.5,
+            mobile: 3.0,
+        ),
+        visibility: (
+            desktop: L2,
+            mobile: L1,
+        ),
+        rays: (
+            desktop: 256,
+            mobile: 128,
+        ),
+        surfel_rays: 64,
+        surfel_spacing: 0.5,
+        bounces: 2,
+        bounce_strength: 1.0,
+        timeline: DefaultDay,
+        meshes: [
+            (
+                mesh: "14ad5875-ec27-4866-bb2e-501408f4e1ad",
+                translation: (0.0, 0.0, 0.0),
+                yaw: 0.0,
+            ),
+            (
+                mesh: "29f2acee-efb7-4abb-8df6-f9b80a877df8",
+                translation: (0.0, 0.0, 0.0),
+                yaw: 0.0,
+            ),
+        ],
+    ),
+)

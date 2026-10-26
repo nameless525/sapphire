@@ -30,6 +30,9 @@
 //! - [`material`]: material documents (`.material.ron`) cooked to
 //!   [`Material`](sapphire_assets::material::Material)s, checked against the textures (and
 //!   character maps) they reference, whose swizzles they record.
+//! - [`probes`]: ambient probe grid documents (`.probes.ron`) baked to
+//!   [`ProbeGrid`](sapphire_assets::probes::ProbeGrid)s (M1 W5): sky visibility and bounce light
+//!   per time-of-day key, ray traced on the CPU over the meshes they name.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache; a source can cook to sub-assets beside its own (a VRM's
 //!   rig).
@@ -93,6 +96,7 @@ pub mod mesh;
 pub mod meta;
 pub mod optimize;
 pub mod pack;
+pub mod probes;
 pub mod samples;
 #[cfg(test)]
 mod test_util;

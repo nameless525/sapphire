@@ -1,5 +1,6 @@
 //! Math for Sapphire (spec §5.4): glam re-exports plus the engine's transforms, bounds, culling
-//! volumes, projection, springs, easing, color spaces and deterministic scalar functions.
+//! volumes, projection, springs, easing, color spaces, spherical harmonics and deterministic scalar
+//! functions.
 //!
 //! # Coordinate convention
 //!
@@ -43,6 +44,7 @@ pub mod det;
 pub mod ease;
 pub mod frustum;
 pub mod projection;
+pub mod sh;
 pub mod spring;
 pub mod transform;
 

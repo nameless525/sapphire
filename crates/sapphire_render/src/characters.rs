@@ -7,8 +7,10 @@
 //!   key light with unstyled GI ([`CharacterLighting::unstyled`]), a face at rest
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
 //!   changes (while the hour runs, the camera moves for a rig whose key or GI depends on it, or a
-//!   head, an expression or a body moves): 160 bytes a character. With shadows on, the face pass
-//!   (M1 R4) writes each entry's `shadow.visibility` on the GPU every frame, after the upload.
+//!   head, an expression or a body moves, or the frame's ambient light changes): 224 bytes a
+//!   character. With shadows on, the face pass (M1 R4) writes each entry's `shadow.visibility`
+//!   on the GPU every frame, after the upload; with a probe grid, the character ambient pass
+//!   (M1 W5) writes its `ambient`.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
@@ -19,7 +21,9 @@
 //!
 //! Each package's per-character data is a struct of its own inside [`GpuCharacter`] (WGSL
 //! `CharacterData` in `frame.wgsl`): C2's is the rig, C3's the face beside it, R4's the shadow
-//! (where the face pass samples the environment's shadow over the head, and what it found).
+//! (where the face pass samples the environment's shadow over the head, and what it found), W5's
+//! the ambient light its stylized GI reads ([`GpuCharacterAmbient`]: the frame's hemisphere, the
+//! other characters' capsule AO, and where a probe grid reads it from).
 //! Later ones (C4's outline lighting) add theirs the same way. A character's data is then found
 //! through one index and one binding: the fragment stage's fourth and last storage buffer (see
 //! the crate docs, "Binding budget").
@@ -31,7 +35,7 @@ use sapphire_rhi::wgpu;
 use crate::buffer::{self, GrowableBuffer};
 use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
-use crate::{CharacterBody, CharacterFace, CharacterLighting, FramePacket};
+use crate::{AmbientLight, CharacterBody, CharacterFace, CharacterLighting, FramePacket};
 
 /// The radius of the sphere around a character's head that the face pass samples the
 /// environment's shadow over (M1 R4), in meters: an anime head's.
@@ -46,6 +50,7 @@ pub(crate) struct GpuCharacter {
     pub rig: GpuRig,
     pub face: GpuFace,
     pub shadow: GpuCharacterShadow,
+    pub ambient: GpuCharacterAmbient,
 }
 
 /// A character's light rig as the shader reads it (WGSL `CharacterRig`). 80 bytes.
@@ -89,6 +94,87 @@ pub(crate) struct GpuCharacterShadow {
     pub visibility: [f32; 4],
 }
 
+/// A character's ambient light as the shaders read it (WGSL `CharacterAmbient`, M1 W5). 64
+/// bytes.
+///
+/// The CPU writes the frame's hemisphere (time of day's ambient sky and ground along +Y, exactly
+/// what `ambient_light` reads, so a character draws as before W5 without a grid), times what
+/// the other characters' bodies leave of it (capsule AO); with a probe grid the character
+/// ambient pass replaces the hemisphere with the grid's around the body every frame.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+pub(crate) struct GpuCharacterAmbient {
+    /// rgb: the light from the hemisphere's pole, color × intensity, times `axis[3]`; w: 0.
+    pub sky: [f32; 4],
+    /// rgb: the light from the opposite pole, likewise; w: 0.
+    pub ground: [f32; 4],
+    /// xyz: the unit axis from ground to sky; w: what capsule AO leaves of the light.
+    pub axis: [f32; 4],
+    /// xyz: where the grid is read, world space: the body's center, or the head without a body;
+    /// w: 1 with somewhere to read it, else 0 (the frame's hemisphere stays).
+    pub probe: [f32; 4],
+}
+
+impl GpuCharacterAmbient {
+    /// The frame's `ambient` hemisphere, read from the grid at `probe` where there is one.
+    fn new(ambient: &AmbientLight, probe: Option<Vec3>) -> Self {
+        Self {
+            sky: (ambient.sky * ambient.intensity).extend(0.0).to_array(),
+            ground: (ambient.ground * ambient.intensity).extend(0.0).to_array(),
+            axis: [0.0, 1.0, 0.0, 1.0],
+            probe: probe.map_or([0.0; 4], |probe| probe.extend(1.0).to_array()),
+        }
+    }
+
+    /// The hemisphere darkened by capsule AO leaving `visibility` of it.
+    fn occluded(mut self, visibility: f32) -> Self {
+        for channel in 0..3 {
+            self.sky[channel] *= visibility;
+            self.ground[channel] *= visibility;
+        }
+        self.axis[3] = visibility;
+        self
+    }
+}
+
+/// What capsule AO from `others` leaves of the ambient light of a character with `body` (M1 W5):
+/// each other body as the environment's capsule AO sees it (`capsule_occlusion` in
+/// `ambient.wgsl`: a sphere at the point of its axis nearest the body's center, its
+/// cosine-weighted solid angle faded out between three and five radii), averaged over every way
+/// the character's surface faces, which takes a quarter of it. Bodies equal to `body` are the
+/// same character's and bodies of radius 0 cast nothing.
+pub(crate) fn capsule_visibility<'a>(
+    body: &CharacterBody,
+    others: impl IntoIterator<Item = &'a CharacterBody>,
+) -> f32 {
+    let center = 0.5 * (body.base + body.top);
+    let mut visibility = 1.0;
+    for other in others {
+        if other == body || !other.casts() {
+            continue;
+        }
+        let axis = other.top - other.base;
+        let length_squared = axis.length_squared();
+        let along = if length_squared > 1e-8 {
+            ((center - other.base).dot(axis) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let distance = center.distance(other.base + along * axis).max(1e-4);
+        let radius = other.radius;
+        let ratio = radius / distance.max(radius);
+        let reach = 1.0 - smoothstep(2.0 * radius, 4.0 * radius, distance - radius);
+        visibility *= 1.0 - 0.25 * ratio * ratio * reach;
+    }
+    visibility
+}
+
+/// WGSL's `smoothstep`.
+fn smoothstep(low: f32, high: f32, x: f32) -> f32 {
+    let t = ((x - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl GpuCharacterShadow {
     /// Where the face pass samples for a character with `lighting` and `body`: its rig's head if
     /// it has one, else the top of its body, else nowhere.
@@ -114,8 +200,14 @@ impl GpuFace {
 }
 
 impl GpuCharacter {
-    /// The entry of a character lit by `lighting`, with `face` and `body`.
-    fn new(lighting: &CharacterLighting, face: &CharacterFace, body: &CharacterBody) -> Self {
+    /// The entry of a character lit by `lighting`, with `face` and `body`, under the frame's
+    /// `ambient` light.
+    fn new(
+        lighting: &CharacterLighting,
+        face: &CharacterFace,
+        body: &CharacterBody,
+        ambient: &AmbientLight,
+    ) -> Self {
         let CharacterLighting { key, rim, local_light_ceiling, gi } = *lighting;
         let toward_key = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
@@ -135,6 +227,10 @@ impl GpuCharacter {
             },
             face: GpuFace::new(face),
             shadow: GpuCharacterShadow::new(lighting, body),
+            ambient: GpuCharacterAmbient::new(
+                ambient,
+                body.casts().then(|| 0.5 * (body.base + body.top)).or(lighting.gi.head),
+            ),
         }
     }
 }
@@ -146,15 +242,23 @@ pub(crate) struct Characters {
     /// The entries differ from what the buffer holds.
     unsent: bool,
     buffer: GrowableBuffer,
+    /// Characters take capsule AO from each other's bodies (M1 W5).
+    capsule_ao: bool,
 }
 
 impl Characters {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, capsule_ao: bool) -> Self {
         let limits = device.limits();
         let max = limits.max_storage_buffer_binding_size.min(limits.max_buffer_size);
         let usage = wgpu::BufferUsages::STORAGE;
         let buffer = GrowableBuffer::new(device, "characters", usage, 16 * ENTRY_BYTES, max);
-        Self { list: CharacterList::default(), unsent: false, buffer }
+        Self { list: CharacterList::default(), unsent: false, buffer, capsule_ao }
+    }
+
+    /// Uploads the entries again with the next frame, whether they changed or not: what a pass
+    /// wrote into them on the GPU (the probe grid's ambient, M1 W5) no longer holds.
+    pub(crate) fn invalidate(&mut self) {
+        self.unsent = true;
     }
 
     /// Builds the frame's entries from `packet` and points the instances in `slots` (which
@@ -171,7 +275,7 @@ impl Characters {
         if packet.main_view().is_none() {
             return false;
         }
-        self.unsent |= self.list.update(packet, slots);
+        self.unsent |= self.list.update(packet, slots, self.capsule_ao);
         // The entries are uploaded whole whenever they change, so nothing needs keeping.
         let bytes = self.list.entries.len() as u64 * ENTRY_BYTES;
         let replaced = self.buffer.reserve(device, queue, bytes, 0);
@@ -252,6 +356,8 @@ struct CharacterList {
     listing: Vec<u32>,
     /// Per instance slot: the entry this frame gives it, 0 for none.
     next: Vec<u32>,
+    /// Per entry of the frame being built, its body, for capsule AO between characters.
+    bodies: Vec<CharacterBody>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
     lit: u32,
     ignored: u32,
@@ -261,12 +367,17 @@ impl CharacterList {
     /// Builds the entries for `packet`: the fallback from its key light, with a face at rest,
     /// then each valid character of an instance in `slots`, in packet order. Points each of
     /// those instances at its entry, and every instance the last frame listed but this one
-    /// doesn't back at the fallback. Returns whether the entries changed.
-    fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots) -> bool {
+    /// doesn't back at the fallback. With `capsule_ao`, each character's ambient takes what the
+    /// others' bodies leave of it ([`capsule_visibility`]). Returns whether the entries changed.
+    fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots, capsule_ao: bool) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
+        self.bodies.clear();
         let fallback = CharacterLighting::unstyled(packet.sun);
-        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &CharacterBody::default()));
+        let ambient = &packet.ambient;
+        let none = CharacterBody::default();
+        self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &none, ambient));
+        self.bodies.push(none);
         // Slots are never given back, so the last frame's are all below this.
         self.next.resize(slots.len(), 0);
         for &slot in &self.listed {
@@ -290,7 +401,19 @@ impl CharacterList {
                 self.listing.push(slot);
             }
             self.next[slot as usize] = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
-            self.entries.push(GpuCharacter::new(&character.lighting, &character.face, &character.body));
+            self.entries.push(GpuCharacter::new(
+                &character.lighting,
+                &character.face,
+                &character.body,
+                ambient,
+            ));
+            self.bodies.push(character.body);
+        }
+        if capsule_ao {
+            for (entry, body) in self.entries.iter_mut().zip(&self.bodies).skip(1) {
+                let visibility = capsule_visibility(body, &self.bodies[1..]);
+                entry.ambient = entry.ambient.occluded(visibility);
+            }
         }
         for &slot in self.listed.iter().chain(&self.listing) {
             slots.set_character(slot, self.next[slot as usize]);
@@ -363,14 +486,15 @@ mod tests {
             },
         };
         let none = CharacterBody::default();
-        let GpuCharacter { rig, face, shadow } =
-            GpuCharacter::new(&lighting, &CharacterFace::default(), &none);
+        let ambient = AmbientLight::default();
+        let GpuCharacter { rig, face, shadow, .. } =
+            GpuCharacter::new(&lighting, &CharacterFace::default(), &none, &ambient);
         assert_eq!(rig.key_direction, [0.0, 1.0, 0.0, 0.5], "toward the key, unit length; the rim");
         assert_eq!(rig.key_radiance, [2.0, 1.0, 0.5, 1.5]);
         assert_eq!(rig.head, [1.0, 2.0, 3.0, 0.8]);
         assert_eq!(rig.gi, [0.3, 0.6, f32::MAX, 1.0], "no value ceiling is the largest finite one");
         let headless = CharacterLighting { gi: CharacterGi::default(), ..lighting };
-        let headless = GpuCharacter::new(&headless, &CharacterFace::default(), &none);
+        let headless = GpuCharacter::new(&headless, &CharacterFace::default(), &none, &ambient);
         assert_eq!((headless.rig.head, headless.rig.gi[3]), ([0.0, 0.0, 0.0, 1.0], 0.0), "nothing spherizes");
         assert_eq!(rig.skin_tint, [1.1, 0.9, 0.8, 0.0]);
         assert_eq!(face.forward, [0.0, 0.0, 1.0, 0.0], "a face at rest");
@@ -380,7 +504,7 @@ mod tests {
         assert_eq!(shadow.visibility, [1.0, 0.0, 0.0, 0.0], "lit until the face pass says otherwise");
         assert_eq!(headless.shadow.probe, [0.0; 4]);
         let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
-        let bodied = GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body);
+        let bodied = GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient);
         assert_eq!(bodied.shadow.probe, [0.0, 1.5, 0.0, HEAD_PROBE_RADIUS]);
     }
 
@@ -394,7 +518,8 @@ mod tests {
             head: HeadBasis { forward: Vec3::new(3.0, 0.0, 0.0), up: Vec3::new(1.0, 2.0, 0.0) },
             expression: FaceExpression { blush: 0.25, gloom: 2.0 },
         };
-        let packed = GpuCharacter::new(&lighting(1.0), &face, &CharacterBody::default()).face;
+        let ambient = AmbientLight::default();
+        let packed = GpuCharacter::new(&lighting(1.0), &face, &CharacterBody::default(), &ambient).face;
         assert_eq!(packed.forward, [1.0, 0.0, 0.0, 0.0], "unit length");
         assert_eq!(packed.up, [0.0, 1.0, 0.0, 0.0], "square to forward");
         assert_eq!(packed.expression, [0.25, 2.0, 0.0, 0.0], "as given: the shader clamps");
@@ -427,7 +552,7 @@ mod tests {
         let entry =
             |slots: &InstanceSlots, id: u64| slots.character(slots.slot(InstanceId(id)).expect("live"));
         // Instance 9 isn't drawn, and the second entry for 2 replaces the first.
-        assert!(list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots));
+        assert!(list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false));
         assert_eq!((list.lit, list.ignored), (2, 1), "instance 2 counts once");
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0, 1, 3, 0]);
         let intensity = |list: &CharacterList, index: usize| list.entries[index].rig.key_radiance[0];
@@ -435,12 +560,12 @@ mod tests {
         assert_eq!(intensity(&list, 3), 4.0);
 
         // The same list again: nothing changes, so nothing is uploaded.
-        assert!(!list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots));
+        assert!(!list.update(&packet(&[(1, 2.0), (9, 1.0), (2, 3.0), (2, 4.0)]), &mut slots, false));
         // Instance 1 leaves the list and 3 joins: 1 falls back, 2 and 3 move.
-        assert!(list.update(&packet(&[(3, 1.0), (2, 1.0)]), &mut slots));
+        assert!(list.update(&packet(&[(3, 1.0), (2, 1.0)]), &mut slots, false));
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0, 0, 2, 1]);
         assert_eq!(list.lit, 2);
-        assert!(list.update(&packet(&[]), &mut slots));
+        assert!(list.update(&packet(&[]), &mut slots, false));
         assert_eq!([0, 1, 2, 3].map(|id| entry(&slots, id)), [0; 4]);
         assert_eq!(list.entries.len(), 1, "the fallback alone");
     }
@@ -451,7 +576,7 @@ mod tests {
         let mut slots = slots(0..count);
         let mut list = CharacterList::default();
         let characters: Vec<(u64, f32)> = (0..count).map(|id| (id, 1.0)).collect();
-        list.update(&packet(&characters), &mut slots);
+        list.update(&packet(&characters), &mut slots, false);
         assert_eq!((list.lit, list.ignored), (ID_ENTRY_MASK, 2));
         assert_eq!(list.entries.len(), ID_ENTRY_MASK as usize + 1, "the fallback and the rest");
         assert_eq!(slots.character(slots.slot(InstanceId(count - 1)).expect("live")), 0, "unlit");
@@ -463,7 +588,7 @@ mod tests {
         let mut list = CharacterList::default();
         let mut frame = packet(&[(0, 1.0)]);
         frame.characters[0].lighting.rim = -1.0;
-        list.update(&frame, &mut slots);
+        list.update(&frame, &mut slots, false);
         assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
     }
 
@@ -472,12 +597,77 @@ mod tests {
         let mut slots = slots(0..1);
         let mut list = CharacterList::default();
         let mut frame = packet(&[(0, 1.0)]);
-        assert!(list.update(&frame, &mut slots));
+        assert!(list.update(&frame, &mut slots, false));
         frame.characters[0].face.expression.blush = 0.5;
-        assert!(list.update(&frame, &mut slots), "an expression moved");
+        assert!(list.update(&frame, &mut slots, false), "an expression moved");
         assert_eq!(list.entries[1].face.expression[0], 0.5);
         frame.characters[0].face.head = HeadBasis { forward: Vec3::ZERO, up: Vec3::Y };
-        list.update(&frame, &mut slots);
+        list.update(&frame, &mut slots, false);
         assert_eq!((list.lit, list.ignored, slots.character(0)), (0, 1, 0));
+    }
+
+    #[test]
+    fn entries_carry_the_frame_hemisphere_and_where_to_read_the_grid() {
+        let ambient =
+            AmbientLight { sky: Vec3::new(0.4, 0.5, 0.6), ground: Vec3::splat(0.2), intensity: 2.0 };
+        let body = CharacterBody::capsule(Vec3::ZERO, Vec3::new(0.0, 1.5, 0.0), 0.3);
+        let entry =
+            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &body, &ambient).ambient;
+        // Exactly what the frame's uniforms hold, so `character_ambient_light` is `ambient_light`.
+        assert_eq!(entry.sky, (ambient.sky * ambient.intensity).extend(0.0).to_array());
+        assert_eq!(entry.ground, (ambient.ground * ambient.intensity).extend(0.0).to_array());
+        assert_eq!(entry.axis, [0.0, 1.0, 0.0, 1.0], "up, nothing occluded");
+        assert_eq!(entry.probe, [0.0, 0.75, 0.0, 1.0], "the body's center");
+        // Without a body, the head; without either, nowhere.
+        let head = Vec3::new(1.0, 1.6, 0.0);
+        let headed = CharacterLighting {
+            gi: CharacterGi { head: Some(head), ..CharacterGi::default() },
+            ..lighting(1.0)
+        };
+        let none = CharacterBody::default();
+        let entry = GpuCharacter::new(&headed, &CharacterFace::default(), &none, &ambient).ambient;
+        assert_eq!(entry.probe, [1.0, 1.6, 0.0, 1.0]);
+        let entry =
+            GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient).ambient;
+        assert_eq!(entry.probe, [0.0; 4]);
+    }
+
+    #[test]
+    fn capsule_ao_falls_off_with_distance_and_skips_the_same_body() {
+        let at = |x: f32| CharacterBody::capsule(Vec3::new(x, 0.25, 0.0), Vec3::new(x, 1.5, 0.0), 0.25);
+        let me = at(0.0);
+        assert_eq!(capsule_visibility(&me, &[me]), 1.0, "a character's own instances");
+        assert_eq!(capsule_visibility(&me, &[CharacterBody::default()]), 1.0, "a body of radius 0");
+        // Touching, a quarter of a full sphere's occlusion; it falls with distance, and is gone
+        // past five radii.
+        let touching = capsule_visibility(&me, &[at(0.2)]);
+        assert!((touching - 0.75).abs() < 1e-6, "{touching}");
+        let mut last = touching;
+        for x in [0.4, 0.6, 0.8, 1.0, 1.2] {
+            let visibility = capsule_visibility(&me, &[at(x)]);
+            assert!(visibility > last && visibility <= 1.0, "{x}: {visibility}");
+            last = visibility;
+        }
+        assert_eq!(capsule_visibility(&me, &[at(1.3)]), 1.0);
+        // Two neighbors darken more than one.
+        assert!(capsule_visibility(&me, &[at(0.5), at(-0.5)]) < capsule_visibility(&me, &[at(0.5)]));
+    }
+
+    #[test]
+    fn characters_side_by_side_darken_each_others_ambient() {
+        let mut slots = slots(0..2);
+        let mut list = CharacterList::default();
+        let mut frame = packet(&[(0, 1.0), (1, 1.0)]);
+        frame.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+        frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        frame.characters[1].body =
+            CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
+        list.update(&frame, &mut slots, false);
+        assert_eq!(list.entries[1].ambient.axis[3], 1.0, "capsule AO off");
+        assert!(list.update(&frame, &mut slots, true));
+        let [fallback, first, second] = [0, 1, 2].map(|index| list.entries[index].ambient);
+        assert_eq!(fallback.axis[3], 1.0, "the world's fallback has no body");
+        assert!(first.axis[3] < 1.0 && first.axis[3] == second.axis[3], "{first:?}");
+        assert_eq!(first.sky[0], first.axis[3], "the hemisphere scaled by it");
     }
 }

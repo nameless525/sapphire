@@ -18,6 +18,8 @@ sapphire_assets.workspace = true
 # The device class (`target::FormFactor`) quality tiers are selected by, and the `r.*` cvars.
 sapphire_core.workspace = true
 sapphire_jobs.workspace = true
+# Spherical harmonics, shared with the cooker's probe bake (M1 W5).
+sapphire_math.workspace = true
 # The quality-tier table is a versioned RON document (`tiers.ron`).
 sapphire_reflect.workspace = true
 sapphire_rhi.workspace = true

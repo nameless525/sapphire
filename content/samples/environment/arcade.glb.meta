@@ -1,0 +1,13 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "29f2acee-efb7-4abb-8df6-f9b80a877df8",
+        importer: Gltf((
+            materials: {
+                "Stone": "74541928-2897-450e-9528-157d19d9e9a4",
+                "Wall": "4e68ee72-a635-4ca3-8fb9-87c813226709",
+            },
+        )),
+    ),
+)

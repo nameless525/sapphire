@@ -22,6 +22,8 @@
 //! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
 //!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
 //!   for animation (M2) to read.
+//! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
+//!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
 //!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
 //!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it
@@ -82,6 +84,7 @@ mod kind;
 pub mod material;
 pub mod mesh;
 pub mod pack;
+pub mod probes;
 pub mod rig;
 mod server;
 pub mod texture;

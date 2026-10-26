@@ -27,7 +27,10 @@
 //! name the mist map ([`Content::fog_cards`]). With `--foliage` it loads the foliage samples, a
 //! tree, a bush and a patch of grass ([`foliage::TREE`], [`foliage::BUSH`], [`foliage::GRASS`]),
 //! whose slots their sidecars bind to foliage materials, which name the cards' maps
-//! ([`Content::foliage`]).
+//! ([`Content::foliage`]). With `--probes` it loads the arcade ([`environment::ARCADE`]) and the
+//! courtyard's ambient probe grid ([`environment::PROBES`], M1 W5), which the renderer holds one
+//! of: a new version replaces it there, and the scene takes its key hours ([`Content::probes`],
+//! [`Content::probe_hours`]).
 //!
 //! With `--stage` it keeps a copy of the character's mesh, from which the stage derives the
 //! character without its pedestal ([`Content::keep_character_mesh`]): the server keeps no mesh's
@@ -56,6 +59,7 @@ use std::sync::Arc;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack;
+use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadPriority, PackFile, PackSource,
     ReadDone, TextureAsset, Unloaded, Upload, UploadError,
@@ -152,6 +156,8 @@ struct GpuAssets {
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
+    /// The probe grid the renderer holds (it holds one), as its key hours.
+    probe_grid: Option<Held<Vec<f32>>>,
 }
 
 impl GpuAssets {
@@ -206,6 +212,14 @@ impl GpuAssets {
                     self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
                 }
             }
+        } else if let Some(grid) = upload.get::<ProbeGrid>() {
+            // The renderer holds one grid: a new version (hot reload) replaces it there.
+            if self.probe_grid.as_ref().is_some_and(|held| held.slot == slot && held.generation >= generation)
+            {
+                return Ok(());
+            }
+            renderer.set_probe_grid(Some(grid))?;
+            self.probe_grid = Some(Held { slot, generation, object: grid.key_hours().collect() });
         }
         Ok(())
     }
@@ -223,6 +237,10 @@ impl GpuAssets {
         }
         if self.meshes.get(&id).is_some_and(|held| held.slot == slot) {
             self.meshes.remove(&id);
+        }
+        // The renderer keeps the grid, as it keeps meshes, until another replaces it.
+        if self.probe_grid.as_ref().is_some_and(|held| held.slot == slot) {
+            self.probe_grid = None;
         }
     }
 }
@@ -248,6 +266,8 @@ pub(crate) struct Content {
     foliage: Vec<Handle<Mesh>>,
     /// The hard-edged outline sample, once asked for (`--hard-edges`).
     hard_edges: Option<Handle<Mesh>>,
+    /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
+    probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
     /// The sky material, once asked for.
     sky: Option<Handle<Material>>,
     server: AssetServer,
@@ -290,6 +310,7 @@ impl Content {
             fog_cards: Vec::new(),
             foliage: Vec::new(),
             hard_edges: None,
+            probes: None,
             sky: None,
             server,
             #[cfg(feature = "dev")]
@@ -480,6 +501,35 @@ impl Content {
             bush: mesh(foliage::BUSH),
             grass: mesh(foliage::GRASS),
         })
+    }
+
+    /// Loads until the arcade and the courtyard's probe grid are on `renderer`, the arcade with
+    /// its materials, and returns the arcade's mesh: the load screen of `--probes`. Both stay
+    /// loaded from then on; the grid's key hours are [`Self::probe_hours`].
+    pub fn probes(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<MeshHandle, AppInitError> {
+        // Asking again tries what failed before, as the character does.
+        let arcade =
+            self.server.load_with(environment::ARCADE, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let grid =
+            self.server.load_with(environment::PROBES, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self
+            .server
+            .finish(&arcade, |upload| assets.upload(upload, renderer, gpu))
+            .and_then(|()| self.server.finish(&grid, |upload| assets.upload(upload, renderer, gpu)));
+        self.probes = Some((arcade, grid));
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded
+            .map_err(|error| AppInitError::msg(format!("the arcade and probe grid didn't load: {error}")))?;
+        Ok(self.gpu.meshes.get(&environment::ARCADE).expect("a ready mesh was uploaded here").object.handle)
+    }
+
+    /// The hours of the time-of-day keys the uploaded probe grid was baked at, for time of day
+    /// to pick the keys a frame blends (`TimeOfDay::probe_keys`); empty without a grid.
+    pub fn probe_hours(&self) -> &[f32] {
+        self.gpu.probe_grid.as_ref().map_or(&[], |held| &held.object)
     }
 
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,

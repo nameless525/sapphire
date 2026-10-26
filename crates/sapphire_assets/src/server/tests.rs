@@ -150,6 +150,7 @@ fn uploads_are_plain_cooked_data() {
                     ));
                 }
                 AssetKind::Rig => unreachable!("rigs never go to the uploader"),
+                AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
             }
             Ok(())
         })

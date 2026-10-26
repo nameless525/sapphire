@@ -38,7 +38,7 @@ use std::ops::Range;
 use glam::camera::rh::{proj::directx, view};
 use glam::{Affine3A, Mat4, Quat, Vec3};
 
-use crate::{MaterialHandle, MeshHandle, PostParams};
+use crate::{MaterialHandle, MeshHandle, PostParams, ProbeKeys};
 
 /// Packets in a [`FramePacketRing`]: one extracting, one rendering, one spare.
 const RING_SIZE: usize = 3;
@@ -79,6 +79,11 @@ pub struct FramePacket {
     /// even stars and no clouds.
     pub sky_material: Option<MaterialHandle>,
     pub ambient: AmbientLight,
+    /// Which keys of the ambient probe grid's bake ([`Renderer::set_probe_grid`]
+    /// (crate::Renderer::set_probe_grid)) this frame's bounce light blends, resolved by time of
+    /// day from the frame's hour (M1 W5). The default blends none: a grid then lends sky light
+    /// alone.
+    pub probe_keys: ProbeKeys,
     /// Distance and height fog over the world and the sky (M1 W3), which fog cards take their
     /// light from. The default has none.
     pub fog: Fog,
@@ -175,6 +180,7 @@ impl FramePacket {
             sky_layers,
             sky_material,
             ambient,
+            probe_keys,
             fog,
             shadow_tint,
             weather,
@@ -198,6 +204,7 @@ impl FramePacket {
         *sky_layers = SkyLayers::default();
         *sky_material = None;
         *ambient = AmbientLight::default();
+        *probe_keys = ProbeKeys::default();
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
         *weather = Weather::default();

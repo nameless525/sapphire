@@ -16,7 +16,11 @@ sapphire_assets.workspace = true
 # Color math shared with the runtime (sRGB, OkLab).
 sapphire_math.workspace = true
 sapphire_reflect.workspace = true
+# The probe bake lights the sky as the renderer relights it (`ambient::sky_radiance`), under time
+# of day's keys (M1 W5).
+sapphire_render.workspace = true
 sapphire_serialize.workspace = true
+sapphire_world.workspace = true
 anyhow.workspace = true
 # `.meta` sidecars derive `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true
@@ -25,6 +29,8 @@ bytemuck.workspace = true
 ctt.workspace = true
 getrandom.workspace = true
 glam.workspace = true
+# Probe grids store half floats (M1 W5).
+half.workspace = true
 # `extras` exposes per-object custom properties, which is how Blender drives character shading parameters.
 # `extensions` exposes extensions gltf doesn't model, which is how VRM files carry theirs (M1 A6).
 # `utils` reads accessors; buffers load in `import::gltf` rather than through `import` (which

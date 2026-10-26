@@ -50,6 +50,7 @@ use std::path::{Path, PathBuf};
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
+use sapphire_assets::probes::PROBE_GRID_EXTENSION;
 use sapphire_assets::rig::RIG_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
@@ -74,7 +75,7 @@ pub const SHARED: &str = "shared";
 /// The codec a kind's blocks are compressed with (see the [module docs](self)).
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
-        AssetKind::Mesh | AssetKind::Texture => Codec::Zstd,
+        AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid => Codec::Zstd,
         AssetKind::Material | AssetKind::Rig => Codec::Lz4,
     }
 }
@@ -86,6 +87,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         TEXTURE_EXTENSION => Some(AssetKind::Texture),
         MATERIAL_EXTENSION => Some(AssetKind::Material),
         RIG_EXTENSION => Some(AssetKind::Rig),
+        PROBE_GRID_EXTENSION => Some(AssetKind::ProbeGrid),
         _ => None,
     }
 }

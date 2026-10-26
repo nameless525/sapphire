@@ -71,6 +71,8 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/environment/mist.material.ron",
     "samples/environment/haze.material.ron",
     "samples/environment/mist.png",
+    "samples/environment/arcade.glb",
+    "samples/environment/courtyard.probes.ron",
     "samples/hard_edges.glb",
     "samples/foliage/tree.glb",
     "samples/foliage/bush.glb",

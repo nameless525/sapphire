@@ -4,7 +4,9 @@
 //! followed by the files it uses, its own last, joined by newlines; M1 replaces the
 //! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
 //! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone. The shadow
-//! passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like a scene pass.
+//! passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like a scene pass. The
+//! ambient passes (M1 W5) join `ambient.wgsl`, which the environment shader shares, with their
+//! own `probes.wgsl` and `occlusion.wgsl` in one program.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -20,7 +22,8 @@
 //! A new shader file joins [`ShaderFile`] (its name and its compiled-in text) and the programs
 //! that use it (`Program::files`); a new program also needs its pipelines' owner to build them
 //! from [`ShaderSources`] and rebuild them in `Renderer::set_shader_sources`, as the mesh
-//! pipelines, the sky, post, temporal AA, the light clusters and skinning do.
+//! pipelines, the sky, post, temporal AA, the light clusters, skinning, the shadows and the
+//! ambient passes do.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -57,10 +60,18 @@ pub enum ShaderFile {
     Shadows,
     /// The foliage shader (M1 W6): its surfaces, scene prepass and shadow casters.
     Foliage,
+    /// Ambient light and occlusion as surfaces read them: the probe grid's lookup, capsule AO,
+    /// GTAO's upsample and the reflection cube (M1 W5).
+    Ambient,
+    /// The ambient passes: the sky's projection, the reflection cube's prefilter, the grid's
+    /// relight and the characters' ambient.
+    Probes,
+    /// GTAO and its denoiser.
+    Occlusion,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 18] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -76,6 +87,9 @@ impl ShaderFile {
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
+        Self::Ambient,
+        Self::Probes,
+        Self::Occlusion,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -96,6 +110,9 @@ impl ShaderFile {
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
             Self::Foliage => "foliage.wgsl",
+            Self::Ambient => "ambient.wgsl",
+            Self::Probes => "probes.wgsl",
+            Self::Occlusion => "occlusion.wgsl",
         }
     }
 
@@ -122,6 +139,9 @@ impl ShaderFile {
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
             Self::Foliage => include_str!("../shaders/foliage.wgsl"),
+            Self::Ambient => include_str!("../shaders/ambient.wgsl"),
+            Self::Probes => include_str!("../shaders/probes.wgsl"),
+            Self::Occlusion => include_str!("../shaders/occlusion.wgsl"),
         }
     }
 
@@ -151,10 +171,12 @@ pub(crate) enum Program {
     Temporal,
     Shadows,
     Foliage,
+    /// The ambient passes and GTAO (M1 W5).
+    Ambient,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -167,6 +189,7 @@ impl Program {
         Self::Temporal,
         Self::Shadows,
         Self::Foliage,
+        Self::Ambient,
     ];
 
     /// Its files, in order.
@@ -175,7 +198,7 @@ impl Program {
         match self {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
             Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
-            Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Environment],
+            Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Environment],
             Self::FogCard => &[F::Frame, F::Materials, F::FogCard],
             Self::Outline => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter, F::Outline],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
@@ -184,7 +207,8 @@ impl Program {
             Self::Post => &[F::Post],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
-            Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Foliage],
+            Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
+            Self::Ambient => &[F::Frame, F::Materials, F::Ambient, F::Probes, F::Occlusion],
         }
     }
 
@@ -203,6 +227,7 @@ impl Program {
             Self::Temporal => "temporal",
             Self::Shadows => "shadows",
             Self::Foliage => "foliage",
+            Self::Ambient => "ambient",
         }
     }
 
@@ -357,7 +382,10 @@ mod tests {
     use sapphire_rhi::wgpu::{self, naga};
 
     use super::*;
-    use crate::characters::{GpuCharacter, GpuCharacterShadow, GpuFace, GpuRig};
+    use crate::ambient::{
+        AmbientUniforms, GpuAmbientCapsule, GtaoUniforms, PrefilterUniforms, RelightUniforms,
+    };
+    use crate::characters::{GpuCharacter, GpuCharacterAmbient, GpuCharacterShadow, GpuFace, GpuRig};
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
@@ -370,7 +398,7 @@ mod tests {
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 12] = [
+    const PASSES: [(Program, &[&str]); 13] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -409,6 +437,18 @@ mod tests {
                 "fs_foliage_prepass",
                 "vs_foliage_caster",
                 "fs_foliage_caster",
+            ],
+        ),
+        (
+            Program::Ambient,
+            &[
+                "cs_sky_projection",
+                "cs_prefilter",
+                "cs_relight",
+                "cs_character_ambient",
+                "cs_gtao_depths",
+                "cs_gtao",
+                "cs_gtao_denoise",
             ],
         ),
     ];
@@ -671,6 +711,17 @@ mod tests {
             (Program::Foliage, "LocalLight", size_of::<GpuLight>()),
             (Program::Foliage, "WindState", size_of::<WindState>()),
             (Program::Foliage, "WindUniforms", size_of::<WindUniforms>()),
+            (Program::AnimeCharacter, "CharacterAmbient", size_of::<GpuCharacterAmbient>()),
+            (Program::Environment, "AmbientUniforms", size_of::<AmbientUniforms>()),
+            (Program::Environment, "AmbientCapsule", size_of::<GpuAmbientCapsule>()),
+            (Program::Ambient, "AmbientUniforms", size_of::<AmbientUniforms>()),
+            (Program::Ambient, "CharacterData", size_of::<GpuCharacter>()),
+            (Program::Ambient, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Ambient, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Ambient, "RelightUniforms", size_of::<RelightUniforms>()),
+            (Program::Ambient, "PrefilterUniforms", size_of::<PrefilterUniforms>()),
+            (Program::Ambient, "GtaoUniforms", size_of::<GtaoUniforms>()),
+            (Program::Ambient, "SkyLight", crate::ambient::SKY_LIGHT_BYTES as usize),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);
@@ -805,7 +856,8 @@ mod tests {
                     character,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient })),
+            ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
             ("CharacterShadow", offsets!(GpuCharacterShadow { probe, visibility })),
@@ -827,8 +879,32 @@ mod tests {
             ("CharacterShadowMap", offsets!(GpuCharacterMap { area, depth, tile })),
             ("ShadowCapsule", offsets!(GpuCapsule { base, top })),
         ];
-        let module = validate(Program::AnimeCharacter);
-        for (name, rust) in structs {
+        let character = validate(Program::AnimeCharacter);
+        let ambient = validate(Program::Ambient);
+        let ambient_structs = [
+            (
+                "AmbientUniforms",
+                offsets!(AmbientUniforms {
+                    grid_origin,
+                    grid_cells,
+                    grid_bricks,
+                    atlas,
+                    atlas_texel,
+                    occlusion_size,
+                    counts,
+                    capsules
+                }),
+            ),
+            ("AmbientCapsule", offsets!(GpuAmbientCapsule { base, top })),
+            ("RelightUniforms", offsets!(RelightUniforms { keys, weights, counts, offsets, atlas, slice })),
+            ("PrefilterUniforms", offsets!(PrefilterUniforms { mip, faces })),
+            ("GtaoUniforms", offsets!(GtaoUniforms { size, params })),
+        ];
+        let modules = structs
+            .into_iter()
+            .map(|s| (&character, s))
+            .chain(ambient_structs.into_iter().map(|s| (&ambient, s)));
+        for (module, (name, rust)) in modules {
             let (_, ty) = module
                 .types
                 .iter()
@@ -975,8 +1051,10 @@ mod tests {
         }
         let overrides: Vec<&str> =
             environment.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
-        // `frame.wgsl`'s shadow constants (M1 R4), which its receivers read, then its own.
+        // `frame.wgsl`'s shadow constants (M1 R4), which its receivers read, then its own: the
+        // permutation, the tier's specular model and the ambient terms (M1 W5).
         let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
+        use crate::ambient::override_constant as ambient;
         assert_eq!(
             overrides,
             [
@@ -984,7 +1062,11 @@ mod tests {
                 shadows[1],
                 "PERMUTATION_ALPHA_TEST",
                 "PERMUTATION_TRANSPARENT",
-                crate::environment::SPECULAR_CONSTANT
+                crate::environment::SPECULAR_CONSTANT,
+                ambient::PROBES,
+                ambient::PROBES_PER_VERTEX,
+                ambient::CAPSULE_AO,
+                ambient::GTAO,
             ]
         );
         // Group 3: the texture slots at their own indices, then the samplers it reads; group 2
@@ -1106,6 +1188,11 @@ mod tests {
                 override_constant::SAMPLES,
                 override_constant::WIND_LEVELS,
                 override_constant::TRANSLUCENCY,
+                // The ambient terms, by the names the environment shader's take (M1 W5).
+                crate::ambient::override_constant::PROBES,
+                crate::ambient::override_constant::PROBES_PER_VERTEX,
+                crate::ambient::override_constant::CAPSULE_AO,
+                crate::ambient::override_constant::GTAO,
             ]
         );
     }
@@ -1618,6 +1705,67 @@ mod tests {
             let stage = Some((entry_point.stage, entry_point.name.as_str()));
             naga::back::pipeline_constants::process_overrides(&shadows, &info, stage, &on)
                 .unwrap_or_else(|error| panic!("shadows.wgsl {}: {error}", entry_point.name));
+        }
+    }
+
+    /// The ambient passes' numbers as the shaders and the `ambient` module both state them, and
+    /// the environment shader with every ambient term on: what a grid and the tiers' occlusion
+    /// build.
+    #[test]
+    fn wgsl_ambient_matches_rust() {
+        use crate::ambient::{
+            ATLAS_SUB_VOLUMES, GTAO_DEPTH_MIPS, GTAO_WORKGROUP, MAX_CAPSULES, PREFILTER_WORKGROUP,
+            PROBE_EDGE_BIT, WORKGROUP, override_constant,
+        };
+        use sapphire_assets::probes::ProbeData;
+        use sapphire_assets::probes::{BRICK_CELLS, BRICK_SIDE, EMPTY_BRICK};
+        let ambient = validate(Program::Ambient);
+        let environment = validate(Program::Environment);
+        for module in [&ambient, &environment] {
+            assert_eq!(wgsl_u32(module, "MAX_AMBIENT_CAPSULES") as usize, MAX_CAPSULES);
+            assert_eq!(wgsl_u32(module, "ATLAS_SUB_VOLUMES"), ATLAS_SUB_VOLUMES);
+            assert_eq!(wgsl_u32(module, "BRICK_CELLS"), BRICK_CELLS);
+            assert_eq!(wgsl_u32(module, "BRICK_SIDE"), BRICK_SIDE);
+            assert_eq!(wgsl_u32(module, "EMPTY_BRICK"), EMPTY_BRICK);
+        }
+        assert_eq!(wgsl_u32(&ambient, "AMBIENT_WORKGROUP"), WORKGROUP);
+        assert_eq!(wgsl_u32(&ambient, "PREFILTER_WORKGROUP"), PREFILTER_WORKGROUP);
+        assert_eq!(wgsl_u32(&ambient, "GTAO_WORKGROUP"), GTAO_WORKGROUP);
+        assert_eq!(wgsl_u32(&ambient, "GTAO_DEPTH_MIPS"), GTAO_DEPTH_MIPS);
+        // The probe data's bits: the cooked valid bit, and the edge bit the upload sets in the
+        // bit cooked grids leave clear.
+        assert_eq!(wgsl_u32(&ambient, "PROBE_EDGE_BIT"), PROBE_EDGE_BIT);
+        assert_eq!(ProbeData::UNUSED_BITS, PROBE_EDGE_BIT);
+        let valid = ProbeData { free: [0; 6], valid: true }.to_bits();
+        assert_eq!(wgsl_u32(&ambient, "PROBE_VALID_BIT"), valid);
+        assert_eq!(
+            1 << (GTAO_DEPTH_MIPS - 1),
+            GTAO_WORKGROUP,
+            "one workgroup reduces to a texel of the last mip"
+        );
+        // Every ambient term on, the grid read per pixel and per vertex, in both shaders that
+        // read them: the environment's and foliage's (M1 W6).
+        let foliage = validate(Program::Foliage);
+        for (module, file) in [(&environment, "environment.wgsl"), (&foliage, "foliage.wgsl")] {
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(module)
+            .expect("validated above");
+            for per_vertex in [false, true] {
+                let on: naga::back::PipelineConstants =
+                    [override_constant::PROBES, override_constant::CAPSULE_AO, override_constant::GTAO]
+                        .into_iter()
+                        .chain(per_vertex.then_some(override_constant::PROBES_PER_VERTEX))
+                        .map(|name| (name.to_owned(), 1.0))
+                        .collect();
+                for entry_point in &module.entry_points {
+                    let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                    naga::back::pipeline_constants::process_overrides(module, &info, stage, &on)
+                        .unwrap_or_else(|error| panic!("{file} {}: {error}", entry_point.name));
+                }
+            }
         }
     }
 }

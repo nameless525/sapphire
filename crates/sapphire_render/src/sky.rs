@@ -50,9 +50,10 @@
 //!
 //! # The sky cube
 //!
-//! A cubemap of the sky alone, no geometry, for the probes and reflections that will read it:
-//! the ambient probe grid's sky term (W5), reflection-probe and screen-space-reflection misses
-//! (W4, W5, C7's reflection add). It holds the gradient, the glows and both cloud layers, and
+//! A cubemap of the sky alone, no geometry, for the probes and reflections that read it: the
+//! ambient probe grid's sky term and the reflection cube's prefiltered mips (W5, the
+//! [`ambient`](crate::ambient) module), and later reflection-probe and screen-space-reflection
+//! misses (C7's reflection add). It holds the gradient, the glows and both cloud layers, and
 //! leaves out the discs and the stars: the bodies are the key light, which shading adds
 //! analytically, so a disc would add them twice and alias at probe resolution, and stars are far
 //! smaller than its texels, so they would only cost (the night sky's light there is the
@@ -88,9 +89,8 @@
 //!   overrides, and a rain or storm sky.
 //! - **Moon phases** from the sun's direction, and sparkle shapes for the brightest stars.
 //! - **Cloud shadows** on the world from the card clouds' coverage (R4, W4).
-//! - **The cube's readers** (W4, W5): a prefiltered mip chain for rough reflections and an SH
-//!   projection for ambient; the cube becomes a graph resource once textures can outlive a
-//!   frame in it.
+//! - **A graph resource:** the cube, and the reflection cube its readers prefilter (W5), become
+//!   frame graph resources once textures can outlive a frame in it.
 
 use std::f32::consts::FRAC_PI_2;
 use std::num::NonZeroU64;
@@ -426,6 +426,11 @@ pub(crate) struct CubePass<'a> {
 }
 
 impl CubePass<'_> {
+    /// The faces it draws, which the ambient pass then projects and prefilters (M1 W5).
+    pub(crate) fn faces(&self) -> Range<u32> {
+        self.faces.clone()
+    }
+
     /// Records the faces, each its own render pass: `frame` and `view` are groups 0 and 1, the
     /// view group bound at `view_offset(face)` for each face's view.
     pub(crate) fn record(
@@ -645,7 +650,6 @@ impl Sky {
     }
 
     /// The sky cube, for the probes and reflections that read it (see the module docs).
-    #[cfg_attr(not(test), expect(dead_code, reason = "its readers arrive with W4 and W5"))]
     pub(crate) fn cube_view(&self) -> &wgpu::TextureView {
         &self.cube.view
     }

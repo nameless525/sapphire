@@ -55,6 +55,10 @@
 //! - `--shadows on|off`: the player's shadow setting (M1 R4); the tier's shadows without it. Off
 //!   draws no shadow maps and compiles the shaders as they were before shadows, which the golden
 //!   scenes from before them pin.
+//! - `--ao off|capsule|full`: the player's ambient occlusion setting (M1 W5); the tier's without
+//!   it. `capsule` is capsule AO from the characters' bodies alone, `full` adds GTAO (the
+//!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before
+//!   W5 pin, compiles the environment shader as it was before ambient occlusion.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
@@ -81,6 +85,10 @@
 //!   show the grove whole, the big tree against the key light (light through its leaves), or the
 //!   grass and a bush up close.
 //! - `--wind <0..4>`: the wind's strength instead of `--foliage`'s breeze of 1; 0 is calm.
+//! - `--probes`: the courtyard with its arcade (a gateway through the wall and a roofed loggia
+//!   along it), lit by the ambient probe grid the cooker baked for both (M1 W5) in place of the
+//!   ambient hemisphere, seen through a longer lens turned to the arcade. Implies
+//!   `--environment`.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -90,9 +98,10 @@
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
-//! - `--stage floor|pillar`: stand the character on a floor, with its pedestal split off as
-//!   environment, and with `pillar` a stone pillar toward the key light whose shadow crosses the
-//!   character, or the face rig with `--faces` (M1 R4's shadow scenes).
+//! - `--stage floor|pillar|plinth`: stand the character on a floor, with its pedestal split off
+//!   as environment, and with `pillar` a stone pillar toward the key light whose shadow crosses the
+//!   character, or the face rig with `--faces` (M1 R4's shadow scenes); with `plinth` the pedestal
+//!   is stone, an environment material, so capsule AO gathers around the feet (M1 W5).
 //! - `--light-path clustered|per-object`: override how the tier lists local lights (clustered
 //!   on desktop tiers, per-object on mobile ones).
 //! - `--time-of-day <hours>`: start the day at this hour, `0 ≤ hours < 24` (default 10, the

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::AssetId;
 use crate::material::{Material, MaterialError};
 use crate::mesh::{Mesh, MeshError};
+use crate::probes::{ProbeGrid, ProbeGridError};
 use crate::rig::{CharacterRig, RigError};
 use crate::texture::{Texture, TextureFormatError};
 
@@ -25,11 +26,13 @@ pub enum AssetKind {
     /// A character rig (`.srig`, M1 A6): [`CharacterRig`]. Animation's CPU data, never
     /// uploaded.
     Rig = 4,
+    /// An ambient probe grid (`.sprobe`, M1 W5): [`ProbeGrid`], uploaded to the renderer.
+    ProbeGrid = 5,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 4] = [Self::Mesh, Self::Texture, Self::Material, Self::Rig];
+    pub const ALL: [Self; 5] = [Self::Mesh, Self::Texture, Self::Material, Self::Rig, Self::ProbeGrid];
 
     /// The kind's position in [`Self::ALL`].
     pub const fn index(self) -> usize {
@@ -43,6 +46,7 @@ impl AssetKind {
             Self::Texture => "texture",
             Self::Material => "material",
             Self::Rig => "rig",
+            Self::ProbeGrid => "probe grid",
         }
     }
 
@@ -52,9 +56,9 @@ impl AssetKind {
         !matches!(self, Self::Rig)
     }
 
-    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes and
-    /// textures are GPU data, so their bytes go once uploaded (a new renderer has them read
-    /// again). Materials are small and CPU code reads them (live link, the editor), and rigs are
+    /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
+    /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
+    /// has them read again). Materials are small and CPU code reads them (live link, the editor), and rigs are
     /// read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(self, Self::Material | Self::Rig)
@@ -69,7 +73,7 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials, materials
-    /// on textures, textures and rigs on nothing. Every dependency is of a lower kind, so chains
+    /// on textures, textures, rigs and probe grids on nothing. Every dependency is of a lower kind, so chains
     /// are at most three long and cycles can't exist, whatever a pack claims. A new kind takes
     /// its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -83,12 +87,14 @@ impl AssetKind {
             2 => Some(Self::Texture),
             3 => Some(Self::Material),
             4 => Some(Self::Rig),
+            5 => Some(Self::ProbeGrid),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
-    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`), and returns the assets they
+    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`), and
+    /// returns the assets they
     /// reference, sorted and without repeats: a mesh's material slots bound to material assets, a
     /// material's textures. The packer records these as the asset's dependencies, and decode jobs
     /// check that a decoded asset references exactly what its pack says it does.
@@ -114,6 +120,11 @@ impl AssetKind {
             // A rig refers to its mesh's joints, morph targets and slots by index, not to assets.
             Self::Rig => {
                 CharacterRig::read(bytes)?;
+                Vec::new()
+            }
+            // A probe grid is baked from meshes and materials, but reads none of them.
+            Self::ProbeGrid => {
+                ProbeGrid::read(bytes)?;
                 Vec::new()
             }
         };
@@ -150,4 +161,6 @@ pub enum AssetError {
     Material(#[from] MaterialError),
     #[error("invalid rig")]
     Rig(#[from] RigError),
+    #[error("invalid probe grid")]
+    ProbeGrid(#[from] ProbeGridError),
 }

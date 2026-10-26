@@ -22,7 +22,9 @@
 //! chain, its fused composite with the compositing layers, and the two together against §3.3's
 //! "Bloom + tonemap + LUT", 0.7 ms on Desktop-Low and 2.5 ms on Mobile-Low), the skinning pass
 //! (`--skinned`), the sky cube's face pass, the shadow passes (the cascades drawn, the character
-//! maps and the face pass, against spec §3.3's 2 ms on desktop and 3 ms on phones) and the whole
+//! maps and the face pass, against spec §3.3's 2 ms on desktop and 3 ms on phones), the light
+//! clusters, the ambient pass (the probe grid's sky, prefilter, relight and characters, and GTAO;
+//! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low) and the whole
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
@@ -31,7 +33,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{CHARACTER_PREPASS, MAIN_PASS, PREPASSES, post, shadows, temporal};
+use sapphire_render::{CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -120,6 +122,9 @@ pub(crate) fn run(
         msaa = settings.msaa.sample_count(),
         taa = settings.temporal,
         shadows = settings.shadows.is_some(),
+        ambient_occlusion = ?settings.ambient_occlusion,
+        environment = options.environment,
+        probes = options.probes,
         stage = ?options.stage,
         lights = options.lights,
         skinned = options.skinned,
@@ -162,7 +167,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
     let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut shadow) =
         (zero, zero, zero, zero, zero, zero);
-    let mut character_prepass = zero;
+    let (mut character_prepass, mut clusters, mut ambient_pass) = (zero, zero, zero);
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -182,7 +187,8 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
         // runs are its inputs, timed apart; post's composite runs at the output's size either way,
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
-        let groups: [(&[&str], &mut Sums); 7] = [
+        // The ambient pass (M1 W5): the grid's work and GTAO.
+        let groups: [(&[&str], &mut Sums); 9] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -190,6 +196,8 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
             (&[CHARACTER_PREPASS], &mut character_prepass),
             (&temporal::PASSES, &mut taa),
             (&shadows::PASSES, &mut shadow),
+            (&["light clusters"], &mut clusters),
+            (&ambient::PASSES, &mut ambient_pass),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -244,6 +252,12 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_shadows_us = format_args!("{:.1}", micros(shadow.0, shadow.2)),
         gpu_shadows_duration_us = format_args!("{:.1}", micros(shadow.1, shadow.2)),
         shadow_frames = shadow.2,
+        gpu_light_clusters_us = format_args!("{:.1}", micros(clusters.0, clusters.2)),
+        light_cluster_frames = clusters.2,
+        gpu_ambient_us = format_args!("{:.1}", micros(ambient_pass.0, ambient_pass.2)),
+        ambient_frames = ambient_pass.2,
+        gpu_clustering_ao_us =
+            format_args!("{:.1}", micros(clusters.0, clusters.2) + micros(ambient_pass.0, ambient_pass.2)),
         "bench gpu",
     );
     Ok(())

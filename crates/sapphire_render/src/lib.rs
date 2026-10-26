@@ -240,12 +240,18 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces and shadows, 160 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows and ambient, 224 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
 //! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
 //! | 0 frame | 8, 9: textures | fragment | the character prepass's depth and IDs (`texture_depth_2d`, `texture_2d<u32>`; M1 C5) | the character prepass |
 //! | 0 frame | 10: sampler | fragment | nearest, clamped: the character prepass's gathers (non-filtering) | — |
+//! | 0 frame | 11: uniform | vertex, fragment | ambient (`AmbientUniforms`): the probe grid's placement and atlas layout, GTAO's texture size, the capsules, the sky faces the projection reads | the uploads pass |
+//! | 0 frame | 12: 3D texture | vertex, fragment | the probe grid's relit atlas (one black texel without a grid) | the ambient pass's relight |
+//! | 0 frame | 13: 3D `u32` texture | vertex, fragment | the probe grid's brick table | grid upload |
+//! | 0 frame | 14: cube texture | fragment | the reflection cube's roughness mips (the sky cube without a grid) | the ambient pass's prefilter |
+//! | 0 frame | 15: texture | fragment | GTAO's visibility and depth at half resolution (one open texel without GTAO) | the ambient pass's GTAO |
+//! | 0 frame | 16: sampler | vertex, fragment | linear clamped: the atlas and the reflection cube | — |
 //! | 1 view | uniform, dynamic offset | vertex, fragment, compute | matrices (this frame's and the last drawn one's view-projection), camera, viewport | `record` |
 //! | 2 scene | 0: storage | vertex | instance transforms (current and last drawn) and character entries, by slot | `prepare`, changed instances only, and once more when they come to rest |
 //! | 2 scene | 1: storage | vertex, fragment | the drawn family's material blocks, by slot: a scene group per family meshes draw with, each its own layout | the uploads pass, changed slots only |
@@ -283,7 +289,12 @@
 //! group's uniforms carry the jitter (appended in M1 R7: the unjittered `clip_from_world` and
 //! the jitter itself). The light-cluster pass (`shaders/clusters.wgsl`)
 //! binds its own group 0 (the frame constants, the lights read-only and the cluster lists
-//! read-write: the same buffers) and the view group as group 1.
+//! read-write: the same buffers) and the view group as group 1. The ambient pass's dispatches
+//! (`shaders/probes.wgsl`, `occlusion.wgsl`, M1 W5) bind an "ambient frame" group 0 of their
+//! own (the frame constants and bindings 11–13 and 16, without the characters, which the
+//! character dispatch binds read-write as its group 1) and their own group 3, or the view group
+//! and group 2 for GTAO: at most two storage buffers a dispatch (the relight's grid words and sky
+//! light).
 //!
 //! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
 //! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 4 (materials, lights, light
@@ -294,13 +305,16 @@
 //! faces' head basis and expressions (C3, beside the rig), the environment's shadow over the face
 //! (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
 //! uniforms or textures: the shadows' uniforms, cascades and character atlas (R4), the character
-//! prepass's targets (C5), probes. Group 3 is the last of the 4 bind groups the
-//! floor allows; the prepasses, which read no material textures, leave it out. The anime
-//! character family binds 8 of the 16 sampled textures and 3 of the 16 samplers a fragment stage
-//! gets (trilinear, ramp, and nearest for material IDs), leaving 8 textures for frame-wide ones:
-//! shadows take two (the cascades and the character atlas) and a comparison sampler (R4), and
-//! the character prepass two (its depth and IDs) and a nearest sampler (C5), which leaves 4
-//! (probes, the sky cube) and 11 samplers; the other families bind 1 to 5 (the environment's
+//! prepass's targets (C5), the ambient uniforms, the probe grid's atlas and brick table, the
+//! reflection cube and GTAO (W5), whose relight packs the grid's data into one storage buffer
+//! under the same floor. Group 3 is the last of the 4 bind groups the floor allows; the
+//! prepasses, which read no material textures, leave it out. The anime character family binds 8
+//! of the 16 sampled textures and 3 of the 16 samplers a fragment stage gets (trilinear, ramp,
+//! and nearest for material IDs), leaving 8 textures for frame-wide ones: shadows take two (the
+//! cascades and the character atlas) and a comparison sampler (R4), the character prepass two
+//! (its depth and IDs) and a nearest sampler (C5), and W5's ambient the last four (the atlas, the
+//! brick table, the reflection cube and GTAO) and a linear sampler: every sampled texture a
+//! fragment stage gets, and 10 samplers left; the other families bind 1 to 5 (the environment's
 //! pipelines read five textures and two samplers, and the same four storage buffers as the anime
 //! character's, its own family's in place of that one's). Local lights take
 //! only two fragment bindings because both light paths share one list buffer layout, a count and
@@ -671,6 +685,7 @@
 //!   with the warm-up (spec §5.12), instead of on the frame that applies an edit; WESL imports
 //!   replace the concatenation.
 
+pub mod ambient;
 mod bind_cache;
 mod bounds;
 mod buffer;
@@ -699,8 +714,11 @@ mod sky;
 pub mod temporal;
 pub mod texture;
 
+pub use ambient::{
+    AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
+};
 pub use character_prepass::CharacterPrepassStats;
-pub use environment::{EnvironmentSettings, EnvironmentSpecular};
+pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{

@@ -1,6 +1,6 @@
-//! The stage (`--stage floor|pillar`, M1 R4): a floor under the character and an environment
-//! caster beside it, generated in code like the swatches and the stalk, so the sandbox has
-//! shadows to look at in a controlled frame: a character's contact shadow on the ground, an
+//! The stage (`--stage floor|pillar|plinth`, M1 R4): a floor under the character and an
+//! environment caster beside it, generated in code like the swatches and the stalk, so the sandbox
+//! has shadows to look at in a controlled frame: a character's contact shadow on the ground, an
 //! environment shadow across a character and over faces. The courtyard (`--environment`, W4)
 //! shows them in a world.
 //!
@@ -11,6 +11,9 @@
 //!   draws exactly as before), and the pedestal is an environment instance of its own, at rest
 //!   while the figure turns: it receives the character's contact shadow, and casts its own.
 //! - **The floor**, [`FLOOR_SIZE`] meters square, at the pedestal's foot.
+//! - **A plinth** (`plinth`, M1 W5) in place of the pedestal: a box of the pedestal's size in the
+//!   pillar's stone, an environment material, so the character stands on the world's ground and
+//!   the environment's capsule AO gathers around its feet, as it does where characters walk.
 //! - **A pillar** (`pillar`), a square stone post standing on the floor toward the key light
 //!   from the subject (the character, or the face rig with `--faces`), sized so its shadow falls
 //!   across it: on the character from its feet to its chest, so the edge crosses its body; over
@@ -23,7 +26,7 @@
 
 use sapphire_assets::material::{EnvironmentMaterial, Material, Terminator};
 use sapphire_assets::mesh::{
-    MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+    Bounds, MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_math::{Mat4, Quat, Vec3};
@@ -40,6 +43,8 @@ const PEDESTAL_SLOT: &str = "Pedestal";
 pub(crate) enum StageLayout {
     Floor,
     Pillar,
+    /// The floor, with the pedestal in stone (M1 W5).
+    Plinth,
 }
 
 impl StageLayout {
@@ -48,6 +53,7 @@ impl StageLayout {
         match name {
             "floor" => Some(Self::Floor),
             "pillar" => Some(Self::Pillar),
+            "plinth" => Some(Self::Plinth),
             _ => None,
         }
     }
@@ -59,17 +65,19 @@ pub(crate) enum Piece {
     Floor,
     Pillar,
     Pedestal,
+    /// The pillar's box, sized and placed as the pedestal.
+    Plinth,
 }
 
 /// The stage's meshes on a renderer: its own, and the character split from its pedestal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StageMeshes {
     pub floor: MeshHandle,
     pub pillar: MeshHandle,
     /// The character without its pedestal, which the turntable draws on the stage.
     pub figure: MeshHandle,
-    /// The pedestal alone; `None` for a character without one.
-    pub pedestal: Option<MeshHandle>,
+    /// The pedestal alone, and its object-space bounds; `None` for a character without one.
+    pub pedestal: Option<(MeshHandle, Bounds)>,
 }
 
 impl StageMeshes {
@@ -77,8 +85,8 @@ impl StageMeshes {
     pub fn get(&self, piece: Piece) -> MeshHandle {
         match piece {
             Piece::Floor => self.floor,
-            Piece::Pillar => self.pillar,
-            Piece::Pedestal => self.pedestal.expect("a pedestal piece is placed only with a pedestal"),
+            Piece::Pillar | Piece::Plinth => self.pillar,
+            Piece::Pedestal => self.pedestal.expect("a pedestal piece is placed only with a pedestal").0,
         }
     }
 }
@@ -104,7 +112,10 @@ pub(crate) fn upload_stage(renderer: &mut Renderer, character: &Mesh) -> Result<
         floor: upload(renderer, &floor_mesh())?,
         pillar: upload(renderer, &pillar_mesh())?,
         figure: upload(renderer, &figure)?,
-        pedestal: pedestal.as_ref().map(|pedestal| upload(renderer, pedestal)).transpose()?,
+        pedestal: pedestal
+            .as_ref()
+            .map(|mesh| Ok::<_, AppInitError>((upload(renderer, mesh)?, drawn_bounds(mesh))))
+            .transpose()?,
     })
 }
 
@@ -120,6 +131,16 @@ pub(crate) fn upload(renderer: &mut Renderer, mesh: &Mesh) -> Result<MeshHandle,
     let mesh = Mesh::read(&bytes)?;
     let materials = renderer.upload_embedded_materials(mesh)?;
     Ok(renderer.upload_mesh(mesh, &materials)?)
+}
+
+/// The object-space bounds of the vertices `mesh`'s first LOD draws: a part split by
+/// [`split_pedestal`] keeps the whole mesh's streams, and with them their bounds.
+fn drawn_bounds(mesh: &Mesh) -> Bounds {
+    let drawn = mesh.lods[0].submeshes.iter().flat_map(|submesh| {
+        let first = submesh.first_index as usize;
+        mesh.indices[first..first + submesh.index_count as usize].iter()
+    });
+    Bounds::enclosing(drawn.filter_map(|&index| Some(mesh.streams.vertex(index as usize)?.position)))
 }
 
 /// `mesh` without its pedestal's submeshes, and the pedestal's alone (`None` without a
@@ -141,11 +162,12 @@ fn split_pedestal(mesh: &Mesh) -> (Mesh, Option<Mesh>) {
 }
 
 /// Where each piece of `layout` stands around `subject`, for a key light toward `toward_light`:
-/// the floor first, then the pedestal (with `pedestal`), then the pillar.
+/// the floor first, then the pedestal or the plinth (with `pedestal`, the pedestal's bounds),
+/// then the pillar.
 pub(crate) fn placements(
     layout: StageLayout,
     subject: &Subject,
-    pedestal: bool,
+    pedestal: Option<Bounds>,
     toward_light: Vec3,
 ) -> Vec<(Piece, Mat4)> {
     let floor = subject.base.y;
@@ -157,8 +179,18 @@ pub(crate) fn placements(
             Vec3::new(subject.base.x, floor, subject.base.z),
         ),
     )];
-    if pedestal {
-        pieces.push((Piece::Pedestal, Mat4::IDENTITY));
+    match (pedestal, layout) {
+        (Some(bounds), StageLayout::Plinth) => {
+            // The pillar's unit box stands on its base's middle.
+            let (min, max) = (Vec3::from(bounds.min), Vec3::from(bounds.max));
+            let base = Vec3::new(0.5 * (min.x + max.x), min.y, 0.5 * (min.z + max.z));
+            pieces.push((
+                Piece::Plinth,
+                Mat4::from_scale_rotation_translation(max - min, Quat::IDENTITY, base),
+            ));
+        }
+        (Some(_), _) => pieces.push((Piece::Pedestal, Mat4::IDENTITY)),
+        (None, _) => {}
     }
     // The light's direction across the floor, and how fast its rays climb per meter across it.
     let toward = toward_light.normalize_or(Vec3::Y);
@@ -267,6 +299,9 @@ fn mesh(name: &str, vertices: &[Vertex], indices: Vec<u32>, material: &Environme
 mod tests {
     use super::*;
 
+    /// The sample mannequin's pedestal, roughly.
+    const PEDESTAL: Bounds = Bounds { min: [-0.5, 0.0, -0.4], max: [0.5, 0.2, 0.4] };
+
     const SUBJECT: Subject = Subject {
         base: Vec3::new(0.0, 0.0, 0.0),
         shade_height: 1.4,
@@ -322,6 +357,12 @@ mod tests {
             (mesh.streams.clone(), mesh.materials.clone())
         );
         assert_eq!(pedestal.streams, mesh.streams, "the streams as cooked");
+        // The pillar's box: its first two faces (+X, −X) for the figure, the other four for the
+        // pedestal, which together still span the whole box.
+        assert_eq!(drawn_bounds(&pedestal), Bounds { min: [-0.5, 0.0, -0.5], max: [0.5, 1.0, 0.5] });
+        let mut sides = pedestal.clone();
+        sides.lods[0].submeshes = vec![Submesh { first_index: 0, index_count: 6, material: 0 }];
+        assert_eq!(drawn_bounds(&sides), Bounds { min: [0.5, 0.0, -0.5], max: [0.5, 1.0, 0.5] }, "+X alone");
         let (whole, none) = split_pedestal(&floor_mesh());
         assert_eq!((whole, none), (floor_mesh(), None), "no pedestal: the whole mesh");
     }
@@ -329,7 +370,7 @@ mod tests {
     #[test]
     fn the_pillar_stands_toward_the_light_and_shades_the_subject_to_its_height() {
         let toward = Vec3::new(-0.55, 0.7, 0.45).normalize();
-        let pieces = placements(StageLayout::Pillar, &SUBJECT, true, toward);
+        let pieces = placements(StageLayout::Pillar, &SUBJECT, Some(PEDESTAL), toward);
         assert_eq!(
             pieces.iter().map(|(piece, _)| *piece).collect::<Vec<_>>(),
             [Piece::Floor, Piece::Pedestal, Piece::Pillar]
@@ -343,13 +384,36 @@ mod tests {
         let at_pillar =
             ray + toward * (SUBJECT.pillar_distance / Vec3::new(toward.x, 0.0, toward.z).length());
         assert!((at_pillar.y - (at.y + scale.y)).abs() < 1e-3);
-        assert_eq!(placements(StageLayout::Floor, &SUBJECT, false, toward).len(), 1);
+        assert_eq!(placements(StageLayout::Floor, &SUBJECT, None, toward).len(), 1);
+    }
+
+    #[test]
+    fn the_plinth_takes_the_pedestals_place_and_size() {
+        let toward = Vec3::new(-0.55, 0.7, 0.45).normalize();
+        let pieces = placements(StageLayout::Plinth, &SUBJECT, Some(PEDESTAL), toward);
+        assert_eq!(pieces.iter().map(|(piece, _)| *piece).collect::<Vec<_>>(), [Piece::Floor, Piece::Plinth]);
+        // The pillar's unit box, placed: it spans the pedestal's bounds exactly.
+        let place = pieces[1].1;
+        let (min, max) = (
+            place.transform_point3(Vec3::new(-0.5, 0.0, -0.5)),
+            place.transform_point3(Vec3::new(0.5, 1.0, 0.5)),
+        );
+        assert!(
+            min.abs_diff_eq(Vec3::from(PEDESTAL.min), 1e-6)
+                && max.abs_diff_eq(Vec3::from(PEDESTAL.max), 1e-6)
+        );
+        assert_eq!(
+            placements(StageLayout::Plinth, &SUBJECT, None, toward).len(),
+            1,
+            "no pedestal, no plinth"
+        );
     }
 
     #[test]
     fn layouts_are_named_as_the_command_line_spells_them() {
         assert_eq!(StageLayout::from_name("floor"), Some(StageLayout::Floor));
         assert_eq!(StageLayout::from_name("pillar"), Some(StageLayout::Pillar));
+        assert_eq!(StageLayout::from_name("plinth"), Some(StageLayout::Plinth));
         assert_eq!(StageLayout::from_name("arena"), None);
     }
 }

@@ -484,3 +484,40 @@ fn aligned(bytes: &[u8]) -> AlignedVec {
     aligned.extend_from_slice(bytes);
     aligned
 }
+
+#[test]
+fn a_probe_grid_uploads_and_reloads_in_place() {
+    use crate::probes::{ProbeGrid, one_brick};
+    let grid_pack = |keys: usize| {
+        let bytes = one_brick(keys).to_cooked().unwrap().into_vec();
+        write_pack(vec![packed(id(30), AssetKind::ProbeGrid, &bytes)]).unwrap()
+    };
+    let source = Arc::new(MemoryPackSource::new());
+    source.insert("shared", grid_pack(2));
+    let mut server = AssetServer::new(source.clone(), unlimited());
+    server.mount("shared").unwrap();
+    let grid: Handle<ProbeGrid> = server.load(id(30)).unwrap();
+    let mut seen = Vec::new();
+    server
+        .finish(&grid, |upload| {
+            let read = upload.get::<ProbeGrid>().expect("a probe grid, read in place");
+            seen.push((upload.slot(), upload.generation(), read.key_hours().count()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(seen.len(), 1);
+    // Its bytes go once uploaded, as a mesh's do: the renderer holds the grid.
+    assert!(server.get(&grid).is_none());
+
+    // A new bake: the same slot at the next generation, so the app replaces its copy.
+    source.insert("shared", grid_pack(3));
+    assert_eq!(server.remount("shared").unwrap().changed, 1);
+    let mut reloaded = Vec::new();
+    settle(&mut server, |upload| {
+        let read = upload.get::<ProbeGrid>().expect("a probe grid");
+        reloaded.push((upload.slot(), upload.generation(), read.key_hours().count()));
+        Ok(())
+    });
+    assert_eq!(reloaded, [(seen[0].0, 1, 3)]);
+    assert_eq!(server.generation(&grid), 1);
+}

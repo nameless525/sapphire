@@ -38,15 +38,27 @@
 //   light's diffuse: a saturated, slightly warm band along the boundary, as anime backgrounds
 //   paint it. Authored ramps end in white, so only the transition takes it.
 // - **Ambient light** is the frame's sky-and-ground hemisphere (`ambient_light`, time of day's,
-//   shared with the characters' GI), occluded by vertex AO, the mask's AO and its cavity.
+//   shared with the characters' GI), occluded by vertex AO, the mask's AO and its cavity. Where
+//   an ambient probe grid lights the point (M1 W5, ambient.wgsl; `AMBIENT_PROBES`), the grid's
+//   irradiance replaces the hemisphere, faded in over the last cell before an empty brick or the
+//   grid's edge: the sky seen past the geometry around the point, relit as it changes, plus the
+//   bounce of the time-of-day keys the frame blends. The tier reads it at each pixel or, on
+//   Mobile-Low, at each vertex (`AMBIENT_PROBES_PER_VERTEX`, `ProbeLookup`), the triangle
+//   interpolating its irradiance. Ambient occlusion then darkens it (`CAPSULE_AO`, `GTAO`): the
+//   characters' bodies as capsules, and GTAO's contact-scale term, both through Jimenez's
+//   multi-bounce fit by the surface's albedo; the grid's sky visibility carries occlusion beyond
+//   GTAO's radius.
 // - **Specular** is GGX with the roughness remapped into the material's range (WuWa keeps
 //   reflective surfaces under 0.4) and each light's highlight held under the material's
 //   specular clamp, a multiple of the light's radiance. Reflectance is 4% for dielectrics and
 //   the albedo for metals, times the mask's specular mask, which takes the grazing reflection
 //   down with it, so a masked texel is matte on every tier. The ambient hemisphere also reflects,
 //   seen along the reflection vector through Karis's analytic environment BRDF, so metals and
-//   glossy surfaces keep a sky-colored sheen until reflection probes and the sky cube's
-//   prefiltered mips arrive (W5). Per tier (`ENVIRONMENT_SPECULAR`, `EnvironmentSpecular`):
+//   glossy surfaces keep a sky-colored sheen. Where a probe grid lights the point (W5), the
+//   reflection is the sky cube's prefiltered mip for the roughness where the grid's sky
+//   visibility along the reflection vector sees the sky, and the grid's irradiance from that
+//   direction where geometry blocks it; ambient occlusion takes it down by Lagarde's specular
+//   occlusion. Per tier (`ENVIRONMENT_SPECULAR`, `EnvironmentSpecular`):
 //   - full (desktop): GGX distribution, height-correlated Smith visibility, Schlick Fresnel;
 //   - approximate (Mobile-High): the GGX distribution with visibility and Fresnel folded into
 //     `1 / (4 · max(L·H², 0.1) · (α + 0.5))` at the reflectance (Zioma, "Optimizing PBR for
@@ -99,6 +111,14 @@ const MIN_ROUGHNESS: f32 = 0.045;
 override PERMUTATION_ALPHA_TEST: bool = false;
 override PERMUTATION_TRANSPARENT: bool = false;
 override ENVIRONMENT_SPECULAR: u32 = 2u;
+// The ambient terms beyond the hemisphere (M1 W5, `ambient::override_constant`): a probe grid,
+// set while the renderer has one, read per vertex rather than per pixel on the tiers that say so
+// (`ProbeLookup`), and the tier's capsule AO and GTAO. Pipelines without them compile to the
+// shader as it was before them.
+override AMBIENT_PROBES: bool = false;
+override AMBIENT_PROBES_PER_VERTEX: bool = false;
+override CAPSULE_AO: bool = false;
+override GTAO: bool = false;
 
 // The frame's light lists: a list per cluster or per instance slot (see lights.wgsl).
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
@@ -128,6 +148,9 @@ struct EnvironmentVaryings {
     @location(4) @interpolate(flat) material: u32,
     // The instance's slot: its light list on the per-object path.
     @location(5) @interpolate(flat) instance: u32,
+    // With the grid read per vertex: its irradiance along the vertex's normal (rgb) and how much
+    // it speaks for the vertex (a). Zero otherwise.
+    @location(6) probe: vec4<f32>,
 }
 
 @vertex
@@ -143,6 +166,12 @@ fn vs_environment(packed: PackedVertex, draw: DrawRecord) -> EnvironmentVaryings
     out.occlusion = vertex.color.r;
     out.material = draw.material;
     out.instance = draw.instance;
+    if AMBIENT_PROBES && AMBIENT_PROBES_PER_VERTEX {
+        let normal = safe_normalize(out.world_normal);
+        let view_dir = safe_normalize(view.position.xyz - out.world_position);
+        let grid = grid_lookup(out.world_position, normal, view_dir);
+        out.probe = vec4<f32>(grid_irradiance(grid, normal), grid.weight);
+    }
     return out;
 }
 
@@ -238,10 +267,19 @@ fn specular(surface: EnvironmentSurface, l: vec3<f32>, n_dot_l: f32) -> vec3<f32
     return min(reflected * saturate(n_dot_l), vec3<f32>(surface.specular_clamp)) * surface.cavity;
 }
 
-// The ambient hemisphere's light reflected toward the camera: the hemisphere seen along the
-// reflection vector, through Karis's analytic fit of the split-sum environment BRDF
+// What the ambient light at a point is made of beyond the frame's hemisphere (M1 W5), read once
+// per pixel: the probe grid there, and what ambient occlusion leaves of the light.
+struct EnvironmentAmbient {
+    grid: GridSample,
+    // Capsule AO × GTAO's visibility.
+    visibility: f32,
+}
+
+// The ambient light reflected toward the camera: the hemisphere, or where a probe grid lights
+// the point (read per pixel) the sky's prefiltered reflection past the geometry the grid sees
+// (see the top of this file), through Karis's analytic fit of the split-sum environment BRDF
 // ("Physically Based Shading on Mobile", 2014). Zero with specular off.
-fn ambient_specular(surface: EnvironmentSurface) -> vec3<f32> {
+fn ambient_specular(surface: EnvironmentSurface, sources: EnvironmentAmbient) -> vec3<f32> {
     if ENVIRONMENT_SPECULAR == ENVIRONMENT_SPECULAR_OFF {
         return vec3<f32>(0.0);
     }
@@ -254,7 +292,40 @@ fn ambient_specular(surface: EnvironmentSurface) -> vec3<f32> {
     let reflected = reflect(-surface.view_dir, surface.normal);
     // The fit's bias dips just under 0 for rough surfaces that reflect nothing.
     let brdf = max(surface.f0 * scale_bias.x + scale_bias.y * grazing_reflectance(surface.f0), vec3<f32>(0.0));
-    return ambient_light(reflected) * brdf * surface.occlusion * surface.cavity;
+    var light = ambient_light(reflected);
+    if AMBIENT_PROBES && !AMBIENT_PROBES_PER_VERTEX {
+        let mip = surface.roughness * ambient.atlas_texel.w;
+        let sky = textureSampleLevel(reflection_cube, ambient_sampler, reflected, mip).rgb;
+        let open = grid_sky_visibility(sources.grid, reflected);
+        let probed = mix(grid_irradiance(sources.grid, reflected), sky, open);
+        light = mix(light, probed, sources.grid.weight);
+    }
+    var specular_light = light * brdf * surface.occlusion * surface.cavity;
+    if CAPSULE_AO || GTAO {
+        specular_light *= specular_occlusion(n_dot_v, sources.visibility, surface.roughness);
+    }
+    return specular_light;
+}
+
+// The ambient light's sources at the point (`EnvironmentAmbient`): the grid where
+// `AMBIENT_PROBES` reads it per pixel, capsule AO and GTAO where on, each skipped without its
+// constant.
+fn environment_ambient(in: EnvironmentVaryings, surface: EnvironmentSurface) -> EnvironmentAmbient {
+    var sources: EnvironmentAmbient;
+    sources.visibility = 1.0;
+    if AMBIENT_PROBES && !AMBIENT_PROBES_PER_VERTEX {
+        sources.grid = grid_lookup(in.world_position, surface.normal, surface.view_dir);
+    }
+    if CAPSULE_AO {
+        sources.visibility *= capsule_occlusion(in.world_position, surface.normal);
+    }
+    // Transparent surfaces write no prepass depth, so GTAO measured what lies behind them; they
+    // take capsule AO alone.
+    if GTAO && !PERMUTATION_TRANSPARENT {
+        let view_depth = -(view.view_from_world * vec4<f32>(in.world_position, 1.0)).z;
+        sources.visibility *= gtao_visibility(in.clip_position.xy, view_depth);
+    }
+    return sources;
 }
 
 // Screen-space derivatives of the shading point, taken once per pixel in uniform control flow:
@@ -390,9 +461,22 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     }
     let keep = frame.shadow_tint.rgb * environment_materials[material].shadow_tint.rgb;
     let key_light = key_radiance * mix(keep, vec3<f32>(1.0), lit * wrapped(n_dot_l, surface.wrap)) * band;
-    let ambient = ambient_light(surface.normal) * (surface.occlusion * surface.cavity);
-    var color = surface.diffuse * (key_light + ambient)
-        + key_radiance * specular(surface, key_direction, n_dot_l) * lit + ambient_specular(surface);
+    // The ambient light: the hemisphere, or the probe grid's, and its occlusion (M1 W5).
+    let sources = environment_ambient(in, surface);
+    var irradiance = ambient_light(surface.normal);
+    if AMBIENT_PROBES {
+        var probed = vec4<f32>(grid_irradiance(sources.grid, surface.normal), sources.grid.weight);
+        if AMBIENT_PROBES_PER_VERTEX {
+            probed = in.probe;
+        }
+        irradiance = mix(irradiance, probed.rgb, probed.a);
+    }
+    var ambient_diffuse = irradiance * (surface.occlusion * surface.cavity);
+    if CAPSULE_AO || GTAO {
+        ambient_diffuse *= multibounce(sources.visibility, surface.diffuse);
+    }
+    var color = surface.diffuse * (key_light + ambient_diffuse)
+        + key_radiance * specular(surface, key_direction, n_dot_l) * lit + ambient_specular(surface, sources);
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {
         let list = light_list(in.clip_position, in.instance);

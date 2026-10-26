@@ -28,8 +28,12 @@
 //   `pow(saturate(dot(-L, V)), power)`, strongest on the side facing away from it and at the
 //   canopy's edges (the gradient's tip), scaled by the mask map's thickness (R) and kept out of
 //   cast shadow: a canopy against a low sun glows. A tier can turn it off (`FOLIAGE_TRANSLUCENCY`).
-// - **Ambient light,** the frame's hemisphere, occluded as above; **distance desaturation** of the
-//   albedo, as the environment's.
+// - **Ambient light,** as the environment's (M1 W5, ambient.wgsl): the frame's hemisphere, or
+//   where a probe grid lights the point its irradiance along the volume normal, read per pixel or,
+//   on Mobile-Low, per vertex (`AMBIENT_PROBES_PER_VERTEX`); occluded as above, then by capsule AO
+//   and GTAO (`CAPSULE_AO`, `GTAO`) through Jimenez's multi-bounce fit by the albedo. GTAO sees
+//   the cards as the scene prepass cuts them, so their holes occlude nothing. **Distance
+//   desaturation** of the albedo, as the environment's.
 // - **Local lights** (R5's lists) light the diffuse through the same terminator and wrap.
 // - **Fog** (M1 W3) covers the final color, as it does every world pass's (`fogged` in
 //   frame.wgsl): distance and height fog colored by the sky's horizon.
@@ -92,6 +96,14 @@ override PERMUTATION_ALPHA_TEST: bool = false;
 override FOLIAGE_SAMPLES: u32 = 4u;
 override FOLIAGE_WIND_LEVELS: u32 = 3u;
 override FOLIAGE_TRANSLUCENCY: bool = true;
+// The ambient terms beyond the hemisphere, as the environment shader's (M1 W5,
+// `ambient::override_constant`): a probe grid, read per vertex on the tiers that say so, and the
+// tier's capsule AO and GTAO. Pipelines without them compile to the shader as it was without
+// them.
+override AMBIENT_PROBES: bool = false;
+override AMBIENT_PROBES_PER_VERTEX: bool = false;
+override CAPSULE_AO: bool = false;
+override GTAO: bool = false;
 
 // The wind at one frame (`foliage::WindState`).
 struct WindState {
@@ -145,6 +157,9 @@ struct FoliageVaryings {
     // two triangles may number differently; where an edge crosses its diagonal the two dither
     // apart, which covers the same share of the pixel on average.
     @location(6) @interpolate(flat) card: u32,
+    // With the grid read per vertex (M1 W5): its irradiance along the vertex's volume normal (rgb)
+    // and how much it speaks for the vertex (a). Zero otherwise.
+    @location(7) probe: vec4<f32>,
 }
 
 // Cycles of an oscillator at `hz` at wrapped time `t`, in [0, 1). The frequency is rounded to a
@@ -234,6 +249,11 @@ fn vs_foliage(
     out.material = draw.material;
     out.instance = draw.instance;
     out.card = index;
+    if AMBIENT_PROBES && AMBIENT_PROBES_PER_VERTEX {
+        let normal = safe_normalize(out.world_normal);
+        let grid = grid_lookup(world, normal, safe_normalize(view.position.xyz - world));
+        out.probe = vec4<f32>(grid_irradiance(grid, normal), grid.weight);
+    }
     return out;
 }
 
@@ -296,6 +316,33 @@ fn foliage_local_lights(
     return diffuse;
 }
 
+// The ambient light reaching the foliage point `in` with volume normal `n`, seen along `v`, for
+// `albedo` (M1 W5; see the top of this file): the hemisphere or the probe grid's irradiance, then
+// capsule AO and GTAO, each skipped without its constant.
+fn foliage_ambient(in: FoliageVaryings, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    var irradiance = ambient_light(n);
+    if AMBIENT_PROBES {
+        var probed = in.probe;
+        if !AMBIENT_PROBES_PER_VERTEX {
+            let grid = grid_lookup(in.world_position, n, v);
+            probed = vec4<f32>(grid_irradiance(grid, n), grid.weight);
+        }
+        irradiance = mix(irradiance, probed.rgb, probed.a);
+    }
+    if CAPSULE_AO || GTAO {
+        var visibility = 1.0;
+        if CAPSULE_AO {
+            visibility *= capsule_occlusion(in.world_position, n);
+        }
+        if GTAO {
+            let view_depth = -(view.view_from_world * vec4<f32>(in.world_position, 1.0)).z;
+            visibility *= gtao_visibility(in.clip_position.xy, view_depth);
+        }
+        irradiance *= multibounce(visibility, albedo);
+    }
+    return irradiance;
+}
+
 // A foliage pixel: its lit color and its coverage, before the alpha test.
 struct FoliageShade {
     color: vec3<f32>,
@@ -344,7 +391,7 @@ fn shade_foliage(in: FoliageVaryings) -> FoliageShade {
     let lit = light_step(0.0, max(width, 0.5 * fwidth(x)), x);
     let keep = frame.shadow_tint.rgb * foliage_materials[material].shadow_tint.rgb;
     let key = frame.sun_radiance.rgb * mix(keep, vec3<f32>(1.0), lit * wrapped(n_dot_l, shading.y));
-    var color = albedo * (key + ambient_light(n) * occlusion);
+    var color = albedo * (key + foliage_ambient(in, n, v, albedo) * occlusion);
     if FOLIAGE_TRANSLUCENCY {
         // Light through thin leaves seen against the key light: strongest facing away from it and
         // at the canopy's edges, never through a cast shadow.

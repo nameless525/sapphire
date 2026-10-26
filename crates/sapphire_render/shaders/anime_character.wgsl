@@ -39,7 +39,9 @@
 // as `key_direction` and `key_radiance`, and every key-light term takes it from there.
 //
 // Stylized GI (`character_gi`, WuWa's character GI) stands in for plain ambient light: the
-// frame's ambient hemisphere (time of day's) at a normal turned toward a sphere around the head
+// character's ambient hemisphere (its entry's `CharacterAmbient`: time of day's, or since M1 W5
+// the probe grid's light around its body, low frequency) at a normal turned toward a sphere
+// around the head
 // by the region's sphere weight (faces, hair) and bent toward the camera, so it stays low
 // frequency; then an HSV clamp of its saturation and value, the rig's skin tint by the region's
 // skin weight, and vertex AO.
@@ -525,12 +527,17 @@ fn spherized_normal(surface: CharacterSurface, rig: CharacterRig, position: vec3
 
 // Stylized character GI (see the top of this file): the light the GI gives the point, which
 // its albedo then takes.
-fn character_gi(surface: CharacterSurface, rig: CharacterRig, position: vec3<f32>) -> vec3<f32> {
+fn character_gi(
+    surface: CharacterSurface,
+    rig: CharacterRig,
+    ambient: CharacterAmbient,
+    position: vec3<f32>,
+) -> vec3<f32> {
     // Faces and hair shade like one smooth ball around the head, by the region's weight.
     let spherized = spherized_normal(surface, rig, position);
     // The whole character leans toward the camera, which flattens it.
     let normal = safe_normalize(spherized + rig.gi.x * surface.view_dir);
-    let gi = hsv_clamp(ambient_light(normal) * rig.head.w, rig.gi.y, rig.gi.z);
+    let gi = hsv_clamp(character_ambient_light(ambient, normal) * rig.head.w, rig.gi.y, rig.gi.z);
     // Skin takes the rig's tint by the region's weight (`RegionGi::skin`, in the rim vector's
     // spare channel), so its shadow side never reads grey.
     let skin = mix(vec3<f32>(1.0), rig.skin_tint.rgb, surface.region.rim.a);
@@ -803,7 +810,7 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
 
     surface.shade = surface.albedo * shade_tint(surface, material, x, width);
     let diffuse = mix(surface.shade, surface.albedo, lit) * key_radiance;
-    let ambient = surface.albedo * character_gi(surface, rig, in.world_position);
+    let ambient = surface.albedo * character_gi(surface, rig, characters[in.character].ambient, in.world_position);
     var color = diffuse + ambient + rim_light(rim, key_direction, surface.view_dir, lit) * key_radiance;
     // A uniform branch: frames without local lights skip them.
     if frame.lights.y != LIGHT_LISTS_NONE {

@@ -14,8 +14,9 @@
 //! 4. Keys each asset ([`CacheKey`]) and takes its output from the [`Cache`], or imports,
 //!    bakes, validates and cooks it and stores the result. An output is written only when its
 //!    bytes change, so a file watcher (hot reload, A8) sees exactly the assets that changed.
-//!    Materials read the cooked textures they reference, so they cook after every other asset;
-//!    their keys depend on those textures' keys.
+//!    Materials read the cooked textures they reference, so they cook after every other asset
+//!    but probe grids, which read cooked meshes and materials; their keys depend on those
+//!    assets' keys.
 //!
 //! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
 //! format, whose versions are part of the cache key:
@@ -35,6 +36,10 @@
 //!   tree.
 //! - **VRM characters** cook `.vrm` → `.smesh` like glTF meshes, plus a `.srig` rig (A6,
 //!   [`vrm`]).
+//! - **Ambient probe grids** cook `.probes.ron` documents → `.sprobe` (W5, [`probes`]): a bake of
+//!   the meshes the document names, lit by their materials under time of day's keys. They read
+//!   cooked meshes and materials' sources, so they cook last; their keys depend on those assets'
+//!   keys.
 //!
 //! A source may cook to more than one asset: its own, and [`SubAsset`]s, each with its own
 //! recipe, output beside the source's (`alicia.smesh`, `alicia.srig`) and an ID derived from the
@@ -54,6 +59,7 @@ use std::str::FromStr;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
@@ -67,6 +73,7 @@ use crate::import::vrm::{self, VrmImportError, VrmSettings};
 use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
+use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
 use crate::{bake, optimize};
 
@@ -128,7 +135,7 @@ pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
 pub(crate) const COOKED_EXTENSIONS: &[&str] =
-    &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION, RIG_EXTENSION];
+    &[MESH_EXTENSION, TEXTURE_EXTENSION, MATERIAL_EXTENSION, RIG_EXTENSION, PROBE_GRID_EXTENSION];
 
 /// An asset a source cooks to besides its own (see the [module docs](self)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +184,12 @@ impl Recipe {
                 format: Mesh::VERSION,
                 extension: MESH_EXTENSION,
             },
+            ImportSettings::ProbeGrid(_) => Self {
+                importer: probes::IMPORTER,
+                cooker: probes::COOKER,
+                format: ProbeGrid::VERSION,
+                extension: PROBE_GRID_EXTENSION,
+            },
         }
     }
 
@@ -187,16 +200,20 @@ impl Recipe {
             ImportSettings::Gltf(_)
             | ImportSettings::Texture(_)
             | ImportSettings::CharacterMap(_)
-            | ImportSettings::Material(_) => &[],
+            | ImportSettings::Material(_)
+            | ImportSettings::ProbeGrid(_) => &[],
         }
     }
 
     /// Where a source at `relative` cooks to, relative to the output root: its path with the
     /// cooked extension in place of the source's (`samples/mannequin.glb` →
-    /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`).
+    /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`, `courtyard.probes.ron` →
+    /// `courtyard.sprobe`).
     pub fn output_path(&self, relative: &Path) -> PathBuf {
         if material::is_source(relative) {
             material::output_path(relative, self.extension)
+        } else if probes::is_source(relative) {
+            probes::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -261,6 +278,13 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: FoliageError,
+    },
+    #[error("failed to bake probe grid {}", path.display())]
+    ProbeGrid {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<ProbeCookError>,
     },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
@@ -389,11 +413,14 @@ pub fn cook_dir(
             }));
         }
     }
-    // Materials read the cooked textures they reference, so everything else cooks first.
+    // Materials read the cooked textures they reference, so everything else cooks first; probe
+    // grids read cooked meshes and their materials, so they cook last.
+    let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
+        (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
     let (materials, others): (Vec<usize>, Vec<usize>) =
-        (0..plan.len()).partition(|&index| plan[index].is_material());
+        rest.into_iter().partition(|&index| plan[index].is_material());
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
-    for index in others.into_iter().chain(materials) {
+    for index in others.into_iter().chain(materials).chain(probe_grids) {
         let assets = Assets { plan: &plan, by_id: &by_id, cooked: &cooked };
         let asset = cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)?;
         cooked[index] = Some(asset);
@@ -423,6 +450,10 @@ impl Planned {
     fn is_material(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Material(_))
     }
+
+    fn is_probe_grid(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::ProbeGrid(_))
+    }
 }
 
 /// The content tree's assets by ID, with what has cooked so far.
@@ -444,6 +475,17 @@ impl<'a> Assets<'a> {
         Some(Referenced {
             source: &planned.asset.path,
             class: TextureKind::of(&planned.asset.meta.importer),
+            cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
+        })
+    }
+
+    /// What a probe grid's cook knows about asset `id`.
+    fn probe_input(&self, id: AssetId) -> Option<ProbeInput<'a>> {
+        let index = *self.by_id.get(&id)?;
+        let planned = &self.plan[index];
+        Some(ProbeInput {
+            source: &planned.asset.path,
+            settings: &planned.asset.meta.importer,
             cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
         })
     }
@@ -535,7 +577,15 @@ fn cook_source(
         ImportSettings::Material(_) => material::read(bytes)
             .and_then(|document| material::cook(&document, |id| assets.referenced(id)))
             .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::ProbeGrid(_) => probes::read(bytes)
+            .and_then(|document| probes::cook(&document, cook, |id| assets.probe_input(id)))
+            .map_err(probe_error(path)),
     }
+}
+
+/// Wraps a probe grid error as the cook error for the document at `path`.
+fn probe_error(path: &Path) -> impl Fn(ProbeCookError) -> CookError + '_ {
+    move |source| CookError::ProbeGrid { path: path.to_owned(), source: Box::new(source) }
 }
 
 /// Wraps a VRM import error as the cook error for the source at `path`.
@@ -643,6 +693,9 @@ fn dependencies(
         ImportSettings::Material(_) => material::read(bytes)
             .and_then(|document| material::dependencies(&document, |id| assets.referenced(id)))
             .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::ProbeGrid(_) => probes::read(bytes)
+            .and_then(|document| probes::dependencies(&document, |id| assets.probe_input(id)))
+            .map_err(probe_error(path)),
     }
 }
 
@@ -658,7 +711,10 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
         ImportSettings::Vrm(settings) => {
             (vrm::import(bytes, settings.version).map_err(vrm_error(path))?.mesh, &settings.mesh)
         }
-        ImportSettings::Texture(_) | ImportSettings::CharacterMap(_) | ImportSettings::Material(_) => {
+        ImportSettings::Texture(_)
+        | ImportSettings::CharacterMap(_)
+        | ImportSettings::Material(_)
+        | ImportSettings::ProbeGrid(_) => {
             return Err(CookError::UnsupportedSource { path: path.to_owned() });
         }
     };

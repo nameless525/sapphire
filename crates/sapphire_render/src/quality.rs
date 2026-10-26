@@ -22,23 +22,26 @@
 //!   whose resolve also upsamples to the output; 4× MSAA kept in tile memory on phones.
 //! - **MSAA and temporal AA, bloom levels, the light path, the light budget, the sky** (its
 //!   cube's size and update rate, and the cirrus layer, M1 W2), **the environment shader's
-//!   specular model** (M1 W4), **the shadows** (cascades, their resolution, distance and
+//!   specular model** (M1 W4) and where it reads a probe grid (per pixel or per vertex, M1 W5),
+//!   **the shadows** (cascades, their resolution, distance and
 //!   caching, the characters' maps or capsules and the filter, M1 R4), **the screen effects'
-//!   cost** (the radial blur's taps, [`PostEffectSettings`], M1 P3) **and foliage** (its wind
-//!   levels, alpha-to-coverage and translucency, M1 W6): [`QualityTier::render_settings`], which a
-//!   renderer is created with. The player's settings
-//!   can turn the shadows off ([`QualitySettings::shadows`]).
+//!   cost** (the radial blur's taps, [`PostEffectSettings`], M1 P3), **foliage** (its wind
+//!   levels, alpha-to-coverage and translucency, M1 W6), **ambient occlusion** (capsule AO, and
+//!   GTAO's slices, steps and radius) **and the reflection cube's size** (M1 W5):
+//!   [`QualityTier::render_settings`], which a renderer is created with. The player's settings
+//!   can turn the shadows off ([`QualitySettings::shadows`]) and choose the ambient occlusion
+//!   ([`QualitySettings::ambient_occlusion`]).
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
 //! One more knob is a cvar rather than a tier's: `r.outline_distance`, a scale on every
 //! material's outline LOD cutoff (M1 C4), for tuning and profiling ([`Quality::outline_distance`];
 //! the sandbox's `--outline-distance`). Every tier draws the same lines today, within its budget.
 //!
-//! Plain data until their packages read them: capsule AO and GTAO (W5), volumetric fog (after W3's
-//! distance and height fog, which every tier has), screen-space environment outlines (the desktop
-//! option beside C4's character hulls, which no M1 package builds), the particle cap
-//! (`sapphire_vfx`, M2) and the LOD bias (LOD selection, with culling). The frame rate is also
-//! what frame pacing (§6.2, F7) will hold.
+//! Plain data until their packages read them: volumetric fog (after W3's distance and height fog,
+//! which every tier has), screen-space environment outlines (the desktop option beside C4's
+//! character hulls, which no M1 package builds), the particle cap (`sapphire_vfx`, M2) and the
+//! LOD bias (LOD selection, with culling). The frame rate is also what frame pacing (§6.2, F7)
+//! will hold.
 //!
 //! # Choosing a tier
 //!
@@ -99,8 +102,9 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    EnvironmentSettings, FoliageSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS,
-    MIN_RENDER_SCALE, Msaa, PostEffectSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    AmbientOcclusion, EnvironmentSettings, FoliageSettings, GtaoSettings, LOG_TARGET, LightPath,
+    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, ReflectionSettings,
+    RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -196,7 +200,7 @@ pub struct QualityTier {
     /// The key light's shadows: cascades and characters' own shadows (M1 R4,
     /// [`RenderSettings::shadows`]).
     pub shadows: ShadowSettings,
-    /// Read by ambient occlusion (W5).
+    /// Capsule AO and GTAO (M1 W5, [`RenderSettings::ambient_occlusion`]).
     pub ambient_occlusion: AmbientOcclusion,
     /// Volumetric fog, on top of the distance and height fog every tier has (W3; volumetric fog
     /// is desktop-only and later).
@@ -213,8 +217,9 @@ pub struct QualityTier {
     /// table without it gets the desktop tiers' sky.
     #[serde(default)]
     pub sky: SkySettings,
-    /// The environment shader's specular model ([`RenderSettings::environment`]). A table
-    /// without it gets the desktop tiers' full specular.
+    /// The environment shader's specular model and where it reads a probe grid
+    /// ([`RenderSettings::environment`]). A table without it gets the desktop tiers' full
+    /// specular and per-pixel grid.
     #[serde(default)]
     pub environment: EnvironmentSettings,
     /// What the screen effects spend ([`RenderSettings::post_effects`], M1 P3). A table without
@@ -225,6 +230,10 @@ pub struct QualityTier {
     /// A table without it gets the desktop tiers' foliage.
     #[serde(default)]
     pub foliage: FoliageSettings,
+    /// The reflection cube a probe grid's environment specular reads (M1 W5,
+    /// [`RenderSettings::reflections`]). A table without it gets the desktop tiers'.
+    #[serde(default)]
+    pub reflections: ReflectionSettings,
 }
 
 /// The scene's size relative to the output.
@@ -263,16 +272,6 @@ pub struct Antialiasing {
     /// Temporal AA and upsampling with velocity and a responsive mask (M1 R7,
     /// [`RenderSettings::temporal`]): the desktop tiers.
     pub temporal: bool,
-}
-
-/// Ambient occlusion (W5).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[type_path = "sapphire::render"]
-pub struct AmbientOcclusion {
-    /// Capsule AO under characters: every tier.
-    pub capsules: bool,
-    /// GTAO at half resolution: desktop and Mobile-High.
-    pub gtao: bool,
 }
 
 /// One way a device qualifies for a tier: it must meet every condition the rule sets.
@@ -387,6 +386,8 @@ impl QualityTier {
             shadows: Some(self.shadows),
             post_effects: self.post_effects,
             foliage: self.foliage,
+            ambient_occlusion: self.ambient_occlusion,
+            reflections: self.reflections,
         }
     }
 
@@ -446,6 +447,12 @@ impl QualityTier {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.foliage.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.ambient_occlusion.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.reflections.validate() {
             return invalid(field, problem);
         }
         Ok(())
@@ -699,6 +706,36 @@ pub struct QualitySettings {
     /// Shadows: the tier's (`Auto`, the default, or `On`), or none (`Off`), which draws no shadow
     /// maps at all.
     pub shadows: Switch,
+    /// Ambient occlusion: the tier's, or a level of the player's (M1 W5).
+    pub ambient_occlusion: OcclusionSetting,
+}
+
+/// The player's ambient occlusion setting (M1 W5; the sandbox's `--ao`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OcclusionSetting {
+    /// The tier's.
+    #[default]
+    Auto,
+    /// None: no passes, and the environment shader as it was without it.
+    Off,
+    /// Capsule AO alone.
+    Capsules,
+    /// Capsule AO and GTAO: the tier's GTAO, or the desktop tiers' on a tier without it.
+    Full,
+}
+
+impl OcclusionSetting {
+    /// The ambient occlusion it gives on a tier with `tier`'s.
+    pub fn resolve(self, tier: AmbientOcclusion) -> AmbientOcclusion {
+        match self {
+            Self::Auto => tier,
+            Self::Off => AmbientOcclusion::OFF,
+            Self::Capsules => AmbientOcclusion { capsules: true, gtao: None },
+            Self::Full => {
+                AmbientOcclusion { capsules: true, gtao: Some(tier.gtao.unwrap_or(GtaoSettings::DESKTOP)) }
+            }
+        }
+    }
 }
 
 /// Where the active tier came from, in precedence order (lowest first).
@@ -811,7 +848,11 @@ impl Quality {
     /// What a renderer for the active tier is created with, under the player's settings.
     pub fn render_settings(&self) -> RenderSettings {
         let tier = self.tier().render_settings();
-        RenderSettings { shadows: tier.shadows.filter(|_| self.settings.shadows.resolve(true)), ..tier }
+        RenderSettings {
+            shadows: tier.shadows.filter(|_| self.settings.shadows.resolve(true)),
+            ambient_occlusion: self.settings.ambient_occlusion.resolve(tier.ambient_occlusion),
+            ..tier
+        }
     }
 
     /// Follows `r.tier`. When it changed since the last call to a choice that selects another
@@ -936,11 +977,13 @@ mod tests {
             let tier = table.get(id);
             let shadows = Some(tier.shadows);
             let post_effects = PostEffectSettings { radial_blur_taps: taps };
+            let ambient_occlusion = tier.ambient_occlusion;
             let expected = RenderSettings {
                 msaa: Msaa::Off,
                 temporal: true,
                 shadows,
                 post_effects,
+                ambient_occlusion,
                 ..RenderSettings::default()
             };
             assert_eq!(tier.render_settings(), expected, "{id}");
@@ -974,6 +1017,38 @@ mod tests {
     }
 
     #[test]
+    fn mobile_low_reads_the_probe_grid_per_vertex() {
+        let table = TierTable::shipped();
+        let lookup = |id| table.get(id).render_settings().environment.probes;
+        for id in [TierId::DesktopHigh, TierId::DesktopLow, TierId::MobileHigh] {
+            assert_eq!(lookup(id), crate::ProbeLookup::PerPixel, "{id}");
+        }
+        assert_eq!(lookup(TierId::MobileLow), crate::ProbeLookup::PerVertex);
+    }
+
+    #[test]
+    fn every_tier_has_capsule_ao_and_gtao_runs_on_desktop_and_mobile_high() {
+        let table = TierTable::shipped();
+        for id in TierId::ALL {
+            let occlusion = table.get(id).render_settings().ambient_occlusion;
+            assert!(occlusion.capsules, "{id}");
+            assert_eq!(occlusion.gtao.is_some(), id != TierId::MobileLow, "{id}");
+        }
+        // The desktop tiers search alike, so golden images match on every desktop GPU.
+        let desktop = |id| table.get(id).ambient_occlusion.gtao;
+        assert_eq!(desktop(TierId::DesktopHigh), Some(GtaoSettings::DESKTOP));
+        assert_eq!(desktop(TierId::DesktopLow), Some(GtaoSettings::DESKTOP));
+        // The player's setting over the tier's.
+        let tier = table.get(TierId::MobileLow).ambient_occlusion;
+        assert_eq!(OcclusionSetting::Auto.resolve(tier), tier);
+        assert_eq!(OcclusionSetting::Off.resolve(tier), AmbientOcclusion::OFF);
+        assert_eq!(OcclusionSetting::Capsules.resolve(tier), AmbientOcclusion { capsules: true, gtao: None });
+        assert_eq!(OcclusionSetting::Full.resolve(tier).gtao, Some(GtaoSettings::DESKTOP));
+        let mobile_high = table.get(TierId::MobileHigh).ambient_occlusion;
+        assert_eq!(OcclusionSetting::Full.resolve(mobile_high), mobile_high, "its own GTAO");
+    }
+
+    #[test]
     fn base_scales_hold_the_internal_height() {
         let table = TierTable::shipped();
         // Mobile-Low's ~590 rows on an iPhone 12 in landscape (2532×1170).
@@ -998,7 +1073,7 @@ mod tests {
     #[test]
     fn bad_values_are_rejected() {
         use TierId::*;
-        let cases: [BadValue; 17] = [
+        let cases: [BadValue; 20] = [
             (DesktopHigh, "resolution.scale", |tier| tier.resolution.scale = 0.0),
             (DesktopHigh, "resolution.scale", |tier| tier.resolution.scale = 1.5),
             (DesktopLow, "resolution.scale", |tier| tier.resolution.scale = f32::NAN),
@@ -1016,6 +1091,13 @@ mod tests {
             (MobileLow, "shadows.cached_cascades", |tier| tier.shadows.cached_cascades = 2),
             (DesktopHigh, "shadows.character_resolution", |tier| tier.shadows.character_resolution = 100),
             (DesktopLow, "lod_bias", |tier| tier.lod_bias = f32::INFINITY),
+            (DesktopHigh, "ambient_occlusion.gtao.slices", |tier| {
+                tier.ambient_occlusion.gtao = Some(GtaoSettings { slices: 9, ..GtaoSettings::DESKTOP });
+            }),
+            (MobileHigh, "ambient_occlusion.gtao.radius", |tier| {
+                tier.ambient_occlusion.gtao = Some(GtaoSettings { radius: -1.0, ..GtaoSettings::DESKTOP });
+            }),
+            (MobileLow, "reflections.cube_size", |tier| tier.reflections.cube_size = 100),
         ];
         for (id, field, edit) in cases {
             assert_eq!(invalid_field(edited(id, edit)), field, "{id}");
@@ -1135,6 +1217,7 @@ mod tests {
             render_scale: Some(0.7),
             dynamic_resolution: false,
             shadows: Switch::Auto,
+            ambient_occlusion: OcclusionSetting::Auto,
         });
         assert_eq!(player.active(), ActiveTier { id: TierId::MobileLow, source: TierSource::Setting });
         assert_eq!(player.render_scale((1920, 1080), &timing), 0.7);
@@ -1143,6 +1226,11 @@ mod tests {
         assert_eq!(player.render_settings().shadows, Some(mobile_low), "the tier's shadows");
         let unshadowed = quality(QualitySettings { shadows: Switch::Off, ..QualitySettings::default() });
         assert_eq!(unshadowed.render_settings().shadows, None, "the player turned them off");
+        let unoccluded = quality(QualitySettings {
+            ambient_occlusion: OcclusionSetting::Off,
+            ..QualitySettings::default()
+        });
+        assert_eq!(unoccluded.render_settings().ambient_occlusion, AmbientOcclusion::OFF);
 
         let mut quality = quality(QualitySettings::default());
         assert_eq!(quality.active().id, TierId::DesktopHigh);

@@ -9,6 +9,7 @@ use sapphire_serialize::cooked::access_unchecked;
 
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
+use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
 use crate::texture::Texture;
 use crate::{AssetId, AssetKind};
@@ -20,7 +21,7 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`].
+/// [`CharacterRig`], [`ProbeGrid`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -42,6 +43,7 @@ mod sealed {
     impl Sealed for crate::mesh::Mesh {}
     impl Sealed for crate::material::Material {}
     impl Sealed for crate::rig::CharacterRig {}
+    impl Sealed for crate::probes::ProbeGrid {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -53,6 +55,17 @@ impl Asset for CharacterRig {
         // SAFETY: as for meshes: `CharacterRig::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<CharacterRig>(bytes) }
             .expect("the envelope was checked when the rig was decoded")
+    }
+}
+
+impl Asset for ProbeGrid {
+    const KIND: AssetKind = AssetKind::ProbeGrid;
+    type View<'a> = &'a ArchivedProbeGrid;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedProbeGrid {
+        // SAFETY: as for meshes: `ProbeGrid::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<ProbeGrid>(bytes) }
+            .expect("the envelope was checked when the probe grid was decoded")
     }
 }
 

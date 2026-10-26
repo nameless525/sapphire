@@ -491,7 +491,7 @@ impl Harness {
 
     /// With the tier's `specular` model.
     fn with_specular(specular: EnvironmentSpecular) -> Self {
-        let environment = EnvironmentSettings { specular };
+        let environment = EnvironmentSettings { specular, ..EnvironmentSettings::default() };
         Self::new(RenderSettings { msaa: Msaa::Off, environment, ..RenderSettings::default() })
     }
 

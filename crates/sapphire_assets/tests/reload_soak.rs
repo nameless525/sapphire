@@ -117,6 +117,7 @@ impl Gpu {
             AssetKind::Material => assert!(upload.get::<Material>().is_some()),
             AssetKind::Texture => assert!(upload.get::<sapphire_assets::TextureAsset>().is_some()),
             AssetKind::Rig => unreachable!("rigs never go to the uploader"),
+            AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -212,7 +213,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", packs[0].clone());
     // Tight budgets, so residency evicts all the time.
-    let budgets = AssetBudgets { upload_per_frame: 32 << 10, resident: [400, 30_000, 2_000, 1_000] };
+    let budgets = AssetBudgets { upload_per_frame: 32 << 10, resident: [400, 30_000, 2_000, 1_000, 1_000] };
     let mut server = AssetServer::new(source.clone(), budgets);
     server.mount("shared").unwrap();
     let mut rng = Rng(0xa8a8);
@@ -247,7 +248,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
     server.unload_unused();
     follow(&mut server, &mut gpu);
     let stats = server.stats();
-    assert_eq!((stats.assets, stats.resident, stats.reads_in_flight), (0, [0; 4], 0), "{stats:?}");
+    assert_eq!((stats.assets, stats.resident, stats.reads_in_flight), (0, [0; 5], 0), "{stats:?}");
     assert!(gpu.0.is_empty(), "the app was told to free every copy it uploaded");
     let after = alloc::stats().live_bytes;
     // Allowance for allocator-internal and channel blocks that come and go; a leak per round (a

@@ -4,8 +4,8 @@
 // clocks (spec §3).
 //
 // - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`,
-//   `sky`, `environment`, `shadows`, `post_effects` and `foliage`, plus `frame_rate` and
-//   `gpu_frame_ms` as dynamic resolution's targets.
+//   `sky`, `environment`, `shadows`, `post_effects`, `foliage`, `ambient_occlusion` and
+//   `reflections`, plus `frame_rate` and `gpu_frame_ms` as dynamic resolution's targets.
 // - `post_effects` (M1 P3): the radial blur's taps per pixel along its streak, in groups of four.
 //   A pixel's taps start at a per-pixel offset, so fewer taps read as finer grain rather than as
 //   copies of the frame; phones take 8 (spec §5.12's P3 note has the costs).
@@ -15,15 +15,24 @@
 //   GGX (distribution, height-correlated Smith visibility, Schlick Fresnel); Mobile-High a
 //   cheaper GGX that folds visibility and Fresnel into one term; Mobile-Low none, where the world
 //   reads by its painted diffuse (terminator, wrap, shadow tint, band, desaturation and emission
-//   run on every tier). Both desktop tiers draw the same, as with the sky.
+//   run on every tier). Both desktop tiers draw the same, as with the sky. And where it reads a
+//   probe grid (M1 W5, `probes`): per pixel, or per vertex on Mobile-Low, where the per-pixel
+//   lookup cost 38% of its main pass at 1080p (spec §5.12 "Lighting" has the numbers).
 // - `foliage` (M1 W6): how many of the wind's levels run (trunk sway, branch bend, leaf flutter),
 //   alpha-to-coverage for alpha-tested cards under MSAA, and translucency through leaves. Desktop
 //   tiers resolve cards with TAA (MSAA is off, so alpha-to-coverage never applies) and run every
 //   level with translucency. Phones cover cards' edges in tile memory with alpha-to-coverage;
 //   Mobile-Low keeps trunks and branches moving but drops the leaves' flutter, which a 590-row
 //   scene barely resolves, and translucency, a per-pixel `pow` the canopy reads without.
-// - Read by later packages: `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines`
-//   (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
+// - `ambient_occlusion` (M1 W5): capsule AO from the characters' bodies on every tier, a short
+//   loop per pixel; GTAO at half resolution on desktop (two slices of four steps out to 1 m, the
+//   same on both desktop tiers, as with the sky) and Mobile-High (one slice of four steps, out to
+//   0.75 m), none on Mobile-Low, whose budget row has no figure (spec §3.3).
+// - `reflections` (M1 W5): the sky cube prefiltered into roughness mips for a probe grid's
+//   environment specular, half the sky cube's size; Mobile-Low has no environment specular, so
+//   none is made there.
+// - Read by later packages: `volumetric_fog`, `screen_space_outlines` (C4), `max_particles`
+//   (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
 // Shadows (M1 R4, look pillar 4; `sapphire_render::shadows`): spec §3.3 budgets 2 ms for 4
 // cascades on desktop and 3 ms for 2 on phones. The far half of the cascades is cached, drawn in
@@ -41,7 +50,8 @@
 // outlines, where MSAA resolves only geometry, and the scene prepass it reads holds
 // single-sampled depth and velocity. 4× MSAA on top would quadruple the main pass's attachments
 // for edges TAA already resolves. Phones keep 4× MSAA in tile memory instead (transient
-// attachments, cleared and discarded on tile): no history, no prepasses, and nothing to smear.
+// attachments, cleared and discarded on tile): no history and nothing to smear, and no prepasses
+// but the scene prepass GTAO reads on Mobile-High (M1 W5).
 //
 // Resolution: TAA also upsamples, so the desktop tiers keep spec §3.1's internal heights:
 // Desktop-High renders at most 1440 rows (1440p native, 4K from 1440), Desktop-Low 1080. Below
@@ -79,15 +89,16 @@
                     character_resolution: 1024,
                     filter: Tent5,
                 ),
-                ambient_occlusion: (capsules: true, gtao: true),
+                ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
                 screen_space_outlines: true,
                 max_particles: 50000,
                 lod_bias: 0.0,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
-                environment: (specular: Full),
+                environment: (specular: Full, probes: PerPixel),
                 post_effects: (radial_blur_taps: 16),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                reflections: (cube_size: 128),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -110,15 +121,16 @@
                     character_resolution: 512,
                     filter: Tent5,
                 ),
-                ambient_occlusion: (capsules: true, gtao: true),
+                ambient_occlusion: (capsules: true, gtao: Some((slices: 2, steps: 4, radius: 1.0))),
                 volumetric_fog: true,
                 screen_space_outlines: false,
                 max_particles: 50000,
                 lod_bias: 0.5,
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
-                environment: (specular: Full),
+                environment: (specular: Full, probes: PerPixel),
                 post_effects: (radial_blur_taps: 12),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                reflections: (cube_size: 128),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -142,15 +154,16 @@
                     character_shadow: false,
                     filter: Tent3,
                 ),
-                ambient_occlusion: (capsules: true, gtao: true),
+                ambient_occlusion: (capsules: true, gtao: Some((slices: 1, steps: 4, radius: 0.75))),
                 volumetric_fog: false,
                 screen_space_outlines: false,
                 max_particles: 8000,
                 lod_bias: 0.0,
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
-                environment: (specular: Approximate),
+                environment: (specular: Approximate, probes: PerPixel),
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
+                reflections: (cube_size: 64),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -172,7 +185,7 @@
                     character_shadow: false,
                     filter: Tent3,
                 ),
-                ambient_occlusion: (capsules: true, gtao: false),
+                ambient_occlusion: (capsules: true, gtao: None),
                 volumetric_fog: false,
                 screen_space_outlines: false,
                 max_particles: 8000,
@@ -182,9 +195,10 @@
                 sky: (cube_size: 64, cube_interval: 2, cirrus: false),
                 // The world's highlights go first: a 30 fps phone spends its budget on the
                 // characters and the frame's atmosphere.
-                environment: (specular: Off),
+                environment: (specular: Off, probes: PerVertex),
                 post_effects: (radial_blur_taps: 8),
                 foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
+                reflections: (cube_size: 32),
             ),
         ],
     ),

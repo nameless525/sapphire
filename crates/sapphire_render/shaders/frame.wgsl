@@ -6,7 +6,8 @@
 //              ambient light, the shadow tint, the weather and the fog; the local lights (binding 1) and
 //              their lists (binding 2) are declared in lights.wgsl and the passes that read
 //              them, the characters (binding 3), the shadows (bindings 4–7) and the
-//              character prepass's targets (bindings 8–10) below
+//              character prepass's targets (bindings 8–10) below, the ambient probe grid,
+//              reflection cube and occlusion (bindings 11–16) in ambient.wgsl
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
 //              shadow cascades and other views (M1) share one buffer
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
@@ -148,12 +149,31 @@ struct CharacterShadow {
     visibility: vec4<f32>,
 }
 
+// A character's ambient light (M1 W5): the hemisphere its stylized GI reads
+// (`character_ambient_light`). Without a probe grid it is the frame's own (`ambient_light`):
+// time of day's sky and ground along +Y. Where a grid lights the character, the ambient pass
+// (probes.wgsl's `cs_character_ambient`) writes the grid's light around its body, kept low
+// frequency: a hemisphere along the axis its light comes from.
+struct CharacterAmbient {
+    // rgb: the light from the hemisphere's pole, color × intensity, times `axis.w`.
+    sky: vec4<f32>,
+    // rgb: the light from the opposite pole, likewise.
+    ground: vec4<f32>,
+    // xyz: the unit axis from ground to sky (+Y for the frame's hemisphere); w: what capsule AO
+    // from the other characters' bodies leaves of the ambient light (1 without them).
+    axis: vec4<f32>,
+    // xyz: the body's center, world space, where the ambient pass reads the grid; w: 1 with a
+    // body, 0 without.
+    probe: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
-// own here: the light rig (C2), the face (C3) and the shadow (R4).
+// own here: the light rig (C2), the face (C3), the shadow (R4) and the ambient light (W5).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
     shadow: CharacterShadow,
+    ambient: CharacterAmbient,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -373,6 +393,12 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 // hemisphere of sky light above and ground light below, a blend by how far the surface faces up.
 fn ambient_light(n: vec3<f32>) -> vec3<f32> {
     return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, 0.5 + 0.5 * n.y);
+}
+
+// A character's ambient light (`CharacterAmbient`) reaching a surface whose unit normal is `n`:
+// exactly `ambient_light(n)` for the frame's own hemisphere.
+fn character_ambient_light(ambient: CharacterAmbient, n: vec3<f32>) -> vec3<f32> {
+    return mix(ambient.ground.rgb, ambient.sky.rgb, 0.5 + 0.5 * dot(n, ambient.axis.xyz));
 }
 
 // ---------------------------------------------------------------------------------------------

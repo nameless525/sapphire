@@ -17,10 +17,19 @@
 //!   sheets dip a little into the rolling ground, where the depth fade softens them (and on
 //!   phones, which have none, the map's soft lower edge).
 //!
-//! The courtyard and its cards never move, so their instances are extracted once.
+//! - **The arcade and the probe grid** (`--probes`, M1 W5): a stone gateway through the far wall
+//!   and a loggia with a terracotta roof along it, in world space too, and the ambient probe grid
+//!   the cooker baked for the courtyard with them ([`Content::probes`]). The grid lights the
+//!   world in place of the ambient hemisphere: colored bounce in the shade, the sky seen past the
+//!   arcade's roof and arches, and the characters' ambient from around them; time of day picks
+//!   the keys its bounce blends from the hour. The camera turns to it through a longer lens, the
+//!   gateway and the loggia large either side behind the character.
+//!
+//! The courtyard, its cards and the arcade never move, so their instances are extracted once.
 //!
 //! [`Content::courtyard`]: crate::content::Content::courtyard
 //! [`Content::fog_cards`]: crate::content::Content::fog_cards
+//! [`Content::probes`]: crate::content::Content::probes
 
 use sapphire_assets::AssetId;
 use sapphire_math::{Mat4, Quat, Vec3};
@@ -75,16 +84,38 @@ pub(crate) fn fog_cards() -> impl Iterator<Item = (usize, Mat4)> {
     })
 }
 
+/// The arcade (`content/samples/environment/arcade.glb.meta`, the pipeline's
+/// `samples::environment::ARCADE_ID`).
+pub(crate) const ARCADE: AssetId = AssetId::from_text("29f2acee-efb7-4abb-8df6-f9b80a877df8");
+
+/// The courtyard's ambient probe grid (`content/samples/environment/courtyard.probes.ron.meta`,
+/// the pipeline's `samples::environment::PROBES_ID`).
+pub(crate) const PROBES: AssetId = AssetId::from_text("2b0e5d95-2b11-4042-8435-7de3da07ba18");
+
 /// How much farther than the character's framing the camera stands.
 const PULL_BACK: f32 = 1.45;
 /// The camera's starting angles in radians: the framing's yaw, a lower pitch.
 const YAW: f32 = 0.35;
 const PITCH: f32 = 0.1;
 
+/// The arcade camera's angles in radians (−48° and 3°) and vertical field of view (20°).
+const ARCADE_YAW: f32 = -0.837_758;
+const ARCADE_PITCH: f32 = 0.052_359_88;
+const ARCADE_FOV: f32 = 0.349_065_8;
+
 /// The camera for a character whose object-space bounds are `bounds`, in the courtyard.
 pub(crate) fn camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
     let mut camera = OrbitCamera::framing(bounds).pulled_back(PULL_BACK);
     camera.look_from(YAW, PITCH);
+    camera
+}
+
+/// The courtyard's camera turned toward the arcade (`--probes`), its lens narrowed with the
+/// character's framing kept.
+pub(crate) fn arcade_camera(bounds: [[f32; 3]; 2]) -> OrbitCamera {
+    let mut camera = camera(bounds);
+    camera.look_from(ARCADE_YAW, ARCADE_PITCH);
+    camera.set_fov(ARCADE_FOV);
     camera
 }
 
@@ -119,5 +150,27 @@ mod tests {
         assert!((ratio - PULL_BACK).abs() < 1e-4, "{ratio}");
         assert!(wide.eye().y < framing.eye().y, "lower: {} against {}", wide.eye(), framing.eye());
         assert!(wide.eye().z > 0.0, "still in front of the character");
+    }
+
+    #[test]
+    fn the_arcade_camera_looks_past_the_character_at_the_arcade() {
+        let bounds = [[-0.55, 0.0, -0.55], [0.55, 2.2, 0.55]];
+        let camera = arcade_camera(bounds);
+        let target = Vec3::new(0.0, 1.1, 0.0);
+        // The gateway's middle and the loggia's (the pipeline's `samples::environment` arcade),
+        // either side of the character, both well within the 16:9 frame's 17° to either side.
+        let forward = (target - camera.eye()).normalize();
+        for (name, middle) in
+            [("gateway", Vec3::new(6.25, 2.0, -9.5)), ("loggia", Vec3::new(11.8, 2.0, -7.2))]
+        {
+            let toward = (middle - camera.eye()).normalize();
+            assert!(forward.dot(toward) > 12f32.to_radians().cos(), "the {name} in view");
+            assert!(forward.dot(toward) < 3f32.to_radians().cos(), "the {name} beside the character");
+        }
+        assert!(camera.eye().distance(target) > 2.0 * environment_distance(bounds), "a longer lens");
+    }
+
+    fn environment_distance(bounds: [[f32; 3]; 2]) -> f32 {
+        camera(bounds).eye().distance(Vec3::new(0.0, 1.1, 0.0))
     }
 }

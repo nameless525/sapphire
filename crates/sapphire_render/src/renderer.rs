@@ -1,8 +1,9 @@
-//! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, a main
-//! pass into HDR scene color (anime character, environment and foliage surfaces per surface
-//! variant, the characters' outlines, their eyes through hair, the sky, then transparent surfaces
-//! and fog cards), lit by each character's light rig (or, for the world, the sun) under the
-//! frame's shadows, local lights and fog, then post-processing into the target.
+//! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, the
+//! ambient pass (the probe grid's relight and GTAO), a main pass into HDR scene color (anime
+//! character, environment and foliage surfaces per surface variant, the characters' outlines,
+//! their eyes through hair, the sky, then transparent surfaces and fog cards), lit by each
+//! character's light rig (or, for the world, the sun) under the frame's shadows, ambient light,
+//! local lights and fog, then post-processing into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -13,9 +14,13 @@ use glam::Mat4;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
+use sapphire_assets::probes::ArchivedProbeGrid;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
+use crate::ambient::{
+    Ambient, AmbientOcclusion, AmbientPipelines, AmbientStats, GtaoInputs, ReflectionSettings,
+};
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
@@ -117,12 +122,20 @@ pub struct RenderSettings {
     /// Foliage's wind levels, alpha-to-coverage under MSAA and translucency (M1 W6, the
     /// [`foliage`](crate::foliage) module).
     pub foliage: FoliageSettings,
+    /// Ambient occlusion (M1 W5, the [`ambient`](crate::ambient) module): capsule AO from the
+    /// characters' bodies, and GTAO. Off draws none: no passes, and shaders compiled as they were
+    /// without it.
+    pub ambient_occlusion: AmbientOcclusion,
+    /// The reflection cube a probe grid's environment specular reads (M1 W5): the sky cube's
+    /// prefiltered mips. Made only with environment specular on.
+    pub reflections: ReflectionSettings,
 }
 
 impl Default for RenderSettings {
-    /// The desktop tiers' settings with 4× MSAA instead of temporal AA, and without shadows: what
-    /// the golden scenes from before M1 R7 pin (`--aa msaa`, and `--shadows off` since M1 R4) and
-    /// most GPU tests draw with, since a single frame shows them completely.
+    /// The desktop tiers' settings with 4× MSAA instead of temporal AA, and without shadows or
+    /// ambient occlusion: what the golden scenes from before M1 R7 pin (`--aa msaa`, `--shadows
+    /// off` since M1 R4 and `--ao off` since W5) and most GPU tests draw with, since a single
+    /// frame shows them completely.
     fn default() -> Self {
         Self {
             msaa: Msaa::default(),
@@ -135,6 +148,8 @@ impl Default for RenderSettings {
             shadows: None,
             post_effects: PostEffectSettings::default(),
             foliage: FoliageSettings::default(),
+            ambient_occlusion: AmbientOcclusion::OFF,
+            reflections: ReflectionSettings::default(),
         }
     }
 }
@@ -205,6 +220,8 @@ pub enum RenderError {
          loads it before the mesh, for `upload_material` and then `upload_slot_materials`"
     )]
     UnresolvedMaterial { slot: String, id: AssetId },
+    #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
+    ProbeGridTooLarge { bricks: u32 },
 }
 
 /// The character prepass's name in the frame graph (M1 C5): the characters' depth and IDs, on
@@ -310,6 +327,8 @@ pub struct RenderStats {
     /// The shadows' cascades, character maps, capsules and caster draws; all zero when they are
     /// off.
     pub shadows: ShadowStats,
+    /// The ambient probe grid, the reflection cube and ambient occlusion (M1 W5).
+    pub ambient: AmbientStats,
 }
 
 /// What [`Renderer::set_shader_sources`] rebuilt.
@@ -413,6 +432,8 @@ pub struct Renderer {
     shadows: Shadows,
     /// The wind foliage sways in, this frame's and the last drawn one's.
     wind: FoliageWind,
+    /// The ambient probe grid, the reflection cube, GTAO and their passes (M1 W5).
+    ambient: Ambient,
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
@@ -500,6 +521,7 @@ impl Renderer {
             &shaders,
             settings.shadows.as_ref(),
             settings.temporal,
+            crate::ambient::constants(&settings.ambient_occlusion, None),
         );
         let fog_cards = FogCards::new(&device, settings.temporal);
         let uniform = |label, size: usize| {
@@ -530,18 +552,9 @@ impl Renderer {
         }
         let lights =
             Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache(), &shaders);
-        let characters = Characters::new(&device);
+        let characters = Characters::new(&device, settings.ambient_occlusion.capsules);
         shadows.set_character_buffer(&device, characters.buffer());
         let character_prepass = CharacterPrepassTargets::new(&device);
-        let frame_bind_group = create_frame_bind_group(
-            &device,
-            &layouts.frame,
-            &frame_uniforms,
-            &lights,
-            &characters,
-            &shadows,
-            &character_prepass,
-        );
         let view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &layouts.view,
@@ -557,6 +570,35 @@ impl Renderer {
         let meshes = MeshPool::new(&device);
         let mut materials = Materials::new(&device, gpu.queue());
         let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
+        // Reflections only where environment specular reads them.
+        let reflections = (settings.environment.specular != crate::EnvironmentSpecular::Off)
+            .then_some(settings.reflections);
+        let mut ambient = Ambient::new(
+            &device,
+            gpu.queue(),
+            &layouts,
+            &frame_uniforms,
+            sky.cube_view(),
+            settings.ambient_occlusion,
+            settings.environment.probes,
+            settings.temporal,
+            reflections,
+            gpu.pipeline_cache(),
+            &shaders,
+        );
+        ambient.set_character_buffer(characters.buffer());
+        let frame_bind_group = create_frame_bind_group(
+            &device,
+            &layouts.frame,
+            FrameBindings {
+                uniforms: &frame_uniforms,
+                lights: &lights,
+                characters: &characters,
+                shadows: &shadows,
+                character_prepass: &character_prepass,
+                ambient: &ambient,
+            },
+        );
         let scene = GpuScene::new(&device);
         let wind = FoliageWind::new(&device);
         let scene_bind_groups =
@@ -574,6 +616,7 @@ impl Renderer {
             environment_specular = ?settings.environment.specular,
             shadows = ?settings.shadows,
             foliage = ?settings.foliage,
+            ambient_occlusion = ?settings.ambient_occlusion,
             "renderer created"
         );
         Ok(Self {
@@ -597,6 +640,7 @@ impl Renderer {
             character_scratch: Vec::new(),
             shadows,
             wind,
+            ambient,
             meshes,
             materials,
             scene,
@@ -947,6 +991,9 @@ impl Renderer {
             .then(|| self.shadows.rebuilt_pipelines(device, sources))
             .flatten();
         pipelines += shadows.as_ref().map_or(0, |shadows| shadows.count());
+        // Only those built so far: none without a grid or GTAO.
+        let ambient = changed.contains(&Program::Ambient).then(|| self.ambient.rebuilt_pipelines(sources));
+        pipelines += ambient.as_ref().map_or(0, AmbientPipelines::count);
         let error = scope_error(internal.pop()).or(scope_error(validation.pop()));
         if let Some(error) = error {
             let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
@@ -972,6 +1019,9 @@ impl Renderer {
         }
         if let Some(shadows) = shadows {
             self.shadows.set_pipelines(shadows);
+        }
+        if let Some(ambient) = ambient {
+            self.ambient.set_pipelines(ambient);
         }
         self.shaders = sources.clone();
         self.edited_shaders = !sources.is_compiled_in();
@@ -1062,19 +1112,13 @@ impl Renderer {
         let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
         if characters_replaced {
             self.shadows.set_character_buffer(device, self.characters.buffer());
+            self.ambient.set_character_buffer(self.characters.buffer());
         }
         if lists_replaced || characters_replaced {
-            self.frame_bind_group = create_frame_bind_group(
-                device,
-                &self.layouts.frame,
-                &self.frame_uniforms,
-                &self.lights,
-                &self.characters,
-                &self.shadows,
-                &self.character_prepass,
-            );
+            self.rebuild_frame_bind_group();
         }
         let entries = self.characters.entries();
+        self.ambient.prepare(packet, entries);
         // How far the frame's wind carries a foliage mesh past its bounds: its materials' reach.
         let materials = &self.materials;
         let wind_margin = |record: &MeshRecord| -> f32 {
@@ -1159,6 +1203,7 @@ impl Renderer {
         );
         self.stats.skinning = self.skinning.stats();
         self.stats.shadows = self.shadows.stats();
+        self.stats.ambient = self.ambient.stats();
         self.stats.material_uploads = self.materials.pending();
         self.update_pool_stats();
     }
@@ -1204,17 +1249,11 @@ impl Renderer {
         let size = scaled_size(output, self.render_scale);
         self.stats.scene_size = size;
         self.skinning.begin_record(&self.device, &self.queue, &self.meshes);
-        // The character prepass's targets follow the scene's size, and group 0 binds them.
-        if self.character_prepass.resize(&self.device, size) {
-            self.frame_bind_group = create_frame_bind_group(
-                &self.device,
-                &self.layouts.frame,
-                &self.frame_uniforms,
-                &self.lights,
-                &self.characters,
-                &self.shadows,
-                &self.character_prepass,
-            );
+        // The character prepass's targets follow the scene's size, and GTAO's (new textures for a
+        // new size): group 0 binds both.
+        let prepass_resized = self.character_prepass.resize(&self.device, size);
+        if self.ambient.fit(size) || prepass_resized {
+            self.rebuild_frame_bind_group();
         }
         // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
         // the camera counts as unmoved.
@@ -1283,6 +1322,7 @@ impl Renderer {
             ref character_prepass,
             ref shadows,
             ref wind,
+            ref mut ambient,
             ref meshes,
             ref mut materials,
             ref mut scene,
@@ -1326,6 +1366,8 @@ impl Renderer {
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
         let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
+        let ambient = ambient.split_for_record(sky_cube.as_ref().map_or(0..0, |cube| cube.faces()));
+        let ambient_upload = ambient.upload;
         let (light_uploads, cluster_pass) = lights.split_for_record();
         let (character_uploads, character_entries) = characters.split_for_record();
         let skinning_frame = skinning.frame();
@@ -1366,6 +1408,9 @@ impl Renderer {
                 upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(uniforms));
             }
             shadows.upload(uploads, ctx.encoder, view_uniforms, FIRST_SHADOW_VIEW, view_stride);
+            if let Some(ambient_upload) = &ambient_upload {
+                ambient_upload.write(uploads, ctx.encoder);
+            }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
         // Also side effects: the passes after read the buffers they write.
@@ -1551,6 +1596,20 @@ impl Renderer {
                     }
                 }
             });
+        // The ambient pass (M1 W5), a side effect before the main pass, which reads what it
+        // writes: with a probe grid, the sky's projection and the reflection cube's prefilter,
+        // which read this frame's face, the grid's relight and the characters' ambient; with GTAO,
+        // GTAO from the scene prepass, which its reads make run, without the characters the
+        // character prepass marks.
+        if let Some(pass) = ambient.pass {
+            let inputs = GtaoInputs {
+                depth: targets.depth,
+                normals: targets.normals,
+                outlines: targets.outlines,
+                characters: targets.character_depth,
+            };
+            pass.add(graph, view_bind_group, inputs, labels);
+        }
 
         // Fog cards fade against the scene prepass's depth where the frame has it.
         let card_depth_fade = fog_cards.depth_fade();
@@ -1702,7 +1761,7 @@ impl Renderer {
     }
 
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
-    /// size and sky cube faces.
+    /// size, sky cube faces and ambient textures.
     pub fn stats(&self) -> RenderStats {
         RenderStats {
             character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
@@ -1710,8 +1769,51 @@ impl Renderer {
             foliage_pipelines: self.pipelines.built(MaterialFamily::Foliage),
             sky: self.sky.stats(),
             fog: FogStats { card_pipelines: self.pipelines.built(MaterialFamily::FogCard), ..self.stats.fog },
+            ambient: self.ambient.stats(),
             ..self.stats
         }
+    }
+
+    /// Uploads a zone's ambient probe grid ([`sapphire_assets::probes::ProbeGrid::read`], M1
+    /// W5), replacing the grid the renderer had (a hot reload hands the new one here), or removes
+    /// it (`None`). The next frame relights all of it, later ones as the light changes; the
+    /// environment shader reads it in place of the ambient hemisphere where it reaches, and
+    /// characters read their ambient from it (see the [`ambient`](crate::ambient) module). The
+    /// environment's pipelines are built again with the grid's constants on (or off), and the
+    /// first grid builds the ambient pass's light pipelines and the reflection cube, on this
+    /// thread: a load-time cost.
+    ///
+    /// Fails, keeping no grid, if the grid is larger than the device's atlas, buffers or
+    /// dispatches allow.
+    pub fn set_probe_grid(&mut self, grid: Option<&ArchivedProbeGrid>) -> Result<(), RenderError> {
+        profiling::scope!("Renderer::set_probe_grid");
+        let result = self
+            .checked_build(|renderer| renderer.ambient.set_grid(&renderer.queue, grid, &renderer.shaders));
+        if result.is_err() {
+            self.ambient.set_grid(&self.queue, None, &self.shaders).expect("removing a grid can't fail");
+        }
+        self.rebuild_frame_bind_group();
+        let constants = self.ambient.constants();
+        self.checked_build(|renderer| renderer.pipelines.set_ambient_constants(&renderer.device, constants));
+        // Entries the character pass wrote for the old grid go back to the CPU's.
+        self.characters.invalidate();
+        result
+    }
+
+    /// Rebuilds group 0 after a buffer or texture in it was replaced.
+    fn rebuild_frame_bind_group(&mut self) {
+        self.frame_bind_group = create_frame_bind_group(
+            &self.device,
+            &self.layouts.frame,
+            FrameBindings {
+                uniforms: &self.frame_uniforms,
+                lights: &self.lights,
+                characters: &self.characters,
+                shadows: &self.shadows,
+                character_prepass: &self.character_prepass,
+                ambient: &self.ambient,
+            },
+        );
     }
 
     /// Sets the scene's size as a fraction of the target's width and height, from the next
@@ -1909,17 +2011,27 @@ fn upload(
     buffer::stage(belt, encoder, target, 0, bytes);
 }
 
+/// What group 0 binds, by owner (the crate docs' binding table).
+struct FrameBindings<'a> {
+    uniforms: &'a wgpu::Buffer,
+    lights: &'a Lights,
+    characters: &'a Characters,
+    shadows: &'a Shadows,
+    character_prepass: &'a CharacterPrepassTargets,
+    ambient: &'a Ambient,
+}
+
 fn create_frame_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    frame_uniforms: &wgpu::Buffer,
-    lights: &Lights,
-    characters: &Characters,
-    shadows: &Shadows,
-    character_prepass: &CharacterPrepassTargets,
+    bindings: FrameBindings<'_>,
 ) -> wgpu::BindGroup {
+    let FrameBindings { uniforms: frame_uniforms, lights, characters, shadows, character_prepass, ambient } =
+        bindings;
     let [shadow_uniforms, cascades, atlas, sampler] = shadows.frame_entries();
     let [character_depth, character_ids, character_sampler] = character_prepass.frame_entries();
+    let [ambient_uniforms, probe_atlas, bricks, reflection, occlusion, ambient_sampler] =
+        ambient.frame_entries();
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
         layout,
@@ -1935,6 +2047,12 @@ fn create_frame_bind_group(
             character_depth,
             character_ids,
             character_sampler,
+            ambient_uniforms,
+            probe_atlas,
+            bricks,
+            reflection,
+            occlusion,
+            ambient_sampler,
         ],
     })
 }

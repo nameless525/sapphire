@@ -86,6 +86,7 @@ use crate::character_maps::{MapKind, MapSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::material::{self, MaterialSettings};
 use crate::optimize::LodSettings;
+use crate::probes::{self, ProbeGridSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.
@@ -120,6 +121,8 @@ pub enum ImportSettings {
     Material(MaterialSettings),
     /// A VRM character (`.vrm`), 1.0 or 0.x: a mesh as glTF's, and its rig (M1 A6).
     Vrm(VrmSettings),
+    /// An ambient probe grid document (`.probes.ron`), baked from the meshes it names (M1 W5).
+    ProbeGrid(ProbeGridSettings),
 }
 
 impl ImportSettings {
@@ -133,6 +136,9 @@ impl ImportSettings {
         }
         if material::is_source(source) {
             return Some(Self::Material(MaterialSettings::default()));
+        }
+        if probes::is_source(source) {
+            return Some(Self::ProbeGrid(ProbeGridSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -163,7 +169,7 @@ impl ImportSettings {
         match self {
             Self::Gltf(settings) => Some(settings),
             Self::Vrm(settings) => Some(&settings.mesh),
-            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) => None,
+            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }
     }
 
@@ -172,7 +178,7 @@ impl ImportSettings {
         match self {
             Self::Gltf(settings) => Some(settings),
             Self::Vrm(settings) => Some(&mut settings.mesh),
-            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) => None,
+            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }
     }
 }

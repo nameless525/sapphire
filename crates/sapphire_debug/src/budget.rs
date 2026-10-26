@@ -74,6 +74,16 @@ impl BudgetTier {
         self.pick(3.5, 8.0)
     }
 
+    /// Light clustering and AO (§3.3's row): the light-cluster pass and the ambient pass (the
+    /// probe grid's relight, the sky's projection and prefilter, the characters' ambient and
+    /// GTAO, M1 W5). Mobile-Low's column has no figure: `None`.
+    pub fn clustering_ao(self) -> Option<Duration> {
+        match self {
+            Self::DesktopLow => Some(Duration::from_micros(1500)),
+            Self::MobileLow => None,
+        }
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {
@@ -226,6 +236,8 @@ mod tests {
         assert_eq!((desktop.prepass(), mobile.prepass()), (ms(1.5), ms(1.5)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));
         assert_eq!(BudgetTier::CURRENT == mobile, FormFactor::CURRENT == FormFactor::Mobile);
+        assert_eq!(desktop.clustering_ao(), Some(Duration::from_micros(1500)), "spec §3.3");
+        assert_eq!(mobile.clustering_ao(), None, "§3.3 has no Mobile-Low figure");
     }
 
     #[test]

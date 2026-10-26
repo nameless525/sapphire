@@ -859,3 +859,59 @@ fn zones_and_cutscenes_override_the_fog() {
     tod.stop_cutscene();
     assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.fog, base.look.fog);
 }
+
+#[test]
+fn probe_keys_follow_the_hour_and_cutscenes() {
+    let day = TodTimeline::default_day();
+    let baked: Vec<f32> = day.keys().iter().map(|key| key.time).collect();
+    let weights = |keys: sapphire_render::ProbeKeys| -> Vec<(u32, f32)> {
+        keys.keys
+            .iter()
+            .zip(keys.weights)
+            .filter(|(_, weight)| *weight > 0.0)
+            .map(|(&key, w)| (key, w))
+            .collect()
+    };
+    // On a key: that key alone.
+    let (_, mut tod) = time_of_day(DAY);
+    tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(weights(tod.probe_keys(&baked)), [(3, 1.0)], "10:00 is the day key");
+    // Between keys baked at the timeline's own: the timeline's eased weight, so the bounce moves
+    // with the look.
+    let (_, mut tod) = time_of_day(12.0);
+    tod.resolve(Vec3::ZERO, 0.0);
+    let segment = day.segment(12.0);
+    assert_eq!(
+        weights(tod.probe_keys(&baked)),
+        [(segment.from as u32, 1.0 - segment.weight), (segment.to as u32, segment.weight)]
+    );
+    // Other baked hours: linear in the hour, wrapping at midnight.
+    let (_, mut tod) = time_of_day(23.0);
+    tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(
+        weights(tod.probe_keys(&[6.0, 20.0])),
+        [(1, 0.7), (0, 0.3)],
+        "three of the ten hours from 20:00 to 6:00"
+    );
+    assert_eq!(weights(tod.probe_keys(&[12.0])), [(0, 1.0)], "one key holds all day");
+    assert_eq!(weights(tod.probe_keys(&[])), [], "no grid, no keys");
+    // A cutscene at its own hour crossfades to that hour's keys by its weight.
+    let shot = TodCutscene::new(
+        4.0,
+        1.0,
+        1.0,
+        Some(ShotTime { hours: 18.75, hours_per_second: 0.0 }),
+        vec![key(0.0)],
+        None,
+    )
+    .expect("valid");
+    let (_, mut tod) = time_of_day(DAY);
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(0.5);
+    tod.resolve(Vec3::ZERO, 0.0);
+    let weight = tod.stats().cutscene_weight;
+    assert!(weight > 0.0 && weight < 1.0);
+    let keys = weights(tod.probe_keys(&baked));
+    assert_eq!(keys, [(3, 1.0 - weight), (6, weight)], "the day key, and the sunset key");
+    assert!((keys.iter().map(|(_, w)| w).sum::<f32>() - 1.0).abs() < 1e-6);
+}

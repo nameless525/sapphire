@@ -126,6 +126,10 @@ impl Stage {
         if let Some(view) = options.foliage {
             scene.spawn_foliage(view, content.foliage(&mut renderer, &gpu)?);
         }
+        if options.probes {
+            let arcade = content.probes(&mut renderer, &gpu)?;
+            scene.spawn_arcade(arcade, content.probe_hours());
+        }
         if options.outline_row {
             scene.spawn_outline_row(character);
         }
@@ -213,6 +217,7 @@ impl Stage {
         #[cfg(feature = "dev")]
         self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
         self.content.update(&mut self.renderer, &self.gpu);
+        self.scene.set_probe_hours(self.content.probe_hours());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("offscreen target", view);
         let (width, height) = graph.size(target);

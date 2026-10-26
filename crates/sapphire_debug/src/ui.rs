@@ -11,7 +11,7 @@ use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_platform::PacingSource;
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{MAIN_PASS, PREPASSES, post, shadows, temporal};
+use sapphire_render::{MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -307,6 +307,19 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                     let passes = shadows::PASSES.iter().filter_map(|name| timings.get(name));
                     budget_row(ui, "  Shadows", passes.map(|pass| pass.exclusive).sum(), tier.shadows());
                 }
+                // The light-cluster pass and the ambient pass (M1 W5): the probe grid's relight,
+                // the sky's projection and prefilter, the characters' ambient and GTAO.
+                let mut clustering_ao = std::iter::once(&CLUSTER_PASS)
+                    .chain(&ambient::PASSES)
+                    .filter_map(|name| timings.get(name))
+                    .peekable();
+                if clustering_ao.peek().is_some() {
+                    let used = clustering_ao.map(|pass| pass.exclusive).sum();
+                    match tier.clustering_ao() {
+                        Some(budget) => budget_row(ui, "  Light clustering, AO", used, budget),
+                        None => unbudgeted_row(ui, "  Light clustering, AO", used),
+                    }
+                }
             }
             None => {
                 ui.label("GPU frame");
@@ -446,6 +459,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             format!("{} characters lit, {} ignored", render.characters, render.ignored_characters),
         );
         row(ui, "Shadows", shadow_text(&render.shadows));
+        row(ui, "Ambient", ambient_text(&render.ambient));
         let graph = frame.graph.stats();
         row(
             ui,
@@ -690,6 +704,50 @@ fn shadow_text(shadows: &sapphire_render::ShadowStats) -> String {
     )
 }
 
+/// The ambient probe grid, ambient occlusion and the reflection cube (M1 W5). The grid itself
+/// is a readout here; drawing its probes waits for the debug view modes (F5's second part).
+fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
+    let grid = if ambient.grid {
+        format!(
+            "grid: {} probes in {} of {} bricks, {}, {} keys ({} blended), {} bricks relit",
+            ambient.probes,
+            ambient.bricks,
+            ambient.brick_positions,
+            format_bytes(ambient.grid_bytes),
+            ambient.keys,
+            ambient.blended_keys,
+            ambient.relit_bricks
+        )
+    } else {
+        "no grid: the ambient hemisphere".to_owned()
+    };
+    let mut occlusion = Vec::new();
+    if ambient.capsule_ao {
+        occlusion.push(format!("{} capsules", ambient.capsules));
+    }
+    if ambient.gtao {
+        let (width, height) = ambient.gtao_size;
+        occlusion.push(format!("GTAO {width}×{height}"));
+    }
+    let occlusion =
+        if occlusion.is_empty() { "AO off".to_owned() } else { format!("AO: {}", occlusion.join(", ")) };
+    let reflections = if ambient.reflection_size > 0 {
+        format!(
+            "; reflections {}² in {} mips ({} faces filtered)",
+            ambient.reflection_size, ambient.reflection_mips, ambient.prefiltered_faces
+        )
+    } else {
+        String::new()
+    };
+    // The pass runs only with a grid or GTAO, and builds its pipelines only for them.
+    let pass = if ambient.pipelines > 0 {
+        format!("; pass: {} dispatches, {} pipelines", ambient.dispatches, ambient.pipelines)
+    } else {
+        "; no pass".to_owned()
+    };
+    format!("{grid}; {occlusion}{reflections}{pass}")
+}
+
 fn sky_text(sky: &sapphire_render::SkyStats) -> String {
     let layers: Vec<&str> = [(sky.stars, "stars"), (sky.clouds, "clouds"), (sky.cirrus, "cirrus")]
         .into_iter()
@@ -774,6 +832,15 @@ fn effects_text(
     }
 }
 
+/// A row whose budget spec §3 leaves without a figure on this tier ("—"): measured, never
+/// colored.
+fn unbudgeted_row(ui: &mut Ui, name: &str, used: Duration) {
+    ui.label(name);
+    ui.monospace(format_ms(used));
+    ui.monospace("—");
+    ui.end_row();
+}
+
 fn budget_row(ui: &mut Ui, name: &str, used: Duration, budget: Duration) {
     ui.label(name);
     let color = budget_color(budget::budget_use(used, budget));
@@ -781,6 +848,9 @@ fn budget_row(ui: &mut Ui, name: &str, used: Duration, budget: Duration) {
     ui.monospace(if budget.is_zero() { "—".to_owned() } else { format_ms(budget) });
     ui.end_row();
 }
+
+/// The light-cluster pass's name in the frame graph (`sapphire_render`'s renderer).
+const CLUSTER_PASS: &str = "light clusters";
 
 /// Green within three quarters of the budget, amber up to it, red over.
 fn budget_color(fraction: f32) -> Color32 {

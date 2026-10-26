@@ -29,9 +29,19 @@
 //!   - their fog card materials, `mist.material.ron` and `haze.material.ron`, read
 //!     **`mist.png`** (mask, linear): R a soft bank of mist, densest low and fading to nothing
 //!     at every edge, G a tiling octave of noise the cards drift through.
+//! - **`arcade.glb`** (M1 W5), a second mesh in world space that only the sandbox's `--probes`
+//!   places, so the courtyard of the scenes before it stays as it was: an arched stone gateway in
+//!   the wall's gap, and a loggia, a walkway roofed in terracotta plaster on stone pillars along
+//!   the wall's right half, closed at its end. Corners, the arch's underside and the shade under
+//!   the roof are where ambient occlusion and bounce light show.
+//! - **`courtyard.probes.ron`** (M1 W5): the ambient probe grid baked over the courtyard and the
+//!   arcade ([`probe_document`]), 1.5 m apart on desktop and 3 m on phones, under the default
+//!   day's keys. It names those two meshes alone: fog cards are transparent fog, neither
+//!   occluders nor bounce surfaces, and the bake refuses their family.
 //!
-//! The golden scenes `environment-day`, `environment-sunset` and `environment-night` show it
-//! with the character, without fog; the `fog-*` scenes show it in fog, with the cards.
+//! The golden scenes `environment-day`, `environment-sunset` and `environment-night` show the
+//! courtyard with the character, without fog; the `fog-*` scenes show it in fog, with the cards;
+//! the `ambient-*` scenes show it with the arcade, lit by its probe grid.
 
 use std::f32::consts::{PI, TAU};
 use std::io;
@@ -48,6 +58,7 @@ use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
 use super::shapes;
 use crate::color::{srgb8, unorm8};
 use crate::gltf_writer::{Geometry, GltfWriter};
+use crate::probes::{BakeBounds, BakeMesh, BakeTimeline, PerCook, ProbeGridDocument, ShOrder};
 
 /// The directory of the environment content, under the samples directory.
 pub const DIR: &str = "environment";
@@ -65,6 +76,8 @@ pub const HAZE_CARD_FILE_NAME: &str = "haze_card.glb";
 pub const MIST_MATERIAL_FILE_NAME: &str = "mist.material.ron";
 pub const HAZE_MATERIAL_FILE_NAME: &str = "haze.material.ron";
 pub const MIST_MAP_FILE_NAME: &str = "mist.png";
+pub const ARCADE_FILE_NAME: &str = "arcade.glb";
+pub const PROBES_FILE_NAME: &str = "courtyard.probes.ron";
 
 /// The assets' IDs, which their committed sidecars (`content/samples/environment/*.meta`) give
 /// them: materials name their maps by ID, and the courtyard's sidecar binds its slots to the
@@ -86,6 +99,9 @@ pub const MIST_MAP_ID: AssetId = AssetId::from_text("fa5aecd1-fe5a-4655-a055-97c
 /// The fog cards' one slot each, with the material it is bound to.
 pub const MIST_SLOT: (&str, AssetId) = ("Mist", MIST_MATERIAL_ID);
 pub const HAZE_SLOT: (&str, AssetId) = ("Haze", HAZE_MATERIAL_ID);
+pub const ARCADE_ID: AssetId = AssetId::from_text("29f2acee-efb7-4abb-8df6-f9b80a877df8");
+/// The courtyard's probe grid, baked over the courtyard and the arcade.
+pub const PROBES_ID: AssetId = AssetId::from_text("2b0e5d95-2b11-4042-8435-7de3da07ba18");
 
 /// The courtyard's material slots, in file order, with the material each is bound to.
 pub const SLOTS: [(&str, AssetId); 5] = [
@@ -95,6 +111,9 @@ pub const SLOTS: [(&str, AssetId); 5] = [
     ("Wall", WALL_MATERIAL_ID),
     ("Lantern", LANTERN_MATERIAL_ID),
 ];
+
+/// The arcade's material slots, in file order, with the material each is bound to.
+pub const ARCADE_SLOTS: [(&str, AssetId); 2] = [("Stone", STONE_MATERIAL_ID), ("Wall", WALL_MATERIAL_ID)];
 
 /// Meters from the character to the ground's edge.
 const GROUND_HALF: f32 = 110.0;
@@ -124,6 +143,11 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path(MIST_MATERIAL_FILE_NAME), document(&mist_material())),
         (path(HAZE_MATERIAL_FILE_NAME), document(&haze_material())),
         (path(MIST_MAP_FILE_NAME), mist_png()?),
+        (path(ARCADE_FILE_NAME), arcade_glb()),
+        (
+            path(PROBES_FILE_NAME),
+            sapphire_serialize::to_ron(&probe_document()).map_err(io::Error::other)?.into_bytes(),
+        ),
     ])
 }
 
@@ -547,6 +571,191 @@ fn lanterns() -> Geometry {
     geometry
 }
 
+/// The arched gateway in the wall's gap: its outer edges, the opening's half-width and center, and
+/// where the arch springs and the block ends, in meters.
+const GATEWAY_X: (f32, f32) = (4.55, 7.95);
+const GATEWAY_OPENING: (f32, f32) = (6.25, 1.0);
+const GATEWAY_DEPTH: f32 = 0.45;
+const GATEWAY_SPRING: f32 = 2.2;
+const GATEWAY_TOP: f32 = 3.6;
+
+/// The loggia along the wall's right half: its floor's extent in x and z, its front pillars'
+/// x, and its height from floor to roof.
+const LOGGIA_X: (f32, f32) = (7.9, 15.75);
+const LOGGIA_Z: (f32, f32) = (WALL_Z + WALL_HALF_THICKNESS, -5.2);
+const LOGGIA_PILLARS: [f32; 3] = [8.25, 11.9, 15.4];
+const LOGGIA_HEIGHT: f32 = 2.55;
+
+/// The arcade as a binary glTF: one mesh in world space, a primitive per slot.
+pub fn arcade_glb() -> Vec<u8> {
+    let mut gltf = GltfWriter::default();
+    let (loggia_stone, loggia_wall) = loggia();
+    let mut stone = gateway();
+    append(&mut stone, loggia_stone);
+    let primitives: Vec<(Geometry, usize)> = ARCADE_SLOTS
+        .iter()
+        .zip([stone, loggia_wall])
+        .map(|(&(name, _), geometry)| {
+            let material = gltf.add_material(json!({
+                "name": name,
+                "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0] },
+            }));
+            (geometry, material)
+        })
+        .collect();
+    let primitives: Vec<(&Geometry, Option<usize>)> =
+        primitives.iter().map(|(geometry, material)| (geometry, Some(*material))).collect();
+    let mesh = gltf.add_mesh("Arcade", &primitives);
+    let root = gltf.add_node(json!({ "name": "Arcade", "mesh": mesh }));
+    gltf.add_root(root);
+    gltf.to_glb()
+}
+
+/// The lowest and highest ground over the rectangle `x` × `z`, sampled every half meter.
+fn ground_range(x: (f32, f32), z: (f32, f32)) -> (f32, f32) {
+    let steps = |(from, to): (f32, f32)| ((to - from) / 0.5).ceil() as u32;
+    let (nx, nz) = (steps(x), steps(z));
+    let mut range = (f32::INFINITY, f32::NEG_INFINITY);
+    for i in 0..=nx {
+        for j in 0..=nz {
+            let h = ground_height(
+                x.0 + (x.1 - x.0) * i as f32 / nx as f32,
+                z.0 + (z.1 - z.0) * j as f32 / nz as f32,
+            );
+            range = (range.0.min(h), range.1.max(h));
+        }
+    }
+    range
+}
+
+/// A box from `min` to `max`.
+fn block(min: Vec3, max: Vec3) -> Geometry {
+    placed(shapes::cuboid(((max - min) * 0.5).to_array()), (min + max) * 0.5)
+}
+
+/// The gateway: two piers, and above them a block with a semicircular arch cut through it,
+/// standing across the wall's gap.
+fn gateway() -> Geometry {
+    let (x0, x1) = GATEWAY_X;
+    let (cx, r) = GATEWAY_OPENING;
+    let (z0, z1) = (WALL_Z - GATEWAY_DEPTH, WALL_Z + GATEWAY_DEPTH);
+    let (low, _) = ground_range(GATEWAY_X, (z0, z1));
+    let bottom = low - 0.25;
+    let mut geometry = Geometry::default();
+    // The piers, up to where the arch springs.
+    append(&mut geometry, block(Vec3::new(x0, bottom, z0), Vec3::new(cx - r, GATEWAY_SPRING, z1)));
+    append(&mut geometry, block(Vec3::new(cx + r, bottom, z0), Vec3::new(x1, GATEWAY_SPRING, z1)));
+    // Above them, the arch's faces: a strip between the circle and the block's outline, at
+    // angles from 0 (right) to π (left), with the block's top corners among them.
+    let center = Vec2::new(cx, GATEWAY_SPRING);
+    let height = GATEWAY_TOP - GATEWAY_SPRING;
+    let mut angles: Vec<f32> = (0..=24).map(|i| PI * i as f32 / 24.0).collect();
+    angles.push(height.atan2(x1 - cx));
+    angles.push(height.atan2(x0 - cx));
+    angles.sort_by(f32::total_cmp);
+    angles.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+    let inner = |angle: f32| center + Vec2::new(angle.cos(), angle.sin()) * r;
+    let outer = |angle: f32| {
+        let direction = Vec2::new(angle.cos(), angle.sin());
+        let mut t = f32::INFINITY;
+        if direction.x > 1e-6 {
+            t = t.min((x1 - cx) / direction.x);
+        }
+        if direction.x < -1e-6 {
+            t = t.min((x0 - cx) / direction.x);
+        }
+        if direction.y > 1e-6 {
+            t = t.min(height / direction.y);
+        }
+        center + direction * t
+    };
+    for pair in angles.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let [pa, qa, qb, pb] = [inner(a), outer(a), outer(b), inner(b)];
+        // The front face (+z) winds counter-clockwise as the angle grows; the back reversed.
+        let at = |p: Vec2, z: f32| [p.x, p.y, z];
+        quad(&mut geometry, [at(pa, z1), at(qa, z1), at(qb, z1), at(pb, z1)], [0.0, 0.0, 1.0]);
+        quad(&mut geometry, [at(pb, z0), at(qb, z0), at(qa, z0), at(pa, z0)], [0.0, 0.0, -1.0]);
+        // The arch's underside, facing its center.
+        let mid = (a + b) * 0.5;
+        let inward = [-mid.cos(), -mid.sin(), 0.0];
+        quad(&mut geometry, [at(pa, z0), at(pa, z1), at(pb, z1), at(pb, z0)], inward);
+    }
+    // The block's outer sides and top above the piers.
+    let corners = |x: f32| {
+        [[x, GATEWAY_SPRING, z0], [x, GATEWAY_TOP, z0], [x, GATEWAY_TOP, z1], [x, GATEWAY_SPRING, z1]]
+    };
+    let [a, b, c, d] = corners(x1);
+    quad(&mut geometry, [a, b, c, d], [1.0, 0.0, 0.0]);
+    let [a, b, c, d] = corners(x0);
+    quad(&mut geometry, [d, c, b, a], [-1.0, 0.0, 0.0]);
+    quad(
+        &mut geometry,
+        [[x0, GATEWAY_TOP, z0], [x0, GATEWAY_TOP, z1], [x1, GATEWAY_TOP, z1], [x1, GATEWAY_TOP, z0]],
+        [0.0, 1.0, 0.0],
+    );
+    geometry
+}
+
+/// Appends the quad `corners` (counter-clockwise seen from its front) with the flat `normal`.
+fn quad(geometry: &mut Geometry, corners: [[f32; 3]; 4], normal: [f32; 3]) {
+    let first = geometry.positions.len() as u32;
+    for (corner, uv) in corners.iter().zip([[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]) {
+        geometry.positions.push(*corner);
+        geometry.normals.push(normal);
+        geometry.uvs.push(uv);
+        geometry.colors.push([255; 4]);
+    }
+    geometry.indices.extend([0, 1, 2, 0, 2, 3].map(|i| first + i));
+}
+
+/// The loggia: a stone floor raised over the rolling ground, pillars along its front, and in
+/// plaster a roof, the wall raised to it behind and a wall closing its right end. Returns its
+/// stone and its plaster.
+fn loggia() -> (Geometry, Geometry) {
+    let (x0, x1) = LOGGIA_X;
+    let (z0, z1) = LOGGIA_Z;
+    let (low, high) = ground_range(LOGGIA_X, LOGGIA_Z);
+    let floor = high + 0.12;
+    let roof = floor + LOGGIA_HEIGHT;
+    let mut stone = block(Vec3::new(x0, low - 0.3, z0), Vec3::new(x1, floor, z1));
+    for x in LOGGIA_PILLARS {
+        let half = 0.17;
+        append(
+            &mut stone,
+            block(Vec3::new(x - half, floor, z1 - 0.2 - 2.0 * half), Vec3::new(x + half, roof, z1 - 0.2)),
+        );
+    }
+    let wall_back = WALL_Z - WALL_HALF_THICKNESS;
+    let coping_top = WALL_HEIGHT + 0.14;
+    let mut plaster =
+        block(Vec3::new(x0 - 0.1, roof, wall_back - 0.1), Vec3::new(x1 + 0.35, roof + 0.22, z1 + 0.05));
+    append(&mut plaster, block(Vec3::new(7.5, coping_top, wall_back), Vec3::new(16.0, roof, z0)));
+    append(&mut plaster, block(Vec3::new(x1, low - 0.3, z0), Vec3::new(x1 + 0.3, roof, z1)));
+    (stone, plaster)
+}
+
+/// The courtyard's probe grid: the box the camera's scenes see around the character, over the
+/// courtyard and the arcade, its lowest probes a quarter meter above the flat ground and below
+/// it (filled from above), under the default day's keys.
+pub fn probe_document() -> ProbeGridDocument {
+    ProbeGridDocument {
+        bounds: BakeBounds { min: [-22.0, -1.25, -34.0], max: [26.0, 10.75, 10.0] },
+        spacing: PerCook { desktop: 1.5, mobile: 3.0 },
+        visibility: PerCook { desktop: ShOrder::L2, mobile: ShOrder::L1 },
+        rays: PerCook { desktop: 256, mobile: 128 },
+        surfel_rays: 64,
+        surfel_spacing: 0.5,
+        bounces: 2,
+        bounce_strength: 1.0,
+        timeline: BakeTimeline::DefaultDay,
+        meshes: vec![
+            BakeMesh { mesh: COURTYARD_ID, translation: [0.0; 3], yaw: 0.0 },
+            BakeMesh { mesh: ARCADE_ID, translation: [0.0; 3], yaw: 0.0 },
+        ],
+    }
+}
+
 /// `geometry` with its vertex color's ambient occlusion (R) at `ao(y)` of each vertex's height.
 fn occluded(mut geometry: Geometry, ao: impl Fn(f32) -> f32) -> Geometry {
     geometry.colors =
@@ -586,9 +795,19 @@ mod tests {
 
     #[test]
     fn the_courtyard_imports_with_a_slot_per_material() {
-        let mesh = import::gltf::import_slice(&courtyard_glb(), None).expect("import");
+        check_mesh(&courtyard_glb(), &SLOTS);
+    }
+
+    #[test]
+    fn the_arcade_imports_with_its_slots() {
+        check_mesh(&arcade_glb(), &ARCADE_SLOTS);
+    }
+
+    /// `glb` imports with `slots`, cooks, and every triangle faces the way its normals do.
+    fn check_mesh(glb: &[u8], slots: &[(&str, AssetId)]) {
+        let mesh = import::gltf::import_slice(glb, None).expect("import");
         let names: Vec<&str> = mesh.materials.iter().map(|slot| slot.name.as_str()).collect();
-        assert_eq!(names, SLOTS.map(|(name, _)| name));
+        assert_eq!(names, slots.iter().map(|(name, _)| *name).collect::<Vec<_>>());
         let cooked = mesh.pack(PositionFormat::Unorm16, &BTreeMap::new()).unwrap().to_cooked().expect("cook");
         sapphire_assets::mesh::Mesh::read(&cooked).expect("structurally valid");
         // Every triangle faces the way its normals do.
@@ -660,13 +879,18 @@ mod tests {
             (MIST_MATERIAL_FILE_NAME, MIST_MATERIAL_ID),
             (HAZE_MATERIAL_FILE_NAME, HAZE_MATERIAL_ID),
             (MIST_MAP_FILE_NAME, MIST_MAP_ID),
+            (ARCADE_FILE_NAME, ARCADE_ID),
+            (PROBES_FILE_NAME, PROBES_ID),
         ];
         for (file, id) in ids {
             let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(file))).expect("a sidecar");
             assert_eq!(meta.id, id, "{file}");
         }
-        for (_, bytes) in files().expect("files") {
+        for (name, bytes) in files().expect("files") {
             let Ok(text) = String::from_utf8(bytes) else { continue };
+            if name.ends_with(crate::probes::SOURCE_SUFFIX) {
+                continue;
+            }
             let document = AnyMaterialDocument::from_ron(&text).expect("a material document");
             let textures = document.textures();
             assert!(
@@ -679,19 +903,38 @@ mod tests {
             let crate::meta::ImportSettings::Gltf(settings) = meta.importer else { panic!("a glTF sidecar") };
             settings.materials.iter().map(|(name, id)| (name.clone(), *id)).collect()
         };
-        let mut slots: Vec<(String, AssetId)> =
-            SLOTS.iter().map(|&(name, id)| (name.to_owned(), id)).collect();
-        slots.sort_unstable();
-        assert_eq!(bound(COURTYARD_FILE_NAME), slots, "every slot bound to its material");
+        for (file, slots) in [(COURTYARD_FILE_NAME, &SLOTS[..]), (ARCADE_FILE_NAME, &ARCADE_SLOTS[..])] {
+            let mut slots: Vec<(String, AssetId)> =
+                slots.iter().map(|&(name, id)| (name.to_owned(), id)).collect();
+            slots.sort_unstable();
+            assert_eq!(bound(file), slots, "every slot of {file} bound to its material");
+        }
         for (file, (slot, material)) in [(MIST_SHEET_FILE_NAME, MIST_SLOT), (HAZE_CARD_FILE_NAME, HAZE_SLOT)]
         {
             assert_eq!(bound(file), [(slot.to_owned(), material)], "{file}");
         }
+        let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(PROBES_FILE_NAME)))
+            .expect("a sidecar");
+        assert!(matches!(meta.importer, crate::meta::ImportSettings::ProbeGrid(_)));
+    }
+
+    #[test]
+    fn the_probe_document_names_both_meshes_and_round_trips() {
+        let document = probe_document();
+        let meshes: Vec<AssetId> = document.meshes.iter().map(|placed| placed.mesh).collect();
+        assert_eq!(meshes, [COURTYARD_ID, ARCADE_ID]);
+        let text = sapphire_serialize::to_ron(&document).unwrap();
+        assert_eq!(crate::probes::read(text.as_bytes()).unwrap(), document);
+        // The lowest probes above the flat ground stand off it, not on it.
+        let spacing = document.spacing.desktop;
+        let above = (0.0 - document.bounds.min[1]).rem_euclid(spacing);
+        assert!(above > 0.1 && spacing - above > 0.1, "{above}");
     }
 
     #[test]
     fn generation_is_deterministic() {
         assert_eq!(courtyard_glb(), courtyard_glb());
+        assert_eq!(arcade_glb(), arcade_glb());
         assert_eq!(band_png().unwrap(), band_png().unwrap());
         assert_eq!(ground_png().unwrap(), ground_png().unwrap());
         assert_eq!(mist_png().unwrap(), mist_png().unwrap());

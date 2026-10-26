@@ -27,7 +27,10 @@
 //! - **The courtyard** (`--environment`): the environment shader's test scene around the
 //!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
 //!   to show it ([`Scene::spawn_environment`], [`crate::environment`]); with fog, its fog cards,
-//!   static entities of their own ([`Scene::spawn_fog_cards`]).
+//!   static entities of their own ([`Scene::spawn_fog_cards`]); with `--probes`, its arcade,
+//!   another at the origin, a camera turned to it, and the key hours of the ambient probe grid
+//!   baked for both, from which time of day picks the keys each frame's bounce blends (M1 W5,
+//!   [`Scene::spawn_arcade`]).
 //! - **The plants** (`--foliage`): trees, bushes and grass patches in the courtyard, static
 //!   entities with a [`RenderMesh`] and their placement, which the wind sways in the shader,
 //!   and a camera for the view asked for ([`Scene::spawn_foliage`], [`Scene::frame_foliage`],
@@ -160,6 +163,10 @@ pub(crate) struct Scene {
     foliage_view: Option<FoliageView>,
     /// The air foliage moves in: calm unless `--foliage` or `--wind` set it.
     wind: Wind,
+    /// The arcade, with `--probes`.
+    arcade: Option<Entity>,
+    /// The hours the renderer's probe grid was baked at (`--probes`); empty without one.
+    probe_hours: Vec<f32>,
     /// The outline row, with `--outline-row`.
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
@@ -244,6 +251,8 @@ impl Scene {
             foliage: Vec::new(),
             foliage_view: None,
             wind: Wind::default(),
+            arcade: None,
+            probe_hours: Vec::new(),
             outline_row: None,
             hard_edges: None,
             stage: Vec::new(),
@@ -503,8 +512,8 @@ impl Scene {
 
     /// Builds the stage (`--stage`) around the subject, the face rig with `--faces` or else the
     /// character, drawing `meshes`: the character without its pedestal, which stands on the
-    /// floor of its own, and with [`StageLayout::Pillar`] a pillar placed for the key light at the
-    /// scene's hour.
+    /// floor of its own (or on a stone plinth, with [`StageLayout::Plinth`]), and with
+    /// [`StageLayout::Pillar`] a pillar placed for the key light at the scene's hour.
     /// Call after the hour is set. The pieces never move, so they are extracted once.
     pub fn spawn_stage(&mut self, layout: StageLayout, meshes: StageMeshes) {
         self.set_character_mesh(meshes.figure);
@@ -532,7 +541,7 @@ impl Scene {
         let eye = self.ecs.world().resource::<OrbitCamera>().eye();
         self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
         let world = self.ecs.world_mut();
-        let pedestal = meshes.pedestal.is_some();
+        let pedestal = meshes.pedestal.map(|(_, bounds)| bounds);
         for (piece, place) in stage::placements(layout, &subject, pedestal, -packet.sun.direction) {
             let entity = world.spawn((RenderMesh(meshes.get(piece)), RenderTransform(place))).id();
             self.stage.push((entity, piece));
@@ -624,6 +633,33 @@ impl Scene {
         self.wind = wind;
     }
 
+    /// Places the courtyard's arcade (`--probes`), drawing `mesh`, where its probe grid was baked
+    /// with it, turns the camera to it, and takes the grid's key `hours`. It never moves, so it is
+    /// extracted once.
+    pub fn spawn_arcade(&mut self, mesh: MeshHandle, hours: &[f32]) {
+        let camera = environment::arcade_camera(self.bounds);
+        let world = self.ecs.world_mut();
+        world.insert_resource(camera);
+        self.arcade = Some(world.spawn((RenderMesh(mesh), RenderTransform(Mat4::IDENTITY))).id());
+        self.set_probe_hours(hours);
+    }
+
+    /// Sets the mesh the arcade draws again: after GPU device loss.
+    pub fn set_arcade_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(arcade) = self.arcade {
+            self.ecs.world_mut().entity_mut(arcade).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// The hours the renderer's probe grid was baked at, which each frame's packet picks its
+    /// bounce keys by: after a new grid (hot reload). Allocates nothing while they stay the same.
+    pub fn set_probe_hours(&mut self, hours: &[f32]) {
+        if self.probe_hours != hours {
+            self.probe_hours.clear();
+            self.probe_hours.extend_from_slice(hours);
+        }
+    }
+
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -696,6 +732,7 @@ impl Scene {
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
+        let probe_hours = &self.probe_hours;
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             let camera = world.resource::<OrbitCamera>();
@@ -708,6 +745,8 @@ impl Scene {
             packet.time_seconds =
                 clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
             world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
+            // The probe grid's bounce keys for the hour (M1 W5): none without a grid.
+            packet.probe_keys = world.resource::<TimeOfDay>().probe_keys(probe_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
             packet.sky_material = sky_material;

@@ -237,7 +237,8 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     surface.split = split;
     let lit = light_step(split.x, width, x);
     let tone = mix(shade_tint(surface, material, x, width), vec3<f32>(1.0), lit);
-    let lit_line = line * (tone * rig.key_radiance.rgb + character_gi(surface, rig, in.world_position));
+    let gi = character_gi(surface, rig, characters[in.character].ambient, in.world_position);
+    let lit_line = line * (tone * rig.key_radiance.rgb + gi);
     // Unlit lines are their color exactly, and every line takes the fog its surface does (M1 W3),
     // at the hull.
     let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);

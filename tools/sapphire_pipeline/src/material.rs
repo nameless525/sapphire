@@ -97,7 +97,10 @@ impl TextureKind {
                 MapKind::Ramp => Self::Ramp,
                 MapKind::Ilm => Self::Ilm,
             },
-            ImportSettings::Gltf(_) | ImportSettings::Vrm(_) | ImportSettings::Material(_) => return None,
+            ImportSettings::Gltf(_)
+            | ImportSettings::Vrm(_)
+            | ImportSettings::Material(_)
+            | ImportSettings::ProbeGrid(_) => return None,
         })
     }
 

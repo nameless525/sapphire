@@ -12,6 +12,7 @@ use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, Vertex
 use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
+use crate::ambient;
 use crate::character_prepass;
 use crate::characters::GpuCharacter;
 use crate::environment::{self, EnvironmentSettings};
@@ -643,8 +644,9 @@ pub(crate) mod override_constant {
 #[derive(Debug)]
 pub(crate) struct Layouts {
     /// Group 0: frame constants, local lights and their lists, the characters' entries, the
-    /// shadows' uniforms, maps and comparison sampler (M1 R4), and the character prepass's
-    /// depth and IDs with the sampler that gathers them (M1 C5).
+    /// shadows' uniforms, maps and comparison sampler (M1 R4), the character prepass's depth and
+    /// IDs with the sampler that gathers them (M1 C5), and the ambient uniforms, probe atlas, brick
+    /// table, reflection cube, GTAO and their sampler (M1 W5).
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
@@ -686,42 +688,42 @@ impl Layouts {
             },
             count: None,
         };
+        let frame = [
+            buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>()),
+            buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
+            buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
+            buffer(3, S::FRAGMENT, storage, false, size_of::<GpuCharacter>()),
+            buffer(4, S::FRAGMENT, uniform, false, size_of::<ShadowUniforms>()),
+            depth(5, wgpu::TextureViewDimension::D2Array),
+            depth(6, wgpu::TextureViewDimension::D2),
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: S::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                count: None,
+            },
+            depth(8, wgpu::TextureViewDimension::D2),
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: S::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: S::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+        ];
+        let frame: Vec<wgpu::BindGroupLayoutEntry> =
+            frame.into_iter().chain(ambient::frame_layout_entries()).collect();
         Self {
-            frame: layout(
-                "frame",
-                &[
-                    buffer(0, S::VERTEX_FRAGMENT, uniform, false, size_of::<FrameUniforms>()),
-                    buffer(1, S::FRAGMENT, storage, false, size_of::<GpuLight>()),
-                    buffer(2, S::FRAGMENT, storage, false, size_of::<u32>()),
-                    buffer(3, S::FRAGMENT, storage, false, size_of::<GpuCharacter>()),
-                    buffer(4, S::FRAGMENT, uniform, false, size_of::<ShadowUniforms>()),
-                    depth(5, wgpu::TextureViewDimension::D2Array),
-                    depth(6, wgpu::TextureViewDimension::D2),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 7,
-                        visibility: S::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                    depth(8, wgpu::TextureViewDimension::D2),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 9,
-                        visibility: S::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Uint,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 10,
-                        visibility: S::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        count: None,
-                    },
-                ],
-            ),
+            frame: layout("frame", &frame),
             view: layout(
                 "view",
                 &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
@@ -954,7 +956,8 @@ impl MeshModules {
             | Program::Skinning
             | Program::Post
             | Program::Temporal
-            | Program::Shadows => unreachable!("not a mesh program"),
+            | Program::Shadows
+            | Program::Ambient => unreachable!("not a mesh program"),
         }
     }
 
@@ -996,6 +999,9 @@ struct PipelineTarget {
     shadows: Option<[(&'static str, f64); 2]>,
     /// Fog cards fade against the scene prepass's depth (`fog::FogCards`).
     card_depth_fade: bool,
+    /// The environment shader's ambient constants (M1 W5, `ambient::constants`): only those on,
+    /// so without a probe grid or ambient occlusion it is the shader as it was without them.
+    ambient: Vec<(&'static str, f64)>,
 }
 
 impl Pipelines {
@@ -1014,6 +1020,7 @@ impl Pipelines {
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
         card_depth_fade: bool,
+        ambient: Vec<(&'static str, f64)>,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
@@ -1063,6 +1070,7 @@ impl Pipelines {
             cache: cache.cloned(),
             shadows: shadows.map(ShadowSettings::constants),
             card_depth_fade,
+            ambient,
         };
         let modules = MeshModules {
             character: shaders::module(device, Program::AnimeCharacter, sources),
@@ -1250,6 +1258,34 @@ impl Pipelines {
         }
     }
 
+    /// Sets the environment and foliage shaders' ambient constants (M1 W5: a probe grid arrived or
+    /// left) and builds every environment and foliage surface pipeline built so far again with
+    /// them, on this thread. Returns the pipelines built: none if the constants didn't change.
+    pub(crate) fn set_ambient_constants(
+        &mut self,
+        device: &wgpu::Device,
+        constants: Vec<(&'static str, f64)>,
+    ) -> u32 {
+        if self.target.ambient == constants {
+            return 0;
+        }
+        self.target.ambient = constants;
+        let mut built = 0;
+        for format in PositionFormat::ALL {
+            let Some(mesh) = self.mesh[format_index(format)].as_mut() else { continue };
+            let lit_by_ambient =
+                |v: &SurfaceVariant| matches!(v.shading, Shading::Environment | Shading::Foliage);
+            for variant in SurfaceVariant::ALL.into_iter().filter(lit_by_ambient) {
+                if mesh.surfaces[variant.index()].is_some() {
+                    let pipeline = build_surface(device, &self.target, &self.modules, format, variant);
+                    mesh.surfaces[variant.index()] = Some(pipeline);
+                    built += 1;
+                }
+            }
+        }
+        built
+    }
+
     /// Pipelines of `family` built so far, across formats: anime character surfaces and
     /// outlines, the environment's or fog cards' surfaces, or foliage's surfaces, prepasses and
     /// casters.
@@ -1286,6 +1322,7 @@ fn build_surface(
         Shading::Character(_) => "anime character",
         Shading::Environment => {
             constants.push((environment::SPECULAR_CONSTANT, target.environment.specular.constant()));
+            constants.extend(target.ambient.iter().copied());
             "environment"
         }
         Shading::FogCard => {
@@ -1296,6 +1333,7 @@ fn build_surface(
         }
         Shading::Foliage => {
             constants.extend(target.foliage.constants());
+            constants.extend(target.ambient.iter().copied());
             constants.push((foliage::override_constant::SAMPLES, f64::from(target.sample_count)));
             // Alpha-to-coverage under MSAA, where the tier asks for it.
             if variant.coverage == Coverage::AlphaTest && target.foliage.covers(target.sample_count) {

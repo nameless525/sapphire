@@ -21,6 +21,10 @@
 //! Every LOD's indices are uploaded with the mesh and its index ranges recorded; draws use
 //! LOD0 until LOD selection lands with culling.
 //!
+//! Each buffer hands out ranges first fit ([`RangeAllocator`]): a mesh replaced in place (hot
+//! reload, live link: [`MeshPool::replace`]) frees its old ranges for later uploads, under the
+//! same handle. Meshes are not unloaded yet (see the crate docs' later milestones).
+//!
 //! # Skinned and morphed meshes (M1 R2)
 //!
 //! A mesh with a skin or morph targets is never drawn from its own positions and shading:
@@ -45,12 +49,13 @@
 //! (all of a body, usually) costs one read of its two offsets.
 
 use sapphire_assets::mesh::{
-    ArchivedInfluences, ArchivedMesh, MorphDelta, PositionFormat, VertexShading, VertexSurface,
+    ArchivedInfluences, ArchivedMesh, ArchivedSlotMaterial, MorphDelta, PositionFormat, VertexShading,
+    VertexSurface,
 };
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
-use crate::buffer::GrowableBuffer;
+use crate::buffer::{GrowableBuffer, RangeAllocator};
 use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
 use crate::pipelines::format_index;
@@ -116,6 +121,28 @@ pub(crate) struct MeshRecord {
     pub lods: Vec<Vec<SubmeshDraw>>,
     /// Per LOD: the vertices it reads, a prefix of the streams.
     pub lod_vertices: Vec<u32>,
+    /// The pool's ranges it occupies.
+    pub placement: Placement,
+    /// Per material slot: the material it draws with, and whether the mesh embeds it.
+    pub slots: Vec<SlotRecord>,
+}
+
+/// A mesh's material slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SlotRecord {
+    pub material: SubmeshMaterial,
+    /// The mesh embeds the material (`SlotMaterial::Embedded`), so the material is the mesh's
+    /// own; otherwise it is a material asset's.
+    pub embedded: bool,
+}
+
+/// The ranges of the pool's buffers a mesh occupies, as `(start, length)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Placement {
+    /// Vertices of its slab, or words of the deformable buffer.
+    pub vertices: (u32, u32),
+    /// Indices of the index buffer.
+    pub indices: (u32, u32),
 }
 
 /// Where a mesh's vertex streams are.
@@ -194,7 +221,10 @@ pub(crate) struct Slab {
     positions: GrowableBuffer,
     shading: GrowableBuffer,
     surface: GrowableBuffer,
-    vertex_count: u32,
+    /// Vertex ranges in use, shared by the three streams.
+    vertices: RangeAllocator,
+    /// Vertices in use.
+    used: u32,
 }
 
 impl Slab {
@@ -214,7 +244,8 @@ impl Slab {
             positions: stream(positions, format.stride() as u64),
             shading: stream(shading, SHADING_BYTES),
             surface: stream(surface, SURFACE_BYTES),
-            vertex_count: 0,
+            vertices: RangeAllocator::default(),
+            used: 0,
         }
     }
 
@@ -236,7 +267,7 @@ impl Slab {
     }
 
     fn bytes_used(&self) -> u64 {
-        u64::from(self.vertex_count) * (self.position_stride() + SHADING_BYTES + SURFACE_BYTES)
+        u64::from(self.used) * (self.position_stride() + SHADING_BYTES + SURFACE_BYTES)
     }
 
     fn growths(&self) -> u32 {
@@ -256,9 +287,13 @@ pub(crate) struct MeshPool {
     slabs: [Slab; 2],
     /// Skinned and morphed meshes' streams (see the module docs).
     deformable: GrowableBuffer,
-    deformable_words: u32,
+    /// Word ranges of the deformable buffer in use, and the words they hold.
+    deformable_words: RangeAllocator,
+    deformable_used: u32,
     indices: GrowableBuffer,
-    index_count: u32,
+    /// Index ranges in use, and the indices they hold.
+    index_ranges: RangeAllocator,
+    indices_used: u32,
     records: Vec<MeshRecord>,
 }
 
@@ -280,7 +315,8 @@ impl MeshPool {
                 0,
                 max_storage,
             ),
-            deformable_words: 0,
+            deformable_words: RangeAllocator::default(),
+            deformable_used: 0,
             indices: GrowableBuffer::new(
                 device,
                 "mesh pool indices",
@@ -288,14 +324,15 @@ impl MeshPool {
                 1 << 19,
                 limits.max_buffer_size,
             ),
-            index_count: 0,
+            index_ranges: RangeAllocator::default(),
+            indices_used: 0,
             records: Vec::new(),
         }
     }
 
-    /// Appends a mesh whose material slots draw with `materials`, one per slot: a static mesh's
-    /// streams to its format's slab, a skinned or morphed one's to the deformable buffer.
-    /// Returns the handle and the buffers it replaced.
+    /// Adds a mesh whose material slots draw with `materials`, one per slot: a static mesh's
+    /// streams to its format's slab, a skinned or morphed one's to the deformable buffer. Returns
+    /// the handle and the buffers it replaced.
     pub(crate) fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -303,6 +340,40 @@ impl MeshPool {
         mesh: &ArchivedMesh,
         materials: &[SubmeshMaterial],
     ) -> Result<(MeshHandle, PoolMoves), RenderError> {
+        let handle =
+            MeshHandle(u32::try_from(self.records.len()).map_err(|_| RenderError::MeshPoolFull("meshes"))?);
+        let (record, moves) = self.place(device, queue, mesh, materials)?;
+        self.records.push(record);
+        Ok((handle, moves))
+    }
+
+    /// Replaces mesh `handle` with `mesh`, whose material slots draw with `materials`, under the
+    /// same handle: the new streams and indices are written, then the old ranges freed for later
+    /// uploads. Nothing changes if it fails. GPU work already submitted read the old ranges
+    /// first, since queue writes land before the next submission.
+    pub(crate) fn replace(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        handle: MeshHandle,
+        mesh: &ArchivedMesh,
+        materials: &[SubmeshMaterial],
+    ) -> Result<PoolMoves, RenderError> {
+        let (record, moves) = self.place(device, queue, mesh, materials)?;
+        let old = std::mem::replace(&mut self.records[handle.index()], record);
+        self.release(&old);
+        Ok(moves)
+    }
+
+    /// Validates `mesh`, finds room for it and writes its streams and indices, returning its
+    /// record. Everything that can fail is checked before anything is written.
+    fn place(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: &ArchivedMesh,
+        materials: &[SubmeshMaterial],
+    ) -> Result<(MeshRecord, PoolMoves), RenderError> {
         mesh.validate()?;
         if materials.len() != mesh.materials.len() {
             return Err(RenderError::MaterialCount { slots: mesh.materials.len(), handles: materials.len() });
@@ -313,60 +384,71 @@ impl MeshPool {
             return Err(RenderError::MeshTooLarge { vertices });
         }
         let deformable = mesh.skin.is_some() || !mesh.morph_targets.is_empty();
-        let index_count = grow(self.index_count, mesh.indices.len(), "indices")?;
-        let handle =
-            MeshHandle(u32::try_from(self.records.len()).map_err(|_| RenderError::MeshPoolFull("meshes"))?);
-        fits(&self.indices, u64::from(index_count) * INDEX_BYTES, "indices")?;
-
-        // Everything that can fail is checked before anything is written.
-        let mut moves = PoolMoves::default();
         let (position_offset, position_scale) = streams.position_transform();
         let (uv_offset, uv_scale) = streams.uv_transform();
         let uv_transform = [uv_offset[0], uv_offset[1], uv_scale[0], uv_scale[1]];
-        let (record_streams, dequantize) = if deformable {
-            let (bytes, mut source) = deformable_region(mesh);
-            let words = grow(self.deformable_words, bytes.len() / 4, "deformable mesh sources")?;
-            fits(&self.deformable, u64::from(words) * 4, "deformable mesh sources")?;
-            let offset = u64::from(self.deformable_words) * 4;
-            moves.deformable = self.deformable.reserve(device, queue, u64::from(words) * 4, offset);
-            write(queue, self.deformable.buffer(), offset, &bytes);
-            source.offset_by(self.deformable_words);
-            self.deformable_words = words;
-            let identity = Dequantize { position_offset: [0.0; 3], position_scale: [1.0; 3], uv_transform };
-            (MeshStreams::Deformable(source), identity)
-        } else {
-            let slab = &mut self.slabs[format_index(streams.position_format())];
-            let vertex_count = grow(slab.vertex_count, vertices, "vertices")?;
-            let streams_bytes = [slab.position_stride(), SHADING_BYTES, SURFACE_BYTES];
-            let stream_buffers = [&slab.positions, &slab.shading, &slab.surface];
-            for (buffer, stride) in stream_buffers.into_iter().zip(streams_bytes) {
-                fits(buffer, u64::from(vertex_count) * stride, "vertices")?;
-            }
-            let first_vertex = u64::from(slab.vertex_count);
-            let stream_data = [streams.position_bytes(), streams.shading_bytes(), streams.surface_bytes()];
-            for ((buffer, stride), bytes) in [&mut slab.positions, &mut slab.shading, &mut slab.surface]
-                .into_iter()
-                .zip(streams_bytes)
-                .zip(stream_data)
-            {
-                let offset = first_vertex * stride;
-                buffer.reserve(device, queue, u64::from(vertex_count) * stride, offset);
-                write(queue, buffer.buffer(), offset, bytes);
-            }
-            let first_vertex = slab.vertex_count;
-            slab.vertex_count = vertex_count;
-            let format = streams.position_format();
-            (
-                MeshStreams::Slab { format, first_vertex },
-                Dequantize { position_offset, position_scale, uv_transform },
-            )
+        let region = deformable.then(|| deformable_region(mesh));
+
+        // Room first: the ranges are taken back if any buffer can't grow to hold them.
+        let index_len = count(mesh.indices.len(), "indices")?;
+        let vertex_len = match &region {
+            Some((bytes, _)) => count(bytes.len() / 4, "deformable mesh sources")?,
+            None => count(vertices, "vertices")?,
+        };
+        let format = streams.position_format();
+        let slab = format_index(format);
+        let vertices_end_before = match region {
+            Some(_) => self.deformable_words.end(),
+            None => self.slabs[slab].vertices.end(),
+        };
+        let indices_end_before = self.index_ranges.end();
+        let Some((first_vertex, first_index)) = self.allocate(region.is_some(), slab, vertex_len, index_len)
+        else {
+            return Err(RenderError::MeshPoolFull("vertices or indices"));
         };
 
-        let index_offset = u64::from(self.index_count) * INDEX_BYTES;
-        self.indices.reserve(device, queue, u64::from(index_count) * INDEX_BYTES, index_offset);
-        write(queue, self.indices.buffer(), index_offset, mesh.index_bytes());
+        let mut moves = PoolMoves::default();
+        let (record_streams, dequantize) = match region {
+            Some((bytes, mut source)) => {
+                let offset = u64::from(first_vertex) * 4;
+                let end = u64::from(self.deformable_words.end()) * 4;
+                moves.deformable =
+                    self.deformable.reserve(device, queue, end, u64::from(vertices_end_before) * 4);
+                write(queue, self.deformable.buffer(), offset, &bytes);
+                source.offset_by(first_vertex);
+                self.deformable_used += vertex_len;
+                let identity =
+                    Dequantize { position_offset: [0.0; 3], position_scale: [1.0; 3], uv_transform };
+                (MeshStreams::Deformable(source), identity)
+            }
+            None => {
+                let slab = &mut self.slabs[format_index(format)];
+                let end = u64::from(slab.vertices.end());
+                let streams_bytes = [slab.position_stride(), SHADING_BYTES, SURFACE_BYTES];
+                let stream_data =
+                    [streams.position_bytes(), streams.shading_bytes(), streams.surface_bytes()];
+                for ((buffer, stride), bytes) in [&mut slab.positions, &mut slab.shading, &mut slab.surface]
+                    .into_iter()
+                    .zip(streams_bytes)
+                    .zip(stream_data)
+                {
+                    buffer.reserve(device, queue, end * stride, u64::from(vertices_end_before) * stride);
+                    write(queue, buffer.buffer(), u64::from(first_vertex) * stride, bytes);
+                }
+                slab.used += vertex_len;
+                (
+                    MeshStreams::Slab { format, first_vertex },
+                    Dequantize { position_offset, position_scale, uv_transform },
+                )
+            }
+        };
 
-        self.records.push(MeshRecord {
+        let index_end = u64::from(self.index_ranges.end()) * INDEX_BYTES;
+        self.indices.reserve(device, queue, index_end, u64::from(indices_end_before) * INDEX_BYTES);
+        write(queue, self.indices.buffer(), u64::from(first_index) * INDEX_BYTES, mesh.index_bytes());
+        self.indices_used += index_len;
+
+        let record = MeshRecord {
             streams: record_streams,
             dequantize,
             lods: mesh
@@ -376,7 +458,7 @@ impl MeshPool {
                     lod.submeshes
                         .iter()
                         .map(|s| SubmeshDraw {
-                            first_index: self.index_count + s.first_index.to_native(),
+                            first_index: first_index + s.first_index.to_native(),
                             index_count: s.index_count.to_native(),
                             material: materials[s.material.to_native() as usize],
                         })
@@ -384,9 +466,87 @@ impl MeshPool {
                 })
                 .collect(),
             lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
-        });
-        self.index_count = index_count;
-        Ok((handle, moves))
+            placement: Placement { vertices: (first_vertex, vertex_len), indices: (first_index, index_len) },
+            slots: mesh
+                .materials
+                .iter()
+                .zip(materials)
+                .map(|(slot, &material)| SlotRecord {
+                    material,
+                    embedded: matches!(slot.material, ArchivedSlotMaterial::Embedded(_)),
+                })
+                .collect(),
+        };
+        Ok((record, moves))
+    }
+
+    /// Takes `vertex_len` vertices (words of the deformable buffer if `deformable`, else of slab
+    /// `slab`) and `index_len` indices, if the buffers can grow to hold them. Returns the first of
+    /// each.
+    fn allocate(
+        &mut self,
+        deformable: bool,
+        slab: usize,
+        vertex_len: u32,
+        index_len: u32,
+    ) -> Option<(u32, u32)> {
+        let first_index = self.index_ranges.try_allocate(index_len)?;
+        let first_vertex = if deformable {
+            self.deformable_words.try_allocate(vertex_len)
+        } else {
+            self.slabs[slab].vertices.try_allocate(vertex_len)
+        };
+        if let Some(first_vertex) = first_vertex {
+            if self.fits(deformable, slab) {
+                return Some((first_vertex, first_index));
+            }
+            if deformable {
+                self.deformable_words.free(first_vertex, vertex_len);
+            } else {
+                self.slabs[slab].vertices.free(first_vertex, vertex_len);
+            }
+        }
+        self.index_ranges.free(first_index, index_len);
+        None
+    }
+
+    /// Whether the index buffer, and the deformable buffer or slab `slab`'s streams, can grow to
+    /// hold every range handed out.
+    fn fits(&self, deformable: bool, slab: usize) -> bool {
+        let indices = u64::from(self.index_ranges.end()) * INDEX_BYTES <= self.indices.max_size();
+        let vertices = if deformable {
+            u64::from(self.deformable_words.end()) * 4 <= self.deformable.max_size()
+        } else {
+            let slab = &self.slabs[slab];
+            let end = u64::from(slab.vertices.end());
+            [
+                (&slab.positions, slab.position_stride()),
+                (&slab.shading, SHADING_BYTES),
+                (&slab.surface, SURFACE_BYTES),
+            ]
+            .iter()
+            .all(|(buffer, stride)| end * stride <= buffer.max_size())
+        };
+        indices && vertices
+    }
+
+    /// Frees the ranges `record` occupied.
+    fn release(&mut self, record: &MeshRecord) {
+        let Placement { vertices: (first_vertex, vertex_len), indices: (first_index, index_len) } =
+            record.placement;
+        match record.streams {
+            MeshStreams::Slab { format, .. } => {
+                let slab = &mut self.slabs[format_index(format)];
+                slab.vertices.free(first_vertex, vertex_len);
+                slab.used -= vertex_len;
+            }
+            MeshStreams::Deformable(_) => {
+                self.deformable_words.free(first_vertex, vertex_len);
+                self.deformable_used -= vertex_len;
+            }
+        }
+        self.index_ranges.free(first_index, index_len);
+        self.indices_used -= index_len;
     }
 
     pub(crate) fn records(&self) -> &[MeshRecord] {
@@ -409,8 +569,8 @@ impl MeshPool {
     /// Bytes in use: vertex streams (with skin and morph data) and indices.
     pub(crate) fn bytes_used(&self) -> u64 {
         self.slabs.iter().map(Slab::bytes_used).sum::<u64>()
-            + u64::from(self.deformable_words) * 4
-            + u64::from(self.index_count) * INDEX_BYTES
+            + u64::from(self.deformable_used) * 4
+            + u64::from(self.indices_used) * INDEX_BYTES
     }
 
     /// Times any pool buffer grew.
@@ -514,17 +674,9 @@ pub(crate) fn morphs_by_vertex(
     (offsets, regrouped)
 }
 
-/// `current + added`, unless it overflows the pool's u32 counts.
-fn grow(current: u32, added: usize, what: &'static str) -> Result<u32, RenderError> {
-    u32::try_from(added)
-        .ok()
-        .and_then(|added| current.checked_add(added))
-        .ok_or(RenderError::MeshPoolFull(what))
-}
-
-/// Whether `buffer` can grow to `bytes`.
-fn fits(buffer: &GrowableBuffer, bytes: u64, what: &'static str) -> Result<(), RenderError> {
-    if bytes <= buffer.max_size() { Ok(()) } else { Err(RenderError::MeshPoolFull(what)) }
+/// `len` as the pool's u32 counts.
+fn count(len: usize, what: &'static str) -> Result<u32, RenderError> {
+    u32::try_from(len).map_err(|_| RenderError::MeshPoolFull(what))
 }
 
 fn write(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {

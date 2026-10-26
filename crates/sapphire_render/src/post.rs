@@ -81,7 +81,7 @@ use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use crate::RenderError;
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::SCENE_COLOR_FORMAT;
-use crate::shaders;
+use crate::shaders::{self, Program, ShaderSources};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
 pub use params::{BloomParams, ColorGrade, PostParams, ToneCurve, Vignette};
 
@@ -144,6 +144,10 @@ const UP_NAMES: [&str; MAX_BLOOM_LEVELS as usize - 1] =
 pub(crate) struct PostProcess {
     device: wgpu::Device,
     pipelines: Pipelines,
+    /// What the pipelines are built with, kept to build them again from new shader sources.
+    shared_layout: wgpu::BindGroupLayout,
+    output_format: wgpu::TextureFormat,
+    cache: Option<wgpu::PipelineCache>,
     layouts: Layouts,
     uniform_buffer: wgpu::Buffer,
     /// Group 0: the uniforms and the sampler.
@@ -167,11 +171,64 @@ pub(crate) struct PostProcess {
 }
 
 #[derive(Debug)]
-struct Pipelines {
+pub(crate) struct Pipelines {
     prefilter: wgpu::RenderPipeline,
     down: wgpu::RenderPipeline,
     up: wgpu::RenderPipeline,
     composite: wgpu::RenderPipeline,
+}
+
+impl Pipelines {
+    /// The four post pipelines, from `module` (`post.wgsl`): bloom passes write `bloom_format`,
+    /// the fused composite `output_format`.
+    fn new(
+        device: &wgpu::Device,
+        module: &wgpu::ShaderModule,
+        shared_layout: &wgpu::BindGroupLayout,
+        layouts: &Layouts,
+        bloom_format: wgpu::TextureFormat,
+        output_format: wgpu::TextureFormat,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let pipeline = |name: &str, entry_point: &str, layout: &wgpu::BindGroupLayout, format| {
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(name),
+                bind_group_layouts: &[Some(shared_layout), Some(layout)],
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(name),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_fullscreen"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache,
+            })
+        };
+        Self {
+            prefilter: pipeline("bloom prefilter", "fs_bloom_prefilter", &layouts.one, bloom_format),
+            down: pipeline("bloom down", "fs_bloom_down", &layouts.one, bloom_format),
+            up: pipeline("bloom up", "fs_bloom_up", &layouts.two, bloom_format),
+            composite: pipeline("post", "fs_post", &layouts.composite, output_format),
+        }
+    }
 }
 
 /// Group 1 layouts, by the textures a pass reads.
@@ -255,6 +312,7 @@ impl PostProcess {
         gpu: &GpuContext,
         output_format: wgpu::TextureFormat,
         bloom_levels: u32,
+        sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         if !gpu.format_support(LUT_FORMAT).filterable {
             return Err(RenderError::NotFilterable(LUT_FORMAT));
@@ -313,48 +371,15 @@ impl PostProcess {
             ),
         };
 
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("post"),
-            source: wgpu::ShaderSource::Wgsl(shaders::POST.into()),
-        });
-        let pipeline = |name: &str, entry_point: &str, layout: &wgpu::BindGroupLayout, format| {
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(name),
-                bind_group_layouts: &[Some(&shared_layout), Some(layout)],
-                immediate_size: 0,
-            });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(name),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs_fullscreen"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some(entry_point),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache,
-            })
-        };
-        let pipelines = Pipelines {
-            prefilter: pipeline("bloom prefilter", "fs_bloom_prefilter", &layouts.one, bloom_format),
-            down: pipeline("bloom down", "fs_bloom_down", &layouts.one, bloom_format),
-            up: pipeline("bloom up", "fs_bloom_up", &layouts.two, bloom_format),
-            composite: pipeline("post", "fs_post", &layouts.composite, output_format),
-        };
+        let pipelines = Pipelines::new(
+            device,
+            &shaders::module(device, Program::Post, sources),
+            &shared_layout,
+            &layouts,
+            bloom_format,
+            output_format,
+            cache,
+        );
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post uniforms"),
@@ -406,6 +431,9 @@ impl PostProcess {
         Ok(Self {
             device: device.clone(),
             pipelines,
+            shared_layout,
+            output_format,
+            cache: cache.cloned(),
             layouts,
             uniform_buffer,
             shared,
@@ -422,6 +450,26 @@ impl PostProcess {
             bloom: false,
             bakes: 0,
         })
+    }
+
+    /// The post pipelines built from `sources` instead, for [`Self::set_pipelines`] (shader hot
+    /// reload).
+    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> Pipelines {
+        let module = shaders::module(&self.device, Program::Post, sources);
+        let (layouts, cache) = (&self.layouts, self.cache.as_ref());
+        Pipelines::new(
+            &self.device,
+            &module,
+            &self.shared_layout,
+            layouts,
+            self.bloom_format,
+            self.output_format,
+            cache,
+        )
+    }
+
+    pub(crate) fn set_pipelines(&mut self, pipelines: Pipelines) {
+        self.pipelines = pipelines;
     }
 
     /// Takes the frame's parameters: bakes the LUTs they need that aren't baked yet and

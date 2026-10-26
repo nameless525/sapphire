@@ -27,6 +27,7 @@ members = [
     "crates/sapphire_world",
     # Dev-only: development builds, through an app's `dev` feature
     "crates/sapphire_debug",
+    "crates/sapphire_hot_reload",
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
@@ -59,6 +60,8 @@ sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_debug = { path = "crates/sapphire_debug" }
+# Its default `notify` feature is for its own tests: apps turn it on per target.
+sapphire_hot_reload = { path = "crates/sapphire_hot_reload", default-features = false }
 
 # --- Foundation ---
 bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }
@@ -158,6 +161,11 @@ egui = { version = "0.37.0", default-features = false, features = ["default_font
 # Built on wgpu 30, the workspace's. Default features off: they turn on wgpu's default and WebGL
 # backends, which the engine keeps off (spec §2).
 egui-wgpu = { version = "0.37.0", default-features = false }
+# Desktop hot reload (spec §5.10, M1 A8): file watching, FSEvents on macOS (the default
+# `macos_fsevent`), inotify on Linux, ReadDirectoryChangesW on Windows. sapphire_hot_reload
+# debounces its events itself. Only that crate's `notify` feature reaches it, which apps turn on
+# for desktop targets: phones and shipping builds never build it.
+notify = "8.2.0"
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_testkit = { path = "tools/sapphire_testkit" }

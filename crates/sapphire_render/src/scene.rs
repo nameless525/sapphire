@@ -143,6 +143,14 @@ impl GpuScene {
         self.draws_stale = true;
     }
 
+    /// Mesh `mesh` was replaced in place (hot reload, live link): the next `prepare` lists its
+    /// instances as given a mesh again, so what follows meshes (skinning outputs) starts over, and
+    /// rebuilds the draw list.
+    pub(crate) fn mesh_replaced(&mut self, mesh: MeshHandle) {
+        self.slots.remesh(mesh);
+        self.draws_stale = true;
+    }
+
     pub(crate) fn instance_buffer(&self) -> &wgpu::Buffer {
         self.instances.buffer()
     }
@@ -240,10 +248,13 @@ pub(crate) struct InstanceSlots {
     ids: HashMap<InstanceId, u32, BuildHasherDefault<IdHasher>>,
     /// Slots written since the last flush, each listed once.
     dirty: Vec<u32>,
-    /// Slots the last `apply` freed, then slots it gave a mesh: new instances and mesh changes.
-    /// A slot freed and reused within one packet is in both.
+    /// Slots the last `apply` freed, then slots it gave a mesh: new instances, mesh changes and
+    /// instances of meshes replaced in place. A slot freed and reused within one packet is in
+    /// both.
     freed: Vec<u32>,
     meshed: Vec<u32>,
+    /// Meshes replaced in place since the last `apply`.
+    remeshed: Vec<MeshHandle>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -270,6 +281,15 @@ impl InstanceSlots {
                 self.freed.push(slot);
                 drawn_changed = true;
             }
+        }
+        if !self.remeshed.is_empty() {
+            for (index, slot) in self.slots.iter().enumerate() {
+                if slot.id.is_some() && self.remeshed.contains(&slot.mesh) {
+                    self.meshed.push(to_u32(index));
+                }
+            }
+            self.remeshed.clear();
+            drawn_changed = true;
         }
         for instance in &deltas.changed {
             let slot = match self.ids.get(&instance.id) {
@@ -323,6 +343,13 @@ impl InstanceSlots {
     #[cfg(test)]
     pub(crate) fn character(&self, slot: u32) -> u32 {
         self.data[slot as usize].character
+    }
+
+    /// Lists every live instance of `mesh` as given a mesh by the next [`Self::apply`].
+    pub(crate) fn remesh(&mut self, mesh: MeshHandle) {
+        if !self.remeshed.contains(&mesh) {
+            self.remeshed.push(mesh);
+        }
     }
 
     fn allocate(&mut self, id: InstanceId, mesh: MeshHandle) -> u32 {
@@ -553,7 +580,7 @@ mod tests {
     use super::*;
     use crate::MeshInstance;
     use crate::gpu_types::Dequantize;
-    use crate::mesh_pool::{DeformSource, SubmeshDraw, SubmeshMaterial};
+    use crate::mesh_pool::{DeformSource, Placement, SubmeshDraw, SubmeshMaterial};
 
     /// Material `slot`, uploaded as handle `slot + 10`.
     fn material(slot: u32) -> SubmeshMaterial {
@@ -686,6 +713,22 @@ mod tests {
     }
 
     #[test]
+    fn a_mesh_replaced_in_place_lists_its_live_instances_once() {
+        let mut slots = InstanceSlots::default();
+        let instances = [instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 0.0)];
+        slots.apply(&deltas(&instances, &[]));
+        slots.apply(&deltas(&[], &[3]));
+        slots.remesh(MeshHandle::from_raw(0));
+        slots.remesh(MeshHandle::from_raw(0));
+        // The next packet lists mesh 0's live instances as given a mesh, which rebuilds the draw
+        // list and starts their skinning outputs over; a removed one isn't.
+        assert!(slots.apply(&deltas(&[], &[])));
+        assert_eq!(slots.meshed(), [0]);
+        assert!(!slots.apply(&deltas(&[], &[])), "only once");
+        assert_eq!(slots.meshed(), [] as [u32; 0]);
+    }
+
+    #[test]
     fn removed_then_added_in_one_packet_survives_and_unknown_removals_are_ignored() {
         let mut slots = InstanceSlots::default();
         slots.apply(&deltas(&[instance(1, 0, 0.0)], &[]));
@@ -742,6 +785,15 @@ mod tests {
         };
         let identity = Dequantize { position_offset: [0.0; 3], position_scale: [1.0; 3], ..quantized };
         let slab = |format, first_vertex| MeshStreams::Slab { format, first_vertex };
+        // The draw list reads only the streams, dequantization and LODs.
+        let record = || MeshRecord {
+            streams: slab(PositionFormat::Unorm16, 0),
+            dequantize: quantized,
+            lods: Vec::new(),
+            lod_vertices: Vec::new(),
+            placement: Placement::default(),
+            slots: Vec::new(),
+        };
         let meshes = [
             MeshRecord {
                 streams: slab(PositionFormat::Unorm16, 0),
@@ -751,6 +803,7 @@ mod tests {
                     vec![SubmeshDraw { first_index: 6, index_count: 3, material: material(0) }],
                 ],
                 lod_vertices: vec![24, 12],
+                ..record()
             },
             MeshRecord {
                 streams: slab(PositionFormat::Unorm16, 24),
@@ -760,18 +813,21 @@ mod tests {
                     SubmeshDraw { first_index: 12, index_count: 12, material: material(2) },
                 ]],
                 lod_vertices: vec![8],
+                ..record()
             },
             MeshRecord {
                 streams: slab(PositionFormat::Float32, 0),
                 dequantize: identity,
                 lods: vec![vec![SubmeshDraw { first_index: 24, index_count: 3, material: material(3) }]],
                 lod_vertices: vec![3],
+                ..record()
             },
             MeshRecord {
                 streams: MeshStreams::Deformable(DeformSource { surface: 90, ..DeformSource::default() }),
                 dequantize: identity,
                 lods: vec![vec![SubmeshDraw { first_index: 27, index_count: 6, material: material(4) }]],
                 lod_vertices: vec![4],
+                ..record()
             },
         ];
         let mut slots = InstanceSlots::default();

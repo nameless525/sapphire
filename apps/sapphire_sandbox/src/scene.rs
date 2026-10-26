@@ -258,6 +258,13 @@ impl Scene {
         self.plain_sky = plain;
     }
 
+    /// Replaces the character light rig presets (hot reload, `dev` builds). Characters keep their
+    /// preset IDs; one past the new presets' end is lit with their default.
+    #[cfg(feature = "dev")]
+    pub fn set_light_rigs(&mut self, rigs: LightRigLibrary) {
+        self.ecs.world_mut().insert_resource(rigs);
+    }
+
     /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
     /// `meshes`, top to bottom. They never move, so they are extracted once.
     pub fn spawn_swatches(&mut self, meshes: [MeshHandle; SWATCHES]) {

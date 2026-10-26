@@ -49,6 +49,34 @@
 //! unloaded asset is reported through [`AssetServer::take_unloaded`] so the app can free what it
 //! uploaded. [`AssetServer::unload_unused`] drops the whole cache (`LowMemory`, spec §6.3).
 //!
+//! # Hot reload
+//!
+//! [`AssetServer::remount`] reads a mounted pack again after it changed: desktop dev builds
+//! remount a pack when its file is rewritten (M1 A8, the desktop trigger of spec §5.10), and
+//! live link (A9) when it pushes one. Assets the new pack holds with other bytes than the loaded
+//! ones (by their blake3 hashes) load again through the same pipeline, while the version they
+//! have stays ready and in use:
+//!
+//! - The new version is read, decoded and checked on the same IO thread and workers, and its
+//!   dependencies, which its new table of contents lists, load first. It joins the upload queue
+//!   once they are ready, and waits for a dependency that is itself reloading, so a material
+//!   binds its texture's new version. It goes to the uploader within the same per-frame budget
+//!   as any load, as the asset's next [generation](Upload::generation) for the same
+//!   [`AssetSlot`]: the app replaces its copy in place.
+//! - Once uploaded (or decoded, for kinds that never go to the GPU) it replaces the old version
+//!   behind every handle: [`AssetServer::get`] reads it, the asset's generation goes up
+//!   ([`AssetServer::generation`]), dependencies it no longer has are released, and an
+//!   [`AssetChange::Reloaded`] is reported ([`AssetServer::take_changes`]), so CPU systems that
+//!   derive data from it (animation from a rig) can tell.
+//! - Assets that bind their dependencies' GPU objects ([`AssetKind::binds_dependencies`]: a
+//!   material its textures) are sent again from their kept bytes, as a generation of their own,
+//!   when a dependency is replaced.
+//! - A new version that fails (a corrupt or invalid asset, a missing dependency, a refused
+//!   upload) is dropped and reported ([`AssetChange::ReloadFailed`]); the asset keeps the version
+//!   it had. An asset its pack no longer holds keeps its version too
+//!   ([`AssetChange::Removed`]), until nothing uses it. Unused cached assets that changed are
+//!   unloaded rather than reloaded, and assets still loading start again from the new pack.
+//!
 //! # Threading
 //!
 //! The server lives on one thread (the main thread in apps) and takes `&mut self`. Handles are
@@ -56,6 +84,7 @@
 //! server.
 
 mod handle;
+mod reload;
 mod source;
 
 use std::collections::{HashMap, VecDeque};
@@ -71,6 +100,8 @@ use slotmap::SlotMap;
 
 pub use self::handle::{Asset, Handle, TextureAsset, UntypedHandle, WeakHandle};
 use self::handle::{HandleInner, SlotKey};
+pub use self::reload::{AssetChange, RemountReport};
+use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
 use crate::pack::{Decoder, Entry, HEADER_LEN, PackError, PackHeader, Toc};
 use crate::{AssetId, AssetKind};
@@ -165,6 +196,8 @@ pub enum LoadError {
     Panicked { id: AssetId },
     #[error("loading asset {id} can't make progress")]
     Stalled { id: AssetId },
+    #[error("asset {0} was removed from its pack")]
+    Removed(AssetId),
 }
 
 /// A pack that couldn't be mounted.
@@ -186,14 +219,17 @@ pub enum MountError {
     },
     #[error("asset {id} is in both pack {first:?} and pack {second:?}")]
     Duplicate { id: AssetId, first: String, second: String },
+    #[error("pack {0:?} isn't mounted")]
+    NotMounted(String),
 }
 
 /// What an uploader returns for an asset it couldn't upload.
 pub type UploadError = Box<dyn error::Error + Send + Sync>;
 
-/// An asset's identity within one server's lifetime: unlike its [`AssetId`], a reloaded asset gets
-/// a new one. Apps key what they upload by it, so freeing an unloaded asset's GPU copy can never
-/// free a newer copy of the same asset.
+/// An asset's identity within one server's lifetime: unlike its [`AssetId`], an asset unloaded and
+/// loaded again gets a new one. Apps key what they upload by it, so freeing an unloaded asset's
+/// GPU copy can never free a newer copy of the same asset. Hot reload keeps it: a new version of
+/// a loaded asset comes with the same slot and a higher [generation](Upload::generation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AssetSlot(SlotKey);
 
@@ -204,6 +240,7 @@ pub struct Upload<'a> {
     id: AssetId,
     kind: AssetKind,
     slot: AssetSlot,
+    generation: u32,
     bytes: &'a [u8],
 }
 
@@ -218,6 +255,15 @@ impl<'a> Upload<'a> {
 
     pub fn slot(&self) -> AssetSlot {
         self.slot
+    }
+
+    /// Which version of the asset this is: 0 when first loaded, one more for each version hot
+    /// reload put behind its handles since, and for each time a dependency it binds was replaced
+    /// ([`AssetKind::binds_dependencies`]). An app that holds an uploaded copy of the same
+    /// [`slot`](Self::slot) at a lower generation replaces it in place; one at this generation is
+    /// already current (assets are sent again after [`AssetServer::reupload_all`]).
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 
     /// The cooked bytes, 16-byte aligned.
@@ -240,6 +286,7 @@ impl fmt::Debug for Upload<'_> {
             .field("id", &self.id)
             .field("kind", &self.kind)
             .field("slot", &self.slot)
+            .field("generation", &self.generation)
             .field("bytes", &self.bytes.len())
             .finish()
     }
@@ -286,6 +333,12 @@ pub struct AssetStats {
     pub loads: u64,
     pub unloads: u64,
     pub failures: u64,
+    /// Ready assets loading a new version (hot reload).
+    pub reloading: u32,
+    /// New versions that replaced loaded assets, and those that failed, since the server
+    /// started (hot reload).
+    pub reloads: u64,
+    pub reload_failures: u64,
 }
 
 /// A mounted pack.
@@ -299,23 +352,37 @@ struct Mount {
 struct Slot {
     /// The server's own reference: while its count is 1, nothing else uses the asset.
     handle: UntypedHandle,
-    /// Where it is: a mount and an entry of its table of contents.
+    /// Where it is: a mount, and its entry in the mount's table of contents, which a remount
+    /// moves to the new table's, or `None` once its pack no longer holds it (hot reload).
     mount: u32,
-    entry: u32,
+    entry: Option<u32>,
+    /// The size and hash of the version `state` holds or is loading.
     size: u64,
+    hash: [u8; 32],
     priority: LoadPriority,
     state: SlotState,
-    /// Counts the reads started for it, so a completion of an earlier one is ignored.
+    /// Counts the reads started for it, so a completion of an earlier one is ignored. At most
+    /// one is current: the main state's while it loads, else the next version's.
     request: u32,
     /// Decoded bytes, while it has them.
     data: Option<Arc<AlignedVec>>,
     /// Its dependencies, kept loaded by these handles.
     children: Vec<UntypedHandle>,
-    /// The assets that depend on it, which may be waiting for it.
+    /// The assets that depend on it, which may be waiting for it, or bind it.
     parents: Vec<SlotKey>,
     pins: u32,
     /// The last update that saw it in use, for LRU eviction.
     last_used: u64,
+    /// Versions that replaced the first one behind its handles (see [`Upload::generation`]).
+    generation: u32,
+    /// It has been ready: the app holds a version of it.
+    loaded: bool,
+    /// The version `state` loads replaces one the app holds, so uploading it is a new
+    /// generation: a reload that [`AssetServer::reupload_all`] took over.
+    replaces: bool,
+    /// A new version on its way while the asset stays ready with the one it has (hot reload).
+    /// Only a ready asset has one.
+    next: Option<Next>,
 }
 
 impl Slot {
@@ -336,6 +403,15 @@ enum SlotState {
     Failed(LoadError),
 }
 
+/// Which of a slot's versions an upload-queue entry is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Version {
+    /// The main state's: a load, or the version a new renderer is sent again.
+    Main,
+    /// [`Slot::next`]: a hot-reloaded version, or a rebinding.
+    Next,
+}
+
 /// A decode job's result.
 struct Completion {
     key: SlotKey,
@@ -352,17 +428,21 @@ pub struct AssetServer {
     index: HashMap<AssetId, (u32, u32)>,
     slots: SlotMap<SlotKey, Slot>,
     by_id: HashMap<AssetId, SlotKey>,
-    upload_queue: VecDeque<SlotKey>,
+    upload_queue: VecDeque<(SlotKey, Version)>,
     sender: Sender<Completion>,
     receiver: Receiver<Completion>,
     reads_in_flight: u32,
     /// Counts updates: the clock LRU eviction runs on.
     frame: u64,
     unloaded: Vec<Unloaded>,
+    /// Hot reload's changes since the last [`Self::take_changes`].
+    changes: Vec<AssetChange>,
     last_upload: UploadReport,
     loads: u64,
     unloads: u64,
     failures: u64,
+    reloads: u64,
+    reload_failures: u64,
 }
 
 impl fmt::Debug for AssetServer {
@@ -392,10 +472,13 @@ impl AssetServer {
             reads_in_flight: 0,
             frame: 0,
             unloaded: Vec::new(),
+            changes: Vec::new(),
             last_upload: UploadReport::default(),
             loads: 0,
             unloads: 0,
             failures: 0,
+            reloads: 0,
+            reload_failures: 0,
         }
     }
 
@@ -413,27 +496,13 @@ impl AssetServer {
     /// An asset may be in one mounted pack only.
     pub fn mount(&mut self, name: &str) -> Result<(), MountError> {
         profiling::scope!("AssetServer::mount");
-        if self.mounts.iter().any(|mount| mount.name == name) {
+        if self.is_mounted(name) {
             return Err(MountError::AlreadyMounted(name.to_owned()));
         }
-        let io_error = |source| MountError::Io { name: name.to_owned(), source };
-        let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
-        let (file, len) = self.source.open(name).map_err(io_error)?;
-        let header = self.read_now(file, 0, HEADER_LEN.min(len as usize)).map_err(io_error)?;
-        let header = PackHeader::read(&header).map_err(pack_error)?;
-        let toc_range = header.toc_range();
-        if toc_range.end > len {
-            return Err(pack_error(PackError::Truncated { expected: header.file_len(), found: len }));
-        }
-        let toc = self
-            .read_now(file, toc_range.start, (toc_range.end - toc_range.start) as usize)
-            .map_err(io_error)?;
-        let toc = Toc::read(header, &toc, len).map_err(pack_error)?;
-        for entry in toc.entries() {
-            if let Some(&(other, _)) = self.index.get(&entry.id) {
-                let first = self.mounts[other as usize].name.clone();
-                return Err(MountError::Duplicate { id: entry.id, first, second: name.to_owned() });
-            }
+        let (file, toc) = self.read_pack(name)?;
+        if let Err(error) = self.check_duplicates(name, &toc, None) {
+            self.source.close(file);
+            return Err(error);
         }
         let mount = self.mounts.len() as u32;
         self.index
@@ -442,10 +511,50 @@ impl AssetServer {
             target: LOG_TARGET,
             pack = name,
             assets = toc.entries().len(),
-            bytes = len,
+            bytes = toc.header().file_len(),
             "pack mounted"
         );
         self.mounts.push(Mount { name: name.to_owned(), file, toc: Arc::new(toc) });
+        Ok(())
+    }
+
+    /// Whether the pack called `name` is mounted.
+    pub fn is_mounted(&self, name: &str) -> bool {
+        self.mounts.iter().any(|mount| mount.name == name)
+    }
+
+    /// Opens the pack called `name` and reads and checks its header and table of contents,
+    /// blocking until they are read. The file stays open for the caller.
+    fn read_pack(&self, name: &str) -> Result<(PackFile, Toc), MountError> {
+        let io_error = |source| MountError::Io { name: name.to_owned(), source };
+        let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
+        let (file, len) = self.source.open(name).map_err(io_error)?;
+        let read = || {
+            let header = self.read_now(file, 0, HEADER_LEN.min(len as usize)).map_err(io_error)?;
+            let header = PackHeader::read(&header).map_err(pack_error)?;
+            let toc_range = header.toc_range();
+            if toc_range.end > len {
+                return Err(pack_error(PackError::Truncated { expected: header.file_len(), found: len }));
+            }
+            let toc = self
+                .read_now(file, toc_range.start, (toc_range.end - toc_range.start) as usize)
+                .map_err(io_error)?;
+            Toc::read(header, &toc, len).map_err(pack_error)
+        };
+        read().map(|toc| (file, toc)).inspect_err(|_| self.source.close(file))
+    }
+
+    /// Fails if pack `name`'s `toc` holds an asset another mounted pack holds, besides mount
+    /// `except` (the one a remount replaces).
+    fn check_duplicates(&self, name: &str, toc: &Toc, except: Option<u32>) -> Result<(), MountError> {
+        for entry in toc.entries() {
+            if let Some(&(other, _)) = self.index.get(&entry.id)
+                && Some(other) != except
+            {
+                let first = self.mounts[other as usize].name.clone();
+                return Err(MountError::Duplicate { id: entry.id, first, second: name.to_owned() });
+            }
+        }
         Ok(())
     }
 
@@ -493,8 +602,9 @@ impl AssetServer {
         let key = self.slots.insert_with_key(|key| Slot {
             handle: UntypedHandle { inner: Arc::new(HandleInner { key, id, kind: entry.kind }) },
             mount,
-            entry: entry_index,
+            entry: Some(entry_index),
             size: entry.size,
+            hash: entry.hash,
             priority,
             state: SlotState::Loading,
             request: 0,
@@ -503,6 +613,10 @@ impl AssetServer {
             parents: Vec::new(),
             pins: 0,
             last_used: self.frame,
+            generation: 0,
+            loaded: false,
+            replaces: false,
+            next: None,
         });
         self.by_id.insert(id, key);
         self.loads += 1;
@@ -513,14 +627,36 @@ impl AssetServer {
     /// Requests an asset's dependencies, which its pack lists, then its own read, so the
     /// dependencies' reads queue first. Dependencies must be of a lower kind
     /// ([`AssetKind::may_depend_on`]), so this recursion is at most three deep. Dependencies it
-    /// already holds are kept; failed ones are tried again.
+    /// already holds are kept, failed ones are tried again, and ones its entry no longer lists
+    /// (after a remount) are released.
     fn resolve(&mut self, key: SlotKey) {
         let slot = &self.slots[key];
-        let (id, kind, priority) = (slot.handle.id(), slot.handle.kind(), slot.priority);
+        let id = slot.handle.id();
+        let Some(entry) = slot.entry else {
+            self.fail(key, LoadError::Removed(id));
+            return;
+        };
         let toc = self.mounts[slot.mount as usize].toc.clone();
-        let entry = toc.entries()[slot.entry as usize];
-        let mut failure = None;
-        for &dependency in toc.dependencies(&entry) {
+        let entry = toc.entries()[entry as usize];
+        match self.load_dependencies(key, toc.dependencies(&entry)) {
+            Ok(children) => {
+                self.set_children(key, children);
+                let slot = &mut self.slots[key];
+                (slot.size, slot.hash) = (entry.size, entry.hash);
+                self.request_read(key);
+            }
+            Err(error) => self.fail(key, error),
+        }
+    }
+
+    /// Loads `ids`, the dependencies of the asset in `key`, and returns their handles, or why one
+    /// can't load. They become its children only through [`Self::set_children`] or
+    /// [`Self::link`].
+    fn load_dependencies(&mut self, key: SlotKey, ids: &[AssetId]) -> Result<Vec<UntypedHandle>, LoadError> {
+        let slot = &self.slots[key];
+        let (id, kind, priority) = (slot.handle.id(), slot.handle.kind(), slot.priority);
+        let mut children = Vec::with_capacity(ids.len());
+        for &dependency in ids {
             let child = match self.kind_of(dependency) {
                 None => Err(LoadError::NotFound(dependency)),
                 Some(dependency_kind) if !kind.may_depend_on(dependency_kind) => {
@@ -529,24 +665,57 @@ impl AssetServer {
                 Some(_) => self.load_untyped(dependency, priority),
             };
             match child {
-                Ok(child) if !self.slots[key].children.contains(&child) => {
-                    self.slots[child.key()].parents.push(key);
-                    self.slots[key].children.push(child);
-                }
-                Ok(_) => {}
+                Ok(child) => children.push(child),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, %id, %dependency, %error, "dependency failed to load");
-                    failure = Some(match error {
+                    return Err(match error {
                         LoadError::DependencyKind { .. } => error,
                         _ => LoadError::Dependency { id, dependency },
                     });
-                    break;
                 }
             }
         }
-        match failure {
-            Some(error) => self.fail(key, error),
-            None => self.request_read(key),
+        Ok(children)
+    }
+
+    /// Makes `children` the dependencies of the asset in `key`, releasing those it had and no
+    /// longer has.
+    fn set_children(&mut self, key: SlotKey, children: Vec<UntypedHandle>) {
+        self.link(key, &children);
+        let old = std::mem::replace(&mut self.slots[key].children, children);
+        self.unlink(key, &old);
+    }
+
+    /// The assets that depend on the asset in `key`, as they are now: what each of them goes on to
+    /// do may change the list (a parent's next version that fails unlinks its dependencies).
+    fn parents(&self, key: SlotKey) -> Vec<SlotKey> {
+        self.slots[key].parents.clone()
+    }
+
+    /// Records the asset in `key` as a parent of each of `children`.
+    fn link(&mut self, key: SlotKey, children: &[UntypedHandle]) {
+        for child in children {
+            let parents = &mut self.slots[child.key()].parents;
+            if !parents.contains(&key) {
+                parents.push(key);
+            }
+        }
+    }
+
+    /// Forgets the asset in `key` as a parent of those of `released` that neither its
+    /// dependencies nor its next version's still name.
+    fn unlink(&mut self, key: SlotKey, released: &[UntypedHandle]) {
+        let slot = &self.slots[key];
+        let held = |child: &UntypedHandle| {
+            slot.children.contains(child)
+                || slot.next.as_ref().is_some_and(|next| next.children.contains(child))
+        };
+        let gone: Vec<SlotKey> =
+            released.iter().filter(|child| !held(child)).map(UntypedHandle::key).collect();
+        for child in gone {
+            if let Some(child) = self.slots.get_mut(child) {
+                child.parents.retain(|&parent| parent != key);
+            }
         }
     }
 
@@ -649,22 +818,37 @@ impl AssetServer {
     pub fn upload(&mut self, mut upload: impl FnMut(Upload<'_>) -> Result<(), UploadError>) -> UploadReport {
         profiling::scope!("AssetServer::upload");
         let mut report = UploadReport::default();
-        while let Some(&key) = self.upload_queue.front() {
-            let Some(slot) = self.slots.get(key).filter(|slot| slot.state == SlotState::Queued) else {
+        while let Some(&(key, version)) = self.upload_queue.front() {
+            // An entry is stale once its version left the queue another way (failed, superseded,
+            // unloaded).
+            let queued = self.slots.get(key).and_then(|slot| match version {
+                Version::Main => (slot.state == SlotState::Queued)
+                    .then(|| (slot.size, slot.data.clone(), slot.generation + u32::from(slot.replaces))),
+                Version::Next => {
+                    let next = slot.next.as_ref().filter(|next| next.stage == NextStage::Queued)?;
+                    Some((next.size, next.data.clone(), slot.generation + 1))
+                }
+            });
+            let Some((size, data, generation)) = queued else {
                 self.upload_queue.pop_front();
                 continue;
             };
-            if report.assets > 0 && report.bytes + slot.size > self.budgets.upload_per_frame {
+            if report.assets > 0 && report.bytes + size > self.budgets.upload_per_frame {
                 break;
             }
             self.upload_queue.pop_front();
-            let data = slot.data.clone().expect("queued assets hold their bytes");
-            let (id, kind) = (slot.handle.id(), slot.handle.kind());
+            let data = data.expect("queued versions hold their bytes");
+            let handle = &self.slots[key].handle;
+            let (id, kind) = (handle.id(), handle.kind());
             report.assets += 1;
-            report.bytes += slot.size;
-            match upload(Upload { id, kind, slot: AssetSlot(key), bytes: &data }) {
-                Ok(()) => self.uploaded(key),
-                Err(error) => self.fail(key, LoadError::Upload { id, message: error_chain(&*error) }),
+            report.bytes += size;
+            let result = upload(Upload { id, kind, slot: AssetSlot(key), generation, bytes: &data });
+            let error = |error: UploadError| LoadError::Upload { id, message: error_chain(&*error) };
+            match (version, result) {
+                (Version::Main, Ok(())) => self.uploaded(key),
+                (Version::Main, Err(error_)) => self.fail(key, error(error_)),
+                (Version::Next, Ok(())) => self.swap(key),
+                (Version::Next, Err(error_)) => self.fail_next(key, error(error_)),
             }
         }
         report.pending = self.upload_queue.len() as u32;
@@ -695,18 +879,27 @@ impl AssetServer {
 
     /// Sends every uploaded asset through the upload queue again, dependencies first: for a new
     /// renderer, after device loss or a quality-tier change. Assets that kept their bytes are
-    /// queued from them; the others are read and decoded again.
+    /// queued from them; the others are read and decoded again. An asset with a new version on
+    /// its way (hot reload) is sent that one instead, as its next generation, since its pack may
+    /// no longer hold the version it has; one its pack no longer holds at all fails, unless it
+    /// kept its bytes.
     pub fn reupload_all(&mut self) {
         self.upload_queue.clear();
         let keys: Vec<SlotKey> = self.slots.keys().collect();
         for &key in &keys {
             let slot = &mut self.slots[key];
-            if slot.handle.kind().uploads() && matches!(slot.state, SlotState::Ready | SlotState::Queued) {
-                if slot.data.is_some() {
-                    slot.state = SlotState::Waiting;
-                } else {
-                    self.request_read(key);
-                }
+            if !(slot.handle.kind().uploads() && matches!(slot.state, SlotState::Ready | SlotState::Queued)) {
+                continue;
+            }
+            if slot.next.is_some() {
+                self.promote(key);
+            } else if slot.data.is_some() {
+                slot.state = SlotState::Waiting;
+            } else if slot.entry.is_none() {
+                let id = slot.handle.id();
+                self.fail(key, LoadError::Removed(id));
+            } else {
+                self.request_read(key);
             }
         }
         for key in keys {
@@ -745,6 +938,8 @@ impl AssetServer {
             loads: self.loads,
             unloads: self.unloads,
             failures: self.failures,
+            reloads: self.reloads,
+            reload_failures: self.reload_failures,
             ..AssetStats::default()
         };
         for slot in self.slots.values() {
@@ -759,6 +954,7 @@ impl AssetServer {
             }
             stats.unused += u32::from(slot.users() == 0);
             stats.pinned += u32::from(slot.pins > 0);
+            stats.reloading += u32::from(slot.next.is_some());
         }
         stats
     }
@@ -774,16 +970,23 @@ impl AssetServer {
         receiver.recv().unwrap_or_else(|_| Err(io::Error::other("the pack source dropped a read")))
     }
 
-    /// Starts reading and decoding the asset in `key`.
+    /// Starts reading and decoding the asset in `key` into its main state.
     fn request_read(&mut self, key: SlotKey) {
         let slot = &mut self.slots[key];
-        slot.request = slot.request.wrapping_add(1);
         slot.state = SlotState::Loading;
         slot.data = None;
+        self.read(key);
+    }
+
+    /// Starts reading and decoding the asset in `key` from where its pack holds it, superseding
+    /// any read of it in flight. The caller says which version waits for it.
+    fn read(&mut self, key: SlotKey) {
+        let slot = &mut self.slots[key];
+        slot.request = slot.request.wrapping_add(1);
         let (request, priority) = (slot.request, slot.priority);
         let mount = &self.mounts[slot.mount as usize];
         let (file, toc) = (mount.file, mount.toc.clone());
-        let entry = toc.entries()[slot.entry as usize];
+        let entry = toc.entries()[slot.entry.expect("only assets their pack holds are read") as usize];
         let range = toc.stored_range(&entry);
         let sender = self.sender.clone();
         self.reads_in_flight += 1;
@@ -805,26 +1008,32 @@ impl AssetServer {
         }
     }
 
-    /// Applies a decode job's result.
+    /// Applies a decode job's result, to the main state or the next version, whichever waits
+    /// for it.
     fn complete(&mut self, completion: Completion) {
         self.reads_in_flight -= 1;
         let Completion { key, request, result } = completion;
-        // A newer read replaced this one, or the asset failed meanwhile (a dependency did).
-        let current = self
-            .slots
-            .get(key)
-            .is_some_and(|slot| slot.request == request && slot.state == SlotState::Loading);
-        if !current {
-            return;
-        }
-        match result {
-            Ok(data) => {
-                let slot = &mut self.slots[key];
-                slot.data = Some(data);
-                slot.state = SlotState::Waiting;
-                self.try_queue(key);
+        // A newer read replaced this one, or the version it was for failed or went meanwhile (a
+        // dependency failed, a remount superseded it, the asset was unloaded).
+        let Some(slot) = self.slots.get_mut(key).filter(|slot| slot.request == request) else { return };
+        if slot.state == SlotState::Loading {
+            match result {
+                Ok(data) => {
+                    slot.data = Some(data);
+                    slot.state = SlotState::Waiting;
+                    self.try_queue(key);
+                }
+                Err(error) => self.fail(key, error),
             }
-            Err(error) => self.fail(key, error),
+        } else if let Some(next) = slot.next.as_mut().filter(|next| next.stage == NextStage::Loading) {
+            match result {
+                Ok(data) => {
+                    next.data = Some(data);
+                    next.stage = NextStage::Waiting;
+                    self.try_queue_next(key);
+                }
+                Err(error) => self.fail_next(key, error),
+            }
         }
     }
 
@@ -849,7 +1058,7 @@ impl AssetServer {
             None if !self.slots[key].handle.kind().uploads() => self.uploaded(key),
             None => {
                 self.slots[key].state = SlotState::Queued;
-                self.upload_queue.push_back(key);
+                self.upload_queue.push_back((key, Version::Main));
             }
         }
     }
@@ -858,33 +1067,37 @@ impl AssetServer {
     fn uploaded(&mut self, key: SlotKey) {
         let slot = &mut self.slots[key];
         slot.state = SlotState::Ready;
+        slot.loaded = true;
         if !slot.handle.kind().keeps_bytes() {
             slot.data = None;
         }
-        for index in 0..self.slots[key].parents.len() {
-            let parent = self.slots[key].parents[index];
+        if std::mem::take(&mut slot.replaces) {
+            self.replaced(key);
+        }
+        for parent in self.parents(key) {
             self.try_queue(parent);
+            self.try_queue_next(parent);
         }
     }
 
-    /// Fails an asset, and every asset loading or waiting on it.
+    /// Fails an asset, and every asset loading or waiting on it, or reloading with it.
     fn fail(&mut self, key: SlotKey, error: LoadError) {
         let slot = &mut self.slots[key];
         tracing::warn!(target: LOG_TARGET, id = %slot.handle.id(), kind = %slot.handle.kind(), %error, "asset failed to load");
         slot.state = SlotState::Failed(error);
         slot.data = None;
+        slot.replaces = false;
         self.failures += 1;
-        for index in 0..self.slots[key].parents.len() {
-            let parent = self.slots[key].parents[index];
-            let waiting = self.slots.get(parent).is_some_and(|slot| {
-                matches!(slot.state, SlotState::Loading | SlotState::Waiting | SlotState::Queued)
-            });
-            if waiting {
-                let error = LoadError::Dependency {
-                    id: self.slots[parent].handle.id(),
-                    dependency: self.slots[key].handle.id(),
-                };
+        // A failed asset has no version to replace.
+        self.cancel_next(key);
+        let child = self.slots[key].handle.clone();
+        for parent in self.parents(key) {
+            let Some(parent_slot) = self.slots.get(parent) else { continue };
+            let error = LoadError::Dependency { id: parent_slot.handle.id(), dependency: child.id() };
+            if matches!(parent_slot.state, SlotState::Loading | SlotState::Waiting | SlotState::Queued) {
                 self.fail(parent, error);
+            } else if parent_slot.next.as_ref().is_some_and(|next| next.children.contains(&child)) {
+                self.fail_next(parent, error);
             }
         }
     }
@@ -944,7 +1157,8 @@ impl AssetServer {
     /// if that was their last.
     fn remove(&mut self, key: SlotKey) {
         let slot = self.slots.remove(key).expect("removing a live slot");
-        for child in &slot.children {
+        let next_children = slot.next.iter().flat_map(|next| &next.children);
+        for child in slot.children.iter().chain(next_children) {
             self.slots[child.key()].parents.retain(|&parent| parent != key);
         }
         let (id, kind) = (slot.handle.id(), slot.handle.kind());

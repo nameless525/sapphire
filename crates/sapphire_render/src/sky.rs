@@ -106,7 +106,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::materials::{MaterialHandle, Materials};
 use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
-use crate::{CameraData, DirectionalLight, FramePacket, LOG_TARGET, RenderError, shaders};
+use crate::shaders::{self, Program, ShaderSources};
+use crate::{CameraData, DirectionalLight, FramePacket, LOG_TARGET, RenderError};
 
 /// How much the sky costs on a quality tier (`tiers.ron`,
 /// [`QualityTier`](crate::quality::QualityTier)): its cube's size and update rate, and whether it
@@ -230,6 +231,11 @@ pub(crate) struct Sky {
     pipelines: [wgpu::RenderPipeline; Layers::VARIANTS],
     /// Into a cube face: one sample, no depth, no discs or stars; without and with clouds.
     cube_pipelines: [wgpu::RenderPipeline; 2],
+    /// What the pipelines are built with besides their module, kept to build them again from new
+    /// shader sources (hot reload, [`Self::rebuilt_pipelines`]).
+    layout: wgpu::PipelineLayout,
+    samples: u32,
+    cache: Option<wgpu::PipelineCache>,
     /// [`SkyMaterial::default`], for packets without a sky material of their own.
     default_material: MaterialHandle,
     cube: SkyCube,
@@ -277,6 +283,69 @@ impl Layers {
     fn index(self) -> usize {
         usize::from(self.stars) | usize::from(self.clouds) << 1
     }
+}
+
+/// The sky's pipelines from `module`: every [`Layers`] variant into the main pass's scene color
+/// at `samples` against its depth, and the cube's two into `cube_format`.
+fn build_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    samples: u32,
+    cube_format: wgpu::TextureFormat,
+    cache: Option<&wgpu::PipelineCache>,
+) -> SkyPipelines {
+    let pipeline =
+        |label, format, samples, depth: Option<wgpu::DepthStencilState>, discs: bool, layers: Layers| {
+            let switch = |on: bool| if on { 1.0 } else { 0.0 };
+            let constants = [
+                (DISCS_CONSTANT, switch(discs)),
+                (STARS_CONSTANT, switch(layers.stars)),
+                (CLOUDS_CONSTANT, switch(layers.clouds)),
+            ];
+            let compilation_options =
+                wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_sky"),
+                    compilation_options: compilation_options.clone(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth,
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_sky"),
+                    compilation_options,
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache,
+            })
+        };
+    // A fullscreen triangle at the far plane, drawn after the opaque surfaces: `Equal`
+    // against the cleared depth (0) shades only pixels no geometry covered. Every variant is
+    // built now, behind the load, so night falling never compiles a pipeline mid-game.
+    let depth = wgpu::DepthStencilState {
+        format: DEPTH_FORMAT,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Equal),
+        stencil: Default::default(),
+        bias: Default::default(),
+    };
+    let main = Layers::ALL
+        .map(|layers| pipeline("sky", SCENE_COLOR_FORMAT, samples, Some(depth.clone()), true, layers));
+    let cube = [false, true]
+        .map(|clouds| pipeline("sky cube", cube_format, 1, None, false, Layers { stars: false, clouds }));
+    SkyPipelines { main, cube }
 }
 
 /// The sky-only cubemap and when each face is drawn.
@@ -394,15 +463,28 @@ impl CubePass<'_> {
     }
 }
 
+/// The sky's pipelines from one module: [`Sky::rebuilt_pipelines`]' result.
+#[derive(Debug)]
+pub(crate) struct SkyPipelines {
+    main: [wgpu::RenderPipeline; Layers::VARIANTS],
+    cube: [wgpu::RenderPipeline; 2],
+}
+
+impl SkyPipelines {
+    /// How many there are: every one is built up front.
+    pub(crate) const COUNT: u32 = (Layers::VARIANTS + 2) as u32;
+}
+
 impl Sky {
-    /// The sky's pipelines (for the main pass's `samples`), its uniforms and cube, and the
-    /// default sky material, uploaded into `materials`.
+    /// The sky's pipelines (for the main pass's `samples`, built from `sources`), its uniforms
+    /// and cube, and the default sky material, uploaded into `materials`.
     pub(crate) fn new(
         gpu: &GpuContext,
         layouts: &Layouts,
         materials: &mut Materials,
         settings: SkySettings,
         samples: u32,
+        sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         let device = gpu.device();
         let defaults = Material::from_document(
@@ -452,63 +534,11 @@ impl Sky {
             ],
             immediate_size: 0,
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("sky"),
-            source: wgpu::ShaderSource::Wgsl(shaders::SKY.into()),
-        });
-        let cache = gpu.pipeline_cache();
-        let pipeline =
-            |label, format, samples, depth: Option<wgpu::DepthStencilState>, discs: bool, layers: Layers| {
-                let switch = |on: bool| if on { 1.0 } else { 0.0 };
-                let constants = [
-                    (DISCS_CONSTANT, switch(discs)),
-                    (STARS_CONSTANT, switch(layers.stars)),
-                    (CLOUDS_CONSTANT, switch(layers.clouds)),
-                ];
-                let compilation_options =
-                    wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: &module,
-                        entry_point: Some("vs_sky"),
-                        compilation_options: compilation_options.clone(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: depth,
-                    multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &module,
-                        entry_point: Some("fs_sky"),
-                        compilation_options,
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache,
-                })
-            };
-        // A fullscreen triangle at the far plane, drawn after the opaque surfaces: `Equal`
-        // against the cleared depth (0) shades only pixels no geometry covered. Every variant is
-        // built now, behind the load, so night falling never compiles a pipeline mid-game.
-        let depth = wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: Some(false),
-            depth_compare: Some(wgpu::CompareFunction::Equal),
-            stencil: Default::default(),
-            bias: Default::default(),
-        };
-        let pipelines = Layers::ALL
-            .map(|layers| pipeline("sky", SCENE_COLOR_FORMAT, samples, Some(depth.clone()), true, layers));
+        let module = shaders::module(device, Program::Sky, sources);
+        let cache = gpu.pipeline_cache().cloned();
         let cube = SkyCube::new(gpu, settings);
-        let cube_pipelines = [false, true].map(|clouds| {
-            pipeline("sky cube", cube.format(), 1, None, false, Layers { stars: false, clouds })
-        });
+        let SkyPipelines { main: pipelines, cube: cube_pipelines } =
+            build_pipelines(device, &layout, &module, samples, cube.format(), cache.as_ref());
         tracing::debug!(
             target: LOG_TARGET,
             cube_size = settings.cube_size,
@@ -523,11 +553,30 @@ impl Sky {
             bind_group,
             pipelines,
             cube_pipelines,
+            layout,
+            samples,
+            cache,
             default_material,
             cube,
             prepared: None,
             stats: SkyStats { cube_size: settings.cube_size, ..SkyStats::default() },
         })
+    }
+
+    /// The sky's pipelines built anew from `sources` (hot reload), on the layout, sample count
+    /// and cube format they were built with: [`Self::set_pipelines`] takes them once the
+    /// renderer knows every pipeline it rebuilt is valid.
+    pub(crate) fn rebuilt_pipelines(&self, device: &wgpu::Device, sources: &ShaderSources) -> SkyPipelines {
+        let module = shaders::module(device, Program::Sky, sources);
+        build_pipelines(device, &self.layout, &module, self.samples, self.cube.format(), self.cache.as_ref())
+    }
+
+    /// Draws with `pipelines` from the next frame, which draws every face of the cube again, as
+    /// the first frame does, so the cube shows the new shaders at once.
+    pub(crate) fn set_pipelines(&mut self, pipelines: SkyPipelines) {
+        self.pipelines = pipelines.main;
+        self.cube_pipelines = pipelines.cube;
+        self.cube.schedule = FaceSchedule::new(self.settings.cube_interval);
     }
 
     /// The CPU half of a frame: folds the packet's sky layers and its sky material (or the

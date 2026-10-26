@@ -106,8 +106,13 @@ impl RangeAllocator {
     /// The start of a new range of `len` units: the first free range that fits, or the end. An
     /// empty range takes no room: it starts at 0.
     pub(crate) fn allocate(&mut self, len: u32) -> u32 {
+        self.try_allocate(len).expect("allocations fit u32 units")
+    }
+
+    /// [`Self::allocate`], or `None` if the range would end past `u32::MAX` units.
+    pub(crate) fn try_allocate(&mut self, len: u32) -> Option<u32> {
         if len == 0 {
-            return 0;
+            return Some(0);
         }
         if let Some(index) = self.free.iter().position(|range| range.len() as u32 >= len) {
             let range = &mut self.free[index];
@@ -116,11 +121,11 @@ impl RangeAllocator {
             if range.start == range.end {
                 self.free.remove(index);
             }
-            return start;
+            return Some(start);
         }
         let start = self.end;
-        self.end = start.checked_add(len).expect("allocations fit u32 units");
-        start
+        self.end = start.checked_add(len)?;
+        Some(start)
     }
 
     /// Returns `start..start + len`, which [`Self::allocate`] handed out.

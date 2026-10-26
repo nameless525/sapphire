@@ -38,6 +38,13 @@ pub trait PackSource: Send + Sync {
     /// Reads `len` bytes of `file` from `offset`, then calls `done` with them, on whatever thread
     /// the read finished on (possibly this one, before returning). `done` is always called.
     fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone);
+
+    /// Closes `file`, which the server reads no more: a remounted pack's earlier file (hot
+    /// reload). Reads of it still queued may fail; their results are no longer wanted. Sources
+    /// that hold nothing open per file keep the default, which does nothing.
+    fn close(&self, file: PackFile) {
+        let _ = file;
+    }
 }
 
 impl<S: PackSource + ?Sized> PackSource for Arc<S> {
@@ -48,13 +55,30 @@ impl<S: PackSource + ?Sized> PackSource for Arc<S> {
     fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
         (**self).read(file, offset, len, priority, done);
     }
+
+    fn close(&self, file: PackFile) {
+        (**self).close(file);
+    }
 }
 
 /// Packs held in memory, read on the calling thread: tests, tools, and packs a live-link session
 /// pushes to a device.
+///
+/// Replacing a pack ([`Self::insert`]) and remounting it ([`AssetServer::remount`]) reloads what
+/// changed, as a rewritten pack file does on desktop: the path live link (A9) takes.
+///
+/// [`AssetServer::remount`]: super::AssetServer::remount
 #[derive(Debug, Default)]
 pub struct MemoryPackSource {
-    packs: Mutex<Vec<(String, Arc<[u8]>)>>,
+    state: Mutex<MemoryPacks>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryPacks {
+    /// The packs by name, each the latest inserted under it.
+    packs: Vec<(String, Arc<[u8]>)>,
+    /// Every file opened, by [`PackFile`] number: the bytes it opened, until it is closed.
+    files: Vec<Option<Arc<[u8]>>>,
 }
 
 impl MemoryPackSource {
@@ -63,32 +87,51 @@ impl MemoryPackSource {
     }
 
     /// Adds the pack called `name`, or replaces it for later opens: files opened before keep
-    /// reading the bytes they opened.
+    /// reading the bytes they opened, until they are closed.
     pub fn insert(&self, name: &str, bytes: impl Into<Arc<[u8]>>) {
-        self.packs.lock().unwrap_or_else(PoisonError::into_inner).push((name.to_owned(), bytes.into()));
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes = bytes.into();
+        match state.packs.iter_mut().find(|(existing, _)| existing == name) {
+            Some((_, pack)) => *pack = bytes,
+            None => state.packs.push((name.to_owned(), bytes)),
+        }
     }
 
-    /// The bytes behind `file`, if it was opened here.
+    /// The bytes behind `file`, if it was opened here and is still open.
     fn bytes(&self, file: PackFile) -> Option<Arc<[u8]>> {
-        let packs = self.packs.lock().unwrap_or_else(PoisonError::into_inner);
-        packs.get(usize::try_from(file.0).ok()?).map(|(_, bytes)| bytes.clone())
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.files.get(usize::try_from(file.0).ok()?)?.clone()
     }
 }
 
 impl PackSource for MemoryPackSource {
     fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
-        let packs = self.packs.lock().unwrap_or_else(PoisonError::into_inner);
-        packs
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes = state
+            .packs
             .iter()
-            .rposition(|(existing, _)| existing == name)
-            .map(|index| (PackFile(index as u64), packs[index].1.len() as u64))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no pack called {name:?}")))
+            .find(|(existing, _)| existing == name)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no pack called {name:?}")))?;
+        let len = bytes.len() as u64;
+        // Closed files' numbers are given out again, as file descriptors are.
+        let number = match state.files.iter().position(Option::is_none) {
+            Some(free) => {
+                state.files[free] = Some(bytes);
+                free
+            }
+            None => {
+                state.files.push(Some(bytes));
+                state.files.len() - 1
+            }
+        };
+        Ok((PackFile(number as u64), len))
     }
 
     fn read(&self, file: PackFile, offset: u64, len: usize, _priority: LoadPriority, done: ReadDone) {
         let result = self
             .bytes(file)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such pack file"))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such open pack file"))
             .and_then(|bytes| {
                 let start = usize::try_from(offset).ok().filter(|&start| start <= bytes.len());
                 start
@@ -99,5 +142,12 @@ impl PackSource for MemoryPackSource {
                     })
             });
         done(result);
+    }
+
+    fn close(&self, file: PackFile) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(open) = usize::try_from(file.0).ok().and_then(|index| state.files.get_mut(index)) {
+            *open = None;
+        }
     }
 }

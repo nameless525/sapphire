@@ -66,6 +66,8 @@ pub(crate) struct Options {
     /// `--debug-overlay[=panels]`: the overlay starts shown, with these panels (empty: the
     /// default ones). Only `dev` builds have it.
     pub debug_overlay: Option<String>,
+    /// `--no-hot-reload`: watch no files. Only `dev` builds watch any.
+    pub no_hot_reload: bool,
 }
 
 /// A mode that renders into an offscreen target, without creating a window or taking focus.
@@ -189,6 +191,7 @@ impl Options {
                 }
                 "--view" => options.view = Some(parse_view(&value("--view")?)?),
                 "--plain-sky" => options.plain_sky = true,
+                "--no-hot-reload" => options.no_hot_reload = true,
                 "--light-path" => {
                     options.light_path = Some(match value("--light-path")?.as_str() {
                         "clustered" => LightPath::Clustered,
@@ -353,6 +356,13 @@ mod tests {
         assert!(parse(&["--view", "120"]).is_err());
         assert!(parse(&["--view", "0,90"]).is_err(), "the orbit camera stops short of straight up");
         assert!(parse(&["--view", "inf,0"]).is_err());
+    }
+
+    #[test]
+    fn hot_reload_is_on_unless_turned_off() {
+        assert!(!parse(&[]).unwrap().0.no_hot_reload);
+        let (options, unknown) = parse(&["--no-hot-reload", "--bench", "10"]).unwrap();
+        assert!(options.no_hot_reload && unknown.is_empty());
     }
 
     #[test]

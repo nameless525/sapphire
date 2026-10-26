@@ -82,8 +82,9 @@
 //!   with streaming adding and removing them.
 //! - **Curves smoother than per-segment easing** (Catmull-Rom through the keys) if per-segment
 //!   kinks show in time-lapses.
-//! - **Hot reload and live link** of timelines (A8, A9) through [`TimeOfDay::set_timeline`] and
-//!   [`TodTimeline::from_ron`], and timelines and cutscenes loaded from packs (A4).
+//! - **Live link** of timelines (A9) through [`TimeOfDay::set_timeline`] and
+//!   [`TodTimeline::from_ron`], as desktop hot reload already reloads the default day in
+//!   development builds (A8), and timelines and cutscenes loaded from packs (A4).
 //! - **The editor's** curve and gradient editors over the keys (M2–M3).
 
 mod clock;

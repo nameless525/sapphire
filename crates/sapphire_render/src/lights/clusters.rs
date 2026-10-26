@@ -40,7 +40,7 @@ use sapphire_rhi::wgpu;
 
 use super::GpuLight;
 use crate::gpu_types::FrameUniforms;
-use crate::shaders;
+use crate::shaders::{self, Program, ShaderSources};
 
 pub(crate) const TILES_X: u32 = 16;
 pub(crate) const TILES_Y: u32 = 9;
@@ -85,6 +85,9 @@ pub(crate) fn depth_uniforms(near: f32, farthest: f32) -> [f32; 4] {
 pub(crate) struct ClusterPass {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
+    /// Kept to build the pipeline again from new shader sources.
+    layout: wgpu::PipelineLayout,
+    cache: Option<wgpu::PipelineCache>,
 }
 
 impl ClusterPass {
@@ -95,6 +98,7 @@ impl ClusterPass {
         lights: &wgpu::Buffer,
         clusters: &wgpu::Buffer,
         cache: Option<&wgpu::PipelineCache>,
+        sources: &ShaderSources,
     ) -> Self {
         let buffer = |binding, ty, min_size: usize| wgpu::BindGroupLayoutEntry {
             binding,
@@ -123,24 +127,23 @@ impl ClusterPass {
                 wgpu::BindGroupEntry { binding: 2, resource: clusters.as_entire_binding() },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("light clusters"),
             bind_group_layouts: &[Some(&layout), Some(view_layout)],
             immediate_size: 0,
         });
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("light clusters"),
-            source: wgpu::ShaderSource::Wgsl(shaders::CLUSTERS.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("light clusters"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("cs_clusters"),
-            compilation_options: Default::default(),
-            cache,
-        });
-        Self { pipeline, bind_group }
+        let pipeline = build(device, &layout, cache, sources);
+        Self { pipeline, bind_group, layout, cache: cache.cloned() }
+    }
+
+    /// The pass's pipeline built from `sources` instead, for [`Self::set_pipeline`] (shader hot
+    /// reload).
+    pub(crate) fn rebuilt(&self, device: &wgpu::Device, sources: &ShaderSources) -> wgpu::ComputePipeline {
+        build(device, &self.layout, self.cache.as_ref(), sources)
+    }
+
+    pub(crate) fn set_pipeline(&mut self, pipeline: wgpu::ComputePipeline) {
+        self.pipeline = pipeline;
     }
 
     /// Bins the frame's lights, viewed through `view` (the main view's bind group).
@@ -161,6 +164,23 @@ impl ClusterPass {
         pass.set_bind_group(1, view, &[0]);
         pass.dispatch_workgroups(CLUSTER_COUNT.div_ceil(WORKGROUP_SIZE), 1, 1);
     }
+}
+
+/// The cluster pass's pipeline on `layout`, from the light-cluster program in `sources`.
+fn build(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    sources: &ShaderSources,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("light clusters"),
+        layout: Some(layout),
+        module: &shaders::module(device, Program::Clusters, sources),
+        entry_point: Some("cs_clusters"),
+        compilation_options: Default::default(),
+        cache,
+    })
 }
 
 /// The CPU reference: the grid and culling math of `shaders/lights.wgsl` and

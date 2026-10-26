@@ -59,9 +59,10 @@
 //!   character, if cutscenes need close-ups free of dappled shade.
 //! - **The head from the skeleton:** characters' heads from their head bones once animation
 //!   poses them (M2); [`CharacterLightRig::head`] is fixed in the entity's space until then.
-//! - **Presets as content** loaded from packs (A4) and hot reloaded (A8, A9) through
-//!   [`LightRigLibrary::from_ron`]; characters keep their [`LightRigId`]s, and an ID past a
-//!   shorter library's end falls back to its default.
+//! - **Presets as content** loaded from packs (A4), and pushed by live link (A9) through
+//!   [`LightRigLibrary::from_ron`] as desktop hot reload already reloads this crate's document in
+//!   development builds (A8); characters keep their [`LightRigId`]s, and an ID past a shorter
+//!   library's end falls back to its default.
 //!
 //! [`FramePacket::characters`]: sapphire_render::FramePacket::characters
 

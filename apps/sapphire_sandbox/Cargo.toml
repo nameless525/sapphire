@@ -48,12 +48,20 @@ profiling.workspace = true
 tracing.workspace = true
 # Dev-only (rule R8): linked only by the `dev` feature.
 sapphire_debug = { workspace = true, optional = true }
+# Hot reload (M1 A8), dev-only too. Its file watching is for desktops alone: see below.
+sapphire_hot_reload = { workspace = true, optional = true }
+
+# Desktop dev builds watch files for hot reload, through the crate's `notify` backend. Phones
+# get changes from live link (A9) instead, so the watcher stays out of their builds.
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+sapphire_hot_reload = { workspace = true, optional = true, features = ["notify"] }
 
 [features]
 # Stream profiling zones to the Tracy profiler (spec §5.3).
 tracy = ["profiling/profile-with-tracy"]
-# Development builds: the debug overlay (spec §5.20). Shipping builds leave it off.
-dev = ["dep:sapphire_debug"]
+# Development builds: the debug overlay (spec §5.20) and hot reload (spec §5.10). Shipping
+# builds leave it off.
+dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload"]
 
 [lints]
 workspace = true

@@ -71,6 +71,23 @@ pub struct OverlayFrame<'a> {
     pub characters: &'a [CharacterInstance],
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
+    /// Hot reload, if the app runs it.
+    pub hot_reload: Option<HotReloadStatus<'a>>,
+}
+
+/// What hot reload (M1 A8) did, for the stats panel. Reloaded assets are counted in
+/// [`AssetStats`], shader rebuilds in [`RenderStats`].
+#[derive(Clone, Copy, Debug)]
+pub struct HotReloadStatus<'a> {
+    /// What is watched, or why nothing is.
+    pub watching: &'a str,
+    /// Times new shader sources were built.
+    pub shader_rebuilds: u32,
+    /// Documents reloaded (the default day, the light rig presets).
+    pub documents: u32,
+    /// What failed in the last change: shaders that don't compile, assets whose new version
+    /// didn't load. Each keeps what it had.
+    pub errors: &'a [String],
 }
 
 /// What the app should do for the overlay after [`DebugOverlay::update`].

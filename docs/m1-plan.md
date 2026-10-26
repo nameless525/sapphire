@@ -91,7 +91,7 @@ Each package is one pull request, or a few, into `main`. Size: **S** is a day or
 | A5 | **Skinned meshes:** glTF skins and skeletons, morph targets, `meshopt` optimization, quantized streams, LODs, and authored `_OUTLINE_NORMAL` attributes. | M | A1 | |
 | A6 | **VRM 1.0 import:** `vrm-spec` types, MToon → Sapphire material mapping, VRM 0.x migration, and spring-bone and constraint data kept for M2. | M | A3, A5 | |
 | A7 | **Anime map tools:** the SDF face-map generator, RON ramp curves baked to rows, the ILM channel packer, and a Blender mask-bake recipe. | M | A2 | Produces the look-dev character's maps. |
-| A8 | **Desktop hot reload:** watch the cooked output with `notify`, swap assets in place behind handles, and hot-reload shaders. | M | A4 | |
+| A8 | **Desktop hot reload:** watch the cooked output with `notify`, swap assets in place behind handles, and hot-reload shaders. | M | A4 | As built: watches the packs, not the loose files; `AssetServer::remount`, `Renderer::set_shader_sources` and `update_mesh`, the dev-only `sapphire_hot_reload` (spec §5.10, §5.12). |
 | A9 | **Live link, minimal:** `sapphire_livelink`. The dev build listens on TCP (postcard frames); the desktop pushes cooked assets, material changes, TOD keys and cvars over Wi-Fi, `adb reverse` or `iproxy`. | M | A8 | Required by exit test 1 on a phone. |
 
 ### Track R: renderer v1 core

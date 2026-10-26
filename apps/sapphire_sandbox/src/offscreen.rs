@@ -112,7 +112,13 @@ impl Stage {
         // the scene chose.
         options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
-        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options.debug_overlay.as_deref())?;
+        let dev = crate::dev::DevTools::new(
+            &gpu,
+            FORMAT,
+            options.debug_overlay.as_deref(),
+            !options.no_hot_reload,
+            std::path::Path::new(platform.content().root()),
+        )?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -174,7 +180,10 @@ impl Stage {
         alpha: f32,
         after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
     ) -> Result<(), AppInitError> {
-        // Loading runs every frame, as in the windowed app, so the bench measures it.
+        // Hot reload and loading run every frame, as in the windowed app, so the bench measures
+        // them.
+        #[cfg(feature = "dev")]
+        self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
         self.content.update(&mut self.renderer, &self.gpu);
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("offscreen target", view);

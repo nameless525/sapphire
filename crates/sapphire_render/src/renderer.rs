@@ -3,7 +3,9 @@
 //! transparent surfaces), lit by each character's light rig (or the sun) and the frame's local
 //! lights, then post-processing into the target.
 
+use std::future::Future;
 use std::num::NonZeroU64;
+use std::task::{Context, Poll, Waker};
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
@@ -20,15 +22,16 @@ use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
-use crate::mesh_pool::{MeshPool, SubmeshMaterial};
+use crate::mesh_pool::{MeshPool, PoolMoves, SubmeshMaterial};
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MeshPass, NORMALS_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT,
     SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::PostProcess;
 use crate::scene::GpuScene;
+use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::skinning::{Skinning, SkinningStats};
-use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
+use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -143,6 +146,8 @@ pub enum RenderError {
     SrgbData { slot: &'static str, format: wgpu::TextureFormat },
     #[error("{0:?} was not uploaded to this renderer")]
     UnknownMaterial(MaterialHandle),
+    #[error("{0:?} was not uploaded to this renderer")]
+    UnknownMesh(MeshHandle),
     #[error("a {from} material can't be updated into a {to} one")]
     MaterialFamilyChanged { from: MaterialFamily, to: MaterialFamily },
     #[error("the {0} family's material buffer is full")]
@@ -213,6 +218,18 @@ pub struct RenderStats {
     pub skinning: SkinningStats,
     /// The sky's layers and its cube.
     pub sky: SkyStats,
+    /// Times new shader sources rebuilt pipelines since the renderer was created
+    /// ([`Renderer::set_shader_sources`]).
+    pub shader_rebuilds: u32,
+}
+
+/// What [`Renderer::set_shader_sources`] rebuilt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShaderUpdate {
+    /// Shader modules built from changed files.
+    pub programs: u32,
+    /// Pipelines built from them: every one the renderer had built from their old versions.
+    pub pipelines: u32,
 }
 
 /// The prepasses' outputs in a frame's graph, which [`Renderer::record`] returns for passes
@@ -292,6 +309,11 @@ pub struct Renderer {
     previous_clip_from_world: Option<Mat4>,
     /// Kept for the pipelines built when meshes arrive.
     pipeline_cache: Option<wgpu::PipelineCache>,
+    /// The shader sources every pipeline is built from, including those built later.
+    shaders: ShaderSources,
+    /// `shaders` aren't the compiled-in ones, so pipelines built later are checked
+    /// (`Renderer::checked_build`).
+    edited_shaders: bool,
     stats: RenderStats,
     /// Stores the main pass's depth so a test can read it back.
     #[cfg(test)]
@@ -332,11 +354,13 @@ impl Renderer {
         if !depth.renderable || !depth.supports_samples(samples) {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
-        let post = PostProcess::new(gpu, color_format, settings.bloom_levels)?;
+        let shaders = ShaderSources::compiled_in();
+        let post = PostProcess::new(gpu, color_format, settings.bloom_levels, &shaders)?;
 
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);
-        let pipelines = Pipelines::new(&device, &layouts, SCENE_COLOR_FORMAT, samples, gpu.pipeline_cache());
+        let pipelines =
+            Pipelines::new(&device, &layouts, SCENE_COLOR_FORMAT, samples, gpu.pipeline_cache(), &shaders);
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -358,7 +382,8 @@ impl Renderer {
             let offset = u64::from(view_stride * (1 + face));
             gpu.queue().write_buffer(&view_uniforms, offset, bytemuck::bytes_of(&view));
         }
-        let lights = Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache());
+        let lights =
+            Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache(), &shaders);
         let characters = Characters::new(&device);
         let frame_bind_group =
             create_frame_bind_group(&device, &layouts.frame, &frame_uniforms, &lights, &characters);
@@ -376,7 +401,7 @@ impl Renderer {
         });
         let meshes = MeshPool::new(&device);
         let mut materials = Materials::new(&device, gpu.queue());
-        let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples)?;
+        let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
         let scene = GpuScene::new(&device);
         let scene_bind_group = create_scene_bind_group(&device, &layouts.scene, &scene, &materials);
         let skinning = Skinning::new(&device);
@@ -415,6 +440,8 @@ impl Renderer {
             prepared: None,
             previous_clip_from_world: None,
             pipeline_cache: gpu.pipeline_cache().cloned(),
+            shaders,
+            edited_shaders: false,
             stats: RenderStats::default(),
             #[cfg(test)]
             readable_depth: false,
@@ -463,11 +490,13 @@ impl Renderer {
             // A new static permutation: its draws move to other pipelines, built for every
             // format already drawn (meshes in another format build theirs when uploaded).
             let variant = SurfaceVariant::of_material(flags);
-            for format in PositionFormat::ALL {
-                if self.pipelines.mesh(format).is_some() {
-                    self.pipelines.prepare_variant(&self.device, format, variant);
+            self.checked_build(|renderer| {
+                for format in PositionFormat::ALL {
+                    if renderer.pipelines.mesh(format).is_some() {
+                        renderer.pipelines.prepare_variant(&renderer.device, format, variant);
+                    }
                 }
-            }
+            });
             self.scene.meshes_changed();
         }
         Ok(())
@@ -526,7 +555,106 @@ impl Renderer {
         mesh: &ArchivedMesh,
         materials: &[MaterialHandle],
     ) -> Result<MeshHandle, RenderError> {
-        let materials = materials
+        let materials = self.submesh_materials(materials)?;
+        let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
+        self.prepare_mesh(handle, &materials, moves);
+        let bounds = mesh.streams.bounds.to_native();
+        self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
+        self.scene.meshes_changed();
+        self.update_pool_stats();
+        Ok(handle)
+    }
+
+    /// Replaces mesh `handle` in place with `mesh`, as [`Self::upload_slot_materials`] and
+    /// [`Self::upload_mesh`] would upload it, under the same handle: instances draw the new mesh
+    /// from the next frame, skinned ones from their bind pose until posed again. This is how hot
+    /// reload (A8) and live link (A9) apply a changed mesh. The materials the new mesh embeds
+    /// rewrite, slot by slot, the material slots the old mesh's embedded ones had where the family
+    /// matches, rather than taking new ones; slots bound to material assets take `assets`'
+    /// handles, as in [`Self::upload_slot_materials`]. The old streams' room in the mesh pool is
+    /// given back. Fails, changing nothing, if the mesh or a material it embeds is invalid or a
+    /// slot can't be resolved; a mesh pool too full for the new mesh fails after the materials of
+    /// slots that need new ones were uploaded, as [`Self::upload_mesh`] does after
+    /// [`Self::upload_slot_materials`].
+    pub fn update_mesh(
+        &mut self,
+        handle: MeshHandle,
+        mesh: &ArchivedMesh,
+        assets: impl Fn(AssetId) -> Option<MaterialHandle>,
+    ) -> Result<(), RenderError> {
+        /// What a slot draws with: a material asset's handle, one of the old mesh's embedded
+        /// materials rewritten, or a new one.
+        enum Plan<'m> {
+            Asset(MaterialHandle),
+            Rewrite(MaterialHandle, &'m ArchivedMaterial),
+            Upload(&'m ArchivedMaterial),
+        }
+        let old_slots =
+            &self.meshes.records().get(handle.index()).ok_or(RenderError::UnknownMesh(handle))?.slots;
+        mesh.validate()?;
+        // Every slot is resolved and checked before anything is uploaded or rewritten.
+        let mut plans = Vec::with_capacity(mesh.materials.len());
+        for (index, slot) in mesh.materials.iter().enumerate() {
+            plans.push(match &slot.material {
+                ArchivedSlotMaterial::Asset(id) => {
+                    let handle = assets(*id).ok_or_else(|| RenderError::UnresolvedMaterial {
+                        slot: slot.name.to_string(),
+                        id: *id,
+                    })?;
+                    self.submesh_materials(&[handle])?;
+                    Plan::Asset(handle)
+                }
+                ArchivedSlotMaterial::Embedded(material) => {
+                    material.validate()?;
+                    if material.family != MaterialFamily::AnimeCharacter {
+                        return Err(RenderError::NotDrawable(material.family));
+                    }
+                    // Embedded materials name no textures (importers make no texture assets), so
+                    // rewriting one after the pool has the new mesh can't fail.
+                    let mut slots = material.family.texture_slots().iter().zip(material.textures.iter());
+                    if let Some((desc, id)) =
+                        slots.find_map(|(desc, binding)| Some((desc, binding.texture()?)))
+                    {
+                        return Err(RenderError::MissingTexture { slot: desc.name, id });
+                    }
+                    let reusable =
+                        old_slots.get(index).filter(|old| old.embedded).map(|old| old.material.handle);
+                    match reusable {
+                        Some(old)
+                            if self.materials.record(old).is_some_and(|r| r.family == material.family) =>
+                        {
+                            Plan::Rewrite(old, material)
+                        }
+                        _ => Plan::Upload(material),
+                    }
+                }
+            });
+        }
+        let mut handles = Vec::with_capacity(plans.len());
+        for plan in &plans {
+            handles.push(match *plan {
+                Plan::Asset(handle) | Plan::Rewrite(handle, _) => handle,
+                Plan::Upload(material) => self.upload_material(material, |_| None)?,
+            });
+        }
+        let materials = self.submesh_materials(&handles)?;
+        let moves = self.meshes.replace(&self.device, &self.queue, handle, mesh, &materials)?;
+        for plan in plans {
+            if let Plan::Rewrite(handle, material) = plan {
+                self.update_material(handle, material, |_| None)?;
+            }
+        }
+        self.prepare_mesh(handle, &materials, moves);
+        let bounds = mesh.streams.bounds.to_native();
+        self.lights.mesh_replaced(handle, [bounds.min, bounds.max]);
+        self.scene.mesh_replaced(handle);
+        self.update_pool_stats();
+        Ok(())
+    }
+
+    /// The draw-side record of each of `materials`, which must be this renderer's and drawable.
+    fn submesh_materials(&self, materials: &[MaterialHandle]) -> Result<Vec<SubmeshMaterial>, RenderError> {
+        materials
             .iter()
             .map(|&handle| {
                 let record = self.materials.record(handle).ok_or(RenderError::UnknownMaterial(handle))?;
@@ -535,27 +663,138 @@ impl Renderer {
                 }
                 Ok(SubmeshMaterial { handle, slot: record.slot })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
+            .collect()
+    }
+
+    /// Builds what mesh `handle`, just placed in the pool with `materials`, draws with: the
+    /// pipelines of its position format and its materials' permutations, and for a skinned or
+    /// morphed mesh the skinning and character prepass pipelines.
+    fn prepare_mesh(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
+        self.checked_build(|renderer| renderer.build_mesh_pipelines(handle, materials, moves));
+    }
+
+    /// [`Self::prepare_mesh`]'s pipelines, built from the current shader sources.
+    fn build_mesh_pipelines(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
         let record = &self.meshes.records()[handle.index()];
         let format = record.draw_format();
         self.pipelines.prepare_format(&self.device, format);
-        for material in &materials {
+        for material in materials {
             let flags = self.materials.record(material.handle).map_or(MaterialFlags::empty(), |r| r.flags);
             self.pipelines.prepare_variant(&self.device, format, SurfaceVariant::of_material(flags));
         }
         if record.deform().is_some() {
             self.pipelines.prepare_characters(&self.device);
-            self.skinning.enable(&self.device, self.pipeline_cache.as_ref());
+            self.skinning.enable(&self.device, self.pipeline_cache.as_ref(), &self.shaders);
         }
         if moves.deformable {
             self.skinning.sources_moved();
         }
-        let bounds = mesh.streams.bounds.to_native();
-        self.lights.mesh_uploaded(handle, [bounds.min, bounds.max]);
-        self.scene.meshes_changed();
-        self.update_pool_stats();
-        Ok(handle)
+    }
+
+    /// Builds the renderer's shaders from `sources` from now on (hot reload, live link; see
+    /// `shaders` in the crate docs): every program with a changed file is checked with naga,
+    /// then its module and every pipeline built from its old version are built again, and
+    /// replace the old ones from the next recorded frame, each on the layout it had, so every
+    /// bind group stays valid (a rebuilt sky also draws its whole cube again that frame).
+    /// Pipelines built later (new permutations, formats, skinning) use them too. Unchanged
+    /// programs keep what they have.
+    ///
+    /// If any program fails, nothing changes and the error says which file and line, or which
+    /// pipelines wgpu refused: the renderer goes on drawing with the shaders it has. The work is
+    /// synchronous, on this thread, so the frame that applies an edit takes longer.
+    pub fn set_shader_sources(&mut self, sources: &ShaderSources) -> Result<ShaderUpdate, ShaderError> {
+        profiling::scope!("Renderer::set_shader_sources");
+        let changed: Vec<Program> =
+            Program::ALL.into_iter().filter(|&program| self.shaders.differs(sources, program)).collect();
+        if changed.is_empty() {
+            return Ok(ShaderUpdate::default());
+        }
+        for &program in &changed {
+            shaders::validate(program, sources)?;
+        }
+        // naga accepted every program; wgpu still checks them against the layouts and vertex
+        // buffers the renderer builds pipelines with. Error scopes catch what it refuses, which
+        // would otherwise be an uncaptured (and in debug builds fatal) GPU error.
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let device = &self.device;
+        let cache = self.pipeline_cache.as_ref();
+        let mut pipelines = 0;
+        let mesh = changed.iter().any(|program| program.is_mesh()).then(|| {
+            let (mesh, built) = self.pipelines.rebuilt(device, sources, &changed);
+            pipelines += built;
+            mesh
+        });
+        let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(device, sources));
+        pipelines += if sky.is_some() { SkyPipelines::COUNT } else { 0 };
+        let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
+        pipelines += if post.is_some() { 4 } else { 0 };
+        let clusters = changed
+            .contains(&Program::Clusters)
+            .then(|| self.lights.rebuilt_cluster_pipeline(device, sources))
+            .flatten();
+        let skinning = changed
+            .contains(&Program::Skinning)
+            .then(|| self.skinning.rebuilt_pipeline(device, cache, sources))
+            .flatten();
+        pipelines += u32::from(clusters.is_some()) + u32::from(skinning.is_some());
+        let error = scope_error(internal.pop()).or(scope_error(validation.pop()));
+        if let Some(error) = error {
+            let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
+            return Err(ShaderError::Pipeline { programs, message: error.to_string() });
+        }
+        if let Some(mesh) = mesh {
+            self.pipelines = mesh;
+        }
+        if let Some(sky) = sky {
+            self.sky.set_pipelines(sky);
+        }
+        if let Some(post) = post {
+            self.post.set_pipelines(post);
+        }
+        if let Some(clusters) = clusters {
+            self.lights.set_cluster_pipeline(clusters);
+        }
+        if let Some(skinning) = skinning {
+            self.skinning.set_pipeline(skinning);
+        }
+        self.shaders = sources.clone();
+        self.edited_shaders = !sources.is_compiled_in();
+        self.stats.shader_rebuilds += 1;
+        let update = ShaderUpdate { programs: changed.len() as u32, pipelines };
+        tracing::info!(target: LOG_TARGET, programs = update.programs, pipelines = update.pipelines, "shaders rebuilt");
+        Ok(update)
+    }
+
+    /// Runs `build`, which may build pipelines from the current shader sources. Edited sources
+    /// were checked against the pipelines built when they were applied, not against those built
+    /// later (another permutation, f32 positions, the skinning pass): if wgpu refuses one of
+    /// those, the renderer goes back to the compiled-in shaders, rebuilding every pipeline from
+    /// them, rather than draw with an invalid one, and logs why.
+    fn checked_build<R>(&mut self, build: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.edited_shaders {
+            return build(self);
+        }
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let result = build(self);
+        if let Some(error) = scope_error(internal.pop()).or(scope_error(validation.pop())) {
+            tracing::error!(
+                target: LOG_TARGET,
+                %error,
+                "a pipeline built from the edited shaders failed; going back to the compiled-in shaders"
+            );
+            if let Err(error) = self.set_shader_sources(&ShaderSources::compiled_in()) {
+                tracing::error!(target: LOG_TARGET, %error, "the compiled-in shaders didn't build");
+            }
+        }
+        result
+    }
+
+    /// The shader sources the renderer builds with: compiled in, until
+    /// [`Self::set_shader_sources`] replaced them.
+    pub fn shader_sources(&self) -> &ShaderSources {
+        &self.shaders
     }
 
     /// The CPU half of a frame: applies the packet's instance deltas to the persistent scene
@@ -1058,6 +1297,16 @@ fn begin_prepass<'p>(
         timestamp_writes,
         ..Default::default()
     })
+}
+
+/// The error an error scope caught: `pop`'s future, which native backends resolve at once. Only
+/// WebGPU resolves it later, and the engine has no web build (spec §1.3).
+fn scope_error(pop: impl Future<Output = Option<wgpu::Error>>) -> Option<wgpu::Error> {
+    let mut pop = std::pin::pin!(pop);
+    match pop.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(error) => error,
+        Poll::Pending => None,
+    }
 }
 
 /// Copies `bytes` to the start of `target` through the staging belt. Empty uploads are skipped.

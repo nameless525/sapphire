@@ -49,6 +49,14 @@
 //! - The prepasses (M1 R2): a character-only depth prepass, and a scene prepass of depth, world
 //!   normals and velocity, as frame-graph transients for later passes to read
 //!   ([`PrepassTargets`]); the graph culls them while nothing does.
+//! - Shader sources (`shaders`, M1 A8): the WGSL files compiled in ([`ShaderFile`]), the
+//!   programs built from them, and rebuilding pipelines from edited text
+//!   ([`Renderer::set_shader_sources`]: hot reload and live link), checked with naga first so an
+//!   error names its file and line, and kept out if anything fails. The renderer never reads a
+//!   file (rule R5).
+//! - Replacing uploaded objects in place, under the same handles (M1 A8): materials
+//!   ([`Renderer::update_material`], which also rebinds replaced textures) and meshes
+//!   ([`Renderer::update_mesh`], whose old room in the mesh pool is given back).
 //! - The frame graph ([`graph`]): pass culling and ordering, pooled transient textures,
 //!   parallel recording and the frame's one submit.
 //! - Texture uploads ([`texture`], M1 A2): cooked KTX2 textures to sampled GPU textures with
@@ -364,7 +372,8 @@
 //!
 //! # Later milestones
 //!
-//! - **M1:** paged mesh residency with free lists and generational [`MeshHandle`]s; mesh
+//! - **M1:** mesh residency (the pool's buffers already hand out ranges first fit and take them
+//!   back when a mesh is replaced) with generational [`MeshHandle`]s; mesh
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
 //!   pipeline/material/mesh draw sorting. The [`FramePacket`] grows with the systems that
 //!   feed it: VFX, UI and debug draws, plus shadow-cascade and UI-inset views.
@@ -407,8 +416,10 @@
 //! - **Permutations' remaining passes:** the prepasses cut alpha-tested materials out (a variant
 //!   binding group 3) once something reads them; transparent surfaces sort back to front with
 //!   draw sorting; alpha-to-coverage for alpha-tested surfaces under MSAA.
-//! - **Textures replaced at runtime** (hot reload, A8) rebind the materials that use them;
-//!   anisotropic filtering joins the quality tiers.
+//! - **Anisotropic filtering** joins the quality tiers.
+//! - **Shader hot reload** compiles on workers and swaps the pipelines in when they are ready,
+//!   with the warm-up (spec §5.12), instead of on the frame that applies an edit; WESL imports
+//!   replace the concatenation.
 
 mod buffer;
 mod characters;
@@ -440,8 +451,10 @@ pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;
 pub use post::{BloomParams, ColorGrade, MAX_BLOOM_LEVELS, PostParams, ToneCurve, Vignette};
 pub use renderer::{
-    MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, scaled_size,
+    MIN_RENDER_SCALE, Msaa, PrepassTargets, RenderError, RenderSettings, RenderStats, Renderer, ShaderUpdate,
+    scaled_size,
 };
+pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 

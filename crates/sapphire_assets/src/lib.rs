@@ -32,6 +32,14 @@
 //!   workers, dependencies first, a GPU upload queue under a per-frame budget); and residency
 //!   (per-kind budgets, LRU eviction of unused assets, pinning). The server's module docs
 //!   describe each stage.
+//! - Hot reload's runtime half (M1 A8): [`AssetServer::remount`] reads a changed pack again and
+//!   reloads what its hashes say changed, through the same pipeline, swapping each new version in
+//!   behind the asset's handles once it is uploaded. Every version an app is sent carries a
+//!   [generation](Upload::generation), so it replaces its copy in place; materials are sent again
+//!   when a texture they bind is replaced; [`AssetServer::generation`] and
+//!   [`AssetServer::take_changes`] tell CPU systems what changed. A new version that fails keeps
+//!   the old one. The triggers are elsewhere: the desktop's file watching
+//!   (`sapphire_hot_reload`, dev builds) and live link (A9), which pushes packs.
 //!
 //! # Does not own
 //!
@@ -46,6 +54,7 @@
 //!   (ADR 0001). Threads for decoding: `sapphire_jobs`.
 //! - Uploading: the app's uploader gets each asset as plain cooked data ([`Upload`]) and calls
 //!   the renderer, which never sees handles or the server (rule R4).
+//! - Watching files, or any other reason to remount: the app decides when a pack changed.
 //! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2), which
 //!   also simulates spring bones and evaluates constraints and expressions from a rig.
 //! - Checking that a material's textures exist and suit their slots: the pipeline, which knows
@@ -53,9 +62,11 @@
 //!
 //! # Later milestones
 //!
-//! - Hot reload behind handles (A8): a changed asset is decoded again and swapped in place
-//!   behind its handle, as [`AssetServer::reupload_all`] already re-sends assets, and a changed
-//!   material asset updates its one slot of the renderer's material buffer.
+//! - Overlay mounts for live link (A9): a pushed pack of the changed assets alone, whose entries
+//!   take over those of the packs mounted under it, so a device needn't receive the whole shared
+//!   pack for one material. Assets moving from one mounted pack to another (group packs, M2):
+//!   today the pack they left reports them removed, and the other's remount doesn't take them
+//!   over.
 //! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
 //!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
 //! - Memory-mapped packs, so raw blocks are read in place; unmounting packs at zone changes;
@@ -78,7 +89,7 @@ pub mod texture;
 pub use id::{AssetId, ParseAssetIdError};
 pub use kind::{AssetError, AssetKind};
 pub use server::{
-    Asset, AssetBudgets, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority, LoadState,
-    MemoryPackSource, MountError, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, UntypedHandle,
-    Upload, UploadError, UploadReport, WeakHandle,
+    Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
+    LoadState, MemoryPackSource, MountError, PackFile, PackSource, ReadDone, RemountReport, TextureAsset,
+    Unloaded, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
 };

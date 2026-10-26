@@ -8,6 +8,8 @@ use crate::mesh::{
 use crate::pack::{Codec, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 
+mod reload;
+
 fn id(n: u8) -> AssetId {
     AssetId::from_bytes([n; 16])
 }
@@ -199,6 +201,7 @@ fn the_upload_budget_holds_each_frame() {
         })
         .collect();
     let total: u64 = assets.iter().map(|asset| asset.size).sum();
+    let largest = assets.iter().map(|asset| asset.size).max().expect("five textures");
     let budget = 4 * MIB;
     let (mut server, _) = serve(assets, AssetBudgets { upload_per_frame: budget, ..unlimited() });
     let handles: Vec<Handle<TextureAsset>> = (1..=5).map(|n| server.load(id(n)).unwrap()).collect();
@@ -214,7 +217,9 @@ fn the_upload_budget_holds_each_frame() {
         }
     }
     assert_eq!(frames.iter().sum::<u64>(), total);
-    assert!(frames.len() >= total.div_ceil(budget) as usize, "{frames:?}");
+    // The 6 MiB texture takes a frame of its own; the rest fit the budget a frame. Decodes
+    // finish in any order, so that is the bound.
+    assert!(frames.len() > (total - largest).div_ceil(budget) as usize, "{frames:?}");
     assert!(frames.iter().any(|&bytes| bytes > budget), "the 6 MiB texture goes alone: {frames:?}");
 }
 

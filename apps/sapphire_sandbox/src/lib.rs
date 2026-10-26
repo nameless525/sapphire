@@ -23,12 +23,16 @@
 //!
 //! # Development builds
 //!
-//! The `dev` feature links `sapphire_debug` (rule R8), all of it behind `dev.rs`: the debug
-//! overlay, which sees platform events before the game's input, applies its time and
-//! time-of-day controls before each fixed step and draws after post, and the cvar registry it
-//! edits, holding the sandbox's cvars (`cvars.rs`, compiled in every build so they read their
-//! defaults) and the renderer's quality cvars (`r.tier`, `r.render_scale`,
-//! `r.dynamic_resolution`).
+//! The `dev` feature links `sapphire_debug` and `sapphire_hot_reload` (rule R8), all of it
+//! behind `dev.rs`: the debug overlay, which sees platform events before the game's input,
+//! applies its time and time-of-day controls before each fixed step and draws after post; the
+//! cvar registry it edits, holding the sandbox's cvars (`cvars.rs`, compiled in every build so
+//! they read their defaults) and the renderer's quality cvars (`r.tier`, `r.render_scale`,
+//! `r.dynamic_resolution`); and hot reload (`reload.rs`, M1 A8), on by default on desktop:
+//! rewritten packs in the content root are remounted and their changed assets replaced in
+//! place, edited WGSL rebuilds the renderer's pipelines, an edited `default_day.ron` replaces
+//! time of day's timeline and an edited `default_light_rigs.ron` the character light rig
+//! presets, all without a restart.
 //! Without the feature none of it is compiled.
 //!
 //! # Arguments
@@ -66,13 +70,8 @@
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
-//!
-//! # The sky
-//!
-//! The zone's sky is the sky material `samples/sky.material.ron` (`content::SKY`), loaded with its
-//! maps at startup and after every renderer rebuild, and drawn with time of day's sky layers:
-//! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
-//! (spec §5.12, "Sky").
+//! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't
+//!   change it.
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `console`,
 //!   `cvars`, `all`). Offscreen captures draw it too.
@@ -84,6 +83,13 @@
 //!     allocations per frame.
 //!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
+//!
+//! # The sky
+//!
+//! The zone's sky is the sky material `samples/sky.material.ron` (`content::SKY`), loaded with its
+//! maps at startup and after every renderer rebuild, and drawn with time of day's sky layers:
+//! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
+//! (spec §5.12, "Sky").
 
 mod app;
 mod bench;
@@ -98,6 +104,8 @@ mod input;
 mod offscreen;
 mod options;
 mod orbit;
+#[cfg(feature = "dev")]
+mod reload;
 mod scene;
 mod skinned;
 mod stats;

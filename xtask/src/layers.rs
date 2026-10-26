@@ -14,6 +14,9 @@
 //!   dev-only) package through normal dependencies, including through tools. Build-
 //!   dependency subtrees (cmake, bindgen, ...) run on the build host and never ship, so
 //!   they are not followed.
+//! - No `dev_only_dependencies` crate (the overlay's egui, hot reload's file watching) is
+//!   reachable from a runtime or app package except through a dev-only crate, so a build
+//!   without the app's `dev` feature never links one.
 //! - Every feature a local package declares is listed in its placement, and every listed
 //!   feature exists (R8: runtime features select platform or backend; dev tooling enters
 //!   through apps and dev-only crates).
@@ -118,6 +121,8 @@ pub struct Config {
     allow: Allow,
     #[serde(default)]
     tool_only_dependencies: ToolOnlyDependencies,
+    #[serde(default)]
+    dev_only_dependencies: DevOnlyDependencies,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -131,6 +136,13 @@ struct Allow {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolOnlyDependencies {
+    #[serde(default)]
+    crates: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DevOnlyDependencies {
     #[serde(default)]
     crates: Vec<String>,
 }
@@ -252,6 +264,11 @@ pub enum Violation {
         dependency: String,
         path: Vec<String>,
     },
+    DevOnlyReachable {
+        krate: String,
+        dependency: String,
+        path: Vec<String>,
+    },
     UnlistedFeature {
         krate: String,
         feature: String,
@@ -308,6 +325,12 @@ impl fmt::Display for Violation {
             Self::ToolOnlyReachable { krate, dependency, path } => write!(
                 f,
                 "tool-only crate `{dependency}` is in the dependency tree of `{krate}`: {}",
+                path.join(" -> ")
+            ),
+            Self::DevOnlyReachable { krate, dependency, path } => write!(
+                f,
+                "dev-only crate `{dependency}` is in the dependency tree of `{krate}` outside any dev-only \
+                 crate, so builds without `dev` would link it (R8): {}",
                 path.join(" -> ")
             ),
             Self::UnlistedFeature { krate, feature } => write!(
@@ -405,6 +428,7 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
     }
 
     let tool_only: BTreeSet<&str> = config.tool_only_dependencies.crates.iter().map(String::as_str).collect();
+    let dev_only: BTreeSet<&str> = config.dev_only_dependencies.crates.iter().map(String::as_str).collect();
     for package in &local {
         let Some(entry) = config.crates.get(&package.name) else { continue };
         let from_placement = entry.placement;
@@ -430,6 +454,15 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
         if from_placement.ships() {
             for (dependency, path) in graph.reachable_tool_only(&package.id, &tool_only) {
                 violations.push(Violation::ToolOnlyReachable {
+                    krate: package.name.clone(),
+                    dependency,
+                    path,
+                });
+            }
+        }
+        if matches!(from_placement, Placement::Runtime { .. } | Placement::App) {
+            for (dependency, path) in graph.reachable_dev_only(&package.id, &dev_only, config) {
+                violations.push(Violation::DevOnlyReachable {
                     krate: package.name.clone(),
                     dependency,
                     path,
@@ -526,6 +559,35 @@ impl<'a> Graph<'a> {
             |id, path| {
                 let name = self.name(id);
                 if tool_only.contains(name.as_str()) {
+                    found.push((name, path.iter().map(|id| self.name(id)).collect()));
+                    return false;
+                }
+                true
+            },
+        );
+        found
+    }
+
+    /// Each dev-only third-party crate reachable from `root` through normal dependencies without
+    /// passing through a dev-only local crate, which apps reach only through their `dev`
+    /// feature, with the shortest path to it.
+    fn reachable_dev_only(
+        &self,
+        root: &'a str,
+        dev_only: &BTreeSet<&str>,
+        config: &Config,
+    ) -> Vec<(String, Vec<String>)> {
+        let mut found = Vec::new();
+        self.search(
+            root,
+            |dep| !dep.is_normal(),
+            |id, path| {
+                let name = self.name(id);
+                let local = self.packages.get(id).is_some_and(|package| package.is_local());
+                if local && config.placement(&name) == Some(Placement::DevOnly) {
+                    return false;
+                }
+                if dev_only.contains(name.as_str()) {
                     found.push((name, path.iter().map(|id| self.name(id)).collect()));
                     return false;
                 }
@@ -666,6 +728,9 @@ mod tests {
 
             [tool_only_dependencies]
             crates = ["gltf", "toml"]
+
+            [dev_only_dependencies]
+            crates = ["egui", "notify"]
             "#,
         )
         .unwrap()
@@ -693,6 +758,7 @@ mod tests {
         ("sapphire_render", "sapphire_pipeline", Dev), // Test support may be a tool.
         ("sapphire_core", "gltf", Dev),
         ("sapphire_debug", "sapphire_render", Normal),
+        ("sapphire_debug", "egui", Normal),
         ("sapphire_sandbox", "sapphire_render", Normal),
         ("sapphire_sandbox", "sapphire_debug", Optional),
         ("sapphire_pipeline", "sapphire_core", Normal),
@@ -926,6 +992,40 @@ mod tests {
             path: vec!["sapphire_platform".into(), "sapphire_pipeline".into(), "gltf".into()],
         }));
         assert_eq!(edges(&violations)[0], ("sapphire_platform", "sapphire_pipeline", vec![]));
+    }
+
+    #[test]
+    fn dev_only_crates_are_reached_only_through_dev_only_crates() {
+        // A runtime crate taking one in, and an app reaching one besides its dev-only crate.
+        let violations = check_with(&[
+            ("sapphire_render", "file-watch", Normal),
+            ("file-watch", "notify", Normal),
+            ("sapphire_sandbox", "egui", Optional),
+            ("sapphire_core", "notify", Dev),
+        ]);
+        let reached: Vec<(&str, &str, Vec<&str>)> = violations
+            .iter()
+            .filter_map(|v| match v {
+                Violation::DevOnlyReachable { krate, dependency, path } => {
+                    Some((krate.as_str(), dependency.as_str(), path.iter().map(String::as_str).collect()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reached,
+            [
+                ("sapphire_render", "notify", vec!["sapphire_render", "file-watch", "notify"]),
+                ("sapphire_sandbox", "egui", vec!["sapphire_sandbox", "egui"]),
+                (
+                    "sapphire_sandbox",
+                    "notify",
+                    vec!["sapphire_sandbox", "sapphire_render", "file-watch", "notify"]
+                ),
+            ]
+        );
+        // Through `sapphire_debug` the app reaches egui, which is fine.
+        assert!(!check_with(&[]).iter().any(|v| matches!(v, Violation::DevOnlyReachable { .. })));
     }
 
     #[test]

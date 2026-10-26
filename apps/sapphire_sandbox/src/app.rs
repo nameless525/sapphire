@@ -144,7 +144,13 @@ impl App for SandboxApp {
         // the scene chose.
         options.apply_to(&mut scene);
         #[cfg(feature = "dev")]
-        let dev = DevTools::new(&device.gpu, device.format, options.debug_overlay.as_deref())?;
+        let dev = DevTools::new(
+            &device.gpu,
+            device.format,
+            options.debug_overlay.as_deref(),
+            !options.no_hot_reload,
+            std::path::Path::new(platform.content().root()),
+        )?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -234,6 +240,9 @@ impl App for SandboxApp {
         }
         if !self.gpu.is_lost() {
             self.follow_tier();
+            // Packs, shaders and documents changed on disk, swapped in before loading.
+            #[cfg(feature = "dev")]
+            self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
         }
@@ -490,6 +499,8 @@ impl SandboxApp {
                 self.dev.recreate_gpu(&device.gpu, device.format);
                 self.scene.set_meshes(&renderer);
                 self.renderer = renderer.renderer;
+                #[cfg(feature = "dev")]
+                self.dev.renderer_created(&mut self.renderer);
                 self.graph = GraphExecutor::new();
                 self.gpu = device.gpu;
                 self.format = device.format;
@@ -519,6 +530,8 @@ impl SandboxApp {
             Ok(renderer) => {
                 self.scene.set_meshes(&renderer);
                 self.renderer = renderer.renderer;
+                #[cfg(feature = "dev")]
+                self.dev.renderer_created(&mut self.renderer);
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");

@@ -11,7 +11,7 @@ use sapphire_rhi::wgpu;
 use crate::characters::GpuCharacter;
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
-use crate::shaders;
+use crate::shaders::{self, Program, ShaderSources};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
 /// the way out with an infinite far plane.
@@ -506,11 +506,15 @@ impl MeshPipelines {
     }
 }
 
-/// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up front, opaque surfaces only; the
-/// f32 ones when the first f32 mesh, or skinned or morphed mesh, is uploaded
+/// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up
+/// front, opaque surfaces only; the f32 ones when the first f32 mesh, or skinned or morphed mesh,
+/// is uploaded
 /// ([`Self::prepare_format`]); the other surface variants when a draw first needs them
 /// ([`Self::prepare_variant`]); and the character prepass's with the first skinned or morphed
 /// mesh ([`Self::prepare_characters`]). Apps never pay for compiling what they don't draw.
+///
+/// They are built from the renderer's current shader sources, whose modules they keep; new
+/// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]).
 #[derive(Debug)]
 pub(crate) struct Pipelines {
     /// Per [`PositionFormat::ALL`] entry.
@@ -518,13 +522,33 @@ pub(crate) struct Pipelines {
     /// Depth of skinned and morphed instances, whose skinning outputs are f32.
     character_prepass: Option<wgpu::RenderPipeline>,
     target: PipelineTarget,
-    character_module: wgpu::ShaderModule,
-    outline_module: wgpu::ShaderModule,
-    prepass_module: wgpu::ShaderModule,
+    modules: MeshModules,
+}
+
+/// The modules the mesh pipelines are built from.
+#[derive(Clone, Debug)]
+struct MeshModules {
+    character: wgpu::ShaderModule,
+    outline: wgpu::ShaderModule,
+    prepass: wgpu::ShaderModule,
+}
+
+impl MeshModules {
+    /// The module of `program`, one of the mesh programs.
+    fn get_mut(&mut self, program: Program) -> &mut wgpu::ShaderModule {
+        match program {
+            Program::AnimeCharacter => &mut self.character,
+            Program::Outline => &mut self.outline,
+            Program::Prepass => &mut self.prepass,
+            Program::Sky | Program::Clusters | Program::Skinning | Program::Post => {
+                unreachable!("not a mesh program")
+            }
+        }
+    }
 }
 
 /// What every scene pipeline shares, kept to build the f32 ones later.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct PipelineTarget {
     /// Groups 0–2, for passes that read no material textures: the prepasses.
     layout: wgpu::PipelineLayout,
@@ -543,6 +567,7 @@ impl Pipelines {
         color_format: wgpu::TextureFormat,
         sample_count: u32,
         cache: Option<&wgpu::PipelineCache>,
+        sources: &ShaderSources,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
@@ -561,22 +586,70 @@ impl Pipelines {
         });
         let target =
             PipelineTarget { layout, character_layout, color_format, sample_count, cache: cache.cloned() };
-        let module = |name, source: &str| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(source.into()),
-            })
+        let modules = MeshModules {
+            character: shaders::module(device, Program::AnimeCharacter, sources),
+            outline: shaders::module(device, Program::Outline, sources),
+            prepass: shaders::module(device, Program::Prepass, sources),
         };
-        let mut pipelines = Self {
-            mesh: [None, None],
-            character_prepass: None,
-            target,
-            character_module: module("anime character", shaders::ANIME_CHARACTER),
-            outline_module: module("outline", shaders::OUTLINE),
-            prepass_module: module("prepass", shaders::PREPASS),
-        };
+        let mut pipelines = Self { mesh: [None, None], character_prepass: None, target, modules };
         pipelines.prepare_format(device, PositionFormat::Unorm16);
         pipelines
+    }
+
+    /// The same pipelines as these, with the programs in `changed` (mesh programs among them)
+    /// built anew from `sources`: new modules, and every pipeline built from them so far rebuilt
+    /// from those. The others are shared. Returns them with the number of pipelines built.
+    pub(crate) fn rebuilt(
+        &self,
+        device: &wgpu::Device,
+        sources: &ShaderSources,
+        changed: &[Program],
+    ) -> (Self, u32) {
+        let mut modules = self.modules.clone();
+        for &program in changed.iter().filter(|program| program.is_mesh()) {
+            *modules.get_mut(program) = shaders::module(device, program, sources);
+        }
+        let (target, mut built) = (&self.target, 0);
+        let mut rebuild =
+            |program: Program, old: &wgpu::RenderPipeline, build: &dyn Fn() -> wgpu::RenderPipeline| {
+                if changed.contains(&program) {
+                    built += 1;
+                    build()
+                } else {
+                    old.clone()
+                }
+            };
+        let character_prepass = self
+            .character_prepass
+            .as_ref()
+            .map(|old| rebuild(Program::Prepass, old, &|| build_character_prepass(device, target, &modules)));
+        let mut mesh = [None, None];
+        for format in PositionFormat::ALL {
+            let Some(old) = self.mesh(format) else { continue };
+            let scene_prepass = rebuild(Program::Prepass, &old.scene_prepass, &|| {
+                build_scene_prepass(device, target, &modules, format)
+            });
+            let mut pipelines =
+                MeshPipelines { character: Default::default(), outline: Default::default(), scene_prepass };
+            for variant in SurfaceVariant::ALL {
+                if let Some(old) = old.character(variant) {
+                    pipelines.character[variant.index()] =
+                        Some(rebuild(Program::AnimeCharacter, old, &|| {
+                            build_character(device, target, &modules, format, variant)
+                        }));
+                }
+            }
+            for coverage in Coverage::DEPTH_WRITING {
+                if let Some(old) = &old.outline[coverage.index()] {
+                    pipelines.outline[coverage.index()] = Some(rebuild(Program::Outline, old, &|| {
+                        build_outline(device, target, &modules, format, coverage)
+                    }));
+                }
+            }
+            mesh[format_index(format)] = Some(pipelines);
+        }
+        let pipelines = Self { mesh, character_prepass, target: self.target.clone(), modules };
+        (pipelines, built)
     }
 
     /// Builds the mesh pipelines for `format` unless they exist: the scene prepass, and the
@@ -585,16 +658,7 @@ impl Pipelines {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
-        let normals_and_velocity = [NORMALS_FORMAT, VELOCITY_FORMAT].map(|format| {
-            Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })
-        });
-        let scene_prepass = self.target.build_prepass(
-            device,
-            "scene prepass",
-            &self.prepass_module,
-            &MeshPass::ScenePrepass.buffers(format),
-            &normals_and_velocity,
-        );
+        let scene_prepass = build_scene_prepass(device, &self.target, &self.modules, format);
         self.mesh[format_index(format)] =
             Some(MeshPipelines { character: Default::default(), outline: Default::default(), scene_prepass });
         self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
@@ -614,42 +678,10 @@ impl Pipelines {
             return;
         }
         let needs_outline = mesh.outline(variant).is_none();
-        let buffers = MeshPass::Main.buffers(format);
-        let layout = &self.target.character_layout;
-        let transparent = variant.coverage == Coverage::Transparent;
-        let character = self.target.build_with(
-            device,
-            layout,
-            PassDesc {
-                name: "anime character",
-                module: &self.character_module,
-                vertex_buffers: &buffers,
-                cull: Some(wgpu::Face::Back),
-                // Transparent surfaces are depth-tested against the opaque frame but don't hide
-                // what lies behind them.
-                depth_write: !transparent,
-                depth_compare: wgpu::CompareFunction::Greater,
-                blend: transparent.then_some(TRANSPARENT_BLEND),
-                constants: variant.constants(),
-            },
-        );
-        // Inverted hull: keep only the back faces of the extruded shell.
-        let outline = (!transparent && needs_outline).then(|| {
-            self.target.build_with(
-                device,
-                layout,
-                PassDesc {
-                    name: "outline",
-                    module: &self.outline_module,
-                    vertex_buffers: &buffers,
-                    cull: Some(wgpu::Face::Front),
-                    depth_write: true,
-                    depth_compare: wgpu::CompareFunction::Greater,
-                    blend: None,
-                    constants: variant.coverage.constants(),
-                },
-            )
-        });
+        let character = build_character(device, &self.target, &self.modules, format, variant);
+        // Transparent surfaces have no outline; every part shares its coverage's.
+        let outline = (variant.coverage != Coverage::Transparent && needs_outline)
+            .then(|| build_outline(device, &self.target, &self.modules, format, variant.coverage));
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
         mesh.character[variant.index()] = Some(character);
         if let Some(outline) = outline {
@@ -666,14 +698,7 @@ impl Pipelines {
     /// morphed mesh.
     pub(crate) fn prepare_characters(&mut self, device: &wgpu::Device) {
         if self.character_prepass.is_none() {
-            let buffers = MeshPass::CharacterPrepass.buffers(PositionFormat::Float32);
-            self.character_prepass = Some(self.target.build_prepass(
-                device,
-                "character prepass",
-                &self.prepass_module,
-                &buffers,
-                &[],
-            ));
+            self.character_prepass = Some(build_character_prepass(device, &self.target, &self.modules));
         }
     }
 
@@ -686,6 +711,87 @@ impl Pipelines {
     pub(crate) fn character_prepass(&self) -> Option<&wgpu::RenderPipeline> {
         self.character_prepass.as_ref()
     }
+}
+
+/// The anime character surface pipeline of `variant` for meshes in `format`.
+fn build_character(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+    variant: SurfaceVariant,
+) -> wgpu::RenderPipeline {
+    let transparent = variant.coverage == Coverage::Transparent;
+    target.build_with(
+        device,
+        &target.character_layout,
+        PassDesc {
+            name: "anime character",
+            module: &modules.character,
+            vertex_buffers: &MeshPass::Main.buffers(format),
+            cull: Some(wgpu::Face::Back),
+            // Transparent surfaces are depth-tested against the opaque frame but don't hide
+            // what lies behind them.
+            depth_write: !transparent,
+            depth_compare: wgpu::CompareFunction::Greater,
+            blend: transparent.then_some(TRANSPARENT_BLEND),
+            constants: variant.constants(),
+        },
+    )
+}
+
+/// The outline hull pipeline of `coverage`, one that writes depth, for meshes in `format`.
+fn build_outline(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+    coverage: Coverage,
+) -> wgpu::RenderPipeline {
+    // Inverted hull: keep only the back faces of the extruded shell.
+    target.build_with(
+        device,
+        &target.character_layout,
+        PassDesc {
+            name: "outline",
+            module: &modules.outline,
+            vertex_buffers: &MeshPass::Main.buffers(format),
+            cull: Some(wgpu::Face::Front),
+            depth_write: true,
+            depth_compare: wgpu::CompareFunction::Greater,
+            blend: None,
+            constants: coverage.constants(),
+        },
+    )
+}
+
+/// The scene prepass pipeline for meshes in `format`.
+fn build_scene_prepass(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+) -> wgpu::RenderPipeline {
+    let normals_and_velocity = [NORMALS_FORMAT, VELOCITY_FORMAT].map(|format| {
+        Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })
+    });
+    target.build_prepass(
+        device,
+        "scene prepass",
+        &modules.prepass,
+        &MeshPass::ScenePrepass.buffers(format),
+        &normals_and_velocity,
+    )
+}
+
+/// The character prepass pipeline: skinning outputs are f32.
+fn build_character_prepass(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+) -> wgpu::RenderPipeline {
+    let buffers = MeshPass::CharacterPrepass.buffers(PositionFormat::Float32);
+    target.build_prepass(device, "character prepass", &modules.prepass, &buffers, &[])
 }
 
 impl PipelineTarget {

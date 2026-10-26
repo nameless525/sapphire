@@ -38,6 +38,9 @@ sapphire_render = { kind = "runtime", layer = 3 }
 sapphire_world = { kind = "runtime", layer = 4 }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
+# Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
+# desktop targets; `default` turns it on for the crate's own tests.
+sapphire_hot_reload = { kind = "dev_only", features = ["default", "notify"] }
 # Apps.
 # `tracy`: stream profiling zones to Tracy (spec §5.3).
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).
@@ -62,3 +65,8 @@ edges = [
 # tree.
 [tool_only_dependencies]
 crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec"]
+
+# Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
+# other than through a dev-only crate would link it into builds without `dev`.
+[dev_only_dependencies]
+crates = ["egui", "egui-wgpu", "notify"]

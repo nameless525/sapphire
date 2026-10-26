@@ -60,6 +60,14 @@ impl AssetKind {
         matches!(self, Self::Material | Self::Rig)
     }
 
+    /// Whether uploading an asset of this kind binds its dependencies' GPU objects, so it must be
+    /// sent again when hot reload replaces one: a material binds its textures. A mesh names its
+    /// materials by the renderer's handles, which a material reloaded in place keeps. Such kinds
+    /// keep their bytes, which they are sent again from.
+    pub const fn binds_dependencies(self) -> bool {
+        matches!(self, Self::Material)
+    }
+
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials, materials
     /// on textures, textures and rigs on nothing. Every dependency is of a lower kind, so chains
     /// are at most three long and cycles can't exist, whatever a pack claims. A new kind takes
@@ -114,6 +122,16 @@ impl AssetKind {
         Ok(references)
     }
 }
+
+// Kinds sent again when a dependency is replaced are sent from their kept bytes.
+const _: () = {
+    let mut index = 0;
+    while index < AssetKind::ALL.len() {
+        let kind = AssetKind::ALL[index];
+        assert!(!kind.binds_dependencies() || kind.keeps_bytes());
+        index += 1;
+    }
+};
 
 impl fmt::Display for AssetKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -22,6 +22,13 @@
 //! A new renderer (device loss, a quality-tier change) gets everything again through
 //! [`Content::renderer_rebuilt`]: the server sends every asset back through its upload queue,
 //! reading meshes and textures from the pack again.
+//!
+//! Hot reload (M1 A8; `dev` builds remount the pack when a cook rewrites it,
+//! [`Content::remount`]) sends a new version of a loaded asset through the same queue, for the
+//! same slot at a higher generation: [`GpuAssets`] replaces what the renderer holds in place, so
+//! the handles the scene draws with stay valid. A texture is uploaded anew and the materials
+//! that bind it come again to be rebound; a material rewrites its slot; a mesh replaces its
+//! streams under its handle.
 
 use std::collections::HashMap;
 use std::io;
@@ -33,6 +40,8 @@ use sapphire_assets::{
     AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadPriority, PackFile, PackSource,
     ReadDone, TextureAsset, Unloaded, Upload, UploadError,
 };
+#[cfg(feature = "dev")]
+use sapphire_assets::{AssetChange, MountError, RemountReport};
 use sapphire_platform::{AppInitError, IoFile, IoPriority, IoThread, Platform, ReadError};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
@@ -60,6 +69,12 @@ impl PackSource for PlatformPacks {
         Ok((PackFile(u64::from(file.to_raw())), len))
     }
 
+    fn close(&self, file: PackFile) {
+        if let Ok(raw) = u32::try_from(file.0) {
+            self.0.close(IoFile::from_raw(raw));
+        }
+    }
+
     fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
         let priority = match priority {
             LoadPriority::Critical => IoPriority::Critical,
@@ -85,42 +100,79 @@ impl PackSource for PlatformPacks {
     }
 }
 
-/// What the renderer holds of loaded assets, by asset ID, with the slot each was uploaded for.
+/// What the renderer holds of an uploaded asset: the slot and generation it was uploaded for,
+/// and the renderer's object.
+struct Held<T> {
+    slot: AssetSlot,
+    generation: u32,
+    object: T,
+}
+
+/// A mesh on the renderer, with its bounds.
+#[derive(Clone, Copy)]
+struct GpuMesh {
+    handle: MeshHandle,
+    bounds: [[f32; 3]; 2],
+}
+
+/// What the renderer holds of loaded assets, by asset ID.
 #[derive(Default)]
 struct GpuAssets {
-    textures: HashMap<AssetId, (AssetSlot, GpuTexture)>,
-    materials: HashMap<AssetId, (AssetSlot, MaterialHandle)>,
-    meshes: HashMap<AssetId, (AssetSlot, MeshHandle, [[f32; 3]; 2])>,
+    textures: HashMap<AssetId, Held<GpuTexture>>,
+    materials: HashMap<AssetId, Held<MaterialHandle>>,
+    /// Meshes, with their bounds.
+    meshes: HashMap<AssetId, Held<GpuMesh>>,
 }
 
 impl GpuAssets {
     /// Uploads one asset the server hands over, resolving its references through what is
     /// already uploaded (the server uploads dependencies first). An asset this renderer already
-    /// holds for the same slot is kept as it is: the server re-sends everything after a renderer
-    /// change, which [`Content::keep_renderer`] undoes.
+    /// holds for the same slot at the same generation is kept as it is: the server re-sends
+    /// everything after a renderer change, which [`Content::keep_renderer`] undoes. One it holds
+    /// at an older generation is a new version (hot reload), replaced in place.
     fn upload(
         &mut self,
         upload: Upload<'_>,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), UploadError> {
-        let (id, slot) = (upload.id(), upload.slot());
-        if self.holds(id, slot) {
-            return Ok(());
-        }
+        let (id, slot, generation) = (upload.id(), upload.slot(), upload.generation());
         if let Some(texture) = upload.get::<TextureAsset>() {
-            let texture = GpuTexture::upload(gpu, &texture, "texture asset")?;
-            self.textures.insert(id, (slot, texture));
+            if self.textures.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
+                return Ok(());
+            }
+            let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
+            self.textures.insert(id, Held { slot, generation, object });
         } else if let Some(material) = upload.get::<Material>() {
-            let handle =
-                renderer.upload_material(material, |texture| self.textures.get(&texture).map(|(_, t)| t))?;
-            self.materials.insert(id, (slot, handle));
+            let textures = &self.textures;
+            let resolve = |texture| textures.get(&texture).map(|held| &held.object);
+            match self.materials.get_mut(&id).filter(|held| held.slot == slot) {
+                Some(held) if held.generation >= generation => {}
+                Some(held) => {
+                    renderer.update_material(held.object, material, resolve)?;
+                    held.generation = generation;
+                }
+                None => {
+                    let object = renderer.upload_material(material, resolve)?;
+                    self.materials.insert(id, Held { slot, generation, object });
+                }
+            }
         } else if let Some(mesh) = upload.get::<Mesh>() {
-            let materials = renderer.upload_slot_materials(mesh, |material| {
-                self.materials.get(&material).map(|&(_, handle)| handle)
-            })?;
-            let handle = renderer.upload_mesh(mesh, &materials)?;
-            self.meshes.insert(id, (slot, handle, scene::mesh_bounds(mesh)));
+            let materials = &self.materials;
+            let resolve = |material| materials.get(&material).map(|held| held.object);
+            let bounds = scene::mesh_bounds(mesh);
+            match self.meshes.get_mut(&id).filter(|held| held.slot == slot) {
+                Some(held) if held.generation >= generation => {}
+                Some(held) => {
+                    renderer.update_mesh(held.object.handle, mesh, resolve)?;
+                    *held = Held { slot, generation, object: GpuMesh { handle: held.object.handle, bounds } };
+                }
+                None => {
+                    let materials = renderer.upload_slot_materials(mesh, resolve)?;
+                    let handle = renderer.upload_mesh(mesh, &materials)?;
+                    self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
+                }
+            }
         }
         Ok(())
     }
@@ -130,22 +182,15 @@ impl GpuAssets {
     /// milestones).
     fn unload(&mut self, unloaded: Unloaded) {
         let Unloaded { id, slot, .. } = unloaded;
-        if self.textures.get(&id).is_some_and(|(uploaded, _)| *uploaded == slot) {
+        if self.textures.get(&id).is_some_and(|held| held.slot == slot) {
             self.textures.remove(&id);
         }
-        if self.materials.get(&id).is_some_and(|(uploaded, _)| *uploaded == slot) {
+        if self.materials.get(&id).is_some_and(|held| held.slot == slot) {
             self.materials.remove(&id);
         }
-        if self.meshes.get(&id).is_some_and(|(uploaded, ..)| *uploaded == slot) {
+        if self.meshes.get(&id).is_some_and(|held| held.slot == slot) {
             self.meshes.remove(&id);
         }
-    }
-
-    /// Whether this renderer holds asset `id` as uploaded for `slot`.
-    fn holds(&self, id: AssetId, slot: AssetSlot) -> bool {
-        self.textures.get(&id).is_some_and(|(uploaded, _)| *uploaded == slot)
-            || self.materials.get(&id).is_some_and(|(uploaded, _)| *uploaded == slot)
-            || self.meshes.get(&id).is_some_and(|(uploaded, ..)| *uploaded == slot)
     }
 }
 
@@ -224,7 +269,8 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the character didn't load: {error}")))?;
-        let &(_, mesh, bounds) = self.gpu.meshes.get(&CHARACTER).expect("a ready mesh was uploaded here");
+        let GpuMesh { handle: mesh, bounds } =
+            self.gpu.meshes.get(&CHARACTER).expect("a ready mesh was uploaded here").object;
         let stats = self.server.stats();
         tracing::info!(
             target: LOG_TARGET,
@@ -260,10 +306,8 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the swatch materials didn't load: {error}")))?;
-        Ok(swatches::MATERIALS.map(|id| {
-            let &(_, handle) = self.gpu.materials.get(&id).expect("a ready material was uploaded here");
-            handle
-        }))
+        Ok(swatches::MATERIALS
+            .map(|id| self.gpu.materials.get(&id).expect("a ready material was uploaded here").object))
     }
 
     /// Loads until the face test head is on `renderer`, with its materials and the maps they
@@ -282,8 +326,7 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the face head didn't load: {error}")))?;
-        let &(_, mesh, _) = self.gpu.meshes.get(&faces::HEAD).expect("a ready mesh was uploaded here");
-        Ok(mesh)
+        Ok(self.gpu.meshes.get(&faces::HEAD).expect("a ready mesh was uploaded here").object.handle)
     }
 
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
@@ -302,8 +345,7 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the sky material didn't load: {error}")))?;
-        let &(_, material) = self.gpu.materials.get(&SKY).expect("a ready material was uploaded here");
-        Ok(material)
+        Ok(self.gpu.materials.get(&SKY).expect("a ready material was uploaded here").object)
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every
@@ -320,6 +362,25 @@ impl Content {
     pub fn keep_renderer(&mut self, previous: RendererAssets) {
         self.gpu = previous.0;
         self.server.reupload_all();
+    }
+
+    /// Reads pack `name` again after its file changed and reloads what changed (hot reload,
+    /// `dev` builds): new versions reach the renderer through [`Self::update`].
+    #[cfg(feature = "dev")]
+    pub fn remount(&mut self, name: &str) -> Result<RemountReport, MountError> {
+        self.server.remount(name)
+    }
+
+    /// Whether pack `name` is mounted.
+    #[cfg(feature = "dev")]
+    pub fn is_mounted(&self, name: &str) -> bool {
+        self.server.is_mounted(name)
+    }
+
+    /// Hot reload's changes to loaded assets since the last call.
+    #[cfg(feature = "dev")]
+    pub fn take_changes(&mut self) -> Vec<AssetChange> {
+        self.server.take_changes()
     }
 
     /// The asset server's counters (rule R9).

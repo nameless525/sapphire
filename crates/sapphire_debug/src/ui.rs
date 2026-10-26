@@ -14,7 +14,7 @@ use sapphire_time::{NORMAL_SPEED, ScaledClock};
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
 use crate::console::{Completion, Console, LineKind};
 use crate::history::{FrameTimes, HISTORY};
-use crate::overlay::{OverlayCost, OverlayFrame};
+use crate::overlay::{HotReloadStatus, OverlayCost, OverlayFrame};
 use crate::time::{SPEEDS, TimeControls};
 use crate::time_of_day::{self, TodControls, TodPanel};
 use crate::{GPU_TIMING, route};
@@ -382,6 +382,30 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
 
     ui.separator();
     assets(ui, frame);
+    if let Some(status) = frame.hot_reload {
+        ui.separator();
+        hot_reload(ui, frame, &status);
+    }
+}
+
+/// Hot reload's state and the last change's errors (M1 A8).
+fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_>) {
+    egui::Grid::new("hot reload").num_columns(2).show(ui, |ui| {
+        ui.label("Hot reload");
+        ui.monospace(status.watching);
+        ui.end_row();
+        let (reloads, failures) =
+            frame.assets.map_or((0, 0), |assets| (assets.reloads, assets.reload_failures));
+        ui.label("Reloaded");
+        ui.monospace(format!(
+            "{reloads} assets ({failures} failed), {} shader rebuilds, {} documents",
+            frame.render.shader_rebuilds, status.documents
+        ));
+        ui.end_row();
+    });
+    for error in status.errors {
+        ui.label(RichText::new(error).monospace().color(OVER));
+    }
 }
 
 /// The asset server's counters and budgets (M1 A4).

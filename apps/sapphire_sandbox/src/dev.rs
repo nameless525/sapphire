@@ -1,10 +1,12 @@
 //! Development tools, in `dev` builds only (rule R8): the debug overlay and the cvar registry it
-//! edits (spec §5.20).
+//! edits (spec §5.20), and hot reload (spec §5.10, M1 A8; `reload.rs`).
 //!
-//! Everything the windowed app and the offscreen modes do for the overlay is here, so they hold
-//! one `dev` field and make a few calls, all compiled away without the feature. Hidden, the
-//! overlay costs a frame-time store per frame and a comparison per fixed step.
+//! Everything the windowed app and the offscreen modes do for them is here, so they hold one
+//! `dev` field and make a few calls, all compiled away without the feature. Hidden, the overlay
+//! costs a frame-time store per frame and a comparison per fixed step; idle, hot reload one empty
+//! channel read per frame.
 
+use std::path::Path;
 use std::time::Duration;
 
 use sapphire_assets::AssetStats;
@@ -14,18 +16,21 @@ use sapphire_debug::{
     CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels, WindowMetrics,
 };
 use sapphire_platform::{AppInitError, Event, TextInputKind, Timestamp, Window, WindowEvent};
-use sapphire_render::RenderStats;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::Quality;
+use sapphire_render::{RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
+use crate::content::Content;
 use crate::input::SandboxInput;
+use crate::reload::Reload;
 use crate::scene::Scene;
 use crate::stats::Stages;
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
     cvars: CvarRegistry,
+    reload: Reload,
     /// Process-wide allocation totals when the current frame began.
     allocations_at: AllocCounts,
     /// The previous frame's allocations.
@@ -53,11 +58,14 @@ pub(crate) struct FrameState<'a> {
 
 impl DevTools {
     /// The overlay, drawing into `format` targets, shown from the start if `--debug-overlay`
-    /// asked for it (with its panel list).
+    /// asked for it (with its panel list), and hot reload of the packs in `content_root` and the
+    /// engine's sources, unless `--no-hot-reload` turned it off.
     pub fn new(
         gpu: &GpuContext,
         format: wgpu::TextureFormat,
         show: Option<&str>,
+        hot_reload: bool,
+        content_root: &Path,
     ) -> Result<Self, AppInitError> {
         let panels = match show {
             None | Some("") => Panels::default(),
@@ -73,6 +81,7 @@ impl DevTools {
         Ok(Self {
             overlay: DebugOverlay::new(gpu, format, config),
             cvars,
+            reload: Reload::start(hot_reload, content_root),
             allocations_at: process_allocations(),
             last_frame: AllocCounts::default(),
             now: Timestamp::default(),
@@ -83,6 +92,16 @@ impl DevTools {
     /// After GPU device loss: the overlay's GPU half on the new device.
     pub fn recreate_gpu(&mut self, gpu: &GpuContext, format: wgpu::TextureFormat) {
         self.overlay.recreate_gpu(gpu, format);
+    }
+
+    /// Applies what hot reload found changed, before the frame's loading: once a frame.
+    pub fn reload(&mut self, content: &mut Content, renderer: &mut Renderer, scene: &mut Scene) {
+        self.reload.update(content, renderer, scene);
+    }
+
+    /// A new renderer (a tier change, device loss) builds the shaders hot reload gave the last.
+    pub fn renderer_created(&mut self, renderer: &mut Renderer) {
+        self.reload.renderer_created(renderer);
     }
 
     /// The overlay sees each event first; the game's input gets what it doesn't use.
@@ -160,6 +179,7 @@ impl DevTools {
             time_of_day: Some(frame.scene.time_of_day()),
             characters: frame.scene.characters(),
             assets: Some(frame.assets),
+            hot_reload: Some(self.reload.status()),
         })
     }
 

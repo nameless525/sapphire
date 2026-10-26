@@ -1,31 +1,292 @@
-//! WGSL sources, embedded at build time. Each scene pass is `frame.wgsl` and `materials.wgsl`
-//! (the material families' blocks, which frame.wgsl's material binding names) followed by the
-//! files it uses, its own last; M1 replaces the concatenation with WESL imports (spec §5.12).
-//! The post passes share `post.wgsl`, and compute skinning has `skinning.wgsl`; both stand
-//! alone.
+//! WGSL sources: the renderer's shader files, embedded at build time ([`ShaderFile`]), and the
+//! programs it builds from them (`Program`). Each scene pass's program is `frame.wgsl` and
+//! `materials.wgsl` (the material families' blocks, which frame.wgsl's material binding names)
+//! followed by the files it uses, its own last, joined by newlines; M1 replaces the
+//! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
+//! skinning has `skinning.wgsl`; both stand alone.
+//!
+//! # Replacing sources (hot reload, M1 A8)
+//!
+//! [`ShaderSources`] holds every file's text: compiled in, or edited. Development builds read
+//! edited files from disk (the desktop hot reload) and live link will push them (A9); the
+//! renderer only ever gets text, never a path (rule R5), and shipping builds use the compiled-in
+//! files alone. [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources) rebuilds
+//! the programs whose files changed and every pipeline built from them, after checking each
+//! program with naga ([`validate`]) the way wgpu compiles it, with no optional capabilities,
+//! so an error names the file and line it is in. Anything that fails keeps the pipelines the
+//! renderer has.
+//!
+//! A new shader file joins [`ShaderFile`] (its name and its compiled-in text) and the programs
+//! that use it (`Program::files`); a new program also needs its pipelines' owner to build them
+//! from [`ShaderSources`] and rebuild them in `Renderer::set_shader_sources`, as the mesh
+//! pipelines, the sky, post, the light clusters and skinning do.
 
-macro_rules! pass_source {
-    ($($file:literal),+) => {
-        concat!(
-            include_str!("../shaders/frame.wgsl"),
-            "\n",
-            include_str!("../shaders/materials.wgsl")
-            $(, "\n", include_str!(concat!("../shaders/", $file)))+
-        )
-    };
+use std::borrow::Cow;
+use std::fmt;
+
+use sapphire_rhi::wgpu::{self, naga};
+
+/// One of the renderer's WGSL files (`crates/sapphire_render/shaders/`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShaderFile {
+    /// Declarations every scene pass shares: bindings, uniforms, vertex decoding, the sky.
+    Frame,
+    /// The material families' parameter blocks.
+    Materials,
+    /// Local lights and their lists.
+    Lights,
+    Sky,
+    AnimeCharacter,
+    Outline,
+    /// The light-cluster compute pass.
+    Clusters,
+    /// The character and scene prepasses.
+    Prepass,
+    /// Compute skinning, which binds its own group 0.
+    Skinning,
+    /// Every post pass: the bloom chain and the fused composite.
+    Post,
 }
 
-pub(crate) const SKY: &str = pass_source!("sky.wgsl");
-pub(crate) const ANIME_CHARACTER: &str = pass_source!("lights.wgsl", "anime_character.wgsl");
-pub(crate) const OUTLINE: &str = pass_source!("outline.wgsl");
-/// The light-cluster compute pass.
-pub(crate) const CLUSTERS: &str = pass_source!("lights.wgsl", "clusters.wgsl");
-/// The character and scene prepasses.
-pub(crate) const PREPASS: &str = pass_source!("prepass.wgsl");
-/// Compute skinning, which binds its own group 0.
-pub(crate) const SKINNING: &str = include_str!("../shaders/skinning.wgsl");
-/// Every post pass: the bloom chain and the fused composite.
-pub(crate) const POST: &str = include_str!("../shaders/post.wgsl");
+impl ShaderFile {
+    pub const ALL: [Self; 10] = [
+        Self::Frame,
+        Self::Materials,
+        Self::Lights,
+        Self::Sky,
+        Self::AnimeCharacter,
+        Self::Outline,
+        Self::Clusters,
+        Self::Prepass,
+        Self::Skinning,
+        Self::Post,
+    ];
+
+    /// Its name in the renderer's shader directory, which errors name it by too.
+    pub const fn file_name(self) -> &'static str {
+        match self {
+            Self::Frame => "frame.wgsl",
+            Self::Materials => "materials.wgsl",
+            Self::Lights => "lights.wgsl",
+            Self::Sky => "sky.wgsl",
+            Self::AnimeCharacter => "anime_character.wgsl",
+            Self::Outline => "outline.wgsl",
+            Self::Clusters => "clusters.wgsl",
+            Self::Prepass => "prepass.wgsl",
+            Self::Skinning => "skinning.wgsl",
+            Self::Post => "post.wgsl",
+        }
+    }
+
+    /// The file called `name`, if it is one of the renderer's.
+    pub fn from_file_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|file| file.file_name() == name)
+    }
+
+    /// Its text as compiled into the renderer.
+    pub const fn compiled_in(self) -> &'static str {
+        match self {
+            Self::Frame => include_str!("../shaders/frame.wgsl"),
+            Self::Materials => include_str!("../shaders/materials.wgsl"),
+            Self::Lights => include_str!("../shaders/lights.wgsl"),
+            Self::Sky => include_str!("../shaders/sky.wgsl"),
+            Self::AnimeCharacter => include_str!("../shaders/anime_character.wgsl"),
+            Self::Outline => include_str!("../shaders/outline.wgsl"),
+            Self::Clusters => include_str!("../shaders/clusters.wgsl"),
+            Self::Prepass => include_str!("../shaders/prepass.wgsl"),
+            Self::Skinning => include_str!("../shaders/skinning.wgsl"),
+            Self::Post => include_str!("../shaders/post.wgsl"),
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+impl fmt::Display for ShaderFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.file_name())
+    }
+}
+
+/// A shader module the renderer builds: its files, concatenated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Program {
+    Sky,
+    AnimeCharacter,
+    Outline,
+    Clusters,
+    Prepass,
+    Skinning,
+    Post,
+}
+
+impl Program {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Sky,
+        Self::AnimeCharacter,
+        Self::Outline,
+        Self::Clusters,
+        Self::Prepass,
+        Self::Skinning,
+        Self::Post,
+    ];
+
+    /// Its files, in order.
+    pub(crate) const fn files(self) -> &'static [ShaderFile] {
+        use ShaderFile as F;
+        match self {
+            Self::Sky => &[F::Frame, F::Materials, F::Sky],
+            Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
+            Self::Outline => &[F::Frame, F::Materials, F::Outline],
+            Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
+            Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
+            Self::Skinning => &[F::Skinning],
+            Self::Post => &[F::Post],
+        }
+    }
+
+    /// Its module's label.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Sky => "sky",
+            Self::AnimeCharacter => "anime character",
+            Self::Outline => "outline",
+            Self::Clusters => "light clusters",
+            Self::Prepass => "prepass",
+            Self::Skinning => "skinning",
+            Self::Post => "post",
+        }
+    }
+
+    /// Whether the mesh pipelines (`pipelines::Pipelines`) are built from it.
+    pub(crate) const fn is_mesh(self) -> bool {
+        matches!(self, Self::AnimeCharacter | Self::Outline | Self::Prepass)
+    }
+}
+
+/// The text of every [`ShaderFile`], which the renderer builds its programs from: the
+/// compiled-in files ([`Self::compiled_in`], the default), or edited ones ([`Self::set`]; see
+/// the [module docs](self)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShaderSources {
+    files: [Cow<'static, str>; ShaderFile::ALL.len()],
+}
+
+impl Default for ShaderSources {
+    fn default() -> Self {
+        Self::compiled_in()
+    }
+}
+
+impl ShaderSources {
+    /// The files compiled into the renderer.
+    pub fn compiled_in() -> Self {
+        Self { files: ShaderFile::ALL.map(|file| Cow::Borrowed(file.compiled_in())) }
+    }
+
+    /// The text of `file`.
+    pub fn get(&self, file: ShaderFile) -> &str {
+        &self.files[file.index()]
+    }
+
+    /// Replaces the text of `file`.
+    pub fn set(&mut self, file: ShaderFile, text: impl Into<Cow<'static, str>>) {
+        self.files[file.index()] = text.into();
+    }
+
+    /// Whether every file is the compiled-in one.
+    pub fn is_compiled_in(&self) -> bool {
+        ShaderFile::ALL.into_iter().all(|file| self.get(file) == file.compiled_in())
+    }
+
+    /// The source of `program`: its files, joined by newlines.
+    pub(crate) fn program(&self, program: Program) -> String {
+        let files = program.files();
+        let mut source = String::with_capacity(files.iter().map(|&file| self.get(file).len() + 1).sum());
+        for (index, &file) in files.iter().enumerate() {
+            if index > 0 {
+                source.push('\n');
+            }
+            source.push_str(self.get(file));
+        }
+        source
+    }
+
+    /// Whether `program`'s files differ between these sources and `other`.
+    pub(crate) fn differs(&self, other: &Self, program: Program) -> bool {
+        program.files().iter().any(|&file| self.get(file) != other.get(file))
+    }
+
+    /// The file and line (1-based) of line `line` of `program`'s source, which joins its files.
+    fn locate(&self, program: Program, line: u32) -> (ShaderFile, u32) {
+        let files = program.files();
+        let mut first = 1;
+        for &file in files {
+            // Each file starts on a line of its own: the newline that joins it to the next adds
+            // one line beyond those the file's own newlines end.
+            let lines = self.get(file).matches('\n').count() as u32 + 1;
+            if line < first + lines {
+                return (file, line - first + 1);
+            }
+            first += lines;
+        }
+        let last = *files.last().expect("every program has files");
+        (last, line.saturating_sub(first) + 1)
+    }
+}
+
+/// Why shader sources weren't applied. The renderer keeps the pipelines it has.
+#[derive(Debug, thiserror::Error)]
+pub enum ShaderError {
+    /// A program's source doesn't parse or validate, at `file`, `line` and `column` (1-based).
+    #[error("{file}:{line}:{column}: {message}")]
+    Invalid {
+        file: ShaderFile,
+        line: u32,
+        column: u32,
+        message: String,
+        /// naga's report, with the source lines it points at (lines numbered in the program,
+        /// which joins its files).
+        report: String,
+    },
+    /// wgpu refused a module or pipeline built from programs that validate (`programs`, the
+    /// changed ones): entry points, bindings or vertex inputs that don't match what the renderer
+    /// builds and binds.
+    #[error("pipelines of the {programs} shaders: {message}")]
+    Pipeline { programs: String, message: String },
+}
+
+/// Checks `program`'s source in `sources` as wgpu will compile it, with naga and no optional
+/// capabilities (every shader must run on every supported device), and returns the module.
+pub(crate) fn validate(program: Program, sources: &ShaderSources) -> Result<naga::Module, ShaderError> {
+    let source = sources.program(program);
+    let invalid = |location: Option<naga::SourceLocation>, message: String, report: String| {
+        let (line, column) = location.map_or((1, 1), |at| (at.line_number, at.line_position));
+        let (file, line) = sources.locate(program, line);
+        ShaderError::Invalid { file, line, column, message, report }
+    };
+    let module = naga::front::wgsl::parse_str(&source).map_err(|error| {
+        let report = error.emit_to_string_with_path(&source, program.name());
+        invalid(error.location(&source), error.message().to_owned(), report)
+    })?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+        .validate(&module)
+        .map_err(|error| {
+            let report = error.emit_to_string_with_path(&source, program.name());
+            invalid(error.location(&source), error.as_inner().to_string(), report)
+        })?;
+    Ok(module)
+}
+
+/// `program`'s shader module, from `sources`.
+pub(crate) fn module(device: &wgpu::Device, program: Program, sources: &ShaderSources) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(program.name()),
+        source: wgpu::ShaderSource::Wgsl(sources.program(program).into()),
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -51,42 +312,99 @@ mod tests {
     };
     use crate::post::PostUniforms;
 
-    const PASSES: [(&str, &str, &[&str]); 7] = [
-        ("sky", SKY, &["vs_sky", "fs_sky"]),
-        ("anime_character", ANIME_CHARACTER, &["vs_anime_character", "fs_anime_character"]),
-        ("outline", OUTLINE, &["vs_outline", "fs_outline"]),
-        ("post", POST, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
-        ("clusters", CLUSTERS, &["cs_clusters"]),
-        ("prepass", PREPASS, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
-        ("skinning", SKINNING, &["cs_skinning"]),
+    const PASSES: [(Program, &[&str]); 7] = [
+        (Program::Sky, &["vs_sky", "fs_sky"]),
+        (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
+        (Program::Outline, &["vs_outline", "fs_outline"]),
+        (Program::Clusters, &["cs_clusters"]),
+        (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
+        (Program::Skinning, &["cs_skinning"]),
+        (Program::Post, &["vs_fullscreen", "fs_bloom_prefilter", "fs_bloom_down", "fs_bloom_up", "fs_post"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(&str, &str, &str, MeshPass); 4] = [
-        ("anime_character", ANIME_CHARACTER, "vs_anime_character", MeshPass::Main),
-        ("outline", OUTLINE, "vs_outline", MeshPass::Main),
-        ("prepass", PREPASS, "vs_character_prepass", MeshPass::CharacterPrepass),
-        ("prepass", PREPASS, "vs_scene_prepass", MeshPass::ScenePrepass),
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 4] = [
+        (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
+        (Program::Outline, "vs_outline", MeshPass::Main),
+        (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
+        (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
     ];
 
-    fn validate(name: &str, source: &str) -> naga::Module {
-        let module = naga::front::wgsl::parse_str(source)
-            .unwrap_or_else(|err| panic!("{name}.wgsl: {}", err.emit_to_string(source)));
-        // No optional capabilities: the shaders must run on every supported device.
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-            .validate(&module)
-            .unwrap_or_else(|err| panic!("{name}.wgsl: {}", err.emit_to_string(source)));
-        module
+    /// The compiled-in `program`, checked as the renderer checks sources.
+    fn validate(program: Program) -> naga::Module {
+        super::validate(program, &ShaderSources::compiled_in()).unwrap_or_else(|error| match error {
+            ShaderError::Invalid { ref report, .. } => panic!("{error}\n{report}"),
+            ShaderError::Pipeline { .. } => unreachable!("validation builds no pipelines"),
+        })
+    }
+
+    #[test]
+    fn programs_join_their_files_as_they_always_have() {
+        let sources = ShaderSources::compiled_in();
+        let character = concat!(
+            include_str!("../shaders/frame.wgsl"),
+            "\n",
+            include_str!("../shaders/materials.wgsl"),
+            "\n",
+            include_str!("../shaders/lights.wgsl"),
+            "\n",
+            include_str!("../shaders/anime_character.wgsl")
+        );
+        assert_eq!(sources.program(Program::AnimeCharacter), character);
+        assert_eq!(sources.program(Program::Post), include_str!("../shaders/post.wgsl"));
+        // Every file is in a program, and found by its name.
+        for file in ShaderFile::ALL {
+            assert!(Program::ALL.iter().any(|program| program.files().contains(&file)), "{file}");
+            assert_eq!(ShaderFile::from_file_name(file.file_name()), Some(file));
+        }
+        assert_eq!(ShaderFile::from_file_name("missing.wgsl"), None);
+    }
+
+    #[test]
+    fn errors_name_the_file_and_line_they_are_in() {
+        let compiled_in = ShaderSources::compiled_in();
+        let at = |file: ShaderFile, after: &str, inserted: &str| {
+            let mut sources = compiled_in.clone();
+            let text = file.compiled_in();
+            let end = text.find(after).expect("present") + after.len();
+            sources.set(file, format!("{}\n{inserted}{}", &text[..end], &text[end..]));
+            let line = text[..end].matches('\n').count() as u32 + 2;
+            (sources, line)
+        };
+        // A parse error in the last file of a program, and one in the first file of another.
+        let anchor = "fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {";
+        let (sources, line) = at(ShaderFile::AnimeCharacter, anchor, "    let broken = ;");
+        assert!(sources.differs(&compiled_in, Program::AnimeCharacter));
+        assert!(!sources.differs(&compiled_in, Program::Sky));
+        match validate_sources(Program::AnimeCharacter, &sources) {
+            ShaderError::Invalid { file, line: found, column, .. } => {
+                assert_eq!((file, found, column), (ShaderFile::AnimeCharacter, line, 18));
+            }
+            other => panic!("{other}"),
+        }
+        let (sources, line) = at(ShaderFile::Frame, "struct FrameUniforms {", "    broken,");
+        match validate_sources(Program::Sky, &sources) {
+            ShaderError::Invalid { file, line: found, .. } => {
+                assert_eq!((file, found), (ShaderFile::Frame, line))
+            }
+            other => panic!("{other}"),
+        }
+    }
+
+    fn validate_sources(program: Program, sources: &ShaderSources) -> ShaderError {
+        super::validate(program, sources).expect_err("a broken source")
     }
 
     #[test]
     fn every_pass_parses_and_validates() {
-        for (name, source, entry_points) in PASSES {
-            let module = validate(name, source);
+        assert_eq!(PASSES.map(|(program, _)| program), Program::ALL);
+        for (program, entry_points) in PASSES {
+            let name = program.name();
+            let module = validate(program);
             for &entry_point in entry_points {
                 assert!(
                     module.entry_points.iter().any(|ep| ep.name == entry_point),
-                    "{name}.wgsl has no entry point {entry_point}"
+                    "the {name} program has no entry point {entry_point}"
                 );
             }
         }
@@ -146,7 +464,7 @@ mod tests {
     #[test]
     fn vertex_inputs_match_rust_vertex_layouts() {
         for format in PositionFormat::ALL {
-            for (name, source, vertex_entry, pass) in MESH_ENTRY_POINTS {
+            for (program, vertex_entry, pass) in MESH_ENTRY_POINTS {
                 let attributes: BTreeMap<u32, naga::TypeInner> = pass
                     .buffers(format)
                     .iter()
@@ -154,7 +472,7 @@ mod tests {
                     .flat_map(|buffer| buffer.attributes)
                     .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
                     .collect();
-                let module = validate(name, source);
+                let module = validate(program);
                 let entry_point =
                     module.entry_points.iter().find(|ep| ep.name == vertex_entry).expect("entry point");
                 let mut inputs = BTreeMap::new();
@@ -204,29 +522,29 @@ mod tests {
     #[test]
     fn rust_structs_match_wgsl_layouts() {
         let expected = [
-            ("anime_character", ANIME_CHARACTER, "FrameUniforms", size_of::<FrameUniforms>()),
-            ("anime_character", ANIME_CHARACTER, "ViewUniforms", size_of::<ViewUniforms>()),
-            ("anime_character", ANIME_CHARACTER, "InstanceData", size_of::<InstanceData>()),
-            ("anime_character", ANIME_CHARACTER, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
-            ("anime_character", ANIME_CHARACTER, "AnimeCharacterRegion", size_of::<AnimeCharacterRegion>()),
-            ("sky", SKY, "EnvironmentParams", size_of::<EnvironmentParams>()),
-            ("sky", SKY, "FoliageParams", size_of::<FoliageParams>()),
-            ("sky", SKY, "SkyParams", size_of::<SkyParams>()),
-            ("sky", SKY, "FogCardParams", size_of::<FogCardParams>()),
-            ("sky", SKY, "SkyUniforms", size_of::<crate::sky::SkyUniforms>()),
-            ("sky", SKY, "FrameUniforms", size_of::<FrameUniforms>()),
-            ("sky", SKY, "ViewUniforms", size_of::<ViewUniforms>()),
-            ("post", POST, "PostUniforms", size_of::<PostUniforms>()),
-            ("anime_character", ANIME_CHARACTER, "LocalLight", size_of::<GpuLight>()),
-            ("anime_character", ANIME_CHARACTER, "CharacterData", size_of::<GpuCharacter>()),
-            ("anime_character", ANIME_CHARACTER, "CharacterRig", size_of::<GpuRig>()),
-            ("anime_character", ANIME_CHARACTER, "CharacterFace", size_of::<GpuFace>()),
-            ("clusters", CLUSTERS, "FrameUniforms", size_of::<FrameUniforms>()),
-            ("prepass", PREPASS, "InstanceData", size_of::<InstanceData>()),
-            ("prepass", PREPASS, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::AnimeCharacter, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::AnimeCharacter, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::AnimeCharacter, "InstanceData", size_of::<InstanceData>()),
+            (Program::AnimeCharacter, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
+            (Program::AnimeCharacter, "AnimeCharacterRegion", size_of::<AnimeCharacterRegion>()),
+            (Program::Sky, "EnvironmentParams", size_of::<EnvironmentParams>()),
+            (Program::Sky, "FoliageParams", size_of::<FoliageParams>()),
+            (Program::Sky, "SkyParams", size_of::<SkyParams>()),
+            (Program::Sky, "FogCardParams", size_of::<FogCardParams>()),
+            (Program::Sky, "SkyUniforms", size_of::<crate::sky::SkyUniforms>()),
+            (Program::Sky, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Sky, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Post, "PostUniforms", size_of::<PostUniforms>()),
+            (Program::AnimeCharacter, "LocalLight", size_of::<GpuLight>()),
+            (Program::AnimeCharacter, "CharacterData", size_of::<GpuCharacter>()),
+            (Program::AnimeCharacter, "CharacterRig", size_of::<GpuRig>()),
+            (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
+            (Program::Clusters, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Prepass, "InstanceData", size_of::<InstanceData>()),
+            (Program::Prepass, "ViewUniforms", size_of::<ViewUniforms>()),
         ];
-        for (source_name, source, name, rust_size) in expected {
-            let module = validate(source_name, source);
+        for (program, name, rust_size) in expected {
+            let module = validate(program);
             let mut layouter = naga::proc::Layouter::default();
             layouter.update(module.to_ctx()).expect("layout");
             let (handle, _) = module
@@ -300,7 +618,7 @@ mod tests {
             ("SkyParams", offsets!(SkyParams { discs, stars, clouds, cirrus, modes, swizzles })),
             ("FogCardParams", offsets!(FogCardParams { color, fade, scroll, modes, swizzles })),
         ];
-        let module = validate("anime_character", ANIME_CHARACTER);
+        let module = validate(Program::AnimeCharacter);
         for (name, rust) in blocks {
             let (_, ty) = module
                 .types
@@ -350,7 +668,7 @@ mod tests {
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),
             ("CharacterFace", offsets!(GpuFace { forward, up, expression })),
         ];
-        let module = validate("anime_character", ANIME_CHARACTER);
+        let module = validate(Program::AnimeCharacter);
         for (name, rust) in structs {
             let (_, ty) = module
                 .types
@@ -383,8 +701,8 @@ mod tests {
     fn wgsl_light_constants_match_rust() {
         use crate::lights::ListMode;
         use crate::lights::clusters::{CLUSTER_COUNT, SLICES, TILES_X, TILES_Y, WORKGROUP_SIZE};
-        let character = validate("anime_character", ANIME_CHARACTER);
-        let clusters = validate("clusters", CLUSTERS);
+        let character = validate(Program::AnimeCharacter);
+        let clusters = validate(Program::Clusters);
         for module in [&character, &clusters] {
             assert_eq!(wgsl_u32(module, "CLUSTER_TILES_X"), TILES_X);
             assert_eq!(wgsl_u32(module, "CLUSTER_TILES_Y"), TILES_Y);
@@ -400,7 +718,7 @@ mod tests {
     #[test]
     fn wgsl_skinning_constants_match_rust() {
         use crate::skinning::{JOB_ROWS, WORKGROUP_SIZE, flags};
-        let skinning = validate("skinning", SKINNING);
+        let skinning = validate(Program::Skinning);
         assert_eq!(wgsl_u32(&skinning, "SKINNING_WORKGROUP"), WORKGROUP_SIZE);
         assert_eq!(wgsl_u32(&skinning, "JOB_ROWS"), JOB_ROWS);
         assert_eq!(wgsl_u32(&skinning, "FLAG_FLOAT_POSITIONS"), flags::FLOAT_POSITIONS);
@@ -414,7 +732,7 @@ mod tests {
         use crate::pipelines::material_binding;
         type M = AnimeCharacterMaterial;
         type P = AnimeCharacterParams;
-        let character = validate("anime_character", ANIME_CHARACTER);
+        let character = validate(Program::AnimeCharacter);
         let slots = [
             ("CHARACTER_BASE_COLOR", M::BASE_COLOR),
             ("CHARACTER_CONTROL", M::CONTROL),
@@ -470,7 +788,7 @@ mod tests {
 
         use crate::pipelines::material_binding;
         use crate::sky::{CLOUDS_CONSTANT, DISCS_CONSTANT, STARS_CONSTANT, SkyUniforms};
-        let sky = validate("sky", SKY);
+        let sky = validate(Program::Sky);
         let rust = offsets!(SkyUniforms {
             sun,
             sun_disc,
@@ -572,8 +890,8 @@ mod tests {
     fn wgsl_character_contract_matches_rust() {
         use sapphire_assets::character_maps::{MATERIAL_IDS, face_sdf, ilm, ramp};
         use sapphire_assets::mesh::VertexFlags;
-        let character = validate("anime_character", ANIME_CHARACTER);
-        let outline = validate("outline", OUTLINE);
+        let character = validate(Program::AnimeCharacter);
+        let outline = validate(Program::Outline);
         for module in [&character, &outline] {
             assert_eq!(wgsl_u32(module, "VERTEX_MATERIAL_ID_MASK"), u32::from(VertexFlags::MATERIAL_ID_MASK));
         }
@@ -598,9 +916,10 @@ mod tests {
             .iter()
             .map(|coverage| (format!("{coverage:?}"), coverage.constants()))
             .collect();
-        let passes = [("anime_character", ANIME_CHARACTER, surfaces), ("outline", OUTLINE, outlines)];
-        for (name, source, variants) in passes {
-            let module = validate(name, source);
+        let passes = [(Program::AnimeCharacter, surfaces), (Program::Outline, outlines)];
+        for (program, variants) in passes {
+            let name = program.name();
+            let module = validate(program);
             let info = naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
                 naga::valid::Capabilities::empty(),
@@ -614,19 +933,19 @@ mod tests {
                 let constants: naga::back::PipelineConstants =
                     variant_constants.iter().map(|&(key, value)| (key.to_owned(), value)).collect();
                 for key in constants.keys() {
-                    assert!(overrides.contains(&key.as_str()), "{name}.wgsl has no override {key}");
+                    assert!(overrides.contains(&key.as_str()), "the {name} program has no override {key}");
                 }
                 for entry_point in &module.entry_points {
                     let stage = Some((entry_point.stage, entry_point.name.as_str()));
                     naga::back::pipeline_constants::process_overrides(&module, &info, stage, &constants)
                         .unwrap_or_else(|error| {
-                            panic!("{name}.wgsl {variant:?} {}: {error}", entry_point.name)
+                            panic!("the {name} program, {variant:?} {}: {error}", entry_point.name)
                         });
                 }
             }
-            assert!(overrides.contains(&override_constant::ALPHA_TEST), "{name}.wgsl");
+            assert!(overrides.contains(&override_constant::ALPHA_TEST), "{name}");
         }
-        let character = validate("anime_character", ANIME_CHARACTER);
+        let character = validate(Program::AnimeCharacter);
         for constant in [override_constant::TRANSPARENT, override_constant::FACE] {
             assert!(
                 character.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(constant)),

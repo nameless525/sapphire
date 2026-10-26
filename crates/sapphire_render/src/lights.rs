@@ -63,6 +63,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::scene::InstanceSlots;
+use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
 use clusters::ClusterPass;
 use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
@@ -234,6 +235,7 @@ impl Lights {
         frame_uniforms: &wgpu::Buffer,
         view_layout: &wgpu::BindGroupLayout,
         cache: Option<&wgpu::PipelineCache>,
+        sources: &ShaderSources,
     ) -> Self {
         let max_lights = settings.max_lights.min(MAX_LIGHTS);
         let limits = device.limits();
@@ -258,6 +260,7 @@ impl Lights {
                         &light_buffer,
                         lists.buffer(),
                         cache,
+                        sources,
                     )
                 });
                 (capacity, lists, pass)
@@ -294,6 +297,29 @@ impl Lights {
     /// Notes a mesh's object-space bounds, which per-object lists are chosen with.
     pub(crate) fn mesh_uploaded(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
         self.objects.mesh_uploaded(mesh, bounds);
+    }
+
+    /// The cluster pass's pipeline built from `sources` instead, if the clustered path runs, for
+    /// [`Self::set_cluster_pipeline`] (shader hot reload).
+    pub(crate) fn rebuilt_cluster_pipeline(
+        &self,
+        device: &wgpu::Device,
+        sources: &ShaderSources,
+    ) -> Option<wgpu::ComputePipeline> {
+        self.cluster_pass.as_ref().map(|pass| pass.rebuilt(device, sources))
+    }
+
+    pub(crate) fn set_cluster_pipeline(&mut self, pipeline: wgpu::ComputePipeline) {
+        if let Some(pass) = &mut self.cluster_pass {
+            pass.set_pipeline(pipeline);
+        }
+    }
+
+    /// A mesh was replaced in place, with new bounds: every per-object list is chosen again on
+    /// the next frame (a rare event, so its instances aren't looked for).
+    pub(crate) fn mesh_replaced(&mut self, mesh: MeshHandle, bounds: [[f32; 3]; 2]) {
+        self.objects.mesh_uploaded(mesh, bounds);
+        self.objects.invalidate();
     }
 
     /// Culls, caps and packs the packet's lights for its main view, and on the per-object

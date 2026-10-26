@@ -40,6 +40,9 @@
 //!   the meshes the document names, lit by their materials under time of day's keys. They read
 //!   cooked meshes and materials' sources, so they cook last; their keys depend on those assets'
 //!   keys.
+//! - **Assemblies** cook `.assembly.ron` documents → `.smesh` like glTF meshes: kit pieces
+//!   placed into one mesh in slots of the document's own (M1 X1, [`assembly`]). The pieces'
+//!   files are dependencies of the key.
 //!
 //! A source may cook to more than one asset: its own, and [`SubAsset`]s, each with its own
 //! recipe, output beside the source's (`alicia.smesh`, `alicia.srig`) and an ID derived from the
@@ -64,6 +67,7 @@ use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
 
+use crate::assembly::{self, AssemblyError};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
@@ -190,6 +194,12 @@ impl Recipe {
                 format: ProbeGrid::VERSION,
                 extension: PROBE_GRID_EXTENSION,
             },
+            ImportSettings::Assembly(_) => Self {
+                importer: assembly::IMPORTER,
+                cooker: MESH_COOKER,
+                format: Mesh::VERSION,
+                extension: MESH_EXTENSION,
+            },
         }
     }
 
@@ -198,6 +208,7 @@ impl Recipe {
         match settings {
             ImportSettings::Vrm(_) => &[vrm::RIG],
             ImportSettings::Gltf(_)
+            | ImportSettings::Assembly(_)
             | ImportSettings::Texture(_)
             | ImportSettings::CharacterMap(_)
             | ImportSettings::Material(_)
@@ -214,6 +225,8 @@ impl Recipe {
             material::output_path(relative, self.extension)
         } else if probes::is_source(relative) {
             probes::output_path(relative, self.extension)
+        } else if assembly::is_source(relative) {
+            assembly::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -232,6 +245,13 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: GltfImportError,
+    },
+    #[error("failed to assemble {}", path.display())]
+    Assembly {
+        path: PathBuf,
+        /// Boxed: document and glTF errors are large, and every cook result carries this type.
+        #[source]
+        source: Box<AssemblyError>,
     },
     #[error("failed to import VRM {}", path.display())]
     Vrm {
@@ -555,7 +575,9 @@ fn cook_source(
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, CookError> {
     match settings {
-        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) if sub_asset.is_none() => {
+        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) | ImportSettings::Assembly(_)
+            if sub_asset.is_none() =>
+        {
             let mesh = import_mesh(path, bytes, settings, cook)?;
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
@@ -568,7 +590,9 @@ fn cook_source(
             CharacterRig::read(&cooked).map_err(invalid)?;
             Ok(cooked.into_vec())
         }
-        ImportSettings::Gltf(_) => unreachable!("glTF sources have no sub-assets"),
+        ImportSettings::Gltf(_) | ImportSettings::Assembly(_) => {
+            unreachable!("glTF sources and assemblies have no sub-assets")
+        }
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::CharacterMap(settings) => {
@@ -653,7 +677,7 @@ fn dependencies(
     assets: &Assets<'_>,
 ) -> Result<Vec<Dependency>, CookError> {
     match settings {
-        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) => {
+        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) | ImportSettings::Assembly(_) => {
             let mesh = settings.mesh().expect("mesh importers have mesh settings");
             // The mesh holds only the bound materials' IDs, so their contents aren't inputs.
             for (slot, &id) in &mesh.materials {
@@ -664,6 +688,9 @@ fn dependencies(
             if matches!(settings, ImportSettings::Vrm(_)) {
                 // VRM files are GLB: they read nothing besides themselves.
                 return Ok(Vec::new());
+            }
+            if matches!(settings, ImportSettings::Assembly(_)) {
+                return assembly_dependencies(path, bytes);
             }
             let files = gltf::external_files(bytes)
                 .map_err(|source| CookError::Import { path: path.to_owned(), source })?;
@@ -699,8 +726,33 @@ fn dependencies(
     }
 }
 
-/// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF
-/// or VRM), for `cook`.
+/// The pieces an assembly at `path` places: files it reads, by the path it names them with.
+fn assembly_dependencies(path: &Path, bytes: &[u8]) -> Result<Vec<Dependency>, CookError> {
+    let fail = |source| CookError::Assembly { path: path.to_owned(), source: Box::new(source) };
+    let assembly = assembly::read(bytes).map_err(fail)?;
+    let mut dependencies = Vec::new();
+    for file in assembly.files().map_err(fail)? {
+        let full = character_maps::resolve_input(path, &file)
+            .map_err(|_| fail(AssemblyError::PiecePath(file.clone())))?;
+        let piece = fs::read(&full).map_err(|source| CookError::Read { path: full.clone(), source })?;
+        // A piece's external buffers are read with it.
+        let dir = Path::new(&file).parent().unwrap_or(Path::new(""));
+        for buffer in
+            gltf::external_files(&piece).map_err(|source| CookError::Import { path: full.clone(), source })?
+        {
+            let buffer_path = full.parent().unwrap_or(Path::new("")).join(&buffer);
+            let bytes =
+                fs::read(&buffer_path).map_err(|source| CookError::Read { path: buffer_path, source })?;
+            let name = dir.join(&buffer).to_string_lossy().replace('\\', "/");
+            dependencies.push(Dependency::File { path: name, hash: blake3::hash(&bytes) });
+        }
+        dependencies.push(Dependency::File { path: file, hash: blake3::hash(&piece) });
+    }
+    Ok(dependencies)
+}
+
+/// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF,
+/// VRM or an assembly), for `cook`.
 fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook) -> Result<Mesh, CookError> {
     let (mut mesh, settings) = match importer {
         ImportSettings::Gltf(settings) => (
@@ -711,6 +763,11 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
         ImportSettings::Vrm(settings) => {
             (vrm::import(bytes, settings.version).map_err(vrm_error(path))?.mesh, &settings.mesh)
         }
+        ImportSettings::Assembly(settings) => (
+            assembly::import(path, bytes)
+                .map_err(|source| CookError::Assembly { path: path.to_owned(), source: Box::new(source) })?,
+            settings,
+        ),
         ImportSettings::Texture(_)
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
@@ -766,6 +823,7 @@ fn cook_mesh_with_bytes(
         Some(ImportSettings::Vrm(_)) => {
             ImportSettings::Vrm(VrmSettings { mesh: settings.clone(), version: None })
         }
+        Some(ImportSettings::Assembly(_)) => ImportSettings::Assembly(settings.clone()),
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;

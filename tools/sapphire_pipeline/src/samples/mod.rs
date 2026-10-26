@@ -24,7 +24,7 @@ pub mod environment;
 pub mod face;
 pub mod foliage;
 pub mod hard_edges;
-mod noise;
+pub(crate) mod noise;
 mod shapes;
 pub mod sky;
 pub mod swatch;

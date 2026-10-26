@@ -191,7 +191,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         ImportSettings::Texture(_)
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
-        | ImportSettings::ProbeGrid(_) => {
+        | ImportSettings::ProbeGrid(_)
+        | ImportSettings::Assembly(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

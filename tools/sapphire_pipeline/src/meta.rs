@@ -80,6 +80,7 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
+use crate::assembly;
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
@@ -123,6 +124,9 @@ pub enum ImportSettings {
     Vrm(VrmSettings),
     /// An ambient probe grid document (`.probes.ron`), baked from the meshes it names (M1 W5).
     ProbeGrid(ProbeGridSettings),
+    /// An assembly document (`.assembly.ron`): kit pieces placed into one static mesh, in
+    /// slots of its own, cooked as glTF's meshes are (M1 X1).
+    Assembly(MeshSettings),
 }
 
 impl ImportSettings {
@@ -139,6 +143,9 @@ impl ImportSettings {
         }
         if probes::is_source(source) {
             return Some(Self::ProbeGrid(ProbeGridSettings::default()));
+        }
+        if assembly::is_source(source) {
+            return Some(Self::Assembly(MeshSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -167,7 +174,7 @@ impl ImportSettings {
     /// The settings of a mesh importer, or `None` for other kinds of source.
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
-            Self::Gltf(settings) => Some(settings),
+            Self::Gltf(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&settings.mesh),
             Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }
@@ -176,7 +183,7 @@ impl ImportSettings {
     /// [`Self::mesh`], to change.
     pub fn mesh_mut(&mut self) -> Option<&mut MeshSettings> {
         match self {
-            Self::Gltf(settings) => Some(settings),
+            Self::Gltf(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&mut settings.mesh),
             Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }

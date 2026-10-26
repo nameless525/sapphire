@@ -17,6 +17,8 @@
 //!   expressions, look-at, spring bones and constraints.
 //! - [`extract`]: the `extract-materials` command, which writes a mesh's materials out as
 //!   material documents bound in its sidecar, and a VRM's images as texture sources.
+//! - [`assembly`]: assembly documents (`.assembly.ron`), kit pieces placed into one static mesh
+//!   and re-materialed in slots of the project's own, cooked as meshes (M1 X1's town).
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
 //!   [`Mesh`](sapphire_assets::mesh::Mesh) (quantized streams).
 //! - [`bake`]: derived data computed offline: smoothed outline normals where none are authored.
@@ -40,6 +42,8 @@
 //!   with the grouping rules and the codec each kind is compressed with.
 //! - [`cache`]: the cache key over everything that determines a cooked output or a pack, and the
 //!   local store of cooked outputs and pack encodings by key.
+//! - [`lookdev`]: the look-dev scene's generated sources (M1 X1): the town's painted maps and
+//!   the character's hair mask.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
 //!   mannequin, the shader swatches' maps and materials, the face test head with its face
 //!   maps and material, the sky's maps and material, the environment's courtyard with its
@@ -83,6 +87,7 @@
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
 
+pub mod assembly;
 pub mod bake;
 pub mod cache;
 pub mod character_maps;
@@ -91,6 +96,7 @@ pub mod cook;
 pub mod extract;
 mod gltf_writer;
 pub mod import;
+pub mod lookdev;
 pub mod material;
 pub mod mesh;
 pub mod meta;

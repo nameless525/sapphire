@@ -99,6 +99,7 @@ impl TextureKind {
             },
             ImportSettings::Gltf(_)
             | ImportSettings::Vrm(_)
+            | ImportSettings::Assembly(_)
             | ImportSettings::Material(_)
             | ImportSettings::ProbeGrid(_) => return None,
         })

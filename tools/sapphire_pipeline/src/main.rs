@@ -1,6 +1,6 @@
 //! `sapphire_pipeline`: command-line front end to the asset pipeline.
 //!
-//! The arguments are parsed by hand, as in xtask: five commands and a handful of options don't
+//! The arguments are parsed by hand, as in xtask: six commands and a handful of options don't
 //! justify clap's build time, which xtask's cook pays in a release build too.
 
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
-use sapphire_pipeline::samples;
+use sapphire_pipeline::{lookdev, samples};
 
 const USAGE: &str = "\
 Sapphire asset pipeline: generate, import, bake and cook source assets.
@@ -23,6 +23,10 @@ Usage:
   sapphire_pipeline gen-samples --out <DIR>
       Write the procedural sample source assets (mannequin.glb, the swatch maps and materials)
       into DIR, created if missing.
+  sapphire_pipeline gen-lookdev --out <DIR>
+      Write the look-dev scene's generated sources into DIR, created if missing: the town's
+      painted maps, and the character's hair mask from the model's highlight that DIR's
+      ../third_party holds.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
       Cook one .gltf/.glb/.vrm file into a .smesh file (default cook: desktop), with the
       settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
@@ -57,6 +61,9 @@ Options:
 #[derive(Debug, PartialEq)]
 enum Command {
     GenSamples {
+        out: PathBuf,
+    },
+    GenLookdev {
         out: PathBuf,
     },
     CookMesh {
@@ -109,6 +116,13 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::GenSamples { out } => {
             let written = samples::write_all(&out)
                 .with_context(|| format!("failed to write samples to {}", out.display()))?;
+            for path in written {
+                eprintln!("generated {}", path.display());
+            }
+        }
+        Command::GenLookdev { out } => {
+            let written = lookdev::write_all(&out)
+                .with_context(|| format!("failed to write the look-dev sources to {}", out.display()))?;
             for path in written {
                 eprintln!("generated {}", path.display());
             }
@@ -263,6 +277,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
     let mut options = Options(args);
     let command = match name.as_str() {
         "gen-samples" => Command::GenSamples { out: options.required("--out")? },
+        "gen-lookdev" => Command::GenLookdev { out: options.required("--out")? },
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
             let outline = match options.value("--weld-tolerance")? {
@@ -360,6 +375,10 @@ mod tests {
         assert_eq!(
             parse(&["gen-samples", "--out", "dir"]).unwrap(),
             Command::GenSamples { out: "dir".into() }
+        );
+        assert_eq!(
+            parse(&["gen-lookdev", "--out", "dir"]).unwrap(),
+            Command::GenLookdev { out: "dir".into() }
         );
         assert_eq!(
             parse(&["cook-mesh", "a.glb", "--cook=mobile", "b.smesh", "--weld-tolerance", "0.001"]).unwrap(),

@@ -4,8 +4,8 @@
 // clocks (spec §3).
 //
 // - Drawn from today: `resolution`, `antialiasing`, `bloom_levels`, `light_path`, `max_lights`,
-//   `sky`, `environment`, `shadows` and `post_effects`, plus `frame_rate` and `gpu_frame_ms` as
-//   dynamic resolution's targets.
+//   `sky`, `environment`, `shadows`, `post_effects` and `foliage`, plus `frame_rate` and
+//   `gpu_frame_ms` as dynamic resolution's targets.
 // - `post_effects` (M1 P3): the radial blur's taps per pixel along its streak, in groups of four.
 //   A pixel's taps start at a per-pixel offset, so fewer taps read as finer grain rather than as
 //   copies of the frame; phones take 8 (spec §5.12's P3 note has the costs).
@@ -16,6 +16,12 @@
 //   cheaper GGX that folds visibility and Fresnel into one term; Mobile-Low none, where the world
 //   reads by its painted diffuse (terminator, wrap, shadow tint, band, desaturation and emission
 //   run on every tier). Both desktop tiers draw the same, as with the sky.
+// - `foliage` (M1 W6): how many of the wind's levels run (trunk sway, branch bend, leaf flutter),
+//   alpha-to-coverage for alpha-tested cards under MSAA, and translucency through leaves. Desktop
+//   tiers resolve cards with TAA (MSAA is off, so alpha-to-coverage never applies) and run every
+//   level with translucency. Phones cover cards' edges in tile memory with alpha-to-coverage;
+//   Mobile-Low keeps trunks and branches moving but drops the leaves' flutter, which a 590-row
+//   scene barely resolves, and translucency, a per-pixel `pow` the canopy reads without.
 // - Read by later packages: `ambient_occlusion` (W5), `volumetric_fog`, `screen_space_outlines`
 //   (C4), `max_particles` (sapphire_vfx, M2) and `lod_bias` (LOD selection).
 //
@@ -81,6 +87,7 @@
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full),
                 post_effects: (radial_blur_taps: 16),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
             ),
             (
                 // GTX 1060 6 GB, Steam Deck, M1 8 GB: 1080p (800p on the Deck), upsampled by
@@ -111,6 +118,7 @@
                 sky: (cube_size: 256, cube_interval: 1, cirrus: true),
                 environment: (specular: Full),
                 post_effects: (radial_blur_taps: 12),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
             ),
             (
                 // iPhone 15 Pro (A17 Pro), Snapdragon 8 Gen 2+: ~1600×740 → native at 60 fps.
@@ -142,6 +150,7 @@
                 sky: (cube_size: 128, cube_interval: 1, cirrus: true),
                 environment: (specular: Approximate),
                 post_effects: (radial_blur_taps: 8),
+                foliage: (wind_levels: 3, alpha_to_coverage: true, translucency: true),
             ),
             (
                 // iPhone 12 (A14, 4 GB), Snapdragon 865-class with 6 GB: ~1280×590 → native at
@@ -175,6 +184,7 @@
                 // characters and the frame's atmosphere.
                 environment: (specular: Off),
                 post_effects: (radial_blur_taps: 8),
+                foliage: (wind_levels: 2, alpha_to_coverage: true, translucency: false),
             ),
         ],
     ),

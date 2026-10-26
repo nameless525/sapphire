@@ -72,6 +72,15 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/environment/haze.material.ron",
     "samples/environment/mist.png",
     "samples/hard_edges.glb",
+    "samples/foliage/tree.glb",
+    "samples/foliage/bush.glb",
+    "samples/foliage/grass.glb",
+    "samples/foliage/bark.material.ron",
+    "samples/foliage/leaves.material.ron",
+    "samples/foliage/bush.material.ron",
+    "samples/foliage/grass.material.ron",
+    "samples/foliage/leaves.png",
+    "samples/foliage/grass.png",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

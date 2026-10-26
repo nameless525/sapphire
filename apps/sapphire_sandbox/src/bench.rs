@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{CHARACTER_PREPASS, PREPASSES, post, shadows, temporal};
+use sapphire_render::{CHARACTER_PREPASS, MAIN_PASS, PREPASSES, post, shadows, temporal};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -125,6 +125,7 @@ pub(crate) fn run(
         skinned = options.skinned,
         faces = ?options.faces,
         rim_rig = ?options.rim_rig,
+        foliage = ?options.foliage,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),
@@ -184,7 +185,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         let groups: [(&[&str], &mut Sums); 7] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
-            (&["main"], &mut main),
+            (&[MAIN_PASS], &mut main),
             (&PREPASSES, &mut prepasses),
             (&[CHARACTER_PREPASS], &mut character_prepass),
             (&temporal::PASSES, &mut taa),
@@ -201,7 +202,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         }
         let chain = stage.renderer.stats().post.bloom_chain;
         let post_passes = || post::frame_passes(bloom_levels, chain);
-        if timings.get("main").is_some() && post_passes().all(|name| timings.get(name).is_some()) {
+        if timings.get(MAIN_PASS).is_some() && post_passes().all(|name| timings.get(name).is_some()) {
             for name in post_passes() {
                 let pass = timings.get(name).expect("checked above");
                 let sums = if name == post::COMPOSITE_PASS { &mut composite } else { &mut bloom };

@@ -1,8 +1,10 @@
 //! Offline bakes: data derived from imported geometry.
 //!
-//! Spec §5.27 lists smoothed outline normals for both cooks, authored or baked by welding.
-//! Vertex order, LODs and quantization are later stages ([`optimize`](crate::optimize),
-//! [`ImportedMesh::pack`]).
+//! Spec §5.27 lists smoothed outline normals for both cooks, authored or baked by welding, and
+//! (M1 W6) foliage's volume normals and wind data ([`foliage`](mod@foliage)). Vertex order, LODs
+//! and quantization are later stages ([`optimize`](crate::optimize), [`ImportedMesh::pack`]).
+
+pub mod foliage;
 
 use std::collections::HashMap;
 

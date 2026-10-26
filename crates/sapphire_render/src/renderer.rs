@@ -1,8 +1,8 @@
 //! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, a main
-//! pass into HDR scene color (anime character and environment surfaces per surface variant, the
-//! characters' outlines, their eyes through hair, the sky, then transparent surfaces and fog
-//! cards), lit by each character's light rig (or, for the world, the sun) under the frame's
-//! shadows, local lights and fog, then post-processing into the target.
+//! pass into HDR scene color (anime character, environment and foliage surfaces per surface
+//! variant, the characters' outlines, their eyes through hair, the sky, then transparent surfaces
+//! and fog cards), lit by each character's light rig (or, for the world, the sun) under the
+//! frame's shadows, local lights and fog, then post-processing into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -22,21 +22,22 @@ use crate::characters::Characters;
 use crate::draw::{DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogCards, FogStats, GpuFog};
+use crate::foliage::{self, FoliageSettings, FoliageWind};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
-use crate::mesh_pool::{MeshPool, PoolMoves, SubmeshMaterial};
+use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, Layouts, MESH_FAMILIES, MeshPass, MeshPipelines,
-    NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant,
-    VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES, MeshPass,
+    MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
+    SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{self, PostEffectSettings, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
-use crate::shadows::{ShadowSettings, ShadowStats, Shadows};
+use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalPipelines, TemporalStats};
@@ -113,6 +114,9 @@ pub struct RenderSettings {
     /// What the screen effects spend (M1 P3, the [`post`](crate::post) module): the radial
     /// blur's taps per pixel.
     pub post_effects: PostEffectSettings,
+    /// Foliage's wind levels, alpha-to-coverage under MSAA and translucency (M1 W6, the
+    /// [`foliage`](crate::foliage) module).
+    pub foliage: FoliageSettings,
 }
 
 impl Default for RenderSettings {
@@ -130,6 +134,7 @@ impl Default for RenderSettings {
             environment: EnvironmentSettings::default(),
             shadows: None,
             post_effects: PostEffectSettings::default(),
+            foliage: FoliageSettings::default(),
         }
     }
 }
@@ -189,6 +194,13 @@ pub enum RenderError {
     #[error("meshes don't draw with {0} materials")]
     NotDrawable(MaterialFamily),
     #[error(
+        "the mesh has foliage materials but no foliage stream; cook it with foliage import settings \
+         (`sapphire_pipeline::bake::foliage`)"
+    )]
+    NoFoliageStream,
+    #[error("foliage materials draw on static meshes only, and this mesh is skinned or morphed")]
+    DeformedFoliage,
+    #[error(
         "material slot {slot:?} names material asset {id}, which wasn't uploaded; the asset server \
          loads it before the mesh, for `upload_material` and then `upload_slot_materials`"
     )]
@@ -203,6 +215,10 @@ pub const CHARACTER_PREPASS: &str = "character prepass";
 pub const SCENE_PREPASS: &str = "scene prepass";
 /// The prepasses, which spec §3.3's "Culling + prepass" row budgets.
 pub const PREPASSES: [&str; 2] = [CHARACTER_PREPASS, SCENE_PREPASS];
+/// The main pass's name in the frame graph: every family's opaque, alpha-tested and transparent
+/// surfaces, their outlines and the sky, forward lit. The overlay and the bench time it against
+/// spec §3.3's "Forward opaque" row (3.5 ms on Desktop-Low, 8 ms on Mobile-Low).
+pub const MAIN_PASS: &str = "main";
 
 /// Renderer counters for the stats overlay and Tracy (rule R9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -223,6 +239,10 @@ pub struct RenderStats {
     /// Of [`Self::draws`], those of environment materials (M1 W4), through the environment
     /// shader.
     pub environment_draws: u32,
+    /// Of [`Self::draws`], those of foliage materials (M1 W6), through the foliage shader.
+    pub foliage_draws: u32,
+    /// Instances with at least one foliage draw in the last prepared frame.
+    pub foliage_instances: u32,
     /// Outline hulls drawn in the last prepared frame (in the main pass, and in the scene
     /// prepass when it runs).
     pub outline_draws: u32,
@@ -234,6 +254,9 @@ pub struct RenderStats {
     pub character_pipelines: u32,
     /// Environment pipelines built (surface variants across position formats), likewise.
     pub environment_pipelines: u32,
+    /// Foliage pipelines built (surface variants, and their scene prepass and shadow casters,
+    /// across position formats), likewise.
+    pub foliage_pipelines: u32,
     /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
     /// Instances the last prepared packet added or changed; each is uploaded.
@@ -388,6 +411,8 @@ pub struct Renderer {
     character_scratch: Vec<u32>,
     /// The key light's shadow maps, their passes and each frame's plan.
     shadows: Shadows,
+    /// The wind foliage sways in, this frame's and the last drawn one's.
+    wind: FoliageWind,
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
@@ -470,6 +495,7 @@ impl Renderer {
             SCENE_COLOR_FORMAT,
             samples,
             settings.environment,
+            settings.foliage,
             gpu.pipeline_cache(),
             &shaders,
             settings.shadows.as_ref(),
@@ -532,7 +558,9 @@ impl Renderer {
         let mut materials = Materials::new(&device, gpu.queue());
         let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
         let scene = GpuScene::new(&device);
-        let scene_bind_groups = create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards);
+        let wind = FoliageWind::new(&device);
+        let scene_bind_groups =
+            create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards, &wind);
         let skinning = Skinning::new(&device);
         let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
@@ -545,6 +573,7 @@ impl Renderer {
             max_lights = settings.max_lights,
             environment_specular = ?settings.environment.specular,
             shadows = ?settings.shadows,
+            foliage = ?settings.foliage,
             "renderer created"
         );
         Ok(Self {
@@ -567,6 +596,7 @@ impl Renderer {
             character_prepass,
             character_scratch: Vec::new(),
             shadows,
+            wind,
             meshes,
             materials,
             scene,
@@ -597,9 +627,9 @@ impl Renderer {
     /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
     /// the next recorded frame.
     ///
-    /// Every family uploads. Anime character, environment and fog card materials draw on meshes,
-    /// and a sky material draws the sky when a packet names it ([`FramePacket::sky_material`]);
-    /// foliage's shader comes with its package (W6).
+    /// Every family uploads. Anime character, environment, foliage and fog card materials draw on
+    /// meshes, and a sky material draws the sky when a packet names it
+    /// ([`FramePacket::sky_material`]).
     pub fn upload_material<'t>(
         &mut self,
         material: &ArchivedMaterial,
@@ -614,6 +644,7 @@ impl Renderer {
                 &self.scene,
                 &self.materials,
                 &self.fog_cards,
+                &self.wind,
             );
         }
         self.update_pool_stats();
@@ -696,12 +727,15 @@ impl Renderer {
     }
 
     /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
-    /// into the mesh pool, drawing material slot `i` with `materials[i]`: anime character or
-    /// environment materials, mixed freely within a mesh and across them (each submesh draws
-    /// through its family's shader). Its streams are copied as they are; all its LODs' indices
-    /// are uploaded and LOD0 is drawn. A skinned or morphed mesh also uploads its skin and morph
-    /// targets, and each of its instances is drawn from its own skinning outputs, in its bind pose
-    /// until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)).
+    /// into the mesh pool, drawing material slot `i` with `materials[i]`: anime character,
+    /// environment or foliage materials, mixed freely within a mesh and across them (each submesh
+    /// draws through its family's shader). Its streams are copied as they are; all its LODs'
+    /// indices are uploaded and LOD0 is drawn. A skinned or morphed mesh also uploads its skin and
+    /// morph targets, and each of its instances is drawn from its own skinning outputs, in its
+    /// bind pose until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)). Foliage
+    /// materials need a static mesh cooked with its foliage stream
+    /// ([`RenderError::NoFoliageStream`], [`RenderError::DeformedFoliage`]; see the
+    /// [`foliage`](crate::foliage) module).
     ///
     /// The first mesh with f32 positions, or skinned or morphed, also builds the f32 pipelines;
     /// the first skinned or morphed one the skinning and character prepass pipelines.
@@ -711,6 +745,8 @@ impl Renderer {
         materials: &[MaterialHandle],
     ) -> Result<MeshHandle, RenderError> {
         let materials = self.submesh_materials(materials)?;
+        let families = materials.iter().filter_map(|material| self.materials.record(material.handle));
+        check_foliage(mesh, families.map(|record| record.family))?;
         let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
         self.prepare_mesh(handle, &materials, moves);
         self.scene.meshes_changed();
@@ -747,6 +783,7 @@ impl Renderer {
         mesh.validate()?;
         // Every slot is resolved and checked before anything is uploaded or rewritten.
         let mut plans = Vec::with_capacity(mesh.materials.len());
+        let mut families = Vec::with_capacity(mesh.materials.len());
         for (index, slot) in mesh.materials.iter().enumerate() {
             plans.push(match &slot.material {
                 ArchivedSlotMaterial::Asset(id) => {
@@ -755,6 +792,7 @@ impl Renderer {
                         id: *id,
                     })?;
                     self.submesh_materials(&[handle])?;
+                    families.extend(self.materials.record(handle).map(|record| record.family));
                     Plan::Asset(handle)
                 }
                 ArchivedSlotMaterial::Embedded(material) => {
@@ -762,6 +800,7 @@ impl Renderer {
                     if !MESH_FAMILIES.contains(&material.family) {
                         return Err(RenderError::NotDrawable(material.family));
                     }
+                    families.push(material.family);
                     // Embedded materials name no textures (importers make no texture assets), so
                     // rewriting one after the pool has the new mesh can't fail.
                     let mut slots = material.family.texture_slots().iter().zip(material.textures.iter());
@@ -783,6 +822,7 @@ impl Renderer {
                 }
             });
         }
+        check_foliage(mesh, families)?;
         let mut handles = Vec::with_capacity(plans.len());
         for plan in &plans {
             handles.push(match *plan {
@@ -1011,9 +1051,11 @@ impl Renderer {
                 &self.scene,
                 &self.materials,
                 &self.fog_cards,
+                &self.wind,
             );
         }
         self.materials.prepare();
+        self.wind.prepare(packet);
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         let lists_replaced =
             self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
@@ -1033,10 +1075,25 @@ impl Renderer {
             );
         }
         let entries = self.characters.entries();
+        // How far the frame's wind carries a foliage mesh past its bounds: its materials' reach.
+        let materials = &self.materials;
+        let wind_margin = |record: &MeshRecord| -> f32 {
+            if record.foliage.is_none() {
+                return 0.0;
+            }
+            let reach = record
+                .slots
+                .iter()
+                .filter_map(|slot| materials.foliage_wind(slot.material.handle))
+                .map(foliage::wind_reach)
+                .fold(0.0, f32::max);
+            foliage::wind_margin(reach, &packet.wind)
+        };
         self.shadows.prepare(
             packet,
             self.scene.slots(),
             self.meshes.records(),
+            &wind_margin,
             self.scene.draw_list(),
             entries,
         );
@@ -1081,6 +1138,8 @@ impl Renderer {
         self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
         self.stats.fog.cards = draws(|variant| variant == SurfaceVariant::FOG_CARD);
         self.stats.fog.layers = GpuFog::new(&packet.fog).layers();
+        self.stats.foliage_draws = draws(|variant| variant.shading == Shading::Foliage);
+        self.stats.foliage_instances = self.scene.draw_list().foliage_instances;
         let outlines = self.outlines.counts();
         (self.stats.outline_draws, self.stats.outlines_culled) = (outlines.drawn, outlines.culled);
         self.stats.instances = self.scene.live_instances();
@@ -1173,6 +1232,9 @@ impl Renderer {
         }
         let jitter = temporal_frame.map_or([0.0; 2], |frame| frame.jitter);
         let temporal_reset = temporal_frame.is_some_and(|frame| frame.reset.is_some());
+        // The wind, and the last drawn frame's for velocity, which a cut holds still as it does
+        // the camera.
+        let wind_uniforms = self.wind.record(cut);
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -1220,6 +1282,7 @@ impl Renderer {
             ref mut characters,
             ref character_prepass,
             ref shadows,
+            ref wind,
             ref meshes,
             ref mut materials,
             ref mut scene,
@@ -1290,6 +1353,7 @@ impl Renderer {
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
             upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
             upload(uploads, ctx.encoder, sky_buffer, bytemuck::bytes_of(&sky_uniforms));
+            upload(uploads, ctx.encoder, wind.buffer(), bytemuck::bytes_of(&wind_uniforms));
             scene_uploads.write(uploads, ctx.encoder);
             material_uploads.write(uploads, ctx.encoder);
             light_uploads.write(uploads, ctx.encoder);
@@ -1326,18 +1390,18 @@ impl Renderer {
             });
         }
         // The shadow maps (M1 R4): persistent too, so side effects before the main pass. Their
-        // casters bind the anime character family's scene group, as the prepasses do.
-        shadows.record(
-            graph,
-            mesh_draws,
-            view_bind_group,
-            &scene_bind_groups[0],
-            FIRST_SHADOW_VIEW,
-            view_stride,
-            labels,
-        );
+        // casters bind the anime character family's scene group, as the prepasses do, and
+        // foliage's casters foliage's (M1 W6).
+        let foliage_group = Shading::Foliage.scene_group();
+        let casters = CasterBindings {
+            scene_group: &scene_bind_groups[0],
+            foliage_group: &scene_bind_groups[foliage_group],
+            mesh: pipelines,
+        };
+        shadows.record(graph, mesh_draws, view_bind_group, casters, FIRST_SHADOW_VIEW, view_stride, labels);
         // Group 2 starts as the anime character family's, which the prepasses bind for every
-        // family's draws (they read no material); the main pass binds each family's in turn.
+        // family's draws but foliage's (they read no material); the main pass binds each family's
+        // in turn.
         let bind = move |pass: &mut wgpu::RenderPass<'_>| {
             pass.set_bind_group(0, frame_bind_group, &[]);
             pass.set_bind_group(1, view_bind_group, &[0]);
@@ -1408,12 +1472,12 @@ impl Renderer {
                 let colors = [targets.normals, targets.velocity, targets.outlines];
                 let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
                 bind(&mut pass);
-                // Opaque and alpha-tested surfaces of every family, through one pipeline per
-                // format: the prepass doesn't cut alpha-tested ones out yet (crate docs, "Later
-                // milestones"). Transparent surfaces write no depth.
+                // Opaque and alpha-tested surfaces of every family but foliage, through one
+                // pipeline per format: the prepass doesn't cut their alpha-tested ones out yet
+                // (crate docs, "Later milestones"). Transparent surfaces write no depth.
                 let prepass = MeshPass::ScenePrepass;
                 for format in PositionFormat::ALL {
-                    if !SurfaceVariant::DEPTH_WRITING
+                    if !SurfaceVariant::SHARED_DEPTH
                         .iter()
                         .any(|&variant| mesh_draws.has_static(format, variant))
                     {
@@ -1422,17 +1486,42 @@ impl Renderer {
                     let pipelines =
                         pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
                     pass.set_pipeline(&pipelines.scene_prepass);
-                    for variant in SurfaceVariant::DEPTH_WRITING {
+                    for variant in SurfaceVariant::SHARED_DEPTH {
                         mesh_draws.draw_static(&mut pass, prepass, format, variant, DrawSet::Surfaces);
                     }
                 }
-                if SurfaceVariant::DEPTH_WRITING.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                if SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
                     let pipelines =
                         pipelines.mesh(PositionFormat::Float32).expect("built with deformable meshes");
                     pass.set_pipeline(&pipelines.scene_prepass);
-                    for variant in SurfaceVariant::DEPTH_WRITING {
+                    for variant in SurfaceVariant::SHARED_DEPTH {
                         mesh_draws.draw_deformed(&mut pass, prepass, variant, DrawSet::Surfaces);
                     }
+                }
+                // Foliage (M1 W6) through its own pipelines per coverage, on its scene group (the
+                // wind) and each draw's group 3: displaced by this frame's wind, with velocity
+                // from the last drawn frame's, and its alpha-tested cards cut out as the main pass
+                // cuts them.
+                let mut foliage_bound = false;
+                for format in PositionFormat::ALL {
+                    let Some(mesh) = pipelines.mesh(format) else { continue };
+                    for variant in SurfaceVariant::FOLIAGE {
+                        if !mesh_draws.has_static(format, variant) {
+                            continue;
+                        }
+                        let pipeline =
+                            mesh.foliage_prepass(variant.coverage).expect("built with the variant's surface");
+                        if !foliage_bound {
+                            pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
+                            foliage_bound = true;
+                        }
+                        pass.set_pipeline(pipeline);
+                        let foliage = MeshPass::FoliagePrepass;
+                        mesh_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
+                    }
+                }
+                if foliage_bound {
+                    pass.set_bind_group(2, &scene_bind_groups[0], &[]);
                 }
                 // Then the outline hulls, after every surface as in the main pass and with the
                 // same depths, writing their own velocity (M1 C4): temporal AA reprojects a line
@@ -1468,7 +1557,7 @@ impl Renderer {
         let (card_draws, card_groups) = fog_cards.split_for_record();
         let card_depth = (card_depth_fade && !card_draws.is_empty()).then_some(targets.depth);
         let mut main = graph
-            .add_pass("main")
+            .add_pass(MAIN_PASS)
             .read(targets.character_depth)
             .read(targets.character_ids)
             .write(scene_color)
@@ -1498,7 +1587,7 @@ impl Renderer {
                 None => (ctx.view(scene_color), None, wgpu::StoreOp::Store),
             };
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: labels.then_some("main"),
+                label: labels.then_some(MAIN_PASS),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
@@ -1618,6 +1707,7 @@ impl Renderer {
         RenderStats {
             character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
             environment_pipelines: self.pipelines.built(MaterialFamily::Environment),
+            foliage_pipelines: self.pipelines.built(MaterialFamily::Foliage),
             sky: self.sky.stats(),
             fog: FogStats { card_pipelines: self.pipelines.built(MaterialFamily::FogCard), ..self.stats.fog },
             ..self.stats
@@ -1729,20 +1819,40 @@ fn draw_main(
             DrawSet::ThroughHair => mesh.through_hair(variant),
         }
     };
+    // Foliage reads its own stream too.
+    let kind = variant.shading.main_pass();
     for format in PositionFormat::ALL {
         if draws.has_static(format, variant)
             && let Some(pipeline) = pipeline(format)
         {
             pass.set_pipeline(pipeline);
-            draws.draw_static(pass, MeshPass::Main, format, variant, set);
+            draws.draw_static(pass, kind, format, variant, set);
         }
     }
     if draws.has_deformed(variant)
         && let Some(pipeline) = pipeline(PositionFormat::Float32)
     {
         pass.set_pipeline(pipeline);
-        draws.draw_deformed(pass, MeshPass::Main, variant, set);
+        draws.draw_deformed(pass, kind, variant, set);
     }
+}
+
+/// Checks that a mesh drawing with materials of `families` can draw foliage: only a static mesh
+/// with a foliage stream can (see the [`foliage`](crate::foliage) module).
+fn check_foliage(
+    mesh: &ArchivedMesh,
+    families: impl IntoIterator<Item = MaterialFamily>,
+) -> Result<(), RenderError> {
+    if !families.into_iter().any(|family| family == MaterialFamily::Foliage) {
+        return Ok(());
+    }
+    if mesh.skin.is_some() || !mesh.morph_targets.is_empty() {
+        return Err(RenderError::DeformedFoliage);
+    }
+    if mesh.streams.foliage_bytes().is_empty() {
+        return Err(RenderError::NoFoliageStream);
+    }
+    Ok(())
 }
 
 /// Begins a prepass's render pass: `depth` and the `colors` cleared, all stored.
@@ -1830,8 +1940,9 @@ fn create_frame_bind_group(
 }
 
 /// Group 2 per [`MESH_FAMILIES`] entry, for that family's pipelines: the instances and the
-/// family's materials, and for fog cards the stand-in for the depth they fade against (frames that
-/// read the prepass's bind a group of their own, `fog::CardGroupCache`). The prepasses bind the
+/// family's materials, for fog cards the stand-in for the depth they fade against (frames that
+/// read the prepass's bind a group of their own, `fog::CardGroupCache`), and for foliage the wind.
+/// The shared prepass and caster pipelines bind the
 /// anime character family's.
 fn create_scene_bind_groups(
     device: &wgpu::Device,
@@ -1839,22 +1950,29 @@ fn create_scene_bind_groups(
     scene: &GpuScene,
     materials: &Materials,
     fog_cards: &FogCards,
+    wind: &FoliageWind,
 ) -> [wgpu::BindGroup; MESH_FAMILIES.len()] {
     std::array::from_fn(|group| {
         let family = MESH_FAMILIES[group];
-        let entries = [
+        let mut entries = vec![
             wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: materials.buffer(family).as_entire_binding() },
-            wgpu::BindGroupEntry {
+        ];
+        match family {
+            MaterialFamily::FogCard => entries.push(wgpu::BindGroupEntry {
                 binding: FOG_CARD_DEPTH_BINDING,
                 resource: wgpu::BindingResource::TextureView(fog_cards.stand_in()),
-            },
-        ];
-        let bindings = if family == MaterialFamily::FogCard { entries.len() } else { 2 };
+            }),
+            MaterialFamily::Foliage => {
+                let resource = wind.buffer().as_entire_binding();
+                entries.push(wgpu::BindGroupEntry { binding: FOLIAGE_WIND_BINDING, resource });
+            }
+            _ => {}
+        }
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(family.name()),
             layout: &layouts.scene[group],
-            entries: &entries[..bindings],
+            entries: &entries,
         })
     })
 }

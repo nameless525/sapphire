@@ -14,11 +14,15 @@
 //! - the environment's test content ([`environment`], in `environment/`): a courtyard on rolling
 //!   ground, its environment materials, a terminator band and a painted ground map, for the
 //!   sandbox's `--environment` (M1 W4);
+//! - the foliage's test content ([`foliage`], in `foliage/`): a stylized tree, a bush and a
+//!   grass patch, their foliage materials and the cards' maps, for the sandbox's `--foliage`
+//!   (M1 W6);
 //! - the hard-edged outline sample ([`hard_edges`], `hard_edges.glb`): flat-shaded shapes for the
 //!   sandbox's `--hard-edges`, whose hulls must stay closed at every corner (M1 C4).
 
 pub mod environment;
 pub mod face;
+pub mod foliage;
 pub mod hard_edges;
 mod noise;
 mod shapes;
@@ -62,7 +66,8 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
     let mut paths = Vec::new();
-    for (name, bytes) in files.into_iter().chain(face::files()?).chain(environment::files()?) {
+    let nested = face::files()?.into_iter().chain(environment::files()?).chain(foliage::files()?);
+    for (name, bytes) in files.into_iter().chain(nested) {
         let path = dir.join(name);
         std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
         std::fs::write(&path, bytes)?;
@@ -417,7 +422,11 @@ mod tests {
             faces,
             "then the face's, in their directory"
         );
-        assert_eq!(written[names.len() + faces.len()..], environment, "then the environment's");
+        let foliage: Vec<_> =
+            foliage::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        let first = names.len() + faces.len();
+        assert_eq!(written[first..first + environment.len()], environment, "then the environment's");
+        assert_eq!(written[first + environment.len()..], foliage, "then the foliage's");
         assert!(written.iter().all(|path| path.is_file()));
         assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }

@@ -1,5 +1,8 @@
-//! The foliage family: NPR leaves and grass, shaded in the characters' language rather than
-//! the environment's (world_lighting_post.md §8, M1 plan pillar 7). Its shader is W6's.
+//! The foliage family: NPR leaves, grass and the wood that carries them (world_lighting_post.md
+//! §8, M1 plan pillar 7), lit by the environment's light model (wrap, a terminator that softens
+//! with distance, time of day's shadow tint) on cook-time volume normals, so a canopy reads as
+//! one painted mass in the world it stands in. Its shader is the renderer's `foliage.wgsl`
+//! (M1 W6), whose header says how each field shades.
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -16,9 +19,12 @@ use crate::texture::Swizzle;
 
 /// A foliage material, as a document (`sapphire::render::FoliageMaterial`, version 1).
 ///
-/// Wrapped N·L on cook-time sphere or hull normals, then a terminator remap; canopy occlusion
-/// from cluster depth; light through thin leaves; a root-to-tip gradient; three-tier wind.
-/// Cards are alpha-tested (alpha-to-coverage under MSAA).
+/// Wrapped N·L on the cook-time sphere or hull normals a foliage mesh carries, through the
+/// environment's terminator remap (a width that grows with distance) and time of day's shadow
+/// tint; canopy occlusion and a color gradient along the mesh's cooked gradient coordinate
+/// (root to tip, the canopy's inside to its outside); light through thin leaves seen against
+/// the key light; three levels of wind. Cards are alpha-tested (alpha-to-coverage under MSAA);
+/// an `alpha_cutoff` of 0 draws opaque, for trunks, branches and solid canopies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[reflect(Document)]
@@ -28,17 +34,21 @@ pub struct FoliageMaterial {
     pub base_color: [f32; 4],
     /// Leaf or blade cards; alpha is coverage.
     pub base_color_map: Option<AssetId>,
-    /// Coverage below this is discarded.
+    /// Coverage below this is discarded; 0 draws the material opaque, without a test.
     pub alpha_cutoff: f32,
-    /// Linear RGB: R thickness (translucency), G occlusion, B flutter weight.
+    /// Linear RGB: R thickness (scales the translucency), G occlusion (darkens the ambient light
+    /// and pushes the key light toward the shadow side, as vertex AO does); B unused.
     pub mask_map: Option<AssetId>,
     /// Diffuse wrap, 0 to 1; foliage wants it soft.
     pub wrap: f32,
-    /// Half-width of the light/shadow transition.
+    /// Half-width of the light/shadow transition up close, in N·L.
     pub terminator_width: f32,
+    /// Added to the width per meter of view distance, so far canopies soften into painted masses
+    /// (the environment's terminator remap).
+    pub terminator_growth: f32,
     /// Multiplies the time of day's shadow tint.
     pub shadow_tint: [f32; 3],
-    /// How much inner leaves darken with depth into the canopy, 0 to 1.
+    /// How much leaves darken toward the canopy's inside (the gradient coordinate's 0), 0 to 1.
     pub canopy_occlusion: f32,
     pub translucency: Translucency,
     pub gradient: FoliageGradient,
@@ -59,6 +69,7 @@ impl Default for FoliageMaterial {
             mask_map: None,
             wrap: 0.5,
             terminator_width: 0.15,
+            terminator_growth: 0.004,
             shadow_tint: [1.0; 3],
             canopy_occlusion: 0.5,
             translucency: Translucency::default(),
@@ -69,7 +80,8 @@ impl Default for FoliageMaterial {
     }
 }
 
-/// Light through leaves seen against the sun: `pow(saturate(dot(-L, V)), power) × thickness`.
+/// Light through leaves seen against the key light: `pow(saturate(dot(-L, V)), power) ×
+/// thickness`, so a canopy against a low sun glows at its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
@@ -86,8 +98,9 @@ impl Default for Translucency {
     }
 }
 
-/// A vertical color gradient, multiplied into albedo from the root (vertex height 0) to the
-/// tip (1).
+/// A color gradient multiplied into the albedo along the mesh's cooked gradient coordinate:
+/// from `root` (0: a blade's or trunk's root, or deep inside a canopy) to `tip` (1: the tip, or
+/// the canopy's outer surface).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
@@ -102,17 +115,17 @@ impl Default for FoliageGradient {
     }
 }
 
-/// Response to the global wind: trunk sway, branch bend from pivots, leaf flutter by vertex
-/// color.
+/// Response to the frame's wind, in meters at unit wind strength, each level scaled by the
+/// mesh's cooked per-vertex weight: trunk sway, branch bend and leaf flutter.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Wind {
-    /// Meters of sway at the top, at unit wind.
+    /// How far the top leans and sways.
     pub sway: f32,
-    /// Radians of branch bend at unit wind.
+    /// How far a branch's tip swings.
     pub bend: f32,
-    /// Meters of leaf flutter.
+    /// How far a leaf flutters.
     pub flutter: f32,
     /// Flutter cycles per second.
     pub flutter_frequency: f32,
@@ -130,13 +143,13 @@ impl Default for Wind {
 pub struct FoliageParams {
     /// Linear RGBA.
     pub base_color: [f32; 4],
-    /// x: alpha cutoff; y: wrap; z: terminator width; w: canopy occlusion.
+    /// x: alpha cutoff; y: wrap; z: terminator width; w: its growth per meter.
     pub shading: [f32; 4],
     /// rgb: shadow tint multiplier; a: 0.
     pub shadow_tint: [f32; 4],
     /// rgb: translucency color × strength; a: power.
     pub translucency: [f32; 4],
-    /// rgb: root color; a: 0.
+    /// rgb: root color; a: canopy occlusion.
     pub gradient_root: [f32; 4],
     /// rgb: tip color; a: 0.
     pub gradient_tip: [f32; 4],
@@ -176,10 +189,10 @@ impl FoliageMaterial {
         let t = &self.translucency;
         FoliageParams {
             base_color: self.base_color,
-            shading: [self.alpha_cutoff, self.wrap, self.terminator_width, self.canopy_occlusion],
+            shading: [self.alpha_cutoff, self.wrap, self.terminator_width, self.terminator_growth],
             shadow_tint: rgb_w(self.shadow_tint, 0.0),
             translucency: rgb_w(t.color.map(|c| c * t.strength), t.power),
-            gradient_root: rgb_w(self.gradient.root, 0.0),
+            gradient_root: rgb_w(self.gradient.root, self.canopy_occlusion),
             gradient_tip: rgb_w(self.gradient.tip, 0.0),
             wind: [self.wind.sway, self.wind.bend, self.wind.flutter, self.wind.flutter_frequency],
             distance: self.distance.gpu(),
@@ -198,6 +211,7 @@ impl MaterialDocument for FoliageMaterial {
         unit("alpha_cutoff", self.alpha_cutoff)?;
         unit("wrap", self.wrap)?;
         non_negative("terminator_width", self.terminator_width)?;
+        non_negative("terminator_growth", self.terminator_growth)?;
         color("shadow_tint", &self.shadow_tint)?;
         unit("canopy_occlusion", self.canopy_occlusion)?;
         color("translucency.color", &self.translucency.color)?;
@@ -217,7 +231,7 @@ impl MaterialDocument for FoliageMaterial {
     }
 
     fn flags(&self) -> MaterialFlags {
-        MaterialFlags::ALPHA_TEST
+        if self.alpha_cutoff > 0.0 { MaterialFlags::ALPHA_TEST } else { MaterialFlags::empty() }
     }
 
     fn params(&self, swizzles: &[Swizzle]) -> Vec<u8> {

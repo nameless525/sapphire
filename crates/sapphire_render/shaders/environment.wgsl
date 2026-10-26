@@ -187,19 +187,6 @@ fn cast_shadow(in: EnvironmentVaryings) -> f32 {
     return shadow_visibility(in.world_position, safe_normalize(in.world_normal));
 }
 
-// The lit side's falloff toward a light at `n_dot_l`: Lambert's wrapped by `wrap`, 0 at
-// N·L = -wrap and 1 facing the light.
-fn wrapped(n_dot_l: f32, wrap: f32) -> f32 {
-    return saturate((n_dot_l + wrap) / (1.0 + wrap));
-}
-
-// How far distance stylization has gone at `distance` meters: 0 up to the start (`x`), easing to
-// 1 at the end (`y`).
-fn distance_amount(distance: f32, stylization: vec4<f32>) -> f32 {
-    let t = saturate((distance - stylization.x) / max(stylization.y - stylization.x, 1e-3));
-    return t * t * (3.0 - 2.0 * t);
-}
-
 // GGX's normal distribution for `alpha2` (roughness⁴).
 fn ggx_distribution(n_dot_h: f32, alpha2: f32) -> f32 {
     let d = n_dot_h * n_dot_h * (alpha2 - 1.0) + 1.0;

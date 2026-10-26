@@ -24,7 +24,10 @@
 //! binds to environment materials, which name a terminator band and a painted ground map
 //! ([`Content::courtyard`]), and, where frames draw fog, its fog cards
 //! ([`environment::FOG_CARDS`]), whose sidecars bind their slots to fog card materials, which
-//! name the mist map ([`Content::fog_cards`]).
+//! name the mist map ([`Content::fog_cards`]). With `--foliage` it loads the foliage samples, a
+//! tree, a bush and a patch of grass ([`foliage::TREE`], [`foliage::BUSH`], [`foliage::GRASS`]),
+//! whose slots their sidecars bind to foliage materials, which name the cards' maps
+//! ([`Content::foliage`]).
 //!
 //! With `--stage` it keeps a copy of the character's mesh, from which the stage derives the
 //! character without its pedestal ([`Content::keep_character_mesh`]): the server keeps no mesh's
@@ -72,6 +75,7 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::environment;
 use crate::faces;
+use crate::foliage::{self, FoliageMeshes};
 use crate::outlines;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
@@ -240,6 +244,8 @@ pub(crate) struct Content {
     courtyard: Option<Handle<Mesh>>,
     /// The courtyard's fog cards, once asked for (`--environment` with fog).
     fog_cards: Vec<Handle<Mesh>>,
+    /// The foliage samples, once asked for (`--foliage`).
+    foliage: Vec<Handle<Mesh>>,
     /// The hard-edged outline sample, once asked for (`--hard-edges`).
     hard_edges: Option<Handle<Mesh>>,
     /// The sky material, once asked for.
@@ -282,6 +288,7 @@ impl Content {
             face_head: None,
             courtyard: None,
             fog_cards: Vec::new(),
+            foliage: Vec::new(),
             hard_edges: None,
             sky: None,
             server,
@@ -442,6 +449,37 @@ impl Content {
         self.fog_cards = cards;
         Ok(environment::FOG_CARDS
             .map(|id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle))
+    }
+
+    /// Loads until the foliage samples are on `renderer`, with their foliage materials and the
+    /// cards' maps, and returns their meshes: the load screen of `--foliage`. They stay loaded
+    /// from then on.
+    pub fn foliage(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<FoliageMeshes, AppInitError> {
+        // Asking again tries plants that failed before, as the character does.
+        let plants = [foliage::TREE, foliage::BUSH, foliage::GRASS];
+        let handles = plants
+            .into_iter()
+            .map(|id| self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let assets = &mut self.gpu;
+        let loaded: Result<(), _> = handles
+            .iter()
+            .try_for_each(|handle| self.server.finish(handle, |upload| assets.upload(upload, renderer, gpu)));
+        self.foliage = handles;
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the foliage didn't load: {error}")))?;
+        let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
+        Ok(FoliageMeshes {
+            tree: mesh(foliage::TREE),
+            bush: mesh(foliage::BUSH),
+            grass: mesh(foliage::GRASS),
+        })
     }
 
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,

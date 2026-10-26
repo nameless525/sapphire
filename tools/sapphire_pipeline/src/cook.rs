@@ -58,6 +58,7 @@ use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_reflect::Versioned;
 
+use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::import::gltf::{self, GltfImportError};
@@ -254,6 +255,12 @@ pub enum CookError {
         /// Boxed: document errors are large, and every cook result carries this type.
         #[source]
         source: Box<MaterialCookError>,
+    },
+    #[error("failed to bake the foliage of {}", path.display())]
+    Foliage {
+        path: PathBuf,
+        #[source]
+        source: FoliageError,
     },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
@@ -656,6 +663,10 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
         }
     };
     bake::outline_normals(&mut mesh, &settings.outline);
+    if let Some(foliage) = &settings.foliage {
+        bake::foliage::bake(&mut mesh, foliage, settings.outline.weld_tolerance())
+            .map_err(|source| CookError::Foliage { path: path.to_owned(), source })?;
+    }
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
     mesh.pack(settings.position_format, &settings.materials)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })

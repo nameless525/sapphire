@@ -7,7 +7,7 @@
 //! |---|---|---|---|---|
 //! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 1120 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader, its outlines and its eyes through hair (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
-//! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
+//! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | the foliage shader (M1 W6), on static meshes with a foliage stream |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
 //! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | the fog card shader (M1 W3), on meshes |
 //!
@@ -73,8 +73,6 @@
 //!
 //! # Later milestones
 //!
-//! - A shader for the foliage family (W6): its block is defined and uploaded, and its group 3
-//!   layout exists, but nothing draws it yet.
 //! - A porosity input for the environment family, with the wet surface model that arrives with
 //!   weather (the renderer already carries the frame's wetness).
 //! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows
@@ -333,19 +331,21 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 6: the anime character family's depth-offset rim, per-region rim settings, hair shadow
-    /// and eyes-through-hair settings, four more vectors and a rim vector per region after the
-    /// outline's, its rim width now pixels, and the `THROUGH_HAIR` flag (M1 C5). 5: the fog card
-    /// family packs its facing into `modes[1]` (M1 W3). 4: the anime character family's outline
-    /// settings (M1 C4: the width's distance curve and LOD cutoff, model scale, flattening, and the
-    /// line's albedo and lighting), three vectors after the regions. 3: the anime character
-    /// family's face settings and its eighth texture slot, the expression map (M1 C3). 2: anime
-    /// character regions pack the character light rig's GI weights (M1 C2) into their subsurface
-    /// and rim vectors' fourth components. 1: M1 A3's blocks. Bump it whenever a family's block
-    /// layout, its packing (`gpu_params`) or its texture slots change: the cache key holds it, so
-    /// every material recooks, and meshes, whose generated materials embed blocks, must bump
+    /// 7: the foliage family's block packs its terminator's growth per meter (M1 W6), its canopy
+    /// occlusion moving to the root color's fourth component. 6: the anime character family's
+    /// depth-offset rim, per-region rim settings, hair shadow and eyes-through-hair settings, four
+    /// more vectors and a rim vector per region after the outline's, its rim width now pixels, and
+    /// the `THROUGH_HAIR` flag (M1 C5). 5: the fog card family packs its facing into `modes[1]` (M1
+    /// W3). 4: the anime character family's outline settings (M1 C4: the width's distance curve
+    /// and LOD cutoff, model scale, flattening, and the line's albedo and lighting), three vectors
+    /// after the regions. 3: the anime character family's face settings and its eighth texture
+    /// slot, the expression map (M1 C3). 2: anime character regions pack the character light
+    /// rig's GI weights (M1 C2) into their subsurface and rim vectors' fourth components. 1: M1
+    /// A3's blocks. Bump it whenever a family's block layout, its packing (`gpu_params`) or its
+    /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
+    /// generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 6;
+    const VERSION: u32 = 7;
 }
 
 /// What one texture slot binds.

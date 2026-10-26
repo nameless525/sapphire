@@ -20,21 +20,29 @@
 //!   family's parameter buffer, each block copied as cooked, and their textures in group 3 (see
 //!   "Material buffers" below). [`Renderer::update_material`] rewrites one slot: the path for
 //!   hot reload and live link. The anime character family drives the anime character shader
-//!   (`shaders/anime_character.wgsl`) and its outlines, and the environment family the
-//!   environment shader (`shaders/environment.wgsl`, M1 W4); both sample their textures through
-//!   their cooked swizzles.
+//!   (`shaders/anime_character.wgsl`) and its outlines, the environment family the environment
+//!   shader (`shaders/environment.wgsl`, M1 W4), and the foliage family the foliage shader
+//!   (`shaders/foliage.wgsl`, M1 W6); all sample their textures through their cooked swizzles.
 //! - Decoding cooked meshes on the GPU: the vertex shaders read the quantized streams of
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The scene pipelines: the anime character uber-shader and its inverted-hull outline, in
 //!   one pipeline per static permutation (see "The anime character shader" below), and the
-//!   environment uber-shader, per coverage (see "The environment shader" below), and the fog
-//!   card shader. A mesh's submeshes may draw with any of the three families, and draws group by
-//!   pipeline (see "Material families on meshes" below).
+//!   environment uber-shader, per coverage (see "The environment shader" below), the foliage
+//!   shader, per coverage ([`foliage`]), and the fog card shader. A mesh's submeshes may draw with
+//!   any of the four families, and draws group by pipeline (see "Material families on meshes"
+//!   below).
 //! - Fog ([`fog`], M1 W3): the packet's distance and height [`Fog`], applied by one shared
 //!   function at the final color of every world pass (the environment, anime characters and
 //!   their outlines, fog cards) and of the sky, and fog cards: translucent sheets of the fog
 //!   card family on meshes, lit by the fog, faded near the lens and (on the desktop tiers) where
 //!   they meet geometry, drawn last and back to front.
+//! - Foliage ([`foliage`], M1 W6): trees, bushes and grass of the foliage family, lit by the
+//!   environment's light model on the volume normals the cooker transferred onto their cards,
+//!   with canopy occlusion, a color gradient and light through thin leaves; swayed in the vertex
+//!   stage by the packet's [`Wind`] in three levels (trunk, branch, leaf), alike in every pass
+//!   that draws them, with the wind in their velocity; cut out by an alpha test in the main pass,
+//!   the scene prepass and the shadow casters, or by alpha-to-coverage under MSAA where the tier
+//!   asks ([`FoliageSettings`]).
 //! - The sky (`sky`, M1 W2): the gradient, stars and the Milky Way, the sun's and moon's discs and
 //!   glows, cirrus and the card clouds' band, drawn at the far plane in the main pass from the
 //!   packet's [`SkyLayers`] and its sky material, and a sky-only cubemap updated a face a frame
@@ -489,26 +497,30 @@
 //!
 //! # Material families on meshes (M1 W4)
 //!
-//! A mesh's material slots bind anime character, environment or fog card (M1 W3) materials,
-//! mixed freely, and [`Renderer::upload_mesh`] takes all three (other families are
-//! [`RenderError::NotDrawable`]). Each submesh draws through its family's shader:
+//! A mesh's material slots bind anime character, environment, fog card (M1 W3) or foliage (M1 W6)
+//! materials, mixed freely, and [`Renderer::upload_mesh`] takes all four (the sky family is
+//! [`RenderError::NotDrawable`]; foliage needs a static mesh with a foliage stream, else
+//! [`RenderError::NoFoliageStream`] or [`RenderError::DeformedFoliage`]). Each submesh draws
+//! through its family's shader:
 //!
 //! - **Surface variants** are a coverage (opaque, alpha-tested, transparent) and a shading: the
-//!   anime character shader for a part (body, face, hair, eye), the environment shader, or the
-//!   fog card shader (always transparent). Sixteen in all, each a pipeline per position format,
-//!   built when a draw first needs it; the opaque and alpha-tested face and eye variants have a
-//!   through-hair pipeline too (M1 C5).
+//!   anime character shader for a part (body, face, hair, eye), the environment shader, the
+//!   foliage shader (M1 W6), or the fog card shader (always transparent). Nineteen in all, each a
+//!   pipeline per position format, built when a draw first needs it; the opaque and alpha-tested
+//!   face and eye variants have a through-hair pipeline too (M1 C5).
 //! - **Draws sort by pipeline:** the draw list groups them by position format and variant, so the
 //!   families never interleave whatever order instances and submeshes come in. In each coverage
-//!   characters draw before the world, so depth rejects the world behind them; then the
-//!   characters' outlines, the sky, transparent surfaces of both, and fog cards last, back to
-//!   front by their instances' bounds (the [`fog`] module).
+//!   characters draw before the world (the environment, then foliage), so depth rejects the
+//!   world behind them; then the characters' outlines, the sky, transparent surfaces of both,
+//!   and fog cards last, back to front by their instances' bounds (the [`fog`] module).
 //! - **Scene groups:** each family's pipelines bind group 2 with its own parameter buffer beside
-//!   the instances; the main pass rebinds group 2 only when the family changes.
+//!   the instances (and a third binding of the family's own: fog cards' depth, foliage's wind);
+//!   the main pass rebinds group 2 only when the family changes.
 //! - **The prepasses** draw every family's opaque and alpha-tested surfaces into the scene
-//!   prepass (depth, normals, velocity, which temporal AA reads); the character prepass draws the
-//!   anime character family's surfaces of the instances the frame lists as characters alone, so
-//!   a skinned prop or an anime-shaded pedestal is never taken for a character.
+//!   prepass (depth, normals, velocity, which temporal AA reads), foliage through pipelines of
+//!   its own that bind group 3 and cut its cards out; the character prepass draws the anime
+//!   character family's surfaces of the instances the frame lists as characters alone, so a
+//!   skinned prop or an anime-shaded pedestal is never taken for a character.
 //!
 //! # Outlines (M1 C4)
 //!
@@ -624,13 +636,9 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **Material families' shaders:** foliage (W6) brings pipelines that bind its family's buffer
-//!   (in a scene group of its own, as the environment's and fog cards' do: join
-//!   `pipelines::MESH_FAMILIES` and `Shading`) and group 3. The sky (W2) reads its one material's
-//!   block on the CPU instead (see "The sky").
 //! - **The environment shader** (see above): reflection probes and the sky cube's prefiltered
 //!   mips (W5) replace the hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
-//!   edges for the environment (desktop); foliage (W6) shares its terminator and wrap.
+//!   edges for the environment (desktop).
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
 //! - **The anime character shader** (see above) grows layered eyes (C6) on the eye permutation,
@@ -649,13 +657,15 @@
 //! - **Faces** (see above): light layers,
 //!   so local lights split on faces by the face map or not at all (today they split on the
 //!   face's normals, as on the body); a face-SDF threshold debug view (F5's views).
-//! - **Shadows** (see the [`shadows`] module's later milestones): alpha-tested casters cut out,
-//!   characters shadowing each other, a static far term past the cascades, cheaper receivers (a
-//!   smaller far tent or a desktop shadow mask), clearing only the atlas tiles drawn, cloud
-//!   shadows and local-light shadows, and GPU culling of casters.
-//! - **Permutations' remaining passes:** the prepasses cut alpha-tested materials out (a variant
-//!   binding group 3) once something reads them; transparent surfaces sort back to front with
-//!   draw sorting; alpha-to-coverage for alpha-tested surfaces under MSAA.
+//! - **Shadows** (see the [`shadows`] module's later milestones): alpha-tested casters of the
+//!   other families cut out (foliage's do, M1 W6), characters shadowing each other, a static far
+//!   term past the cascades, cheaper receivers (a smaller far tent or a desktop shadow mask),
+//!   clearing only the atlas tiles drawn, cloud shadows and local-light shadows, and GPU culling
+//!   of casters.
+//! - **Permutations' remaining passes:** the prepasses cut the other families' alpha-tested
+//!   materials out (a variant binding group 3, as foliage's do) once something reads them;
+//!   transparent surfaces sort back to front with draw sorting; alpha-to-coverage for the other
+//!   families' alpha-tested surfaces under MSAA (foliage writes its own sample mask).
 //! - **Anisotropic filtering** joins the quality tiers.
 //! - **Shader hot reload** compiles on workers and swaps the pipelines in when they are ready,
 //!   with the warm-up (spec §5.12), instead of on the frame that applies an edit; WESL imports
@@ -669,6 +679,7 @@ mod characters;
 mod draw;
 mod environment;
 pub mod fog;
+pub mod foliage;
 mod frame;
 mod gpu_types;
 pub mod graph;
@@ -691,11 +702,12 @@ pub mod texture;
 pub use character_prepass::CharacterPrepassStats;
 pub use environment::{EnvironmentSettings, EnvironmentSpecular};
 pub use fog::FogStats;
+pub use foliage::FoliageSettings;
 pub use frame::{
     AmbientLight, CameraData, Celestial, CharacterBody, CharacterFace, CharacterGi, CharacterInstance,
     CharacterLight, CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer,
     FramePacket, FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight,
-    MeshInstance, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
+    MeshInstance, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather, Wind,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
@@ -707,8 +719,8 @@ pub use post::{
     RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use renderer::{
-    CHARACTER_PREPASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError, RenderSettings,
-    RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
+    CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,
+    RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
 };
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};

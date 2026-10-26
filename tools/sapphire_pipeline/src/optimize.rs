@@ -24,7 +24,7 @@
 //!    finer one, and so on, so every LOD reads a prefix of the vertex streams (see the cooked
 //!    format) and fetches within it are close to sequential. The price is some locality for
 //!    LOD0, whose own vertices follow the coarser LODs'. Vertices no kept LOD uses are
-//!    dropped; skin weights and morph deltas follow the reorder.
+//!    dropped; skin weights, morph deltas and foliage data follow the reorder.
 //!
 //! Every step is deterministic, so a cook of the same input writes the same bytes.
 
@@ -327,6 +327,9 @@ fn reorder_vertices(mesh: &mut ImportedMesh, chain: &[Level], scale: f32) {
 
     reorder_by(&mut mesh.vertices, &remap, next as usize);
     reorder_by(&mut mesh.authored_outline, &remap, next as usize);
+    if !mesh.foliage.is_empty() {
+        reorder_by(&mut mesh.foliage, &remap, next as usize);
+    }
     if let Some(skin) = mesh.skin.as_mut() {
         reorder_by(&mut skin.weights, &remap, next as usize);
     }

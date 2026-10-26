@@ -268,6 +268,53 @@ impl VertexSurface {
     }
 }
 
+packed!(
+    /// A foliage vertex's wind weights and color coordinate (M1 W6), the optional foliage stream
+    /// ([`VertexStreams::foliage`](super::VertexStreams::foliage)): unorm8 × 4 of wind data (the
+    /// trunk sway, branch bend and leaf flutter weights, then the phase as a fraction of a cycle),
+    /// then the gradient coordinate as unorm8 and three reserved zero bytes. 8 bytes, read as two
+    /// `Unorm8x4`; [`FoliageVertex`](super::FoliageVertex) has what each holds.
+    ///
+    /// 8 bits are plenty: the weights scale displacements of centimeters, and a phase step is
+    /// 1/255 of a cycle (1.4°). The reserved bytes keep the stream at a multiple of 4 (vertex
+    /// attributes come in 4-byte steps) and are left for M2's camera-facing leaf clusters.
+    VertexFoliage,
+    8
+);
+
+impl VertexFoliage {
+    /// Packs `[sway, bend, flutter, phase]` and `gradient`, each clamped to 0..=1.
+    pub fn new(wind: [f32; 4], gradient: f32) -> Self {
+        let [sway, bend, flutter, phase] = wind.map(unorm8);
+        Self([sway, bend, flutter, phase, unorm8(gradient), 0, 0, 0])
+    }
+
+    /// `[sway, bend, flutter, phase]`, as the vertex shaders read them.
+    pub fn wind(self) -> [f32; 4] {
+        std::array::from_fn(|i| from_unorm8(self.0[i]))
+    }
+
+    /// The gradient coordinate: 0 at the root or deep inside the canopy, 1 at the tip or its
+    /// outer surface.
+    pub fn gradient(self) -> f32 {
+        from_unorm8(self.0[4])
+    }
+
+    /// The reserved bytes, which must be zero.
+    pub fn reserved(self) -> [u8; 3] {
+        [self.0[5], self.0[6], self.0[7]]
+    }
+}
+
+/// `value` in 0..=1 as unorm8, clamped; NaN encodes 0.
+fn unorm8(value: f32) -> u8 {
+    if value.is_nan() { 0 } else { (value.clamp(0.0, 1.0) * 255.0).round() as u8 }
+}
+
+fn from_unorm8(value: u8) -> f32 {
+    f32::from(value) / 255.0
+}
+
 /// Per-vertex flags of an anime character mesh: one byte of each [`VertexSurface`], constant
 /// per vertex. The vertex shader decodes them and passes them on flat, so they never blend
 /// between vertices: a field changes along whole triangles, which is how its sources are
@@ -611,6 +658,22 @@ pub(crate) mod tests {
         for bits in 0..=u8::MAX {
             assert_eq!((f32::from(bits) / 255.0 * 255.0).round() as u8, bits);
         }
+    }
+
+    #[test]
+    fn foliage_vertices_keep_their_weights_within_half_a_step() {
+        // Half an 8-bit step, and f32's rounding of the decode.
+        const HALF_STEP: f32 = 0.5 / 255.0 + 1e-6;
+        let foliage = VertexFoliage::new([0.0, 0.5, 1.0, 0.25], 0.75);
+        assert_eq!(foliage.to_bytes(), [0, 128, 255, 64, 191, 0, 0, 0]);
+        let [sway, bend, flutter, phase] = foliage.wind();
+        assert_eq!((sway, flutter), (0.0, 1.0));
+        assert!((bend - 0.5).abs() <= HALF_STEP && (phase - 0.25).abs() <= HALF_STEP);
+        assert!((foliage.gradient() - 0.75).abs() <= HALF_STEP);
+        assert_eq!(foliage.reserved(), [0; 3]);
+        // Out of range values clamp, and NaN is 0.
+        let clamped = VertexFoliage::new([-1.0, 2.0, f32::NAN, 1.0], 9.0);
+        assert_eq!(clamped.to_bytes(), [0, 255, 0, 255, 255, 0, 0, 0]);
     }
 
     #[test]

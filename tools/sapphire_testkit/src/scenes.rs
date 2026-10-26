@@ -47,8 +47,11 @@ pub struct Scene {
 /// Every scene from before fog (M1 W3) pins it off (`--fog off`: no fog in any frame and no fog
 /// cards in the courtyard), so it stays pixel-identical as well; the fog scenes pin plain post and
 /// no shadows, so they show fog alone. The rim and hair scenes (M1 C5) pin the plain sky and post,
-/// 4× MSAA, no shadows and no fog, so they show the character prepass's readers alone.
-pub fn scenes() -> [Scene; 49] {
+/// 4× MSAA, no shadows and no fog, so they show the character prepass's readers alone. The
+/// foliage scenes (M1 W6) plant the foliage samples in the courtyard (`--foliage <view>`; no
+/// earlier scene plants any, and the wind is calm without it) and pin plain post and no fog, so
+/// they show foliage alone, its shadows on.
+pub fn scenes() -> [Scene; 54] {
     [
         Scene {
             name: "turntable-start",
@@ -1089,6 +1092,118 @@ pub fn scenes() -> [Scene; 49] {
                 "off",
                 "--fog",
                 "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Foliage (M1 W6) by day: two trees, bushes and grass in the courtyard around the
+        // character, in a breeze held still. Canopies light as soft masses over their leaf cards,
+        // deep teal inside to yellow-green on top, under the same lavender shade as the world;
+        // the trees' shadows on the ground are leafy, their cards cut out; the grass lights like
+        // the ground it stands on, its patches fading out at their edges.
+        Scene {
+            name: "foliage-day",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--foliage",
+                "grove",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Sunset (18:30) through the big tree's crown, from its far side: the low sun behind the
+        // canopy glows through its outer leaves (translucency), warm against the pink sky, while
+        // leaves in the canopy's own shadow stay dark.
+        Scene {
+            name: "foliage-backlit",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--foliage",
+                "backlit",
+                "--time-of-day",
+                "18.5",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Low over the grass beside a bush, the character beyond: blades lighting like the ground,
+        // darker at their roots, bending at their two rows; the bush's cards a soft dome.
+        Scene {
+            name: "foliage-ground",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--foliage",
+                "ground",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Mobile-Low's foliage: cards' edges through alpha-to-coverage under 4× MSAA, two wind
+        // levels (no leaf flutter) and no translucency, two shadow cascades.
+        Scene {
+            name: "foliage-mobile",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--foliage",
+                "grove",
+                "--tier",
+                "mobile-low",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A stiff wind (2.5 times the breeze) playing for the 32 frames up to tick 150: trunks
+        // leaning, branches swinging and leaves fluttering, the frame resolved by temporal AA from
+        // velocity that includes the wind, without ghosting or smears.
+        Scene {
+            name: "foliage-wind",
+            args: &[
+                "--capture-ticks",
+                "150",
+                "--plain-post",
+                "--fog",
+                "off",
+                "--foliage",
+                "grove",
+                "--wind",
+                "2.5",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--capture-step",
+                "1",
             ],
             thresholds: Thresholds::default(),
         },

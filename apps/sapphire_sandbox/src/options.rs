@@ -4,9 +4,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use sapphire_render::quality::{QualitySettings, Switch, TierId};
-use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings};
+use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
 
 use crate::faces::FaceLayout;
+use crate::foliage::{DEFAULT_WIND, FoliageView};
 use crate::rims::RimLayout;
 use crate::scene::{self, Scene};
 use crate::stage::StageLayout;
@@ -70,6 +71,12 @@ pub(crate) struct Options {
     /// `--environment`: place the character in the courtyard, the environment shader's test
     /// scene.
     pub environment: bool,
+    /// `--foliage grove|backlit|ground`: plant the foliage samples in the courtyard (which it
+    /// implies) and show them so (M1 W6).
+    pub foliage: Option<FoliageView>,
+    /// `--wind <strength>`: the wind's strength, 0 (calm) to 4, instead of `--foliage`'s breeze
+    /// of 1.
+    pub wind: Option<f32>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -211,11 +218,16 @@ pub(crate) enum Antialiasing {
 }
 
 impl Options {
-    /// Sets `scene` up as the options ask: the hour and the day's length, the cloud cover, the
-    /// sky's and post's layers, sharpening, the screen effects, the camera's starting view and
-    /// the turntable's speed. Fails if a screen effect preset is unknown.
+    /// Sets `scene` up as the options ask: the hour and the day's length, the plants' framing at
+    /// that hour and the wind, the cloud cover, the sky's and post's layers, sharpening, the
+    /// screen effects, the camera's starting view and the turntable's speed. Fails if a screen
+    /// effect preset is unknown.
     pub fn apply_to(&self, scene: &mut Scene) -> Result<(), String> {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
+        scene.frame_foliage();
+        if let Some(wind) = self.wind() {
+            scene.set_wind(wind);
+        }
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
         scene.set_fog(!self.fog_off);
@@ -242,6 +254,12 @@ impl Options {
             scene.push_effect(preset, *at)?;
         }
         Ok(())
+    }
+
+    /// The scene's wind: `--foliage`'s breeze at `--wind`'s strength, if either is set.
+    pub fn wind(&self) -> Option<Wind> {
+        (self.foliage.is_some() || self.wind.is_some())
+            .then(|| Wind { strength: self.wind.unwrap_or(DEFAULT_WIND.strength), ..DEFAULT_WIND })
     }
 
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
@@ -373,6 +391,22 @@ impl Options {
                     );
                 }
                 "--environment" => options.environment = true,
+                "--foliage" => {
+                    let raw = value("--foliage")?;
+                    options.foliage =
+                        Some(FoliageView::from_name(&raw).ok_or_else(|| {
+                            format!("--foliage expects grove, backlit or ground, got {raw:?}")
+                        })?);
+                    // The plants stand in the courtyard.
+                    options.environment = true;
+                }
+                "--wind" => {
+                    let strength: f32 = number(&value("--wind")?, "--wind")?;
+                    if !(0.0..=4.0).contains(&strength) {
+                        return Err(format!("--wind expects 0 to 4, got {strength}"));
+                    }
+                    options.wind = Some(strength);
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -648,6 +682,24 @@ mod tests {
         assert!(!parse(&[]).unwrap().0.environment);
         let (options, unknown) = parse(&["--environment", "--time-of-day", "18.5"]).unwrap();
         assert!(options.environment && unknown.is_empty());
+    }
+
+    #[test]
+    fn foliage_brings_the_courtyard_and_a_breeze() {
+        let defaults = parse(&[]).unwrap().0;
+        assert_eq!((defaults.foliage, defaults.wind()), (None, None), "calm without foliage");
+        let (options, unknown) = parse(&["--foliage", "backlit"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.foliage, Some(FoliageView::Backlit));
+        assert!(options.environment, "in the courtyard");
+        assert_eq!(options.wind(), Some(DEFAULT_WIND));
+        let (options, _) = parse(&["--foliage=grove", "--wind", "2.5"]).unwrap();
+        assert_eq!(options.wind(), Some(Wind { strength: 2.5, ..DEFAULT_WIND }));
+        assert_eq!(parse(&["--wind", "0"]).unwrap().0.wind().map(|wind| wind.strength), Some(0.0));
+        assert!(parse(&["--foliage", "forest"]).is_err());
+        assert!(parse(&["--foliage"]).is_err(), "needs a view");
+        assert!(parse(&["--wind", "5"]).is_err());
+        assert!(parse(&["--wind", "NaN"]).is_err());
     }
 
     #[test]

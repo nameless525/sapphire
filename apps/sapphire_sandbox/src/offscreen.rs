@@ -123,6 +123,9 @@ impl Stage {
                 scene.spawn_fog_cards(content.fog_cards(&mut renderer, &gpu)?);
             }
         }
+        if let Some(view) = options.foliage {
+            scene.spawn_foliage(view, content.foliage(&mut renderer, &gpu)?);
+        }
         if options.outline_row {
             scene.spawn_outline_row(character);
         }

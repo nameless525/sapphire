@@ -11,7 +11,7 @@ use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_platform::PacingSource;
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{PREPASSES, post, shadows, temporal};
+use sapphire_render::{MAIN_PASS, PREPASSES, post, shadows, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -280,10 +280,14 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             Some(timings) => {
                 budget_row(ui, "GPU frame (pass span)", timings.span(), tier.gpu_frame());
                 // The prepasses: the character prepass on every tier (M1 C5), the scene prepass
-                // under TAA, what each added to the frame.
+                // under TAA, what each added to the frame. Then the main pass, foliage's draws
+                // (M1 W6) among every family's.
                 let prepasses =
                     PREPASSES.iter().filter_map(|name| timings.get(name)).map(|pass| pass.exclusive);
                 budget_row(ui, "  Culling + prepass", prepasses.sum(), tier.prepass());
+                if let Some(main) = timings.get(MAIN_PASS) {
+                    budget_row(ui, "  Forward (main pass)", main.exclusive, tier.forward_opaque());
+                }
                 // Temporal AA's two passes (the renderer's `responsive mask` and `taa`), what
                 // each added to the frame.
                 if frame.render.temporal.enabled {
@@ -342,8 +346,8 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Draws",
             format!(
-                "{} surfaces ({} alpha-tested, {} transparent, {} faces, {} hair, {} eyes, {} environment), {} \
-                 outlines ({} past their cutoff), {} instances",
+                "{} surfaces ({} alpha-tested, {} transparent, {} faces, {} hair, {} eyes, {} environment, {} \
+                 foliage on {} plants), {} outlines ({} past their cutoff), {} instances",
                 render.draws,
                 render.alpha_tested_draws,
                 render.transparent_draws,
@@ -351,6 +355,8 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 render.hair_draws,
                 render.eye_draws,
                 render.environment_draws,
+                render.foliage_draws,
+                render.foliage_instances,
                 render.outline_draws,
                 render.outlines_culled,
                 render.instances
@@ -367,6 +373,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         );
         row(ui, "Character pipelines", render.character_pipelines.to_string());
         row(ui, "Environment pipelines", render.environment_pipelines.to_string());
+        row(ui, "Foliage pipelines", render.foliage_pipelines.to_string());
         row(ui, "Changed instances", render.changed_instances.to_string());
         row(ui, "Draw-list builds", render.draw_list_builds.to_string());
         row(ui, "Mesh pool", format_bytes(render.mesh_pool_bytes));

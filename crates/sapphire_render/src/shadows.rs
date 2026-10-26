@@ -52,8 +52,25 @@
 //!   alpha-tested, drawn solid; transparent ones cast nothing, as in the prepasses), culled per
 //!   cascade by their bounding spheres; skinned and morphed environment instances, whose posed
 //!   bounds aren't known yet, go into every cascade. Outline hulls cast nothing. Casters are
-//!   drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias.
-//! - **Billboards and impostors** (W6) face the light in the shadow passes without code of their
+//!   drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
+//!   ([`CASTER_BIAS`]).
+//! - **Foliage** (M1 W6) casts through casters of its own (the [`foliage`](crate::foliage)
+//!   module's, built with its surfaces): displaced by the wind as the main pass draws it, so
+//!   shadows sway with the leaves, and its alpha-tested cards cut out by their base color's
+//!   alpha, so a canopy casts its leaves' shapes rather than its cards'. Its leaf cards are
+//!   world-space geometry, cast as they stand. Culling pads a foliage instance's sphere by as far
+//!   as the frame's wind can carry its vertices (its materials' reach × the wind's strength × its
+//!   strongest gust), so a leaf swaying past its cooked bounds stays in the cascade it shades.
+//!   **Decision: cached cascades stay cached with foliage in them.** Their foliage casters redraw
+//!   on the cascade's turn (every other frame on every tier today), so foliage's shadows there
+//!   lag the leaves by up to a frame and move at half the frame rate. The visible effect is
+//!   small: at the sample tree's breeze, a frame moves a branch tip at most 1.6 cm and a leaf at
+//!   full flutter 3.4 cm (4 and 9 cm at 2.5 times the breeze), against the cached cascades'
+//!   texels of about 2.7 and 9.4 cm on Desktop-High at the sandbox's 43° lens, under a tent of
+//!   five of them, on plants 15 m and more away. In a gale the far dapple steps at half rate.
+//!   Redrawing both cached cascades every frame would bring back all the caster work caching
+//!   saves (a fourth cascade a frame on Desktop-High), which far foliage's shadows don't earn.
+//! - **Billboards and impostors** (M2) face the light in the shadow passes without code of their
 //!   own: their vertex shaders orient cards by the view's axes (`ViewUniforms::view_from_world`),
 //!   never by the main camera, and each shadow view carries the light's axes.
 //!
@@ -106,7 +123,8 @@
 //! storage buffer is added. The caster pipelines bind the view group (each map's view at its own
 //! dynamic offset in the view buffer) and the anime character family's scene group (its
 //! instances, as the prepasses do), and leave group 0 out, since it holds the maps they draw
-//! into.
+//! into. Foliage's casters bind foliage's scene group instead (its instances, its material blocks
+//! and the wind) and each draw's group 3, for the alpha test.
 //!
 //! With shadows off ([`RenderSettings::shadows`](crate::RenderSettings::shadows) `None`) the maps
 //! are 1 × 1, no pass runs, and the shaders' `SHADOWS` constant is false, so they compile to what
@@ -114,7 +132,7 @@
 //!
 //! # Later milestones
 //!
-//! - **Alpha-tested casters cut out** (foliage cards, W6; hair cards), with the prepasses.
+//! - **Alpha-tested casters cut out** for the other families (hair cards), as foliage's do (W6).
 //! - **Characters shadowing each other** through their maps, which the contract allows; and
 //!   posed bounds from the joints, so skinned environment instances are culled per cascade.
 //! - **A static far term:** NTE's camera-anchored tiled cache or a baked shadow per time-of-day
@@ -150,10 +168,12 @@ use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
 use crate::mesh_pool::MeshRecord;
-use crate::pipelines::{DEPTH_FORMAT, Layouts, MeshPass, Part, Shading, SurfaceVariant, format_index};
+use crate::pipelines::{
+    Coverage, DEPTH_FORMAT, Layouts, MeshPass, Part, Pipelines, Shading, SurfaceVariant, format_index,
+};
 use crate::scene::{DrawList, InstanceSlots};
 use crate::shaders::{self, Program, ShaderSources};
-use plan::ShadowPlan;
+use plan::{ShadowPlan, WindMargin};
 
 /// The most cascades a tier may have (spec §5.12: 4 on desktop, 2 on phones).
 pub const MAX_CASCADES: usize = 4;
@@ -178,6 +198,10 @@ const FACE_PASS: &str = "face shadows";
 
 /// Threads per workgroup of the face pass (`FACE_SHADOW_WORKGROUP` in `shadows.wgsl`).
 pub(crate) const FACE_WORKGROUP: u32 = 64;
+
+/// Every caster's raster bias. Reverse-Z: casters move away from the light, more on slopes.
+pub(crate) const CASTER_BIAS: wgpu::DepthBiasState =
+    wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 };
 
 /// The pipeline-overridable constants of the receivers (`frame.wgsl`).
 pub(crate) mod override_constant {
@@ -586,8 +610,7 @@ impl Shadows {
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: Default::default(),
-                // Reverse-Z: casters move away from the light, more on slopes.
-                bias: wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 },
+                bias: CASTER_BIAS,
             }),
             multisample: wgpu::MultisampleState::default(),
             fragment: None,
@@ -650,13 +673,15 @@ impl Shadows {
     }
 
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`
-    /// has the packet's instance deltas applied, `meshes` are the pool's records, `list` the draw
-    /// list, `entries` the character buffer's entries this frame.
+    /// has the packet's instance deltas applied, `meshes` are the pool's records, `wind_margin`
+    /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
+    /// `entries` the character buffer's entries this frame.
     pub(crate) fn prepare(
         &mut self,
         packet: &FramePacket,
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
+        wind_margin: &WindMargin<'_>,
         list: &DrawList,
         entries: u32,
     ) {
@@ -665,7 +690,16 @@ impl Shadows {
         let face = Shading::Character(Part::Face);
         self.faces =
             SurfaceVariant::ALL.iter().any(|&variant| variant.shading == face && list.len(variant) > 0);
-        self.plan.update(&settings, packet, slots, meshes, list, entries, self.textures.atlas_size);
+        self.plan.update(
+            &settings,
+            packet,
+            slots,
+            meshes,
+            wind_margin,
+            list,
+            entries,
+            self.textures.atlas_size,
+        );
     }
 
     /// Counters from the last frame with a view.
@@ -714,14 +748,15 @@ impl Shadows {
     /// Adds the frame's shadow passes to `graph`, side effects to run before the main pass: each
     /// cascade drawn, the character maps and the face pass. `draws` are the frame's mesh draws;
     /// the shadows' views are `first` views into the view buffer (`stride` bytes apart), bound
-    /// through `view_group`; `scene_group` binds the instances.
+    /// through `view_group`; `casters` holds the scene groups that bind the instances and
+    /// foliage's casters.
     #[expect(clippy::too_many_arguments, reason = "the frame's shared bindings, all borrowed for the graph")]
     pub(crate) fn record<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         draws: MeshDraws<'f>,
         view_group: &'f wgpu::BindGroup,
-        scene_group: &'f wgpu::BindGroup,
+        casters: CasterBindings<'f>,
         first: u32,
         stride: u32,
         labels: bool,
@@ -730,7 +765,7 @@ impl Shadows {
         if !self.plan.active {
             return;
         }
-        let casters = &self.plan.casters;
+        let plan = &self.plan.casters;
         let offset = move |index: usize| stride * (first + self.view_index(index));
         for (index, fit) in self.plan.drawn.iter().enumerate() {
             if fit.is_none() {
@@ -743,10 +778,9 @@ impl Shadows {
                 let mut pass =
                     begin_depth_pass(ctx.encoder, CASCADE_PASSES[index], layer, timestamps, labels);
                 pass.set_bind_group(1, view_group, &[offset(index)]);
-                pass.set_bind_group(2, scene_group, &[]);
                 pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
-                draw_casters(&mut pass, pipelines, &draws, |slot| {
-                    casters.get(slot as usize).is_some_and(|caster| caster.cascades & bit != 0)
+                draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
+                    plan.get(slot as usize).is_some_and(|caster| caster.cascades & bit != 0)
                 });
             });
         }
@@ -756,15 +790,14 @@ impl Shadows {
                 let timestamps = ctx.timestamp_writes();
                 let atlas = &self.textures.atlas;
                 let mut pass = begin_depth_pass(ctx.encoder, CHARACTER_PASS, atlas, timestamps, labels);
-                pass.set_bind_group(2, scene_group, &[]);
                 pass.set_index_buffer(draws.meshes.index_buffer().slice(..), wgpu::IndexFormat::Uint32);
                 for map in 0..maps {
                     let (x, y) = ((map as u32 % ATLAS_COLUMNS) * tile, (map as u32 / ATLAS_COLUMNS) * tile);
                     pass.set_viewport(x as f32, y as f32, tile as f32, tile as f32, 0.0, 1.0);
                     pass.set_scissor_rect(x, y, tile, tile);
                     pass.set_bind_group(1, view_group, &[offset(MAX_CASCADES + map)]);
-                    draw_casters(&mut pass, pipelines, &draws, |slot| {
-                        casters.get(slot as usize).is_some_and(|caster| caster.map == Some(map as u8))
+                    draw_casters(&mut pass, pipelines, casters, &draws, |slot| {
+                        plan.get(slot as usize).is_some_and(|caster| caster.map == Some(map as u8))
                     });
                 }
             });
@@ -809,31 +842,70 @@ fn begin_depth_pass<'p>(
     })
 }
 
+/// What the caster pipelines bind beyond the view: the scene groups and foliage's pipelines.
+#[derive(Clone, Copy)]
+pub(crate) struct CasterBindings<'f> {
+    /// The anime character family's scene group: the shared casters read its instances.
+    pub scene_group: &'f wgpu::BindGroup,
+    /// Foliage's scene group: its instances, material blocks and the wind.
+    pub foliage_group: &'f wgpu::BindGroup,
+    /// The mesh pipelines, which hold foliage's casters.
+    pub mesh: &'f Pipelines,
+}
+
 /// Draws the depth-writing surfaces of the instances `include` takes, by slot: static meshes per
-/// format, then skinned and morphed ones, through the caster pipelines.
+/// format, then skinned and morphed ones, through the shared caster pipelines, then foliage
+/// through its own.
 fn draw_casters(
     pass: &mut wgpu::RenderPass<'_>,
     pipelines: &ShadowPipelines,
+    bindings: CasterBindings<'_>,
     draws: &MeshDraws<'_>,
     include: impl Fn(u32) -> bool + Copy,
 ) {
+    pass.set_bind_group(2, bindings.scene_group, &[]);
     for format in PositionFormat::ALL {
         let Some(pipeline) = &pipelines.casters[format_index(format)] else { continue };
-        if !SurfaceVariant::DEPTH_WRITING.iter().any(|&variant| draws.has_static(format, variant)) {
+        if !SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| draws.has_static(format, variant)) {
             continue;
         }
         pass.set_pipeline(pipeline);
-        for variant in SurfaceVariant::DEPTH_WRITING {
+        for variant in SurfaceVariant::SHARED_DEPTH {
             draws.draw_static_where(pass, MeshPass::Shadow, format, variant, DrawSet::Surfaces, include);
         }
     }
     let float = &pipelines.casters[format_index(PositionFormat::Float32)];
     if let Some(pipeline) = float
-        && SurfaceVariant::DEPTH_WRITING.iter().any(|&variant| draws.has_deformed(variant))
+        && SurfaceVariant::SHARED_DEPTH.iter().any(|&variant| draws.has_deformed(variant))
     {
         pass.set_pipeline(pipeline);
-        for variant in SurfaceVariant::DEPTH_WRITING {
+        for variant in SurfaceVariant::SHARED_DEPTH {
             draws.draw_deformed_where(pass, MeshPass::Shadow, variant, DrawSet::Surfaces, include);
+        }
+    }
+    // Foliage, static meshes only, through its casters per coverage.
+    let mut foliage_bound = false;
+    for format in PositionFormat::ALL {
+        let Some(mesh) = bindings.mesh.mesh(format) else { continue };
+        for coverage in Coverage::DEPTH_WRITING {
+            let variant = SurfaceVariant::foliage(coverage);
+            let Some(pipeline) = mesh.foliage_caster(coverage) else { continue };
+            if !draws.has_static(format, variant) {
+                continue;
+            }
+            if !foliage_bound {
+                pass.set_bind_group(2, bindings.foliage_group, &[]);
+                foliage_bound = true;
+            }
+            pass.set_pipeline(pipeline);
+            draws.draw_static_where(
+                pass,
+                MeshPass::FoliageShadow,
+                format,
+                variant,
+                DrawSet::Surfaces,
+                include,
+            );
         }
     }
 }

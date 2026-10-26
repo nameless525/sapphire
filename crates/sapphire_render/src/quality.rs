@@ -23,9 +23,10 @@
 //! - **MSAA and temporal AA, bloom levels, the light path, the light budget, the sky** (its
 //!   cube's size and update rate, and the cirrus layer, M1 W2), **the environment shader's
 //!   specular model** (M1 W4), **the shadows** (cascades, their resolution, distance and
-//!   caching, the characters' maps or capsules and the filter, M1 R4) **and the screen effects'
-//!   cost** (the radial blur's taps, [`PostEffectSettings`], M1 P3):
-//!   [`QualityTier::render_settings`], which a renderer is created with. The player's settings
+//!   caching, the characters' maps or capsules and the filter, M1 R4), **the screen effects'
+//!   cost** (the radial blur's taps, [`PostEffectSettings`], M1 P3) **and foliage** (its wind
+//!   levels, alpha-to-coverage and translucency, M1 W6): [`QualityTier::render_settings`], which a
+//!   renderer is created with. The player's settings
 //!   can turn the shadows off ([`QualitySettings::shadows`]).
 //! - **Frame rate and GPU frame budget** (§3.1): dynamic resolution's targets.
 //!
@@ -98,8 +99,8 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    EnvironmentSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa,
-    PostEffectSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    EnvironmentSettings, FoliageSettings, LOG_TARGET, LightPath, MAX_BLOOM_LEVELS, MAX_LIGHTS,
+    MIN_RENDER_SCALE, Msaa, PostEffectSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -220,6 +221,10 @@ pub struct QualityTier {
     /// it gets Desktop-Low's.
     #[serde(default)]
     pub post_effects: PostEffectSettings,
+    /// Foliage's wind levels, alpha-to-coverage and translucency ([`RenderSettings::foliage`]).
+    /// A table without it gets the desktop tiers' foliage.
+    #[serde(default)]
+    pub foliage: FoliageSettings,
 }
 
 /// The scene's size relative to the output.
@@ -381,6 +386,7 @@ impl QualityTier {
             environment: self.environment,
             shadows: Some(self.shadows),
             post_effects: self.post_effects,
+            foliage: self.foliage,
         }
     }
 
@@ -437,6 +443,9 @@ impl QualityTier {
             return invalid(field, problem);
         }
         if let Err((field, problem)) = self.post_effects.validate() {
+            return invalid(field, problem);
+        }
+        if let Err((field, problem)) = self.foliage.validate() {
             return invalid(field, problem);
         }
         Ok(())

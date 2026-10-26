@@ -15,6 +15,10 @@ use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
 use crate::{CameraData, CharacterBody, FramePacket};
 
+/// How far the frame's wind can carry a mesh's vertices past its cooked bounds, in meters:
+/// foliage's margin (`foliage::wind_margin`), 0 for every other mesh.
+pub(crate) type WindMargin<'a> = dyn Fn(&MeshRecord) -> f32 + 'a;
+
 /// What each instance slot casts into this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SlotCaster {
@@ -88,9 +92,10 @@ pub(crate) struct ShadowPlan {
 impl ShadowPlan {
     /// Plans the frame of `packet` with `settings`: the quantized key light, the cascades, the
     /// casters and the receivers' uniforms. `slots` has the packet's instance deltas applied,
-    /// `meshes` are the pool's records, `list` the frame's draw list (for the stats' counts),
-    /// `entries` the character buffer's entries this frame, and `atlas` the character atlas's
-    /// size in texels.
+    /// `meshes` are the pool's records, `wind_margin` how far the frame's wind can carry each
+    /// mesh's vertices past its bounds (foliage's; 0 for the rest), `list` the frame's draw list
+    /// (for the stats' counts), `entries` the character buffer's entries this frame, and `atlas`
+    /// the character atlas's size in texels.
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn update(
         &mut self,
@@ -98,6 +103,7 @@ impl ShadowPlan {
         packet: &FramePacket,
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
+        wind_margin: &WindMargin<'_>,
         list: &DrawList,
         entries: u32,
         atlas: (u32, u32),
@@ -124,7 +130,7 @@ impl ShadowPlan {
             self.toward = Some(toward);
         }
         self.plan_cascades(settings, camera, light);
-        self.classify(packet, slots, meshes, settings, camera, light);
+        self.classify(packet, slots, (meshes, wind_margin), settings, camera, light);
         self.skip_empty();
         self.uniforms = self.pack(settings, camera, light, entries, atlas);
         self.count_draws(list, settings);
@@ -169,7 +175,7 @@ impl ShadowPlan {
         &mut self,
         packet: &FramePacket,
         slots: &InstanceSlots,
-        meshes: &[MeshRecord],
+        (meshes, wind_margin): (&[MeshRecord], &WindMargin<'_>),
         settings: &ShadowSettings,
         camera: &CameraData,
         light: LightSpace,
@@ -250,7 +256,11 @@ impl ShadowPlan {
                 SlotCharacter::Environment => {
                     let sphere = match meshes.get(mesh.index()) {
                         Some(record) if matches!(record.streams, MeshStreams::Slab { .. }) => {
-                            Some(record.bounds.transformed(transform))
+                            // Foliage reaches past its cooked bounds by as far as the wind
+                            // carries it (M1 W6), in world meters whatever the transform.
+                            let mut sphere = record.bounds.transformed(transform);
+                            sphere.radius += wind_margin(record);
+                            Some(sphere)
                         }
                         // Posed bounds aren't known yet: every cascade.
                         _ => None,
@@ -439,6 +449,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere::around([[-0.5; 3], [0.5; 3]]),
+            foliage: None,
         };
         vec![
             record(MeshStreams::Slab {
@@ -484,7 +495,7 @@ mod tests {
     }
 
     fn update(plan: &mut ShadowPlan, settings: &ShadowSettings, packet: &FramePacket, slots: &InstanceSlots) {
-        plan.update(settings, packet, slots, &meshes(), &DrawList::default(), 3, (4096, 2048));
+        plan.update(settings, packet, slots, &meshes(), &|_| 0.0, &DrawList::default(), 3, (4096, 2048));
     }
 
     #[test]
@@ -637,6 +648,32 @@ mod tests {
         assert_eq!(plan.casters[1].cascades & 1, 0, "past the first cascade");
         assert_ne!(plan.casters[1].cascades & 0b1000, 0, "in the last");
         assert_eq!(plan.casters[2].cascades, 0b1111, "posed bounds aren't known: every cascade");
+    }
+
+    #[test]
+    fn the_wind_keeps_swaying_foliage_in_the_cascades_it_reaches() {
+        // The first place, walking away from the camera, where a cube falls out of the first
+        // cascade; there, a margin of a meter (foliage's wind) keeps it in.
+        let first_cascade = |at: Vec3, margin: f32| {
+            let mut plan = ShadowPlan::default();
+            let slots = slots(&[instance(1, 0, at)]);
+            plan.update(
+                &SETTINGS,
+                &packet(Vec::new()),
+                &slots,
+                &meshes(),
+                &|_| margin,
+                &DrawList::default(),
+                3,
+                (4096, 2048),
+            );
+            plan.casters[0].cascades & 1 == 1
+        };
+        let outside = (0..400)
+            .map(|step| Vec3::new(0.0, 0.0, -0.25 * step as f32))
+            .find(|&at| !first_cascade(at, 0.0))
+            .expect("past the first cascade within 100 m");
+        assert!(first_cascade(outside, 1.0), "the wind's margin reaches back in at {outside}");
     }
 
     #[test]

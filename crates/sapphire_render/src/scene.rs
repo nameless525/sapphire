@@ -45,7 +45,7 @@ use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
-use crate::pipelines::{SurfaceVariant, format_index, mesh_draw};
+use crate::pipelines::{Shading, SurfaceVariant, format_index, mesh_draw};
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -474,6 +474,9 @@ pub(crate) struct DrawCommand {
     pub material: MaterialHandle,
     /// It draws an outline hull too ([`Permutation::outlined`]).
     pub outline: bool,
+    /// Its mesh's first element in the pool's foliage buffer (M1 W6), which foliage passes bind
+    /// as slot 5; 0 for meshes without a foliage stream, which no foliage pass draws.
+    pub foliage: u32,
 }
 
 /// A draw of a skinned or morphed instance on the CPU-driven path: positions and shading
@@ -502,6 +505,8 @@ pub(crate) struct DrawList {
     /// Skinned and morphed meshes, drawn with the f32 pipelines, per [`SurfaceVariant::ALL`]
     /// entry.
     pub deformed: [Vec<DeformedDraw>; SurfaceVariant::ALL.len()],
+    /// Instances with at least one foliage draw (M1 W6), for the stats.
+    pub foliage_instances: u32,
 }
 
 impl DrawList {
@@ -521,6 +526,7 @@ impl DrawList {
         for deformed in &mut self.deformed {
             deformed.clear();
         }
+        self.foliage_instances = 0;
         for (slot, mesh) in slots.live() {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
@@ -528,12 +534,14 @@ impl DrawList {
             let (skinned, morphed) = record
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
+            let mut foliage = false;
             for submesh in &record.lods[0] {
                 let handle = submesh.material.handle;
                 let (family, flags) = material_kind(handle);
                 let drawn = mesh_draw(family, flags, skinned, morphed);
                 debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
                 let Some((variant, outline)) = drawn else { continue };
+                foliage |= variant.shading == Shading::Foliage;
                 let (variant, material) = (variant.index(), handle);
                 let draw_id = to_u32(self.draws.len());
                 self.draws.push(DrawData {
@@ -552,6 +560,7 @@ impl DrawList {
                             draw_id,
                             material,
                             outline,
+                            foliage: record.foliage.unwrap_or(0),
                         });
                     }
                     MeshStreams::Deformable(source) => {
@@ -567,6 +576,7 @@ impl DrawList {
                     }
                 }
             }
+            self.foliage_instances += u32::from(foliage);
         }
     }
 
@@ -811,6 +821,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            foliage: None,
         };
         let meshes = [
             MeshRecord {
@@ -905,6 +916,7 @@ mod tests {
             draw_id,
             material: MaterialHandle(slot + 10),
             outline,
+            foliage: 0,
         };
         assert_eq!(unorm16[..], [command(0..6, 0, 2, 2, 0, true)]);
         assert_eq!(unorm16_face[..], [command(9..12, 24, 1, 0, 1, true)], "a face of its own");
@@ -925,7 +937,7 @@ mod tests {
             lens
         };
         let found = SurfaceVariant::ALL.map(|variant| list.len(variant));
-        assert_eq!((found, list.outlines()), (lens([2, 1, 1, 1]), 3));
+        assert_eq!((found, list.outlines(), list.foliage_instances), (lens([2, 1, 1, 1]), 3, 0));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
@@ -957,6 +969,7 @@ mod tests {
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+                foliage: None,
             },
             MeshRecord {
                 streams: MeshStreams::Deformable(DeformSource::default()),
@@ -966,6 +979,7 @@ mod tests {
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+                foliage: None,
             },
         ];
         // Handles 10 and 12 are anime character materials (12 a face), 11, 13 and 14 environment
@@ -1030,6 +1044,55 @@ mod tests {
         assert_eq!(list.outlines(), 5, "the anime character draws' hulls alone");
         let instances: Vec<u32> = list.draws.iter().map(|draw| draw.instance).collect();
         assert_eq!(instances, [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2], "records follow the slots");
+    }
+
+    #[test]
+    fn foliage_draws_carry_their_stream_and_count_their_instances() {
+        use crate::pipelines::Coverage;
+        let identity = Dequantize { position_scale: [1.0; 3], ..Dequantize::default() };
+        let submesh =
+            |first_index, slot| SubmeshDraw { first_index, index_count: 3, material: material(slot) };
+        let mesh = |first_vertex, foliage, lod: Vec<SubmeshDraw>| MeshRecord {
+            streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex },
+            dequantize: identity,
+            lods: vec![lod],
+            lod_vertices: vec![4],
+            placement: Placement::default(),
+            slots: Vec::new(),
+            bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            foliage,
+        };
+        // A tree (opaque wood and alpha-tested leaves), a patch of grass, and a rock.
+        let meshes = [
+            mesh(0, Some(0), vec![submesh(0, 0), submesh(3, 1)]),
+            mesh(4, Some(4), vec![submesh(6, 1)]),
+            mesh(8, None, vec![submesh(9, 2)]),
+        ];
+        // Handle 10 is opaque foliage, 11 alpha-tested foliage, 12 an environment material.
+        let kind = |handle: MaterialHandle| match handle.0 {
+            10 => (MaterialFamily::Foliage, MaterialFlags::empty()),
+            11 => (MaterialFamily::Foliage, MaterialFlags::ALPHA_TEST),
+            _ => (MaterialFamily::Environment, MaterialFlags::empty()),
+        };
+        let mut slots = InstanceSlots::default();
+        let trees = [instance(1, 0, 0.0), instance(2, 0, 5.0)];
+        slots.apply(&deltas(&[trees[0], trees[1], instance(3, 1, 0.0), instance(4, 2, 0.0)], &[]));
+        let mut list = DrawList::default();
+        list.build(&meshes, kind, &slots);
+        let draws = |variant: SurfaceVariant| -> Vec<(u32, u32, u32)> {
+            list.commands[format_index(PositionFormat::Unorm16)][variant.index()]
+                .iter()
+                .map(|command| (command.slot, command.first_vertex, command.foliage))
+                .collect()
+        };
+        assert_eq!(draws(SurfaceVariant::foliage(Coverage::Opaque)), [(0, 0, 0), (1, 0, 0)]);
+        assert_eq!(draws(SurfaceVariant::foliage(Coverage::AlphaTest)), [(0, 0, 0), (1, 0, 0), (2, 4, 4)]);
+        assert_eq!(draws(SurfaceVariant::environment(Coverage::Opaque)), [(3, 8, 0)]);
+        assert_eq!(list.foliage_instances, 3, "two trees and the grass");
+        assert_eq!(list.outlines(), 0, "foliage draws no hull");
+        slots.apply(&deltas(&[], &[1]));
+        list.build(&meshes, kind, &slots);
+        assert_eq!(list.foliage_instances, 2);
     }
 
     #[test]

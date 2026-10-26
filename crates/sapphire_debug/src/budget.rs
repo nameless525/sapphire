@@ -68,6 +68,12 @@ impl BudgetTier {
         self.pick(1.5, 1.5)
     }
 
+    /// Forward opaque (§3.3's row): the main pass, every family's surfaces (foliage's among
+    /// them, M1 W6), their outlines and the sky.
+    pub fn forward_opaque(self) -> Duration {
+        self.pick(3.5, 8.0)
+    }
+
     /// The budget of a CPU stage (§3.2) for a frame that ran `steps` fixed steps.
     pub fn stage(self, stage: CpuStage, steps: u32) -> Duration {
         match stage {
@@ -215,6 +221,7 @@ mod tests {
         assert_eq!(mobile.stage(CpuStage::Extract, 2), ms(1.2));
         assert_eq!((mobile.game_side(), mobile.gpu_frame()), (ms(13.6), ms(23.5)));
         assert_eq!((desktop.taa_upscaling(), mobile.taa_upscaling()), (ms(0.8), ms(1.0)));
+        assert_eq!((desktop.forward_opaque(), mobile.forward_opaque()), (ms(3.5), ms(8.0)));
         assert_eq!((desktop.post(), mobile.post()), (ms(0.7), ms(2.5)));
         assert_eq!((desktop.prepass(), mobile.prepass()), (ms(1.5), ms(1.5)));
         assert_eq!(desktop.frame(), Duration::from_micros(16_667));

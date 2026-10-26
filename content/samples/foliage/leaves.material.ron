@@ -1,0 +1,35 @@
+(
+    type: "sapphire::render::FoliageMaterial",
+    version: 1,
+    data: (
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("3b93f25e-0f01-488c-b5ba-691136d40542"),
+        alpha_cutoff: 0.45,
+        mask_map: None,
+        wrap: 0.5,
+        terminator_width: 0.16,
+        terminator_growth: 0.006,
+        shadow_tint: (0.95, 0.95, 1.08),
+        canopy_occlusion: 0.55,
+        translucency: (
+            color: (0.6724432, 0.8387991, 0.18782076),
+            strength: 0.7,
+            power: 4.0,
+        ),
+        gradient: (
+            root: (0.036889445, 0.15592647, 0.10702311),
+            tip: (0.4341537, 0.6724432, 0.13286833),
+        ),
+        wind: (
+            sway: 0.09,
+            bend: 0.12,
+            flutter: 0.035,
+            flutter_frequency: 2.2,
+        ),
+        distance: (
+            start: 15.0,
+            end: 140.0,
+            desaturation: 0.45,
+        ),
+    ),
+)

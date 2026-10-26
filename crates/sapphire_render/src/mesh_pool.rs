@@ -21,6 +21,11 @@
 //! Every LOD's indices are uploaded with the mesh and its index ranges recorded; draws use
 //! LOD0 until LOD selection lands with culling.
 //!
+//! Foliage meshes' foliage stream (M1 W6, [`VertexFoliage`]) goes to a buffer of its own, with
+//! its own numbering: other meshes spend nothing on it, at the cost of a second base vertex on
+//! the GPU-driven path (the `foliage` module's later milestones). A draw binds it at the mesh's
+//! first element, as it binds the slab's streams.
+//!
 //! Each buffer hands out ranges first fit ([`RangeAllocator`]): a mesh replaced in place (hot
 //! reload, live link: [`MeshPool::replace`]) frees its old ranges for later uploads, under the
 //! same handle. Meshes are not unloaded yet (see the crate docs' later milestones).
@@ -49,8 +54,8 @@
 //! (all of a body, usually) costs one read of its two offsets.
 
 use sapphire_assets::mesh::{
-    ArchivedInfluences, ArchivedMesh, ArchivedSlotMaterial, MorphDelta, PositionFormat, VertexShading,
-    VertexSurface,
+    ArchivedInfluences, ArchivedMesh, ArchivedSlotMaterial, MorphDelta, PositionFormat, VertexFoliage,
+    VertexShading, VertexSurface,
 };
 use sapphire_rhi::wgpu;
 
@@ -63,6 +68,7 @@ use crate::pipelines::format_index;
 
 const SHADING_BYTES: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_BYTES: u64 = size_of::<VertexSurface>() as u64;
+const FOLIAGE_BYTES: u64 = size_of::<VertexFoliage>() as u64;
 const INDEX_BYTES: u64 = size_of::<u32>() as u64;
 
 /// Vulkan devices without `fullDrawIndexUint32` (some Vulkan 1.1 phones) only guarantee
@@ -130,6 +136,9 @@ pub(crate) struct MeshRecord {
     /// casters' culling place it by each instance's transform. A skinned or morphed mesh's is
     /// its bind pose's.
     pub bounds: Sphere,
+    /// A static mesh's foliage stream (M1 W6): its first element in the pool's foliage buffer,
+    /// if it has one.
+    pub foliage: Option<u32>,
 }
 
 /// A mesh's material slot.
@@ -148,6 +157,8 @@ pub(crate) struct Placement {
     pub vertices: (u32, u32),
     /// Indices of the index buffer.
     pub indices: (u32, u32),
+    /// Elements of the foliage buffer.
+    pub foliage: (u32, u32),
 }
 
 /// Where a mesh's vertex streams are.
@@ -299,6 +310,11 @@ pub(crate) struct MeshPool {
     /// Index ranges in use, and the indices they hold.
     index_ranges: RangeAllocator,
     indices_used: u32,
+    /// Static meshes' foliage streams (see the module docs).
+    foliage: GrowableBuffer,
+    /// Element ranges of the foliage buffer in use, and the elements they hold.
+    foliage_ranges: RangeAllocator,
+    foliage_used: u32,
     records: Vec<MeshRecord>,
 }
 
@@ -331,6 +347,16 @@ impl MeshPool {
             ),
             index_ranges: RangeAllocator::default(),
             indices_used: 0,
+            // Empty until the first foliage mesh.
+            foliage: GrowableBuffer::new(
+                device,
+                "mesh foliage",
+                wgpu::BufferUsages::VERTEX,
+                0,
+                limits.max_buffer_size,
+            ),
+            foliage_ranges: RangeAllocator::default(),
+            foliage_used: 0,
             records: Vec::new(),
         }
     }
@@ -400,6 +426,9 @@ impl MeshPool {
             Some((bytes, _)) => count(bytes.len() / 4, "deformable mesh sources")?,
             None => count(vertices, "vertices")?,
         };
+        // Skinned and morphed meshes draw no foliage (uploads refuse foliage materials on them).
+        let foliage_bytes = if deformable { &[][..] } else { streams.foliage_bytes() };
+        let foliage_len = count(foliage_bytes.len() / FOLIAGE_BYTES as usize, "foliage")?;
         let format = streams.position_format();
         let slab = format_index(format);
         let vertices_end_before = match region {
@@ -407,7 +436,9 @@ impl MeshPool {
             None => self.slabs[slab].vertices.end(),
         };
         let indices_end_before = self.index_ranges.end();
-        let Some((first_vertex, first_index)) = self.allocate(region.is_some(), slab, vertex_len, index_len)
+        let foliage_end_before = self.foliage_ranges.end();
+        let lens = (vertex_len, index_len, foliage_len);
+        let Some((first_vertex, first_index, first_foliage)) = self.allocate(region.is_some(), slab, lens)
         else {
             return Err(RenderError::MeshPoolFull("vertices or indices"));
         };
@@ -452,6 +483,12 @@ impl MeshPool {
         self.indices.reserve(device, queue, index_end, u64::from(indices_end_before) * INDEX_BYTES);
         write(queue, self.indices.buffer(), u64::from(first_index) * INDEX_BYTES, mesh.index_bytes());
         self.indices_used += index_len;
+        if foliage_len > 0 {
+            let end = u64::from(self.foliage_ranges.end()) * FOLIAGE_BYTES;
+            self.foliage.reserve(device, queue, end, u64::from(foliage_end_before) * FOLIAGE_BYTES);
+            write(queue, self.foliage.buffer(), u64::from(first_foliage) * FOLIAGE_BYTES, foliage_bytes);
+            self.foliage_used += foliage_len;
+        }
 
         let record = MeshRecord {
             streams: record_streams,
@@ -471,7 +508,11 @@ impl MeshPool {
                 })
                 .collect(),
             lod_vertices: mesh.lods.iter().map(|lod| lod.vertex_count.to_native()).collect(),
-            placement: Placement { vertices: (first_vertex, vertex_len), indices: (first_index, index_len) },
+            placement: Placement {
+                vertices: (first_vertex, vertex_len),
+                indices: (first_index, index_len),
+                foliage: (first_foliage, foliage_len),
+            },
             slots: mesh
                 .materials
                 .iter()
@@ -485,21 +526,25 @@ impl MeshPool {
                 let bounds = streams.bounds.to_native();
                 Sphere::around([bounds.min, bounds.max])
             },
+            foliage: (foliage_len > 0).then_some(first_foliage),
         };
         Ok((record, moves))
     }
 
     /// Takes `vertex_len` vertices (words of the deformable buffer if `deformable`, else of slab
-    /// `slab`) and `index_len` indices, if the buffers can grow to hold them. Returns the first of
-    /// each.
+    /// `slab`), `index_len` indices and `foliage_len` foliage elements, if the buffers can grow
+    /// to hold them. Returns the first of each.
     fn allocate(
         &mut self,
         deformable: bool,
         slab: usize,
-        vertex_len: u32,
-        index_len: u32,
-    ) -> Option<(u32, u32)> {
+        (vertex_len, index_len, foliage_len): (u32, u32, u32),
+    ) -> Option<(u32, u32, u32)> {
         let first_index = self.index_ranges.try_allocate(index_len)?;
+        let Some(first_foliage) = self.foliage_ranges.try_allocate(foliage_len) else {
+            self.index_ranges.free(first_index, index_len);
+            return None;
+        };
         let first_vertex = if deformable {
             self.deformable_words.try_allocate(vertex_len)
         } else {
@@ -507,7 +552,7 @@ impl MeshPool {
         };
         if let Some(first_vertex) = first_vertex {
             if self.fits(deformable, slab) {
-                return Some((first_vertex, first_index));
+                return Some((first_vertex, first_index, first_foliage));
             }
             if deformable {
                 self.deformable_words.free(first_vertex, vertex_len);
@@ -515,14 +560,16 @@ impl MeshPool {
                 self.slabs[slab].vertices.free(first_vertex, vertex_len);
             }
         }
+        self.foliage_ranges.free(first_foliage, foliage_len);
         self.index_ranges.free(first_index, index_len);
         None
     }
 
-    /// Whether the index buffer, and the deformable buffer or slab `slab`'s streams, can grow to
-    /// hold every range handed out.
+    /// Whether the index and foliage buffers, and the deformable buffer or slab `slab`'s
+    /// streams, can grow to hold every range handed out.
     fn fits(&self, deformable: bool, slab: usize) -> bool {
-        let indices = u64::from(self.index_ranges.end()) * INDEX_BYTES <= self.indices.max_size();
+        let indices = u64::from(self.index_ranges.end()) * INDEX_BYTES <= self.indices.max_size()
+            && u64::from(self.foliage_ranges.end()) * FOLIAGE_BYTES <= self.foliage.max_size();
         let vertices = if deformable {
             u64::from(self.deformable_words.end()) * 4 <= self.deformable.max_size()
         } else {
@@ -541,8 +588,11 @@ impl MeshPool {
 
     /// Frees the ranges `record` occupied.
     fn release(&mut self, record: &MeshRecord) {
-        let Placement { vertices: (first_vertex, vertex_len), indices: (first_index, index_len) } =
-            record.placement;
+        let Placement {
+            vertices: (first_vertex, vertex_len),
+            indices: (first_index, index_len),
+            foliage: (first_foliage, foliage_len),
+        } = record.placement;
         match record.streams {
             MeshStreams::Slab { format, .. } => {
                 let slab = &mut self.slabs[format_index(format)];
@@ -556,6 +606,8 @@ impl MeshPool {
         }
         self.index_ranges.free(first_index, index_len);
         self.indices_used -= index_len;
+        self.foliage_ranges.free(first_foliage, foliage_len);
+        self.foliage_used -= foliage_len;
     }
 
     pub(crate) fn records(&self) -> &[MeshRecord] {
@@ -575,16 +627,25 @@ impl MeshPool {
         self.indices.buffer()
     }
 
-    /// Bytes in use: vertex streams (with skin and morph data) and indices.
+    /// Static foliage meshes' foliage streams, drawn as slot 5.
+    pub(crate) fn foliage_buffer(&self) -> &wgpu::Buffer {
+        self.foliage.buffer()
+    }
+
+    /// Bytes in use: vertex streams (with skin and morph data and foliage streams) and indices.
     pub(crate) fn bytes_used(&self) -> u64 {
         self.slabs.iter().map(Slab::bytes_used).sum::<u64>()
             + u64::from(self.deformable_used) * 4
             + u64::from(self.indices_used) * INDEX_BYTES
+            + u64::from(self.foliage_used) * FOLIAGE_BYTES
     }
 
     /// Times any pool buffer grew.
     pub(crate) fn growths(&self) -> u32 {
-        self.slabs.iter().map(Slab::growths).sum::<u32>() + self.deformable.growths() + self.indices.growths()
+        self.slabs.iter().map(Slab::growths).sum::<u32>()
+            + self.deformable.growths()
+            + self.indices.growths()
+            + self.foliage.growths()
     }
 }
 

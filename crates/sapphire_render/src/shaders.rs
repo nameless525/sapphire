@@ -55,10 +55,12 @@ pub enum ShaderFile {
     Temporal,
     /// The shadow passes: casters and the face pass (the receivers are `frame.wgsl`'s).
     Shadows,
+    /// The foliage shader (M1 W6): its surfaces, scene prepass and shadow casters.
+    Foliage,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -73,6 +75,7 @@ impl ShaderFile {
         Self::Post,
         Self::Temporal,
         Self::Shadows,
+        Self::Foliage,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -92,6 +95,7 @@ impl ShaderFile {
             Self::Post => "post.wgsl",
             Self::Temporal => "temporal.wgsl",
             Self::Shadows => "shadows.wgsl",
+            Self::Foliage => "foliage.wgsl",
         }
     }
 
@@ -117,6 +121,7 @@ impl ShaderFile {
             Self::Post => include_str!("../shaders/post.wgsl"),
             Self::Temporal => include_str!("../shaders/temporal.wgsl"),
             Self::Shadows => include_str!("../shaders/shadows.wgsl"),
+            Self::Foliage => include_str!("../shaders/foliage.wgsl"),
         }
     }
 
@@ -145,10 +150,11 @@ pub(crate) enum Program {
     Post,
     Temporal,
     Shadows,
+    Foliage,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -160,6 +166,7 @@ impl Program {
         Self::Post,
         Self::Temporal,
         Self::Shadows,
+        Self::Foliage,
     ];
 
     /// Its files, in order.
@@ -177,6 +184,7 @@ impl Program {
             Self::Post => &[F::Post],
             Self::Temporal => &[F::Temporal],
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
+            Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Foliage],
         }
     }
 
@@ -194,6 +202,7 @@ impl Program {
             Self::Post => "post",
             Self::Temporal => "temporal",
             Self::Shadows => "shadows",
+            Self::Foliage => "foliage",
         }
     }
 
@@ -201,7 +210,12 @@ impl Program {
     pub(crate) const fn is_mesh(self) -> bool {
         matches!(
             self,
-            Self::AnimeCharacter | Self::Environment | Self::FogCard | Self::Outline | Self::Prepass
+            Self::AnimeCharacter
+                | Self::Environment
+                | Self::FogCard
+                | Self::Outline
+                | Self::Prepass
+                | Self::Foliage
         )
     }
 }
@@ -345,17 +359,18 @@ mod tests {
     use super::*;
     use crate::characters::{GpuCharacter, GpuCharacterShadow, GpuFace, GpuRig};
     use crate::fog::GpuFog;
+    use crate::foliage::{WindState, WindUniforms};
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
-        DRAW_ATTRIBUTES, MeshPass, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES, position_attributes,
-        previous_position_attributes,
+        DRAW_ATTRIBUTES, FOLIAGE_ATTRIBUTES, MeshPass, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES,
+        position_attributes, previous_position_attributes,
     };
     use crate::post::PostUniforms;
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 11] = [
+    const PASSES: [(Program, &[&str]); 12] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -384,10 +399,22 @@ mod tests {
         ),
         (Program::Temporal, &["vs_fullscreen", "fs_responsive_mask", "cs_temporal_resolve"]),
         (Program::Shadows, &["vs_shadow_caster", "cs_face_shadow"]),
+        (
+            Program::Foliage,
+            &[
+                "vs_foliage",
+                "fs_foliage",
+                "fs_foliage_coverage",
+                "vs_foliage_prepass",
+                "fs_foliage_prepass",
+                "vs_foliage_caster",
+                "fs_foliage_caster",
+            ],
+        ),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 9] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 12] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::AnimeCharacter, "vs_through_hair", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
@@ -397,6 +424,9 @@ mod tests {
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
         (Program::Prepass, "vs_scene_prepass", MeshPass::ScenePrepass),
         (Program::Shadows, "vs_shadow_caster", MeshPass::Shadow),
+        (Program::Foliage, "vs_foliage", MeshPass::Foliage),
+        (Program::Foliage, "vs_foliage_prepass", MeshPass::FoliagePrepass),
+        (Program::Foliage, "vs_foliage_caster", MeshPass::FoliageShadow),
     ];
 
     /// The compiled-in `program`, checked as the renderer checks sources.
@@ -557,10 +587,12 @@ mod tests {
                         "{vertex_entry} location {location}: {shader:?} can't take {attribute:?} ({format:?})"
                     );
                 }
-                // The main pass's shaders read every stream they bind, as the hull's prepass
-                // does; a prepass may bind a stream for one of its attributes (the scene prepass
-                // ignores outline normals).
-                if pass == MeshPass::Main || pass == MeshPass::OutlinePrepass {
+                // The main pass's shaders read every stream they bind, as the hull's prepass and
+                // foliage's do; a prepass or caster may bind a stream for one of its attributes
+                // (the scene prepass ignores outline normals, foliage's casters vertex colors).
+                let exact =
+                    [MeshPass::Main, MeshPass::OutlinePrepass, MeshPass::Foliage, MeshPass::FoliagePrepass];
+                if exact.contains(&pass) {
                     assert_eq!(
                         inputs.keys().collect::<Vec<_>>(),
                         attributes.keys().collect::<Vec<_>>(),
@@ -573,7 +605,7 @@ mod tests {
 
     #[test]
     fn vertex_layouts_match_the_packed_streams() {
-        use sapphire_assets::mesh::{VertexShading, VertexSurface};
+        use sapphire_assets::mesh::{VertexFoliage, VertexShading, VertexSurface};
 
         use crate::gpu_types::DrawData;
         let end = |attributes: &[wgpu::VertexAttribute]| {
@@ -585,6 +617,7 @@ mod tests {
         }
         assert_eq!(end(&SHADING_ATTRIBUTES), size_of::<VertexShading>() as u64);
         assert_eq!(end(&SURFACE_ATTRIBUTES), size_of::<VertexSurface>() as u64);
+        assert_eq!(end(&FOLIAGE_ATTRIBUTES), size_of::<VertexFoliage>() as u64);
         assert_eq!(end(&DRAW_ATTRIBUTES), size_of::<DrawData>() as u64);
         assert_eq!(size_of::<DrawData>(), 48);
     }
@@ -631,6 +664,13 @@ mod tests {
             (Program::Prepass, "InstanceData", size_of::<InstanceData>()),
             (Program::Prepass, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Temporal, "TemporalUniforms", size_of::<TemporalUniforms>()),
+            (Program::Foliage, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Foliage, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Foliage, "InstanceData", size_of::<InstanceData>()),
+            (Program::Foliage, "FoliageParams", size_of::<FoliageParams>()),
+            (Program::Foliage, "LocalLight", size_of::<GpuLight>()),
+            (Program::Foliage, "WindState", size_of::<WindState>()),
+            (Program::Foliage, "WindUniforms", size_of::<WindUniforms>()),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);
@@ -980,6 +1020,96 @@ mod tests {
         assert_eq!(environment.types[base].name.as_deref(), Some("EnvironmentParams"));
     }
 
+    /// The foliage shader's numbers, as `sapphire_assets` and the `foliage` module state them:
+    /// texture slots and group 3 bindings, its scene group's buffers, the wind's uniforms field
+    /// by field and the constants its CPU mirror shares, and its overrides.
+    #[test]
+    fn wgsl_foliage_matches_rust() {
+        use sapphire_assets::material::FoliageMaterial;
+
+        use crate::foliage::{self, override_constant};
+        use crate::pipelines::material_binding;
+        type M = FoliageMaterial;
+        let module = validate(Program::Foliage);
+        assert_eq!(wgsl_u32(&module, "FOLIAGE_BASE_COLOR") as usize, M::BASE_COLOR);
+        assert_eq!(wgsl_u32(&module, "FOLIAGE_MASK") as usize, M::MASK);
+        assert_eq!(M::TEXTURE_SLOTS.len(), 2);
+        let bindings = |group: u32| -> BTreeMap<u32, String> {
+            module
+                .global_variables
+                .iter()
+                .filter_map(|(_, global)| {
+                    let binding = global.binding.as_ref().filter(|binding| binding.group == group)?;
+                    Some((binding.binding, global.name.clone().unwrap_or_default()))
+                })
+                .collect()
+        };
+        let mut expected: BTreeMap<u32, String> = M::TEXTURE_SLOTS
+            .iter()
+            .zip(0..)
+            .map(|(slot, binding)| (binding, format!("{}_map", slot.name)))
+            .collect();
+        expected.insert(material_binding::SAMPLER, "material_sampler".into());
+        assert_eq!(bindings(3), expected);
+        // Group 2: frame.wgsl's instances and anime character blocks (which foliage's entry points
+        // never read), foliage's blocks at the same binding, and the wind.
+        let scene = bindings(2);
+        assert_eq!(scene.get(&2).map(String::as_str), Some("wind"));
+        let (_, buffer) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some("foliage_materials"))
+            .expect("declared");
+        let binding = buffer.binding.as_ref().expect("bound");
+        assert_eq!((binding.group, binding.binding), (2, 1));
+        let fields = |name: &str| -> Vec<(String, usize)> {
+            let (_, ty) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("no WGSL struct {name}"));
+            let naga::TypeInner::Struct { members, .. } = &ty.inner else { panic!("{name} is a struct") };
+            members
+                .iter()
+                .map(|member| (member.name.clone().unwrap_or_default(), member.offset as usize))
+                .collect()
+        };
+        let owned = |fields: Vec<(&str, usize)>| -> Vec<(String, usize)> {
+            fields.into_iter().map(|(name, offset)| (name.to_owned(), offset)).collect()
+        };
+        assert_eq!(fields("WindState"), owned(offsets!(WindState { direction, time })));
+        assert_eq!(fields("WindUniforms"), owned(offsets!(WindUniforms { current, previous })));
+        // The wind's numbers, which `foliage::wind_offset` mirrors.
+        assert_eq!(f64::from(wgsl_f32(&module, "WIND_PERIOD")), foliage::WIND_PERIOD);
+        let numbers = [
+            ("WIND_SWAY_HZ", foliage::SWAY_HZ),
+            ("WIND_BEND_HZ", foliage::BEND_HZ),
+            ("WIND_BOB_HZ", foliage::BOB_HZ),
+            ("WIND_GUST_HZ", foliage::GUST_HZ),
+            ("WIND_GUST_WAVELENGTH", foliage::GUST_WAVELENGTH),
+            ("WIND_LEAN", foliage::LEAN),
+            ("WIND_SWING", foliage::SWING),
+            ("TAU", std::f32::consts::TAU),
+        ];
+        for (name, value) in numbers {
+            assert_eq!(wgsl_f32(&module, name), value, "{name}");
+        }
+        assert_eq!(wgsl_vec3(&module, "WIND_FLUTTER_SPREAD"), foliage::FLUTTER_SPREAD.to_array());
+        let overrides: Vec<&str> = module.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
+        let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
+        assert_eq!(
+            overrides,
+            [
+                shadows[0],
+                shadows[1],
+                "PERMUTATION_ALPHA_TEST",
+                override_constant::SAMPLES,
+                override_constant::WIND_LEVELS,
+                override_constant::TRANSLUCENCY,
+            ]
+        );
+    }
+
     /// The sky's uniform block is written by the CPU every frame, so every field must sit where
     /// the WGSL struct reads it; its texture slots and group 3 bindings are the sky family's.
     #[test]
@@ -1294,18 +1424,23 @@ mod tests {
     /// pipeline compiles (the GPU tests build them on the device too).
     #[test]
     fn every_permutation_specializes_and_validates() {
-        use crate::EnvironmentSpecular;
+        use crate::foliage::FoliageSettings;
         use crate::pipelines::{Coverage, Shading, SurfaceVariant, override_constant};
         use crate::shadows::{ShadowFilter, ShadowSettings};
+        use crate::{EnvironmentSpecular, foliage};
         type Constants = Vec<(&'static str, f64)>;
         // Every surface variant without shadows, and with them under either filter (M1 R4).
         let shadows = [None, Some(ShadowFilter::Tent3), Some(ShadowFilter::Tent5)].map(|filter| {
             filter.map(|filter| ShadowSettings { filter, ..ShadowSettings::default() }.constants())
         });
-        let surfaces = |environment: bool| -> Vec<(String, Constants)> {
+        let surfaces = |shading: fn(Shading) -> bool| -> Vec<(String, Constants)> {
             SurfaceVariant::ALL
                 .iter()
-                .filter(|variant| (variant.shading == Shading::Environment) == environment)
+                .filter(move |variant| shading(variant.shading))
+                // Foliage is never transparent: that variant never builds.
+                .filter(|variant| {
+                    !(variant.shading == Shading::Foliage && variant.coverage == Coverage::Transparent)
+                })
                 .flat_map(|variant| {
                     shadows.iter().map(move |shadows| {
                         let constants =
@@ -1318,7 +1453,7 @@ mod tests {
         // The environment's variants under every tier's specular model.
         let specular =
             [EnvironmentSpecular::Off, EnvironmentSpecular::Approximate, EnvironmentSpecular::Full];
-        let environment: Vec<(String, Constants)> = surfaces(true)
+        let environment: Vec<(String, Constants)> = surfaces(|shading| shading == Shading::Environment)
             .into_iter()
             .flat_map(|(name, constants)| {
                 specular.map(|model| {
@@ -1339,10 +1474,30 @@ mod tests {
                 })
             })
             .collect();
+        // Foliage's surfaces under every tier's settings and sample count, and its prepasses and
+        // casters (whose constants are their coverage's and the wind levels) alike.
+        let tiers = [
+            FoliageSettings::default(),
+            FoliageSettings { wind_levels: 2, translucency: false, ..FoliageSettings::default() },
+            FoliageSettings { wind_levels: 0, alpha_to_coverage: false, translucency: false },
+        ];
+        let mut foliage = Vec::new();
+        for (name, constants) in surfaces(|shading| shading == Shading::Foliage) {
+            for settings in &tiers {
+                for samples in [1u32, 4] {
+                    let mut constants = constants.clone();
+                    constants.extend(settings.constants());
+                    constants.push((foliage::override_constant::SAMPLES, f64::from(samples)));
+                    foliage.push((format!("{name} {settings:?} {samples}x"), constants));
+                }
+            }
+        }
+        let character = |shading: Shading| matches!(shading, Shading::Character(_));
         let passes = [
-            (Program::AnimeCharacter, surfaces(false)),
+            (Program::AnimeCharacter, surfaces(character)),
             (Program::Environment, environment),
             (Program::Outline, outlines),
+            (Program::Foliage, foliage),
         ];
         for (program, variants) in passes {
             let name = program.name();

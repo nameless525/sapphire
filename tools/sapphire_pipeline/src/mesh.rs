@@ -2,17 +2,17 @@
 //! whatever the source authored (skins, morph targets, outline normals).
 //!
 //! Importers produce an [`ImportedMesh`] with a single LOD; [`bake`](crate::bake) fills in
-//! outline normals; [`optimize`](crate::optimize) reorders it for the GPU and adds the LOD
-//! chain; [`ImportedMesh::pack`] quantizes it into the cooked
-//! [`Mesh`] and resolves its material slots.
+//! outline normals and, for foliage, volume normals and wind data;
+//! [`optimize`](crate::optimize) reorders it for the GPU and adds the LOD chain;
+//! [`ImportedMesh::pack`] quantizes it into the cooked [`Mesh`] and resolves its material slots.
 
 use std::collections::BTreeMap;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialDocument, MaterialError};
 use sapphire_assets::mesh::{
-    Influences, Joint, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat,
-    Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence, VertexStreams, quantize_weights,
+    FoliageVertex, Influences, Joint, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget,
+    PositionFormat, Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence, VertexStreams, quantize_weights,
 };
 use sapphire_assets::texture::Swizzle;
 
@@ -31,6 +31,9 @@ pub struct ImportedMesh {
     pub materials: Vec<ImportedMaterial>,
     pub skin: Option<ImportedSkin>,
     pub morph_targets: Vec<ImportedMorphTarget>,
+    /// Per vertex, the foliage stream's data, once the foliage bake ran (M1 W6,
+    /// [`bake::foliage`](crate::bake::foliage)); empty for other meshes.
+    pub foliage: Vec<FoliageVertex>,
 }
 
 /// A material slot as imported: the source's name for it, and the anime character material
@@ -189,8 +192,9 @@ impl ImportedMesh {
             morph_deltas
                 .extend(target.deltas.iter().map(|d| MorphDelta::new(d.vertex, d.position, d.normal)));
         }
+        let streams = VertexStreams::pack(&self.vertices, format);
         Ok(Mesh {
-            streams: VertexStreams::pack(&self.vertices, format),
+            streams: if self.foliage.is_empty() { streams } else { streams.with_foliage(&self.foliage) },
             indices: self.indices.clone(),
             lods: self.lods.clone(),
             materials,

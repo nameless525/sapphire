@@ -17,17 +17,17 @@
 //!   bound (shaders skip those slots on the block's bound bits), and the three samplers. Each
 //!   bound texture must carry the swizzle the material was cooked with, and slots of linear data
 //!   (normal, control, mask and SDF maps) take no sRGB texture: decoding would bend the data.
-//! - Meshes draw with the anime character, environment (M1 W4) and fog card (M1 W3) families,
-//!   each through a scene group (group 2) of its own holding its buffer beside the instances
-//!   (the fog cards' also the depth they fade against), rebuilt when the instance buffer or its
-//!   family's buffer grows; foliage (W6) joins with its shader. The sky (W2) draws one material at a time and reads its block from the
-//!   mirror ([`Materials::params`]), binding only its group 3.
+//! - Meshes draw with the anime character, environment (M1 W4), fog card (M1 W3) and foliage
+//!   (M1 W6) families, each through a scene group (group 2) of its own holding its buffer beside
+//!   the instances (the fog cards' also the depth they fade against, foliage's the wind), rebuilt
+//!   when the instance buffer or its family's buffer grows. The sky (W2) draws one material at a
+//!   time and reads its block from the mirror ([`Materials::params`]), binding only its group 3.
 //!
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    AnimeCharacterParams, ArchivedMaterial, MaterialFamily, MaterialFlags, TextureUsage,
+    AnimeCharacterParams, ArchivedMaterial, FoliageParams, MaterialFamily, MaterialFlags, TextureUsage,
 };
 use sapphire_rhi::wgpu;
 
@@ -309,6 +309,17 @@ impl Materials {
         let buffer = &self.families[record.family.index()];
         let start = record.slot as usize * buffer.stride();
         buffer.mirror.get(start..start + buffer.stride())
+    }
+
+    /// The wind response of foliage material `handle` (`FoliageParams::wind`: sway, bend, flutter,
+    /// flutter frequency), as the GPU will read it; `None` for another family's.
+    pub(crate) fn foliage_wind(&self, handle: MaterialHandle) -> Option<[f32; 4]> {
+        let record = self.record(handle).filter(|record| record.family == MaterialFamily::Foliage)?;
+        let buffer = &self.families[record.family.index()];
+        let start = record.slot as usize * buffer.stride();
+        let params: FoliageParams =
+            bytemuck::pod_read_unaligned(buffer.mirror.get(start..start + buffer.stride())?);
+        Some(params.wind)
     }
 
     /// The anime character block in `slot` of that family's buffer, as the GPU will hold it: what

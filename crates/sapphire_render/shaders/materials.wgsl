@@ -132,19 +132,23 @@ const ENVIRONMENT_EMISSION: u32 = 4u;
 const ENVIRONMENT_FLAG_ALPHA_TEST: u32 = 256u;
 const ENVIRONMENT_FLAG_TRANSPARENT: u32 = 512u;
 
-// --- Foliage (`FoliageParams`): NPR leaves and grass, W6's shader.
+// --- Foliage (`FoliageParams`): NPR leaves, canopies and grass, W6's shader (foliage.wgsl).
 
 struct FoliageParams {
     base_color: vec4<f32>,
-    // x: alpha cutoff; y: wrap; z: terminator width; w: canopy occlusion.
+    // x: alpha cutoff (0: opaque); y: wrap; z: terminator width; w: its growth per meter.
     shading: vec4<f32>,
+    // rgb: multiplies the frame's shadow tint.
     shadow_tint: vec4<f32>,
     // rgb: translucency color × strength; a: power.
     translucency: vec4<f32>,
+    // rgb: the gradient's root color; a: canopy occlusion.
     gradient_root: vec4<f32>,
+    // rgb: the gradient's tip color.
     gradient_tip: vec4<f32>,
-    // x: sway; y: bend; z: flutter; w: flutter frequency.
+    // x: sway; y: bend; z: flutter, in meters at unit wind; w: flutter frequency.
     wind: vec4<f32>,
+    // x: desaturation start; y: end; z: amount.
     distance: vec4<f32>,
     modes: vec4<u32>,
     swizzles: vec4<u32>,

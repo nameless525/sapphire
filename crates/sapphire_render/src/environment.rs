@@ -10,6 +10,9 @@
 //! (R4) fill. Its materials are cooked
 //! [`EnvironmentMaterial`](sapphire_assets::material::EnvironmentMaterial)s, drawn on meshes
 //! beside the anime character family's (see the crate docs, "Material families on meshes").
+//! Foliage (M1 W6, [`crate::foliage`]) is lit by the same model, sharing its wrap and distance
+//! stylization (`wrapped`, `distance_amount`, which moved unchanged into `frame.wgsl`), its
+//! terminator remap and time of day's shadow tint, so trees stand in the world's picture.
 //!
 //! # Tiers
 //!
@@ -33,7 +36,6 @@
 //!   colors on top of the fog (M1 W3), and the painterly lower-mip read of distant surfaces.
 //! - **Screen-space edges** for the environment, from the prepass's normals and depth: the
 //!   desktop option the tiers carry as `screen_space_outlines`.
-//! - **Foliage** (W6) shares the terminator and wrap with its own NPR family.
 
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};

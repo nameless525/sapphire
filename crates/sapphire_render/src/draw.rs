@@ -1,7 +1,8 @@
 //! Recording a pass's mesh draws on the CPU-driven path (see the crate docs): each draw binds
 //! its streams and its draw record by buffer offset, with `base_vertex` 0 and one instance.
 //!
-//! A static mesh's streams come from its slab at the mesh's first vertex; a skinned or morphed
+//! A static mesh's streams come from its slab at the mesh's first vertex, and its foliage stream
+//! (M1 W6) from the pool's foliage buffer at the mesh's first element; a skinned or morphed
 //! instance's positions and normals from its skinning outputs, and its surface stream from its
 //! mesh's sources. Each pass binds only the streams it reads ([`MeshPass`]). Streams are rebound
 //! only when the next draw's mesh (or deformed instance) differs, so a mesh's submeshes share
@@ -16,7 +17,7 @@
 use std::ops::Range;
 
 use sapphire_assets::material::MaterialFlags;
-use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
+use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
 use crate::buffer::GrowableBuffer;
@@ -29,6 +30,7 @@ use crate::skinning::SkinnedOutputs;
 
 const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_STRIDE: u64 = size_of::<VertexSurface>() as u64;
+const FOLIAGE_STRIDE: u64 = size_of::<VertexFoliage>() as u64;
 const DRAW_STRIDE: u64 = size_of::<DrawData>() as u64;
 
 /// What a frame's mesh draws read, shared by every pass that draws meshes.
@@ -162,6 +164,11 @@ impl MeshDraws<'_> {
             if kind.reads_surface() {
                 pass.set_vertex_buffer(slot::SURFACE, slab.surface().slice(vertex * SURFACE_STRIDE..));
             }
+            if kind.reads_foliage() {
+                // The mesh's foliage stream, numbered apart from the slab's vertices.
+                let foliage = u64::from(command.foliage) * FOLIAGE_STRIDE;
+                pass.set_vertex_buffer(slot::FOLIAGE, self.meshes.foliage_buffer().slice(foliage..));
+            }
             bound.streams = Some(streams);
         }
         self.draw(pass, command.draw_id, command.indices.clone());
@@ -190,6 +197,7 @@ impl MeshDraws<'_> {
         set: DrawSet,
         instance: impl Fn(u32) -> bool,
     ) {
+        debug_assert!(!kind.reads_foliage(), "foliage draws on static meshes alone");
         let mut bound = Bound::default();
         for command in &self.list.deformed[variant.index()] {
             if !self.includes(set, command.draw_id, command.material, command.outline)

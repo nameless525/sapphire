@@ -31,6 +31,10 @@ pub enum MeshError {
     ReservedNotZero { vertex: usize },
     #[error("vertex {vertex} sets reserved flag bits ({bits:#04x})")]
     ReservedFlags { vertex: usize, bits: u8 },
+    #[error("the foliage stream holds {found} elements for {vertex_count} vertices, not none or one each")]
+    FoliageLength { found: usize, vertex_count: usize },
+    #[error("vertex {vertex} sets the foliage stream's reserved bytes")]
+    ReservedFoliage { vertex: usize },
     #[error("index count {0} is not a multiple of 3")]
     NotTriangles(usize),
     #[error("index {index} at position {position} is out of range for {vertex_count} vertices")]
@@ -211,6 +215,15 @@ impl ArchivedVertexStreams {
         let reserved = |surface: &VertexSurface| surface.flags_bits() & VertexFlags::RESERVED_MASK;
         if let Some(vertex) = self.surface.iter().position(|surface| reserved(surface) != 0) {
             return Err(MeshError::ReservedFlags { vertex, bits: self.surface[vertex].flags_bits() });
+        }
+        let foliage = self.foliage.len();
+        if foliage != 0 && foliage != positions {
+            return Err(MeshError::FoliageLength { found: foliage, vertex_count: positions });
+        }
+        // Reserved for M2's camera-facing leaf clusters, as the flag bits above are for later
+        // character data.
+        if let Some(vertex) = self.foliage.iter().position(|foliage| foliage.reserved() != [0; 3]) {
+            return Err(MeshError::ReservedFoliage { vertex });
         }
         match &self.positions {
             ArchivedPositions::Quantized(values) => {

@@ -12,9 +12,10 @@
 //   2  scene   persistent scene buffers: instances, and the parameter buffer of the material
 //              family the pass draws (materials.wgsl): the anime character family's is
 //              `materials` below, the environment family's `environment_materials`
-//              (environment.wgsl)
-//   3  material one material's textures and samplers, per family (anime_character.wgsl and
-//              environment.wgsl declare their families')
+//              (environment.wgsl), the foliage family's `foliage_materials` with the frame's
+//              wind at binding 2 (foliage.wgsl)
+//   3  material one material's textures and samplers, per family (anime_character.wgsl,
+//              environment.wgsl and foliage.wgsl declare their families')
 //
 // Conventions: right-handed world, Y up; reverse-Z depth (near = 1, infinity = 0); all
 // colors linear HDR light, unclamped: passes write `Rgba16Float` scene color, which post.wgsl
@@ -512,6 +513,21 @@ fn light_step(edge: f32, width: f32, x: f32) -> f32 {
 // tones instead of darkening them.
 fn occluded(n_dot_l: f32, occlusion: f32) -> f32 {
     return n_dot_l + (occlusion - 1.0) * (n_dot_l + 1.0);
+}
+
+// The world's light model: the environment shader's (M1 W4), which foliage shares (M1 W6).
+
+// The lit side's falloff toward a light at `n_dot_l`: Lambert's wrapped by `wrap`, 0 at
+// N·L = -wrap and 1 facing the light.
+fn wrapped(n_dot_l: f32, wrap: f32) -> f32 {
+    return saturate((n_dot_l + wrap) / (1.0 + wrap));
+}
+
+// How far distance stylization has gone at `distance` meters: 0 up to the start (`x`), easing to
+// 1 at the end (`y`).
+fn distance_amount(distance: f32, stylization: vec4<f32>) -> f32 {
+    let t = saturate((distance - stylization.x) / max(stylization.y - stylization.x, 1e-3));
+    return t * t * (3.0 - 2.0 * t);
 }
 
 // The normal map's tangent-space normal in world space, by a tangent frame built from the

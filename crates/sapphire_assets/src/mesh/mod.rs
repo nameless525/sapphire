@@ -24,11 +24,12 @@
 //! | positions (alternative) | 12 | f32 xyz ([`FloatPosition`]) | none |
 //! | shading | 8 | normal (object space) and outline normal (in the normal's tangent frame, [`outline_frame`]), octahedral snorm16 × 2 each ([`VertexShading`]) | < 0.008° (outline < 0.016°) |
 //! | surface | 8 | UV unorm16 × 2 across [`VertexStreams::uv_bounds`], vertex color RGB unorm8, [`VertexFlags`] u8 ([`VertexSurface`]) | `range / 131 070`: 0.016 texels of a 2K map |
+//! | foliage (optional) | 8 | wind weights and phase unorm8 × 4, the gradient coordinate unorm8, three reserved bytes ([`VertexFoliage`]) | 1/510 |
 //!
-//! That is 24 bytes a vertex where M0 read 48. The element docs give the reasons for each
-//! encoding. [`PositionFormat::Float32`] is for meshes whose extent makes 16 bits too coarse,
-//! or whose edges must meet a neighbor's exactly (quantizing two meshes across different
-//! bounds can open hairline cracks between them).
+//! That is 24 bytes a vertex where M0 read 48, and 32 for foliage. The element docs give the
+//! reasons for each encoding. [`PositionFormat::Float32`] is for meshes whose extent makes 16
+//! bits too coarse, or whose edges must meet a neighbor's exactly (quantizing two meshes across
+//! different bounds can open hairline cracks between them).
 //!
 //! # Vertex color and flags
 //!
@@ -44,6 +45,17 @@
 //! A per-vertex byte of [`VertexFlags`] follows: the vertex's material ID (the region it
 //! shades with when its material has no control map), and reserved bits for faces and eyes.
 //! Both share the surface stream's second word.
+//!
+//! # Foliage (M1 W6)
+//!
+//! A mesh cooked with foliage import settings carries a fourth stream, one [`VertexFoliage`]
+//! per vertex ([`FoliageVertex`] at full precision): the weights of the foliage shader's three
+//! levels of wind (trunk sway, branch bend, leaf flutter), the phase that keeps branches from
+//! moving in step, and the coordinate of the material's color gradient (root to tip, or the
+//! canopy's inside to its outside). Other meshes leave it empty. The cooker computes them with
+//! the volume normals it transfers onto leaf cards (`sapphire_pipeline::bake::foliage`); the
+//! foliage stream is the only vertex data that isn't the same for every family, so it is a
+//! stream of its own rather than a reading of the vertex color.
 //!
 //! # LODs
 //!
@@ -87,7 +99,8 @@ use serde::{Deserialize, Serialize};
 
 pub use encoding::{
     FloatPosition, OUTLINE_FRAME_AXIS, OUTLINE_FRAME_FALLBACK, OUTLINE_FRAME_MIN_CROSS, QuantizedPosition,
-    VERTEX_COLOR_NEUTRAL, VertexFlags, VertexShading, VertexSurface, oct_decode, oct_encode, outline_frame,
+    VERTEX_COLOR_NEUTRAL, VertexFlags, VertexFoliage, VertexShading, VertexSurface, oct_decode, oct_encode,
+    outline_frame,
 };
 pub use morph::{ArchivedMorphTarget, MorphDelta, MorphTarget};
 pub use skin::{
@@ -122,24 +135,26 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 9: embedded materials are `Material::VERSION` 6 (M1 C5's rim, hair shadow and
-    /// eyes-through-hair settings). 8: embedded materials are `Material::VERSION` 5 (M1 W3's fog
-    /// card facing). 7: the outline normal is stored in the tangent frame of the shading normal
-    /// ([`outline_frame`], M1 C4), and embedded materials are `Material::VERSION` 4 (outlines v2's
-    /// settings). 6: embedded materials of `Material::VERSION` 3 (M1 C3's face settings and
-    /// expression slot). 5: embedded materials pack the character light rig's region GI weights
-    /// (M1 C2, `Material::VERSION` 2). 4: the anime character vertex contract (M1 C1): vertex
-    /// color RGB is linear data (AO, outline width, outline Z offset) instead of an sRGB tint, and
-    /// the outline-width scale moved from alpha to G, whose byte holds [`VertexFlags`] now. 3 added
-    /// material slots (M1 A3); 2 embedded M0's fixed 64-byte material parameters; 1 was M0's flat
-    /// `SPMS` layout of 48-byte float vertices.
-    const VERSION: u32 = 9;
+    /// 10: the optional foliage stream ([`VertexStreams::foliage`], M1 W6), and embedded
+    /// materials of `Material::VERSION` 7 (the foliage block's terminator growth). 9: embedded
+    /// materials are `Material::VERSION` 6 (M1 C5's rim, hair shadow and eyes-through-hair
+    /// settings). 8: embedded materials are `Material::VERSION` 5 (M1 W3's fog card facing). 7: the
+    /// outline normal is stored in the tangent frame of the shading normal ([`outline_frame`], M1
+    /// C4), and embedded materials are `Material::VERSION` 4 (outlines v2's settings). 6: embedded
+    /// materials of `Material::VERSION` 3 (M1 C3's face settings and expression slot). 5: embedded
+    /// materials pack the character light rig's region GI weights (M1 C2, `Material::VERSION` 2).
+    /// 4: the anime character vertex contract (M1 C1): vertex color RGB is linear data (AO,
+    /// outline width, outline Z offset) instead of an sRGB tint, and the outline-width scale moved
+    /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
+    /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
+    /// float vertices.
+    const VERSION: u32 = 10;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 9 && Material::VERSION == 6,
+    Mesh::VERSION == 10 && Material::VERSION == 7,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 
@@ -154,6 +169,9 @@ pub struct VertexStreams {
     pub positions: Positions,
     pub shading: Vec<VertexShading>,
     pub surface: Vec<VertexSurface>,
+    /// Foliage meshes' wind weights and gradient coordinates, one per vertex (M1 W6); empty for
+    /// every other mesh.
+    pub foliage: Vec<VertexFoliage>,
 }
 
 /// The position stream, in either [`PositionFormat`].
@@ -323,6 +341,37 @@ impl Default for Vertex {
     }
 }
 
+/// A vertex's foliage data at full precision (M1 W6): what the cooker computes and the foliage
+/// stream stores ([`VertexFoliage`]). Every field is 0 to 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FoliageVertex {
+    /// How much of the trunk's sway the vertex takes: 0 at the root, 1 at the top.
+    pub sway: f32,
+    /// How much its branch bends it: 0 on the trunk, 1 at a branch's tip.
+    pub bend: f32,
+    /// How much it flutters: 0 on wood, 1 on a leaf card or a blade's tip.
+    pub flutter: f32,
+    /// Where its branch's swing is in its cycle, as a fraction of one, so branches don't move in
+    /// step. Phases wrap: 0 and 1 are the same.
+    pub phase: f32,
+    /// The material's color gradient coordinate: 0 at the root, or deep inside the canopy; 1 at
+    /// the tip, or on the canopy's outer surface.
+    pub gradient: f32,
+}
+
+impl FoliageVertex {
+    /// The packed element.
+    pub fn encode(&self) -> VertexFoliage {
+        VertexFoliage::new([self.sway, self.bend, self.flutter, self.phase], self.gradient)
+    }
+
+    /// The data a packed element holds, as the shaders read it.
+    pub fn decode(foliage: VertexFoliage) -> Self {
+        let [sway, bend, flutter, phase] = foliage.wind();
+        Self { sway, bend, flutter, phase, gradient: foliage.gradient() }
+    }
+}
+
 impl VertexStreams {
     /// Packs `vertices`, with bounds that fit them exactly.
     pub fn pack(vertices: &[Vertex], format: PositionFormat) -> Self {
@@ -345,7 +394,25 @@ impl VertexStreams {
                 .iter()
                 .map(|v| VertexSurface::new(v.uv, &uv_bounds, v.color, v.flags))
                 .collect(),
+            foliage: Vec::new(),
         }
+    }
+
+    /// The streams with a foliage stream packed from `foliage`, one per vertex (M1 W6).
+    ///
+    /// # Panics
+    ///
+    /// If `foliage` doesn't hold one entry per vertex.
+    pub fn with_foliage(mut self, foliage: &[FoliageVertex]) -> Self {
+        assert_eq!(foliage.len(), self.len(), "foliage data for every vertex");
+        self.foliage = foliage.iter().map(FoliageVertex::encode).collect();
+        self
+    }
+
+    /// Vertex `index`'s foliage data, decoded as the vertex shaders decode it; `None` without a
+    /// foliage stream.
+    pub fn foliage_vertex(&self, index: usize) -> Option<FoliageVertex> {
+        self.foliage.get(index).copied().map(FoliageVertex::decode)
     }
 
     /// Vertices in the streams.
@@ -419,6 +486,11 @@ impl ArchivedVertexStreams {
 
     pub fn surface_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(self.surface.as_slice())
+    }
+
+    /// The foliage stream as the GPU reads it, 8 bytes a vertex; empty without one.
+    pub fn foliage_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(self.foliage.as_slice())
     }
 
     /// `(offset, scale)` such that an object-space position is `offset + scale × p`, with `p`

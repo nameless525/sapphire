@@ -28,6 +28,10 @@
 //!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
 //!   to show it ([`Scene::spawn_environment`], [`crate::environment`]); with fog, its fog cards,
 //!   static entities of their own ([`Scene::spawn_fog_cards`]).
+//! - **The plants** (`--foliage`): trees, bushes and grass patches in the courtyard, static
+//!   entities with a [`RenderMesh`] and their placement, which the wind sways in the shader,
+//!   and a camera for the view asked for ([`Scene::spawn_foliage`], [`Scene::frame_foliage`],
+//!   [`crate::foliage`]).
 //! - **The outline row** (`--outline-row`): more of the character behind it, out to past the
 //!   outline cutoff, each a character with the default light rig; and **the hard-edged sample**
 //!   (`--hard-edges`), which the camera frames instead of the character
@@ -47,14 +51,15 @@
 //!   probe, and writes them; the player's filter strength and sharpening (`post.filter_strength`,
 //!   `post.sharpening` or `--sharpening`) go on top, then the zone's sky material, and
 //!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient, `--fog off`'s clear air (M1 W3)
-//!   or `--plain-post`'s post without its compositing layers (M1 P2), if set, and last the
-//!   effect stack's effects for the frame (M1 P3: `--post-effect`, the overlay's effects panel).
-//!   After `Extract` has posed and extracted the instances, it resolves each character's light
-//!   rig for the frame's camera into the packet's characters (M1 C2), with its face (M1 C3) and
-//!   its body (M1 R4): the turntable's head turning with it and its body a capsule from its feet
-//!   to its head, each rim rig figure's key turned to its angles, and each face rig head lit
-//!   from its own angles, its body a sphere around it. Both run there rather than as `Extract`
-//!   systems, which would cost an allocation a frame each.
+//!   or `--plain-post`'s post without its compositing layers (M1 P2), if set, the scene's wind
+//!   (M1 W6, calm unless `--foliage` or `--wind` set one), and last the effect stack's effects for
+//!   the frame (M1 P3: `--post-effect`, the overlay's effects panel). After `Extract` has posed
+//!   and extracted the instances, it resolves each character's light rig for the frame's camera
+//!   into the packet's characters (M1 C2), with its face (M1 C3) and its body (M1 R4): the
+//!   turntable's head turning with it and its body a capsule from its feet to its head, each rim
+//!   rig figure's key turned to its angles, and each face rig head lit from its own angles, its
+//!   body a sphere around it. Both run there rather than as `Extract` systems, which would cost
+//!   an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -71,7 +76,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, Fog, FramePacket, HeadBasis, LightKind, LocalLight,
-    MaterialHandle, MeshHandle, SkyLayers, ViewData,
+    MaterialHandle, MeshHandle, SkyLayers, ViewData, Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
@@ -82,6 +87,7 @@ use crate::LOG_TARGET;
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
+use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::input::SimActions;
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
@@ -149,6 +155,11 @@ pub(crate) struct Scene {
     /// The courtyard's fog cards, with `--environment` and fog, each with its mesh's index in
     /// [`environment::FOG_CARDS`].
     fog_cards: Vec<(Entity, usize)>,
+    /// The plants, with `--foliage`, and the view it asked for.
+    foliage: Vec<(Entity, Plant)>,
+    foliage_view: Option<FoliageView>,
+    /// The air foliage moves in: calm unless `--foliage` or `--wind` set it.
+    wind: Wind,
     /// The outline row, with `--outline-row`.
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
@@ -230,6 +241,9 @@ impl Scene {
             rim_backdrop: Vec::new(),
             courtyard: None,
             fog_cards: Vec::new(),
+            foliage: Vec::new(),
+            foliage_view: None,
+            wind: Wind::default(),
             outline_row: None,
             hard_edges: None,
             stage: Vec::new(),
@@ -576,6 +590,40 @@ impl Scene {
         }
     }
 
+    /// Plants the foliage samples (`--foliage`) in the courtyard, drawing `meshes`, for `view`,
+    /// which [`Self::frame_foliage`] frames. They never move but for the wind, so they are
+    /// extracted once.
+    pub fn spawn_foliage(&mut self, view: FoliageView, meshes: FoliageMeshes) {
+        let world = self.ecs.world_mut();
+        for (plant, place) in foliage::placements() {
+            let entity = world.spawn((RenderMesh(meshes.get(plant)), RenderTransform(place))).id();
+            self.foliage.push((entity, plant));
+        }
+        self.foliage_view = Some(view);
+    }
+
+    /// Points the camera at the plants as their view asks, the backlit view toward the key light
+    /// at the scene's hour; nothing without foliage. Call after the hour is set.
+    pub fn frame_foliage(&mut self) {
+        let Some(view) = self.foliage_view else { return };
+        let mut packet = FramePacket::default();
+        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
+        self.ecs.world_mut().insert_resource(foliage::camera(view, -packet.sun.direction));
+    }
+
+    /// Sets the meshes the plants draw again: after GPU device loss.
+    pub fn set_foliage_meshes(&mut self, meshes: FoliageMeshes) {
+        for &(entity, plant) in &self.foliage {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.get(plant)));
+        }
+    }
+
+    /// Sets the wind foliage moves in.
+    pub fn set_wind(&mut self, wind: Wind) {
+        self.wind = wind;
+    }
+
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -647,7 +695,7 @@ impl Scene {
         self.ecs.presentation(alpha);
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
-        let (plain_post, sharpening) = (self.plain_post, self.sharpening);
+        let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             let camera = world.resource::<OrbitCamera>();
@@ -676,6 +724,7 @@ impl Scene {
             if plain_post {
                 packet.post = packet.post.plain();
             }
+            packet.wind = wind;
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = world.resource_mut::<EffectStack>().resolve(alpha);
         });

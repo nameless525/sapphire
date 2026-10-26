@@ -79,6 +79,7 @@ fn element_sizes_are_stable() {
     assert_eq!(size_of::<FloatPosition>(), 12);
     assert_eq!(size_of::<VertexShading>(), 8);
     assert_eq!(size_of::<VertexSurface>(), 8);
+    assert_eq!(size_of::<VertexFoliage>(), 8);
     assert_eq!(size_of::<Influence8>(), 8);
     assert_eq!(size_of::<Influence16>(), 12);
     assert_eq!(size_of::<MorphDelta>(), 16);
@@ -124,6 +125,59 @@ fn cooked_meshes_round_trip_and_are_read_in_place() {
     }
 }
 
+/// Foliage data for the quad's four vertices: the top swaying, the right side bending.
+fn quad_foliage() -> [FoliageVertex; 4] {
+    let foliage = |x: f32, y: f32| FoliageVertex {
+        sway: y / 2.0,
+        bend: x,
+        flutter: x * y / 2.0,
+        phase: 0.25 * (x + y),
+        gradient: 1.0 - y / 2.0,
+    };
+    [foliage(0.0, 0.0), foliage(1.0, 0.0), foliage(1.0, 2.0), foliage(0.0, 2.0)]
+}
+
+#[test]
+fn foliage_streams_round_trip_and_are_optional() {
+    let plain = quad(PositionFormat::Unorm16);
+    assert!(plain.streams.foliage.is_empty());
+    let bytes = plain.to_cooked().unwrap();
+    assert!(Mesh::read(&bytes).unwrap().streams.foliage_bytes().is_empty());
+
+    let foliage = quad_foliage();
+    let mut mesh = quad(PositionFormat::Unorm16);
+    mesh.streams = mesh.streams.with_foliage(&foliage);
+    let bytes = mesh.to_cooked().unwrap();
+    let archived = Mesh::read(&bytes).unwrap();
+    assert_eq!(archived.streams.foliage_bytes().len(), 4 * 8);
+    assert_eq!(Mesh::from_cooked(&bytes).unwrap(), mesh);
+    for (index, expected) in foliage.iter().enumerate() {
+        let decoded = mesh.streams.foliage_vertex(index).unwrap();
+        let pairs = [
+            (decoded.sway, expected.sway),
+            (decoded.bend, expected.bend),
+            (decoded.flutter, expected.flutter),
+            (decoded.phase, expected.phase),
+            (decoded.gradient, expected.gradient),
+        ];
+        assert!(pairs.iter().all(|(a, b)| (a - b).abs() <= 0.5 / 255.0 + 1e-6), "{decoded:?} {expected:?}");
+    }
+    assert_eq!(mesh.streams.foliage_vertex(4), None);
+    assert_eq!(plain.streams.foliage_vertex(0), None);
+}
+
+#[test]
+fn foliage_streams_hold_one_element_a_vertex_with_reserved_bytes_clear() {
+    let mut short = quad(PositionFormat::Unorm16);
+    short.streams = short.streams.with_foliage(&quad_foliage());
+    short.streams.foliage.pop();
+    assert!(matches!(read_error(&short), MeshError::FoliageLength { found: 3, vertex_count: 4 }));
+    let mut reserved = quad(PositionFormat::Unorm16);
+    reserved.streams = reserved.streams.with_foliage(&quad_foliage());
+    reserved.streams.foliage[1] = VertexFoliage::from_bytes([0, 0, 0, 0, 0, 0, 7, 0]);
+    assert!(matches!(read_error(&reserved), MeshError::ReservedFoliage { vertex: 1 }));
+}
+
 #[test]
 fn packing_bounds_fit_the_vertices() {
     let mesh = quad(PositionFormat::Unorm16);
@@ -156,7 +210,15 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 9 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 10 }))
+    ));
+    // The previous format (M1 C5's, before the foliage stream) is stale too: cooked meshes don't
+    // migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
+    let mut previous = bytes.clone();
+    previous[16] = 9;
+    assert!(matches!(
+        Mesh::read(&previous),
+        Err(MeshError::Cooked(CookedError::Stale { found: 9, current: 10 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;

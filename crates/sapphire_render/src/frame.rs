@@ -11,7 +11,8 @@
 //!   character rig's key light, the day/night factor and post-processing. Time of day resolves
 //!   all of them from one set of keys (`sapphire_world::tod`, M1 W1; look pillar 1); the
 //!   renderer sees only the values. The weather's wetness ([`Weather`]) joins them, dry until
-//!   weather fills it.
+//!   weather fills it, and the wind foliage sways in ([`Wind`], M1 W6), calm until the world
+//!   sends one.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
@@ -89,6 +90,8 @@ pub struct FramePacket {
     pub shadow_tint: Vec3,
     /// The weather's wetness inputs. The default is dry.
     pub weather: Weather,
+    /// The wind foliage sways in (M1 W6). The default is calm.
+    pub wind: Wind,
     /// Time of day's curve for the character rig's key light: the world resolves each
     /// character's [`CharacterLighting`] from it, so the renderer reads it only through
     /// [`Self::characters`].
@@ -175,6 +178,7 @@ impl FramePacket {
             fog,
             shadow_tint,
             weather,
+            wind,
             character_light,
             day_night,
             time_seconds,
@@ -197,6 +201,7 @@ impl FramePacket {
         *fog = Fog::default();
         *shadow_tint = Vec3::ZERO;
         *weather = Weather::default();
+        *wind = Wind::default();
         *character_light = CharacterLight::default();
         *day_night = 0.0;
         *time_seconds = 0.0;
@@ -638,6 +643,29 @@ pub struct Weather {
     pub puddles: f32,
 }
 
+/// The wind foliage sways in (M1 W6, the [`foliage`](crate::foliage) module): resolved by the
+/// world each frame (a zone's wind, its gusts through the day), and plain data here (rule R4).
+/// Foliage materials say how far each level of a plant moves at unit strength; the time is the
+/// packet's [`FramePacket::time_seconds`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wind {
+    /// The direction the wind blows toward. Only its horizontal part counts; with none the air
+    /// is calm.
+    pub direction: Vec3,
+    /// 0 is calm and 1 the strength materials' responses are authored at; a gale is a few.
+    pub strength: f32,
+    /// How much gusts swell and ease the strength as they travel downwind, 0 (steady) to 1
+    /// (from calm to double).
+    pub gustiness: f32,
+}
+
+impl Default for Wind {
+    /// Calm: foliage stands still.
+    fn default() -> Self {
+        Self { direction: Vec3::X, strength: 0.0, gustiness: 0.0 }
+    }
+}
+
 /// Time of day's curve for the character rig's key light (spec §5.12 "Character light rig").
 /// Characters are lit by a virtual key light of their own, whose color and brightness time of
 /// day curves separately from the world's (as WuWa fits its character brightness across the
@@ -922,6 +950,7 @@ mod tests {
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
         packet.weather = Weather { wetness: 0.5, puddles: 0.25 };
+        packet.wind = Wind { direction: Vec3::Z, strength: 1.5, gustiness: 0.5 };
         packet.day_night = 1.0;
         packet.time_seconds = 1.5;
         packet.lights.push(LocalLight {

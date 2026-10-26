@@ -76,6 +76,11 @@
 //!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
 //!   M1 W4), seen from farther back, with fog cards (mist across the valley, haze among the
 //!   pillars; M1 W3) unless `--fog off`.
+//! - `--foliage grove|backlit|ground`: plant two trees, three bushes and patches of grass in the
+//!   courtyard (implying `--environment`), drawn by the foliage shader in a breeze (M1 W6), and
+//!   show the grove whole, the big tree against the key light (light through its leaves), or the
+//!   grass and a bush up close.
+//! - `--wind <0..4>`: the wind's strength instead of `--foliage`'s breeze of 1; 0 is calm.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -155,6 +160,7 @@ mod dev;
 mod environment;
 mod extract;
 mod faces;
+mod foliage;
 mod input;
 #[cfg(feature = "dev")]
 mod link;

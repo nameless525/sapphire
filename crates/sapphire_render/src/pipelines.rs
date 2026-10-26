@@ -1,13 +1,14 @@
 //! Bind group layouts, vertex layouts and render pipelines for the scene passes and the
 //! prepasses: the surface variants of the material families meshes draw with (the anime character
-//! shader's static permutations, the environment shader's and fog cards'), and their outline
-//! hulls.
+//! shader's static permutations, the environment shader's, fog cards' and foliage's), the anime
+//! characters' outline hulls, and foliage's own scene prepass and shadow casters, which displace
+//! by the wind and cut alpha-tested cards out.
 
 use std::mem::offset_of;
 use std::num::NonZeroU64;
 
 use sapphire_assets::material::{MaterialFamily, MaterialFlags};
-use sapphire_assets::mesh::{PositionFormat, VertexShading, VertexSurface};
+use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
@@ -15,10 +16,11 @@ use crate::character_prepass;
 use crate::characters::GpuCharacter;
 use crate::environment::{self, EnvironmentSettings};
 use crate::fog;
+use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shaders::{self, Program, ShaderSources};
-use crate::shadows::{ShadowSettings, ShadowUniforms};
+use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
 /// the way out with an infinite far plane.
@@ -52,7 +54,8 @@ fn scene_prepass_targets(outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] 
 }
 
 /// Vertex buffer slots. Every mesh pass binds the draw record and positions; a position-only
-/// pass (shadows, the character prepass) needs nothing more, so the streams it skips come last.
+/// pass (shadows, the character prepass) needs nothing more, so the streams it skips come last,
+/// foliage's own stream after them all.
 pub(crate) mod slot {
     /// The draw record, stepped per instance.
     pub const DRAW: u32 = 0;
@@ -65,6 +68,8 @@ pub(crate) mod slot {
     /// Positions when the instance was last drawn, for velocity (the scene prepass): the other
     /// half of a skinned instance's outputs, or slot 1's buffer again.
     pub const PREVIOUS_POSITIONS: u32 = 4;
+    /// The foliage stream (M1 W6): wind weights, phase and gradient, of foliage passes alone.
+    pub const FOLIAGE: u32 = 5;
 }
 
 /// Slot 0: the draw record (WGSL `DrawRecord`).
@@ -95,6 +100,10 @@ pub(crate) const SHADING_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
 /// Slot 3: [`VertexSurface`].
 pub(crate) const SURFACE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     [attribute(3, wgpu::VertexFormat::Unorm16x2, 0), attribute(4, wgpu::VertexFormat::Unorm8x4, 4)];
+
+/// Slot 5: [`VertexFoliage`], its weights and phase, then its gradient and reserved bytes.
+pub(crate) const FOLIAGE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+    [attribute(11, wgpu::VertexFormat::Unorm8x4, 0), attribute(12, wgpu::VertexFormat::Unorm8x4, 4)];
 
 /// The slot 1 attributes for meshes in `format`.
 pub(crate) fn position_attributes(format: PositionFormat) -> &'static [wgpu::VertexAttribute] {
@@ -136,30 +145,45 @@ pub(crate) enum MeshPass {
     OutlinePrepass,
     /// Positions only: the shadow casters (M1 R4).
     Shadow,
+    /// Foliage's main pass draws (M1 W6): the main pass's streams and the foliage stream.
+    Foliage,
+    /// Foliage in the scene prepass: every stream, the surface stream for the alpha test's UVs
+    /// and the previous positions for velocity.
+    FoliagePrepass,
+    /// Foliage's shadow casters: positions, the surface stream's UVs and the foliage stream.
+    FoliageShadow,
 }
 
 impl MeshPass {
     /// The streams the pass binds besides the draw record and positions.
     pub(crate) fn reads_shading(self) -> bool {
-        !matches!(self, Self::CharacterPrepass | Self::Shadow)
+        !matches!(self, Self::CharacterPrepass | Self::Shadow | Self::FoliageShadow)
     }
 
     pub(crate) fn reads_surface(self) -> bool {
-        matches!(self, Self::Main | Self::OutlinePrepass)
+        matches!(
+            self,
+            Self::Main | Self::OutlinePrepass | Self::Foliage | Self::FoliagePrepass | Self::FoliageShadow
+        )
     }
 
     pub(crate) fn reads_previous(self) -> bool {
-        matches!(self, Self::ScenePrepass | Self::OutlinePrepass)
+        matches!(self, Self::ScenePrepass | Self::OutlinePrepass | Self::FoliagePrepass)
     }
 
-    /// Whether the pass shades with materials, binding each draw's group 3: only the main pass;
-    /// the prepasses' layout leaves group 3 out.
+    pub(crate) fn reads_foliage(self) -> bool {
+        matches!(self, Self::Foliage | Self::FoliagePrepass | Self::FoliageShadow)
+    }
+
+    /// Whether the pass shades with materials, binding each draw's group 3: the main pass, and
+    /// foliage's every pass, whose alpha test reads the base color map; the other prepasses' and
+    /// casters' layouts leave group 3 out.
     pub(crate) fn binds_materials(self) -> bool {
-        self == Self::Main
+        matches!(self, Self::Main | Self::Foliage | Self::FoliagePrepass | Self::FoliageShadow)
     }
 
     /// The pass's vertex buffers for a mesh in `format`, in slot order.
-    pub(crate) fn buffers(self, format: PositionFormat) -> [Option<wgpu::VertexBufferLayout<'static>>; 5] {
+    pub(crate) fn buffers(self, format: PositionFormat) -> [Option<wgpu::VertexBufferLayout<'static>>; 6] {
         let vertex = |stride: usize, attributes| {
             Some(wgpu::VertexBufferLayout {
                 array_stride: stride as u64,
@@ -181,6 +205,7 @@ impl MeshPass {
             } else {
                 None
             },
+            if self.reads_foliage() { vertex(size_of::<VertexFoliage>(), &FOLIAGE_ATTRIBUTES) } else { None },
         ]
     }
 }
@@ -353,13 +378,21 @@ impl Part {
 
 /// The material families meshes draw with, each through pipelines of its own that bind its
 /// parameter buffer in the scene group (group 2, beside the instances) and its textures in
-/// group 3: the anime character family, the environment family (M1 W4) and fog cards (M1 W3),
-/// whose scene group also holds the depth they fade against. Foliage (W6) joins with its shader.
-pub(crate) const MESH_FAMILIES: [MaterialFamily; 3] =
-    [MaterialFamily::AnimeCharacter, MaterialFamily::Environment, MaterialFamily::FogCard];
+/// group 3: the anime character family, the environment family (M1 W4), fog cards (M1 W3), whose
+/// scene group also holds the depth they fade against, and foliage (M1 W6), whose scene group also
+/// holds the frame's wind.
+pub(crate) const MESH_FAMILIES: [MaterialFamily; 4] = [
+    MaterialFamily::AnimeCharacter,
+    MaterialFamily::Environment,
+    MaterialFamily::FogCard,
+    MaterialFamily::Foliage,
+];
 
 /// The fog card family's scene group binding of the depth cards fade against (`fog_card.wgsl`).
 pub(crate) const FOG_CARD_DEPTH_BINDING: u32 = 2;
+
+/// The foliage family's scene group binding of the frame's wind ([`WindUniforms`], `foliage.wgsl`).
+pub(crate) const FOLIAGE_WIND_BINDING: u32 = 2;
 
 /// What a surface's pipeline shades with: its material family's shader, and for anime characters
 /// the part that has a variant of its own.
@@ -369,19 +402,24 @@ pub(crate) enum Shading {
     Character(Part),
     /// The environment shader (`environment.wgsl`, M1 W4).
     Environment,
+    /// The foliage shader (`foliage.wgsl`, M1 W6).
+    Foliage,
     /// Fog cards (`fog_card.wgsl`, M1 W3): transparent alone.
     FogCard,
 }
 
 impl Shading {
     /// The shadings drawn at every coverage, in drawing order within one: characters, then the
-    /// world, whose pixels behind them depth then rejects. Fog cards are transparent alone.
-    pub(crate) const SURFACES: [Self; 5] = [
+    /// world (the environment, then foliage), whose pixels behind them depth then rejects.
+    /// Foliage is never transparent: its variant of that coverage has no draws and no pipeline.
+    /// Fog cards are transparent alone.
+    pub(crate) const SURFACES: [Self; 6] = [
         Self::Character(Part::Body),
         Self::Character(Part::Face),
         Self::Character(Part::Hair),
         Self::Character(Part::Eye),
         Self::Environment,
+        Self::Foliage,
     ];
 
     /// Its position in [`Self::SURFACES`], or past it for fog cards.
@@ -389,6 +427,7 @@ impl Shading {
         match self {
             Self::Character(part) => part.index(),
             Self::Environment => Part::ALL.len(),
+            Self::Foliage => Part::ALL.len() + 1,
             Self::FogCard => Self::SURFACES.len(),
         }
     }
@@ -398,8 +437,14 @@ impl Shading {
         match self {
             Self::Character(_) => MaterialFamily::AnimeCharacter,
             Self::Environment => MaterialFamily::Environment,
+            Self::Foliage => MaterialFamily::Foliage,
             Self::FogCard => MaterialFamily::FogCard,
         }
+    }
+
+    /// The streams its main pass draws read: foliage's add the foliage stream.
+    pub(crate) fn main_pass(self) -> MeshPass {
+        if self == Self::Foliage { MeshPass::Foliage } else { MeshPass::Main }
     }
 
     /// Its family's position in [`MESH_FAMILIES`]: the scene group its pipelines bind.
@@ -415,8 +460,9 @@ impl Shading {
 /// The surface pipelines one [`PositionFormat`] can draw with: a coverage, and a shading (the
 /// family's shader and, for anime characters, the part). For anime characters these are the
 /// permutation bits that change the shader or its render state today (see [`Permutation`]);
-/// environment materials vary by their coverage alone, and fog cards are always transparent.
-/// Outline hulls depend on the coverage alone, and only anime characters draw them.
+/// environment and foliage materials vary by their coverage alone, foliage is never transparent
+/// (its variant of that coverage has no draws and no pipeline), and fog cards are always
+/// transparent. Outline hulls depend on the coverage alone, and only anime characters draw them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SurfaceVariant {
     pub coverage: Coverage,
@@ -425,8 +471,8 @@ pub(crate) struct SurfaceVariant {
 
 impl SurfaceVariant {
     /// Every variant, in drawing order: by coverage, then shading, and fog cards last.
-    pub(crate) const ALL: [Self; 16] = {
-        let mut all = [Self::FOG_CARD; 16];
+    pub(crate) const ALL: [Self; 19] = {
+        let mut all = [Self::FOG_CARD; 19];
         let coverages = [Coverage::Opaque, Coverage::AlphaTest, Coverage::Transparent];
         let mut index = 0;
         while index < coverages.len() * Shading::SURFACES.len() {
@@ -436,9 +482,9 @@ impl SurfaceVariant {
         }
         all
     };
-    /// The variants that write depth: drawn first, and into the prepasses.
-    pub(crate) const DEPTH_WRITING: [Self; 10] = {
-        let mut variants = [Self::OPAQUE; 10];
+    /// The variants that write depth: drawn first, and into the prepasses and shadow maps.
+    pub(crate) const DEPTH_WRITING: [Self; 12] = {
+        let mut variants = [Self::OPAQUE; 12];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[index];
@@ -446,6 +492,25 @@ impl SurfaceVariant {
         }
         variants
     };
+    /// The depth-writing variants the shared scene prepass and shadow caster pipelines draw:
+    /// every family's but foliage's, whose own pipelines displace by the wind and cut alpha-tested
+    /// cards out ([`Self::FOLIAGE`]).
+    pub(crate) const SHARED_DEPTH: [Self; 10] = {
+        let mut variants = [Self::OPAQUE; 10];
+        let (mut from, mut to) = (0, 0);
+        while from < Self::DEPTH_WRITING.len() {
+            if !matches!(Self::DEPTH_WRITING[from].shading, Shading::Foliage) {
+                variants[to] = Self::DEPTH_WRITING[from];
+                to += 1;
+            }
+            from += 1;
+        }
+        assert!(to == variants.len(), "every depth-writing variant but foliage's");
+        variants
+    };
+    /// Foliage's variants, opaque and alpha-tested (M1 W6).
+    pub(crate) const FOLIAGE: [Self; 2] =
+        [Self::foliage(Coverage::Opaque), Self::foliage(Coverage::AlphaTest)];
     /// The anime character variants that write depth: what the character prepass draws, and
     /// the variants that can draw an outline hull.
     pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 8] = {
@@ -460,10 +525,10 @@ impl SurfaceVariant {
     };
     /// The variants that can draw an outline hull: the anime character's that write depth.
     pub(crate) const OUTLINED: [Self; 8] = Self::CHARACTER_DEPTH_WRITING;
-    /// The surfaces' variants blended over the frame after the sky; fog cards ([`Self::FOG_CARD`])
-    /// blend after them, sorted back to front.
-    pub(crate) const TRANSPARENT: [Self; 5] = {
-        let mut variants = [Self::OPAQUE; 5];
+    /// The surfaces' variants blended over the frame after the sky (foliage's never has draws);
+    /// fog cards ([`Self::FOG_CARD`]) blend after them, sorted back to front.
+    pub(crate) const TRANSPARENT: [Self; 6] = {
+        let mut variants = [Self::OPAQUE; 6];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[Self::DEPTH_WRITING.len() + index];
@@ -492,6 +557,10 @@ impl SurfaceVariant {
         Self { coverage, shading: Shading::Environment }
     }
 
+    pub(crate) const fn foliage(coverage: Coverage) -> Self {
+        Self { coverage, shading: Shading::Foliage }
+    }
+
     /// Its position in [`Self::ALL`].
     pub(crate) fn index(self) -> usize {
         match self.shading {
@@ -507,10 +576,15 @@ impl SurfaceVariant {
     }
 
     /// The surface shader's static permutation constants for the variant (`PERMUTATION_*` in
-    /// `anime_character.wgsl` and `environment.wgsl`): its coverage's ([`Coverage::constants`],
-    /// which outlines take alone), then its part's. Environment pipelines add their tier's
-    /// specular model. Fog cards have none (their pipelines add the depth fade).
+    /// `anime_character.wgsl`, `environment.wgsl` and `foliage.wgsl`): its coverage's
+    /// ([`Coverage::constants`], which outlines take alone), then its part's. Environment
+    /// pipelines add their tier's specular model, foliage's their tier's settings. Fog cards have
+    /// none (their pipelines add the depth fade).
     pub(crate) fn constants(self) -> Vec<(&'static str, f64)> {
+        debug_assert!(
+            self != Self::foliage(Coverage::Transparent),
+            "foliage is never transparent (`mesh_draw`)"
+        );
         let mut constants = match self.shading {
             Shading::FogCard => Vec::new(),
             _ => self.coverage.constants().to_vec(),
@@ -532,8 +606,9 @@ impl SurfaceVariant {
 /// character materials go by their static permutation ([`Permutation`]); environment materials
 /// by their coverage, with no hull (decision M1 W4: the environment's edges are the spec's
 /// screen-space edge pass, a later desktop option, and props that should read like characters
-/// use the anime character family); fog cards are transparent, with no hull. `None` for a family
-/// meshes don't draw with.
+/// use the anime character family); foliage by its alpha test, never transparent and with no
+/// hull, on static meshes only (uploads refuse it on skinned or morphed ones); fog cards are
+/// transparent, with no hull. `None` for a family meshes don't draw with.
 pub(crate) fn mesh_draw(
     family: MaterialFamily,
     flags: MaterialFlags,
@@ -547,6 +622,10 @@ pub(crate) fn mesh_draw(
         }
         MaterialFamily::Environment => Some((SurfaceVariant::environment(Coverage::of_flags(flags)), false)),
         MaterialFamily::FogCard => Some((SurfaceVariant::FOG_CARD, false)),
+        MaterialFamily::Foliage if !skinned && !morphed => {
+            let coverage = Coverage::of(flags.contains(MaterialFlags::ALPHA_TEST), false);
+            Some((SurfaceVariant::foliage(coverage), false))
+        }
         MaterialFamily::Foliage | MaterialFamily::Sky => None,
     }
 }
@@ -570,8 +649,9 @@ pub(crate) struct Layouts {
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
     /// Group 2 per [`MESH_FAMILIES`] entry: instances and that family's parameter buffer, and for
-    /// fog cards the depth they fade against ([`FOG_CARD_DEPTH_BINDING`]). The prepasses, which
-    /// read no material, bind the anime character family's.
+    /// fog cards the depth they fade against ([`FOG_CARD_DEPTH_BINDING`]), for foliage the wind
+    /// ([`FOLIAGE_WIND_BINDING`]). The prepasses and shadow casters, which read no material, bind
+    /// the anime character family's; foliage's own bind foliage's.
     pub scene: [wgpu::BindGroupLayout; MESH_FAMILIES.len()],
     /// Group 3 per [`MaterialFamily::ALL`] entry: the family's texture slots and samplers.
     pub materials: [wgpu::BindGroupLayout; MaterialFamily::ALL.len()],
@@ -647,14 +727,28 @@ impl Layouts {
                 &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
             ),
             scene: MESH_FAMILIES.map(|family| {
-                let entries = [
+                let mut entries = vec![
                     buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
                     // The family's own parameter buffer: its pipelines read nothing else.
                     buffer(1, S::VERTEX_FRAGMENT, storage, false, family.params_size()),
-                    depth(FOG_CARD_DEPTH_BINDING, wgpu::TextureViewDimension::D2),
                 ];
-                let bindings = if family == MaterialFamily::FogCard { entries.len() } else { 2 };
-                layout(family.name(), &entries[..bindings])
+                match family {
+                    MaterialFamily::FogCard => {
+                        entries.push(depth(FOG_CARD_DEPTH_BINDING, wgpu::TextureViewDimension::D2));
+                    }
+                    MaterialFamily::Foliage => {
+                        let wind = buffer(
+                            FOLIAGE_WIND_BINDING,
+                            S::VERTEX,
+                            uniform,
+                            false,
+                            size_of::<WindUniforms>(),
+                        );
+                        entries.push(wind);
+                    }
+                    _ => {}
+                }
+                layout(family.name(), &entries)
             }),
             materials: MaterialFamily::ALL.map(|family| material_layout(device, family)),
         }
@@ -699,9 +793,11 @@ fn material_layout(device: &wgpu::Device, family: MaterialFamily) -> wgpu::BindG
 }
 
 /// Fixed-function state that differs between passes. Entry points are `vs_<name>` and
-/// `fs_<name>`, with spaces in `name` as underscores.
+/// `fs_<name>`, with spaces in `name` as underscores, unless `fragment` names another.
 struct PassDesc<'a> {
     name: &'static str,
+    /// The fragment entry point, when it isn't `fs_<name>`.
+    fragment: Option<&'static str>,
     module: &'a wgpu::ShaderModule,
     vertex_buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
     cull: Option<wgpu::Face>,
@@ -733,8 +829,8 @@ const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
 /// position attribute.
 #[derive(Debug)]
 pub(crate) struct MeshPipelines {
-    /// The surfaces, anime character and environment, per [`SurfaceVariant::ALL`] entry; each is
-    /// built with the first draw that needs it ([`Pipelines::prepare_variant`]).
+    /// The surfaces of every family, per [`SurfaceVariant::ALL`] entry; each is built with the
+    /// first draw that needs it ([`Pipelines::prepare_variant`]).
     surfaces: [Option<wgpu::RenderPipeline>; SurfaceVariant::ALL.len()],
     /// The anime characters' outline hulls, per [`Coverage::DEPTH_WRITING`] entry: every part's
     /// outline is the same.
@@ -751,6 +847,12 @@ pub(crate) struct MeshPipelines {
     /// Eyes and brows through the character's hair (M1 C5), per [`SurfaceVariant::THROUGH_HAIR`]
     /// entry, built with the first draw of a face or eye material that draws through.
     through_hair: [Option<wgpu::RenderPipeline>; SurfaceVariant::THROUGH_HAIR.len()],
+    /// Foliage into the scene prepass (`foliage.wgsl`), per [`Coverage::DEPTH_WRITING`] entry,
+    /// built with that coverage's surface: displaced by the wind, its velocity with it, and
+    /// alpha-tested cards cut out.
+    foliage_prepass: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
+    /// Foliage's shadow casters likewise, while shadows are on: displaced alike, and cut out.
+    foliage_casters: [Option<wgpu::RenderPipeline>; Coverage::DEPTH_WRITING.len()],
 }
 
 impl MeshPipelines {
@@ -759,13 +861,24 @@ impl MeshPipelines {
         self.surfaces[variant.index()].as_ref()
     }
 
-    /// The outline pipeline of `variant`'s coverage, once it was prepared; transparent surfaces
-    /// and the environment have none.
+    /// The outline pipeline of `variant`'s coverage, once it was prepared; transparent surfaces,
+    /// the environment and foliage have none.
     pub(crate) fn outline(&self, variant: SurfaceVariant) -> Option<&wgpu::RenderPipeline> {
-        if variant.shading == Shading::Environment {
+        if matches!(variant.shading, Shading::Environment | Shading::Foliage) {
             return None;
         }
         self.outline.get(variant.coverage.index())?.as_ref()
+    }
+
+    /// Foliage's scene prepass pipeline of `coverage`, once a foliage draw of it was prepared.
+    pub(crate) fn foliage_prepass(&self, coverage: Coverage) -> Option<&wgpu::RenderPipeline> {
+        self.foliage_prepass.get(coverage.index())?.as_ref()
+    }
+
+    /// Foliage's shadow caster pipeline of `coverage`, once a foliage draw of it was prepared
+    /// with shadows on.
+    pub(crate) fn foliage_caster(&self, coverage: Coverage) -> Option<&wgpu::RenderPipeline> {
+        self.foliage_casters.get(coverage.index())?.as_ref()
     }
 
     /// The outline hulls' scene prepass pipeline, once a draw with an outline was prepared.
@@ -778,20 +891,23 @@ impl MeshPipelines {
         self.through_hair[variant.through_hair_index()?].as_ref()
     }
 
-    /// Pipelines built of `family`: its surfaces, and the anime character family's outlines and
-    /// eyes through hair.
+    /// Pipelines built of `family`: its surfaces, the anime character family's outlines and eyes
+    /// through hair, and foliage's prepasses and casters.
     fn built(&self, family: MaterialFamily) -> u32 {
         let surfaces = SurfaceVariant::ALL
             .iter()
             .filter(|variant| variant.shading.family() == family && self.surface(**variant).is_some())
             .count();
-        let character = match family {
+        let own = match family {
             MaterialFamily::AnimeCharacter => {
                 self.outline.iter().flatten().count() + self.through_hair.iter().flatten().count()
             }
+            MaterialFamily::Foliage => {
+                self.foliage_prepass.iter().flatten().count() + self.foliage_casters.iter().flatten().count()
+            }
             _ => 0,
         };
-        (surfaces + character) as u32
+        (surfaces + own) as u32
     }
 }
 
@@ -820,6 +936,7 @@ struct MeshModules {
     fog_card: wgpu::ShaderModule,
     outline: wgpu::ShaderModule,
     prepass: wgpu::ShaderModule,
+    foliage: wgpu::ShaderModule,
 }
 
 impl MeshModules {
@@ -831,6 +948,7 @@ impl MeshModules {
             Program::FogCard => &mut self.fog_card,
             Program::Outline => &mut self.outline,
             Program::Prepass => &mut self.prepass,
+            Program::Foliage => &mut self.foliage,
             Program::Sky
             | Program::Clusters
             | Program::Skinning
@@ -845,6 +963,7 @@ impl MeshModules {
         match shading {
             Shading::Character(_) => (&self.character, Program::AnimeCharacter),
             Shading::Environment => (&self.environment, Program::Environment),
+            Shading::Foliage => (&self.foliage, Program::Foliage),
             Shading::FogCard => (&self.fog_card, Program::FogCard),
         }
     }
@@ -864,6 +983,12 @@ struct PipelineTarget {
     sample_count: u32,
     /// The environment shader's tier settings: its specular model.
     environment: EnvironmentSettings,
+    /// Foliage's tier settings: its wind levels, alpha-to-coverage and translucency.
+    foliage: FoliageSettings,
+    /// Foliage's shadow casters, while shadows are on: no group 0 (it holds the maps they draw
+    /// into, as the shared casters' layout leaves it out), the view, foliage's scene group and
+    /// its group 3, for the alpha test.
+    foliage_caster_layout: Option<wgpu::PipelineLayout>,
     cache: Option<wgpu::PipelineCache>,
     /// The receivers' shadow constants (`frame.wgsl`'s `SHADOWS` and `SHADOW_TENT`), which every
     /// surface and outline takes with its permutation's; none with shadows off, which keeps the
@@ -884,6 +1009,7 @@ impl Pipelines {
         color_format: wgpu::TextureFormat,
         sample_count: u32,
         environment: EnvironmentSettings,
+        foliage: FoliageSettings,
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
@@ -912,6 +1038,19 @@ impl Pipelines {
                 immediate_size: 0,
             })
         });
+        let foliage_group = Shading::Foliage.scene_group();
+        let foliage_caster_layout = shadows.is_some().then(|| {
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("foliage shadow caster"),
+                bind_group_layouts: &[
+                    None,
+                    Some(&layouts.view),
+                    Some(&layouts.scene[foliage_group]),
+                    Some(&layouts.materials[MaterialFamily::Foliage.index()]),
+                ],
+                immediate_size: 0,
+            })
+        });
         let target = PipelineTarget {
             layout,
             character_layout,
@@ -919,6 +1058,8 @@ impl Pipelines {
             color_format,
             sample_count,
             environment,
+            foliage,
+            foliage_caster_layout,
             cache: cache.cloned(),
             shadows: shadows.map(ShadowSettings::constants),
             card_depth_fade,
@@ -929,6 +1070,7 @@ impl Pipelines {
             fog_card: shaders::module(device, Program::FogCard, sources),
             outline: shaders::module(device, Program::Outline, sources),
             prepass: shaders::module(device, Program::Prepass, sources),
+            foliage: shaders::module(device, Program::Foliage, sources),
         };
         let mut pipelines = Self { mesh: [None, None], target, modules };
         pipelines.prepare_format(device, PositionFormat::Unorm16);
@@ -977,6 +1119,8 @@ impl Pipelines {
                 outline_prepass,
                 character_prepass,
                 through_hair: Default::default(),
+                foliage_prepass: Default::default(),
+                foliage_casters: Default::default(),
             };
             for (index, variant) in SurfaceVariant::THROUGH_HAIR.into_iter().enumerate() {
                 if let Some(old) = &old.through_hair[index] {
@@ -994,9 +1138,20 @@ impl Pipelines {
                 }
             }
             for coverage in Coverage::DEPTH_WRITING {
-                if let Some(old) = &old.outline[coverage.index()] {
-                    pipelines.outline[coverage.index()] = Some(rebuild(Program::Outline, old, &|| {
+                let index = coverage.index();
+                if let Some(old) = &old.outline[index] {
+                    pipelines.outline[index] = Some(rebuild(Program::Outline, old, &|| {
                         build_outline(device, target, &modules, format, coverage)
+                    }));
+                }
+                if let Some(old) = &old.foliage_prepass[index] {
+                    pipelines.foliage_prepass[index] = Some(rebuild(Program::Foliage, old, &|| {
+                        build_foliage_prepass(device, target, &modules, format, coverage)
+                    }));
+                }
+                if let Some(old) = &old.foliage_casters[index] {
+                    pipelines.foliage_casters[index] = Some(rebuild(Program::Foliage, old, &|| {
+                        build_foliage_caster(device, target, &modules, format, coverage)
                     }));
                 }
             }
@@ -1021,6 +1176,8 @@ impl Pipelines {
             outline_prepass: None,
             character_prepass,
             through_hair: Default::default(),
+            foliage_prepass: Default::default(),
+            foliage_casters: Default::default(),
         });
         self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
     }
@@ -1046,7 +1203,8 @@ impl Pipelines {
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
     /// and for anime characters the outline pipeline of its coverage and the outline hulls'
-    /// prepass pipeline, unless they do already.
+    /// prepass pipeline, for foliage its coverage's scene prepass and (with shadows) shadow
+    /// caster, unless they do already.
     pub(crate) fn prepare_variant(
         &mut self,
         device: &wgpu::Device,
@@ -1068,7 +1226,21 @@ impl Pipelines {
             .then(|| build_outline(device, &self.target, &self.modules, format, variant.coverage));
         let outline_prepass =
             needs_outline_prepass.then(|| build_outline_prepass(device, &self.target, &self.modules, format));
+        let foliage = variant.shading == Shading::Foliage;
+        let coverage = variant.coverage;
+        let foliage_prepass = (foliage && mesh.foliage_prepass(coverage).is_none())
+            .then(|| build_foliage_prepass(device, &self.target, &self.modules, format, coverage));
+        let foliage_caster = (foliage
+            && self.target.foliage_caster_layout.is_some()
+            && mesh.foliage_caster(coverage).is_none())
+        .then(|| build_foliage_caster(device, &self.target, &self.modules, format, coverage));
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
+        if let Some(prepass) = foliage_prepass {
+            mesh.foliage_prepass[coverage.index()] = Some(prepass);
+        }
+        if let Some(caster) = foliage_caster {
+            mesh.foliage_casters[coverage.index()] = Some(caster);
+        }
         mesh.surfaces[variant.index()] = Some(surface);
         if let Some(outline) = outline {
             mesh.outline[variant.coverage.index()] = Some(outline);
@@ -1079,7 +1251,8 @@ impl Pipelines {
     }
 
     /// Pipelines of `family` built so far, across formats: anime character surfaces and
-    /// outlines, or the environment's or fog cards' surfaces.
+    /// outlines, the environment's or fog cards' surfaces, or foliage's surfaces, prepasses and
+    /// casters.
     pub(crate) fn built(&self, family: MaterialFamily) -> u32 {
         self.mesh.iter().flatten().map(|mesh| mesh.built(family)).sum()
     }
@@ -1090,9 +1263,10 @@ impl Pipelines {
     }
 }
 
-/// The surface pipeline of `variant` for meshes in `format`: the anime character shader, the
-/// environment shader or fog cards', on its family's layout, with the variant's permutation
-/// constants (and the tier's specular model for the environment, the depth fade for fog cards).
+/// The surface pipeline of `variant` for meshes in `format`: the anime character, environment,
+/// foliage or fog card shader, on its family's layout, with the variant's permutation constants
+/// (and the tier's specular model for the environment, its foliage settings for foliage, the
+/// depth fade for fog cards).
 fn build_surface(
     device: &wgpu::Device,
     target: &PipelineTarget,
@@ -1107,6 +1281,7 @@ fn build_surface(
     if variant.shading != Shading::FogCard {
         constants.extend(target.shadows.iter().flatten());
     }
+    let (mut fragment, mut cull) = (None, Some(wgpu::Face::Back));
     let name = match variant.shading {
         Shading::Character(_) => "anime character",
         Shading::Environment => {
@@ -1115,7 +1290,21 @@ fn build_surface(
         }
         Shading::FogCard => {
             constants.extend(fog::card_constants(target.card_depth_fade));
+            // Cards are seen from either side.
+            cull = None;
             "fog card"
+        }
+        Shading::Foliage => {
+            constants.extend(target.foliage.constants());
+            constants.push((foliage::override_constant::SAMPLES, f64::from(target.sample_count)));
+            // Alpha-to-coverage under MSAA, where the tier asks for it.
+            if variant.coverage == Coverage::AlphaTest && target.foliage.covers(target.sample_count) {
+                fragment = Some("fs_foliage_coverage");
+            }
+            // Cards and blades show both sides, lit alike by their volume normals; opaque foliage
+            // (wood, solid canopies) is closed, so its back faces are culled.
+            cull = foliage::cull(variant.coverage);
+            "foliage"
         }
     };
     target.build_with(
@@ -1123,10 +1312,10 @@ fn build_surface(
         &target.family_layouts[variant.shading.scene_group()],
         PassDesc {
             name,
+            fragment,
             module,
-            vertex_buffers: &MeshPass::Main.buffers(format),
-            // Cards are seen from either side.
-            cull: (variant.shading != Shading::FogCard).then_some(wgpu::Face::Back),
+            vertex_buffers: &variant.shading.main_pass().buffers(format),
+            cull,
             // Transparent surfaces are depth-tested against the opaque frame but don't hide
             // what lies behind them.
             depth_write: !transparent,
@@ -1154,6 +1343,7 @@ fn build_outline(
         &target.family_layouts[Shading::Character(Part::Body).scene_group()],
         PassDesc {
             name: "outline",
+            fragment: None,
             module: &modules.outline,
             vertex_buffers: &MeshPass::Main.buffers(format),
             cull: Some(wgpu::Face::Front),
@@ -1177,9 +1367,87 @@ fn build_scene_prepass(
         "scene prepass",
         &modules.prepass,
         &MeshPass::ScenePrepass.buffers(format),
-        wgpu::Face::Back,
+        Some(wgpu::Face::Back),
         &scene_prepass_targets(false),
+        (&target.layout, &[]),
     )
+}
+
+/// Foliage's scene prepass pipeline of `coverage` for meshes in `format`: the scene prepass's
+/// targets, culled as foliage's surfaces are ([`foliage::cull`]), on foliage's layout (its scene group holds the wind
+/// and its group 3 the cards' coverage), with the tier's wind levels.
+fn build_foliage_prepass(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+    coverage: Coverage,
+) -> wgpu::RenderPipeline {
+    let mut constants = coverage.constants().to_vec();
+    constants.push(target.foliage.wind_constant());
+    target.build_prepass(
+        device,
+        "foliage prepass",
+        &modules.foliage,
+        &MeshPass::FoliagePrepass.buffers(format),
+        foliage::cull(coverage),
+        &scene_prepass_targets(false),
+        (&target.family_layouts[Shading::Foliage.scene_group()], &constants),
+    )
+}
+
+/// Foliage's shadow caster pipeline of `coverage` for meshes in `format` (shadows on): displaced
+/// by the wind as the main pass draws it, two-sided with the shared casters' raster bias, and for
+/// alpha-tested cards a fragment stage that cuts them out.
+fn build_foliage_caster(
+    device: &wgpu::Device,
+    target: &PipelineTarget,
+    modules: &MeshModules,
+    format: PositionFormat,
+    coverage: Coverage,
+) -> wgpu::RenderPipeline {
+    let layout = target.foliage_caster_layout.as_ref().expect("built while shadows are on");
+    let mut constants = coverage.constants().to_vec();
+    constants.push(target.foliage.wind_constant());
+    let compilation_options =
+        wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
+    let cut_out = coverage == Coverage::AlphaTest;
+    tracing::debug!(target: LOG_TARGET, pipeline = "foliage shadow caster", cut_out, "building a mesh pipeline");
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("foliage shadow caster"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &modules.foliage,
+            entry_point: Some("vs_foliage_caster"),
+            compilation_options: compilation_options.clone(),
+            buffers: &MeshPass::FoliageShadow.buffers(format),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
+            stencil: Default::default(),
+            bias: shadow::CASTER_BIAS,
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        // Opaque foliage writes depth alone, as the shared casters do.
+        fragment: cut_out.then_some(wgpu::FragmentState {
+            module: &modules.foliage,
+            entry_point: Some("fs_foliage_caster"),
+            compilation_options,
+            targets: &[],
+        }),
+        multiview_mask: None,
+        cache: target.cache.as_ref(),
+    });
+    tracing::debug!(target: LOG_TARGET, pipeline = "foliage shadow caster", "built a mesh pipeline");
+    pipeline
 }
 
 /// The outline hulls' scene prepass pipeline for meshes in `format`: the scene prepass's
@@ -1195,8 +1463,9 @@ fn build_outline_prepass(
         "outline prepass",
         &modules.outline,
         &MeshPass::OutlinePrepass.buffers(format),
-        wgpu::Face::Front,
+        Some(wgpu::Face::Front),
         &scene_prepass_targets(true),
+        (&target.layout, &[]),
     )
 }
 
@@ -1214,14 +1483,14 @@ fn build_character_prepass(
         blend: None,
         write_mask: wgpu::ColorWrites::ALL,
     })];
-    target.build_prepass_on(
+    target.build_prepass(
         device,
-        &target.character_layout,
         "character prepass",
         &modules.prepass,
         &buffers,
-        wgpu::Face::Back,
+        Some(wgpu::Face::Back),
         &ids,
+        (&target.character_layout, &[]),
     )
 }
 
@@ -1244,6 +1513,7 @@ fn build_through_hair(
         &target.family_layouts[variant.shading.scene_group()],
         PassDesc {
             name: "through hair",
+            fragment: None,
             module: &modules.character,
             vertex_buffers: &MeshPass::Main.buffers(format),
             cull: Some(wgpu::Face::Back),
@@ -1256,37 +1526,25 @@ fn build_through_hair(
 }
 
 impl PipelineTarget {
-    /// A prepass pipeline on the scene prepass's layout: see [`Self::build_prepass_on`].
+    /// A prepass pipeline: `cull` faces culled, reverse-Z depth written, no multisampling (the
+    /// targets are sampled by later passes), and `color_targets` written by the
+    /// `fs_<entry>` entry point when there are any, on `layout` with its pipeline constants.
+    /// `name` is the entry points' suffix with spaces as underscores.
+    #[expect(clippy::too_many_arguments, reason = "a pipeline's states, each read once")]
     fn build_prepass(
         &self,
         device: &wgpu::Device,
         name: &'static str,
         module: &wgpu::ShaderModule,
         vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-        cull: wgpu::Face,
+        cull: Option<wgpu::Face>,
         color_targets: &[Option<wgpu::ColorTargetState>],
-    ) -> wgpu::RenderPipeline {
-        self.build_prepass_on(device, &self.layout, name, module, vertex_buffers, cull, color_targets)
-    }
-
-    /// A prepass pipeline on `layout`: `cull` faces culled, reverse-Z depth written, no
-    /// multisampling (the targets are sampled by later passes), and `color_targets` written by
-    /// the `fs_<entry>` entry point when there are any. `name` is the entry points' suffix with
-    /// spaces as underscores.
-    #[expect(clippy::too_many_arguments, reason = "a pipeline's state, each read once")]
-    fn build_prepass_on(
-        &self,
-        device: &wgpu::Device,
-        layout: &wgpu::PipelineLayout,
-        name: &'static str,
-        module: &wgpu::ShaderModule,
-        vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-        cull: wgpu::Face,
-        color_targets: &[Option<wgpu::ColorTargetState>],
+        (layout, constants): (&wgpu::PipelineLayout, &[(&str, f64)]),
     ) -> wgpu::RenderPipeline {
         let entry = name.replace(' ', "_");
         let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
         let targets = color_targets.len();
+        let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
         tracing::debug!(target: LOG_TARGET, pipeline = name, targets, "building a mesh pipeline");
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(name),
@@ -1294,13 +1552,13 @@ impl PipelineTarget {
             vertex: wgpu::VertexState {
                 module,
                 entry_point: Some(&vs),
-                compilation_options: Default::default(),
+                compilation_options: compilation_options.clone(),
                 buffers: vertex_buffers,
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(cull),
+                cull_mode: cull,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -1314,7 +1572,7 @@ impl PipelineTarget {
             fragment: (!color_targets.is_empty()).then(|| wgpu::FragmentState {
                 module,
                 entry_point: Some(&fs),
-                compilation_options: Default::default(),
+                compilation_options,
                 targets: color_targets,
             }),
             multiview_mask: None,
@@ -1336,7 +1594,8 @@ impl PipelineTarget {
             write_mask: wgpu::ColorWrites::ALL,
         })];
         let entry = pass.name.replace(' ', "_");
-        let (vs, fs) = (format!("vs_{entry}"), format!("fs_{entry}"));
+        let vs = format!("vs_{entry}");
+        let fs = pass.fragment.map_or_else(|| format!("fs_{entry}"), str::to_owned);
         let compilation_options =
             wgpu::PipelineCompilationOptions { constants: pass.constants, ..Default::default() };
         let (pipeline, samples) = (pass.name, self.sample_count);

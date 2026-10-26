@@ -40,6 +40,9 @@
 //! )
 //! ```
 //!
+//! Foliage meshes (M1 W6) add `foliage: (normals: …, slots: […], blend: …)`
+//! ([`FoliageSettings`]), written out only when set.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -78,6 +81,7 @@ use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
 use crate::bake::OutlineSettings;
+use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::material::{self, MaterialSettings};
@@ -188,6 +192,12 @@ pub struct MeshSettings {
     /// name): `materials: {"Skin": "<id>"}`. Unbound slots embed the material the importer
     /// generates from the source.
     pub materials: BTreeMap<String, AssetId>,
+    /// Foliage (M1 W6): volume normals transferred onto leaf cards and the foliage stream's wind
+    /// and gradient data (`foliage: (normals: Hull(count: 6), slots: ["Leaves"])`). Meshes
+    /// without it cook no foliage stream; written out only when set, so other sidecars stay as
+    /// they were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foliage: Option<FoliageSettings>,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.

@@ -130,7 +130,7 @@ blake3 = "1.8.7"
 # decoded, so corruption never reaches the decoder; hostile packs are ruled out by signed packs
 # (M4), and until then meet libzstd's own checks on malformed frames. No default features: no
 # legacy formats, no dictionary builder.
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 # Pack blocks that must decode fast (M1 A4): pure Rust with no unsafe code (`safe-*`), 4–5.5 GB/s
 # decoding on the M5. Block format only: no frame format, so no xxhash.
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode", "safe-encode"] }

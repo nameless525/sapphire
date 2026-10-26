@@ -233,3 +233,11 @@ codegen-units = 1
 panic = "abort"
 debug = "full"
 split-debuginfo = "packed"
+
+# ctt 0.6.0 pins zstd 0.13, which RUSTSEC-2026-0391, -0398 and -0403 cover; its main branch
+# moved to zstd 0.14 on 2026-10-02 but no release carries it yet. Until one does, ctt comes from
+# that commit, pinned by rev (deny.toml allows this one git source). It is 0.6.0 plus dependency
+# updates and an etcpak fix. Remove this patch, and the git source, when ctt publishes a release
+# with zstd 0.14.3 or newer.
+[patch.crates-io]
+ctt = { git = "https://github.com/cwfitzgerald/ctt", rev = "252a361183e5bbdf458ca6fa442324259cec4723" }

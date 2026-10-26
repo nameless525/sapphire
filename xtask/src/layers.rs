@@ -1,8 +1,11 @@
 //! `cargo xtask check-layers`: enforces `xtask/layers.toml` (spec §4.1, rules R1 and R8)
 //! against `cargo metadata`, so it never compiles the crates it checks.
 //!
-//! The checked crates are the *local* packages: workspace members plus every path or git
-//! dependency outside the workspace (vendored crates). Checked:
+//! The checked crates are the *local* packages: workspace members plus every path dependency
+//! outside the workspace (vendored crates, code in this repository). Git dependencies are
+//! third-party code fetched like registry crates: `deny.toml`'s `[sources]` admits each one,
+//! and the tool-only and dev-only lists below police their reach as they do any registry
+//! crate's. Checked:
 //!
 //! - Every local package is placed, and every placement names a local package.
 //! - Dependencies between local packages follow the placements: runtime crates depend
@@ -178,9 +181,9 @@ struct Package {
 }
 
 impl Package {
-    /// Path and git packages: ours, or vendored into the repository.
+    /// Path packages: ours, or vendored into the repository. Git packages are third-party.
     fn is_local(&self) -> bool {
-        self.source.as_deref().is_none_or(|source| source.starts_with("git+"))
+        self.source.is_none()
     }
 
     /// Whether every normal dependency on package `name` is declared optional.
@@ -306,7 +309,7 @@ impl fmt::Display for Violation {
             }
             Self::Unplaced { krate, member: false } => write!(
                 f,
-                "`{krate}` is a path or git dependency (a vendored crate) but has no placement in [crates]"
+                "`{krate}` is a path dependency (a vendored crate) but has no placement in [crates]"
             ),
             Self::NotLocal { krate } => write!(
                 f,
@@ -648,18 +651,22 @@ mod tests {
 
     /// Vendored crates in the fixtures: local, but not workspace members.
     const VENDORED: &[&str] = &["shim", "shim2", "editor_hooks", "ozz-animation-rs"];
+    /// Git dependencies in the fixtures: third-party, like registry crates.
+    const GIT: &[&str] = &["ctt", "ctt-astcenc"];
 
     fn id(name: &str) -> String {
         if name.starts_with("sapphire_") || name == "xtask" || VENDORED.contains(&name) {
             format!("path+file:///ws/{name}#0.1.0")
+        } else if GIT.contains(&name) {
+            format!("git+https://github.com/upstream/{name}?rev=abc#{name}@1.0.0")
         } else {
             format!("registry+https://github.com/rust-lang/crates.io-index#{name}@1.0.0")
         }
     }
 
     /// Builds `cargo metadata`-shaped JSON. `members` are workspace crates with their
-    /// declared features; names in [`VENDORED`] are local non-members; every other name is
-    /// a registry crate.
+    /// declared features; names in [`VENDORED`] are local non-members, names in [`GIT`] git
+    /// dependencies; every other name is a registry crate.
     fn metadata(members: &[(&str, &[&str])], deps: &[(&str, &str, Dep)]) -> Metadata {
         let mut names: BTreeSet<&str> = members.iter().map(|(name, _)| *name).collect();
         names.extend(deps.iter().flat_map(|(from, to, _)| [*from, *to]));
@@ -674,7 +681,11 @@ mod tests {
                     .filter(|(from, _, _)| from == name)
                     .map(|(_, to, kind)| json!({ "name": to, "kind": kind_json(*kind), "optional": *kind == Optional }))
                     .collect();
-                let source = if id(name).starts_with("path+") { Value::Null } else { json!("registry+x") };
+                let source = match id(name) {
+                    id if id.starts_with("path+") => Value::Null,
+                    id if id.starts_with("git+") => json!(id.split('#').next().unwrap()),
+                    _ => json!("registry+x"),
+                };
                 json!({ "id": id(name), "name": name, "source": source, "features": features,
                         "dependencies": declared })
             })
@@ -934,6 +945,25 @@ mod tests {
             render.to_string(),
             "`sapphire_core` (L0) depends on `sapphire_render` (L3) through shim -> shim2: runtime \
              crates may depend only on lower layers (R1)"
+        );
+    }
+
+    /// A git dependency is third-party: it needs no placement, and a tool-only crate is still
+    /// kept out of shipping crates when the path to it runs through one.
+    #[test]
+    fn git_dependencies_are_third_party() {
+        let violations = check_with(&[("sapphire_pipeline", "ctt", Normal), ("ctt", "ctt-astcenc", Normal)]);
+        assert_eq!(violations, []);
+        let violations = check_with(&[("sapphire_platform", "ctt", Normal), ("ctt", "gltf", Normal)]);
+        assert!(violations.contains(&Violation::ToolOnlyReachable {
+            krate: "sapphire_platform".into(),
+            dependency: "gltf".into(),
+            path: vec!["sapphire_platform".into(), "ctt".into(), "gltf".into()],
+        }));
+        assert!(
+            violations.iter().all(
+                |v| matches!(v, Violation::ToolOnlyReachable { dependency, .. } if dependency == "gltf")
+            )
         );
     }
 

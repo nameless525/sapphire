@@ -12,8 +12,10 @@
 # `features` lists every Cargo feature the crate may declare (rule R8). Runtime features
 # select platform or backend only; dev tooling enters through apps and dev-only crates.
 #
-# Every workspace member, and every path or git dependency outside the workspace (vendored
-# crates such as ozz-animation-rs), must appear here, so each gets a deliberate placement.
+# Every workspace member, and every path dependency outside the workspace (vendored crates such
+# as ozz-animation-rs), must appear here, so each gets a deliberate placement. Git dependencies
+# are third-party code, like registry crates: deny.toml's [sources] admits each one, and the
+# lists below police their reach.
 
 [crates]
 # L0 foundation: pure Rust, no OS windowing.

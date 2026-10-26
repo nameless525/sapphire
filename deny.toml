@@ -98,4 +98,6 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# ctt from its upstream commit until a release moves it to zstd 0.14 (see the patch in the root
+# Cargo.toml); remove it with that patch.
+allow-git = ["https://github.com/cwfitzgerald/ctt"]

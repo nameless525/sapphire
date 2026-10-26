@@ -1,6 +1,7 @@
 //! Bind group layouts, vertex layouts and render pipelines for the scene passes and the
 //! prepasses: the surface variants of the material families meshes draw with (the anime character
-//! shader's static permutations, and the environment shader's), and their outline hulls.
+//! shader's static permutations, the environment shader's and fog cards'), and their outline
+//! hulls.
 
 use std::mem::offset_of;
 use std::num::NonZeroU64;
@@ -12,6 +13,7 @@ use sapphire_rhi::wgpu;
 use crate::LOG_TARGET;
 use crate::characters::GpuCharacter;
 use crate::environment::{self, EnvironmentSettings};
+use crate::fog;
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shaders::{self, Program, ShaderSources};
@@ -323,10 +325,13 @@ impl Part {
 
 /// The material families meshes draw with, each through pipelines of its own that bind its
 /// parameter buffer in the scene group (group 2, beside the instances) and its textures in
-/// group 3: the anime character family and, since M1 W4, the environment family. Foliage (W6) and
-/// fog cards (W3) join with their shaders.
-pub(crate) const MESH_FAMILIES: [MaterialFamily; 2] =
-    [MaterialFamily::AnimeCharacter, MaterialFamily::Environment];
+/// group 3: the anime character family, the environment family (M1 W4) and fog cards (M1 W3),
+/// whose scene group also holds the depth they fade against. Foliage (W6) joins with its shader.
+pub(crate) const MESH_FAMILIES: [MaterialFamily; 3] =
+    [MaterialFamily::AnimeCharacter, MaterialFamily::Environment, MaterialFamily::FogCard];
+
+/// The fog card family's scene group binding of the depth cards fade against (`fog_card.wgsl`).
+pub(crate) const FOG_CARD_DEPTH_BINDING: u32 = 2;
 
 /// What a surface's pipeline shades with: its material family's shader, and for anime characters
 /// the part that has a variant of its own.
@@ -336,19 +341,22 @@ pub(crate) enum Shading {
     Character(Part),
     /// The environment shader (`environment.wgsl`, M1 W4).
     Environment,
+    /// Fog cards (`fog_card.wgsl`, M1 W3): transparent alone.
+    FogCard,
 }
 
 impl Shading {
-    /// Every shading, in drawing order within a coverage: characters, then the world, whose
-    /// pixels behind them depth then rejects.
-    pub(crate) const ALL: [Self; 3] =
+    /// The shadings drawn at every coverage, in drawing order within one: characters, then the
+    /// world, whose pixels behind them depth then rejects. Fog cards are transparent alone.
+    pub(crate) const SURFACES: [Self; 3] =
         [Self::Character(Part::Body), Self::Character(Part::Face), Self::Environment];
 
-    /// Its position in [`Self::ALL`].
+    /// Its position in [`Self::SURFACES`], or past it for fog cards.
     pub(crate) fn index(self) -> usize {
         match self {
             Self::Character(part) => part.index(),
             Self::Environment => Part::ALL.len(),
+            Self::FogCard => Self::SURFACES.len(),
         }
     }
 
@@ -357,6 +365,7 @@ impl Shading {
         match self {
             Self::Character(_) => MaterialFamily::AnimeCharacter,
             Self::Environment => MaterialFamily::Environment,
+            Self::FogCard => MaterialFamily::FogCard,
         }
     }
 
@@ -373,8 +382,8 @@ impl Shading {
 /// The surface pipelines one [`PositionFormat`] can draw with: a coverage, and a shading (the
 /// family's shader and, for anime characters, the part). For anime characters these are the
 /// permutation bits that change the shader or its render state today (see [`Permutation`]);
-/// environment materials vary by their coverage alone. Outline hulls depend on the coverage alone,
-/// and only anime characters draw them.
+/// environment materials vary by their coverage alone, and fog cards are always transparent.
+/// Outline hulls depend on the coverage alone, and only anime characters draw them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SurfaceVariant {
     pub coverage: Coverage,
@@ -382,8 +391,8 @@ pub(crate) struct SurfaceVariant {
 }
 
 impl SurfaceVariant {
-    /// Every variant, in drawing order: by coverage, then shading.
-    pub(crate) const ALL: [Self; 9] = [
+    /// Every variant, in drawing order: by coverage, then shading, and fog cards last.
+    pub(crate) const ALL: [Self; 10] = [
         Self::character(Coverage::Opaque, Part::Body),
         Self::character(Coverage::Opaque, Part::Face),
         Self::environment(Coverage::Opaque),
@@ -393,14 +402,18 @@ impl SurfaceVariant {
         Self::character(Coverage::Transparent, Part::Body),
         Self::character(Coverage::Transparent, Part::Face),
         Self::environment(Coverage::Transparent),
+        Self::FOG_CARD,
     ];
     /// The variants that write depth: drawn first, and into the prepasses.
     pub(crate) const DEPTH_WRITING: [Self; 6] =
         [Self::ALL[0], Self::ALL[1], Self::ALL[2], Self::ALL[3], Self::ALL[4], Self::ALL[5]];
     /// The variants that can draw an outline hull: the anime character's that write depth.
     pub(crate) const OUTLINED: [Self; 4] = [Self::ALL[0], Self::ALL[1], Self::ALL[3], Self::ALL[4]];
-    /// The variants blended over the frame after the sky.
+    /// The surfaces' variants blended over the frame after the sky; fog cards ([`Self::FOG_CARD`])
+    /// blend after them, sorted back to front.
     pub(crate) const TRANSPARENT: [Self; 3] = [Self::ALL[6], Self::ALL[7], Self::ALL[8]];
+    /// Fog cards (M1 W3).
+    pub(crate) const FOG_CARD: Self = Self { coverage: Coverage::Transparent, shading: Shading::FogCard };
     /// Opaque anime character bodies: what a material with no permutation bits draws with.
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
@@ -414,7 +427,10 @@ impl SurfaceVariant {
 
     /// Its position in [`Self::ALL`].
     pub(crate) fn index(self) -> usize {
-        self.coverage.index() * Shading::ALL.len() + self.shading.index()
+        match self.shading {
+            Shading::FogCard => Self::ALL.len() - 1,
+            shading => self.coverage.index() * Shading::SURFACES.len() + shading.index(),
+        }
     }
 
     /// The variant a material of `family` with `flags` draws with, on any mesh; `None` for a
@@ -425,10 +441,12 @@ impl SurfaceVariant {
 
     /// The surface shader's static permutation constants for the variant (`PERMUTATION_*` in
     /// `anime_character.wgsl` and `environment.wgsl`). Outlines take their coverage's
-    /// ([`Coverage::constants`]); environment pipelines add their tier's specular model.
+    /// ([`Coverage::constants`]); environment pipelines add their tier's specular model. Fog cards
+    /// have none (their pipelines add the depth fade).
     pub(crate) fn constants(self) -> &'static [(&'static str, f64)] {
         use override_constant::{ALPHA_TEST, FACE, TRANSPARENT};
         match (self.coverage, self.shading) {
+            (_, Shading::FogCard) => &[],
             (coverage, Shading::Character(Part::Body) | Shading::Environment) => coverage.constants(),
             (Coverage::Opaque, Shading::Character(Part::Face)) => &[(FACE, 1.0)],
             (Coverage::AlphaTest, Shading::Character(Part::Face)) => &[(ALPHA_TEST, 1.0), (FACE, 1.0)],
@@ -442,7 +460,8 @@ impl SurfaceVariant {
 /// character materials go by their static permutation ([`Permutation`]); environment materials
 /// by their coverage, with no hull (decision M1 W4: the environment's edges are the spec's
 /// screen-space edge pass, a later desktop option, and props that should read like characters
-/// use the anime character family). `None` for a family meshes don't draw with.
+/// use the anime character family); fog cards are transparent, with no hull. `None` for a family
+/// meshes don't draw with.
 pub(crate) fn mesh_draw(
     family: MaterialFamily,
     flags: MaterialFlags,
@@ -455,7 +474,8 @@ pub(crate) fn mesh_draw(
             Some((permutation.surface(), permutation.outlined()))
         }
         MaterialFamily::Environment => Some((SurfaceVariant::environment(Coverage::of_flags(flags)), false)),
-        MaterialFamily::Foliage | MaterialFamily::Sky | MaterialFamily::FogCard => None,
+        MaterialFamily::FogCard => Some((SurfaceVariant::FOG_CARD, false)),
+        MaterialFamily::Foliage | MaterialFamily::Sky => None,
     }
 }
 
@@ -474,8 +494,9 @@ pub(crate) struct Layouts {
     pub frame: wgpu::BindGroupLayout,
     /// Group 1: one view, bound with a dynamic offset. The light-cluster pass binds it too.
     pub view: wgpu::BindGroupLayout,
-    /// Group 2 per [`MESH_FAMILIES`] entry: instances and that family's parameter buffer. The
-    /// prepasses, which read no material, bind the anime character family's.
+    /// Group 2 per [`MESH_FAMILIES`] entry: instances and that family's parameter buffer, and for
+    /// fog cards the depth they fade against ([`FOG_CARD_DEPTH_BINDING`]). The prepasses, which
+    /// read no material, bind the anime character family's.
     pub scene: [wgpu::BindGroupLayout; MESH_FAMILIES.len()],
     /// Group 3 per [`MaterialFamily::ALL`] entry: the family's texture slots and samplers.
     pub materials: [wgpu::BindGroupLayout; MaterialFamily::ALL.len()],
@@ -534,14 +555,14 @@ impl Layouts {
                 &[buffer(0, S::VERTEX_FRAGMENT | S::COMPUTE, uniform, true, size_of::<ViewUniforms>())],
             ),
             scene: MESH_FAMILIES.map(|family| {
-                layout(
-                    family.name(),
-                    &[
-                        buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
-                        // The family's own parameter buffer: its pipelines read nothing else.
-                        buffer(1, S::VERTEX_FRAGMENT, storage, false, family.params_size()),
-                    ],
-                )
+                let entries = [
+                    buffer(0, S::VERTEX, storage, false, size_of::<InstanceData>()),
+                    // The family's own parameter buffer: its pipelines read nothing else.
+                    buffer(1, S::VERTEX_FRAGMENT, storage, false, family.params_size()),
+                    depth(FOG_CARD_DEPTH_BINDING, wgpu::TextureViewDimension::D2),
+                ];
+                let bindings = if family == MaterialFamily::FogCard { entries.len() } else { 2 };
+                layout(family.name(), &entries[..bindings])
             }),
             materials: MaterialFamily::ALL.map(|family| material_layout(device, family)),
         }
@@ -692,6 +713,7 @@ pub(crate) struct Pipelines {
 struct MeshModules {
     character: wgpu::ShaderModule,
     environment: wgpu::ShaderModule,
+    fog_card: wgpu::ShaderModule,
     outline: wgpu::ShaderModule,
     prepass: wgpu::ShaderModule,
 }
@@ -702,6 +724,7 @@ impl MeshModules {
         match program {
             Program::AnimeCharacter => &mut self.character,
             Program::Environment => &mut self.environment,
+            Program::FogCard => &mut self.fog_card,
             Program::Outline => &mut self.outline,
             Program::Prepass => &mut self.prepass,
             Program::Sky
@@ -718,6 +741,7 @@ impl MeshModules {
         match shading {
             Shading::Character(_) => (&self.character, Program::AnimeCharacter),
             Shading::Environment => (&self.environment, Program::Environment),
+            Shading::FogCard => (&self.fog_card, Program::FogCard),
         }
     }
 }
@@ -739,6 +763,8 @@ struct PipelineTarget {
     /// surface and outline takes with its permutation's; none with shadows off, which keeps the
     /// shaders as they were without them.
     shadows: Option<[(&'static str, f64); 2]>,
+    /// Fog cards fade against the scene prepass's depth (`fog::FogCards`).
+    card_depth_fade: bool,
 }
 
 impl Pipelines {
@@ -755,6 +781,7 @@ impl Pipelines {
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
+        card_depth_fade: bool,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene"),
@@ -782,10 +809,12 @@ impl Pipelines {
             environment,
             cache: cache.cloned(),
             shadows: shadows.map(ShadowSettings::constants),
+            card_depth_fade,
         };
         let modules = MeshModules {
             character: shaders::module(device, Program::AnimeCharacter, sources),
             environment: shaders::module(device, Program::Environment, sources),
+            fog_card: shaders::module(device, Program::FogCard, sources),
             outline: shaders::module(device, Program::Outline, sources),
             prepass: shaders::module(device, Program::Prepass, sources),
         };
@@ -908,7 +937,7 @@ impl Pipelines {
     }
 
     /// Pipelines of `family` built so far, across formats: anime character surfaces and
-    /// outlines, or the environment's surfaces.
+    /// outlines, or the environment's or fog cards' surfaces.
     pub(crate) fn built(&self, family: MaterialFamily) -> u32 {
         self.mesh.iter().flatten().map(|mesh| mesh.built(family)).sum()
     }
@@ -932,9 +961,9 @@ impl Pipelines {
     }
 }
 
-/// The surface pipeline of `variant` for meshes in `format`: the anime character shader or the
-/// environment shader, on its family's layout, with the variant's permutation constants (and the
-/// tier's specular model for the environment).
+/// The surface pipeline of `variant` for meshes in `format`: the anime character shader, the
+/// environment shader or fog cards', on its family's layout, with the variant's permutation
+/// constants (and the tier's specular model for the environment, the depth fade for fog cards).
 fn build_surface(
     device: &wgpu::Device,
     target: &PipelineTarget,
@@ -944,14 +973,20 @@ fn build_surface(
 ) -> wgpu::RenderPipeline {
     let transparent = variant.coverage == Coverage::Transparent;
     let (module, _) = modules.surface(variant.shading);
-    // The permutation's constants, then the shadows' (M1 R4).
+    // The permutation's constants, then the shadows' (M1 R4), which fog cards don't receive.
     let mut constants = variant.constants().to_vec();
-    constants.extend(target.shadows.iter().flatten());
+    if variant.shading != Shading::FogCard {
+        constants.extend(target.shadows.iter().flatten());
+    }
     let name = match variant.shading {
         Shading::Character(_) => "anime character",
         Shading::Environment => {
             constants.push((environment::SPECULAR_CONSTANT, target.environment.specular.constant()));
             "environment"
+        }
+        Shading::FogCard => {
+            constants.extend(fog::card_constants(target.card_depth_fade));
+            "fog card"
         }
     };
     target.build_with(
@@ -961,7 +996,8 @@ fn build_surface(
             name,
             module,
             vertex_buffers: &MeshPass::Main.buffers(format),
-            cull: Some(wgpu::Face::Back),
+            // Cards are seen from either side.
+            cull: (variant.shading != Shading::FogCard).then_some(wgpu::Face::Back),
             // Transparent surfaces are depth-tested against the opaque frame but don't hide
             // what lies behind them.
             depth_write: !transparent,

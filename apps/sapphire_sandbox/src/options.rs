@@ -70,6 +70,9 @@ pub(crate) struct Options {
     pub cloud_cover: Option<f32>,
     /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
     pub plain_sky: bool,
+    /// `--fog off`: no fog (M1 W3): time of day's fog left out of every frame, and no fog cards
+    /// in the courtyard. `--fog on` is the default.
+    pub fog_off: bool,
     /// `--plain-post`: post as it was before its compositing layers (M1 P2), with no diffusion
     /// glow, character bloom, gradient layers, lens flare, vignette tint or sharpening.
     pub plain_post: bool,
@@ -210,6 +213,7 @@ impl Options {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
         scene.set_cloud_cover(self.cloud_cover);
         scene.set_plain_sky(self.plain_sky);
+        scene.set_fog(!self.fog_off);
         scene.set_plain_post(self.plain_post);
         scene.set_sharpening(self.sharpening);
         if let Some((yaw, pitch)) = self.view {
@@ -382,6 +386,13 @@ impl Options {
                     options.outline_distance = Some(scale);
                 }
                 "--plain-sky" => options.plain_sky = true,
+                "--fog" => {
+                    options.fog_off = match value("--fog")?.as_str() {
+                        "on" => false,
+                        "off" => true,
+                        other => return Err(format!("--fog expects on or off, got {other:?}")),
+                    };
+                }
                 "--plain-post" => options.plain_post = true,
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;

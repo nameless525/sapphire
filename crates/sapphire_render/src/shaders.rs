@@ -40,6 +40,8 @@ pub enum ShaderFile {
     AnimeCharacter,
     /// The environment shader (M1 W4).
     Environment,
+    /// Fog cards (M1 W3).
+    FogCard,
     Outline,
     /// The light-cluster compute pass.
     Clusters,
@@ -56,13 +58,14 @@ pub enum ShaderFile {
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
+        Self::FogCard,
         Self::Outline,
         Self::Clusters,
         Self::Prepass,
@@ -81,6 +84,7 @@ impl ShaderFile {
             Self::Sky => "sky.wgsl",
             Self::AnimeCharacter => "anime_character.wgsl",
             Self::Environment => "environment.wgsl",
+            Self::FogCard => "fog_card.wgsl",
             Self::Outline => "outline.wgsl",
             Self::Clusters => "clusters.wgsl",
             Self::Prepass => "prepass.wgsl",
@@ -105,6 +109,7 @@ impl ShaderFile {
             Self::Sky => include_str!("../shaders/sky.wgsl"),
             Self::AnimeCharacter => include_str!("../shaders/anime_character.wgsl"),
             Self::Environment => include_str!("../shaders/environment.wgsl"),
+            Self::FogCard => include_str!("../shaders/fog_card.wgsl"),
             Self::Outline => include_str!("../shaders/outline.wgsl"),
             Self::Clusters => include_str!("../shaders/clusters.wgsl"),
             Self::Prepass => include_str!("../shaders/prepass.wgsl"),
@@ -132,6 +137,7 @@ pub(crate) enum Program {
     Sky,
     AnimeCharacter,
     Environment,
+    FogCard,
     Outline,
     Clusters,
     Prepass,
@@ -142,10 +148,11 @@ pub(crate) enum Program {
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
+        Self::FogCard,
         Self::Outline,
         Self::Clusters,
         Self::Prepass,
@@ -162,6 +169,7 @@ impl Program {
             Self::Sky => &[F::Frame, F::Materials, F::Sky],
             Self::AnimeCharacter => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter],
             Self::Environment => &[F::Frame, F::Materials, F::Lights, F::Environment],
+            Self::FogCard => &[F::Frame, F::Materials, F::FogCard],
             Self::Outline => &[F::Frame, F::Materials, F::Lights, F::AnimeCharacter, F::Outline],
             Self::Clusters => &[F::Frame, F::Materials, F::Lights, F::Clusters],
             Self::Prepass => &[F::Frame, F::Materials, F::Prepass],
@@ -178,6 +186,7 @@ impl Program {
             Self::Sky => "sky",
             Self::AnimeCharacter => "anime character",
             Self::Environment => "environment",
+            Self::FogCard => "fog card",
             Self::Outline => "outline",
             Self::Clusters => "light clusters",
             Self::Prepass => "prepass",
@@ -190,7 +199,10 @@ impl Program {
 
     /// Whether the mesh pipelines (`pipelines::Pipelines`) are built from it.
     pub(crate) const fn is_mesh(self) -> bool {
-        matches!(self, Self::AnimeCharacter | Self::Environment | Self::Outline | Self::Prepass)
+        matches!(
+            self,
+            Self::AnimeCharacter | Self::Environment | Self::FogCard | Self::Outline | Self::Prepass
+        )
     }
 }
 
@@ -332,6 +344,7 @@ mod tests {
 
     use super::*;
     use crate::characters::{GpuCharacter, GpuCharacterShadow, GpuFace, GpuRig};
+    use crate::fog::GpuFog;
     use crate::gpu_types::{FrameUniforms, InstanceData, ViewUniforms};
     use crate::lights::GpuLight;
     use crate::pipelines::{
@@ -342,10 +355,11 @@ mod tests {
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 10] = [
+    const PASSES: [(Program, &[&str]); 11] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (Program::AnimeCharacter, &["vs_anime_character", "fs_anime_character"]),
         (Program::Environment, &["vs_environment", "fs_environment"]),
+        (Program::FogCard, &["vs_fog_card", "fs_fog_card"]),
         (Program::Outline, &["vs_outline", "fs_outline", "vs_outline_prepass", "fs_outline_prepass"]),
         (Program::Clusters, &["cs_clusters"]),
         (Program::Prepass, &["vs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"]),
@@ -367,9 +381,10 @@ mod tests {
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
-    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 7] = [
+    const MESH_ENTRY_POINTS: [(Program, &str, MeshPass); 8] = [
         (Program::AnimeCharacter, "vs_anime_character", MeshPass::Main),
         (Program::Environment, "vs_environment", MeshPass::Main),
+        (Program::FogCard, "vs_fog_card", MeshPass::Main),
         (Program::Outline, "vs_outline", MeshPass::Main),
         (Program::Outline, "vs_outline_prepass", MeshPass::OutlinePrepass),
         (Program::Prepass, "vs_character_prepass", MeshPass::CharacterPrepass),
@@ -571,6 +586,7 @@ mod tests {
     fn rust_structs_match_wgsl_layouts() {
         let expected = [
             (Program::AnimeCharacter, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::AnimeCharacter, "FogUniforms", size_of::<GpuFog>()),
             (Program::AnimeCharacter, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::AnimeCharacter, "InstanceData", size_of::<InstanceData>()),
             (Program::AnimeCharacter, "AnimeCharacterParams", size_of::<AnimeCharacterParams>()),
@@ -601,6 +617,10 @@ mod tests {
             (Program::Environment, "InstanceData", size_of::<InstanceData>()),
             (Program::Environment, "EnvironmentParams", size_of::<EnvironmentParams>()),
             (Program::Environment, "LocalLight", size_of::<GpuLight>()),
+            (Program::FogCard, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::FogCard, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::FogCard, "InstanceData", size_of::<InstanceData>()),
+            (Program::FogCard, "FogCardParams", size_of::<FogCardParams>()),
             (Program::Prepass, "InstanceData", size_of::<InstanceData>()),
             (Program::Prepass, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Temporal, "TemporalUniforms", size_of::<TemporalUniforms>()),
@@ -721,8 +741,10 @@ mod tests {
                     ambient_ground,
                     shadow_tint,
                     weather,
+                    fog,
                 }),
             ),
+            ("FogUniforms", offsets!(GpuFog { near, far, height, shape, light })),
             (
                 "InstanceData",
                 offsets!(InstanceData {
@@ -1313,6 +1335,49 @@ mod tests {
                 "{constant}"
             );
         }
+        // Fog cards with and without their depth fade.
+        let cards = validate(Program::FogCard);
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&cards)
+        .expect("validated above");
+        for depth_fade in [false, true] {
+            let constants: naga::back::PipelineConstants = crate::fog::card_constants(depth_fade)
+                .iter()
+                .map(|&(key, value)| (key.to_owned(), value))
+                .collect();
+            for entry_point in &cards.entry_points {
+                let stage = Some((entry_point.stage, entry_point.name.as_str()));
+                naga::back::pipeline_constants::process_overrides(&cards, &info, stage, &constants)
+                    .unwrap_or_else(|error| {
+                        panic!("fog_card.wgsl {} ({depth_fade}): {error}", entry_point.name)
+                    });
+            }
+        }
+    }
+
+    /// The fog's numbers as `frame.wgsl` and the `fog` module both state them, and the fog card
+    /// shader's facing codes and slot as the asset crate's.
+    #[test]
+    fn wgsl_fog_constants_match_rust() {
+        use sapphire_assets::material::{CardFacing, FogCardMaterial};
+        let cards = validate(Program::FogCard);
+        assert_eq!(wgsl_f32(&cards, "FOG_CEILING"), crate::fog::CEILING);
+        assert_eq!(wgsl_f32(&cards, "FOG_SKY_DISTANCE"), crate::fog::SKY_DISTANCE);
+        assert_eq!(wgsl_f32(&cards, "FOG_MAX_EXPONENT"), crate::fog::MAX_EXPONENT);
+        assert_eq!(wgsl_f32(&cards, "FOG_MIX_DEPTH"), crate::fog::MIX_DEPTH);
+        assert_eq!(wgsl_f32(&cards, "FOG_MIN_DENSITY"), crate::fog::MIN_DENSITY);
+        assert_eq!(wgsl_f32(&cards, "FOG_HORIZON_WEIGHT"), crate::fog::HORIZON_WEIGHT);
+        assert_eq!(wgsl_f32(&cards, "FOG_SERIES_BELOW"), crate::fog::SERIES_BELOW);
+        assert_eq!(wgsl_u32(&cards, "CARD_FACING_WORLD"), CardFacing::World.code());
+        assert_eq!(wgsl_u32(&cards, "CARD_FACING_UPRIGHT"), CardFacing::Upright.code());
+        assert_eq!(wgsl_u32(&cards, "FOG_CARD_MAP") as usize, FogCardMaterial::MAP);
+        assert_eq!(f64::from(wgsl_f32(&cards, "FOG_CARD_TIME_PERIOD")), crate::gpu_types::SHADER_TIME_PERIOD);
+        assert!(
+            cards.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(crate::fog::DEPTH_FADE_CONSTANT))
+        );
     }
 
     /// The shadow passes' numbers as the shaders and the `shadows` module both state them, and

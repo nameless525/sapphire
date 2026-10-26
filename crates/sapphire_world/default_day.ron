@@ -6,7 +6,15 @@
 //   linearly in time (colors in OkLab, directions along great circles).
 // - 10:00 is exactly the renderer's default look: the sun the sandbox has always drawn with,
 //   `SkyGradient::default()` and `PostParams::default()`. A scene that doesn't choose a time
-//   starts there, so its frames are what they were before time of day.
+//   starts there, so its frames are what they were before time of day; all but the fog (M1 W3),
+//   which the renderer's default leaves out and 10:00 keeps as a light haze, so scenes from
+//   before fog pin it off (the sandbox's `--fog off`).
+// - Fog (M1 W3): the far layer's color is a tint on the sky's horizon, white or nearly, so the
+//   distance melts into the sky's own color at every hour; near haze and height fog carry the
+//   hour's mist (peach at sunrise, lavender in the twilights, deep blue at night), thickest in the
+//   morning, light by day. The moon lights the night's fog a little (`sun_inscatter` follows the
+//   key light). Characters take 40 to 50% of it (`characters`), so they read as figures where
+//   the world melts away.
 // - Directions are the way light travels, from the body into the scene. Looking from the
 //   sandbox's camera, the sun rises on the left, passes high on the camera's side (lighting the
 //   character from the front), and sets on the right; the moon rises on the left as the sun
@@ -52,8 +60,10 @@
                 ambient: (sky: (0.2, 0.28, 0.6), ground: (0.04, 0.05, 0.09), intensity: 0.22),
                 fog: (
                     near: (color: (0.06, 0.09, 0.2), density: 0.0),
-                    far: (color: (0.05, 0.08, 0.22), density: 0.004, start: 25.0),
-                    height: (color: (0.06, 0.09, 0.2), density: 0.02, falloff: 0.25),
+                    far: (color: (0.85, 0.9, 1.0), density: 0.0025, start: 25.0),
+                    height: (color: (0.06, 0.09, 0.2), density: 0.015, falloff: 0.3),
+                    sun_inscatter: (0.03, 0.035, 0.05),
+                    characters: 0.4,
                 ),
                 shadow_tint: (0.22, 0.26, 0.5),
                 character: (color: (0.66, 0.74, 1.0), intensity: 0.8),
@@ -88,9 +98,10 @@
                 sky: (zenith: (0.03, 0.05, 0.2), horizon: (0.32, 0.3, 0.52), ground: (0.07, 0.07, 0.12)),
                 ambient: (sky: (0.4, 0.4, 0.62), ground: (0.08, 0.08, 0.13), intensity: 0.18),
                 fog: (
-                    near: (color: (0.36, 0.36, 0.55), density: 0.004),
-                    far: (color: (0.32, 0.3, 0.52), density: 0.006, start: 20.0),
-                    height: (color: (0.36, 0.36, 0.55), density: 0.04, falloff: 0.3),
+                    near: (color: (0.36, 0.36, 0.55), density: 0.0015),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.004, start: 20.0),
+                    height: (color: (0.36, 0.36, 0.55), density: 0.025, falloff: 0.35),
+                    characters: 0.4,
                 ),
                 shadow_tint: (0.3, 0.3, 0.55),
                 character: (color: (0.72, 0.76, 1.0), intensity: 0.75),
@@ -125,10 +136,11 @@
                 sky: (zenith: (0.09, 0.2, 0.56), horizon: (1.0, 0.66, 0.5), ground: (0.14, 0.12, 0.2)),
                 ambient: (sky: (1.0, 0.7, 0.62), ground: (0.14, 0.12, 0.2), intensity: 0.13),
                 fog: (
-                    near: (color: (1.0, 0.75, 0.65), density: 0.006),
-                    far: (color: (1.0, 0.66, 0.5), density: 0.006, start: 20.0),
-                    height: (color: (1.0, 0.75, 0.65), density: 0.05, falloff: 0.3),
+                    near: (color: (0.85, 0.66, 0.6), density: 0.002),
+                    far: (color: (1.0, 0.96, 0.92), density: 0.003, start: 25.0),
+                    height: (color: (0.9, 0.7, 0.62), density: 0.025, falloff: 0.4),
                     sun_inscatter: (0.6, 0.33, 0.18),
+                    characters: 0.45,
                 ),
                 shadow_tint: (0.45, 0.36, 0.55),
                 character: (color: (1.0, 0.72, 0.58), intensity: 0.95),
@@ -156,16 +168,18 @@
                 lens_flare: (intensity: 0.9, color: (1.0, 0.75, 0.5)),
             ),
             (
-                // Day: exactly the renderer's default look (see the top of this file).
+                // Day: exactly the renderer's default look, but for a light haze (see the top of
+                // this file).
                 time: 10.0,
                 sun: (direction: (0.55, -0.7, -0.45), color: (1.0, 0.97, 0.92), intensity: 1.0),
                 moon: (direction: (-0.55, 0.7, 0.45), color: (0.62, 0.72, 1.0), intensity: 0.0),
                 sky: (zenith: (0.1, 0.3, 0.8), horizon: (0.62, 0.78, 0.95), ground: (0.36, 0.34, 0.42)),
                 ambient: (sky: (0.62, 0.78, 0.95), ground: (0.36, 0.34, 0.42), intensity: 0.12),
                 fog: (
-                    far: (color: (0.62, 0.78, 0.95), density: 0.002, start: 40.0),
-                    height: (color: (0.66, 0.8, 0.95), density: 0.012, falloff: 0.2),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.002, start: 40.0),
+                    height: (color: (0.66, 0.8, 0.95), density: 0.008, falloff: 0.25),
                     sun_inscatter: (0.15, 0.14, 0.12),
+                    characters: 0.5,
                 ),
                 shadow_tint: (0.38, 0.42, 0.62),
                 character: (color: (1.0, 0.97, 0.92), intensity: 1.0),
@@ -200,9 +214,10 @@
                 sky: (zenith: (0.09, 0.28, 0.78), horizon: (0.68, 0.8, 0.93), ground: (0.38, 0.35, 0.4)),
                 ambient: (sky: (0.68, 0.8, 0.93), ground: (0.38, 0.35, 0.4), intensity: 0.12),
                 fog: (
-                    far: (color: (0.68, 0.8, 0.93), density: 0.002, start: 40.0),
-                    height: (color: (0.7, 0.8, 0.92), density: 0.012, falloff: 0.2),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.002, start: 40.0),
+                    height: (color: (0.7, 0.8, 0.92), density: 0.008, falloff: 0.25),
                     sun_inscatter: (0.16, 0.14, 0.12),
+                    characters: 0.5,
                 ),
                 shadow_tint: (0.38, 0.42, 0.62),
                 character: (color: (1.0, 0.95, 0.88), intensity: 1.0),
@@ -237,9 +252,10 @@
                 sky: (zenith: (0.05, 0.18, 0.62), horizon: (1.0, 0.78, 0.5), ground: (0.16, 0.13, 0.18)),
                 ambient: (sky: (1.0, 0.78, 0.6), ground: (0.16, 0.13, 0.18), intensity: 0.12),
                 fog: (
-                    far: (color: (1.0, 0.8, 0.55), density: 0.003, start: 30.0),
-                    height: (color: (1.0, 0.78, 0.6), density: 0.015, falloff: 0.2),
+                    far: (color: (1.0, 0.97, 0.94), density: 0.0025, start: 30.0),
+                    height: (color: (1.0, 0.78, 0.6), density: 0.01, falloff: 0.25),
                     sun_inscatter: (0.5, 0.34, 0.18),
+                    characters: 0.5,
                 ),
                 shadow_tint: (0.45, 0.38, 0.6),
                 character: (color: (1.0, 0.82, 0.62), intensity: 1.0),
@@ -274,10 +290,11 @@
                 sky: (zenith: (0.07, 0.07, 0.36), horizon: (1.0, 0.45, 0.18), ground: (0.09, 0.07, 0.13)),
                 ambient: (sky: (0.9, 0.5, 0.45), ground: (0.09, 0.07, 0.13), intensity: 0.14),
                 fog: (
-                    near: (color: (1.0, 0.55, 0.4), density: 0.002),
-                    far: (color: (1.0, 0.45, 0.18), density: 0.004, start: 25.0),
-                    height: (color: (0.9, 0.5, 0.45), density: 0.02, falloff: 0.25),
+                    near: (color: (0.9, 0.5, 0.38), density: 0.0015),
+                    far: (color: (1.0, 0.92, 0.88), density: 0.003, start: 25.0),
+                    height: (color: (0.9, 0.5, 0.45), density: 0.015, falloff: 0.25),
                     sun_inscatter: (0.7, 0.3, 0.14),
+                    characters: 0.45,
                 ),
                 shadow_tint: (0.42, 0.3, 0.55),
                 character: (color: (1.0, 0.66, 0.5), intensity: 0.95),
@@ -312,9 +329,11 @@
                 sky: (zenith: (0.025, 0.035, 0.16), horizon: (0.22, 0.15, 0.34), ground: (0.05, 0.05, 0.09)),
                 ambient: (sky: (0.35, 0.3, 0.55), ground: (0.08, 0.07, 0.12), intensity: 0.18),
                 fog: (
-                    near: (color: (0.3, 0.22, 0.4), density: 0.002),
-                    far: (color: (0.22, 0.15, 0.34), density: 0.005, start: 25.0),
-                    height: (color: (0.3, 0.22, 0.4), density: 0.025, falloff: 0.25),
+                    near: (color: (0.3, 0.22, 0.4), density: 0.0015),
+                    far: (color: (0.95, 0.92, 1.0), density: 0.003, start: 25.0),
+                    height: (color: (0.3, 0.22, 0.4), density: 0.018, falloff: 0.3),
+                    sun_inscatter: (0.03, 0.035, 0.05),
+                    characters: 0.4,
                 ),
                 shadow_tint: (0.25, 0.25, 0.5),
                 character: (color: (0.75, 0.72, 1.0), intensity: 0.75),

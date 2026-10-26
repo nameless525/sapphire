@@ -887,9 +887,9 @@ mod tests {
         );
         // Grouped by format, then by surface variant, in slot order within each group.
         let [unorm16_variants, float32_variants] = &list.commands;
-        let [unorm16, unorm16_face, _, unorm16_alpha_test, _, _, unorm16_transparent, _, _] =
+        let [unorm16, unorm16_face, _, unorm16_alpha_test, _, _, unorm16_transparent, _, _, _] =
             unorm16_variants;
-        let [float32, _, _, _, _, _, float32_transparent, _, _] = float32_variants;
+        let [float32, _, _, _, _, _, float32_transparent, _, _, _] = float32_variants;
         // Each names its instance's slot and its material (by material slot).
         let command = |indices, first_vertex, instance, draw_id, slot: u32, outline| DrawCommand {
             indices,
@@ -912,13 +912,13 @@ mod tests {
             [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
         );
         let lens = SurfaceVariant::ALL.map(|variant| list.len(variant));
-        assert_eq!((lens, list.outlines()), ([2, 1, 0, 1, 0, 0, 1, 0, 0], 3));
+        assert_eq!((lens, list.outlines()), ([2, 1, 0, 1, 0, 0, 1, 0, 0, 0], 3));
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
         list.build(&meshes, flags, &slots);
         assert_eq!(list.draws.len(), 3);
-        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 0, 1, 0, 0, 1, 0, 0]);
+        assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), [0, 1, 0, 1, 0, 0, 1, 0, 0, 0]);
     }
 
     #[test]
@@ -927,12 +927,20 @@ mod tests {
         let identity = Dequantize { position_scale: [1.0; 3], ..Dequantize::default() };
         let submesh =
             |first_index, slot| SubmeshDraw { first_index, index_count: 3, material: material(slot) };
-        // One mesh whose submeshes alternate between the families, and a second, skinned one.
+        // One mesh whose submeshes alternate between the families (a fog card among them), and a
+        // second, skinned one.
         let meshes = [
             MeshRecord {
                 streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 8 },
                 dequantize: identity,
-                lods: vec![vec![submesh(0, 0), submesh(3, 1), submesh(6, 2), submesh(9, 3), submesh(12, 4)]],
+                lods: vec![vec![
+                    submesh(0, 0),
+                    submesh(3, 1),
+                    submesh(6, 2),
+                    submesh(9, 3),
+                    submesh(12, 4),
+                    submesh(21, 5),
+                ]],
                 lod_vertices: vec![8],
                 placement: Placement::default(),
                 slots: Vec::new(),
@@ -949,12 +957,14 @@ mod tests {
             },
         ];
         // Handles 10 and 12 are anime character materials (12 a face), 11, 13 and 14 environment
-        // ones: opaque, alpha-tested, and transparent asking for an outline it never draws.
+        // ones: opaque, alpha-tested, and transparent asking for an outline it never draws; 15 is
+        // a fog card.
         let kind = |handle: MaterialHandle| match handle.0 {
             10 => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
             12 => (MaterialFamily::AnimeCharacter, MaterialFlags::FACE | MaterialFlags::OUTLINE),
             11 => (MaterialFamily::Environment, MaterialFlags::empty()),
             13 => (MaterialFamily::Environment, MaterialFlags::ALPHA_TEST),
+            15 => (MaterialFamily::FogCard, MaterialFlags::TRANSPARENT),
             _ => (MaterialFamily::Environment, MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE),
         };
         let mut slots = InstanceSlots::default();
@@ -993,16 +1003,21 @@ mod tests {
             [(12, MaterialHandle(14), false), (12, MaterialHandle(14), false)],
             "transparent and environment: no outline either way"
         );
+        assert_eq!(
+            static_draws(SurfaceVariant::FOG_CARD),
+            [(21, MaterialHandle(15), false), (21, MaterialHandle(15), false)],
+            "fog cards: transparent, without a hull"
+        );
         // The skinned instance's two families land in their variants' deformed groups.
         let deformed = |variant: SurfaceVariant| -> Vec<u32> {
             list.deformed[variant.index()].iter().map(|draw| draw.indices.start).collect()
         };
         assert_eq!(deformed(SurfaceVariant::environment(Coverage::Opaque)), [15]);
         assert_eq!(deformed(SurfaceVariant::OPAQUE), [18]);
-        assert_eq!(list.draws.len(), 12, "every submesh of every instance");
+        assert_eq!(list.draws.len(), 14, "every submesh of every instance");
         assert_eq!(list.outlines(), 5, "the anime character draws' hulls alone");
         let instances: Vec<u32> = list.draws.iter().map(|draw| draw.instance).collect();
-        assert_eq!(instances, [0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2], "records follow the slots");
+        assert_eq!(instances, [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2], "records follow the slots");
     }
 
     #[test]

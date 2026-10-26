@@ -10,7 +10,9 @@
 // around the horizon. Stars and clouds are pipeline variants (below); within one, every layer is
 // a branch every pixel takes alike, so a layer at zero is skipped and leaves the gradient exactly
 // as it was. The sky shades most of the screen, so every instruction counts: per-draw constants
-// are worked out on the CPU (`SkyUniforms`), and edges are linear ramps.
+// are worked out on the CPU (`SkyUniforms`), and edges are linear ramps. Last, the frame's fog
+// covers it all as at infinite distance (`fogged_sky`, M1 W3): a band along the horizon, all fog
+// at and below it, so the sky meets fogged geometry without a seam.
 
 struct SkyUniforms {
     // xyz: unit vector toward the sun; w: its disc's angular radius (0: a dark disc, skipped).
@@ -169,7 +171,9 @@ fn fs_sky(in: SkyVaryings) -> @location(0) vec4<f32> {
             color = cloud_band(color, dir, ddx, ddy, above);
         }
     }
-    return vec4<f32>(color, 1.0);
+    // The frame's fog over all of it (M1 W3), as at infinite distance, so the sky agrees with
+    // the fog over distant geometry wherever the two meet.
+    return vec4<f32>(fogged_sky(color, dir), 1.0);
 }
 
 // atan2(y, x) to within 2e-6 radians: a minimax polynomial for the arctangent on [0, 1], with the

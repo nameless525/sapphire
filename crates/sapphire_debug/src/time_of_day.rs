@@ -19,10 +19,12 @@
 //!   M5, with sRGB encoding through a table (direct encoding took 210 µs).
 //! - **Resolved values:** the key light and where it comes from, the sun and moon, the sky and its
 //!   layers (the discs and their glows, star brightness, the clouds' tones and coverage; M1 W2),
-//!   ambient, fog, shadow tint, character light, day/night factor and post-processing (with the
-//!   grades post's two LUTs blend, and the compositing layers: the diffusion glow, characters'
-//!   bloom, gradient layers and the lens flare, M1 P2), zone volumes and the cutscene, each
-//!   character's resolved light rig, and the resolve's own CPU time against its 0.05 ms budget.
+//!   ambient, fog (each layer's color and density, the far layer's as the horizon it tints, the
+//!   sun's inscatter and the characters' share; M1 W3), shadow tint, character light, day/night
+//!   factor and post-processing (with the grades post's two LUTs blend, and the compositing
+//!   layers: the diffusion glow, characters' bloom, gradient layers and the lens flare, M1 P2),
+//!   zone volumes and the cutscene, each character's resolved light rig, and the resolve's own
+//!   CPU time against its 0.05 ms budget.
 
 use std::sync::LazyLock;
 
@@ -425,15 +427,29 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
             ui.monospace(format!("{:.2}", ambient.intensity));
         });
         ui.end_row();
+        // The fog as the renderer draws it (M1 W3): each layer's color, the far layer's as the
+        // horizon it tints, and the sun's inscatter, then their densities and shapes.
+        let fog = &look.fog;
         ui.label("Fog");
         ui.horizontal(|ui| {
-            let fog = &look.fog;
-            swatch(ui, fog.far.color, exposure);
+            for color in [fog.near.color, fog.far.color * look.sky.horizon, fog.height.color, fog.sun_inscatter] {
+                swatch(ui, color, exposure);
+            }
             ui.monospace(format!(
-                "near {:.4}, far {:.4} from {:.0} m, height {:.3}",
-                fog.near.density, fog.far.density, fog.far.start, fog.height.density
+                "near {:.4}, far {:.4}, height {:.3}",
+                fog.near.density, fog.far.density, fog.height.density
             ));
         });
+        ui.end_row();
+        ui.label("");
+        ui.monospace(format!(
+            "from {:.0} m and {:.0} m; height ×e^(−{:.2}·(y − {:.1} m)); characters {:.0}%",
+            fog.near.start,
+            fog.far.start,
+            fog.height.falloff,
+            fog.height.base,
+            fog.characters * 100.0
+        ));
         ui.end_row();
         ui.label("Shadow tint");
         ui.horizontal(|ui| {

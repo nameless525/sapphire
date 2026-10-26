@@ -22,6 +22,7 @@ use crate::LOG_TARGET;
 use crate::content::Content;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
+use crate::environment::FOG_CARDS;
 use crate::input::SandboxInput;
 use crate::options::Options;
 use crate::scene::Scene;
@@ -146,6 +147,9 @@ impl App for SandboxApp {
         }
         if let Some(courtyard) = renderer.courtyard {
             scene.spawn_environment(courtyard);
+        }
+        if let Some(meshes) = renderer.fog_cards {
+            scene.spawn_fog_cards(meshes);
         }
         if options.outline_row {
             scene.spawn_outline_row(renderer.character);
@@ -641,6 +645,8 @@ struct SceneRenderer {
     face_head: Option<MeshHandle>,
     /// The courtyard, with `--environment`.
     courtyard: Option<MeshHandle>,
+    /// The courtyard's fog cards, with `--environment` and fog.
+    fog_cards: Option<[MeshHandle; FOG_CARDS.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
@@ -665,6 +671,9 @@ impl Scene {
         }
         if let Some(courtyard) = renderer.courtyard {
             self.set_courtyard_mesh(courtyard);
+        }
+        if let Some(meshes) = renderer.fog_cards {
+            self.set_fog_card_meshes(meshes);
         }
         self.set_outline_row_mesh(renderer.character);
         if let Some(mesh) = renderer.hard_edges {
@@ -700,7 +709,7 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
 /// the shader swatches, whose materials `content` uploads too, the face test head, the
-/// courtyard, the hard-edged outline sample and the stage.
+/// courtyard and its fog cards, the hard-edged outline sample and the stage.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -718,6 +727,9 @@ fn create_renderer(
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
         let face_head = options.faces.then(|| content.face_head(&mut renderer, gpu)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
+        let fog_cards = (options.environment && !options.fog_off)
+            .then(|| content.fog_cards(&mut renderer, gpu))
+            .transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {
@@ -729,10 +741,22 @@ fn create_renderer(
             None => None,
         };
         let sky = content.sky_material(&mut renderer, gpu)?;
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, stage, sky))
+        let environment = (courtyard, fog_cards);
+        Ok((character, character_bounds, stalk, swatches, face_head, environment, hard_edges, stage, sky))
     });
     match scene {
-        Ok((character, character_bounds, stalk, swatches, face_head, courtyard, hard_edges, stage, sky)) => {
+        Ok((
+            character,
+            character_bounds,
+            stalk,
+            swatches,
+            face_head,
+            environment,
+            hard_edges,
+            stage,
+            sky,
+        )) => {
+            let (courtyard, fog_cards) = environment;
             Ok(SceneRenderer {
                 renderer,
                 character,
@@ -741,6 +765,7 @@ fn create_renderer(
                 swatches,
                 face_head,
                 courtyard,
+                fog_cards,
                 hard_edges,
                 stage,
                 sky,

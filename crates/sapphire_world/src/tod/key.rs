@@ -202,8 +202,11 @@ pub struct AmbientKey {
     pub intensity: f32,
 }
 
-/// Fog at a key ([`sapphire_render::Fog`] says how W3 reads each part). A layer left out has
-/// no fog.
+/// Fog at a key ([`sapphire_render::Fog`] says how the renderer draws each part; M1 W3). A layer
+/// left out has no fog, and characters take none of it unless `characters` says so.
+///
+/// Between keys each layer's color blends in OkLab weighted by the layers' densities, so a layer
+/// one key doesn't have fades in or out in the other key's color rather than through black.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(deny_unknown_fields)]
@@ -214,12 +217,18 @@ pub struct FogKey {
     pub far: FogLayerKey,
     #[serde(default)]
     pub height: HeightFogKey,
-    /// Light scattered toward the camera around the sun, linear RGB (color × strength).
+    /// Light scattered toward the camera around the key light, linear RGB (color × strength).
     #[serde(default)]
     pub sun_inscatter: Rgb,
+    /// How much of the fog characters take, 0 (none: they keep their colors at any distance) to
+    /// 1 (as the world): the scale on their optical depth, which keeps them readable in fog.
+    /// Unset, 0: keys written before it (M1 W3) leave characters clear of the fog.
+    #[serde(default)]
+    pub characters: f32,
 }
 
-/// One distance layer of fog.
+/// One distance layer of fog. The far layer's color is a tint on the sky's horizon (white is
+/// the horizon itself), which is what melts distant geometry into the sky.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(deny_unknown_fields)]
@@ -741,6 +750,7 @@ impl TodKey {
             non_negative(fog.height.falloff, "fog.height.falloff")?;
             finite(fog.height.base, "fog.height.base")?;
             color(fog.sun_inscatter, "fog.sun_inscatter")?;
+            within(fog.characters, 0.0, 1.0, "fog.characters", "must be within 0..=1")?;
         }
         if let Some(tint) = self.shadow_tint {
             color(tint, "shadow_tint")?;

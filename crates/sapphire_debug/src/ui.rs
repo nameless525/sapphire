@@ -368,6 +368,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Sky", sky_text(&render.sky));
         row(ui, "Post layers", post_text(&render.post));
         row(ui, "Screen effects", effects_text(&render.post.effects, view.frame.screen_effects));
+        row(ui, "Fog", fog_text(&render.fog));
         let taa = &render.temporal;
         let taa = if taa.enabled {
             let ((input_w, input_h), (output_w, output_h)) = (taa.input_size, taa.output_size);
@@ -636,6 +637,23 @@ fn sky_text(sky: &sapphire_render::SkyStats) -> String {
     let layers = if layers.is_empty() { "gradient and discs".to_owned() } else { layers.join(", ") };
     let face = sky.last_face.map_or_else(|| "none".to_owned(), |face| face.to_string());
     format!("{layers}; cube {}², face {face} ({} drawn)", sky.cube_size, sky.cube_faces)
+}
+
+/// The fog's layers and its cards this frame (M1 W3).
+fn fog_text(fog: &sapphire_render::FogStats) -> String {
+    let layers = match fog.layers {
+        0 => "off".to_owned(),
+        1 => "1 layer".to_owned(),
+        n => format!("{n} layers"),
+    };
+    let plural = |n: u32| if n == 1 { "" } else { "s" };
+    format!(
+        "{layers}; {} card{} ({} pipeline{})",
+        fog.cards,
+        plural(fog.cards),
+        fog.card_pipelines,
+        plural(fog.card_pipelines)
+    )
 }
 
 /// The compositing layers post drew this frame (M1 P2).

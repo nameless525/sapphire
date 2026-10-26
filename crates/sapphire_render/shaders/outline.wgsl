@@ -39,7 +39,8 @@
 // pixel, as on the surface; the width scale is the vertex's region's (the vertex stage reads no
 // textures). Alpha is the character's, post's character mask (M1 P2): 0 on a character's line,
 // as on the character it outlines, so the line belongs to the character's bloom, and 1 on an
-// unlisted instance's.
+// unlisted instance's. Last, the line fogs like its surface (M1 W3): its character's share of the
+// frame's fog at the hull.
 //
 // Velocity: the scene prepass draws the hulls too (`vs_outline_prepass`), after the surfaces,
 // with this frame's and the last frame's clip positions, and its depth is the main pass's. A
@@ -264,8 +265,10 @@ fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     let lit = light_step(split.x, width, x);
     let tone = mix(shade_tint(surface, material, x, width), vec3<f32>(1.0), lit);
     let lit_line = line * (tone * rig.key_radiance.rgb + character_gi(surface, rig, in.world_position));
-    // Unlit lines are their color exactly.
-    return vec4<f32>(select(mix(line, lit_line, style.y), line, style.y <= 0.0), world);
+    // Unlit lines are their color exactly, and every line takes the fog its surface does (M1 W3),
+    // at the hull.
+    let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);
+    return vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
 }
 
 // The hull in the scene prepass: `ScenePrepassVaryings` (frame.wgsl), and how squarely the

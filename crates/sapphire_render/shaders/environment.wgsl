@@ -57,6 +57,8 @@
 //   read as painted color masses while the frame's light keeps its time of day hue. Emission
 //   keeps its color.
 // - **Emission** (color × map) adds HDR light unaffected by lighting, so it blooms.
+// - **Fog** (M1 W3) covers the final color, lit and emitting, as it does every world pass's
+//   (`fogged` in frame.wgsl): distance and height fog colored by the sky's horizon.
 //
 // Local lights (M1 R5) come from the same lists the anime character shader walks (the pixel's
 // cluster on desktop, its instance's list on mobile; `light_list`). Each lights the diffuse
@@ -413,9 +415,9 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     if material_has_texture(modes, ENVIRONMENT_EMISSION) {
         emission *= sample_material(emission_map, swizzles, ENVIRONMENT_EMISSION, uv).rgb;
     }
-    // The surface's final color, lit and emitting: the one place it is produced, where fog (W3)
-    // will join it through a function the world's passes share. Opaque passes keep alpha 1;
-    // transparent ones blend by their coverage.
-    let final_color = color + emission;
+    // The surface's final color, lit and emitting, with the frame's fog over it (M1 W3, `fogged`
+    // in frame.wgsl, which every world pass shares): the one place it is produced. Opaque passes
+    // keep alpha 1; transparent ones blend by their coverage.
+    let final_color = fogged(color + emission, in.world_position, 1.0);
     return vec4<f32>(final_color, select(1.0, base.a, PERMUTATION_TRANSPARENT));
 }

@@ -82,6 +82,9 @@
 //   region's outline color that appears as the head turns from the camera; blush tinting the
 //   albedo and gloom pushing toward the deepest shadow as occlusion does (its GI too, except
 //   where always lit), each scaled by the character's expression weight.
+//
+// Fog (M1 W3) covers the final color last (`fogged` in frame.wgsl), characters taking time of
+// day's share of it (`fog_share`) and anything else drawn in this family the world's.
 
 // The control map's shadow bias (`character_maps::ilm`): neutral, and the values at and beyond
 // which a point stays lit or in shadow whatever the light.
@@ -566,5 +569,8 @@ fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     // for everything else, as every other pass does; transparent ones blend by their coverage,
     // keeping the mask under them.
     let world = select(1.0, 0.0, in.character != 0u);
-    return vec4<f32>(color, select(world, base.a, PERMUTATION_TRANSPARENT));
+    // The final color, with the frame's fog over it (M1 W3): characters take their share of it,
+    // so they stay readable where the world melts into the sky.
+    let fogged_color = fogged(color, in.world_position, fog_share(in.character));
+    return vec4<f32>(fogged_color, select(world, base.a, PERMUTATION_TRANSPARENT));
 }

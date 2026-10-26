@@ -67,7 +67,8 @@
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
 //! - `--environment`: place the character in the courtyard, the environment shader's test scene
 //!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
-//!   M1 W4), seen from farther back.
+//!   M1 W4), seen from farther back, with fog cards (mist across the valley, haze among the
+//!   pillars; M1 W3) unless `--fog off`.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -93,6 +94,9 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--fog on|off`: draw time of day's fog (M1 W3), on by default. Off leaves it out of every
+//!   frame and places no fog cards in the courtyard, so frames draw exactly as before fog, which
+//!   the golden scenes from before it pin.
 //! - `--plain-post`: draw post as it was before its compositing layers (`PostParams::plain`: no
 //!   diffusion glow, character bloom, gradient layers, lens flare, vignette tint or sharpening),
 //!   which the golden scenes from before them pin (M1 P2).

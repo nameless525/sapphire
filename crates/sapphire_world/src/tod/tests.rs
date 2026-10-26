@@ -774,3 +774,88 @@ fn zones_and_cutscenes_override_the_post_layers() {
     tod.stop_cutscene();
     assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.gradients, base.look.gradients);
 }
+
+#[test]
+fn the_default_day_fogs_every_hour_and_keeps_characters_readable() {
+    let day = TodTimeline::default_day();
+    for step in 0..48 {
+        let hours = step as f32 * 0.5;
+        let fog = day.evaluate(hours).fog;
+        assert!(fog.is_visible(), "{hours}: some fog at every hour");
+        assert!((0.35..=0.55).contains(&fog.characters), "{hours}: characters take part of it");
+        // The far layer tints the sky's horizon: near white, so the distance melts into the sky.
+        let tint = fog.far.color;
+        assert!(tint.min_element() >= 0.8 && tint.max_element() <= 1.001, "{hours}: a tint, {tint}");
+    }
+}
+
+#[test]
+fn fog_colors_blend_by_density_in_oklab() {
+    // Morning mist in a valley, then a clear noon with only the distance's haze.
+    let mist = FogKey {
+        far: FogLayerKey { color: [1.0; 3], density: 0.002, start: 30.0 },
+        height: HeightFogKey { color: [1.0, 0.6, 0.4], density: 0.04, falloff: 0.3, base: 0.0 },
+        characters: 0.6,
+        ..FogKey::default()
+    };
+    let noon = FogKey {
+        far: FogLayerKey { color: [0.8, 0.9, 1.0], density: 0.004, start: 50.0 },
+        characters: 0.2,
+        ..FogKey::default()
+    };
+    let timeline = TodTimeline::new(vec![
+        TodKey { fog: Some(mist), ..key(6.0) },
+        TodKey { fog: Some(noon), ..key(12.0) },
+    ])
+    .expect("valid");
+    let halfway = timeline.evaluate(9.0).fog;
+    // A layer only one side has keeps its color as it thins away, never darkening toward the
+    // other side's unused black.
+    assert!(halfway.height.color.abs_diff_eq(Vec3::new(1.0, 0.6, 0.4), 1e-5), "{}", halfway.height.color);
+    assert!((halfway.height.density - 0.02).abs() < 1e-7);
+    // Both sides have the far layer: their colors blend weighted by density, here two thirds of
+    // the way to the denser noon's.
+    let lab = |color: Vec3| Vec3::from(linear_srgb_to_oklab(color.to_array()));
+    let expected = lab(Vec3::ONE).lerp(lab(Vec3::new(0.8, 0.9, 1.0)), 2.0 / 3.0);
+    assert!(lab(halfway.far.color).abs_diff_eq(expected, 1e-4), "{}", halfway.far.color);
+    assert!((halfway.far.density - 0.003).abs() < 1e-7 && (halfway.far.start - 40.0).abs() < 1e-5);
+    assert!((halfway.characters - 0.4).abs() < 1e-6, "the characters' share blends linearly");
+    // Exact on the keys.
+    assert_eq!(timeline.evaluate(6.0).fog.height.color, Vec3::new(1.0, 0.6, 0.4));
+    assert_eq!(timeline.evaluate(12.0).fog.far.color, Vec3::new(0.8, 0.9, 1.0));
+}
+
+#[test]
+fn zones_and_cutscenes_override_the_fog() {
+    let (_, mut tod) = time_of_day(DAY);
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    // A misty valley: thick height fog lying below the camera, characters taking less of it.
+    let valley = FogKey {
+        far: FogLayerKey { color: [0.9, 0.95, 1.0], density: 0.006, start: 10.0 },
+        height: HeightFogKey { color: [0.8, 0.85, 0.9], density: 0.08, falloff: 0.5, base: -2.0 },
+        characters: 0.3,
+        ..FogKey::default()
+    };
+    let valley_key = TodKey { fog: Some(valley), ..key(0.0) };
+    let expected = TodTimeline::new(vec![valley_key.clone()]).expect("valid").evaluate(0.0).fog;
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 10.0 };
+    let zone_id = tod.add_volume(TodVolume::new(shape, zone(valley_key.clone())));
+    let inside = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(inside.look.fog, expected, "inside the zone: its fog");
+    assert_eq!(inside.look.sky, base.look.sky, "groups the zone doesn't set stay the base's");
+    let outside = *tod.resolve(Vec3::new(100.0, 0.0, 0.0), 0.0);
+    assert_eq!(outside.look.fog, base.look.fog, "outside: the day's");
+    tod.remove_volume(zone_id);
+    // A shot's fog, eased in and out like its other values, and what the renderer reads.
+    let shot = TodCutscene::new(4.0, 1.0, 1.0, None, vec![valley_key], None).expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(2.0);
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.fog, expected, "fully in: the shot's fog, in the frame packet");
+    tod.seek_cutscene(0.5);
+    let easing = tod.resolve(Vec3::ZERO, 0.0).look.fog;
+    assert!(easing != expected && easing != base.look.fog, "easing in");
+    tod.stop_cutscene();
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.fog, base.look.fog);
+}

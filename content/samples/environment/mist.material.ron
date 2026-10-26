@@ -1,0 +1,13 @@
+(
+    type: "sapphire::render::FogCardMaterial",
+    version: 1,
+    data: (
+        color: (1.0, 1.0, 1.0, 0.6),
+        map: Some("fa5aecd1-fe5a-4655-a055-97cd4fd7ffe1"),
+        scroll: (0.004, 0.0),
+        depth_fade: 4.0,
+        camera_fade: (8.0, 24.0),
+        sun_scatter: 0.5,
+        facing: World,
+    ),
+)

@@ -1,8 +1,8 @@
 //! The renderer: compute skinning, the prepasses, the sky cube's face, the shadow maps, a main
 //! pass into HDR scene color (anime character and environment surfaces per surface variant, the
-//! characters' outlines, the sky, then transparent surfaces), lit by each character's light rig
-//! (or, for the world, the sun) under the frame's shadows and local lights, then post-processing
-//! into the target.
+//! characters' outlines, the sky, then transparent surfaces and fog cards), lit by each
+//! character's light rig (or, for the world, the sun) under the frame's shadows, local lights and
+//! fog, then post-processing into the target.
 
 use std::future::Future;
 use std::num::NonZeroU64;
@@ -20,6 +20,7 @@ use crate::buffer;
 use crate::characters::Characters;
 use crate::draw::{DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
+use crate::fog::{FogCards, FogStats, GpuFog};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::lights::{LightPath, LightStats, Lights};
@@ -27,8 +28,9 @@ use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, Layouts, MESH_FAMILIES, MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT,
-    Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant, VELOCITY_FORMAT,
+    Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, Layouts, MESH_FAMILIES, MeshPass, MeshPipelines,
+    NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant,
+    VELOCITY_FORMAT,
 };
 use crate::post::{self, PostEffectSettings, PostProcess, PostStats, SunOnScreen};
 use crate::scene::GpuScene;
@@ -263,6 +265,8 @@ pub struct RenderStats {
     pub temporal: TemporalStats,
     /// The compositing layers post drew (M1 P2).
     pub post: PostStats,
+    /// The fog's layers and the fog cards drawn (M1 W3).
+    pub fog: FogStats,
     /// The shadows' cascades, character maps, capsules and caster draws; all zero when they are
     /// off.
     pub shadows: ShadowStats,
@@ -365,6 +369,8 @@ pub struct Renderer {
     scene: GpuScene,
     /// Which draws' outline hulls the frame draws, by their LOD cutoff.
     outlines: OutlineCull,
+    /// Fog cards' depth and their order each frame.
+    fog_cards: FogCards,
     /// Group 2 per [`MESH_FAMILIES`] entry: the instances and that family's materials.
     scene_bind_groups: [wgpu::BindGroup; MESH_FAMILIES.len()],
     /// Skinned and morphed instances' outputs and the pass that writes them.
@@ -441,7 +447,9 @@ impl Renderer {
             gpu.pipeline_cache(),
             &shaders,
             settings.shadows.as_ref(),
+            settings.temporal,
         );
+        let fog_cards = FogCards::new(&device, settings.temporal);
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -490,7 +498,7 @@ impl Renderer {
         let mut materials = Materials::new(&device, gpu.queue());
         let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
         let scene = GpuScene::new(&device);
-        let scene_bind_groups = create_scene_bind_groups(&device, &layouts, &scene, &materials);
+        let scene_bind_groups = create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards);
         let skinning = Skinning::new(&device);
         let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
@@ -527,6 +535,7 @@ impl Renderer {
             materials,
             scene,
             outlines: OutlineCull::default(),
+            fog_cards,
             scene_bind_groups,
             skinning,
             post,
@@ -552,9 +561,9 @@ impl Renderer {
     /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
     /// the next recorded frame.
     ///
-    /// Every family uploads. Anime character and environment materials draw on meshes, and a sky
-    /// material draws the sky when a packet names it ([`FramePacket::sky_material`]); the other
-    /// families' shaders come with their packages (fog cards W3, foliage W6).
+    /// Every family uploads. Anime character, environment and fog card materials draw on meshes,
+    /// and a sky material draws the sky when a packet names it ([`FramePacket::sky_material`]);
+    /// foliage's shader comes with its package (W6).
     pub fn upload_material<'t>(
         &mut self,
         material: &ArchivedMaterial,
@@ -563,8 +572,13 @@ impl Renderer {
         let (handle, replaced) =
             self.materials.upload(&self.device, &self.queue, &self.layouts.materials, material, textures)?;
         if replaced && MESH_FAMILIES.contains(&material.family) {
-            self.scene_bind_groups =
-                create_scene_bind_groups(&self.device, &self.layouts, &self.scene, &self.materials);
+            self.scene_bind_groups = create_scene_bind_groups(
+                &self.device,
+                &self.layouts,
+                &self.scene,
+                &self.materials,
+                &self.fog_cards,
+            );
         }
         self.update_pool_stats();
         Ok(handle)
@@ -950,8 +964,13 @@ impl Renderer {
             self.meshes.records(),
             material_kind,
         ) {
-            self.scene_bind_groups =
-                create_scene_bind_groups(device, &self.layouts, &self.scene, &self.materials);
+            self.scene_bind_groups = create_scene_bind_groups(
+                device,
+                &self.layouts,
+                &self.scene,
+                &self.materials,
+                &self.fog_cards,
+            );
         }
         self.materials.prepare();
         self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
@@ -995,6 +1014,7 @@ impl Renderer {
             let (list, slots) = (self.scene.draw_list(), self.scene.slots());
             let meshes = self.meshes.records();
             self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
+            self.fog_cards.sort(view.camera.position, list, slots, meshes);
         }
         self.sky.prepare(packet, &self.materials);
         // The lens flare follows the sun's disc as the main view sees it.
@@ -1015,6 +1035,8 @@ impl Renderer {
         self.stats.transparent_draws = draws(|variant| variant.coverage == Coverage::Transparent);
         self.stats.face_draws = draws(|variant| variant.shading == Shading::Character(Part::Face));
         self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
+        self.stats.fog.cards = draws(|variant| variant == SurfaceVariant::FOG_CARD);
+        self.stats.fog.layers = GpuFog::new(&packet.fog).layers();
         let outlines = self.outlines.counts();
         (self.stats.outline_draws, self.stats.outlines_culled) = (outlines.drawn, outlines.culled);
         self.stats.instances = self.scene.live_instances();
@@ -1136,7 +1158,10 @@ impl Renderer {
             ref mut materials,
             ref mut scene,
             ref outlines,
+            ref mut fog_cards,
             ref scene_bind_groups,
+            ref layouts,
+            ref device,
             ref skinning,
             ref mut post,
             ref mut temporal,
@@ -1164,6 +1189,9 @@ impl Renderer {
             #[cfg(test)]
             main_depth: depth,
         };
+        // The buffers fog cards' depth group binds, by handle: the splits below borrow their owners.
+        let card_buffers =
+            (scene.instance_buffer().clone(), materials.buffer(MaterialFamily::FogCard).clone());
         let (scene_uploads, draw_list, records) = scene.split_for_record();
         let (material_uploads, material_records) = materials.split_for_record();
         let (sky_uniforms, sky_buffer, sky_draw, sky_cube) = sky.record(material_records);
@@ -1339,11 +1367,29 @@ impl Renderer {
                 }
             });
 
+        // Fog cards fade against the scene prepass's depth where the frame has it.
+        let card_depth_fade = fog_cards.depth_fade();
+        let (card_draws, card_groups) = fog_cards.split_for_record();
+        let card_depth = (card_depth_fade && !card_draws.is_empty()).then_some(targets.depth);
         let mut main = graph.add_pass("main").write(scene_color).write(depth);
         if let Some(msaa_color) = msaa_color {
             main = main.write(msaa_color);
         }
+        if let Some(card_depth) = card_depth {
+            main = main.read(card_depth);
+        }
         main.record(move |ctx| {
+            // Fog cards' scene group, with the depth they fade against where they read the
+            // prepass's: made before the pass begins, since the depth's view borrows the context.
+            let card_family = SurfaceVariant::FOG_CARD.shading.scene_group();
+            let card_group = match card_depth {
+                Some(card_depth) => {
+                    let (instances, materials) = &card_buffers;
+                    let layout = &layouts.scene[card_family];
+                    card_groups.get(device, layout, instances, materials, ctx.view(card_depth))
+                }
+                None => &scene_bind_groups[card_family],
+            };
             let (view, resolve_target, store) = match msaa_color {
                 Some(msaa_color) => {
                     (ctx.view(msaa_color), Some(ctx.view(scene_color)), wgpu::StoreOp::Discard)
@@ -1407,6 +1453,22 @@ impl Renderer {
                     DrawSet::Surfaces,
                 );
             }
+            // Fog cards last, back to front (M1 W3), their scene group holding the depth they
+            // fade against.
+            if !card_draws.is_empty() {
+                pass.set_bind_group(2, card_group, &[]);
+                let pipeline = |format| {
+                    let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+                    mesh.surface(SurfaceVariant::FOG_CARD).expect("built when a fog card draw was added")
+                };
+                mesh_draws.draw_ordered(
+                    &mut pass,
+                    MeshPass::Main,
+                    SurfaceVariant::FOG_CARD,
+                    card_draws,
+                    pipeline,
+                );
+            }
         });
 
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
@@ -1454,6 +1516,7 @@ impl Renderer {
             character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
             environment_pipelines: self.pipelines.built(MaterialFamily::Environment),
             sky: self.sky.stats(),
+            fog: FogStats { card_pipelines: self.pipelines.built(MaterialFamily::FogCard), ..self.stats.fog },
             ..self.stats
         }
     }
@@ -1649,22 +1712,31 @@ fn create_frame_bind_group(
 }
 
 /// Group 2 per [`MESH_FAMILIES`] entry, for that family's pipelines: the instances and the
-/// family's materials. The prepasses bind the anime character family's.
+/// family's materials, and for fog cards the stand-in for the depth they fade against (frames that
+/// read the prepass's bind a group of their own, `fog::CardGroupCache`). The prepasses bind the
+/// anime character family's.
 fn create_scene_bind_groups(
     device: &wgpu::Device,
     layouts: &Layouts,
     scene: &GpuScene,
     materials: &Materials,
+    fog_cards: &FogCards,
 ) -> [wgpu::BindGroup; MESH_FAMILIES.len()] {
     std::array::from_fn(|group| {
         let family = MESH_FAMILIES[group];
+        let entries = [
+            wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: materials.buffer(family).as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: FOG_CARD_DEPTH_BINDING,
+                resource: wgpu::BindingResource::TextureView(fog_cards.stand_in()),
+            },
+        ];
+        let bindings = if family == MaterialFamily::FogCard { entries.len() } else { 2 };
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(family.name()),
             layout: &layouts.scene[group],
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: scene.instance_buffer().as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: materials.buffer(family).as_entire_binding() },
-            ],
+            entries: &entries[..bindings],
         })
     })
 }

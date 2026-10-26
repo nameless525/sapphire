@@ -64,7 +64,8 @@ impl TodTimeline {
     /// dusk. At 10:00 it is exactly the renderer's default look (the sun the sandbox has always
     /// drawn with, [`sapphire_render::SkyGradient::default`] and
     /// [`sapphire_render::PostParams::default`]), so a scene that doesn't choose a time looks as
-    /// it did before time of day.
+    /// it did before time of day, but for its fog (M1 W3): a light haze the renderer's default
+    /// leaves out.
     pub fn default_day() -> Self {
         Self::from_ron(DEFAULT_DAY).expect("the shipped default day is checked by this module's tests")
     }

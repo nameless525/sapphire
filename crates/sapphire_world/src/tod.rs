@@ -65,8 +65,9 @@
 //! light, ambient light and post-processing with its compositing layers (P2) are drawn today, the ambient through the character
 //! light rig's GI (C2), as is the character key light, which reaches characters through their
 //! rigs ([`TodFrame::character_lighting`], [`crate::light_rig`]). The day/night factor is C1's ramp
-//! blend (the frame uniforms' `day_night`). The rest is carried for the packages that read it: fog
-//! (W3), ambient on the environment (W4, W5) and the shadow tint (R4, W4).
+//! blend (the frame uniforms' `day_night`), and fog is drawn over the world, the characters and
+//! the sky, and lights fog cards (W3). The rest is carried for the packages that read it: ambient
+//! on the environment (W4, W5) and the shadow tint (R4, W4).
 //!
 //! # The celestial sphere
 //!

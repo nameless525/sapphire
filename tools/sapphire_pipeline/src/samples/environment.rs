@@ -20,9 +20,18 @@
 //!   light/shadow transition.
 //! - **`ground.png`** (color): painted grass, olive and gold patches over green, tiling every
 //!   [`GROUND_TILE`] meters.
+//! - **Fog cards** (M1 W3): a unit quad each, centered in its object's XY plane and facing +Z,
+//!   for the sandbox to place by instance where frames draw fog, so the renderer sorts every
+//!   card on its own:
+//!   - **`mist_sheet.glb`** (slot `Mist`): world-placed sheets of mist across the valley;
+//!   - **`haze_card.glb`** (slot `Haze`): upright haze among the colonnade, turned toward the
+//!     camera about the up axis;
+//!   - their fog card materials, `mist.material.ron` and `haze.material.ron`, read
+//!     **`mist.png`** (mask, linear): R a soft bank of mist, densest low and fading to nothing
+//!     at every edge, G a tiling octave of noise the cards drift through.
 //!
 //! The golden scenes `environment-day`, `environment-sunset` and `environment-night` show it
-//! with the character.
+//! with the character, without fog; the `fog-*` scenes show it in fog, with the cards.
 
 use std::f32::consts::{PI, TAU};
 use std::io;
@@ -30,11 +39,12 @@ use std::io;
 use glam::{Vec2, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    DistanceStylization, EnvironmentMaterial, MaterialDocument, Terminator, TerminatorBand,
+    CardFacing, DistanceStylization, EnvironmentMaterial, FogCardMaterial, MaterialDocument, Terminator,
+    TerminatorBand,
 };
 use serde_json::json;
 
-use super::noise::{Rng, fbm, smoothstep};
+use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
 use super::shapes;
 use crate::color::{srgb8, unorm8};
 use crate::gltf_writer::{Geometry, GltfWriter};
@@ -50,6 +60,11 @@ pub const WALL_MATERIAL_FILE_NAME: &str = "wall.material.ron";
 pub const LANTERN_MATERIAL_FILE_NAME: &str = "lantern.material.ron";
 pub const BAND_FILE_NAME: &str = "terminator_band.png";
 pub const GROUND_COLOR_FILE_NAME: &str = "ground.png";
+pub const MIST_SHEET_FILE_NAME: &str = "mist_sheet.glb";
+pub const HAZE_CARD_FILE_NAME: &str = "haze_card.glb";
+pub const MIST_MATERIAL_FILE_NAME: &str = "mist.material.ron";
+pub const HAZE_MATERIAL_FILE_NAME: &str = "haze.material.ron";
+pub const MIST_MAP_FILE_NAME: &str = "mist.png";
 
 /// The assets' IDs, which their committed sidecars (`content/samples/environment/*.meta`) give
 /// them: materials name their maps by ID, and the courtyard's sidecar binds its slots to the
@@ -62,6 +77,15 @@ pub const WALL_MATERIAL_ID: AssetId = AssetId::from_text("4e68ee72-a635-4ca3-8fb
 pub const LANTERN_MATERIAL_ID: AssetId = AssetId::from_text("75c36792-1225-42ae-aa70-95f4c3f84f2c");
 pub const BAND_ID: AssetId = AssetId::from_text("14d1e642-3b75-456f-b100-0395230326bb");
 pub const GROUND_COLOR_ID: AssetId = AssetId::from_text("9792c615-2cbd-494c-9681-750dfbc10e31");
+pub const MIST_SHEET_ID: AssetId = AssetId::from_text("4b217f2d-6046-4760-a4ee-cadc08d243ae");
+pub const HAZE_CARD_ID: AssetId = AssetId::from_text("046a80c3-c224-44ec-bacf-36e1ccf62f63");
+pub const MIST_MATERIAL_ID: AssetId = AssetId::from_text("a4cfe9cc-8e05-4940-92ad-922472ccb36a");
+pub const HAZE_MATERIAL_ID: AssetId = AssetId::from_text("95dc8b41-de81-4d06-acf1-5bfb7273b39f");
+pub const MIST_MAP_ID: AssetId = AssetId::from_text("fa5aecd1-fe5a-4655-a055-97cd4fd7ffe1");
+
+/// The fog cards' one slot each, with the material it is bound to.
+pub const MIST_SLOT: (&str, AssetId) = ("Mist", MIST_MATERIAL_ID);
+pub const HAZE_SLOT: (&str, AssetId) = ("Haze", HAZE_MATERIAL_ID);
 
 /// The courtyard's material slots, in file order, with the material each is bound to.
 pub const SLOTS: [(&str, AssetId); 5] = [
@@ -95,11 +119,16 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path(LANTERN_MATERIAL_FILE_NAME), document(&lantern_material())),
         (path(BAND_FILE_NAME), band_png()?),
         (path(GROUND_COLOR_FILE_NAME), ground_png()?),
+        (path(MIST_SHEET_FILE_NAME), card_glb(MIST_SLOT.0)),
+        (path(HAZE_CARD_FILE_NAME), card_glb(HAZE_SLOT.0)),
+        (path(MIST_MATERIAL_FILE_NAME), document(&mist_material())),
+        (path(HAZE_MATERIAL_FILE_NAME), document(&haze_material())),
+        (path(MIST_MAP_FILE_NAME), mist_png()?),
     ])
 }
 
-fn document(material: &EnvironmentMaterial) -> Vec<u8> {
-    material.validate().expect("the environment materials are valid");
+fn document<M: MaterialDocument>(material: &M) -> Vec<u8> {
+    material.validate().expect("the environment's materials are valid");
     sapphire_serialize::to_ron(material).expect("a material document serializes").into_bytes()
 }
 
@@ -218,6 +247,75 @@ pub fn ground_png() -> io::Result<Vec<u8>> {
         image::Rgb(srgb)
     });
     png(image)
+}
+
+/// Valley mist: world-placed sheets, lit by the fog, fading in from 8 m away and softly where they
+/// meet the ground, and brightening toward the sun.
+pub fn mist_material() -> FogCardMaterial {
+    FogCardMaterial {
+        color: [1.0, 1.0, 1.0, 0.6],
+        map: Some(MIST_MAP_ID),
+        scroll: [0.004, 0.0],
+        depth_fade: 4.0,
+        camera_fade: [8.0, 24.0],
+        sun_scatter: 0.5,
+        facing: CardFacing::World,
+    }
+}
+
+/// Haze among the colonnade: upright cards, thinner and nearer, drifting a little faster.
+pub fn haze_material() -> FogCardMaterial {
+    FogCardMaterial {
+        color: [1.0, 1.0, 1.0, 0.4],
+        map: Some(MIST_MAP_ID),
+        scroll: [0.007, 0.002],
+        depth_fade: 1.5,
+        camera_fade: [3.0, 10.0],
+        sun_scatter: 0.35,
+        facing: CardFacing::Upright,
+    }
+}
+
+/// The fog cards' map, linear: R a bank of mist in the card's UVs (V down), densest a little below
+/// the middle and nothing at any edge, its top ragged; G a tiling octave of noise, never below a
+/// third, which the cards drift through.
+pub fn mist_png() -> io::Result<Vec<u8>> {
+    const SIZE: u32 = 256;
+    let image = image::RgbImage::from_fn(SIZE, SIZE, |x, y| {
+        let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / SIZE as f32;
+        let ragged = fbm(Vec2::new(p.x * 6.0, 0.5), (NO_PERIOD, 1), 3, 0xf091);
+        let top = 0.12 + 0.25 * ragged;
+        let across = smoothstep(0.0, 0.28, p.x) * smoothstep(0.0, 0.28, 1.0 - p.x);
+        let down = smoothstep(top, top + 0.35, p.y) * smoothstep(0.0, 0.3, 1.0 - p.y);
+        let shape = across * down;
+        let octave = fbm(p * Vec2::new(4.0, 2.0), (4, 2), 4, 0xf092);
+        let octave = 0.34 + 0.66 * smoothstep(0.2, 0.8, octave);
+        image::Rgb([unorm8(shape), unorm8(octave), 0])
+    });
+    png(image)
+}
+
+/// A fog card as a binary glTF: a unit quad centered in the XY plane, facing +Z, its one
+/// primitive in the slot `slot`, UVs across it with V down.
+pub fn card_glb(slot: &str) -> Vec<u8> {
+    let mut geometry = Geometry::default();
+    for (x, y) in [(-0.5, 0.5), (0.5, 0.5), (-0.5, -0.5), (0.5, -0.5)] {
+        geometry.positions.push([x, y, 0.0]);
+        geometry.normals.push([0.0, 0.0, 1.0]);
+        geometry.uvs.push([x + 0.5, 0.5 - y]);
+        geometry.colors.push([255; 4]);
+    }
+    // Counter-clockwise seen from +Z.
+    geometry.indices.extend([0, 2, 1, 1, 2, 3]);
+    let mut gltf = GltfWriter::default();
+    let material = gltf.add_material(json!({
+        "name": slot,
+        "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0] },
+    }));
+    let mesh = gltf.add_mesh(slot, &[(&geometry, Some(material))]);
+    let root = gltf.add_node(json!({ "name": slot, "mesh": mesh }));
+    gltf.add_root(root);
+    gltf.to_glb()
 }
 
 fn png<P: image::PixelWithColorType>(image: image::ImageBuffer<P, Vec<P::Subpixel>>) -> io::Result<Vec<u8>>
@@ -503,6 +601,36 @@ mod tests {
     }
 
     #[test]
+    fn fog_cards_are_centered_unit_quads_in_their_slots() {
+        for slot in [MIST_SLOT.0, HAZE_SLOT.0] {
+            let mesh = import::gltf::import_slice(&card_glb(slot), None).expect("import");
+            let names: Vec<&str> = mesh.materials.iter().map(|slot| slot.name.as_str()).collect();
+            assert_eq!(names, [slot]);
+            let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|vertex| vertex.position).collect();
+            let center = positions.iter().map(|&p| Vec3::from(p)).sum::<Vec3>() / positions.len() as f32;
+            assert!(center.length() < 1e-6, "centered on the origin: {center}");
+            assert!(positions.iter().all(|p| p[0].abs() == 0.5 && p[1].abs() == 0.5 && p[2] == 0.0));
+            let cooked =
+                mesh.pack(PositionFormat::Unorm16, &BTreeMap::new()).unwrap().to_cooked().expect("cook");
+            sapphire_assets::mesh::Mesh::read(&cooked).expect("structurally valid");
+        }
+    }
+
+    #[test]
+    fn the_mist_map_fades_to_nothing_at_its_edges() {
+        let decoded = image::load_from_memory(&mist_png().unwrap()).unwrap().to_rgb8();
+        let (width, height) = decoded.dimensions();
+        for i in 0..width {
+            for (x, y) in [(i, 0), (i, height - 1), (0, i), (width - 1, i)] {
+                assert!(decoded.get_pixel(x, y)[0] <= 2, "R at the edge ({x}, {y})");
+            }
+        }
+        let densest = decoded.pixels().map(|pixel| pixel[0]).max().unwrap();
+        assert!(densest > 240, "a dense middle: {densest}");
+        assert!(decoded.pixels().all(|pixel| pixel[1] >= 80), "G never clears the card");
+    }
+
+    #[test]
     fn the_character_stands_on_flat_ground_and_hills_rise_far_out() {
         for (x, z) in [(0.0, 0.0), (FLAT_RADIUS * 0.7, 0.0), (0.0, -FLAT_RADIUS * 0.7)] {
             assert_eq!(ground_height(x, z), 0.0, "flat at ({x}, {z})");
@@ -527,6 +655,11 @@ mod tests {
             (LANTERN_MATERIAL_FILE_NAME, LANTERN_MATERIAL_ID),
             (BAND_FILE_NAME, BAND_ID),
             (GROUND_COLOR_FILE_NAME, GROUND_COLOR_ID),
+            (MIST_SHEET_FILE_NAME, MIST_SHEET_ID),
+            (HAZE_CARD_FILE_NAME, HAZE_CARD_ID),
+            (MIST_MATERIAL_FILE_NAME, MIST_MATERIAL_ID),
+            (HAZE_MATERIAL_FILE_NAME, HAZE_MATERIAL_ID),
+            (MIST_MAP_FILE_NAME, MIST_MAP_ID),
         ];
         for (file, id) in ids {
             let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(file))).expect("a sidecar");
@@ -537,18 +670,23 @@ mod tests {
             let document = AnyMaterialDocument::from_ron(&text).expect("a material document");
             let textures = document.textures();
             assert!(
-                textures.iter().flatten().all(|id| [BAND_ID, GROUND_COLOR_ID].contains(id)),
+                textures.iter().flatten().all(|id| [BAND_ID, GROUND_COLOR_ID, MIST_MAP_ID].contains(id)),
                 "{textures:?}"
             );
         }
-        let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(COURTYARD_FILE_NAME)))
-            .expect("a sidecar");
-        let crate::meta::ImportSettings::Gltf(settings) = meta.importer else { panic!("a glTF sidecar") };
-        let bound: Vec<(&str, AssetId)> =
-            settings.materials.iter().map(|(name, id)| (name.as_str(), *id)).collect();
-        let mut slots = SLOTS.to_vec();
+        let bound = |file: &str| -> Vec<(String, AssetId)> {
+            let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(file))).expect("a sidecar");
+            let crate::meta::ImportSettings::Gltf(settings) = meta.importer else { panic!("a glTF sidecar") };
+            settings.materials.iter().map(|(name, id)| (name.clone(), *id)).collect()
+        };
+        let mut slots: Vec<(String, AssetId)> =
+            SLOTS.iter().map(|&(name, id)| (name.to_owned(), id)).collect();
         slots.sort_unstable();
-        assert_eq!(bound, slots, "every slot bound to its material");
+        assert_eq!(bound(COURTYARD_FILE_NAME), slots, "every slot bound to its material");
+        for (file, (slot, material)) in [(MIST_SHEET_FILE_NAME, MIST_SLOT), (HAZE_CARD_FILE_NAME, HAZE_SLOT)]
+        {
+            assert_eq!(bound(file), [(slot.to_owned(), material)], "{file}");
+        }
     }
 
     #[test]
@@ -556,5 +694,7 @@ mod tests {
         assert_eq!(courtyard_glb(), courtyard_glb());
         assert_eq!(band_png().unwrap(), band_png().unwrap());
         assert_eq!(ground_png().unwrap(), ground_png().unwrap());
+        assert_eq!(mist_png().unwrap(), mist_png().unwrap());
+        assert_eq!(card_glb(MIST_SLOT.0), card_glb(MIST_SLOT.0));
     }
 }

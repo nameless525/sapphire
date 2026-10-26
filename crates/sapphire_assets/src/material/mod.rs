@@ -9,7 +9,7 @@
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | W6 |
 //! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
-//! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | W3 |
+//! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | the fog card shader (M1 W3), on meshes |
 //!
 //! Each document is a `Versioned` type with a stable name under `sapphire::render`
 //! (`(type: "sapphire::render::AnimeCharacterMaterial", version: 1, data: (...))`), registered
@@ -70,8 +70,8 @@
 //!
 //! # Later milestones
 //!
-//! - Shaders for the foliage (W6) and fog card (W3) families: their blocks are defined and
-//!   uploaded, and their group 3 layouts exist, but nothing draws them yet.
+//! - A shader for the foliage family (W6): its block is defined and uploaded, and its group 3
+//!   layout exists, but nothing draws it yet.
 //! - A porosity input for the environment family, with the wet surface model that arrives with
 //!   weather (the renderer already carries the frame's wetness).
 //! - Ramp texture arrays, once texture arrays exist (A2): ramps are one 2D texture of 16 rows
@@ -103,7 +103,7 @@ pub use self::character::{
 pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};
 use self::common::{GpuBlock, bound_bits, pack_swizzles};
 pub use self::environment::{EnvironmentMaterial, EnvironmentParams, Terminator, TerminatorBand};
-pub use self::fog_card::{FogCardMaterial, FogCardParams};
+pub use self::fog_card::{CardFacing, FogCardMaterial, FogCardParams};
 pub use self::foliage::{FoliageGradient, FoliageMaterial, FoliageParams, Translucency, Wind};
 pub use self::sky::{CloudLayer, Disc, Moon, SkyMaterial, SkyParams, Stars};
 use crate::AssetId;
@@ -325,16 +325,16 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 4: the anime character family's outline settings (M1 C4: the width's distance curve and
-    /// LOD cutoff, model scale, flattening, and the line's albedo and lighting), three vectors
-    /// after the regions. 3: the anime character family's face settings and its eighth texture slot, the
-    /// expression map (M1 C3). 2: anime character regions pack the character light rig's GI
-    /// weights (M1 C2) into their subsurface and rim vectors' fourth components. 1: M1 A3's
-    /// blocks. Bump it whenever a family's block layout, its packing (`gpu_params`) or its
-    /// texture slots change: the cache key holds it, so every material recooks, and meshes,
-    /// whose generated materials embed blocks, must bump
-    /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 4;
+    /// 5: the fog card family packs its facing into `modes[1]` (M1 W3). 4: the anime character
+    /// family's outline settings (M1 C4: the width's distance curve and LOD cutoff, model scale,
+    /// flattening, and the line's albedo and lighting), three vectors after the regions. 3: the
+    /// anime character family's face settings and its eighth texture slot, the expression map (M1
+    /// C3). 2: anime character regions pack the character light rig's GI weights (M1 C2) into their
+    /// subsurface and rim vectors' fourth components. 1: M1 A3's blocks. Bump it whenever a
+    /// family's block layout, its packing (`gpu_params`) or its texture slots change: the cache key
+    /// holds it, so every material recooks, and meshes, whose generated materials embed blocks,
+    /// must bump `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
+    const VERSION: u32 = 5;
 }
 
 /// What one texture slot binds.

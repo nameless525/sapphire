@@ -29,8 +29,8 @@
 //!   ([`Weather`](crate::Weather)) to the GPU; the wet surface model (Lagarde's: darker porous
 //!   albedo, lower roughness, puddles, ripples) reads them when weather arrives (M2), with a
 //!   porosity input in the material.
-//! - **Distance stylization** beyond desaturation: a hue drift toward the fog and sky colors
-//!   joins W3's fog, and the painterly lower-mip read of distant surfaces.
+//! - **Distance stylization** beyond desaturation: a hue drift toward the fog's and the sky's
+//!   colors on top of the fog (M1 W3), and the painterly lower-mip read of distant surfaces.
 //! - **Screen-space edges** for the environment, from the prepass's normals and depth: the
 //!   desktop option the tiers carry as `screen_space_outlines`.
 //! - **Foliage** (W6) shares the terminator and wrap with its own NPR family.

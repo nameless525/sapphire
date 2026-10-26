@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "046a80c3-c224-44ec-bacf-36e1ccf62f63",
+        importer: Gltf((
+            materials: {
+                "Haze": "95dc8b41-de81-4d06-acf1-5bfb7273b39f",
+            },
+        )),
+    ),
+)

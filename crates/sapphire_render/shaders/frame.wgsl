@@ -3,7 +3,7 @@
 //
 // Bind groups (the budget behind them is in the crate docs):
 //   0  frame   per-frame constants: sun, sky, time, light counts, the day/night factor,
-//              ambient light, the shadow tint and the weather; the local lights (binding 1) and
+//              ambient light, the shadow tint, the weather and the fog; the local lights (binding 1) and
 //              their lists (binding 2) are declared in lights.wgsl and the passes that read
 //              them, the characters (binding 3) and the shadows (bindings 4–7) below
 //   1  view    one camera and its target, bound with a dynamic offset so the main view,
@@ -51,6 +51,24 @@ struct FrameUniforms {
     // puddles have filled, both 0 to 1. Plumbed for the wet surface model that arrives with
     // weather; no shader reads them yet (environment.wgsl's header says where they will apply).
     weather: vec4<f32>,
+    // The fog over the world and the sky (M1 W3, `FramePacket::fog`; see "Fog" below).
+    fog: FogUniforms,
+}
+
+// The frame's fog (`sapphire_render::fog::GpuFog`).
+struct FogUniforms {
+    // rgb: the near layer's color; a: its extinction per meter.
+    near: vec4<f32>,
+    // rgb: the far layer's tint on the sky's horizon; a: its extinction per meter.
+    far: vec4<f32>,
+    // rgb: the height layer's color; a: its extinction per meter at its base.
+    height: vec4<f32>,
+    // x: where the near layer begins, meters from the camera; y: where the far one does; z: the
+    // height layer's falloff per meter; w: its base height.
+    shape: vec4<f32>,
+    // rgb: the light scattered toward the camera around the key light; a: characters' share of
+    // the fog.
+    light: vec4<f32>,
 }
 
 // Under temporal AA (M1 R7) every matrix into clip space carries the frame's sub-pixel jitter,
@@ -313,6 +331,125 @@ fn sky_color(dir: vec3<f32>) -> vec3<f32> {
 // hemisphere of sky light above and ground light below, a blend by how far the surface faces up.
 fn ambient_light(n: vec3<f32>) -> vec3<f32> {
     return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, 0.5 + 0.5 * n.y);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fog (M1 W3, `sapphire_render::fog`, whose docs have the design): two distance layers and an
+// exponential height layer, mixed by their optical depths along the view ray, the far one
+// colored by the sky's horizon, with the key light scattered forward through them. Every world
+// pass applies it at its final color (`fogged`), the sky as at infinite distance (`fogged_sky`),
+// so distant geometry melts into the sky without a seam. `Fog::ray` is the same function on the
+// CPU; keep the two in step.
+
+// The distance layers fill the air up to this many meters above the camera (`fog::CEILING`).
+const FOG_CEILING: f32 = 30.0;
+// The sky's distance (`fog::SKY_DISTANCE`).
+const FOG_SKY_DISTANCE: f32 = 1.0e6;
+// The largest exponent the height layer takes (`fog::MAX_EXPONENT`), so its depth stays finite.
+const FOG_MAX_EXPONENT: f32 = 30.0;
+// The sky's horizon in the layers' mix, as an optical depth, where they are thin.
+const FOG_HORIZON_WEIGHT: f32 = 1.0e-3;
+// Below this, the height layer's (1 − e^(−x)) / x is its series.
+const FOG_SERIES_BELOW: f32 = 1.0e-3;
+// The optical depth, at the densities around the camera, of the stretch of a ray the layers'
+// colors mix over (`fog::MIX_DEPTH`), and the least density it is measured by.
+const FOG_MIX_DEPTH: f32 = 4.0;
+const FOG_MIN_DENSITY: f32 = 1.0e-12;
+
+// The fog over a view ray.
+struct FogRay {
+    // The share of the light behind that reaches the camera.
+    transmittance: f32,
+    // The fog's light: its layers' colors mixed by their optical depths (the sky's horizon where
+    // they are thin).
+    light: vec3<f32>,
+    // The key light scattered toward the camera along the ray.
+    sun: vec3<f32>,
+}
+
+// Whether the frame has fog: some layer has a density. A uniform branch on it keeps frames
+// without fog exactly as they were.
+fn fog_on() -> bool {
+    return frame.fog.near.a + frame.fog.far.a + frame.fog.height.a > 0.0;
+}
+
+// The share of the fog an instance's surfaces take: characters' (`characters` entries other than
+// 0, as post's character mask has it), or the world's whole.
+fn fog_share(character: u32) -> f32 {
+    return select(1.0, frame.fog.light.a, character != 0u);
+}
+
+// The layers' optical depths (near, far, height) over the first `length` meters of a ray rising
+// `rise` per meter, `start` the height layer's density at the eye over its density at its base.
+fn fog_depths(rise: f32, length: f32, start: f32) -> vec3<f32> {
+    // The distance layers end where the ray has risen FOG_CEILING above the eye.
+    let reach = select(length, min(length, FOG_CEILING / rise), rise > 0.0);
+    let near = frame.fog.near.a * max(reach - frame.fog.shape.x, 0.0);
+    let far = frame.fog.far.a * max(reach - frame.fog.shape.y, 0.0);
+    // The height layer: density × ∫ exp(−k (h0 + rise·t)) dt over the ray, which is
+    // density × exp(−k h0) × length × (1 − exp(−x)) / x with x = k · rise · length.
+    let x = frame.fog.shape.z * rise * length;
+    let ratio = select((1.0 - exp(min(-x, FOG_MAX_EXPONENT))) / x, 1.0 - 0.5 * x, abs(x) < FOG_SERIES_BELOW);
+    return vec3<f32>(near, far, frame.fog.height.a * start * length * ratio);
+}
+
+// The fog over the ray from `eye` along the unit vector `dir` to what lies `distance` meters
+// along it, `share` of it.
+fn fog_ray(eye: vec3<f32>, dir: vec3<f32>, distance: f32, share: f32) -> FogRay {
+    let rise = dir.y;
+    let start = exp(min(-frame.fog.shape.z * (eye.y - frame.fog.shape.w), FOG_MAX_EXPONENT));
+    let depths = fog_depths(rise, distance, start);
+    let total = depths.x + depths.y + depths.z;
+    // The colors mix over the stretch of the ray the camera sees: FOG_MIX_DEPTH at the densities
+    // around it, so the sky and distant geometry agree along the horizon.
+    let around = frame.fog.near.a + frame.fog.far.a + frame.fog.height.a * start;
+    let stretch = FOG_MIX_DEPTH / max(around, FOG_MIN_DENSITY);
+    // Shorter rays (all of them in light fog) mix over their whole length: no second walk.
+    var mixed = depths;
+    if distance > stretch {
+        mixed = fog_depths(rise, stretch, start);
+    }
+    let horizon = frame.sky_horizon.rgb;
+    var ray: FogRay;
+    ray.transmittance = exp(-share * total);
+    ray.light = (frame.fog.near.rgb * mixed.x + frame.fog.far.rgb * horizon * mixed.y
+        + frame.fog.height.rgb * mixed.z + horizon * FOG_HORIZON_WEIGHT)
+        / (mixed.x + mixed.y + mixed.z + FOG_HORIZON_WEIGHT);
+    // A forward lobe toward the key light, cos⁸.
+    let c = saturate(dot(dir, frame.sun_direction.xyz));
+    let c2 = c * c;
+    let c4 = c2 * c2;
+    ray.sun = frame.fog.light.rgb * (c4 * c4);
+    return ray;
+}
+
+// `color` seen through `ray`'s fog.
+fn apply_fog(color: vec3<f32>, ray: FogRay) -> vec3<f32> {
+    return color * ray.transmittance + (ray.light + ray.sun) * (1.0 - ray.transmittance);
+}
+
+// A world surface's final color at `position` with the frame's fog over it, `share` of it (1 for
+// the world, `fog_share` for an instance's). A uniform branch: without fog, `color` exactly.
+// One exit (WARP's compiler, see the outline shader).
+fn fogged(color: vec3<f32>, position: vec3<f32>, share: f32) -> vec3<f32> {
+    var result = color;
+    if fog_on() {
+        let offset = position - view.position.xyz;
+        let distance = length(offset);
+        let dir = offset / max(distance, 1e-6);
+        result = apply_fog(color, fog_ray(view.position.xyz, dir, distance, share));
+    }
+    return result;
+}
+
+// The sky's color in the unit direction `dir` with the frame's fog over it, as at infinite
+// distance.
+fn fogged_sky(color: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+    var result = color;
+    if fog_on() {
+        result = apply_fog(color, fog_ray(view.position.xyz, dir, FOG_SKY_DISTANCE, 1.0));
+    }
+    return result;
 }
 
 // Rec. 709 luminance of linear RGB.

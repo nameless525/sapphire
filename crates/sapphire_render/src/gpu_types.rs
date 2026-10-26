@@ -4,6 +4,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec2, Vec3};
 
+use crate::fog::GpuFog;
 use crate::lights::LightUniforms;
 use crate::{CameraData, FramePacket};
 
@@ -46,6 +47,8 @@ pub(crate) struct FrameUniforms {
     pub shadow_tint: [f32; 4],
     /// x: wetness; y: puddle coverage (`FramePacket::weather`).
     pub weather: [f32; 4],
+    /// The fog over the world and the sky (`FramePacket::fog`, M1 W3).
+    pub fog: GpuFog,
 }
 
 impl FrameUniforms {
@@ -68,6 +71,7 @@ impl FrameUniforms {
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
             weather: [frame.weather.wetness, frame.weather.puddles, 0.0, 0.0],
+            fog: GpuFog::new(&frame.fog),
         }
     }
 }

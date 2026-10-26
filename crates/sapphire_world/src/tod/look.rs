@@ -336,7 +336,7 @@ impl Mix for AmbientLight {
 impl Mix for FogLayer {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
-            color: mix_oklab(self.color, other.color, t),
+            color: fog_color((self.color, self.density), (other.color, other.density), t),
             density: lerp(self.density, other.density, t),
             start: lerp(self.start, other.start, t),
         }
@@ -345,18 +345,31 @@ impl Mix for FogLayer {
 
 impl Mix for Fog {
     fn mix(&self, other: &Self, t: f32) -> Self {
+        let (a, b) = (&self.height, &other.height);
         Self {
             near: self.near.mix(&other.near, t),
             far: self.far.mix(&other.far, t),
             height: HeightFog {
-                color: mix_oklab(self.height.color, other.height.color, t),
-                density: lerp(self.height.density, other.height.density, t),
-                falloff: lerp(self.height.falloff, other.height.falloff, t),
-                base: lerp(self.height.base, other.height.base, t),
+                color: fog_color((a.color, a.density), (b.color, b.density), t),
+                density: lerp(a.density, b.density, t),
+                falloff: lerp(a.falloff, b.falloff, t),
+                base: lerp(a.base, b.base, t),
             },
             sun_inscatter: mix_oklab(self.sun_inscatter, other.sun_inscatter, t),
+            characters: lerp(self.characters, other.characters, t),
         }
     }
+}
+
+/// A fog layer's color `t` of the way from `a`'s to `b`'s (each a color and the layer's density
+/// there), in OkLab weighted by the densities as premultiplied colors blend: the fog's color is
+/// the denser side's, so a layer that only one side has (the other's density 0, its color
+/// whatever a key left it) keeps its own color as it thins away rather than darkening toward the
+/// absent side's. Exactly `a`'s at 0 and `b`'s at 1.
+fn fog_color((a, a_density): (Vec3, f32), (b, b_density): (Vec3, f32), t: f32) -> Vec3 {
+    let density = lerp(a_density, b_density, t);
+    let t = if t > 0.0 && t < 1.0 && density > 0.0 { (t * b_density / density).clamp(0.0, 1.0) } else { t };
+    mix_color(a, b, t)
 }
 
 impl Mix for Quat {
@@ -660,6 +673,7 @@ impl Resolve for FogKey {
             far: layer(&self.far),
             height: HeightFog { color: color.into(), density, falloff, base },
             sun_inscatter: self.sun_inscatter.into(),
+            characters: self.characters,
         }
     }
 }

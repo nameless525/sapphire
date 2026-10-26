@@ -17,10 +17,10 @@
 //!   bound (shaders skip those slots on the block's bound bits), and the three samplers. Each
 //!   bound texture must carry the swizzle the material was cooked with, and slots of linear data
 //!   (normal, control, mask and SDF maps) take no sRGB texture: decoding would bend the data.
-//! - Meshes draw with the anime character and environment families (M1 W4), each through a
-//!   scene group (group 2) of its own holding its buffer beside the instances, rebuilt when the
-//!   instance buffer or its family's buffer grows; fog cards (W3) and foliage (W6) join with
-//!   their shaders. The sky (W2) draws one material at a time and reads its block from the
+//! - Meshes draw with the anime character, environment (M1 W4) and fog card (M1 W3) families,
+//!   each through a scene group (group 2) of its own holding its buffer beside the instances
+//!   (the fog cards' also the depth they fade against), rebuilt when the instance buffer or its
+//!   family's buffer grows; foliage (W6) joins with its shader. The sky (W2) draws one material at a time and reads its block from the
 //!   mirror ([`Materials::params`]), binding only its group 3.
 //!
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.

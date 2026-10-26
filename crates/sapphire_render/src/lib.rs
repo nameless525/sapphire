@@ -7,9 +7,9 @@
 //!   [`FramePacketRing`] it is reused from. The renderer never sees gameplay or world types
 //!   (rule R4): time of day (`sapphire_world::tod`, M1 W1) reaches it only as the packet's
 //!   resolved scene constants (key light, sky gradient and layers, the sun, moon and celestial
-//!   sphere, ambient, shadow tint, day/night factor and post with its compositing layers, and
-//!   the fog its later package reads), and the character light rig (`sapphire_world::light_rig`,
-//!   M1 C2) only as each character's resolved [`CharacterLighting`].
+//!   sphere, ambient, shadow tint, day/night factor, post with its compositing layers, and fog),
+//!   and the character light rig (`sapphire_world::light_rig`, M1 C2) only as each character's
+//!   resolved [`CharacterLighting`].
 //! - Turning packets into pixels.
 //! - The persistent GPU scene: a mesh pool (shared vertex-stream and index buffers), the
 //!   material buffers, and instance and draw-record buffers kept across frames and updated from
@@ -27,9 +27,14 @@
 //!   `sapphire_assets::mesh` as uploaded, byte for byte (see "Vertex streams" below).
 //! - The scene pipelines: the anime character uber-shader and its inverted-hull outline, in
 //!   one pipeline per static permutation (see "The anime character shader" below), and the
-//!   environment uber-shader, per coverage (see "The environment shader" below). A mesh's
-//!   submeshes may draw with either family, and draws group by pipeline (see "Material families
-//!   on meshes" below).
+//!   environment uber-shader, per coverage (see "The environment shader" below), and the fog
+//!   card shader. A mesh's submeshes may draw with any of the three families, and draws group by
+//!   pipeline (see "Material families on meshes" below).
+//! - Fog ([`fog`], M1 W3): the packet's distance and height [`Fog`], applied by one shared
+//!   function at the final color of every world pass (the environment, anime characters and
+//!   their outlines, fog cards) and of the sky, and fog cards: translucent sheets of the fog
+//!   card family on meshes, lit by the fog, faded near the lens and (on the desktop tiers) where
+//!   they meet geometry, drawn last and back to front.
 //! - The sky (`sky`, M1 W2): the gradient, stars and the Milky Way, the sun's and moon's discs and
 //!   glows, cirrus and the card clouds' band, drawn at the far plane in the main pass from the
 //!   packet's [`SkyLayers`] and its sky material, and a sky-only cubemap updated a face a frame
@@ -392,8 +397,8 @@
 //! - **Outlines:** the environment draws no inverted hull in M1 (decision): its edges are the
 //!   spec's screen-space edge pass, a later desktop option; props that should read like
 //!   characters use the anime character family.
-//! - **The final color** is produced in one place at the end of the fragment shader, where fog
-//!   (W3) joins it.
+//! - **The final color** is produced in one place at the end of the fragment shader, where the
+//!   frame's fog joins it (`fogged`, M1 W3).
 //!
 //! # Shadows (M1 R4)
 //!
@@ -416,17 +421,19 @@
 //!
 //! # Material families on meshes (M1 W4)
 //!
-//! A mesh's material slots bind anime character or environment materials, mixed freely, and
-//! [`Renderer::upload_mesh`] takes both (other families are [`RenderError::NotDrawable`]). Each
-//! submesh draws through its family's shader:
+//! A mesh's material slots bind anime character, environment or fog card (M1 W3) materials,
+//! mixed freely, and [`Renderer::upload_mesh`] takes all three (other families are
+//! [`RenderError::NotDrawable`]). Each submesh draws through its family's shader:
 //!
 //! - **Surface variants** are a coverage (opaque, alpha-tested, transparent) and a shading: the
-//!   anime character shader for a part (body, face), or the environment shader. Nine in all, each
-//!   a pipeline per position format, built when a draw first needs it.
+//!   anime character shader for a part (body, face), the environment shader, or the fog card
+//!   shader (always transparent). Ten in all, each a pipeline per position format, built when a
+//!   draw first needs it.
 //! - **Draws sort by pipeline:** the draw list groups them by position format and variant, so the
 //!   families never interleave whatever order instances and submeshes come in. In each coverage
 //!   characters draw before the world, so depth rejects the world behind them; then the
-//!   characters' outlines, the sky, and transparent surfaces of both families.
+//!   characters' outlines, the sky, transparent surfaces of both, and fog cards last, back to
+//!   front by their instances' bounds (the [`fog`] module).
 //! - **Scene groups:** each family's pipelines bind group 2 with its own parameter buffer beside
 //!   the instances; the main pass rebinds group 2 only when the family changes.
 //! - **The prepasses** draw every family's opaque and alpha-tested surfaces into the scene
@@ -543,12 +550,12 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **Material families' shaders:** fog cards (W3) and foliage (W6) bring pipelines that bind
-//!   their family's buffer (in a scene group of their own, as the environment's do: join
+//! - **Material families' shaders:** foliage (W6) brings pipelines that bind its family's buffer
+//!   (in a scene group of its own, as the environment's and fog cards' do: join
 //!   `pipelines::MESH_FAMILIES` and `Shading`) and group 3. The sky (W2) reads its one material's
 //!   block on the CPU instead (see "The sky").
-//! - **The environment shader** (see above): fog (W3) joins its final color; reflection probes and the sky cube's prefiltered mips (W5) replace the
-//!   hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
+//! - **The environment shader** (see above): reflection probes and the sky cube's prefiltered
+//!   mips (W5) replace the hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
 //!   edges for the environment (desktop); foliage (W6) shares its terminator and wrap.
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
 //!   and the sky cube's readers (W4, W5) with its prefiltered mips.
@@ -579,6 +586,7 @@ mod buffer;
 mod characters;
 mod draw;
 mod environment;
+pub mod fog;
 mod frame;
 mod gpu_types;
 pub mod graph;
@@ -599,6 +607,7 @@ pub mod temporal;
 pub mod texture;
 
 pub use environment::{EnvironmentSettings, EnvironmentSpecular};
+pub use fog::FogStats;
 pub use frame::{
     AmbientLight, CameraData, Celestial, CharacterBody, CharacterFace, CharacterGi, CharacterInstance,
     CharacterLight, CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer,

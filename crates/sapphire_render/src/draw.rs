@@ -9,7 +9,8 @@
 //! it changes. Draws come in groups of one surface variant (the draw list's), each drawn
 //! through its own pipeline; outline hulls are drawn for the draws that have one and are within
 //! their material's LOD cutoff this frame (`outlines`), and the shadow passes draw only the
-//! instances that cast into the map they draw (`*_where`).
+//! instances that cast into the map they draw (`*_where`). Fog cards draw in an order of the
+//! frame's own, back to front ([`MeshDraws::draw_ordered`]).
 
 use std::ops::Range;
 
@@ -21,7 +22,7 @@ use crate::gpu_types::DrawData;
 use crate::materials::{MaterialHandle, MaterialRecord};
 use crate::mesh_pool::MeshPool;
 use crate::pipelines::{MeshPass, SurfaceVariant, format_index, slot};
-use crate::scene::DrawList;
+use crate::scene::{DeformedDraw, DrawCommand, DrawList};
 use crate::skinning::SkinnedOutputs;
 
 const SHADING_STRIDE: u64 = size_of::<VertexShading>() as u64;
@@ -41,6 +42,14 @@ pub(crate) struct MeshDraws<'a> {
     /// Per draw record: whether the frame draws its hull, if it has one (the LOD cutoff,
     /// `outlines::OutlineCull`).
     pub hulls: &'a [bool],
+}
+
+/// One of a variant's draws in the draw list: a static mesh's command, by format and position
+/// in its list, or a skinned or morphed instance's, by position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DrawRef {
+    Static { format: PositionFormat, index: u32 },
+    Deformed { index: u32 },
 }
 
 /// Which of a variant's draws a pass draws.
@@ -107,32 +116,45 @@ impl MeshDraws<'_> {
         set: DrawSet,
         instance: impl Fn(u32) -> bool,
     ) {
-        let slab = self.meshes.slab(format);
-        let mut bound_first_vertex = None;
-        let mut bound_material = None;
+        let mut bound = Bound::default();
         for command in &self.list.commands[format_index(format)][variant.index()] {
             if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
                 continue;
             }
-            self.bind_material(pass, kind, command.material, &mut bound_material);
-            if bound_first_vertex != Some(command.first_vertex) {
-                let vertex = u64::from(command.first_vertex);
-                let positions = slab.positions().slice(vertex * slab.position_stride()..);
-                pass.set_vertex_buffer(slot::POSITIONS, positions);
-                if kind.reads_previous() {
-                    // Static meshes move only by their instance transform.
-                    pass.set_vertex_buffer(slot::PREVIOUS_POSITIONS, positions);
-                }
-                if kind.reads_shading() {
-                    pass.set_vertex_buffer(slot::SHADING, slab.shading().slice(vertex * SHADING_STRIDE..));
-                }
-                if kind.reads_surface() {
-                    pass.set_vertex_buffer(slot::SURFACE, slab.surface().slice(vertex * SURFACE_STRIDE..));
-                }
-                bound_first_vertex = Some(command.first_vertex);
-            }
-            self.draw(pass, command.draw_id, command.indices.clone());
+            self.draw_command(pass, kind, format, command, &mut bound);
         }
+    }
+
+    /// Draws `command`, a static mesh's in `format`, binding its streams and material unless
+    /// `bound` says they are bound already.
+    fn draw_command(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        format: PositionFormat,
+        command: &DrawCommand,
+        bound: &mut Bound,
+    ) {
+        self.bind_material(pass, kind, command.material, &mut bound.material);
+        let streams = Streams::Static { format, first_vertex: command.first_vertex };
+        if bound.streams != Some(streams) {
+            let slab = self.meshes.slab(format);
+            let vertex = u64::from(command.first_vertex);
+            let positions = slab.positions().slice(vertex * slab.position_stride()..);
+            pass.set_vertex_buffer(slot::POSITIONS, positions);
+            if kind.reads_previous() {
+                // Static meshes move only by their instance transform.
+                pass.set_vertex_buffer(slot::PREVIOUS_POSITIONS, positions);
+            }
+            if kind.reads_shading() {
+                pass.set_vertex_buffer(slot::SHADING, slab.shading().slice(vertex * SHADING_STRIDE..));
+            }
+            if kind.reads_surface() {
+                pass.set_vertex_buffer(slot::SURFACE, slab.surface().slice(vertex * SURFACE_STRIDE..));
+            }
+            bound.streams = Some(streams);
+        }
+        self.draw(pass, command.draw_id, command.indices.clone());
     }
 
     /// Draws `set` of the skinned or morphed instances of `variant` with the streams `kind`
@@ -158,34 +180,81 @@ impl MeshDraws<'_> {
         set: DrawSet,
         instance: impl Fn(u32) -> bool,
     ) {
-        let outputs_buffer = self.skinned.buffer();
-        let mut bound_slot = None;
-        let mut bound_material = None;
+        let mut bound = Bound::default();
         for command in &self.list.deformed[variant.index()] {
             if !self.includes(set, command.draw_id, command.outline) || !instance(command.slot) {
                 continue;
             }
-            if bound_slot != Some(command.slot) {
-                // An instance whose outputs didn't fit (`SkinningStats::unplaced`) doesn't draw.
-                let Some(outputs) = self.skinned.get(command.slot) else { continue };
-                pass.set_vertex_buffer(slot::POSITIONS, outputs_buffer.slice(outputs.positions..));
-                if kind.reads_previous() {
-                    pass.set_vertex_buffer(
-                        slot::PREVIOUS_POSITIONS,
-                        outputs_buffer.slice(outputs.previous..),
-                    );
-                }
-                if kind.reads_shading() {
-                    pass.set_vertex_buffer(slot::SHADING, outputs_buffer.slice(outputs.shading..));
-                }
-                if kind.reads_surface() {
-                    let surface = u64::from(command.surface) * 4;
-                    pass.set_vertex_buffer(slot::SURFACE, self.meshes.deformable_buffer().slice(surface..));
-                }
-                bound_slot = Some(command.slot);
+            self.draw_deformed_command(pass, kind, command, &mut bound);
+        }
+    }
+
+    /// Draws `command`, a skinned or morphed instance's, binding its streams and material unless
+    /// `bound` says they are bound already.
+    fn draw_deformed_command(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        command: &DeformedDraw,
+        bound: &mut Bound,
+    ) {
+        let streams = Streams::Deformed { slot: command.slot };
+        if bound.streams != Some(streams) {
+            // An instance whose outputs didn't fit (`SkinningStats::unplaced`) doesn't draw.
+            let Some(outputs) = self.skinned.get(command.slot) else { return };
+            let outputs_buffer = self.skinned.buffer();
+            pass.set_vertex_buffer(slot::POSITIONS, outputs_buffer.slice(outputs.positions..));
+            if kind.reads_previous() {
+                pass.set_vertex_buffer(slot::PREVIOUS_POSITIONS, outputs_buffer.slice(outputs.previous..));
             }
-            self.bind_material(pass, kind, command.material, &mut bound_material);
-            self.draw(pass, command.draw_id, command.indices.clone());
+            if kind.reads_shading() {
+                pass.set_vertex_buffer(slot::SHADING, outputs_buffer.slice(outputs.shading..));
+            }
+            if kind.reads_surface() {
+                let surface = u64::from(command.surface) * 4;
+                pass.set_vertex_buffer(slot::SURFACE, self.meshes.deformable_buffer().slice(surface..));
+            }
+            bound.streams = Some(streams);
+        }
+        self.bind_material(pass, kind, command.material, &mut bound.material);
+        self.draw(pass, command.draw_id, command.indices.clone());
+    }
+
+    /// Draws `draws` of `variant`'s surfaces in their order, with the streams `kind` reads, each
+    /// through `pipeline` of its position format (f32 for skinned and morphed instances), set
+    /// only when the format changes. The index buffer must be bound.
+    pub(crate) fn draw_ordered<'p>(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        variant: SurfaceVariant,
+        draws: &[DrawRef],
+        pipeline: impl Fn(PositionFormat) -> &'p wgpu::RenderPipeline,
+    ) {
+        let mut bound = Bound::default();
+        let mut bound_format = None;
+        for &draw in draws {
+            let format = match draw {
+                DrawRef::Static { format, .. } => format,
+                DrawRef::Deformed { .. } => PositionFormat::Float32,
+            };
+            if bound_format != Some(format) {
+                pass.set_pipeline(pipeline(format));
+                bound_format = Some(format);
+            }
+            match draw {
+                DrawRef::Static { format, index } => {
+                    let commands = &self.list.commands[format_index(format)][variant.index()];
+                    if let Some(command) = commands.get(index as usize) {
+                        self.draw_command(pass, kind, format, command, &mut bound);
+                    }
+                }
+                DrawRef::Deformed { index } => {
+                    if let Some(command) = self.list.deformed[variant.index()].get(index as usize) {
+                        self.draw_deformed_command(pass, kind, command, &mut bound);
+                    }
+                }
+            }
         }
     }
 
@@ -208,4 +277,19 @@ impl MeshDraws<'_> {
         pass.set_vertex_buffer(slot::DRAW, self.records.buffer().slice(record..record + DRAW_STRIDE));
         pass.draw_indexed(indices, 0, 0..1);
     }
+}
+
+/// The streams a run of draws has bound: a static mesh's from its first vertex in a format's
+/// slab, or a deformed instance's outputs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Streams {
+    Static { format: PositionFormat, first_vertex: u32 },
+    Deformed { slot: u32 },
+}
+
+/// What a run of draws has bound, so the next draw rebinds only what differs.
+#[derive(Debug, Default)]
+struct Bound {
+    streams: Option<Streams>,
+    material: Option<MaterialHandle>,
 }

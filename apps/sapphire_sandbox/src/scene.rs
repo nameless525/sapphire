@@ -23,7 +23,8 @@
 //!   instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
 //! - **The courtyard** (`--environment`): the environment shader's test scene around the
 //!   character, one static entity with a [`RenderMesh`] at the origin, and a camera pulled back
-//!   to show it ([`Scene::spawn_environment`], [`crate::environment`]).
+//!   to show it ([`Scene::spawn_environment`], [`crate::environment`]); with fog, its fog cards,
+//!   static entities of their own ([`Scene::spawn_fog_cards`]).
 //! - **The outline row** (`--outline-row`): more of the character behind it, out to past the
 //!   outline cutoff, each a character with the default light rig; and **the hard-edged sample**
 //!   (`--hard-edges`), which the camera frames instead of the character
@@ -42,14 +43,15 @@
 //!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
 //!   probe, and writes them; the player's filter strength and sharpening (`post.filter_strength`,
 //!   `post.sharpening` or `--sharpening`) go on top, then the zone's sky material, and
-//!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient or `--plain-post`'s post without
-//!   its compositing layers (M1 P2), if set, and last the effect stack's effects for the frame
-//!   (M1 P3: `--post-effect`, the overlay's effects panel). After `Extract` has posed and
-//!   extracted the instances, it resolves each character's light rig for the frame's camera into
-//!   the packet's characters (M1 C2), with its face (M1 C3) and its body (M1 R4): the
-//!   turntable's head turning with it and its body a capsule from its feet to its head, and each
-//!   face rig head lit from its own angles, its body a sphere around it. Both run there rather
-//!   than as `Extract` systems, which would cost an allocation a frame each.
+//!   `--cloud-cover`'s coverage, `--plain-sky`'s bare gradient, `--fog off`'s clear air (M1 W3)
+//!   or `--plain-post`'s post without its compositing layers (M1 P2), if set, and last the
+//!   effect stack's effects for the frame (M1 P3: `--post-effect`, the overlay's effects panel).
+//!   After `Extract` has posed and extracted the instances, it resolves each character's light
+//!   rig for the frame's camera into the packet's characters (M1 C2), with its face (M1 C3) and
+//!   its body (M1 R4): the turntable's head turning with it and its body a capsule from its feet
+//!   to its head, and each face rig head lit from its own angles, its body a sphere around it.
+//!   Both run there rather than as `Extract` systems, which would cost an allocation a frame
+//!   each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -64,7 +66,7 @@ use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, FramePacket, HeadBasis, LightKind, LocalLight,
+    CharacterBody, CharacterFace, CharacterInstance, Fog, FramePacket, HeadBasis, LightKind, LocalLight,
     MaterialHandle, MeshHandle, SkyLayers, ViewData,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
@@ -126,6 +128,9 @@ pub(crate) struct Scene {
     faces: Option<[Entity; HEADS]>,
     /// The courtyard, with `--environment`.
     courtyard: Option<Entity>,
+    /// The courtyard's fog cards, with `--environment` and fog, each with its mesh's index in
+    /// [`environment::FOG_CARDS`].
+    fog_cards: Vec<(Entity, usize)>,
     /// The outline row, with `--outline-row`.
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
@@ -144,6 +149,8 @@ pub(crate) struct Scene {
     cloud_cover: Option<f32>,
     /// The sky's gradient alone (`--plain-sky`).
     plain_sky: bool,
+    /// Time of day's fog, unless `--fog off` (M1 W3).
+    fog: bool,
     /// Post without its compositing layers (`--plain-post`).
     plain_post: bool,
     /// The player's sharpening instead of the cvar's (`--sharpening`).
@@ -198,6 +205,7 @@ impl Scene {
             swatches: None,
             faces: None,
             courtyard: None,
+            fog_cards: Vec::new(),
             outline_row: None,
             hard_edges: None,
             stage: Vec::new(),
@@ -207,6 +215,7 @@ impl Scene {
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
+            fog: true,
             plain_post: false,
             sharpening: None,
         }
@@ -311,6 +320,12 @@ impl Scene {
     /// gives it: a backdrop that stays the same at any hour, for scenes about something else.
     pub fn set_plain_sky(&mut self, plain: bool) {
         self.plain_sky = plain;
+    }
+
+    /// Draws time of day's fog (M1 W3), or none at all with `false`: every frame then draws as it
+    /// did before fog, for scenes about something else (`--fog off`).
+    pub fn set_fog(&mut self, fog: bool) {
+        self.fog = fog;
     }
 
     /// Draws post as it was before its compositing layers (M1 P2): no diffusion glow, character
@@ -478,6 +493,23 @@ impl Scene {
         }
     }
 
+    /// Places the courtyard's fog cards (M1 W3), drawing `meshes` (in
+    /// [`environment::FOG_CARDS`] order). They never move, so they are extracted once.
+    pub fn spawn_fog_cards(&mut self, meshes: [MeshHandle; environment::FOG_CARDS.len()]) {
+        let world = self.ecs.world_mut();
+        self.fog_cards = environment::fog_cards()
+            .map(|(mesh, place)| (world.spawn((RenderMesh(meshes[mesh]), RenderTransform(place))).id(), mesh))
+            .collect();
+    }
+
+    /// Sets the meshes the fog cards draw again: after GPU device loss.
+    pub fn set_fog_card_meshes(&mut self, meshes: [MeshHandle; environment::FOG_CARDS.len()]) {
+        debug_assert!(!self.fog_cards.is_empty(), "no fog cards were placed");
+        for &(card, mesh) in &self.fog_cards {
+            self.ecs.world_mut().entity_mut(card).insert(RenderMesh(meshes[mesh]));
+        }
+    }
+
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -548,6 +580,7 @@ impl Scene {
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
+        let fog = self.fog;
         let (plain_post, sharpening) = (self.plain_post, self.sharpening);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
@@ -570,6 +603,9 @@ impl Scene {
             }
             if plain_sky {
                 packet.sky_layers = SkyLayers::default();
+            }
+            if !fog {
+                packet.fog = Fog::default();
             }
             if plain_post {
                 packet.post = packet.post.plain();

@@ -50,9 +50,8 @@ const RING_SIZE: usize = 3;
 /// parameters, the UI draw list, and debug draws (dev builds). Shadow cascades (R4) and UI 3D
 /// insets add views after the main camera.
 ///
-/// Some scene constants are carried for the packages that will read them and drawn from
-/// nothing yet: [`Self::fog`] (W3) and [`Self::weather`] (the wet surface model). Each type's
-/// docs name its readers.
+/// One scene constant is carried for the package that will read it and drawn from nothing yet:
+/// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
@@ -79,6 +78,8 @@ pub struct FramePacket {
     /// even stars and no clouds.
     pub sky_material: Option<MaterialHandle>,
     pub ambient: AmbientLight,
+    /// Distance and height fog over the world and the sky (M1 W3), which fog cards take their
+    /// light from. The default has none.
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
     /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
@@ -560,29 +561,47 @@ impl Default for AmbientLight {
     }
 }
 
-/// Distance and height fog (look pillar 3: layered atmosphere), read by W3: two distance layers
-/// and a height layer, each fading what lies behind it toward its color, plus light scattered
-/// toward the camera around the sun.
+/// Distance and height fog (look pillar 3: layered atmosphere; M1 W3, the [`fog`](crate::fog)
+/// module): two distance layers and a height layer, each fading what lies behind it toward its
+/// color, plus light scattered toward the camera around the key light. Every world pass applies
+/// it at its final color, the sky included, so distant geometry melts into the sky without a
+/// seam; fog cards take its light.
 ///
-/// Densities are extinction per meter: a layer's fog is `1 − exp(−density × meters)` over the
-/// meters of view ray inside it. The default has none.
+/// Densities are extinction per meter: a layer's optical depth is its density integrated over
+/// the meters of view ray inside it, and what lies behind keeps `exp(−depth)` of its light. The
+/// layers mix in proportion to their depths along the ray. The default has none, and a frame
+/// without any density draws exactly as it would without fog.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Fog {
     /// Haze near the camera.
     pub near: FogLayer,
-    /// Aerial perspective: what melts distant geometry into the sky. W3 takes its color from
-    /// the sky's horizon in the view direction, tinted by this layer's.
+    /// Aerial perspective: what melts distant geometry into the sky. Its color is a tint on the
+    /// sky's horizon ([`SkyGradient::horizon`]): white is the horizon itself, so geometry far
+    /// enough away takes the sky's own color.
     pub far: FogLayer,
     pub height: HeightFog,
-    /// Linear RGB light the fog scatters toward the camera around the sun's direction
-    /// (color × strength); black for none.
+    /// Linear RGB light the fog scatters toward the camera around the key light's direction
+    /// (the sun by day, the moon at night), color × strength, in a forward lobe; black for none.
+    /// It adds where the fog is, so the sun side of a hazy view glows.
     pub sun_inscatter: Vec3,
+    /// How much of the fog characters take (the instances the frame lists in
+    /// [`FramePacket::characters`], and their outlines): their optical depth is scaled by it,
+    /// from 0 (characters keep their colors at any distance) to 1 (as the world). Anime games
+    /// keep characters readable in fog, so time of day sets it below 1.
+    pub characters: f32,
+}
+
+impl Fog {
+    /// Whether any layer has a density: a frame whose fog doesn't draws exactly as without it.
+    pub fn is_visible(&self) -> bool {
+        [self.near.density, self.far.density, self.height.density].iter().any(|density| *density > 0.0)
+    }
 }
 
 /// One distance layer of [`Fog`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FogLayer {
-    /// Linear RGB.
+    /// Linear RGB (the far layer's: a tint on the sky's horizon).
     pub color: Vec3,
     /// Extinction per meter: 0 is clear.
     pub density: f32,
@@ -591,14 +610,14 @@ pub struct FogLayer {
 }
 
 /// Fog that thickens toward the ground: its density is `density × exp(−falloff × (y − base))`
-/// at height `y` (meters, world space).
+/// at height `y` (meters, world space), so it lies in valleys and thins over hilltops.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HeightFog {
     /// Linear RGB.
     pub color: Vec3,
     /// Extinction per meter at `base`.
     pub density: f32,
-    /// How fast it thins with height, per meter.
+    /// How fast it thins with height, per meter: 0 keeps `density` at every height.
     pub falloff: f32,
     /// The height, in meters, where `density` holds.
     pub base: f32,

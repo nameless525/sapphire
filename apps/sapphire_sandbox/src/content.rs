@@ -22,7 +22,9 @@
 //!
 //! With `--environment` it loads the courtyard ([`environment::COURTYARD`]), whose slots its sidecar
 //! binds to environment materials, which name a terminator band and a painted ground map
-//! ([`Content::courtyard`]).
+//! ([`Content::courtyard`]), and, where frames draw fog, its fog cards
+//! ([`environment::FOG_CARDS`]), whose sidecars bind their slots to fog card materials, which
+//! name the mist map ([`Content::fog_cards`]).
 //!
 //! With `--stage` it keeps a copy of the character's mesh, from which the stage derives the
 //! character without its pedestal ([`Content::keep_character_mesh`]): the server keeps no mesh's
@@ -236,6 +238,8 @@ pub(crate) struct Content {
     face_head: Option<Handle<Mesh>>,
     /// The courtyard, once asked for (`--environment`).
     courtyard: Option<Handle<Mesh>>,
+    /// The courtyard's fog cards, once asked for (`--environment` with fog).
+    fog_cards: Vec<Handle<Mesh>>,
     /// The hard-edged outline sample, once asked for (`--hard-edges`).
     hard_edges: Option<Handle<Mesh>>,
     /// The sky material, once asked for.
@@ -277,6 +281,7 @@ impl Content {
             swatches: Vec::new(),
             face_head: None,
             courtyard: None,
+            fog_cards: Vec::new(),
             hard_edges: None,
             sky: None,
             server,
@@ -412,6 +417,31 @@ impl Content {
             .expect("a ready mesh was uploaded here")
             .object
             .handle)
+    }
+
+    /// Loads until the courtyard's fog cards are on `renderer`, with their fog card materials and
+    /// the map they read, and returns their meshes in [`environment::FOG_CARDS`] order. They stay
+    /// loaded from then on.
+    pub fn fog_cards(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<[MeshHandle; environment::FOG_CARDS.len()], AppInitError> {
+        let mut cards = Vec::with_capacity(environment::FOG_CARDS.len());
+        for id in environment::FOG_CARDS {
+            // Asking again tries a card that failed before, as the character does.
+            let card = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+            let assets = &mut self.gpu;
+            let loaded = self.server.finish(&card, |upload| assets.upload(upload, renderer, gpu));
+            cards.push(card);
+            for unloaded in self.server.take_unloaded() {
+                self.gpu.unload(unloaded);
+            }
+            loaded.map_err(|error| AppInitError::msg(format!("a fog card didn't load: {error}")))?;
+        }
+        self.fog_cards = cards;
+        Ok(environment::FOG_CARDS
+            .map(|id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle))
     }
 
     /// Loads until the hard-edged outline sample is on `renderer`, with the materials it embeds,

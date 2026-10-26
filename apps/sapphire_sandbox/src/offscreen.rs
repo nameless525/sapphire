@@ -202,10 +202,11 @@ impl Stage {
         let packet = self.scene.frame_packet(alpha, Some((width, height)));
         #[cfg(feature = "dev")]
         let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
+        // Before `prepare`, which culls hulls by it.
+        self.renderer.set_outline_distance(self.quality.outline_distance());
         self.renderer.prepare(&self.gpu, packet);
         let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
-        self.renderer.set_outline_distance(self.quality.outline_distance());
         let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
         #[cfg(not(feature = "dev"))]
         self.graph.set_gpu_timing(&self.gpu, gpu_timing);

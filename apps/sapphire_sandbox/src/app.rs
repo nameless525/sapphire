@@ -349,11 +349,12 @@ impl SandboxApp {
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             let packet = self.scene.frame_packet(alpha, frame.as_ref().map(SurfaceFrame::size));
             self.stages.extract = presentation + stopwatch.lap();
+            // Before `prepare`, which culls hulls by it.
+            self.renderer.set_outline_distance(self.quality.outline_distance());
             self.renderer.prepare(&self.gpu, packet);
             if let Some(frame) = frame {
                 let timing = FrameTiming::new(&self.graph, self.frame_time);
                 self.renderer.set_render_scale(self.quality.render_scale(frame.size(), &timing));
-                self.renderer.set_outline_distance(self.quality.outline_distance());
                 // The overlay's own frame is no stage of the game's; its panel shows its cost.
                 #[cfg(feature = "dev")]
                 let overlay = {

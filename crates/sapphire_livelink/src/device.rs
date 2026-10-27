@@ -160,7 +160,10 @@ pub struct LiveLink {
     mode: LinkMode,
     /// The address it listens at once bound (a port of 0 picks a free one), or dials.
     address: SocketAddr,
-    pushes: Receiver<Push>,
+    /// Taken when the link closes, before its thread is joined: a connection's reader waiting
+    /// to queue a push (16 wait already) then fails instead of waiting for a poll that won't
+    /// come, which a dialing thread, serving its connection itself, would hold the join on.
+    pushes: Option<Receiver<Push>>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     /// Dropped to wake a dialing thread between dials.
@@ -211,7 +214,7 @@ impl LiveLink {
             LinkMode::Listen(_) => tracing::info!(target: LOG_TARGET, %address, "live link listening"),
             LinkMode::Connect(_) => tracing::info!(target: LOG_TARGET, %address, "live link dialing"),
         }
-        Ok(Self { mode, address, pushes, shared, thread: Some(thread), wake })
+        Ok(Self { mode, address, pushes: Some(pushes), shared, thread: Some(thread), wake })
     }
 
     pub fn mode(&self) -> LinkMode {
@@ -227,7 +230,7 @@ impl LiveLink {
     /// or a few times (connections wait while 16 are queued): it allocates nothing while nothing
     /// came.
     pub fn poll(&self) -> Option<Push> {
-        self.pushes.try_recv().ok()
+        self.pushes.as_ref()?.try_recv().ok()
     }
 
     pub fn counters(&self) -> LinkCounters {
@@ -248,6 +251,10 @@ impl Drop for LiveLink {
         for (_, stream) in streams {
             let _ = stream.shutdown(Shutdown::Both);
         }
+        // Shutting a socket down wakes its reads and writes, not a reader waiting for room in
+        // the push queue: dropping the queue does, and the pushes still in it go unanswered (the
+        // tool times out), as a dropped `Responder` does.
+        drop(self.pushes.take());
         let Some(thread) = self.thread.take() else { return };
         // A listener blocks in `accept`: a connection of our own wakes it. If none can be made,
         // the thread is left to end with the process rather than waited for.

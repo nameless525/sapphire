@@ -1,11 +1,12 @@
 //! Live link over loopback TCP: a device half serving an asset server, a time-of-day timeline and
 //! cvars, as an app does once a frame, and the desktop half's client pushing to it from another
-//! thread.
+//! thread; and tools of the tests' own, which send what the client doesn't (requests the app
+//! never takes, requests that don't fit).
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -16,7 +17,9 @@ use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, Handle, LoadPriority, MemoryPackSource,
 };
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarRegistry};
-use sapphire_livelink::protocol::{Capture, DeviceStatus, Preamble, ReplyBody};
+use sapphire_livelink::protocol::{
+    Capture, DeviceStatus, Preamble, Reply, ReplyBody, Request, RequestBody, read_frame, write_frame,
+};
 use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
 };
@@ -496,4 +499,120 @@ fn a_dialing_device_waits_between_dials() {
         gaps.iter().all(|gap| *gap >= Duration::from_millis(950)),
         "the device waits a second between dials: {gaps:?}"
     );
+}
+
+/// A tool of the test's own over a plain socket, which pipelines requests without waiting for
+/// their replies and reads replies with a timeout, so a reply that never comes fails the test
+/// rather than hanging it.
+struct RawTool {
+    stream: TcpStream,
+}
+
+impl RawTool {
+    /// Connects to a device listening at `address`.
+    fn connect(address: SocketAddr) -> Self {
+        Self::handshake(TcpStream::connect(address).unwrap())
+    }
+
+    /// Takes the device that dials `listener`.
+    fn accept(listener: &TcpListener) -> Self {
+        Self::handshake(listener.accept().unwrap().0)
+    }
+
+    fn handshake(mut stream: TcpStream) -> Self {
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.write_all(&Preamble::CURRENT.to_bytes()).unwrap();
+        Preamble::read(&mut stream).unwrap().check().unwrap();
+        Self { stream }
+    }
+
+    fn send(&mut self, id: u32, body: RequestBody) {
+        write_frame(&mut self.stream, &Request { id, body }).unwrap();
+    }
+
+    fn reply(&mut self) -> Result<Reply, LinkError> {
+        read_frame(&mut self.stream)
+    }
+}
+
+/// Drops `link` on a thread of its own and says whether that finished within five seconds: a
+/// link that can't close fails the test instead of hanging it (its thread is left behind).
+fn closes_in_time(link: LiveLink) -> bool {
+    let (closed, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        drop(link);
+        let _ = closed.send(());
+    });
+    done.recv_timeout(Duration::from_secs(5)).is_ok()
+}
+
+/// More requests than the link queues for the app (16), none of which the app takes.
+const FLOOD: u32 = 32;
+
+fn empty_packs() -> Arc<LivePacks> {
+    Arc::new(LivePacks::new(MemoryPackSource::new()))
+}
+
+#[test]
+fn a_dialing_link_closes_with_its_push_queue_full() {
+    // A device behind `adb reverse` that stopped polling (in the background, or closing): the
+    // dialing thread serves its connection itself, blocked handing the app a push while 16
+    // wait, and closing the link joins that thread.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), empty_packs()).unwrap();
+    let mut tool = RawTool::accept(&listener);
+    for id in 0..FLOOD {
+        tool.send(id, RequestBody::Status);
+    }
+    // The device reads the requests at once, and its reader blocks on the 17th.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(closes_in_time(link), "the link closes with pushes queued");
+    // The requests the app never took go unanswered, and the connection closes.
+    assert!(tool.reply().is_err());
+}
+
+#[test]
+fn a_listening_link_closes_with_its_push_queue_full() {
+    let link =
+        LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), empty_packs()).unwrap();
+    let mut tool = RawTool::connect(link.address());
+    for id in 0..FLOOD {
+        tool.send(id, RequestBody::Status);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(closes_in_time(link), "the link closes with pushes queued");
+    assert!(tool.reply().is_err());
+}
+
+#[test]
+fn a_dialing_link_closes_while_its_tool_goes_too() {
+    // The tool disconnects as the link closes, with the queue full.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), empty_packs()).unwrap();
+    let mut tool = RawTool::accept(&listener);
+    for id in 0..FLOOD {
+        tool.send(id, RequestBody::Status);
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let gone = std::thread::spawn(move || drop(tool));
+    assert!(closes_in_time(link), "the link closes with pushes queued");
+    gone.join().unwrap();
+}
+
+#[test]
+fn a_dialing_link_closes_mid_handshake_and_while_idle() {
+    // The tool took the dial and hasn't sent its preamble: the device waits for it unbounded.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), empty_packs()).unwrap();
+    let (silent, _) = listener.accept().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(closes_in_time(link), "the link closes during a handshake");
+    drop(silent);
+
+    // Connected and idle: the device's reader waits for a request.
+    let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), empty_packs()).unwrap();
+    let mut tool = RawTool::accept(&listener);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(closes_in_time(link), "the link closes while a connection waits for requests");
+    assert!(tool.reply().is_err(), "the tool sees the connection close");
 }

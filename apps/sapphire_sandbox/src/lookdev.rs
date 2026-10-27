@@ -5,10 +5,10 @@
 //! highlight, the bangs' shadow and eyes through the bangs).
 //!
 //! - **The town** is content: `content/lookdev/town/town.assembly.ron`, an assembly
-//!   (`sapphire_pipeline::assembly`) of Jinzhou-style halls, shops, walls, roofs and lanterns
-//!   built by its parametric builtins, the Chinese pavilion and a few of Kenney's Fantasy Town
-//!   Kit's pieces, cooked into one static mesh whose slots its sidecar binds to the town's
-//!   environment materials ([`TOWN`]). It never moves, so it is extracted once.
+//!   (`sapphire_pipeline::assembly`) of Jinzhou-style halls, shops, walls, roofs, lanterns and
+//!   market stalls built by its parametric builtins, the Chinese pavilion and one of Kenney's
+//!   Fantasy Town Kit's rocks as the hills, cooked into one static mesh whose slots its sidecar
+//!   binds to the town's environment materials ([`TOWN`]). It never moves, so it is extracted once.
 //! - **The character** is pixiv's VRM sample (A6, [`CHARACTER`]) in place of the mannequin. VRM
 //!   characters rest in a T-pose, so the stage holds a standing pose ([`held_pose`]): humanoid
 //!   bones turned from rest, the rig's twist and aim constraints followed ([`crate::pose`]), and a

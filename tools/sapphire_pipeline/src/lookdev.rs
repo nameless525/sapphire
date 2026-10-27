@@ -2,11 +2,11 @@
 //! materials read, written under `content/lookdev/` by `sapphire_pipeline gen-lookdev`.
 //!
 //! The town itself is authored, not generated: `town/town.assembly.ron` ([`crate::assembly`])
-//! builds Jinzhou's halls, shops, walls, roofs and lanterns from the assembly's parametric
-//! builtins, and places the Chinese pavilion (`town/pieces/pavilion.glb`) and a few of Kenney's
-//! Fantasy Town Kit's pieces (market stalls, a cart, the hills); `town/materials/` holds its
-//! materials. Its maps are painted here instead, in code, so they regenerate byte for byte and owe
-//! nothing to a kit's palette:
+//! builds Jinzhou's halls, shops, walls, roofs, lanterns and market from the assembly's
+//! parametric builtins, and places the Chinese pavilion (`town/pieces/pavilion.glb`) and one of
+//! Kenney's Fantasy Town Kit's rocks as the hills; `town/materials/` holds its materials. Its
+//! maps are painted here instead, in code, so they regenerate byte for byte and owe nothing to a
+//! kit's palette:
 //!
 //! | File (in `town/textures/`) | Repeats every | What |
 //! |---|---|---|
@@ -1079,8 +1079,8 @@ mod tests {
     /// The committed town assembles: every triangle of every piece claimed by a rule, every slot
     /// drawn, no two placements fighting in one plane but those its `allow_coplanar` names, and
     /// every entry there needed. Its size is the scene's budget line (spec §3.4's draw calls are
-    /// one per slot): about 217k triangles in the desktop cook's full detail and 147k in the
-    /// mobile cook's light one, the pavilion's 31k in both.
+    /// one per slot): about 232k triangles in the desktop cook's full detail and 153k in the
+    /// mobile cook's light one, the pavilion's 31k in both and the market's 17k and 9k.
     #[test]
     fn the_town_assembles_in_its_own_slots() {
         let path = lookdev_dir().join("town/town.assembly.ron");

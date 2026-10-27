@@ -7,9 +7,10 @@
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
 //!   versions within the frame's upload budget, in place;
-//! - new shader sources build the renderer's pipelines again off the frame thread, which swaps
-//!   them in once they are all built, or keeps the ones it has if they don't compile
-//!   (`shader_edits.rs`);
+//! - WGSL files whose text changed on disk replace those files in the newest sources the
+//!   renderer was asked for, so live link's pushes of other files keep their text, and build the
+//!   renderer's pipelines again off the frame thread, which swaps them in once they are all
+//!   built, or keeps the ones it has if they don't compile (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
 //!   scene runs on ([`Scene::replace_day`]);
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
@@ -33,7 +34,7 @@ use sapphire_assets::AssetChange;
 use sapphire_debug::HotReloadStatus;
 use sapphire_hot_reload::{Changes, DEBOUNCE, DocumentId, HotReload, sources};
 use sapphire_reflect::stable_name;
-use sapphire_render::Renderer;
+use sapphire_render::{Renderer, ShaderFile, ShaderSources};
 use sapphire_time::Stopwatch;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::screen_effects::EffectLibrary;
@@ -149,6 +150,9 @@ pub(crate) struct Reload {
     watching: String,
     /// The watched documents, with their files' names.
     documents: Vec<(DocumentId, Document, String)>,
+    /// The shader files as hot reload last read them: compiled in until one changes on disk, as
+    /// `HotReload` starts.
+    shaders_read: ShaderSources,
     /// Edits of the shaders swapped in.
     shader_rebuilds: u32,
     reloaded_documents: u32,
@@ -166,6 +170,7 @@ impl Reload {
             hot: None,
             watching: String::new(),
             documents: Vec::new(),
+            shaders_read: ShaderSources::compiled_in(),
             shader_rebuilds: 0,
             reloaded_documents: 0,
             errors: Vec::new(),
@@ -272,7 +277,7 @@ impl Reload {
         }
         // Built off the frame thread: `shaders` answers once they show, or with their errors.
         if let Some(sources) = new_shaders {
-            shaders.request(renderer, sources, Origin::HotReload);
+            self.request_shaders(sources, renderer, shaders);
         }
         for (id, text) in documents {
             let Some((_, document, origin)) = self.documents.iter().find(|(watched, ..)| *watched == id)
@@ -291,6 +296,29 @@ impl Reload {
             tracing::warn!(target: LOG_TARGET, error, "hot reload");
         }
         self.errors = errors;
+    }
+
+    /// Asks `renderer`, through `shaders`, to build the files of `read` (every shader file, as
+    /// hot reload read them from disk) that changed since the last reading, on top of the newest
+    /// sources asked for (`ShaderEdits::base`). Taken whole, `read` would put back the disk's
+    /// text of files live link pushed, and the push would still be answered as applied.
+    pub(crate) fn request_shaders(
+        &mut self,
+        read: ShaderSources,
+        renderer: &mut Renderer,
+        shaders: &mut ShaderEdits,
+    ) {
+        let mut sources = None;
+        for file in ShaderFile::ALL {
+            if read.get(file) != self.shaders_read.get(file) {
+                sources.get_or_insert_with(|| shaders.base(renderer)).set(file, read.get(file).to_owned());
+            }
+        }
+        self.shaders_read = read;
+        // A file saved with the text it had changes nothing.
+        if let Some(sources) = sources {
+            shaders.request(renderer, sources, Origin::HotReload);
+        }
     }
 
     /// What the overlay shows.

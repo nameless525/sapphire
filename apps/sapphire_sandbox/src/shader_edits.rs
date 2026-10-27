@@ -6,11 +6,14 @@
 //! live link's push with its reply, so the tool's time from push to reply is the time until the
 //! edit shows, as it was when the frame built them itself.
 //!
-//! A request made while another builds supersedes it and is built on its sources
-//! (`Renderer::requested_shader_sources`), so pushes of different files add up; one answer covers
-//! every request it superseded. A new renderer (a tier change, device loss) builds the newest
-//! sources asked for, or else the last edited ones swapped in, and the requests still waiting are
-//! answered when it has.
+//! Every request is built on the newest sources asked for (`Renderer::requested_shader_sources`,
+//! [`ShaderEdits::base`]), replacing only the files it edits: live link's, the files pushed; hot
+//! reload's, the files whose text changed on disk. So edits of different files add up, whichever
+//! made them and whether the one before is still building or swapped in. A request made while
+//! another builds supersedes it, and one answer covers every request it superseded; an edit of a
+//! file an earlier request edited too replaces that text, as the later save or push. A new
+//! renderer (a tier change, device loss) builds the newest sources asked for, or else the last
+//! edited ones swapped in, and the requests still waiting are answered when it has.
 
 use sapphire_livelink::Responder;
 use sapphire_livelink::protocol::ReplyBody;
@@ -162,5 +165,126 @@ fn shader_report(error: &ShaderError) -> &str {
     match error {
         ShaderError::Invalid { report, .. } => report,
         ShaderError::Pipeline { .. } => "",
+    }
+}
+
+/// Shader edits from live link and hot reload together, through a renderer and a live link of
+/// their own. They need a GPU: run them with
+/// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored shader_edits::`.
+#[cfg(test)]
+mod gpu_tests {
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use sapphire_assets::MemoryPackSource;
+    use sapphire_livelink::protocol::SourceFile;
+    use sapphire_livelink::{Client, LinkMode, LiveLink, LivePacks, Push};
+    use sapphire_math::Vec3;
+    use sapphire_render::{CameraData, FramePacketRing, RenderSettings, ShaderFile, ViewData};
+    use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+
+    use super::*;
+    use crate::reload::Reload;
+
+    /// `file`'s compiled-in text with a comment line added: an edit that builds its programs
+    /// again and draws as before.
+    fn commented(file: ShaderFile, comment: &str) -> String {
+        format!("{}\n// {comment}\n", file.compiled_in())
+    }
+
+    /// Hot reload's reading of the shader files: each compiled in, but `file`'s `text`.
+    fn read_from_disk(file: ShaderFile, text: &str) -> ShaderSources {
+        let mut read = ShaderSources::compiled_in();
+        read.set(file, text.to_owned());
+        read
+    }
+
+    /// Prepares a frame, as the app does before drawing one, which swaps in a finished build;
+    /// then answers the shader requests the renderer answered. Returns how many of hot reload's
+    /// were swapped in.
+    fn frame(
+        gpu: &GpuContext,
+        renderer: &mut Renderer,
+        packets: &mut FramePacketRing,
+        edits: &mut ShaderEdits,
+        reload: &mut Reload,
+    ) -> u32 {
+        let packet = packets.begin();
+        let camera = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 1.2, 1.0, 0.05);
+        packet.views.push(ViewData::new(camera));
+        renderer.prepare(gpu, packets.current());
+        let mut answered = edits.answer(renderer);
+        reload.shaders_answered(&mut answered);
+        std::thread::sleep(Duration::from_millis(1));
+        answered.reloaded
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_push_survives_a_hot_reload_of_another_file() {
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let mut renderer =
+            Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
+                .expect("renderer");
+        let mut edits = ShaderEdits::default();
+        let mut reload = Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron"));
+        let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+        let link =
+            LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).expect("a link");
+
+        // The tool pushes an edited sky.
+        let pushed = commented(ShaderFile::Sky, "pushed over live link");
+        let address = link.address();
+        let file = SourceFile { name: ShaderFile::Sky.file_name().to_owned(), text: pushed.clone() };
+        let tool =
+            std::thread::spawn(move || Client::connect(address).expect("a device").push_shaders(vec![file]));
+        let (files, reply) = loop {
+            if let Some(Push::Shaders { files, reply }) = link.poll() {
+                break (files, reply);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        // Applied as the sandbox applies it (`link.rs`), on the newest sources asked for.
+        let mut sources = edits.base(&renderer);
+        sources.set(ShaderFile::Sky, files[0].text.clone());
+        edits.request(&mut renderer, sources, Origin::LiveLink { files: files[0].name.clone(), reply });
+
+        // While it builds, hot reload reads an edited post.wgsl from disk, and every other file
+        // as it was: the sky as compiled in, which the push replaced. Its request supersedes the
+        // push's build (the push's is still compiling, in practice), and its answer covers both.
+        let saved = commented(ShaderFile::Post, "saved on disk");
+        reload.request_shaders(read_from_disk(ShaderFile::Post, &saved), &mut renderer, &mut edits);
+        let mut packets = FramePacketRing::new();
+        for _ in 0..60_000 {
+            if tool.is_finished() {
+                break;
+            }
+            frame(&gpu, &mut renderer, &mut packets, &mut edits, &mut reload);
+        }
+        let answer = tool.join().expect("the tool's thread");
+        assert!(answer.is_ok(), "the push is answered as applied: {answer:?}");
+        // And it is: the frames draw with both edits.
+        let sources = renderer.shader_sources();
+        assert!(sources.get(ShaderFile::Post) == saved, "hot reload's edit is in use");
+        assert!(sources.get(ShaderFile::Sky) == pushed, "the pushed sky is in use, not the disk's");
+
+        // Swapped in, the push stays through a later save of another file.
+        let saved_again = commented(ShaderFile::Post, "saved on disk again");
+        reload.request_shaders(read_from_disk(ShaderFile::Post, &saved_again), &mut renderer, &mut edits);
+        let reloaded =
+            (0..60_000).any(|_| frame(&gpu, &mut renderer, &mut packets, &mut edits, &mut reload) > 0);
+        assert!(reloaded, "hot reload's edit is answered");
+        let sources = renderer.shader_sources();
+        assert!(sources.get(ShaderFile::Post) == saved_again);
+        assert!(sources.get(ShaderFile::Sky) == pushed, "the pushed sky stays");
+
+        // A reading in which no file changed (a save of the same text) asks for nothing.
+        let builds = renderer.stats().shader_builds.started;
+        reload.request_shaders(read_from_disk(ShaderFile::Post, &saved_again), &mut renderer, &mut edits);
+        assert_eq!(frame(&gpu, &mut renderer, &mut packets, &mut edits, &mut reload), 0);
+        assert_eq!(renderer.stats().shader_builds.started, builds);
     }
 }

@@ -546,13 +546,102 @@ mod tests {
     }
 
     /// The committed plants and Milky Way are what the generator makes, and each plant is its
-    /// foliage sample's geometry.
+    /// foliage sample's geometry. Both are built and painted with `sin`, `cos`, `exp`, `atan2`
+    /// and `powf`, which each platform's libm rounds its own way (glibc's and MSVC's against
+    /// Apple's), so the comparison allows float rounding and nothing more: an edit to a
+    /// generator that isn't regenerated still fails it.
     #[test]
     fn the_committed_content_is_generated() {
-        for (name, bytes) in content_files().unwrap() {
-            assert_eq!(std::fs::read(lookdev_dir().join(&name)).unwrap(), bytes, "{name}");
+        for (name, generated) in content_files().unwrap() {
+            let committed = std::fs::read(lookdev_dir().join(&name)).unwrap();
+            if name.ends_with(".glb") {
+                assert_glb_matches(&name, &committed, &generated);
+            } else {
+                assert_png_matches(&name, &committed, &generated);
+            }
         }
         assert_eq!(Plant::Tree.glb(), foliage::tree_glb());
+    }
+
+    /// Whether two f32s generated on different platforms agree: within a millionth, relative to
+    /// their size but at least 1 (the plants' geometry is in meters, their normals and texture
+    /// coordinates within 0 to 1).
+    fn floats_agree(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
+    }
+
+    /// Asserts two JSON values are the same but for float rounding ([`floats_agree`]): integers,
+    /// strings and the structure exactly.
+    fn assert_json_matches(path: &str, committed: &serde_json::Value, generated: &serde_json::Value) {
+        use serde_json::Value;
+        match (committed, generated) {
+            (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => {
+                let (a, b) = (a.as_f64().unwrap(), b.as_f64().unwrap());
+                assert!(floats_agree(a, b), "{path}: committed {a}, generated {b}");
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                assert_eq!(a.len(), b.len(), "{path}: array length");
+                for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                    assert_json_matches(&format!("{path}[{index}]"), a, b);
+                }
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                assert!(a.keys().eq(b.keys()), "{path}: keys {:?} against {:?}", a.keys(), b.keys());
+                for (key, a) in a {
+                    assert_json_matches(&format!("{path}.{key}"), a, &b[key]);
+                }
+            }
+            (a, b) => assert_eq!(a, b, "{path}"),
+        }
+    }
+
+    /// Asserts two GLBs hold the same glTF but for float rounding: the JSON chunk alike but for
+    /// its floats (the accessors' bounds), and the binary chunk alike byte for byte but in the
+    /// elements of `F32` accessors, whose floats may differ by [`floats_agree`]. Indices and
+    /// every other integer match exactly.
+    fn assert_glb_matches(name: &str, committed: &[u8], generated: &[u8]) {
+        let (a, b) = (gltf::Glb::from_slice(committed).unwrap(), gltf::Glb::from_slice(generated).unwrap());
+        let json = |glb: &gltf::Glb<'_>| serde_json::from_slice::<serde_json::Value>(&glb.json).unwrap();
+        assert_json_matches(name, &json(&a), &json(&b));
+        let (a, b) = (a.bin.expect("a binary chunk"), b.bin.expect("a binary chunk"));
+        assert_eq!(a.len(), b.len(), "{name}: binary chunk length");
+        // Which bytes hold floats, by the generated file's accessors (the JSON matched).
+        let mut float = vec![false; b.len()];
+        for accessor in gltf::Gltf::from_slice(generated).unwrap().accessors() {
+            if accessor.data_type() != gltf::accessor::DataType::F32 {
+                continue;
+            }
+            let view = accessor.view().expect("the plants' accessors are dense");
+            let stride = view.stride().unwrap_or(accessor.size());
+            for element in 0..accessor.count() {
+                let start = view.offset() + accessor.offset() + element * stride;
+                float[start..start + accessor.size()].fill(true);
+            }
+        }
+        // F32 elements are 4-byte aligned in the chunk, so its words line up with their floats.
+        for (index, (a, b)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
+            if a == b {
+                continue;
+            }
+            let at = index * 4;
+            assert!(
+                float[at..at + a.len()].iter().all(|&float| float),
+                "{name}: byte {at} differs outside the floats"
+            );
+            let word = |bytes: &[u8]| f64::from(f32::from_le_bytes(bytes.try_into().unwrap()));
+            let (a, b) = (word(a), word(b));
+            assert!(floats_agree(a, b), "{name}: the float at byte {at}: committed {a}, generated {b}");
+        }
+    }
+
+    /// Asserts two PNGs hold the same image to within one code value a channel: an f32 a few
+    /// ulps off can round to the next 8-bit value.
+    fn assert_png_matches(name: &str, committed: &[u8], generated: &[u8]) {
+        let decode = |bytes: &[u8]| image::load_from_memory(bytes).unwrap().to_rgba8();
+        let (a, b) = (decode(committed), decode(generated));
+        assert_eq!(a.dimensions(), b.dimensions(), "{name}: size");
+        let off = a.as_raw().iter().zip(b.as_raw()).map(|(&a, &b)| a.abs_diff(b)).max().unwrap_or(0);
+        assert!(off <= 1, "{name}: {off} code values off");
     }
 
     #[test]

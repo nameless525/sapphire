@@ -339,6 +339,7 @@ impl App for SandboxApp {
         if presented {
             self.presented_frames += 1;
             self.recovery.reset();
+            self.losses.presented();
             // Rendering works with this pipeline cache, so the next boot may trust it.
             self.gpu.confirm_pipeline_cache();
         } else {
@@ -580,10 +581,14 @@ impl SandboxApp {
     /// Rebuilds everything that lived on the lost device (instance, context, surface,
     /// renderer) and has the asset server upload every asset to it again, per the recovery contract on
     /// `GpuContext`. On failure the app keeps running without a GPU and [`SurfaceRecovery`]
-    /// paces the next attempt, made as [`CreationLosses`] says if the new device was lost too;
-    /// an error when it says to stop.
+    /// paces the next attempt, made as [`CreationLosses`] says if the new device was lost too, or
+    /// the lost one before its stack presented anything; an error when it says to stop.
     fn recover_from_device_loss(&mut self, platform: &Platform) -> Result<(), GaveUp> {
         tracing::warn!(target: LOG_TARGET, "GPU device lost; rebuilding the GPU stack");
+        // A stack that lost its device before presenting anything counts as one that lost it
+        // coming up, and may change what the rebuild is made with.
+        let used = self.render_settings();
+        self.losses.stack_lost(&used, self.quality.active().id).map_err(GaveUp::log)?;
         // The old surface has to go before a new one is created for the same native window.
         self.surface = None;
         self.steady = false;
@@ -726,10 +731,11 @@ impl Default for SurfaceRecovery {
     }
 }
 
-/// What the app does when the GPU device is lost while a renderer is made: at startup, while the
-/// GPU stack is rebuilt after a loss, or for a new quality tier (QA-001). A device that is lost
-/// while the stack is made would otherwise be lost again on every attempt, rebuilding forever (the
-/// Android emulator lost its device building GTAO's pipelines on Mobile-High, every time).
+/// What the app does when the GPU device is lost while its GPU stack comes up: while a renderer
+/// is made (at startup, while the stack is rebuilt after a loss, or for a new quality tier), or
+/// before the stack it was made for presents its first frame (QA-001). A device that is lost
+/// while the stack comes up would otherwise be lost again on every attempt, rebuilding forever
+/// (the Android emulator lost its device building GTAO's pipelines on Mobile-High, every time).
 ///
 /// - The first loss tries again with the same settings: a loss can be a one-off.
 /// - A second in a row tries again with GTAO off, capsule AO only, logged as a warning: the
@@ -737,14 +743,19 @@ impl Default for SurfaceRecovery {
 ///   for the rest of the run, tier changes included.
 /// - A third in a row stops the app with an error.
 ///
-/// A renderer made without losing the device ends the run of losses. Dev and release builds
-/// follow the same policy.
+/// Only a presented frame ends the run of losses: a renderer made without a loss doesn't, so a
+/// stack that comes up and then loses its device before it shows anything counts too. A loss
+/// after the stack has presented starts nothing: the rebuild after it is the first try. Dev and
+/// release builds follow the same policy.
 #[derive(Debug, Default)]
 struct CreationLosses {
-    /// Devices lost in a row while renderers were made.
+    /// Devices lost in a row while stacks came up.
     in_a_row: u32,
-    /// GTAO was turned off: two renderers in a row lost the device with it on.
+    /// GTAO was turned off: two stacks in a row lost the device with it on.
     gtao_off: bool,
+    /// The stack in use was made, and has presented nothing yet: a loss of its device counts. Set
+    /// back once it presents, or once its loss is counted.
+    unproven: bool,
 }
 
 impl CreationLosses {
@@ -769,11 +780,13 @@ impl CreationLosses {
         error: &impl fmt::Display,
     ) -> Result<(), GaveUp> {
         self.in_a_row += 1;
+        // The device that was lost is the one in use, whose stack this loss covers too.
+        self.unproven = false;
         let (losses, ambient_occlusion) = (self.in_a_row, settings.ambient_occlusion);
         if losses >= Self::LIMIT {
             return Err(GaveUp(format!(
-                "the GPU device was lost {losses} times in a row while the renderer was made \
-                 (tier {tier}, ambient occlusion {ambient_occlusion:?}); giving up: {error}"
+                "the GPU device was lost {losses} times in a row before the GPU stack presented a \
+                 frame (tier {tier}, ambient occlusion {ambient_occlusion:?}); giving up: {error}"
             )));
         }
         if losses == 2 && ambient_occlusion.gtao.is_some() {
@@ -782,8 +795,8 @@ impl CreationLosses {
                 target: LOG_TARGET,
                 %error,
                 %tier,
-                "GPU device lost twice in a row while the renderer was made; ambient occlusion \
-                 downgraded: GTAO off, capsule AO only, for the rest of the run"
+                "GPU device lost twice in a row before the GPU stack presented a frame; ambient \
+                 occlusion downgraded: GTAO off, capsule AO only, for the rest of the run"
             );
         } else {
             tracing::warn!(
@@ -792,15 +805,30 @@ impl CreationLosses {
                 %tier,
                 ?ambient_occlusion,
                 losses,
-                "GPU device lost while the renderer was made; trying again"
+                "GPU device lost before the GPU stack presented a frame; trying again"
             );
         }
         Ok(())
     }
 
-    /// A renderer was made, and the device kept: the run of losses ends.
+    /// The device of the stack in use, made with `settings` for `tier`, was lost: counted as
+    /// [`Self::lost`] counts it if the stack hadn't presented a frame yet, once per stack.
+    fn stack_lost(&mut self, settings: &RenderSettings, tier: impl fmt::Display) -> Result<(), GaveUp> {
+        if !std::mem::take(&mut self.unproven) {
+            return Ok(());
+        }
+        self.lost(settings, tier, &"the GPU device was lost before the stack's first frame")
+    }
+
+    /// A renderer was made without losing the device: the stack in use until it presents.
     fn built(&mut self) {
+        self.unproven = true;
+    }
+
+    /// A frame was presented: the stack in use came up, and the run of losses ends.
+    fn presented(&mut self) {
         self.in_a_row = 0;
+        self.unproven = false;
     }
 }
 
@@ -1162,12 +1190,14 @@ mod tests {
     }
 
     #[test]
-    fn a_renderer_made_ends_the_run_of_losses_but_gtao_stays_off() {
+    fn a_presented_frame_ends_the_run_of_losses_but_gtao_stays_off() {
         let mut losses = CreationLosses::default();
         for _ in 0..2 {
             assert!(losses.lost(&with_gtao(), "mobile-high", &"lost").is_ok());
         }
+        // A renderer made doesn't end the run; its first frame does.
         losses.built();
+        losses.presented();
         // Two more losses in a row are a new run: no stop yet.
         let settings = losses.settings(with_gtao());
         for _ in 0..2 {
@@ -1186,5 +1216,40 @@ mod tests {
         }
         assert!(!losses.gtao_off);
         assert!(losses.lost(&plain, "mobile-low", &"lost").is_err());
+    }
+
+    #[test]
+    fn a_loss_before_the_first_frame_counts_once_per_stack() {
+        let tier = "mobile-high";
+        // A stack that presented and then lost its device: the rebuild is a first try.
+        let mut losses = CreationLosses::default();
+        losses.built();
+        losses.presented();
+        assert!(losses.stack_lost(&with_gtao(), tier).is_ok());
+        assert_eq!(losses.in_a_row, 0);
+
+        // Made, then lost before its first frame: counted, once however often recovery runs.
+        losses.built();
+        assert!(losses.stack_lost(&with_gtao(), tier).is_ok());
+        assert_eq!(losses.in_a_row, 1);
+        assert!(losses.stack_lost(&with_gtao(), tier).is_ok());
+        assert_eq!(losses.in_a_row, 1, "one loss per stack");
+        // Then the rebuild comes up and loses its device before a frame too: the second in a row
+        // turns GTAO off.
+        losses.built();
+        assert!(losses.stack_lost(&with_gtao(), tier).is_ok());
+        assert_eq!(losses.settings(with_gtao()).ambient_occlusion.gtao, None);
+        // A loss while making the next counts as the third, and stops.
+        let settings = losses.settings(with_gtao());
+        let error = losses.lost(&settings, tier, &"lost").unwrap_err().to_string();
+        assert!(error.contains("3 times in a row"), "{error}");
+
+        // A loss counted while making a renderer (a new tier's, on the device in use) covers the
+        // stack in use too: the recovery that follows doesn't count it again.
+        let mut losses = CreationLosses::default();
+        losses.built();
+        assert!(losses.lost(&with_gtao(), tier, &"lost").is_ok());
+        assert!(losses.stack_lost(&with_gtao(), tier).is_ok());
+        assert_eq!(losses.in_a_row, 1);
     }
 }

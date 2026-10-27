@@ -81,7 +81,10 @@
 //! are capped ([`protocol::MAX_FRAME`]), pushes too ([`packs::MAX_PUSH`]), their buffers grow only
 //! as bytes come, queues of pushes and replies are bounded, so are connections, the app applies a
 //! few pushes a frame, and every pushed byte an asset is decoded from passes the pack's blake3
-//! checks first.
+//! checks first. Names (a cvar's and its value, a document's origin, a shader file's, a pack's)
+//! longer than 1 KiB are refused on the connection's thread, so the app never looks one up or
+//! quotes it; error messages are cut at 64 KiB; and a reply too large for a frame is answered
+//! with an error saying so, the connection going on.
 //!
 //! # Cost
 //!

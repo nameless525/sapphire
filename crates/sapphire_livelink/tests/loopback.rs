@@ -18,7 +18,8 @@ use sapphire_assets::{
 };
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarRegistry};
 use sapphire_livelink::protocol::{
-    Capture, DeviceStatus, Preamble, Reply, ReplyBody, Request, RequestBody, read_frame, write_frame,
+    Capture, DeviceStatus, MAX_FRAME, Preamble, Reply, ReplyBody, Request, RequestBody, read_frame,
+    write_frame,
 };
 use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
@@ -90,6 +91,8 @@ struct App {
     timeline: TodTimeline,
     cvars: CvarRegistry,
     frame: u64,
+    /// The length of the PNG a capture answers with.
+    capture_len: usize,
 }
 
 impl App {
@@ -110,6 +113,8 @@ impl App {
             timeline: default_day(),
             cvars,
             frame: 0,
+            // As large as a phone's PNG gets.
+            capture_len: 3 << 20,
         }
     }
 
@@ -157,13 +162,13 @@ impl App {
                     Ok(outcome) => self.tracker.track(reply, outcome),
                     Err(error) => reply.refuse(error.to_string()),
                 },
-                // A frame "drawn": its number in every byte, as large as a phone's PNG gets.
+                // A frame "drawn": its number in every byte.
                 Push::Capture { reply } => reply.reply(ReplyBody::Captured(Capture {
                     frame: self.frame,
                     width: 2556,
                     height: 1179,
                     halved: 0,
-                    png: vec![self.frame as u8; 3 << 20],
+                    png: vec![self.frame as u8; self.capture_len],
                 })),
             }
         }
@@ -615,4 +620,61 @@ fn a_dialing_link_closes_mid_handshake_and_while_idle() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(closes_in_time(link), "the link closes while a connection waits for requests");
     assert!(tool.reply().is_err(), "the tool sees the connection close");
+}
+
+#[test]
+fn overlong_names_are_refused_briefly_and_the_connection_goes_on() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    let address = app.address();
+    let day = include_str!("../../sapphire_world/default_day.ron");
+    let replies = app.serve(std::thread::spawn(move || {
+        let mut tool = RawTool::connect(address);
+        // Nearly a frame's worth of name, in one well-framed request: refused unread.
+        tool.send(1, RequestBody::SetCvar { name: "test.exposure".repeat(250_000), value: "1".into() });
+        tool.send(2, RequestBody::SetCvar { name: "test.exposure".into(), value: "1".repeat(1 << 20) });
+        tool.send(3, RequestBody::Document { origin: "day".repeat(1 << 20), text: day.to_owned() });
+        // A name short enough to reach the app, which looks it up and quotes its start.
+        tool.send(4, RequestBody::SetCvar { name: "q".repeat(1000), value: "1".into() });
+        tool.send(5, RequestBody::Status);
+        [tool.reply(), tool.reply(), tool.reply(), tool.reply(), tool.reply()]
+    }));
+    for (id, reply) in (1..=4).zip(&replies) {
+        match reply {
+            Ok(Reply { id: answered, body: ReplyBody::Error(message) }) if *answered == id => {
+                assert!(message.len() < 200, "a short refusal, not the name again: {message}");
+            }
+            other => panic!("request {id}: {other:?}"),
+        }
+    }
+    assert!(matches!(&replies[4], Ok(Reply { id: 5, body: ReplyBody::Status(_) })), "{:?}", replies[4]);
+    assert_eq!(app.link.counters().refused, 4);
+}
+
+#[test]
+fn a_reply_too_large_for_a_frame_is_refused_and_the_connection_goes_on() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    // A capture the app failed to fit in a frame.
+    app.capture_len = MAX_FRAME + 1;
+    let address = app.address();
+    let replies = app.serve(std::thread::spawn(move || {
+        let mut tool = RawTool::connect(address);
+        tool.send(1, RequestBody::Capture);
+        tool.send(2, RequestBody::Status);
+        [tool.reply(), tool.reply()]
+    }));
+    match &replies[0] {
+        Ok(Reply { id: 1, body: ReplyBody::Error(message) }) => {
+            assert!(message.contains("frame"), "{message}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(&replies[1], Ok(Reply { id: 2, body: ReplyBody::Status(_) })), "{:?}", replies[1]);
 }

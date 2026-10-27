@@ -17,8 +17,8 @@ use sapphire_core::cvar::CvarRegistry;
 use crate::LOG_TARGET;
 use crate::packs::{LivePacks, PackPlan, PushedPack};
 use crate::protocol::{
-    AssetFailure, AssetGeneration, DEFAULT_PORT, LinkError, PackOutcome, Preamble, Reply, ReplyBody, Request,
-    RequestBody, SourceFile, read_frame, write_frame,
+    AssetFailure, AssetGeneration, DEFAULT_PORT, LinkError, MAX_FRAME, PackOutcome, Preamble, Reply,
+    ReplyBody, Request, RequestBody, SourceFile, read_frame, write_frame,
 };
 
 /// How long a connection to a listening device has to send its preamble.
@@ -33,6 +33,14 @@ const PUSH_QUEUE: usize = 16;
 const REPLY_QUEUE: usize = 64;
 /// Connections served at once; more are closed as they come.
 const MAX_CONNECTIONS: u32 = 8;
+/// The longest name a connection hands the app (a cvar's and its value, a document's origin
+/// and type, a shader file's, a pack's): they are short words, numbers and file names, so a
+/// longer one is refused on the connection's thread, and the app never looks it up, keeps it or
+/// quotes it in its messages.
+const MAX_NAME: usize = 1 << 10;
+/// The longest error message a reply carries: longer ones keep their start and say how much was
+/// cut.
+const MAX_ERROR: usize = 64 << 10;
 
 /// How a device takes connections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +103,17 @@ impl fmt::Debug for Responder {
 }
 
 impl Responder {
+    /// Answers with `body`. An error message past [`MAX_ERROR`] bytes is cut there; any other
+    /// reply too large for a frame is answered with an error saying so, when the connection's
+    /// thread writes it.
     pub fn reply(self, body: ReplyBody) {
+        let body = match body {
+            ReplyBody::Error(message) if message.len() > MAX_ERROR => {
+                let kept = &message[..message.floor_char_boundary(MAX_ERROR)];
+                ReplyBody::Error(format!("{kept}… ({} bytes cut)", message.len() - kept.len()))
+            }
+            body => body,
+        };
         match &body {
             ReplyBody::Error(_) => self.shared.refused.fetch_add(1, Ordering::Relaxed),
             // Reads, which change nothing.
@@ -451,10 +469,21 @@ fn serve(stream: TcpStream, context: &Context, handshake: Option<Duration>) -> R
 }
 
 /// Writes replies as they come, until every responder of the connection is gone or it closes.
+/// A reply too large for a frame is answered with an error instead: it is refused before any of
+/// it is written, so the connection goes on in step.
 fn write_replies(stream: TcpStream, replies: &Receiver<Reply>) {
     let mut writer = BufWriter::new(&stream);
     while let Ok(reply) = replies.recv() {
-        let written = write_frame(&mut writer, &reply).and_then(|()| Ok(writer.flush()?));
+        let written = match write_frame(&mut writer, &reply) {
+            Err(LinkError::FrameTooLarge(len)) => {
+                let name = reply.body.name();
+                tracing::warn!(target: LOG_TARGET, id = reply.id, name, len, "live link reply too large for a frame");
+                let error = format!("the device's {name} reply is {len} bytes, more than the {MAX_FRAME} a frame carries");
+                write_frame(&mut writer, &Reply { id: reply.id, body: ReplyBody::Error(error) })
+            }
+            written => written,
+        }
+        .and_then(|()| Ok(writer.flush()?));
         if let Err(error) = written {
             tracing::debug!(target: LOG_TARGET, error = error_chain(&error), "live link reply not sent");
             return;
@@ -483,13 +512,19 @@ impl Session<'_> {
 
     fn handle(&mut self, request: Request) {
         let Request { id, body } = request;
-        tracing::debug!(target: LOG_TARGET, id, ?body, "live link request");
         let reply = self.responder(id);
+        if let Some(error) = overlong(&body) {
+            tracing::debug!(target: LOG_TARGET, id, request = body.name(), error, "live link request refused");
+            return reply.refuse(error);
+        }
+        tracing::debug!(target: LOG_TARGET, id, ?body, "live link request");
         match body {
             RequestBody::Status => self.forward(Push::Status { reply }),
             RequestBody::SetCvar { name, value } => self.forward(Push::Cvar { name, value, reply }),
             // The envelope names the type: a document that doesn't even have one is refused here.
             RequestBody::Document { origin, text } => match sapphire_serialize::document::type_name(&text) {
+                Ok(type_name) if type_name.len() > MAX_NAME => reply
+                    .refuse(format!("{origin}: a type name of {} bytes, longer than any", type_name.len())),
                 Ok(type_name) => self.forward(Push::Document { origin, type_name, text, reply }),
                 Err(error) => reply.refuse(format!("{origin}: {error}")),
             },
@@ -535,6 +570,24 @@ impl Session<'_> {
             RequestBody::Capture => self.forward(Push::Capture { reply }),
         }
     }
+}
+
+/// Why `body` is refused before anything reads it, if it names something in more than
+/// [`MAX_NAME`] bytes.
+fn overlong(body: &RequestBody) -> Option<String> {
+    let (what, len) = match body {
+        RequestBody::SetCvar { name, .. } if name.len() > MAX_NAME => ("cvar name", name.len()),
+        RequestBody::SetCvar { value, .. } => ("cvar value", value.len()),
+        RequestBody::Document { origin, .. } => ("document origin", origin.len()),
+        RequestBody::Shaders { files } => {
+            ("shader file name", files.iter().map(|file| file.name.len()).max()?)
+        }
+        RequestBody::PackBegin { name, .. } => ("pack name", name.len()),
+        RequestBody::Status | RequestBody::PackChunk { .. } | RequestBody::PackEnd | RequestBody::Capture => {
+            return None;
+        }
+    };
+    (len > MAX_NAME).then(|| format!("a {what} of {len} bytes, past the {MAX_NAME} allowed"))
 }
 
 /// Answers pushed packs once their reloads land, and keeps every reloaded asset's generation for
@@ -622,4 +675,50 @@ fn error_chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reply `respond` sends through a responder of its own.
+    fn replied(respond: impl FnOnce(Responder)) -> Reply {
+        let (replies, outgoing) = mpsc::sync_channel(1);
+        respond(Responder { id: 7, replies, shared: Arc::default() });
+        outgoing.try_recv().expect("a reply")
+    }
+
+    #[test]
+    fn long_error_messages_keep_their_start() {
+        let Reply { id, body: ReplyBody::Error(message) } =
+            replied(|reply| reply.refuse("語".repeat(1 << 20)))
+        else {
+            panic!("an error");
+        };
+        assert_eq!(id, 7);
+        assert!(message.len() < MAX_ERROR + 32, "{} bytes", message.len());
+        let cut = (3 << 20) - message.floor_char_boundary(MAX_ERROR);
+        assert!(message.starts_with("語語") && message.ends_with(&format!("… ({cut} bytes cut)")));
+        // Shorter ones go whole.
+        let short = replied(|reply| reply.refuse("no"));
+        assert_eq!(short.body, ReplyBody::Error("no".into()));
+    }
+
+    #[test]
+    fn overlong_names_are_refused_unread() {
+        let named = |len: usize| "n".repeat(len);
+        let file = |name: String| SourceFile { name, text: String::new() };
+        for (body, refused) in [
+            (RequestBody::SetCvar { name: named(MAX_NAME), value: named(MAX_NAME) }, false),
+            (RequestBody::SetCvar { name: named(MAX_NAME + 1), value: "1".into() }, true),
+            (RequestBody::SetCvar { name: "a.b".into(), value: named(MAX_NAME + 1) }, true),
+            (RequestBody::Document { origin: named(MAX_NAME + 1), text: String::new() }, true),
+            (RequestBody::Shaders { files: vec![file(named(4)), file(named(MAX_NAME + 1))] }, true),
+            (RequestBody::Shaders { files: Vec::new() }, false),
+            (RequestBody::PackBegin { name: named(MAX_NAME + 1), len: 0, head: Vec::new() }, true),
+            (RequestBody::PackChunk { offset: 0, bytes: vec![0; MAX_NAME + 1] }, false),
+        ] {
+            assert_eq!(overlong(&body).is_some(), refused, "{body:?}");
+        }
+    }
 }

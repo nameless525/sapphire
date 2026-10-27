@@ -394,9 +394,9 @@ impl fmt::Debug for dyn AnyCvar + '_ {
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CvarError {
-    #[error("no cvar is named `{name}`{}", suggestion.map(|s| format!(" (did you mean `{s}`?)")).unwrap_or_default())]
+    #[error("no cvar is named {}{}", Quoted(name), suggestion.map(|s| format!(" (did you mean `{s}`?)")).unwrap_or_default())]
     Unknown { name: String, suggestion: Option<&'static str> },
-    #[error("`{name}` expects {}, got `{text}`", kind.expected())]
+    #[error("`{name}` expects {}, got {}", kind.expected(), Quoted(text))]
     Parse { name: &'static str, kind: CvarKind, text: String },
     #[error("`{name}` expects {}, got {value:?}", kind.expected())]
     WrongKind { name: &'static str, kind: CvarKind, value: CvarValue },
@@ -408,6 +408,26 @@ pub enum CvarError {
     Duplicate(&'static str),
     #[error("cvar name `{0}` is invalid: use dot-separated parts of lowercase letters, digits and `_`")]
     InvalidName(&'static str),
+}
+
+/// Text someone gave (a name that isn't a cvar's, a value that doesn't parse), quoted in an error
+/// message: whole in backticks, or only its first [`Quoted::LEN`] bytes and its length, so a
+/// message stays short whatever was sent.
+struct Quoted<'a>(&'a str);
+
+impl Quoted<'_> {
+    const LEN: usize = 64;
+}
+
+impl fmt::Display for Quoted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = self.0;
+        if text.len() <= Self::LEN {
+            return write!(f, "`{text}`");
+        }
+        let start = &text[..text.floor_char_boundary(Self::LEN)];
+        write!(f, "`{start}…` ({} bytes)", text.len())
+    }
 }
 
 /// Every cvar an app knows about, by name. See the [module docs](self).
@@ -484,11 +504,14 @@ impl CvarRegistry {
     }
 
     /// The registered name closest to a mistyped `name`: within two edits, or the only name
-    /// that starts with it.
+    /// that starts with it. Names whose lengths differ from `name`'s by more than two can't be
+    /// within two edits, so they are passed over unmeasured: a long `name` (any text a tool
+    /// sends) costs a length comparison per cvar, not an edit distance over its every byte.
     pub fn suggest(&self, name: &str) -> Option<&'static str> {
         let nearest = self
             .cvars
             .iter()
+            .filter(|cvar| cvar.name().len().abs_diff(name.len()) <= 2)
             .map(|cvar| (edit_distance(name, cvar.name()), cvar.name()))
             .filter(|&(distance, _)| distance <= 2)
             .min_by_key(|&(distance, _)| distance)
@@ -707,6 +730,32 @@ mod tests {
         assert_eq!(registry.register(&EMPTY_PART), Err(CvarError::InvalidName("r..bloom")));
         assert_eq!(registry.register(&AGAIN), Err(CvarError::Duplicate("test.levels")));
         assert_eq!(registry.len(), 5);
+    }
+
+    #[test]
+    fn long_unknown_names_are_passed_over_and_quoted_briefly() {
+        let registry = registry();
+        // Typos still find their names: one edit, two, and a prefix too short for either.
+        assert_eq!(registry.suggest("test.scal"), Some("test.scale"));
+        assert_eq!(registry.suggest("test.sclae"), Some("test.scale"));
+        assert_eq!(registry.suggest("test.scale_x"), Some("test.scale"));
+        assert_eq!(registry.suggest("test.sc"), Some("test.scale"));
+        assert_eq!(registry.suggest("test.levelsss"), Some("test.levels"));
+        assert_eq!(registry.suggest("test.levelssss"), None, "three edits");
+        // Megabytes of name, ASCII or not, or a cvar's name and more: no suggestion, and the
+        // error quotes the start of it.
+        for name in ["q".repeat(4 << 20), "語".repeat(1 << 20), format!("test.scale{}", "x".repeat(1 << 20))]
+        {
+            assert_eq!(registry.suggest(&name), None);
+            let message = registry.set(&name, "1").unwrap_err().to_string();
+            assert!(message.len() < 200, "{message}");
+            assert!(message.ends_with(&format!("…` ({} bytes)", name.len())), "{message}");
+        }
+        // As is a value that doesn't parse.
+        let message = registry.set("test.scale", &"x".repeat(1 << 20)).unwrap_err().to_string();
+        assert!(message.len() < 200, "{message}");
+        assert!(message.starts_with("`test.scale` expects a number, got `xxx"), "{message}");
+        assert_eq!(SCALE.get(), 1.0);
     }
 
     #[test]

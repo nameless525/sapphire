@@ -103,9 +103,9 @@ impl fmt::Debug for Responder {
 }
 
 impl Responder {
-    /// Answers with `body`. An error message past [`MAX_ERROR`] bytes is cut there; any other
-    /// reply too large for a frame is answered with an error saying so, when the connection's
-    /// thread writes it.
+    /// Answers with `body`. An error message past 64 KiB is cut there; any other reply too
+    /// large for a frame is answered with an error saying so, when the connection's thread
+    /// writes it.
     pub fn reply(self, body: ReplyBody) {
         let body = match body {
             ReplyBody::Error(message) if message.len() > MAX_ERROR => {

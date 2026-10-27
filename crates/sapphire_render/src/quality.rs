@@ -389,6 +389,7 @@ impl QualityTier {
             foliage: self.foliage,
             ambient_occlusion: self.ambient_occlusion,
             reflections: self.reflections,
+            view_culling: true,
         }
     }
 

@@ -54,6 +54,7 @@ use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::{Coverage, Shading, SurfaceVariant, format_index, mesh_draw};
+use crate::view_cull::CullCandidate;
 use crate::{InstanceDeltas, InstanceId, MeshHandle};
 
 const INSTANCE_BYTES: u64 = size_of::<InstanceData>() as u64;
@@ -627,6 +628,9 @@ pub(crate) struct DrawList {
     pub faded: u32,
     /// Draws left out because they would pass the draw records' limit ([`DrawLimits`]).
     pub over_limit: u32,
+    /// The static instances whose draws are all environment or foliage surfaces, in slot order:
+    /// the main view culls them by their bounds (review RA-O01, the `view_cull` module).
+    pub cullable: Vec<CullCandidate>,
 }
 
 impl Default for DrawList {
@@ -638,6 +642,7 @@ impl Default for DrawList {
             foliage_instances: 0,
             faded: 0,
             over_limit: 0,
+            cullable: Vec::new(),
         }
     }
 }
@@ -682,6 +687,7 @@ impl DrawList {
         self.foliage_instances = 0;
         self.faded = 0;
         self.over_limit = 0;
+        self.cullable.clear();
         let mut full = false;
         // In slot order, so every slot after one past the limit is past it too.
         for (slot, mesh) in slots.live().take_while(|&(slot, _)| slot < limits.slots) {
@@ -700,6 +706,10 @@ impl DrawList {
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
             let mut foliage = false;
             let faded = slots.faded(slot);
+            // A static instance of world surfaces alone is the main view's to cull (review
+            // RA-O01, the `view_cull` module).
+            let first_draw = self.draws.len();
+            let mut world = matches!(record.streams, MeshStreams::Slab { .. });
             for submesh in &record.lods[0] {
                 let handle = submesh.material.handle;
                 let (family, flags) = material_kind(handle);
@@ -707,6 +717,7 @@ impl DrawList {
                 debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
                 let Some((mut variant, outline)) = drawn else { continue };
                 foliage |= variant.shading == Shading::Foliage;
+                world &= matches!(variant.shading, Shading::Environment | Shading::Foliage);
                 if faded && matches!(variant.shading, Shading::Character(_)) {
                     if variant.coverage == Coverage::Opaque {
                         variant = variant.with_coverage(Coverage::AlphaTest);
@@ -748,6 +759,10 @@ impl DrawList {
                 }
             }
             self.foliage_instances += u32::from(foliage);
+            let draws = to_u32(self.draws.len() - first_draw);
+            if world && draws > 0 {
+                self.cullable.push(CullCandidate { slot, mesh, draws });
+            }
         }
         // An eye's shadow, iris and highlight layers each blend over the ones before them,
         // whatever order a mesh lists them in. Draw IDs keep slot order within a layer; the

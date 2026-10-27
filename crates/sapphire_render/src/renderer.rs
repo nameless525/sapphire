@@ -48,7 +48,8 @@ use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::GpuTexture;
-use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
+use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
+use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
 
 /// The first shadow view in the view buffer: after the main view and the sky cube's faces.
 const FIRST_SHADOW_VIEW: u32 = 1 + sky::CUBE_FACES;
@@ -137,6 +138,11 @@ pub struct RenderSettings {
     /// The reflection cube a probe grid's environment specular reads (M1 W5): the sky cube's
     /// prefiltered mips. Made only with environment specular on.
     pub reflections: ReflectionSettings,
+    /// Main-view culling of static environment and foliage instances (review RA-O01): the main
+    /// pass, the scene prepass and the debug views skip those wholly outside the main view's
+    /// frustum, which changes no pixel. On by default; off draws everything, for comparisons and
+    /// triage. [`RenderStats::view_culling`] counts what it culled.
+    pub view_culling: bool,
 }
 
 impl Default for RenderSettings {
@@ -159,6 +165,7 @@ impl Default for RenderSettings {
             foliage: FoliageSettings::default(),
             ambient_occlusion: AmbientOcclusion::OFF,
             reflections: ReflectionSettings::default(),
+            view_culling: true,
         }
     }
 }
@@ -339,6 +346,9 @@ pub struct RenderStats {
     /// The size the last recorded frame's scene rendered at: its target's size at the render
     /// scale ([`scaled_size`]).
     pub scene_size: (u32, u32),
+    /// The static instances the last recorded frame's main view tested and culled, and the
+    /// surface draws its main pass drew ([`RenderSettings::view_culling`]).
+    pub view_culling: ViewCullingStats,
     /// Skinned and morphed instances and the skinning they need.
     pub skinning: SkinningStats,
     /// The sky's layers and its cube.
@@ -486,6 +496,8 @@ pub struct Renderer {
     scene: GpuScene,
     /// Which draws' outline hulls the frame draws, by their LOD cutoff.
     outlines: OutlineCull,
+    /// Which instances the main view culls, from each recorded frame's frustum (review RA-O01).
+    view_cull: ViewCull,
     /// Fog cards' depth and their order each frame.
     fog_cards: FogCards,
     /// Group 2 per [`MESH_FAMILIES`] entry: the instances and that family's materials.
@@ -521,6 +533,8 @@ struct PreparedFrame {
     /// The view cut in this frame, or in a prepared frame that was never recorded since.
     cut: bool,
     constants: FrameUniforms,
+    /// The packet's wind, which grows foliage's bounds for culling.
+    wind: Wind,
 }
 
 impl Renderer {
@@ -718,6 +732,7 @@ impl Renderer {
             materials,
             scene,
             outlines: OutlineCull::default(),
+            view_cull: ViewCull::default(),
             fog_cards,
             scene_bind_groups,
             skinning,
@@ -1378,25 +1393,13 @@ impl Renderer {
         }
         let entries = self.characters.entries();
         self.ambient.prepare(packet, entries);
-        // How far the frame's wind carries a foliage mesh past its bounds: its materials' reach.
         let materials = &self.materials;
-        let wind_margin = |record: &MeshRecord| -> f32 {
-            if record.foliage.is_none() {
-                return 0.0;
-            }
-            let reach = record
-                .slots
-                .iter()
-                .filter_map(|slot| materials.foliage_wind(slot.material.handle))
-                .map(foliage::wind_reach)
-                .fold(0.0, f32::max);
-            foliage::wind_margin(reach, &packet.wind)
-        };
+        let margin = |record: &MeshRecord| wind_margin(materials, record, &packet.wind);
         self.shadows.prepare(
             packet,
             self.scene.slots(),
             self.meshes.records(),
-            &wind_margin,
+            &margin,
             self.scene.draw_list(),
             self.characters.table(),
         );
@@ -1409,6 +1412,7 @@ impl Renderer {
             camera: view.camera,
             cut: view.cut || unrecorded_cut,
             constants: FrameUniforms::new(packet, lights, self.outline_distance),
+            wind: packet.wind,
         });
         if let Some(view) = packet.main_view() {
             let materials = &self.materials;
@@ -1530,7 +1534,7 @@ impl Renderer {
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
-        let PreparedFrame { camera, cut, constants } = self.prepared.take()?;
+        let PreparedFrame { camera, cut, constants, wind } = self.prepared.take()?;
         let output = graph.size(target);
         // On a lost device the frame's work would do nothing, and the staging belt can't map the
         // buffers it would make for the uploads (wgpu panics on that).
@@ -1569,6 +1573,18 @@ impl Renderer {
         // The wind, and the last drawn frame's for velocity, which a cut holds still as it does
         // the camera.
         let wind_uniforms = self.wind.record(cut);
+        // Which static world instances the main view draws (review RA-O01): its unjittered
+        // frustum, padded by the jitter too, so the jittered views and the debug views' unjittered
+        // one cull alike.
+        let frustum = self.settings.view_culling.then(|| {
+            let pad = view_cull::PAD_PIXELS + jitter[0].abs().max(jitter[1].abs());
+            Frustum::new(clip_from_world, size, pad)
+        });
+        let materials = &self.materials;
+        let margin = |record: &MeshRecord| wind_margin(materials, record, &wind);
+        let (list, slots, meshes) = (self.scene.draw_list(), self.scene.slots(), self.meshes.records());
+        self.view_cull.update(frustum.as_ref(), list, slots, meshes, margin, self.stats.draws);
+        self.stats.view_culling = self.view_cull.stats();
 
         // Cleared on load and resolved or discarded on store, so tile-based GPUs (Apple, Mali,
         // Adreno) can keep them entirely in tile memory.
@@ -1622,6 +1638,7 @@ impl Renderer {
             ref mut materials,
             ref mut scene,
             ref outlines,
+            ref view_cull,
             ref mut fog_cards,
             ref scene_bind_groups,
             ref layouts,
@@ -1675,6 +1692,7 @@ impl Renderer {
             materials: material_records,
             hulls: outlines.visible(),
             lines: false,
+            view: None,
         };
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
         let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
@@ -1753,6 +1771,10 @@ impl Renderer {
             mesh: pipelines,
         };
         shadows.record(graph, mesh_draws, view_bind_group, casters, FIRST_SHADOW_VIEW, view_stride, labels);
+        // The main view's passes skip what its frustum culled (review RA-O01): the scene prepass,
+        // the main pass and the debug views' replays of it, so all agree. The shadows above and
+        // the character prepass below draw every instance they pick.
+        let view_draws = MeshDraws { view: view_cull.mask(), ..mesh_draws };
         // Group 2 starts as the anime character family's, which the prepasses bind for every
         // family's draws but foliage's (they read no material); the main pass binds each family's
         // in turn.
@@ -1829,20 +1851,20 @@ impl Renderer {
                 for format in PositionFormat::ALL {
                     let Some(mesh) = pipelines.mesh(format) else { continue };
                     for (pipeline, kind, variants) in mesh.scene_prepasses() {
-                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                        if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
                             pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
                             for &variant in variants {
-                                mesh_draws.draw_static(&mut pass, kind, format, variant, set);
+                                view_draws.draw_static(&mut pass, kind, format, variant, set);
                             }
                         }
                     }
                 }
                 if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                     for (pipeline, kind, variants) in mesh.scene_prepasses() {
-                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                        if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
                             pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
                             for &variant in variants {
-                                mesh_draws.draw_deformed(&mut pass, kind, variant, set);
+                                view_draws.draw_deformed(&mut pass, kind, variant, set);
                             }
                         }
                     }
@@ -1855,7 +1877,7 @@ impl Renderer {
                 for format in PositionFormat::ALL {
                     let Some(mesh) = pipelines.mesh(format) else { continue };
                     for variant in SurfaceVariant::FOLIAGE {
-                        if !mesh_draws.has_static(format, variant) {
+                        if !view_draws.has_static(format, variant) {
                             continue;
                         }
                         let pipeline =
@@ -1866,7 +1888,7 @@ impl Renderer {
                         }
                         pass.set_pipeline(pipeline);
                         let foliage = MeshPass::FoliagePrepass;
-                        mesh_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
+                        view_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
                     }
                 }
                 if foliage_bound {
@@ -1881,20 +1903,20 @@ impl Renderer {
                 for format in PositionFormat::ALL {
                     let Some(mesh) = pipelines.mesh(format) else { continue };
                     for (pipeline, kind, variants) in mesh.outline_prepasses() {
-                        if variants.iter().any(|&variant| mesh_draws.has_static(format, variant)) {
+                        if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
                             pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
                             for &variant in variants {
-                                mesh_draws.draw_static(&mut pass, kind, format, variant, set);
+                                view_draws.draw_static(&mut pass, kind, format, variant, set);
                             }
                         }
                     }
                 }
                 if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                     for (pipeline, kind, variants) in mesh.outline_prepasses() {
-                        if variants.iter().any(|&variant| mesh_draws.has_deformed(variant)) {
+                        if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
                             pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
                             for &variant in variants {
-                                mesh_draws.draw_deformed(&mut pass, kind, variant, set);
+                                view_draws.draw_deformed(&mut pass, kind, variant, set);
                             }
                         }
                     }
@@ -1974,7 +1996,7 @@ impl Renderer {
             // Fog cards' scene group holds the depth they fade against.
             let cards = Some((card_group, card_draws));
             let sky = |pass: &mut wgpu::RenderPass<'_>| sky_draw.draw(pass);
-            draw_main_pass(&mut pass, &pipeline, &mesh_draws, scene_bind_groups, Some(&sky), cards, |_| true);
+            draw_main_pass(&mut pass, &pipeline, &view_draws, scene_bind_groups, Some(&sky), cards, |_| true);
         });
 
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
@@ -2000,7 +2022,7 @@ impl Renderer {
                 target,
                 size,
                 prepass: targets,
-                draws: mesh_draws,
+                draws: view_draws,
                 frame_bind_group,
                 scene_bind_groups,
                 index_buffer: meshes.index_buffer(),
@@ -2397,6 +2419,22 @@ fn draw_main<'p>(
             }
         }
     }
+}
+
+/// How far `wind` carries foliage mesh `record` past its bounds: its materials' reach
+/// (`foliage::wind_margin`), 0 for every other mesh. Shadow casters' culling and the main view's
+/// grow foliage's bounds by it.
+fn wind_margin(materials: &Materials, record: &MeshRecord, wind: &Wind) -> f32 {
+    if record.foliage.is_none() {
+        return 0.0;
+    }
+    let reach = record
+        .slots
+        .iter()
+        .filter_map(|slot| materials.foliage_wind(slot.material.handle))
+        .map(foliage::wind_reach)
+        .fold(0.0, f32::max);
+    foliage::wind_margin(reach, wind)
 }
 
 /// Checks a material a mesh embeds, before anything is uploaded: valid, of a family meshes draw

@@ -854,6 +854,7 @@ mod skinning;
 mod sky;
 pub mod temporal;
 pub mod texture;
+mod view_cull;
 
 pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
@@ -893,6 +894,7 @@ pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 pub use temporal::{HistoryReset, TemporalStats};
+pub use view_cull::ViewCullingStats;
 
 /// Log target for this crate.
 pub(crate) const LOG_TARGET: &str = "sapphire::render";

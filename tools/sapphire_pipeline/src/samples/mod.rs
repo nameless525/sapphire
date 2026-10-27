@@ -348,7 +348,7 @@ mod tests {
 
     use super::*;
     use crate::import;
-    use crate::test_util::{assert_glb_matches, assert_png_matches, assert_text_matches};
+    use crate::test_util::{FloatKind, assert_glb_matches, assert_png_matches, assert_text_matches};
 
     #[test]
     fn is_a_valid_glb() {
@@ -508,23 +508,34 @@ mod tests {
         assert_eq!(fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }
 
-    /// Whether two floats of the samples, generated on different platforms, agree: within 1e-4,
-    /// relative to their size but at least 1, so within 1e-4 absolute for normals, texture
-    /// coordinates, colors and sub-meter positions (0.1 mm), and relative beyond.
+    /// Whether two floats of a sample, generated on different platforms, agree, by what they
+    /// hold: a direction's components within 3e-3 (about 0.17°), anything else within 1e-5 of
+    /// its size but at least 1 (10 µm under a meter).
     ///
-    /// Look-dev's millionth (`test_util::floats_agree`) is too tight here. The face's normals come
-    /// from finite differences of its surface 1 mrad either side, so a position an ulp off on
-    /// another libm moves its normal by about 1e-5, and that error is absolute in the unit
-    /// vector: a component near 0 is as far off as one near 1, so a relative tolerance with a
-    /// small floor fails there. CI's first run of this test (PR #87, at 4f6fae9) failed on two
-    /// such normals:
-    /// `face/face_head.glb` byte 21204 (the face's normal 150, x) on Linux, committed
-    /// 0.11108426749706268 against 0.11108289659023285 (1.4e-6 off), and byte 143804 (the eyes'
-    /// normal 592, x) on Windows, 0.44974109530448914 against 0.4497344493865967 (6.6e-6 off).
-    /// 1e-4 is about 0.006° of a normal's direction: a generator change moves far more than that,
-    /// or changes counts and text, which must match exactly.
-    fn sample_floats_agree(a: f64, b: f64) -> bool {
-        (a - b).abs() <= 1e-4 * a.abs().max(b.abs()).max(1.0)
+    /// Both bounds sit above the worst another libm can do, measured: with every `sin`, `cos`,
+    /// `asin`, `atan2`, `cbrt`, `exp`, `hypot`, `powf` and `sin_cos` the generators call nudged
+    /// by a random one or two ulps (32 seeds each, in a throwaway experiment), directions moved by
+    /// at most 9.9e-4 and 1.9e-3, and other floats by 2.4e-6 and 4.6e-6 of their size.
+    /// Directions suffer most where they come from differences between nearby points: on the
+    /// face's ring next to its pole, 2 mrad around the ring is a tenth as long as at its equator,
+    /// and the courtyard ground's slopes difference heights of up to 19 m taken 0.1 m apart. CI
+    /// has seen less. On Linux the courtyard's normal 208 was 1.2e-4 off, from glibc's `atan2f`
+    /// two ulps from Apple's in the heights that slope differences (an f32 emulation with
+    /// correctly rounded libm gives the Mac's bytes; nudge `atan2f` at one height two ulps, or at
+    /// each one ulp apart, and it gives Linux's). The face's normals were 1.4e-6 off on Linux and
+    /// 6.6e-6 on Windows.
+    ///
+    /// A generator change moves positions by far more: each constant tried, moved by a
+    /// thousandth of itself, fails here (the hills' height, the boulders' flattening, the
+    /// ground's texture tile, the face's radius and jaw, the tree's trunk, the mannequin's head),
+    /// and counts, indices and text must match exactly. What gets through is a change to
+    /// directions alone, under 0.17°: scaling the up component of the ground's slope normals by
+    /// 1.001 (a tilt of at most 0.02°) passes.
+    fn sample_floats_agree(kind: FloatKind, a: f64, b: f64) -> bool {
+        match kind {
+            FloatKind::Direction => (a - b).abs() <= 3e-3,
+            FloatKind::Value => (a - b).abs() <= 1e-5 * a.abs().max(b.abs()).max(1.0),
+        }
     }
 
     /// The committed samples (`content/samples/`) are what the generator makes, but for float
@@ -546,7 +557,8 @@ mod tests {
                     } else if name.ends_with(".png") {
                         assert_png_matches(name, &committed, generated);
                     } else {
-                        assert_text_matches(name, &committed, generated, sample_floats_agree);
+                        let agree = |a, b| sample_floats_agree(FloatKind::Value, a, b);
+                        assert_text_matches(name, &committed, generated, agree);
                     }
                 };
                 // Each failure's message is printed as it panics.

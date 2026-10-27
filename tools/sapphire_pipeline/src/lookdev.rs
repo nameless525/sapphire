@@ -1124,7 +1124,7 @@ mod tests {
         for (name, generated) in content_files().unwrap() {
             let committed = std::fs::read(lookdev_dir().join(&name)).unwrap();
             if name.ends_with(".glb") {
-                assert_glb_matches(&name, &committed, &generated, floats_agree);
+                assert_glb_matches(&name, &committed, &generated, |_, a, b| floats_agree(a, b));
             } else {
                 assert_png_matches(&name, &committed, &generated);
             }

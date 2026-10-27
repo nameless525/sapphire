@@ -54,13 +54,44 @@ pub(crate) fn floats_agree(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
 }
 
+/// What a float of a generated GLB holds, which decides how far another platform's libm can
+/// move it ([`assert_glb_matches`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FloatKind {
+    /// A component of a unit direction: a `NORMAL` or `TANGENT` attribute, or a morph target's
+    /// change to one. Generators find directions from differences between nearby surface points,
+    /// which multiply libm's rounding, and the error is absolute in the unit vector.
+    Direction,
+    /// Anything else: positions, texture coordinates, colors, weights, morph targets' position
+    /// changes.
+    Value,
+}
+
+/// Every accessor's [`FloatKind`], by index.
+fn float_kinds(document: &gltf::Document) -> Vec<FloatKind> {
+    let mut kinds = vec![FloatKind::Value; document.accessors().count()];
+    for primitive in document.meshes().flat_map(|mesh| mesh.primitives()) {
+        for (semantic, accessor) in primitive.attributes() {
+            if matches!(semantic, gltf::Semantic::Normals | gltf::Semantic::Tangents) {
+                kinds[accessor.index()] = FloatKind::Direction;
+            }
+        }
+        for target in primitive.morph_targets() {
+            for accessor in target.normals().into_iter().chain(target.tangents()) {
+                kinds[accessor.index()] = FloatKind::Direction;
+            }
+        }
+    }
+    kinds
+}
+
 /// Asserts two JSON values are the same but for float rounding (by `agree`): integers, strings
 /// and the structure exactly.
 pub(crate) fn assert_json_matches(
     path: &str,
     committed: &serde_json::Value,
     generated: &serde_json::Value,
-    agree: fn(f64, f64) -> bool,
+    agree: &dyn Fn(f64, f64) -> bool,
 ) {
     use serde_json::Value;
     match (committed, generated) {
@@ -86,24 +117,38 @@ pub(crate) fn assert_json_matches(
 
 /// Asserts two GLBs hold the same glTF but for float rounding: the JSON chunk alike but for
 /// its floats (the accessors' bounds), and the binary chunk alike byte for byte but in the
-/// elements of `F32` accessors, whose floats may differ as `agree` allows. Indices and every
-/// other integer match exactly. A failure names how many floats disagree and the furthest off,
-/// with its byte and accessor, so one CI run shows the whole spread.
+/// elements of `F32` accessors, whose floats may differ as `agree` allows for their kind (an
+/// accessor's bounds by its own). Indices and every other integer match exactly. A failure
+/// names how many floats disagree and the furthest off, with its byte, accessor and kind, so one
+/// CI run shows the whole spread.
 pub(crate) fn assert_glb_matches(
     name: &str,
     committed: &[u8],
     generated: &[u8],
-    agree: fn(f64, f64) -> bool,
+    agree: fn(FloatKind, f64, f64) -> bool,
 ) {
     let (a, b) = (gltf::Glb::from_slice(committed).unwrap(), gltf::Glb::from_slice(generated).unwrap());
     let json = |glb: &gltf::Glb<'_>| serde_json::from_slice::<serde_json::Value>(&glb.json).unwrap();
-    assert_json_matches(name, &json(&a), &json(&b), agree);
+    let (mut a_json, mut b_json) = (json(&a), json(&b));
+    // Kinds by the generated file's accessors: the JSON must match, so they're the committed's.
+    let document = gltf::Gltf::from_slice(generated).unwrap();
+    let kinds = float_kinds(&document);
+    let (a_accessors, b_accessors) = (a_json["accessors"].take(), b_json["accessors"].take());
+    assert_json_matches(name, &a_json, &b_json, &|a, b| agree(FloatKind::Value, a, b));
+    match (a_accessors.as_array(), b_accessors.as_array()) {
+        (Some(a), Some(b)) => {
+            assert_eq!(a.len(), b.len(), "{name}: accessor count");
+            for (index, ((a, b), &kind)) in a.iter().zip(b).zip(&kinds).enumerate() {
+                assert_json_matches(&format!("{name}.accessors[{index}]"), a, b, &|a, b| agree(kind, a, b));
+            }
+        }
+        _ => assert_eq!(a_accessors, b_accessors, "{name}: accessors"),
+    }
     let (a, b) = (a.bin.expect("a binary chunk"), b.bin.expect("a binary chunk"));
     assert_eq!(a.len(), b.len(), "{name}: binary chunk length");
-    // Which accessor's floats each byte holds, by the generated file's accessors (the JSON
-    // matched).
+    // Which accessor's floats each byte holds.
     let mut float = vec![None; b.len()];
-    for accessor in gltf::Gltf::from_slice(generated).unwrap().accessors() {
+    for accessor in document.accessors() {
         if accessor.data_type() != gltf::accessor::DataType::F32 {
             continue;
         }
@@ -127,7 +172,7 @@ pub(crate) fn assert_glb_matches(
         );
         let word = |bytes: &[u8]| f64::from(f32::from_le_bytes(bytes.try_into().unwrap()));
         let (a, b) = (word(a), word(b));
-        if !agree(a, b) {
+        if !agree(kinds[float[at].expect("checked above")], a, b) {
             disagree += 1;
             if furthest.is_none_or(|(off, ..)| (a - b).abs() > off) {
                 furthest = Some(((a - b).abs(), at, a, b));
@@ -136,9 +181,10 @@ pub(crate) fn assert_glb_matches(
     }
     if let Some((off, at, a, b)) = furthest {
         let accessor = float[at].expect("checked above");
+        let kind = kinds[accessor];
         panic!(
             "{name}: {disagree} floats disagree; the furthest, {off:e} off, at byte {at} (accessor \
-             {accessor}): committed {a}, generated {b}"
+             {accessor}, {kind:?}): committed {a}, generated {b}"
         );
     }
 }
@@ -220,5 +266,44 @@ fn text_matches_up_to_float_rounding() {
         let caught =
             std::panic::catch_unwind(|| assert_text_matches("edited", committed, edited, floats_agree));
         assert!(caught.is_err(), "{}", String::from_utf8_lossy(edited));
+    }
+}
+
+#[test]
+fn glbs_match_by_float_kind() {
+    use crate::gltf_writer::{Geometry, GltfWriter, MorphGeometry};
+    // One triangle, its first normal and position moved by `normal` and `position`, and its
+    // morph target's first normal change by `morph`.
+    let glb = |normal: f32, position: f32, morph: f32| {
+        let mut geometry = Geometry::default();
+        for (x, z) in [(position, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            geometry.positions.push([x, 0.0, z]);
+            geometry.normals.push([0.0, 1.0, 0.0]);
+            geometry.uvs.push([x, z]);
+        }
+        geometry.normals[0][0] = normal;
+        let mut target = MorphGeometry { positions: vec![[0.0; 3]; 3], normals: vec![[0.0; 3]; 3] };
+        target.normals[0][2] = morph;
+        geometry.targets.push(target);
+        geometry.indices.extend([0, 2, 1]);
+        let mut gltf = GltfWriter::default();
+        let mesh = gltf.add_mesh("Triangle", &[(&geometry, None)]);
+        let root = gltf.add_node(serde_json::json!({ "name": "Triangle", "mesh": mesh }));
+        gltf.add_root(root);
+        gltf.to_glb()
+    };
+    // Directions within a hundredth, anything else within a millionth.
+    let agree =
+        |kind, a: f64, b: f64| (a - b).abs() <= if kind == FloatKind::Direction { 1e-2 } else { 1e-6 };
+    let committed = glb(0.0, 0.0, 0.0);
+    assert_glb_matches("directions", &committed, &glb(0.005, 0.0, 0.005), agree);
+    // A position moved more than a millionth fails, as do directions moved more than a hundredth.
+    // The position's move also moves its accessor's bounds.
+    for (normal, position, morph) in [(0.0, 1e-5, 0.0), (0.0, -1e-5, 0.0), (0.02, 0.0, 0.0), (0.0, 0.0, 0.02)]
+    {
+        let caught = std::panic::catch_unwind(|| {
+            assert_glb_matches("moved", &committed, &glb(normal, position, morph), agree);
+        });
+        assert!(caught.is_err(), "normal {normal}, position {position}, morph {morph}");
     }
 }

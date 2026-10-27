@@ -9,7 +9,11 @@
 //! 2. Plans each asset's output: its path under the content root, mirrored under the output
 //!    directory with the cooked format's extension (`samples/mannequin.glb` →
 //!    `samples/mannequin.smesh`). Tools read cooked files by these paths; the runtime reads
-//!    packs ([`crate::pack`], the stage after this one) and addresses assets by ID.
+//!    packs ([`crate::pack`], the stage after this one) and addresses assets by ID. Two assets
+//!    may not cook to one path, nor to paths that differ only in case (`tex.png` and `TEX.tga`),
+//!    which are one file on macOS's and Windows' default file systems: case is folded with
+//!    Unicode's lowercase mapping, and Unicode normalization is left out. The cook fails, naming
+//!    both sources, before it changes any output.
 //! 3. Removes stale files from the output directory: cooked files no source produces any
 //!    more, and temporary files from an interrupted run. Other files are left alone.
 //! 4. Keys each asset ([`CacheKey`]) and takes its output from the [`Cache`], or imports,
@@ -336,6 +340,15 @@ pub enum CookError {
     NotAMaterial { path: PathBuf, slot: String, id: AssetId },
     #[error("{} and {} would both cook to {}", first.display(), second.display(), output.display())]
     OutputCollision { first: PathBuf, second: PathBuf, output: PathBuf },
+    #[error(
+        "{} and {} would cook to {} and {}, which differ only in case: one file where case doesn't \
+         count (macOS's and Windows' default file systems), so rename one of the sources",
+        first.display(),
+        second.display(),
+        outputs[0].display(),
+        outputs[1].display()
+    )]
+    CaseCollision { first: PathBuf, second: PathBuf, outputs: [PathBuf; 2] },
     #[error("failed to read {}", path.display())]
     Read {
         path: PathBuf,
@@ -422,6 +435,9 @@ pub fn cook_dir(
         resolved.assets.into_iter().partition(|asset| asset.meta.cook);
 
     let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
+    // Each output's path folded to lowercase, with its source and output: one file where case
+    // doesn't count.
+    let mut folded: HashMap<String, (PathBuf, PathBuf)> = HashMap::new();
     let mut plan = Vec::with_capacity(cooked_assets.len());
     for asset in cooked_assets {
         let own = (asset.meta.id, None, Recipe::for_settings(&asset.meta.importer));
@@ -429,10 +445,19 @@ pub fn cook_dir(
             .iter()
             .map(|sub| (meta::sub_asset_id(asset.meta.id, sub.name), Some(sub.name), sub.recipe));
         for (id, sub_asset, recipe) in std::iter::once(own).chain(sub_assets) {
-            let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
-            let output = out_root.join(recipe.output_path(relative));
+            let relative = recipe
+                .output_path(asset.path.strip_prefix(source_root).expect("scanned under the source root"));
+            let output = out_root.join(&relative);
             if let Some(first) = outputs.insert(output.clone(), asset.path.clone()) {
                 return Err(CookError::OutputCollision { first, second: asset.path, output });
+            }
+            let key = relative.to_string_lossy().to_lowercase();
+            if let Some((first, first_output)) = folded.insert(key, (asset.path.clone(), output.clone())) {
+                return Err(CookError::CaseCollision {
+                    first,
+                    second: asset.path,
+                    outputs: [first_output, output],
+                });
             }
             plan.push(Planned { asset: asset.clone(), id, sub_asset, recipe, output });
         }
@@ -1782,5 +1807,40 @@ mod tests {
         assert_eq!(report.created_sidecars, [sidecar_path(&mannequin), sidecar_path(&map)]);
         assert_eq!(asset(&report, &map).output, scratch.out().join("maps/body.ilm.ktx2"));
         assert_eq!(listing(&outside), ["bias.png"]);
+    }
+
+    #[test]
+    fn outputs_that_differ_only_in_case_are_refused() {
+        // Review AP-002: `tex.png` and `TEX.tga` cook to `tex.ktx2` and `TEX.ktx2`, one file where
+        // case doesn't count, so the second overwrote the first and the report's hash went stale.
+        let scratch = Scratch::new("cook_case");
+        let color = || TextureClass::Color(ColorSettings::default());
+        let lower = scratch.add_texture("props/tex.png", ALBEDO, color(), 1);
+        scratch.cook();
+        let out = scratch.out().join("props");
+        let cooked = fs::read(out.join("tex.ktx2")).unwrap();
+        let upper = scratch.source().join("props/TEX.tga");
+        ::image::RgbaImage::from_pixel(16, 16, ::image::Rgba([9, 8, 7, 255]))
+            .save_with_format(&upper, ::image::ImageFormat::Tga)
+            .unwrap();
+        write_sidecar(&upper, RAMP, ImportSettings::Texture(TextureSettings { class: color() }));
+        let error = scratch_error(&scratch);
+        let CookError::CaseCollision { first, second, outputs } = &error else { panic!("{error:?}") };
+        assert_eq!((first, second), (&upper, &lower), "both sources are named, in tree order");
+        assert_eq!(outputs, &[out.join("TEX.ktx2"), out.join("tex.ktx2")]);
+        assert!(error.to_string().contains("differ only in case"), "{error}");
+        assert_eq!(listing(&out), ["tex.ktx2"], "no output is written or removed");
+        assert_eq!(fs::read(out.join("tex.ktx2")).unwrap(), cooked);
+
+        // One source renamed only in case still cooks, its output renamed with it.
+        fs::remove_file(&upper).unwrap();
+        fs::remove_file(sidecar_path(&upper)).unwrap();
+        let renamed = scratch.source().join("props/Tex.png");
+        fs::rename(&lower, &renamed).unwrap();
+        fs::rename(sidecar_path(&lower), sidecar_path(&renamed)).unwrap();
+        let report = scratch.cook();
+        assert_eq!(asset(&report, &renamed).output, out.join("Tex.ktx2"));
+        assert_eq!(listing(&out), ["Tex.ktx2"]);
+        assert_eq!(fs::read(out.join("Tex.ktx2")).unwrap(), cooked);
     }
 }

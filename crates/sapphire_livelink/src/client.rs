@@ -26,6 +26,9 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// as long as it needs, while one that stopped reading (suspended, stalled) fails the send as
 /// [`LinkError::Stalled`] once it has taken nothing for [`TIMEOUT`], or up to twice that as the
 /// OS counts a send's timeout (from the last bytes a write took, or from the write's start).
+/// "Taken" is the device's TCP window opening, which can lag its reads: macOS opens it only
+/// once the reader has freed a good part of its receive buffer (up to about 1 MiB on loopback),
+/// so a device must read about that much within the deadline to count as reading.
 ///
 /// A request that fails on the connection (it timed out or stalled, or the stream broke or
 /// carried something malformed) closes it: where in the stream a reply stopped is unknown, so no
@@ -427,17 +430,31 @@ mod tests {
 
     #[test]
     fn a_device_reading_slowly_takes_a_push_as_long_as_it_keeps_reading() {
-        // The device reads a chunk at a time, slowly: the push takes several progress deadlines
-        // in all, and never one without progress.
-        let pack = large_pack(32 << 20);
+        // The device takes a chunk every `PACE`: the push takes several progress deadlines in
+        // all, and never one without progress.
+        //
+        // The client sees the device's TCP window, not its reads. macOS holds the window shut
+        // until the reader has freed a good part of its receive buffer: up to four chunks here,
+        // once loopback's buffers had grown. So the deadline allows many times that, for loaded
+        // runners: against a 300 ms deadline, a device reading a chunk every 150 ms failed as
+        // stalled, and one reading every 20 ms did on CI's macOS runners.
+        const PROGRESS: Duration = Duration::from_secs(1);
+        const PACE: Duration = Duration::from_millis(20);
+        // 3.2 s at `PACE`, past three deadlines.
+        const CHUNKS: u32 = 160;
+        let pack = large_pack(CHUNKS as usize * CHUNK_LEN);
         let sent = pack.len() as u64 - PackHeader::read(&pack).unwrap().data_offset;
         let address = device(|mut stream| {
             let len = ask_for_everything(&mut stream);
-            let mut received = 0;
+            // A schedule rather than a sleep after each chunk, so time a loaded runner takes from
+            // the device isn't added to every gap, and the push can't end early.
+            let schedule = Stopwatch::start();
+            let (mut received, mut chunks) = (0, 0);
             loop {
                 match read_frame::<Request>(&mut stream).unwrap() {
                     Request { body: RequestBody::PackChunk { bytes, .. }, .. } => {
-                        received += bytes.len() as u64
+                        received += bytes.len() as u64;
+                        chunks += 1;
                     }
                     Request { id, body: RequestBody::PackEnd } => {
                         let outcome = PackOutcome { received, len, ..PackOutcome::default() };
@@ -447,15 +464,15 @@ mod tests {
                     }
                     other => panic!("{other:?}"),
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep((PACE * chunks).saturating_sub(schedule.elapsed()));
             }
         });
         let mut client = Client::connect(address).unwrap();
-        client.set_progress(SHORT);
+        client.set_progress(PROGRESS);
         let stopwatch = Stopwatch::start();
         let outcome = client.push_pack("zone", &pack).unwrap();
         let took = stopwatch.elapsed();
         assert_eq!(outcome.received, sent);
-        assert!(took > SHORT * 2, "the push outlasted its progress deadline: {took:?}");
+        assert!(took > PROGRESS * 3, "the push outlasted its progress deadline: {took:?}");
     }
 }

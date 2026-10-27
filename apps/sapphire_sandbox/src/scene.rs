@@ -97,7 +97,9 @@ use sapphire_render::{
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::fade::ProximityFade;
-use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
+use sapphire_world::light_rig::{
+    CharacterLightRig, LightRig, LightRigId, LightRigLibrary, LightRigRim, NamedLightRig,
+};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
@@ -1069,9 +1071,15 @@ impl Scene {
             for (entity, character, transform, key) in characters.iter(world) {
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
-                // A rim rig figure's key light turns to its angles around it.
+                // A rim rig figure's key light turns to its angles around it, or for a folded
+                // key, as far as its rig's limits let it (M1 C8).
                 if let Some(key) = key {
-                    lighting.key.direction = -key.toward(camera.position, head);
+                    let direction = -key.toward(camera.position, head);
+                    lighting.key.direction = if key.folded {
+                        rigs.rig(character.rig).key.direction(direction, &camera, head)
+                    } else {
+                        direction
+                    };
                 }
                 // The head turns with the model, and by the figure's held pose.
                 let pose = HeadBasis {
@@ -1177,6 +1185,24 @@ impl Scene {
         }
         self.time_of_day_mut().set_timeline(timeline).map_err(|error| error.to_string())?;
         Ok(day)
+    }
+
+    /// Gives every light rig preset a camera rim (`--camera-rim`, M1 C8) taking `share` of the
+    /// rim's gating, from the presets' own direction (behind the character on the camera's right,
+    /// and above, unless a preset says otherwise).
+    pub fn set_camera_rim(&mut self, share: f32) -> Result<(), String> {
+        let library = self.ecs.world().resource::<LightRigLibrary>();
+        let rigs = library
+            .names()
+            .map(|name| {
+                let rig = library.rig(library.find(name).expect("a listed preset"));
+                let camera_rim = LightRigRim { share, ..rig.camera_rim };
+                NamedLightRig { name: name.to_owned(), rig: LightRig { camera_rim, ..*rig } }
+            })
+            .collect();
+        let library = LightRigLibrary::new(rigs).map_err(|error| error.to_string())?;
+        self.ecs.world_mut().insert_resource(library);
+        Ok(())
     }
 
     /// Keys characters' shadow sides to keep `shade`'s hue by its share (`--shade-hue`, M1 C8):

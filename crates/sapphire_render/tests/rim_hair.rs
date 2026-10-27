@@ -1,6 +1,7 @@
 //! Tests of the character prepass's readers that need a GPU (M1 C5): the depth-offset rim's
-//! width, light gate, region mask and overlap; the bangs' shadow on faces; eyes through hair,
-//! its fade with the view, the IDs it keys on and the fog over it; and the prepass's counters.
+//! width, light gate, region mask and overlap, and its camera rim (M1 C8); the bangs' shadow on
+//! faces; eyes through hair, its fade with the view, the IDs it keys on and the fog over it; and
+//! the prepass's counters.
 //! Run with
 //! `cargo test -p sapphire_render --test rim_hair -- --ignored`.
 //!
@@ -20,7 +21,7 @@ use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
-    AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance,
+    AmbientLight, BloomParams, CameraData, CameraRim, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, DirectionalLight, Fog, FogLayer, FramePacketRing, HeadBasis, InstanceId,
     MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer,
     SkyGradient, ToneCurve, ViewData, Vignette,
@@ -504,6 +505,80 @@ fn the_light_gate_keeps_the_rim_to_the_lit_side_and_the_region_mask_turns_it_off
     // A region at strength 0 has none.
     harness.update(material, &rim_material(40.0, 0.0, vec![region(0.0, 1.0, 1.0)]));
     assert_eq!(harness.render().rims(SIDE as usize / 2), (0, 0), "masked out");
+}
+
+/// The unit vector from where pixel (`x`, `y`) of `frame` sees a ball of `radius` at the origin
+/// toward the camera.
+fn view_dir_on_ball(frame: &Frame, x: usize, y: usize, radius: f32) -> Vec3 {
+    let side = SIDE as f32;
+    let ndc = Vec3::new((x as f32 + 0.5) / side * 2.0 - 1.0, 1.0 - (y as f32 + 0.5) / side * 2.0, 0.5);
+    let eye = frame.camera.position;
+    let ray = ((frame.camera.proj * frame.camera.view).inverse().project_point3(ndc) - eye).normalize();
+    let (b, c) = (eye.dot(ray), eye.length_squared() - radius * radius);
+    assert!(b * b > c, "the pixel sees the ball");
+    let point = eye + ray * (-b - (b * b - c).sqrt());
+    (eye - point).normalize()
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn a_camera_rim_takes_the_rims_gating_by_its_share() {
+    let mut harness = Harness::new();
+    let material = harness.material(&rim_material(40.0, 1.0, vec![region(1.0, 1.0, 1.0)]), None);
+    let ball = harness.mesh(&[sphere(Vec3::ZERO, 0.5, 0)], &[material]);
+    // The key lights the image's left from the front, as a gameplay rig folds a key from behind
+    // round to the camera's side; the camera rim comes from behind on the right.
+    let character = harness.character(ball, Mat4::IDENTITY, Vec3::new(-1.0, 0.0, 0.25));
+    harness.view(Vec3::Z, 3.0, 38.0);
+    let behind = Vec3::new(1.0, 0.0, -0.5).normalize();
+    let set = |harness: &mut Harness, share: f32| {
+        let entry = harness.characters.iter_mut().find(|entry| entry.id == character).expect("listed");
+        entry.lighting.camera_rim = CameraRim { direction: -behind * 2.0, share };
+    };
+    let y = SIDE as usize / 2;
+    let expected = rim_pixels(40.0);
+
+    // Without a share, the rim is the key light's exactly: the lit side alone.
+    let keyed = harness.render();
+    set(&mut harness, 0.0);
+    let none = harness.render();
+    assert!(none.pixels == keyed.pixels, "a share of 0 is no camera rim");
+    let (left, right) = none.rims(y);
+    assert!((left as f32 - expected).abs() <= 1.5 && right == 0, "{left} {right}");
+    // A pixel in the middle of the left rim, and its mirror image on the right: the ball is
+    // symmetric, so the two see the same mask.
+    let first = (0..SIDE as usize).find(|&x| none.lit(x, y)).expect("a rim");
+    let (at_left, at_right) = (first + left / 2, SIDE as usize - 1 - (first + left / 2));
+    let full = none.linear(at_left, y);
+    assert!(full[0] > 0.3, "the lit side's rim: {full:?}");
+
+    // All of it: the rim moves to the camera rim's side, as bright as the key light's was.
+    set(&mut harness, 1.0);
+    let held = harness.render();
+    let (left, right) = held.rims(y);
+    assert!(left == 0 && (right as f32 - expected).abs() <= 1.5, "{left} {right}");
+    assert_near(held.linear(at_right, y), full, "the camera rim's side");
+    // Half: each side keeps half, the gates blended.
+    set(&mut harness, 0.5);
+    let half = harness.render();
+    assert_near(half.linear(at_left, y), scale(full, 0.5), "the key light's side at half");
+    assert_near(half.linear(at_right, y), scale(full, 0.5), "the camera rim's side at half");
+
+    // Back-light weighting takes the camera rim's direction: 1 − V·L, stronger from behind.
+    let back_lit = Rim { back_light: 1.0, ..rim_material(40.0, 1.0, Vec::new()).rim };
+    let weighted =
+        AnimeCharacterMaterial { rim: back_lit, ..rim_material(40.0, 1.0, vec![region(1.0, 1.0, 1.0)]) };
+    harness.update(material, &weighted);
+    set(&mut harness, 1.0);
+    let frame = harness.render();
+    let weight = 1.0 - view_dir_on_ball(&frame, at_right, y, 0.5).dot(behind);
+    assert!(weight > 1.3, "from behind: {weight}");
+    assert_near(frame.linear(at_right, y), scale(full, weight), "weighted by the camera rim");
+}
+
+/// `color` × `by`.
+fn scale(color: [f32; 3], by: f32) -> [f32; 3] {
+    color.map(|c| c * by)
 }
 
 #[test]

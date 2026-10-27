@@ -2,10 +2,10 @@
 //! in OkLab, directions along great circles, scalars linearly, and grades as a pair of LUTs.
 
 use sapphire_look::{
-    AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
-    CharacterShade, CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, GradientLayer,
-    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient,
-    SkyLayers, Vignette,
+    AmbientLight, BloomParams, CameraRim, Celestial, CharacterBloom, CharacterGi, CharacterLight,
+    CharacterLighting, CharacterShade, CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer,
+    GradientLayer, GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc,
+    SkyGradient, SkyLayers, Vignette,
 };
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
@@ -485,7 +485,24 @@ impl Mix for CharacterLighting {
                 skin_tint: mix_oklab(a.skin_tint, b.skin_tint, t),
             },
             shade: self.shade.mix(&other.shade, t),
+            camera_rim: self.camera_rim.mix(&other.camera_rim, t),
         }
+    }
+}
+
+/// The characters' camera rim (M1 C8): its share linearly, its direction along the great circle
+/// where both hold one, otherwise the one that does (a rim with no share has no direction worth
+/// turning from).
+impl Mix for CameraRim {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        let direction = if self.share <= 0.0 {
+            other.direction
+        } else if other.share <= 0.0 {
+            self.direction
+        } else {
+            slerp_direction(self.direction, other.direction, t)
+        };
+        Self { direction, share: lerp(self.share, other.share, t) }
     }
 }
 

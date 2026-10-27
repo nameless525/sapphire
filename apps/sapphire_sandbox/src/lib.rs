@@ -72,6 +72,9 @@
 //!   of lacquer (a crisp highlight), gold (a tinted matcap and the reflection add), leather (a
 //!   multiplied matcap, a GGX highlight) and a suit with breathing light lines, and a leg in a
 //!   thigh-high stocking.
+//! - `--camera-rim <share>`: give every light rig preset a camera rim taking this share of the
+//!   rim's gating, from behind the character on the camera's right and above (M1 C8), so the rim
+//!   stays on the silhouette however the rig folds the key; `--rim-rig folded` shows it.
 //! - `--shade-hue <r>,<g>,<b>,<share>`: key characters' shadow sides to keep this linear RGB hue
 //!   by this share of their light, all day (M1 C8), into the day the scene runs on.
 //! - `--two-sided`: place the two-sided garment samples on the character's left (M1 C8): a

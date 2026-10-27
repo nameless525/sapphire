@@ -6,11 +6,11 @@
 //!   character this frame, after entry 0: the fallback every other instance reads, the world's
 //!   key light with unstyled GI ([`CharacterLighting::unstyled`]), a face at rest
 //!   ([`CharacterFace::default`]) and no shadow probe. It is rewritten whole when any entry
-//!   changes (while the hour runs, the camera moves for a rig whose key or GI depends on it, or a
-//!   head, an expression, a body or an opacity changes, or the frame's ambient light changes):
-//!   256 bytes a character. With shadows on, the face pass (M1 R4) writes each entry's
-//!   `shadow.visibility` on the GPU every frame, after the upload; with a probe grid, the
-//!   character ambient pass (M1 W5) writes its `ambient`.
+//!   changes (while the hour runs, the camera moves for a rig whose key, GI or camera rim
+//!   depends on it, or a head, an expression, a body or an opacity changes, or the frame's
+//!   ambient light changes): 272 bytes a character. With shadows on, the face pass (M1 R4)
+//!   writes each entry's `shadow.visibility` on the GPU every frame, after the upload; with a
+//!   probe grid, the character ambient pass (M1 W5) writes its `ambient`.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
@@ -70,8 +70,8 @@ use crate::buffer::{self, GrowableBuffer};
 use crate::character_prepass::ID_ENTRY_MASK;
 use crate::scene::InstanceSlots;
 use crate::{
-    AmbientLight, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, CharacterShade,
-    FramePacket,
+    AmbientLight, CameraRim, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting,
+    CharacterShade, FramePacket,
 };
 
 /// The radius of the sphere around a character's head that the face pass samples the
@@ -230,11 +230,14 @@ pub(crate) struct GpuCharacterStyle {
     /// rgb: the shadow side's hue at a luminance of 1; w: its share of the shadow side's light,
     /// 0 to 1, 0 for the key light's own ([`CharacterShade`]).
     pub shade: [f32; 4],
+    /// xyz: unit vector toward the camera rim's light; w: its share of the rim's gating, 0 to 1,
+    /// 0 for the key light's alone ([`CameraRim`]).
+    pub camera_rim: [f32; 4],
 }
 
 impl GpuCharacterStyle {
-    /// The style of a character lit with `shade`.
-    fn new(shade: &CharacterShade) -> Self {
+    /// The style of a character lit with `shade` and `camera_rim`.
+    fn new(shade: &CharacterShade, camera_rim: &CameraRim) -> Self {
         let luminance = crate::lights::luminance(shade.hue);
         // A black hue is no hue: the key light's own, as a share of 0 is.
         let (hue, share) = if luminance > 1e-6 {
@@ -242,7 +245,14 @@ impl GpuCharacterStyle {
         } else {
             (Vec3::ONE, 0.0)
         };
-        Self { shade: hue.extend(share).to_array() }
+        // A light without a direction is none: the key light's rim, as a share of 0 is. Without a
+        // share the entry holds no direction, so the camera rim's doesn't rewrite it.
+        let rim_share = camera_rim.share.clamp(0.0, 1.0);
+        let rim = match (-camera_rim.direction).try_normalize() {
+            Some(toward) if rim_share > 0.0 => toward.extend(rim_share),
+            _ => Vec3::Y.extend(0.0),
+        };
+        Self { shade: hue.extend(share).to_array(), camera_rim: rim.to_array() }
     }
 }
 
@@ -280,7 +290,7 @@ impl GpuCharacter {
         ambient: &AmbientLight,
         fade: f32,
     ) -> Self {
-        let CharacterLighting { key, rim, local_light_ceiling, gi, shade } = *lighting;
+        let CharacterLighting { key, rim, local_light_ceiling, gi, shade, camera_rim } = *lighting;
         let toward_key = (-key.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
             rig: GpuRig {
@@ -304,7 +314,7 @@ impl GpuCharacter {
                 body.casts().then(|| 0.5 * (body.base + body.top)).or(lighting.gi.head),
             ),
             fade: GpuCharacterFade { amount: [fade, 0.0, 0.0, 0.0] },
-            style: GpuCharacterStyle::new(&shade),
+            style: GpuCharacterStyle::new(&shade, &camera_rim),
         }
     }
 
@@ -600,6 +610,7 @@ mod tests {
                 skin_tint: Vec3::new(1.1, 0.9, 0.8),
             },
             shade: CharacterShade { hue: Vec3::new(0.0, 0.0, 2.0), share: 1.5 },
+            camera_rim: CameraRim { direction: Vec3::new(0.0, -3.0, 4.0), share: 0.25 },
         };
         let none = CharacterBody::default();
         let ambient = AmbientLight::default();
@@ -613,9 +624,19 @@ mod tests {
         let black = CharacterLighting { shade: CharacterShade { hue: Vec3::ZERO, share: 0.5 }, ..lighting };
         let black = GpuCharacter::new(&black, &CharacterFace::default(), &none, &ambient, 0.0).style;
         assert_eq!(black.shade, [1.0, 1.0, 1.0, 0.0], "a black hue is the key light's own");
+        // The camera rim toward its light, unit length, with its share.
+        assert_eq!(style.camera_rim, [0.0, 0.6, -0.8, 0.25]);
+        let lightless =
+            CharacterLighting { camera_rim: CameraRim { direction: Vec3::ZERO, share: 1.0 }, ..lighting };
+        let lightless = GpuCharacter::new(&lightless, &CharacterFace::default(), &none, &ambient, 0.0).style;
+        assert_eq!(lightless.camera_rim, [0.0, 1.0, 0.0, 0.0], "a light without a direction is none");
+        let idle = CharacterLighting { camera_rim: CameraRim { direction: Vec3::X, share: 0.0 }, ..lighting };
+        let idle = GpuCharacter::new(&idle, &CharacterFace::default(), &none, &ambient, 0.0).style;
+        assert_eq!(idle.camera_rim, [0.0, 1.0, 0.0, 0.0], "without a share, no direction either");
         let unstyled =
             GpuCharacter::new(&headless_lighting(), &CharacterFace::default(), &none, &ambient, 0.0);
         assert_eq!(unstyled.style.shade[3], 0.0, "no shadow hue by default");
+        assert_eq!(unstyled.style.camera_rim[3], 0.0, "no camera rim by default");
         assert_eq!(rig.key_direction, [0.0, 1.0, 0.0, 0.5], "toward the key, unit length; the rim");
         assert_eq!(rig.key_radiance, [2.0, 1.0, 0.5, 1.5]);
         assert_eq!(rig.head, [1.0, 2.0, 3.0, 0.8]);
@@ -668,6 +689,8 @@ mod tests {
             CharacterLighting { gi: CharacterGi { skin_tint: Vec3::new(1.0, -0.1, 1.0), ..gi }, ..valid },
             CharacterLighting { shade: CharacterShade { hue: Vec3::NAN, share: 0.5 }, ..valid },
             CharacterLighting { shade: CharacterShade { hue: Vec3::ONE, share: -0.5 }, ..valid },
+            CharacterLighting { camera_rim: CameraRim { direction: Vec3::NAN, share: 0.5 }, ..valid },
+            CharacterLighting { camera_rim: CameraRim { direction: Vec3::X, share: f32::NAN }, ..valid },
         ];
         for lighting in broken {
             assert!(!lighting.is_valid(), "{lighting:?}");

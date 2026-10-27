@@ -214,6 +214,53 @@ fn a_camera_fixed_key_ignores_the_sun() {
 }
 
 #[test]
+fn a_camera_rim_is_held_around_the_camera() {
+    let rim = LightRigRim { share: 0.6, ..LightRigRim::default() };
+    let rig = LightRig { camera_rim: rim, ..gameplay() };
+    let character = CharacterLight::default();
+    for eye in [Vec3::new(0.0, 1.2, 4.0), Vec3::new(3.0, 2.0, -2.0), Vec3::new(-4.0, 0.5, 0.5)] {
+        let camera = camera_at(eye);
+        for sun in [sun_toward(150.0, 10.0, &camera), sun_toward(-40.0, 60.0, &camera)] {
+            let lighting = rig.resolve(&sun, &character, &camera, HEAD);
+            // Behind the character on the camera's right, and above, wherever the sun is.
+            let held = lighting.camera_rim;
+            assert_eq!(held.share, 0.6);
+            assert!((azimuth(held.direction, &camera) - 150.0).abs() < 1e-3, "{eye}");
+            assert!((elevation(held.direction) - 35.0).abs() < 1e-3, "{eye}");
+            assert!((held.direction.length() - 1.0).abs() < 1e-5);
+            // Everything else is the rig's without it.
+            let without = gameplay().resolve(&sun, &character, &camera, HEAD);
+            assert_eq!(CharacterLighting { camera_rim: without.camera_rim, ..lighting }, without);
+        }
+    }
+    // Without a share it is none, wherever the camera is, so an idle camera rim never changes a
+    // character's lighting as the camera moves.
+    let idle = gameplay().camera_rim;
+    for eye in [Vec3::new(0.0, 1.2, 4.0), Vec3::new(3.0, 2.0, -2.0)] {
+        assert_eq!(idle.resolve(&camera_at(eye), HEAD), CameraRim::default());
+    }
+    // Documents give it a share and keep the rest; values out of range are refused.
+    let read = |rig: &str| {
+        LightRigLibrary::from_ron(&format!(
+            r#"(type: "sapphire::world::LightRigLibrary", version: 1, data: (rigs: [(name: "a", rig: {rig})]))"#
+        ))
+    };
+    let rigs = read("(camera_rim: (share: 0.5))").expect("valid");
+    assert_eq!(
+        rigs.rig(LightRigId::DEFAULT).camera_rim,
+        LightRigRim { share: 0.5, ..LightRigRim::default() }
+    );
+    for (rig, field) in [
+        ("(camera_rim: (share: 1.5))", "camera_rim.share"),
+        ("(camera_rim: (direction: (azimuth: 200.0)))", "camera_rim.direction.azimuth"),
+        ("(camera_rim: (direction: (elevation: -95.0)))", "camera_rim.direction.elevation"),
+    ] {
+        let error = read(rig).expect_err(rig).to_string();
+        assert!(error.contains(field), "{error}");
+    }
+}
+
+#[test]
 fn the_key_takes_time_of_days_character_curve() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
@@ -253,7 +300,9 @@ fn a_shot_rig_blends_in_and_out_with_its_cutscene() {
     let own = *tod.resolve(Vec3::ZERO, 0.0);
     let gameplay = gameplay();
     let before = own.character_lighting(&gameplay, &camera, head);
-    let shot_rig = portrait();
+    // The shot's rig holds a camera rim, which blends in with it.
+    let shot_rig =
+        LightRig { camera_rim: LightRigRim { share: 0.8, ..LightRigRim::default() }, ..portrait() };
     let shot = TodCutscene::new(2.0, 0.5, 0.5, None, Vec::new(), Some(shot_rig)).expect("a rig alone");
     let in_shot = shot_rig.resolve(&own.look.key_light(), &own.look.character_key(), &camera, head);
     tod.play_cutscene(Arc::new(shot));
@@ -280,6 +329,9 @@ fn a_shot_rig_blends_in_and_out_with_its_cutscene() {
             let bias =
                 before.gi.camera_bias + (in_shot.gi.camera_bias - before.gi.camera_bias) * track_weight;
             assert!((lighting.gi.camera_bias - bias).abs() < 1e-6);
+            assert!((lighting.camera_rim.share - 0.8 * track_weight).abs() < 1e-6);
+            let rim_turned = angle(in_shot.camera_rim.direction, lighting.camera_rim.direction);
+            assert!(rim_turned < 1e-6, "{seconds}: held where the shot's rig holds it: {rim_turned}");
         }
     }
 }

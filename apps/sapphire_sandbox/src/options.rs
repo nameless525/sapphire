@@ -72,6 +72,9 @@ pub(crate) struct Options {
     /// `--shade-hue <r>,<g>,<b>,<share>`: key characters' shadow sides to keep this linear RGB
     /// hue by this share of their light, all day (M1 C8), into the day the scene runs on.
     pub shade_hue: Option<CharacterShadeKey>,
+    /// `--camera-rim <share>`: give every light rig preset a camera rim taking this share of the
+    /// rim's gating, 0 to 1 (M1 C8).
+    pub camera_rim: Option<f32>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
     /// `--materials`: place the material layer samples on the character's right (M1 C7).
@@ -263,6 +266,9 @@ impl Options {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
         if let Some(shade) = self.shade_hue {
             scene.set_shade_hue(shade)?;
+        }
+        if let Some(share) = self.camera_rim {
+            scene.set_camera_rim(share)?;
         }
         scene.frame_foliage();
         if let Some(wind) = self.wind() {
@@ -469,6 +475,13 @@ impl Options {
                 }
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--shade-hue" => options.shade_hue = Some(parse_shade_hue(&value("--shade-hue")?)?),
+                "--camera-rim" => {
+                    let share: f32 = number(&value("--camera-rim")?, "--camera-rim")?;
+                    if !(0.0..=1.0).contains(&share) {
+                        return Err(format!("--camera-rim expects a share from 0 to 1, got {share}"));
+                    }
+                    options.camera_rim = Some(share);
+                }
                 "--swatches" => options.swatches = true,
                 "--materials" => options.materials = true,
                 "--two-sided" => options.two_sided = true,
@@ -932,6 +945,15 @@ mod tests {
         assert!(unknown.is_empty());
         assert!(options.two_sided && !Options::default().two_sided);
         assert!(parse(&["--two-sided", "--swatches"]).is_err(), "both stand on the character's left");
+    }
+
+    #[test]
+    fn camera_rim_parses_a_share() {
+        assert_eq!(parse(&["--camera-rim", "0.75"]).unwrap().0.camera_rim, Some(0.75));
+        assert_eq!(Options::default().camera_rim, None);
+        for wrong in ["1.5", "-0.1", "NaN", "behind"] {
+            assert!(parse(&["--camera-rim", wrong]).is_err(), "{wrong}");
+        }
     }
 
     #[test]

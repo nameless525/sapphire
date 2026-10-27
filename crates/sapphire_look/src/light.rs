@@ -125,6 +125,8 @@ pub struct CharacterLighting {
     pub gi: CharacterGi,
     /// The light on the shadow side (M1 C8): the key light's own by default.
     pub shade: CharacterShade,
+    /// The rim's own light, held around the camera (M1 C8): none by default, the key light's.
+    pub camera_rim: CameraRim,
 }
 
 impl CharacterLighting {
@@ -138,6 +140,7 @@ impl CharacterLighting {
             local_light_ceiling: 2.0,
             gi: CharacterGi::default(),
             shade: CharacterShade::default(),
+            camera_rim: CameraRim::default(),
         }
     }
 
@@ -145,7 +148,7 @@ impl CharacterLighting {
     /// that isn't zero, and no negative intensity, color, scale or ceiling. The value ceiling may
     /// be infinite (no clamp).
     pub fn is_valid(&self) -> bool {
-        let Self { key, rim, local_light_ceiling, gi, shade } = *self;
+        let Self { key, rim, local_light_ceiling, gi, shade, camera_rim } = *self;
         let colors = [key.color, gi.skin_tint, shade.hue];
         let scalars = [
             key.intensity,
@@ -155,9 +158,11 @@ impl CharacterLighting {
             gi.camera_bias,
             gi.max_saturation,
             shade.share,
+            camera_rim.share,
         ];
         key.direction.is_finite()
             && key.direction != Vec3::ZERO
+            && camera_rim.direction.is_finite()
             && colors.iter().all(|color| color.is_finite() && color.min_element() >= 0.0)
             && scalars.iter().all(|value| value.is_finite() && *value >= 0.0)
             && gi.head.is_none_or(Vec3::is_finite)
@@ -190,6 +195,37 @@ pub struct CharacterShade {
 impl Default for CharacterShade {
     fn default() -> Self {
         Self { hue: Vec3::ONE, share: 0.0 }
+    }
+}
+
+/// A rim light held around the camera (M1 C8). The depth-offset rim (M1 C5) is gated by its
+/// light: the material's light gate keeps it to the key light's lit side, and ZZZ's back-light
+/// weighting strengthens it as the key comes from behind. A gameplay rig folds a key from behind
+/// the character back toward the camera's side (`max_azimuth`), so faces keep a lit side, and
+/// then the rim follows the folded key around the front and loses its back light. Here the rim's
+/// gate and back-light weighting take their own direction, by [`Self::share`] blended with the
+/// key light's: one held behind and above the character as the camera sees it, as the reference
+/// games' rim lights are, so the rim keeps to the same silhouette whatever the key does. Its
+/// color stays the key light's, and the rim's shape (its width, depth step and Fresnel gate) the
+/// material's.
+///
+/// **Decision: per character, through its light rig, not per material.** Where a rim light
+/// comes from is lighting, which the rig owns for every material of the character at once (as
+/// it owns the key light's direction and limits); a material says how its regions take a rim.
+/// The world resolves it from the rig preset's angles and the camera
+/// (`sapphire_world::light_rig`); the renderer only uploads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraRim {
+    /// The direction its light travels, world space (any length but zero).
+    pub direction: Vec3,
+    /// 0 to 1: how much of the rim's gating comes from this light rather than the key light. 0
+    /// (the default) keeps the key light's rim exactly. Values above 1 count as 1.
+    pub share: f32,
+}
+
+impl Default for CameraRim {
+    fn default() -> Self {
+        Self { direction: Vec3::NEG_Y, share: 0.0 }
     }
 }
 

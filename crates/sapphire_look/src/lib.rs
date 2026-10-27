@@ -16,7 +16,7 @@
 //! - **Light** ([`light`]): the key light and the bodies that give it ([`DirectionalLight`],
 //!   [`Celestial`]), the ambient hemisphere ([`AmbientLight`]), time of day's curve for the
 //!   characters' key ([`CharacterLight`]) and a character's light rig as the world resolves it
-//!   for a frame ([`CharacterLighting`], [`CharacterGi`], [`CharacterShade`]).
+//!   for a frame ([`CharacterLighting`], [`CharacterGi`], [`CharacterShade`], [`CameraRim`]).
 //! - **The sky** ([`sky`]): its gradient and the layers drawn over it ([`SkyGradient`],
 //!   [`SkyLayers`], [`SkyDisc`], [`Nebula`], [`CloudLight`]), and its light as the probe grid
 //!   takes it ([`sky::sky_radiance`]).
@@ -47,7 +47,8 @@ pub mod sky;
 
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
 pub use light::{
-    AmbientLight, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade, DirectionalLight,
+    AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
+    DirectionalLight,
 };
 pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,

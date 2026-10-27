@@ -14,7 +14,10 @@
 //!   Its color and brightness scale time of day's character key, which curves through the day
 //!   apart from the world's light but fitted to it (a little brighter at night). Its GI settings
 //!   flatten and clamp the ambient light characters take; it also scales the rim and caps the
-//!   local lights.
+//!   local lights. Its camera rim (M1 C8, none by default) holds a rim light around the camera,
+//!   behind and above the character as the camera sees it, which takes a share of the rim's
+//!   gating from the key light: the gameplay preset's limits fold a key from behind round to the
+//!   camera's side, and the rim, which the key gates, would follow it off the silhouette.
 //! - **[`LightRigLibrary`]** (a `LightRigLibrary` document, schema 1): named presets, the first
 //!   the default. [`LightRigLibrary::default_rigs`] is the shipped one, compiled in until packs
 //!   carry it as content: `gameplay` and `portrait`.
@@ -76,7 +79,7 @@ use bevy_reflect::Reflect;
 use sapphire_math::det::{atan2, sin_cos, slerp_direction};
 use sapphire_math::{Vec3, Vec4};
 use sapphire_render::{
-    CameraData, CharacterGi, CharacterLight, CharacterLighting, CharacterShade, DirectionalLight,
+    CameraData, CameraRim, CharacterGi, CharacterLight, CharacterLighting, CharacterShade, DirectionalLight,
 };
 use serde::{Deserialize, Serialize};
 
@@ -85,7 +88,8 @@ pub use library::{LightRigError, LightRigId, LightRigLibrary, NamedLightRig};
 use crate::tod::Rgb;
 
 /// A character light rig preset. Every field left out of a document takes its neutral value: the
-/// world's key light with no limits, time of day's character key as it is, and unstyled GI.
+/// world's key light with no limits, time of day's character key as it is, unstyled GI, and no
+/// camera rim.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(default, deny_unknown_fields)]
@@ -97,6 +101,8 @@ pub struct LightRig {
     /// The most luminance the local lights add together, in units of a unit key light
     /// (the reference games' `_FilterLight`).
     pub local_light_ceiling: f32,
+    /// A rim light held around the camera (M1 C8): none by default, the key light's rim.
+    pub camera_rim: LightRigRim,
 }
 
 impl Default for LightRig {
@@ -107,7 +113,29 @@ impl Default for LightRig {
             gi: LightRigGi::default(),
             rim: neutral.rim,
             local_light_ceiling: neutral.local_light_ceiling,
+            camera_rim: LightRigRim::default(),
         }
+    }
+}
+
+/// A rig's rim light held around the camera (M1 C8; [`CameraRim`] says what it does): where it
+/// comes from as the camera sees the character, and its share of the rim's gating.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(default, deny_unknown_fields)]
+pub struct LightRigRim {
+    /// 0 to 1: how much of the rim's light gate and back-light weighting take this light rather
+    /// than the key light. 0 keeps the key light's rim exactly.
+    pub share: f32,
+    /// Where it comes from around the character as the camera sees it.
+    pub direction: CameraAngles,
+}
+
+impl Default for LightRigRim {
+    /// None, from behind the character on the camera's right and above, where a rim light
+    /// stands.
+    fn default() -> Self {
+        Self { share: 0.0, direction: CameraAngles { azimuth: 150.0, elevation: 35.0 } }
     }
 }
 
@@ -228,12 +256,17 @@ impl LightRig {
         }
         color(gi.skin_tint, "gi.skin_tint")?;
         non_negative(self.rim, "rim")?;
-        non_negative(self.local_light_ceiling, "local_light_ceiling")
+        non_negative(self.local_light_ceiling, "local_light_ceiling")?;
+        let rim = &self.camera_rim;
+        within(rim.share, 0.0, 1.0, "camera_rim.share", UNIT)?;
+        within(rim.direction.azimuth, -180.0, 180.0, "camera_rim.direction.azimuth", azimuth)?;
+        within(rim.direction.elevation, -90.0, 90.0, "camera_rim.direction.elevation", ELEVATION)
     }
 
     /// This preset's lighting for a character whose head is at `head` (world space), seen by
-    /// `camera`, under the world's `key_light` and time of day's `character_light`. Its shadow
-    /// side takes the key light's own color: time of day's shadow hue (M1 C8) comes with
+    /// `camera`, under the world's `key_light` and time of day's `character_light`, its camera
+    /// rim (M1 C8) placed around the camera. Its shadow side takes the key light's own color:
+    /// time of day's shadow hue (M1 C8) comes with
     /// [`TodFrame::character_lighting`](crate::tod::TodFrame::character_lighting).
     pub fn resolve(
         &self,
@@ -261,7 +294,21 @@ impl LightRig {
                 skin_tint: gi.skin_tint.into(),
             },
             shade: CharacterShade::default(),
+            camera_rim: self.camera_rim.resolve(camera, head),
         }
+    }
+}
+
+impl LightRigRim {
+    /// The rim light for a character whose head is at `head`, seen by `camera`: its direction
+    /// placed around the camera's view of the head. Without a share it is none
+    /// ([`CameraRim::default`]), which the camera doesn't move.
+    pub fn resolve(&self, camera: &CameraData, head: Vec3) -> CameraRim {
+        if self.share <= 0.0 {
+            return CameraRim::default();
+        }
+        let toward = CameraYaw::of(camera, head).toward(self.direction.azimuth, self.direction.elevation);
+        CameraRim { direction: -toward, share: self.share }
     }
 }
 

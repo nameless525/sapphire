@@ -189,6 +189,9 @@ struct CharacterStyle {
     // rgb: the shadow side's hue at a luminance of 1; w: its share of the shadow side's light,
     // 0 for the key light's own (`CharacterShade`).
     shade: vec4<f32>,
+    // xyz: unit vector toward the camera rim's light; w: its share of the rim's gating, 0 for
+    // the key light's alone (`CameraRim`).
+    camera_rim: vec4<f32>,
 }
 
 // One character's data for the frame. Each package's per-character data is a struct of its

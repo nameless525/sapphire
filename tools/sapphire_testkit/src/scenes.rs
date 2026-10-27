@@ -82,8 +82,10 @@ pub struct Scene {
 /// The character shading follow-up scenes (M1 C8) turn one of its features on each, all off by
 /// default, so no earlier scene draws any: the two-sided garments (`--two-sided`) pin what the
 /// material layer scenes pin; the shadow hue scenes (`--shade-hue`) light the face rig at golden
-/// hour, with and without the hue, and pin what the face scenes pin.
-pub fn scenes() -> [Scene; 90] {
+/// hour, with and without the hue, and pin what the face scenes pin; the folded rim scenes light
+/// the rim scenes' figures from behind through the gameplay rig's limits (`--rim-rig folded`),
+/// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin.
+pub fn scenes() -> [Scene; 92] {
     [
         Scene {
             name: "turntable-start",
@@ -2182,6 +2184,54 @@ pub fn scenes() -> [Scene; 90] {
                 "18",
                 "--shade-hue",
                 "0.8,0.88,1,0.8",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The rim figures keyed from behind through the gameplay rig's limits (M1 C8), which fold
+        // each key round toward the camera's side: the rim follows the folded key, its back light
+        // gone; the reference for the next scene.
+        Scene {
+            name: "rim-folded",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--rim-rig",
+                "folded",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same with the rig's camera rim taking all the rim's gating (M1 C8): held behind the
+        // figures on the camera's right and above, it keeps the rim on that silhouette and its
+        // back-light weighting, whatever the folded key does.
+        Scene {
+            name: "rim-folded-camera",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--rim-rig",
+                "folded",
+                "--camera-rim",
+                "1",
                 "--plain-post",
                 "--plain-sky",
                 "--aa",

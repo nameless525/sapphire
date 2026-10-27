@@ -938,7 +938,7 @@ mod tests {
                 }),
             ),
             ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style })),
-            ("CharacterStyle", offsets!(GpuCharacterStyle { shade })),
+            ("CharacterStyle", offsets!(GpuCharacterStyle { shade, camera_rim })),
             ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
             ("CharacterFade", offsets!(GpuCharacterFade { amount })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),

@@ -43,6 +43,12 @@
 // luminance of 1), so time of day can keep the shadows' hue whatever the key's color. Without a
 // share it is lit by the key light, exactly as before; the lit side keeps the key light.
 //
+// The camera rim (M1 C8; `CameraRim`, the entry's `CharacterStyle`): by its share, the rim's light
+// gate and back-light weighting take a light held around the camera (behind and above the
+// character as the camera sees it, the rig's choice) instead of the key light, so a key the
+// gameplay rig folds round to the front keeps the rim where its back light would. The rim's
+// shape and color stay as they are; without a share it is the key light's, exactly as before.
+//
 // Stylized GI (`character_gi`, WuWa's character GI) stands in for plain ambient light: the
 // character's ambient hemisphere (its entry's `CharacterAmbient`: time of day's, or since M1 W5
 // the probe grid's light around its body, low frequency) at a normal turned toward a sphere
@@ -276,6 +282,8 @@ const WEAVE_FADE: vec2<f32> = vec2<f32>(0.25, 0.5);
 const BREATH_PHASE_STEP: f32 = 0.618034;
 // `SpecularModel::MIN_GGX_ROUGHNESS`.
 const MIN_GGX_ROUGHNESS: f32 = 0.02;
+// The camera rim's light gate edge (M1 C8): half its width in N·L.
+const CAMERA_RIM_EDGE: f32 = 0.15;
 
 // The frame's light lists: a list per cluster or per instance slot (see lights.wgsl).
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
@@ -698,6 +706,12 @@ fn rim_mask(
     let fresnel = 1.0 - saturate(dot(surface.normal, surface.view_dir));
     let gate = light_step(1.0 - rim.y, fresnel_width, fresnel);
     return step * overlap * gate * scales.x;
+}
+
+// How lit a surface is by the camera rim's light toward `toward` (M1 C8), for the rim's light
+// gate: N·L through a soft step at 0, with no shadow or bias, as a rim light grazes the edge.
+fn camera_rim_lit(surface: CharacterSurface, toward: vec3<f32>) -> f32 {
+    return light_step(0.0, CAMERA_RIM_EDGE, dot(surface.normal, toward));
 }
 
 // The rim a light toward the unit vector `l` gives, per unit of its radiance, at a point whose
@@ -1269,6 +1283,16 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // share the sum is exactly what it was.
     if characters[in.character].style.shade.w > 0.0 {
         color += (1.0 - lit) * surface.shade * (shade_light(in.character, key_radiance) - key_radiance);
+    }
+    // The rim's own light (M1 C8), where the character's style gives it a share: the rim's light
+    // gate and back-light weighting from a light held around the camera, blended with the key
+    // light's by the share, so a key folded round to the front leaves the rim on the silhouette
+    // its back light picks. Its color stays the key light's. Added as the difference, as above.
+    if characters[in.character].style.camera_rim.w > 0.0 && rim.mask > 0.0 {
+        let camera_rim = characters[in.character].style.camera_rim;
+        let held = rim_light(rim, camera_rim.xyz, surface.view_dir, camera_rim_lit(surface, camera_rim.xyz));
+        let keyed = rim_light(rim, key_direction, surface.view_dir, lit);
+        color += (held - keyed) * key_radiance * camera_rim.w;
     }
     if PERMUTATION_FACE {
         // The face highlight brightens the lit tone, fading in from the shadow's edge over the

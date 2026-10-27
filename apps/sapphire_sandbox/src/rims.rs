@@ -14,7 +14,10 @@
 //! - **Layouts** ([`RimLayout`]): `angles` lights the figures from the front, the side, behind
 //!   and to the side, and across from the other side, so the rim's light gate shows; `backlit`
 //!   lights them from behind at several heights, where ZZZ's back-light weighting (the sample
-//!   mannequin's outfit has it) strengthens the rim.
+//!   mannequin's outfit has it) strengthens the rim; `folded` lights them from behind too, but
+//!   through the gameplay rig's limits, which fold each key round toward the camera's side, as
+//!   play does (M1 C8): the rim follows the folded key, unless the rig's camera rim
+//!   (`--camera-rim`) holds it behind.
 //!
 //! Nothing moves, so the instances are extracted once; the figures' characters are listed every
 //! frame, as every character's are.
@@ -53,6 +56,9 @@ const PANEL_HEIGHT: f32 = 7.0;
 pub(crate) struct RimKey {
     pub yaw: f32,
     pub elevation: f32,
+    /// Through the figure's light rig's limits (M1 C8), as play lights a character, rather than
+    /// exactly at its angles.
+    pub folded: bool,
 }
 
 impl RimKey {
@@ -70,6 +76,7 @@ impl RimKey {
 pub(crate) enum RimLayout {
     Angles,
     Backlit,
+    Folded,
 }
 
 impl RimLayout {
@@ -78,16 +85,21 @@ impl RimLayout {
         match name {
             "angles" => Some(Self::Angles),
             "backlit" => Some(Self::Backlit),
+            "folded" => Some(Self::Folded),
             _ => None,
         }
     }
 
     /// The figures' keys, left to right as the camera sees them.
     pub fn keys(self) -> [RimKey; FIGURES] {
-        let key = |yaw, elevation| RimKey { yaw, elevation };
+        let key = |yaw, elevation| RimKey { yaw, elevation, folded: false };
+        let folded = |yaw, elevation| RimKey { yaw, elevation, folded: true };
         match self {
             Self::Angles => [key(0.0, 30.0), key(75.0, 20.0), key(140.0, 25.0), key(-110.0, 15.0)],
             Self::Backlit => [key(180.0, 15.0), key(155.0, 35.0), key(-150.0, 10.0), key(180.0, 55.0)],
+            Self::Folded => {
+                [folded(170.0, 20.0), folded(145.0, 35.0), folded(-155.0, 15.0), folded(-130.0, 45.0)]
+            }
         }
     }
 }
@@ -265,7 +277,7 @@ mod tests {
     #[test]
     fn keys_turn_around_each_figure_as_the_camera_sees_it() {
         let (eye, at) = (Vec3::new(0.0, 1.0, 5.0), Vec3::new(0.0, 1.0, 0.0));
-        let toward = |yaw, elevation| RimKey { yaw, elevation }.toward(eye, at);
+        let toward = |yaw, elevation| RimKey { yaw, elevation, folded: false }.toward(eye, at);
         assert!(toward(0.0, 0.0).abs_diff_eq(Vec3::Z, 1e-6), "from the camera");
         assert!(toward(90.0, 0.0).abs_diff_eq(Vec3::X, 1e-6), "from the image's right");
         assert!(toward(180.0, 0.0).abs_diff_eq(Vec3::NEG_Z, 1e-6), "from behind");
@@ -323,6 +335,11 @@ mod tests {
     fn layouts_are_named_as_the_command_line_spells_them() {
         assert_eq!(RimLayout::from_name("angles"), Some(RimLayout::Angles));
         assert_eq!(RimLayout::from_name("backlit"), Some(RimLayout::Backlit));
+        assert_eq!(RimLayout::from_name("folded"), Some(RimLayout::Folded));
+        assert!(
+            RimLayout::Folded.keys().iter().all(|key| key.folded && key.yaw.abs() > 120.0),
+            "from behind"
+        );
         assert_eq!(RimLayout::from_name("front"), None);
     }
 }

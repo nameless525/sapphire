@@ -6,7 +6,7 @@ M1 ends when its three exit tests pass ([engine-spec.md](engine-spec.md) §10):
 2. The look-dev scene meets the tier budgets on all five platforms.
 3. Golden images pass on three backends.
 
-This is the procedure for the first, and for the phone measurements the second needs. Everything except the phones was rehearsed on 2026-10-26 (the desktop, the iOS Simulator and the Android emulator; results at the end), so a phone run repeats a known procedure. The steps that only a device can prove are listed as such.
+This is the procedure for the first, and for the phone measurements the second needs. Everything except the phones was rehearsed on 2026-10-26 (the desktop, the iOS Simulator and the Android emulator), and the desktop again on 2026-10-27 with C7 and the look-dev stage's own day in (results at the end), so a phone run repeats a known procedure. The steps that only a device can prove are listed as such.
 
 ## What changes
 
@@ -17,19 +17,21 @@ The scene is X1's look-dev town from its hero shot at 10:00: `--look-dev hero --
 | Ramp | `content/samples/swatch.ramp.ron` | The `cloth` material's three `day` stops, blue to red (`#272a52` → `#5a1620`, `#4f5aa0` → `#b03040`, `#9aa8e0` → `#f0a0a8`) | cook, push the pack | The shirt's shadow side turns from blue to red |
 | Character material | `content/lookdev/character/materials/Tops_01_CLOTH.material.ron` | `base_color: (1.0, 1.0, 1.0, 1.0)` → `(1.0, 0.55, 0.62, 1.0)` | cook, push the pack | The shirt turns rose |
 | Environment material | `content/lookdev/town/materials/cobbles.material.ron` | `base_color: (1.0, 1.0, 1.0, 1.0)` → `(0.55, 0.75, 1.0, 1.0)` | cook, push the pack | The paving turns blue |
-| Time-of-day key | `crates/sapphire_world/default_day.ron` | The 10:00 key's `exposure: 0.0` → `0.8` | push the document | The whole frame brightens |
+| Time-of-day key | `content/lookdev/lookdev_day.ron`, the look-dev stage's own day (X1 part 2a) | The 9:00 key's `exposure: -0.2` → `0.6` (the key at or before the shot's hour) | push the document | The whole frame brightens |
 | Cvar | `post.filter_strength` | `1` → `0` | set it | The grade's color filter goes |
 | WGSL | `crates/sapphire_render/shaders/post.wgsl` | In `fs_composite`, `srgb_to_linear(display)` → `srgb_to_linear(display * vec3<f32>(1.0, 0.8, 0.8))` | push the source | The whole frame tints red |
 
 **The ramp needs a setup edit.** The look-dev character has no ramps yet (X1 part 2 owes them), so the run first points the shirt at the sample ramp: in `Tops_01_CLOTH.material.ron`, `diffuse: Ramp((map: "1ace5ab9-aceb-42fa-bbcc-953141739d56", mix: 1.0))`, the region's `ramp_row: Some(1)` (the ramp's `cloth` row) and `light_split`'s `threshold: 0.7`, so the shadow side, where a ramp shows, covers most of the shirt. Push that, then edit the ramp. Once the character has ramps of her own, edit those instead.
 
-**After X1 part 2a** the look-dev stage runs on its own day, `content/lookdev/lookdev_day.ron`: edit a key of that file (the one at or nearest the shot's hour) instead of the default day's, and give it to `watch` by name (`cargo xtask link watch content/lookdev/lookdev_day.ron`).
+**The look-dev stage runs on its own day** (X1 part 2a), `content/lookdev/lookdev_day.ron`, so that is the file to edit, and the one to name to `watch` (`cargo xtask link watch content/lookdev/lookdev_day.ron`); with hot reload, the app watches it itself under `--look-dev`. Both days are timelines, so the app takes a timeline only from the file of the day it runs on: pushing `default_day.ron` to the look-dev stage (which `watch` does whenever that file changes) is refused with the day's name and file, and the stage keeps its day. The app's log and the tool name the day replaced (`look-dev day reloaded`, `replaced the look-dev day`).
 
-**Cooking after editing a compiled-in source is slow once.** `sapphire_pipeline` links `sapphire_render` and `sapphire_world`, which compile the WGSL sources and the default day in, so the first `cargo xtask content` after editing either rebuilds the pipeline (26 to 63 s in the rehearsal, on a loaded machine). Make the content edits first, or expect one slow cook. Every other cook took 0.5 to 0.8 s.
+**Cooking after editing a compiled-in source is slow once.** `sapphire_pipeline` links `sapphire_render` and `sapphire_world`, which compile the WGSL sources and the default day in, so the first `cargo xtask content` after editing either rebuilds the pipeline (26 to 63 s in the rehearsal, on a loaded machine). The look-dev day is compiled into the sandbox alone, so editing it costs the cook nothing. Make the content edits first, or expect one slow cook. Every other cook took 0.5 to 0.8 s.
 
-The rehearsal also edited the character's own shader, `anime_character.wgsl`, tinting the opaque pass's color before it is fogged (`fogged(shaded.color * vec3<f32>(1.0, 0.55, 0.55), …)`): the character alone turns red.
+The rehearsal also edited the character's own shader, `anime_character.wgsl`, tinting the color before it is fogged. Since C7 that is in `character_pixel`: `fogged(shaded.color, …)` → `fogged(shaded.color * vec3<f32>(1.0, 0.55, 0.55), …)` on its `let color` line. The character alone turns red.
 
-**After C7 lands** (Material 8, the new layers), re-run the steps it touches before counting them: both material edits and the ramp (the documents' fields and the ramp's binding may move, and the cooked materials change version, so every material recooks once), and the character shader edit, whose line C7's fragment stage restructures; pick the equivalent line in the new code. Build the app and the tool from the same commit, as always: an app and a tool of different protocol versions refuse each other (captures came with version 2).
+**C7** (Material 8, material layers and the proximity fade) changed none of the documents the edits touch, so the same edits apply; its new cooked version recooks every material once, on the first cook after it lands. The steps it touches (both materials, the ramp and the character shader) were re-run with it in; the results are at the end. Build the app and the tool from the same commit, as always: an app and a tool of different protocol versions refuse each other (captures came with version 2).
+
+**Screen effects' post variants are built lazily** (post's lazy pipelines): every mode prewarms the variants its scene may draw at startup, `--offscreen` included, and a pushed or reloaded screen effect preset library prewarms its own as it is applied, so the first frame of a pushed effect doesn't build a pipeline.
 
 A script made the edits, pushed, captured and checked each, and always undid them, for the rehearsal; the procedure below is the same by hand.
 
@@ -59,7 +61,7 @@ cargo xtask content
 cargo xtask link capture after.png
 ```
 
-Hot reload (A8) finds every edit itself: documents and WGSL sources when they are saved, content when `cargo xtask content` rewrites the pack. To exercise the phones' path on the desktop instead, add `--no-hot-reload` and push each edit (`cargo xtask link push …`, `cargo xtask link cvar …`) as below.
+`cargo xtask run` holds the cooked content locked while the app runs, so that nothing recooks it underneath, except for a `dev` build, which hot reloads: there `cargo xtask content` in another terminal goes ahead (before the rehearsal fixed it, it waited for the app to exit). Hot reload (A8) finds every edit itself: documents and WGSL sources when they are saved, content when `cargo xtask content` rewrites the pack. To exercise the phones' path on the desktop instead, add `--no-hot-reload` and push each edit (`cargo xtask link push …`, `cargo xtask link cvar …`) as below.
 
 ## iOS Simulator
 
@@ -117,7 +119,7 @@ Over Wi-Fi instead: `--live-link 0.0.0.0:7811` on the app, `--addr <phone's addr
 For each target and each of the six kinds, edit and undo:
 
 - **Push → reply:** the tool prints `(in N ms)`, from the request to the device's answer. A pack is answered once its changed assets are swapped in; a document, cvar or shader once applied. The next frame shows it.
-- **Edit → visible:** for content, the cook's time plus the push's. On the desktop with hot reload, the app logs `pack changed`, `asset swapped in`, `shaders reloaded` and `default day reloaded` with timestamps.
+- **Edit → visible:** for content, the cook's time plus the push's. On the desktop with hot reload, the app logs `pack changed`, `asset swapped in`, `shaders reloaded` and `look-dev day reloaded` (or `default day reloaded`) with timestamps.
 - **That it shows, and goes:** a capture before, after the edit and after the undo. The undo's capture must match the first (the rehearsal compared 640-pixel-wide reductions: the share of pixels more than 6 code values apart, against a frame-to-frame noise of 0.01% to 1.4%).
 - **The cost of a shader push:** the app logs `live link rebuilt shaders … elapsed=`. Pipelines are rebuilt on the frame's thread, so a push holds the frame that long: 2.1 to 2.6 s for a cold compile on the simulator and 2.6 to 3.5 s on the emulator, which the frame stats show as one long frame. Record it on the phones; it is the one push that hitches.
 - **Frame pacing and budgets** (spec §3): the tier the device gets (the `quality tier` log line); the `frame stats` log line every two seconds (fps, best and worst frame, on-time and missed display-link ticks on iOS); and the overlay's stats panel for CPU stages and GPU passes against §3.2 and §3.3 (`--debug-overlay=stats`, then `cargo xtask link capture`). Mobile-Low holds 30 fps with a GPU frame of at most 26 ms; Mobile-High 60 fps and 13 ms. Measure again after 15 minutes, throttled (spec §3).
@@ -146,3 +148,19 @@ All six kinds showed and went away again on every target, with the captures and 
 | Ramp | 44 / 45 | 38 / 39 | 49 / 41 |
 
 Content took a cook of 0.5 to 0.8 s first (after the one slow cook described above). On the desktop with hot reload instead of live link, from saving the file to the change applied, by the app's log: the time-of-day key 0.12 to 0.30 s, WGSL 0.13 to 0.14 s (Metal's shader cache warm from the live link run), and content 0.66 to 0.79 s including the cook, the swap coming 0.12 to 0.14 s after the pack was written (the watcher's 100 ms debounce, the remount and the upload). The desktop ran the release `dev` build offscreen at 1280×720 on Desktop-High; the simulator (iPhone 17 Pro, iOS 26.3) on Mobile-Low at 2622×1206, holding 30 fps but for the shader pushes; the emulator (`sapphire_api36`, Android 16, `-gpu host`: the Mac's GPU through MoltenVK, so its compile times say nothing about a phone's driver) on Mobile-Low at 2400×1080. On the emulator, where the tool listens and the app dials, each command also waited up to a second for the dial (wall times of 0.1 to 1 s around the replies above). A pushed pack was swapped in about 30 ms after it arrived on every target, and a capture's PNG (2 MB or so) took 0.4 to 1.2 s to come back.
+
+### Again with C7 and the look-dev day (2026-10-27, main at e0b959c with the rehearsal's changes)
+
+On the desktop only, since nothing there differed from the first run: the release `dev` build started with `cargo xtask run --platform desktop --release --features dev -- --look-dev hero --time-of-day 10 --offscreen --size 1280x720 --no-hot-reload`, every edit pushed over live link. Every edit showed and went again. Push → reply in ms, edit / undo:
+
+| Kind | Desktop, live link |
+|---|---|
+| Cvar | 2 / 18 |
+| Time-of-day key (`lookdev_day.ron`, the 9:00 key) | 41 / 37 |
+| WGSL (`post.wgsl`) | 27 / 50 (Metal's cache already held the edit from the first run) |
+| WGSL (`anime_character.wgsl`, C7's `character_pixel`) | 2,460 / 97 |
+| Character material | 38 / 34, and 38 / 52 again |
+| Environment material | 22 / 26 |
+| Ramp | 55 / 45 |
+
+Cooks took 0.5 to 1 s. Pushing `default_day.ron` to the stage was refused ("the scene runs on the look-dev day (lookdev_day.ron), which only that file replaces") and `lookdev_day.ron` replaced the look-dev day in 36 ms. The stage's breeze sways its trees, so two captures of an unchanged frame now differ on 2 to 4% of the reduced pixels (by more than 6 code values, mostly in the trees); every undo came back within that. The run found that `cargo xtask run` kept a `cargo xtask content` in another terminal waiting until the app exited (20 minutes, until the run's xtask was stopped); `dev` builds now leave the content unlocked (above).

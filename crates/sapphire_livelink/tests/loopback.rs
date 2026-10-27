@@ -6,15 +6,16 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
-use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+use sapphire_assets::pack::{Codec, PackAsset, PackHeader, write_pack};
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, Handle, LoadPriority, MemoryPackSource,
+    PackFile, PackSource, ReadDone,
 };
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarRegistry};
 use sapphire_livelink::protocol::{
@@ -643,6 +644,8 @@ fn a_dialing_link_closes_while_its_tool_goes_too() {
 #[test]
 fn a_dialing_link_closes_mid_handshake_and_while_idle() {
     // The tool took the dial and hasn't sent its preamble: the device waits for it unbounded.
+    // Shutting the socket down ends that read on Unix, not on Windows: either way, closing the
+    // link doesn't wait for it.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), empty_packs()).unwrap();
     let (silent, _) = listener.accept().unwrap();
@@ -655,6 +658,45 @@ fn a_dialing_link_closes_mid_handshake_and_while_idle() {
     let mut tool = RawTool::accept(&listener);
     std::thread::sleep(Duration::from_millis(100));
     assert!(closes_in_time(link), "the link closes while a connection waits for requests");
+    assert!(tool.reply().is_err(), "the tool sees the connection close");
+}
+
+/// The app's pack source, whose `open` waits until the test lets it go: a connection planning a
+/// push waits in it as long as the test likes.
+struct Gated {
+    gate: Mutex<mpsc::Receiver<()>>,
+}
+
+impl PackSource for Gated {
+    fn open(&self, _: &str) -> std::io::Result<(PackFile, u64)> {
+        // Until the test drops the sender.
+        let _ = self.gate.lock().unwrap().recv();
+        Err(std::io::ErrorKind::NotFound.into())
+    }
+
+    fn read(&self, _: PackFile, _: u64, _: usize, _: LoadPriority, done: ReadDone) {
+        done(Err(std::io::ErrorKind::NotFound.into()));
+    }
+}
+
+#[test]
+fn a_dialing_link_closes_whatever_its_connection_waits_on() {
+    // Closing a link waits for nothing its connection's thread waits on: a read that shutting
+    // the socket down doesn't end (Windows doesn't end a pending `recv` so), or, here on every
+    // OS, the app's pack source, which a connection planning a push reads.
+    let (release, gate) = mpsc::channel::<()>();
+    let packs = Arc::new(LivePacks::new(Gated { gate: Mutex::new(gate) }));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), packs).unwrap();
+    let mut tool = RawTool::accept(&listener);
+    let zone =
+        write_pack(vec![packed(ZONE_TEXTURE, AssetKind::Texture, &texture(8, 3), Vec::new())]).unwrap();
+    let head = zone[..PackHeader::read(&zone).unwrap().data_offset as usize].to_vec();
+    tool.send(1, RequestBody::PackBegin { name: "zone".into(), len: zone.len() as u64, head });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(closes_in_time(link), "the link closes while its connection waits");
+    // Let go, the connection ends unanswered: the link closed it.
+    drop(release);
     assert!(tool.reply().is_err(), "the tool sees the connection close");
 }
 

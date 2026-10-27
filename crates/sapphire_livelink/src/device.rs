@@ -178,14 +178,21 @@ pub struct LiveLink {
     mode: LinkMode,
     /// The address it listens at once bound (a port of 0 picks a free one), or dials.
     address: SocketAddr,
-    /// Taken when the link closes, before its thread is joined: a connection's reader waiting
-    /// to queue a push (16 wait already) then fails instead of waiting for a poll that won't
-    /// come, which a dialing thread, serving its connection itself, would hold the join on.
+    /// Taken when the link closes: a connection's reader waiting to queue a push (16 wait
+    /// already) then fails instead of waiting for a poll that won't come.
     pushes: Option<Receiver<Push>>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
-    /// Dropped to wake a dialing thread between dials.
-    wake: Option<Sender<()>>,
+    /// Tells a dialing thread the link is closing.
+    wake: Option<Sender<Wake>>,
+}
+
+/// What a dialing thread waits for.
+enum Wake {
+    /// The link is closing.
+    Closing,
+    /// The connection it dialed ended.
+    Ended,
 }
 
 impl fmt::Debug for LiveLink {
@@ -216,10 +223,10 @@ impl LiveLink {
             }
             LinkMode::Connect(address) => {
                 let (sender, woken) = mpsc::channel();
-                wake = Some(sender);
+                wake = Some(sender.clone());
                 let thread = thread::Builder::new()
                     .name("sapphire-live-link".into())
-                    .spawn(move || dial(address, &context, &woken))?;
+                    .spawn(move || dial(address, &context, &woken, &sender))?;
                 (address, thread)
             }
         };
@@ -266,16 +273,21 @@ impl Drop for LiveLink {
         self.shared.closing.store(true, Ordering::Relaxed);
         let streams =
             std::mem::take(&mut *self.shared.streams.lock().unwrap_or_else(PoisonError::into_inner));
+        // Shutting a connection down closes it for the tool. On Unix it also ends the reads and
+        // writes the connection's threads wait in, but Windows ends no `recv` already waiting
+        // (that one ends when the tool sends or closes). So the link waits for none of its
+        // connections' threads, dialed or accepted: each ends on its own, or with the process.
         for (_, stream) in streams {
             let _ = stream.shutdown(Shutdown::Both);
         }
-        // Shutting a socket down wakes its reads and writes, not a reader waiting for room in
-        // the push queue: dropping the queue does, and the pushes still in it go unanswered (the
-        // tool times out), as a dropped `Responder` does.
+        // Nor does it wake a reader waiting for room in the push queue: dropping the queue does,
+        // and the pushes still in it go unanswered (the tool times out), as a dropped
+        // `Responder` does.
         drop(self.pushes.take());
         let Some(thread) = self.thread.take() else { return };
         // A listener blocks in `accept`: a connection of our own wakes it. If none can be made,
-        // the thread is left to end with the process rather than waited for.
+        // the thread is left to end with the process rather than waited for. A dialing thread
+        // waits on its channel, or at most a dial's timeout.
         let woken = match self.mode {
             LinkMode::Listen(_) => {
                 let ip = match self.address.ip() {
@@ -286,10 +298,7 @@ impl Drop for LiveLink {
                 TcpStream::connect_timeout(&SocketAddr::new(ip, self.address.port()), HANDSHAKE_TIMEOUT)
                     .is_ok()
             }
-            LinkMode::Connect(_) => {
-                drop(self.wake.take());
-                true
-            }
+            LinkMode::Connect(_) => self.wake.take().is_some_and(|wake| wake.send(Wake::Closing).is_ok()),
         };
         if woken {
             let _ = thread.join();
@@ -354,21 +363,40 @@ fn accept(mut listener: TcpListener, address: SocketAddr, context: &Context) {
     }
 }
 
-/// Dials `address` and serves the connection, again whenever it drops, until the link closes,
-/// which drops the sender of `wake`.
-fn dial(address: SocketAddr, context: &Context, wake: &Receiver<()>) {
+/// Dials `address` and serves the connection, again whenever it ends, until the link closes,
+/// which sends [`Wake::Closing`] through `wake`. The connection is served on a thread of its own,
+/// which tells this one through `ended` that it ended, so closing the link waits for this
+/// thread's channel alone, never for what a connection waits on.
+fn dial(address: SocketAddr, context: &Context, wake: &Receiver<Wake>, ended: &Sender<Wake>) {
     while !context.shared.closing.load(Ordering::Relaxed) {
         // The handshake waits as long as the tool takes to accept: a dialed connection sits in
         // its backlog until then.
         if let Ok(stream) = TcpStream::connect_timeout(&address, RETRY) {
-            serve_logged(stream, context, None);
+            let context = context.clone();
+            let ended = ended.clone();
+            let spawned =
+                thread::Builder::new().name("sapphire-live-link-connection".into()).spawn(move || {
+                    serve_logged(stream, &context, None);
+                    let _ = ended.send(Wake::Ended);
+                });
+            match spawned {
+                // One connection at a time: the next dial waits for this one to end.
+                Ok(_) => match wake.recv() {
+                    Ok(Wake::Ended) => {}
+                    Ok(Wake::Closing) | Err(_) => return,
+                },
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, %error, "live link couldn't serve a connection")
+                }
+            }
         }
         // Whether the tool wasn't there or the connection ended, wait: behind `adb reverse` every
         // dial connects at once, to adbd, which closes it when no tool listens on the desktop.
-        // A channel's timeout is the whole of it, where a thread's park may end early.
+        // A channel's timeout is the whole of it, where a thread's park may end early. Each
+        // connection ends once, and that was waited for above.
         match wake.recv_timeout(RETRY) {
-            Err(RecvTimeoutError::Timeout) => {}
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Timeout) | Ok(Wake::Ended) => {}
+            Ok(Wake::Closing) | Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }

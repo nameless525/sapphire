@@ -66,9 +66,9 @@ use crate::texture::Swizzle;
 /// - **Layers** (M1 C7), each off until a region turns it on: a stylized highlight
 ///   ([`Specular`], the region's specular color), the matcap ([`Matcap`], the region's
 ///   [`RegionMatcap`]), the reflection add (the region's `metallic` above
-///   [`layer_mask::REFLECTS`](crate::character_maps::layer_mask::REFLECTS)), stockings
-///   ([`Stockings`], the region's `stocking`) and breathing emission ([`Emission`], the region's
-///   `emission`). A body's `layer_mask` paints where each shows.
+///   [`layer_mask::REFLECTS`]), stockings ([`Stockings`], the region's `stocking`) and breathing
+///   emission ([`Emission`], the region's `emission`). A body's `layer_mask` paints where each
+///   shows.
 ///
 /// Colors are linear RGB(A), as glTF factors are. Textures are referenced by [`AssetId`]; see
 /// [`AnimeCharacterMaterial::TEXTURE_SLOTS`] for what each must hold.
@@ -644,8 +644,8 @@ pub struct CharacterRegion {
     pub matcap: RegionMatcap,
     /// How strongly the region reflects (M1 C7; WuWa's metallic, a reflection strength rather
     /// than a physical blend toward a conductor): the layer mask's G scales it, and only texels
-    /// above [`layer_mask::REFLECTS`](crate::character_maps::layer_mask::REFLECTS) add the
-    /// reflection, on top of the matcap, which stays the metal's base look. 0 to 1.
+    /// above [`layer_mask::REFLECTS`] add the reflection, on top of the matcap, which stays the
+    /// metal's base look. 0 to 1.
     pub metallic: f32,
     /// How blurred the reflection is: 0 a mirror, 1 the roughest the renderer keeps (WuWa clamps
     /// characters' roughness); 0 to 1.

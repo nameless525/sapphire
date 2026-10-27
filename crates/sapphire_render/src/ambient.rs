@@ -113,7 +113,7 @@
 //!
 //! Anime characters' reflection add (M1 C7, `anime_character.wgsl`) reads the same cube on every
 //! tier, grid or not, at its region's roughness. The renderer says whether a reflective material
-//! (`AnimeCharacterParams::FLAG_REFLECTION`) is in the draw list ([`Ambient::set_reflective`]):
+//! (`AnimeCharacterParams::FLAG_REFLECTION`) is in the draw list (`Ambient::set_reflective`):
 //! the first time one is, the cube (at the tier's size, environment specular or not), the
 //! projection, which the prefilter's scale reads, and the prefilter are made, and while one is,
 //! both run as they do for a grid, all six faces again when they start after a pause. Without a

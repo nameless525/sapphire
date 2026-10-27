@@ -118,7 +118,7 @@ pub struct RenderSettings {
     /// and each character's own shadow. `None` draws none: no maps, no passes, and shaders
     /// compiled as they were without shadows.
     pub shadows: Option<ShadowSettings>,
-    /// What the screen effects spend (M1 P3, the [`post`] module): the radial
+    /// What the screen effects spend (M1 P3, the [`post`](crate::post) module): the radial
     /// blur's taps per pixel.
     pub post_effects: PostEffectSettings,
     /// Post's variants built with the renderer, ahead of the frames that draw them (the
@@ -1334,8 +1334,8 @@ impl Renderer {
     /// The surface, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color and, below
-    /// scale 1, upsamples it to the target in its final pass (see the [`post`] module). Under
-    /// temporal AA the projection is jittered, and the [`temporal`] resolve
+    /// scale 1, upsamples it to the target in its final pass (see the [`post`](crate::post)
+    /// module). Under temporal AA the projection is jittered, and the [`temporal`] resolve
     /// accumulates the scene at the target's size before post reads it. On the clustered light
     /// path, frames with local lights first bin them in a compute pass (see the `lights`
     /// module); frames that pose skinned or morphed instances skin them first (see the

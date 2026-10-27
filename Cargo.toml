@@ -220,6 +220,10 @@ dbg_macro = "warn"
 todo = "warn"
 print_stdout = "warn"
 
+# A lone backtick pairs with the next one in the paragraph and garbles the rendered docs.
+[workspace.lints.rustdoc]
+unescaped_backticks = "warn"
+
 # Dependencies fast, our code debuggable (spec §7.2).
 [profile.dev]
 opt-level = 1

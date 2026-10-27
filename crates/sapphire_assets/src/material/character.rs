@@ -4,7 +4,8 @@
 //! rig's stylized GI (M1 C2), the depth-offset rim and its region mask, hair highlights, the
 //! bangs' shadow on a face and eyes through the bangs (M1 C5), the layered eyes (M1 C6), the
 //! layers on top of the base (M1 C7: stylized specular, the matcap, the reflection add,
-//! stockings and breathing emission), and the static permutations of its flags.
+//! stockings and breathing emission), two-sided surfaces (M1 C8), and the static permutations of
+//! its flags.
 //!
 //! # Versions
 //!
@@ -69,6 +70,7 @@ use crate::texture::Swizzle;
 ///   [`layer_mask::REFLECTS`]), stockings ([`Stockings`], the region's `stocking`) and breathing
 ///   emission ([`Emission`], the region's `emission`). A body's `layer_mask` paints where each
 ///   shows.
+/// - **Sides** (M1 C8): `double_sided` draws back faces too, lit as the side the camera sees.
 ///
 /// Colors are linear RGB(A), as glTF factors are. Textures are referenced by [`AssetId`]; see
 /// [`AnimeCharacterMaterial::TEXTURE_SLOTS`] for what each must hold.
@@ -108,6 +110,18 @@ pub struct AnimeCharacterMaterial {
     pub stockings: Stockings,
     /// How the regions' emission breathes and blooms (M1 C7).
     pub emission: Emission,
+    /// Draws the surface's back faces too (M1 C8; glTF's `doubleSided`), shading them with the
+    /// flipped normal: garments made of one layer, such as a collar or a skirt, show their
+    /// inside rather than what lies behind them. Blended materials (`alpha: Blend`) keep culling
+    /// back faces until transparent draws are sorted (spec §5.12, "Sorting"). The outline hull
+    /// stays the surface's outer shell either way. Written only when set, so documents from
+    /// before it read and write as they did.
+    #[serde(skip_serializing_if = "is_false")]
+    pub double_sided: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Versioned for AnimeCharacterMaterial {
@@ -140,6 +154,7 @@ impl Default for AnimeCharacterMaterial {
             layer_mask: None,
             stockings: Stockings::default(),
             emission: Emission::default(),
+            double_sided: false,
         }
     }
 }
@@ -1722,6 +1737,11 @@ impl MaterialDocument for AnimeCharacterMaterial {
         if self.layer_flags() != 0 {
             flags |= MaterialFlags::LAYERS;
         }
+        // Blended surfaces draw unsorted, so both faces of one would blend in whatever order the
+        // mesh lists them: they keep culling.
+        if self.double_sided && !matches!(self.alpha, AlphaMode::Blend) {
+            flags |= MaterialFlags::DOUBLE_SIDED;
+        }
         flags
             | match self.surface {
                 CharacterSurface::Body => MaterialFlags::empty(),
@@ -1756,6 +1776,7 @@ impl From<v1::AnimeCharacterMaterial> for AnimeCharacterMaterial {
             layer_mask: None,
             stockings: Stockings::default(),
             emission: Emission::default(),
+            double_sided: false,
         }
     }
 }

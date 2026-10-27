@@ -79,7 +79,10 @@ pub struct Scene {
 /// and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade scenes
 /// fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post,
 /// AO off, through temporal AA and through MSAA.
-pub fn scenes() -> [Scene; 87] {
+/// The character shading follow-up scenes (M1 C8) turn one of its features on each, all off by
+/// default, so no earlier scene draws any: the two-sided garments (`--two-sided`) pin what the
+/// material layer scenes pin.
+pub fn scenes() -> [Scene; 88] {
     [
         Scene {
             name: "turntable-start",
@@ -2113,6 +2116,28 @@ pub fn scenes() -> [Scene; 87] {
                 "off",
                 "--capture-frames",
                 "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The garment samples (M1 C8) left of the character: a navy collar, a crimson skirt and a
+        // gold ribbon given half a twist, each one-sided (outer column: the insides culled, the
+        // outline hull's inside showing through) beside two-sided (inner column: the insides
+        // shaded as the side the camera sees, the ribbon's back as lit as its front).
+        Scene {
+            name: "two-sided",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--two-sided",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },

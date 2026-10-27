@@ -74,8 +74,9 @@
 // Static permutations (`pipelines::Permutation`) are pipeline-overridable constants, so each
 // variant compiles only its own code: alpha-tested materials discard below their cutoff,
 // transparent ones write their coverage for blending, faces shade by their SDF map, hair takes its
-// mask and highlight, eyes are always lit, and only materials with a layer (and eyes) carry the
-// layers' code (M1 C7).
+// mask and highlight, eyes are always lit, only materials with a layer (and eyes) carry the
+// layers' code (M1 C7), and two-sided ones (glTF's `doubleSided`, M1 C8) shade a back face with
+// its normal flipped, as the side the camera sees: a collar's or a sleeve's inside.
 //
 // Faces (M1 C3, the face permutation). The light split comes from the face's SDF map and the
 // character's key light in head space instead of N·L, as `sapphire_assets::character_maps`
@@ -248,6 +249,9 @@ override PERMUTATION_HAIR: bool = false;
 override PERMUTATION_EYE: bool = false;
 // The layers' code (M1 C7): compiled in for materials with a layer, and for every eye.
 override PERMUTATION_LAYERS: bool = false;
+// Both faces drawn (M1 C8): the pipeline culls nothing, and back faces shade as the side the
+// camera sees, with the normal flipped (`facing`).
+override PERMUTATION_TWO_SIDED: bool = false;
 // The main pass's samples a pixel, for the proximity fade's dither (M1 C7; `faded_out` in
 // frame.wgsl): set under MSAA on the alpha-tested variants' covered entry points, which cover a
 // share of them, and on the outline hulls' masked prepass (outline.wgsl), which keeps the pixels
@@ -1289,6 +1293,15 @@ struct CharacterPixel {
     region: u32,
 }
 
+// The varyings of the side of a surface the camera sees (M1 C8): a two-sided variant's back
+// faces turn the normal around, so they shade (and take the normal map, the shadow's offset and
+// the rim) as a front face would. One-sided variants cull back faces, so `front` is always true.
+fn facing(in: CharacterVaryings, front: bool) -> CharacterVaryings {
+    var out = in;
+    out.world_normal = select(in.world_normal, -in.world_normal, PERMUTATION_TWO_SIDED && !front);
+    return out;
+}
+
 fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
     let shaded = shade_character(in);
     // Alpha is the world's share of the pixel, post's character mask (M1 P2): opaque passes write
@@ -1308,8 +1321,8 @@ fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
 }
 
 @fragment
-fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
-    let pixel = character_pixel(in);
+fn fs_anime_character(in: CharacterVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let pixel = character_pixel(facing(in, front));
     // The one exit, where the pixels cut out leave (docs/conventions.md). Opaque variants never
     // discard, whether or not the compiler inlines the shading: a reachable discard would cost
     // them the GPU's hidden surface removal.
@@ -1328,8 +1341,8 @@ struct CoveredOutput {
 // The alpha-tested variants' surfaces under MSAA (M1 C7): a fading character covers its share of
 // each pixel's samples, as its dither says, rather than whole pixels.
 @fragment
-fn fs_anime_character_covered(in: CharacterVaryings) -> CoveredOutput {
-    let pixel = character_pixel(in);
+fn fs_anime_character_covered(in: CharacterVaryings, @builtin(front_facing) front: bool) -> CoveredOutput {
+    let pixel = character_pixel(facing(in, front));
     var out: CoveredOutput;
     out.color = pixel.color;
     out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
@@ -1471,8 +1484,8 @@ fn character_debug_values(drawn: f32, material: u32, region: u32, extra: f32) ->
 
 // A surface's values: `fs_anime_character`'s pixel.
 @fragment
-fn fs_anime_character_debug(in: CharacterVaryings) -> @location(0) vec4<f32> {
-    let pixel = character_pixel(in);
+fn fs_anime_character_debug(in: CharacterVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let pixel = character_pixel(facing(in, front));
     let shows = pixel.kept && (!PERMUTATION_TRANSPARENT || pixel.color.a >= DEBUG_COVERS);
     let slot = f32(in.material % DEBUG_MATERIALS);
     let values = character_debug_values(DEBUG_DRAWN_SURFACE, in.material, pixel.region, slot);

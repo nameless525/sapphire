@@ -34,7 +34,7 @@ use crate::scene::{LookDev, Scene};
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{layers, lookdev, rims, skinned, stage, swatches};
+use crate::{garments, layers, lookdev, rims, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -152,6 +152,9 @@ impl App for SandboxApp {
         }
         if let Some(meshes) = renderer.layer_samples {
             scene.spawn_layer_samples(meshes);
+        }
+        if let Some(meshes) = renderer.garments {
+            scene.spawn_garments(meshes);
         }
         if let Some(head) = renderer.face_head {
             scene.spawn_face_rig(head, options.faces.unwrap_or_default());
@@ -708,6 +711,8 @@ struct SceneRenderer {
     swatches: Option<[MeshHandle; SWATCHES]>,
     /// The material layer samples, with `--materials`.
     layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
+    /// The garment samples, with `--two-sided`.
+    garments: Option<[MeshHandle; garments::SAMPLES]>,
     /// The face test head, with `--faces`.
     face_head: Option<MeshHandle>,
     /// The rim rig's figure and backdrop, with `--rim-rig`.
@@ -743,6 +748,9 @@ impl Scene {
         }
         if let Some(meshes) = renderer.layer_samples {
             self.set_layer_sample_meshes(meshes);
+        }
+        if let Some(meshes) = renderer.garments {
+            self.set_garment_meshes(meshes);
         }
         if let Some(head) = renderer.face_head {
             self.set_face_mesh(head);
@@ -801,6 +809,7 @@ struct SceneMeshes {
     stalk: Option<MeshHandle>,
     swatches: Option<[MeshHandle; SWATCHES]>,
     layer_samples: Option<[MeshHandle; layers::SAMPLES]>,
+    garments: Option<[MeshHandle; garments::SAMPLES]>,
     face_head: Option<MeshHandle>,
     rim_rig: Option<RimRigMeshes>,
     courtyard: Option<MeshHandle>,
@@ -815,7 +824,7 @@ struct SceneMeshes {
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
 /// the shader swatches and the material layer samples, whose materials `content` uploads too,
-/// the face test head, the rim rig, the courtyard, its fog cards, arcade and probe grid, the
+/// the garment samples, the face test head, the rim rig, the courtyard, its fog cards, arcade and probe grid, the
 /// plants, the hard-edged outline sample, the stage and the look-dev town.
 fn create_renderer(
     content: &mut Content,
@@ -834,6 +843,7 @@ fn create_renderer(
             options.swatches.then(|| swatches::upload_swatches(content, gpu, &mut renderer)).transpose()?;
         let layer_samples =
             options.materials.then(|| layers::upload_samples(content, gpu, &mut renderer)).transpose()?;
+        let garments = options.two_sided.then(|| garments::upload_samples(&mut renderer)).transpose()?;
         let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
         let rim_rig = match options.rim_rig {
             Some(_) => {
@@ -866,6 +876,7 @@ fn create_renderer(
             stalk,
             swatches,
             layer_samples,
+            garments,
             face_head,
             rim_rig,
             courtyard,
@@ -884,6 +895,7 @@ fn create_renderer(
                 stalk,
                 swatches,
                 layer_samples,
+                garments,
                 face_head,
                 rim_rig,
                 courtyard,
@@ -901,6 +913,7 @@ fn create_renderer(
                 stalk,
                 swatches,
                 layer_samples,
+                garments,
                 face_head,
                 rim_rig,
                 courtyard,

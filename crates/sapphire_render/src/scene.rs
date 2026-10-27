@@ -542,7 +542,7 @@ pub(crate) struct DeformedDraw {
 
 /// The draws for every live instance: one per submesh of the mesh's LOD0. Its vectors are
 /// reused across rebuilds.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct DrawList {
     pub draws: Vec<DrawData>,
     /// Static meshes, per [`PositionFormat::ALL`](sapphire_assets::mesh::PositionFormat::ALL)
@@ -558,6 +558,18 @@ pub(crate) struct DrawList {
     /// their opaque ones are drawn through the alpha-tested variants, which the prepasses draw
     /// through their masked pipelines.
     pub faded: u32,
+}
+
+impl Default for DrawList {
+    fn default() -> Self {
+        Self {
+            draws: Vec::new(),
+            commands: [(); 2].map(|_| std::array::from_fn(|_| Vec::new())),
+            deformed: std::array::from_fn(|_| Vec::new()),
+            foliage_instances: 0,
+            faded: 0,
+        }
+    }
 }
 
 impl DrawList {

@@ -49,7 +49,7 @@
 //! | `emissiveTexture` (glTF) | the layer mask's B | Paints the glow where the material's layer mask holds it (below). Read as sRGB, as glTF reads it |
 //! | `uvAnimationMaskTexture`, `uvAnimationScrollXSpeedFactor`, `uvAnimationScrollYSpeedFactor`, `uvAnimationRotationSpeedFactor` | none | Not mapped: the family's texture coordinates are the mesh's and never move (spec §5.12's later milestones). The mask is extracted |
 //! | `transparentWithZWrite`, `renderQueueOffsetNumber` | none | Not mapped: no sort control; `Blend` materials draw in the transparent pass after the sky (C1), back to front once draws sort |
-//! | `doubleSided` (glTF) | none | Not mapped: materials carry no cull mode; characters draw back-face culled |
+//! | `doubleSided` (glTF) | `double_sided` | As it is (M1 C8): back faces draw too, shaded with the flipped normal. VRM 0.x's `_CullMode` 0 (off) is its counterpart. Blended materials keep culling until transparent draws sort |
 //! | `KHR_texture_transform`, `texCoord` (glTF) | none | Not mapped: meshes carry one UV set and materials no UV transform |
 //!
 //! Every texture the family can't bind is still extracted, so nothing authored is lost.
@@ -310,6 +310,8 @@ pub struct Mtoon {
     /// Studio's name for the material ([`super::vroid_region_gi`]), none (0, 0) for anything
     /// else.
     pub gi: RegionGi,
+    /// Whether both faces draw (glTF's `doubleSided`; VRM 0.x's `_CullMode` off; M1 C8).
+    pub double_sided: bool,
 }
 
 /// Where a material's textures are checked against the document, and its shading shift and
@@ -377,6 +379,7 @@ fn core(material: &gltf::Material<'_>) -> Mtoon {
         normal_texture: material
             .normal_texture()
             .map(|normal| TextureRef { texture: normal.texture().index(), channel: Channel::Rgba }),
+        double_sided: material.double_sided(),
         ..Mtoon::UNSHADED
     }
 }
@@ -459,6 +462,7 @@ impl Mtoon {
         uv_animation_mask_texture: None,
         eye: None,
         gi: RegionGi { sphere: 0.0, skin: 0.0 },
+        double_sided: false,
     };
 
     /// A VRM 1.0 MToon material: the glTF material's core properties and emission, and its
@@ -562,8 +566,10 @@ impl Mtoon {
     /// - **Textures:** `_MainTex`, `_ShadeTexture`, `_BumpMap` and `_UvAnimMaskTexture` (R).
     ///   `_MainTex`'s scale and offset, `_ReceiveShadow*`, `_LightColorAttenuation`,
     ///   `_IndirectLightIntensity` (1.0's GI equalization is `1 −` it, which isn't mapped either),
-    ///   `_OutlineScaledMaxDistance`, `_CullMode` and the UV animation speeds (`_UvAnimScrollX`,
+    ///   `_OutlineScaledMaxDistance` and the UV animation speeds (`_UvAnimScrollX`,
     ///   `_UvAnimScrollY`, `_UvAnimRotation`) are dropped, as their 1.0 counterparts are.
+    /// - **Sides:** `_CullMode` 0 (off) draws both faces, as glTF's `doubleSided` (M1 C8); 1
+    ///   (front) has no counterpart and culls back faces, as 2 (back) does.
     ///
     /// Missing properties take MToon 0.x's shader defaults.
     pub(super) fn from_v0(
@@ -648,6 +654,7 @@ impl Mtoon {
             uv_animation_mask_texture: texture("_UvAnimMaskTexture", Channel::R)?,
             eye: None,
             gi: Self::UNSHADED.gi,
+            double_sided: float("_CullMode", 2.0) as i32 == 0,
         })
     }
 
@@ -809,6 +816,7 @@ impl Mtoon {
                 ..Outline::default()
             },
             layer_mask,
+            double_sided: self.double_sided,
             ..AnimeCharacterMaterial::default()
         };
         // MToon's glow is steady.

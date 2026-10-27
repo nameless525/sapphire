@@ -24,7 +24,9 @@
 //!   slots are (`import::slot_names`: its name, `<name>#<index>` when two share one, `#default` for
 //!   faces without). Each slot holds a generated [`AnimeCharacterMaterial`], as glTF's do: the
 //!   material's base (diffuse) color times its factor is its base color and the material's opacity
-//!   its alpha, blended below 1; everything else keeps its default. Textures are left out of
+//!   its alpha, blended below 1; a material that says it is double-sided (ufbx's feature, from
+//!   3ds Max's glTF material) is drawn on both sides (M1 C8), but Blender's FBX says nothing of
+//!   it, though its glTF does; everything else keeps its default. Textures are left out of
 //!   generated materials, as glTF's are: they are separate sources, which `extract-materials` binds
 //!   in documents ([`crate::extract`]), from files the FBX names relative to itself or images it
 //!   embeds. Blender writes its Principled BSDF as FBX Phong in a fixed way, which is read back as
@@ -103,7 +105,9 @@ mod tests;
 /// This importer, as cache keys know it. The name carries ufbx's version, which a test keeps in
 /// step with `Cargo.lock`: a ufbx upgrade can change what a file imports to. Bump the version
 /// whenever import output changes for the same file.
-pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 1 };
+///
+/// 2: generated materials take a material's double-sided feature (M1 C8).
+pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 2 };
 
 /// Joints and palette entries are addressed by u16.
 const MAX_JOINTS: usize = 1 << 16;
@@ -658,6 +662,7 @@ fn generated_material(material: Option<&ufbx::Material>) -> AnimeCharacterMateri
     AnimeCharacterMaterial {
         base_color,
         alpha: if opacity < 1.0 { AlphaMode::Blend } else { AlphaMode::Opaque },
+        double_sided: material.features.double_sided.enabled,
         ..AnimeCharacterMaterial::default()
     }
 }

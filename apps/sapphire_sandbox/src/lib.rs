@@ -72,6 +72,9 @@
 //!   of lacquer (a crisp highlight), gold (a tinted matcap and the reflection add), leather (a
 //!   multiplied matcap, a GGX highlight) and a suit with breathing light lines, and a leg in a
 //!   thigh-high stocking.
+//! - `--two-sided`: place the two-sided garment samples on the character's left (M1 C8): a
+//!   collar, a skirt and a twisted ribbon, each one-sided (the insides culled) beside two-sided
+//!   (the insides shaded as the side the camera sees). Exclusive with `--swatches`.
 //! - `--fade <0..1>`: draw the characters at this opacity through the proximity fade's dither
 //!   (M1 C7), which temporal AA resolves into a blend and MSAA covers as a share of samples.
 //! - `--proximity-fade`: fade the characters as the camera comes within half a meter of their
@@ -210,6 +213,7 @@ mod environment;
 mod extract;
 mod faces;
 mod foliage;
+mod garments;
 mod input;
 mod layers;
 #[cfg(feature = "dev")]

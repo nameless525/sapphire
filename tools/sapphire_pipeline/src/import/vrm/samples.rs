@@ -330,7 +330,10 @@ pub(crate) fn vrm0() -> SampleVrm {
                 ),
                 mtoon(
                     "Hair",
-                    json!({ "_OutlineWidthMode": 2, "_OutlineWidth": 0.8, "_BlendMode": 1, "_Cutoff": 0.3 }),
+                    json!({
+                        "_OutlineWidthMode": 2, "_OutlineWidth": 0.8, "_BlendMode": 1, "_Cutoff": 0.3,
+                        "_CullMode": 0
+                    }),
                     json!({ "_Color": [0.5, 0.5, 0.5, 1.0], "_ShadeColor": [0.25, 0.25, 0.5, 1.0] }),
                     json!({}),
                 ),
@@ -381,6 +384,7 @@ fn materials_v1() -> Vec<Value> {
             "pbrMetallicRoughness": { "baseColorFactor": [0.2, 0.2, 0.2, 1.0] },
             "alphaMode": "MASK",
             "alphaCutoff": 0.3,
+            "doubleSided": true,
             "extensions": { "VRMC_materials_mtoon": {
                 "specVersion": "1.0",
                 "shadeColorFactor": [0.05, 0.05, 0.2],

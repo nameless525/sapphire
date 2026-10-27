@@ -229,6 +229,11 @@ fn mtoon_1_0_parses_every_field() {
         (hair.alpha, hair.outline_width),
         (AlphaMode::Mask { cutoff: 0.3 }, OutlineWidth::Screen(0.004))
     );
+    // glTF's `doubleSided` (M1 C8), into the material it maps to; glTF's default is one-sided.
+    assert!(hair.double_sided && !skin.double_sided);
+    assert!(
+        import.mesh.materials[1].generated.double_sided && !import.mesh.materials[0].generated.double_sided
+    );
     assert!(!hair.is_textured());
     assert_eq!(import.slots[2], None, "Plain is neither MToon nor unlit");
     let lashes = import.slots[3].clone().expect("Lashes are unlit");
@@ -519,6 +524,8 @@ fn mtoon_0_x_properties_migrate() {
 
     let hair = v0.slots[1].clone().unwrap();
     assert_eq!(hair.outline_width, OutlineWidth::Screen(0.004), "0.8 % of half the screen");
+    // `_CullMode` 0 draws both faces, as 1.0's `doubleSided` (M1 C8); the default, 2, culls.
+    assert!(hair.double_sided && !skin.double_sided);
     assert_eq!(hair.alpha, AlphaMode::Mask { cutoff: 0.3 });
     // MToon 0.x's shader defaults fill in what a material leaves out.
     assert_eq!(hair.shading_toony, 0.9 + 0.1 * 0.5);

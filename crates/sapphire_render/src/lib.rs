@@ -372,8 +372,8 @@
 //! without a control map. The file's header has the details.
 //!
 //! - **Static permutations** are at most eight bits (`pipelines::Permutation`): of
-//!   them, alpha test, transparency, faces, hair and eyes are shader variants today, through
-//!   pipeline-overridable constants, and each
+//!   them, alpha test, transparency, faces, hair, eyes, the layers (M1 C7) and two sides (M1 C8)
+//!   are shader variants today, through pipeline-overridable constants, and each
 //!   variant's pipelines are built when a mesh or a material edit first needs them. Everything
 //!   else (ramp or bands, a deep band, which maps are bound) is a branch on the block that every
 //!   pixel of a draw takes alike.

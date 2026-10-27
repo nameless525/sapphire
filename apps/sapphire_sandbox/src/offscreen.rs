@@ -138,6 +138,9 @@ impl Stage {
         if options.materials {
             scene.spawn_layer_samples(crate::layers::upload_samples(&mut content, &gpu, &mut renderer)?);
         }
+        if options.two_sided {
+            scene.spawn_garments(crate::garments::upload_samples(&mut renderer)?);
+        }
         if let Some(layout) = options.faces {
             scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?, layout);
         }

@@ -210,15 +210,15 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 12 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 13 }))
     ));
-    // The previous format (M1 C7's, before M1 X1 part 2e's sky slot) is stale too: cooked meshes
-    // don't migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
+    // The previous format (M1 X1 part 2e's, before M1 C8's double-sided flag) is stale too:
+    // cooked meshes don't migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
     let mut previous = bytes.clone();
-    previous[16] = 11;
+    previous[16] = 12;
     assert!(matches!(
         Mesh::read(&previous),
-        Err(MeshError::Cooked(CookedError::Stale { found: 11, current: 12 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 12, current: 13 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;

@@ -874,3 +874,34 @@ fn environment_emission_keeps_its_steady_share_in_the_blocks_alpha() {
     assert!(text.contains("emission_steady: 1.0"), "{text}");
     assert_eq!(from_ron::<EnvironmentMaterial>(&text).unwrap(), sign);
 }
+
+#[test]
+fn double_sided_materials_set_their_flag_unless_they_blend() {
+    // Off by default, so every document from before it draws culled as it did (M1 C8).
+    assert!(!AnimeCharacterMaterial::default().flags().contains(MaterialFlags::DOUBLE_SIDED));
+    let sided =
+        |alpha| AnimeCharacterMaterial { double_sided: true, alpha, ..AnimeCharacterMaterial::default() };
+    let swizzles = vec![Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    for alpha in [AlphaMode::Opaque, AlphaMode::Mask { cutoff: 0.5 }] {
+        let document = sided(alpha);
+        assert!(document.flags().contains(MaterialFlags::DOUBLE_SIDED), "{alpha:?}");
+        let material = Material::from_document(&document, &swizzles).unwrap();
+        assert!(material.material_flags().contains(MaterialFlags::DOUBLE_SIDED), "{alpha:?}");
+        // The block is the same: the sides are the pipeline's render state.
+        let one_sided = AnimeCharacterMaterial { double_sided: false, ..document.clone() };
+        assert_eq!(material.params, Material::from_document(&one_sided, &swizzles).unwrap().params);
+    }
+    // Blended surfaces draw unsorted: both faces would blend in the mesh's order, so they cull.
+    assert!(!sided(AlphaMode::Blend).flags().contains(MaterialFlags::DOUBLE_SIDED));
+    // Written only when set, so documents from before it read and write as they did.
+    let text = to_ron(&sided(AlphaMode::Opaque)).unwrap();
+    assert!(text.contains("double_sided: true"), "{text}");
+    assert!(from_ron::<AnimeCharacterMaterial>(&text).unwrap().double_sided);
+    let plain = to_ron(&AnimeCharacterMaterial::default()).unwrap();
+    assert!(!plain.contains("double_sided"), "left out at its default: {plain}");
+    assert!(!from_ron::<AnimeCharacterMaterial>(&plain).unwrap().double_sided);
+    // Cooked materials' checks know the flag.
+    let bits = MaterialFlags::DOUBLE_SIDED.bits();
+    assert_eq!(MaterialFlags::from_bits(bits), Some(MaterialFlags::DOUBLE_SIDED));
+    assert_eq!(MaterialFlags::from_bits(bits << 1), None);
+}

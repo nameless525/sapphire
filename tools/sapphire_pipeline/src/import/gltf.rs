@@ -105,11 +105,12 @@ use crate::mesh::{
 };
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file. 7: generated materials carry the depth-offset rim's settings and per-region
-/// rim scales from material extras (M1 C5). 6: generated materials carry outlines v2's settings,
+/// for the same file. 8: generated materials take the material's `doubleSided` (M1 C8). 7:
+/// generated materials carry the depth-offset rim's settings and per-region rim scales from
+/// material extras (M1 C5). 6: generated materials carry outlines v2's settings,
 /// and VRM's MToon maps its outline widths onto the width's curve and its outline lighting mix
 /// (M1 C4).
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 7 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 8 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -1137,6 +1138,7 @@ fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial,
     let mut generated = AnimeCharacterMaterial {
         base_color: material.pbr_metallic_roughness().base_color_factor(),
         alpha: alpha_mode(material),
+        double_sided: material.double_sided(),
         ..AnimeCharacterMaterial::default()
     };
     let Some(raw) = material.extras() else {

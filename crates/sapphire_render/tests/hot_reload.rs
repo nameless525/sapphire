@@ -321,7 +321,10 @@ fn a_broken_shader_keeps_the_pipelines_it_has() {
     let sources = ShaderSources::compiled_in();
 
     // A syntax error, found by naga and placed in its own file and line.
-    let anchor = "fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {";
+    let anchor = concat!(
+        "fn fs_anime_character(in: CharacterVaryings, @builtin(front_facing) front: bool)",
+        " -> @location(0) vec4<f32> {",
+    );
     let broken =
         edited(&sources, ShaderFile::AnimeCharacter, anchor, &format!("{anchor}\n    let broken = ;"));
     let line = line_of(broken.get(ShaderFile::AnimeCharacter), "let broken");

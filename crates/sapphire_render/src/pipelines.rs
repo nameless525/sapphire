@@ -285,19 +285,21 @@ pub(crate) mod material_binding {
 }
 
 /// The anime character shader's static permutation bits (spec §5.12, M1 plan C1): at most
-/// eight; seven are taken. Everything else a material varies (band or ramp diffuse, a deep band,
+/// eight, all eight taken. Everything else a material varies (band or ramp diffuse, a deep band,
 /// which maps are bound, which layers it has, matcap channels) is a branch on its block that
 /// every pixel of a draw takes alike.
 ///
 /// The plan's skinned and morph bits are gone (M1 C7): since M1 R2 skinning and morphs run in a
 /// compute pass, and a deformed mesh draws its outputs through the f32-position pipelines
-/// ([`PositionFormat`]), a dimension of their own, so neither selected a shader variant.
+/// ([`PositionFormat`]), a dimension of their own, so neither selected a shader variant. The
+/// layers took the skinned bit and two-sided surfaces (M1 C8) the morph bit.
 ///
 /// | Bit | From | What it selects today |
 /// |---|---|---|
 /// | layers | the material ([`MaterialFlags::LAYERS`]) | [`SurfaceVariant::layers`] (M1 C7): the layers' code (stockings, matcap, highlight, reflection add, emission) is compiled in, branches on the block choosing among them; without it the shader has none of their cost. Eyes always have it |
 /// | alpha test | the material ([`MaterialFlags::ALPHA_TEST`]) | [`Coverage::AlphaTest`]: the surface and outline shaders discard below the cutoff |
 /// | outline | the material ([`MaterialFlags::OUTLINE`]) | whether the draw is in the outline pass |
+/// | two-sided | the material ([`MaterialFlags::DOUBLE_SIDED`]) | [`SurfaceVariant::two_sided`] (M1 C8): no back-face culling in the main pass and both prepasses, back faces shading with the flipped normal (`PERMUTATION_TWO_SIDED`); its outline hull and eyes through hair are the one-sided variant's. Never on transparent surfaces |
 /// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; the bangs' shadow on it (C5); outlines are the body's |
 /// | hair | the material ([`MaterialFlags::HAIR`]) | [`Part::Hair`] (M1 C5): the hair mask's occlusion and the highlight band, painted, angel ring or Kajiya-Kay by a branch on the block |
 /// | eye | the material ([`MaterialFlags::EYE`]) | [`Part::Eye`] (M1 C5): always lit, no rim. Its layers (M1 C6) are a branch on the block: the eye itself writes depth and the eye depth mask; its shadow, iris and highlights are transparent eyes ([`SurfaceVariant::EYE_LAYERS`]), blended within that mask in their layers' order, with the iris's parallax and the highlights' motion |
@@ -320,14 +322,24 @@ impl Permutation {
     pub const LAYERS: Self = Self(1 << 0);
     pub const ALPHA_TEST: Self = Self(1 << 1);
     pub const OUTLINE: Self = Self(1 << 2);
+    pub const TWO_SIDED: Self = Self(1 << 3);
     pub const FACE: Self = Self(1 << 4);
     pub const HAIR: Self = Self(1 << 5);
     pub const EYE: Self = Self(1 << 6);
     pub const TRANSPARENT: Self = Self(1 << 7);
-    /// Every bit: the layers took the plan's skinned bit (0), and its morph bit (3) is free.
+    /// Every bit: the layers took the plan's skinned bit (0), two-sided surfaces its morph bit
+    /// (3).
     #[cfg(test)]
-    pub const ALL: [Self; 7] =
-        [Self::LAYERS, Self::ALPHA_TEST, Self::OUTLINE, Self::FACE, Self::HAIR, Self::EYE, Self::TRANSPARENT];
+    pub const ALL: [Self; 8] = [
+        Self::LAYERS,
+        Self::ALPHA_TEST,
+        Self::OUTLINE,
+        Self::TWO_SIDED,
+        Self::FACE,
+        Self::HAIR,
+        Self::EYE,
+        Self::TRANSPARENT,
+    ];
 
     /// The permutation of a material with `flags`.
     pub(crate) fn new(flags: MaterialFlags) -> Self {
@@ -335,6 +347,7 @@ impl Permutation {
             (Self::LAYERS, flags.contains(MaterialFlags::LAYERS)),
             (Self::ALPHA_TEST, flags.contains(MaterialFlags::ALPHA_TEST)),
             (Self::OUTLINE, flags.contains(MaterialFlags::OUTLINE)),
+            (Self::TWO_SIDED, flags.contains(MaterialFlags::DOUBLE_SIDED)),
             (Self::FACE, flags.contains(MaterialFlags::FACE)),
             (Self::HAIR, flags.contains(MaterialFlags::HAIR)),
             (Self::EYE, flags.contains(MaterialFlags::EYE)),
@@ -348,7 +361,8 @@ impl Permutation {
     }
 
     /// The surface pipelines it draws with. A material is one part, so at most one of the face,
-    /// hair and eye bits is set.
+    /// hair and eye bits is set. Transparent surfaces are never two-sided: they draw unsorted,
+    /// so both faces of one would blend in whatever order the mesh lists them.
     pub(crate) fn surface(self) -> SurfaceVariant {
         let layers = self.contains(Self::LAYERS);
         let coverage = Coverage::of(self.contains(Self::ALPHA_TEST), self.contains(Self::TRANSPARENT));
@@ -361,10 +375,15 @@ impl Permutation {
         } else {
             Part::Body
         };
-        if layers {
+        let variant = if layers {
             SurfaceVariant::layered(coverage, part)
         } else {
             SurfaceVariant::character(coverage, part)
+        };
+        if self.contains(Self::TWO_SIDED) && coverage != Coverage::Transparent {
+            variant.with_two_sided()
+        } else {
+            variant
         }
     }
 
@@ -506,9 +525,9 @@ impl Shading {
 }
 
 /// The surface pipelines one [`PositionFormat`] can draw with: a coverage, and a shading (the
-/// family's shader and, for anime characters, the part and the layers). For anime characters
-/// these are the permutation bits that change the shader or its render state today (see
-/// [`Permutation`]);
+/// family's shader and, for anime characters, the part and the layers), and for anime characters
+/// whether both faces draw. For anime characters these are the permutation bits that change the
+/// shader or its render state today (see [`Permutation`]);
 /// environment and foliage materials vary by their coverage alone, foliage is never transparent
 /// (its variant of that coverage has no draws and no pipeline), and fog cards are always
 /// transparent. Outline hulls depend on the coverage alone, and only anime characters draw them.
@@ -521,42 +540,60 @@ pub(crate) struct SurfaceVariant {
     /// eye, whose layers (M1 C6) blend in one variant in their order, so its shader keeps the
     /// layers' code rather than split them. False for the other families.
     pub layers: bool,
+    /// An anime character variant drawn on both sides (M1 C8, [`Permutation::TWO_SIDED`]): no
+    /// back-face culling in the main pass and the prepasses, back faces shading with the
+    /// flipped normal. Transparent ones have no draws and no pipeline (blended surfaces keep
+    /// culling until transparent draws sort), as foliage's transparent variant has none. False
+    /// for the other families.
+    pub two_sided: bool,
 }
 
 impl SurfaceVariant {
     /// The surfaces of one coverage, in drawing order: the anime characters' parts, then those
-    /// with the layers (but eyes, which always have them), then the world (the environment, then
-    /// foliage), whose pixels behind them depth then rejects. Foliage is never transparent: its
-    /// variant of that coverage has no draws and no pipeline. Fog cards are transparent alone.
-    const PER_COVERAGE: [(Shading, bool); 9] = [
-        (Shading::Character(Part::Body), false),
-        (Shading::Character(Part::Face), false),
-        (Shading::Character(Part::Hair), false),
-        (Shading::Character(Part::Eye), true),
-        (Shading::Character(Part::Body), true),
-        (Shading::Character(Part::Face), true),
-        (Shading::Character(Part::Hair), true),
-        (Shading::Environment, false),
-        (Shading::Foliage, false),
+    /// with the layers (but eyes, which always have them), then the same on both sides (M1 C8),
+    /// then the world (the environment, then foliage), whose pixels behind them depth then
+    /// rejects. Foliage is never transparent: its variant of that coverage has no draws and no
+    /// pipeline. Fog cards are transparent alone. Each entry is the shading, the layers and the
+    /// sides.
+    const PER_COVERAGE: [(Shading, bool, bool); 16] = [
+        (Shading::Character(Part::Body), false, false),
+        (Shading::Character(Part::Face), false, false),
+        (Shading::Character(Part::Hair), false, false),
+        (Shading::Character(Part::Eye), true, false),
+        (Shading::Character(Part::Body), true, false),
+        (Shading::Character(Part::Face), true, false),
+        (Shading::Character(Part::Hair), true, false),
+        (Shading::Character(Part::Body), false, true),
+        (Shading::Character(Part::Face), false, true),
+        (Shading::Character(Part::Hair), false, true),
+        (Shading::Character(Part::Eye), true, true),
+        (Shading::Character(Part::Body), true, true),
+        (Shading::Character(Part::Face), true, true),
+        (Shading::Character(Part::Hair), true, true),
+        (Shading::Environment, false, false),
+        (Shading::Foliage, false, false),
     ];
-    /// The anime character variants of a coverage, [`Self::PER_COVERAGE`]'s first.
-    const CHARACTER_KINDS: usize = 7;
+    /// The anime character variants of one coverage and one side: [`Self::PER_COVERAGE`]'s first
+    /// seven are one-sided, the next seven two-sided.
+    const CHARACTER_PARTS: usize = 7;
+    /// The anime character variants of a coverage, both sides: [`Self::PER_COVERAGE`]'s first.
+    const CHARACTER_KINDS: usize = 2 * Self::CHARACTER_PARTS;
     /// Every variant, in drawing order: by coverage, then shading, and fog cards last.
-    pub(crate) const ALL: [Self; 28] = {
-        let mut all = [Self::FOG_CARD; 28];
+    pub(crate) const ALL: [Self; 49] = {
+        let mut all = [Self::FOG_CARD; 49];
         let coverages = [Coverage::Opaque, Coverage::AlphaTest, Coverage::Transparent];
         let per = Self::PER_COVERAGE.len();
         let mut index = 0;
         while index < coverages.len() * per {
-            let (shading, layers) = Self::PER_COVERAGE[index % per];
-            all[index] = Self { coverage: coverages[index / per], shading, layers };
+            let (shading, layers, two_sided) = Self::PER_COVERAGE[index % per];
+            all[index] = Self { coverage: coverages[index / per], shading, layers, two_sided };
             index += 1;
         }
         all
     };
     /// The variants that write depth: drawn first, and into the prepasses and shadow maps.
-    pub(crate) const DEPTH_WRITING: [Self; 18] = {
-        let mut variants = [Self::OPAQUE; 18];
+    pub(crate) const DEPTH_WRITING: [Self; 32] = {
+        let mut variants = [Self::OPAQUE; 32];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[index];
@@ -566,9 +603,10 @@ impl SurfaceVariant {
     };
     /// The depth-writing variants the shared scene prepass and shadow caster pipelines draw:
     /// every family's but foliage's, whose own pipelines displace by the wind and cut alpha-tested
-    /// cards out ([`Self::FOLIAGE`]).
-    pub(crate) const SHARED_DEPTH: [Self; 16] = {
-        let mut variants = [Self::OPAQUE; 16];
+    /// cards out ([`Self::FOLIAGE`]). The shared casters cull nothing, so they draw two-sided
+    /// surfaces as they are.
+    pub(crate) const SHARED_DEPTH: [Self; 30] = {
+        let mut variants = [Self::OPAQUE; 30];
         let (mut from, mut to) = (0, 0);
         while from < Self::DEPTH_WRITING.len() {
             if !matches!(Self::DEPTH_WRITING[from].shading, Shading::Foliage) {
@@ -585,10 +623,10 @@ impl SurfaceVariant {
         [Self::foliage(Coverage::Opaque), Self::foliage(Coverage::AlphaTest)];
     /// The anime character variants that write depth: what the character prepass draws, and
     /// the variants that can draw an outline hull.
-    pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 14] = {
-        let mut variants = [Self::OPAQUE; 14];
+    pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 28] = {
+        let mut variants = [Self::OPAQUE; 28];
         let [opaque, alpha_test] =
-            [Self::character_parts(Coverage::Opaque), Self::character_parts(Coverage::AlphaTest)];
+            [Self::character_kinds(Coverage::Opaque), Self::character_kinds(Coverage::AlphaTest)];
         let mut index = 0;
         while index < Self::CHARACTER_KINDS {
             variants[index] = opaque[index];
@@ -597,49 +635,73 @@ impl SurfaceVariant {
         }
         variants
     };
-    /// The variants that can draw an outline hull: the anime character's that write depth.
-    pub(crate) const OUTLINED: [Self; 14] = Self::CHARACTER_DEPTH_WRITING;
-    /// The opaque anime character variants, which the prepasses draw through their plain
-    /// pipelines.
+    /// The variants that can draw an outline hull: the anime character's that write depth. A
+    /// two-sided variant's hull is its coverage's, as every part's is.
+    pub(crate) const OUTLINED: [Self; 28] = Self::CHARACTER_DEPTH_WRITING;
+    /// The opaque anime character variants, both sides, whose hulls the outline prepass draws
+    /// through its plain pipeline.
     pub(crate) const CHARACTER_OPAQUE: [Self; Self::CHARACTER_KINDS] =
-        Self::character_parts(Coverage::Opaque);
-    /// The alpha-tested anime character variants, which the prepasses draw through their masked
-    /// pipelines (M1 C7), cut out as the main pass cuts them; fading characters' opaque draws
-    /// join them.
+        Self::character_kinds(Coverage::Opaque);
+    /// The alpha-tested anime character variants, both sides, whose hulls the outline prepass
+    /// draws through its masked pipeline (M1 C7), cut out as the main pass cuts them; fading
+    /// characters' opaque draws join them.
     pub(crate) const CHARACTER_ALPHA_TEST: [Self; Self::CHARACTER_KINDS] =
-        Self::character_parts(Coverage::AlphaTest);
+        Self::character_kinds(Coverage::AlphaTest);
+    /// The one-sided alpha-tested anime character variants, which the scene prepass draws through
+    /// its masked pipeline (M1 C7).
+    pub(crate) const ONE_SIDED_ALPHA_TEST: [Self; Self::CHARACTER_PARTS] =
+        Self::character_parts(Coverage::AlphaTest, false);
+    /// The two-sided anime character variants (M1 C8), opaque and alpha-tested, which the scene
+    /// prepass draws through its two-sided pipelines, plain and masked.
+    pub(crate) const TWO_SIDED_OPAQUE: [Self; Self::CHARACTER_PARTS] =
+        Self::character_parts(Coverage::Opaque, true);
+    pub(crate) const TWO_SIDED_ALPHA_TEST: [Self; Self::CHARACTER_PARTS] =
+        Self::character_parts(Coverage::AlphaTest, true);
     /// The character prepass's draws but hair's, which follow them (M1 C6): the opaque
-    /// variants', then the alpha-tested ones' (M1 C7).
+    /// variants', then the alpha-tested ones' (M1 C7), each one-sided and then two-sided (M1 C8).
     pub(crate) const CHARACTER_OPAQUE_BUT_HAIR: [Self; 5] =
-        Self::character_parts_but_hair(Coverage::Opaque, false);
+        Self::character_parts_but_hair(Coverage::Opaque, false, false);
     pub(crate) const CHARACTER_ALPHA_TEST_BUT_HAIR: [Self; 5] =
-        Self::character_parts_but_hair(Coverage::AlphaTest, false);
-    /// Hair's, opaque and alpha-tested, with the layers or without.
-    pub(crate) const HAIR_OPAQUE: [Self; 2] = Self::character_parts_but_hair(Coverage::Opaque, true);
-    pub(crate) const HAIR_ALPHA_TEST: [Self; 2] = Self::character_parts_but_hair(Coverage::AlphaTest, true);
+        Self::character_parts_but_hair(Coverage::AlphaTest, false, false);
+    pub(crate) const TWO_SIDED_OPAQUE_BUT_HAIR: [Self; 5] =
+        Self::character_parts_but_hair(Coverage::Opaque, true, false);
+    pub(crate) const TWO_SIDED_ALPHA_TEST_BUT_HAIR: [Self; 5] =
+        Self::character_parts_but_hair(Coverage::AlphaTest, true, false);
+    /// Hair's, opaque and alpha-tested, with the layers or without, one-sided and two-sided.
+    pub(crate) const HAIR_OPAQUE: [Self; 2] = Self::character_parts_but_hair(Coverage::Opaque, false, true);
+    pub(crate) const HAIR_ALPHA_TEST: [Self; 2] =
+        Self::character_parts_but_hair(Coverage::AlphaTest, false, true);
+    pub(crate) const TWO_SIDED_HAIR_OPAQUE: [Self; 2] =
+        Self::character_parts_but_hair(Coverage::Opaque, true, true);
+    pub(crate) const TWO_SIDED_HAIR_ALPHA_TEST: [Self; 2] =
+        Self::character_parts_but_hair(Coverage::AlphaTest, true, true);
     /// The variants the scene prepass draws through its plain pipeline: [`Self::SHARED_DEPTH`]
-    /// but the alpha-tested anime character variants, which it draws masked (M1 C7).
+    /// but the alpha-tested anime character variants, which it draws masked (M1 C7), and the
+    /// two-sided ones, which it draws without culling (M1 C8).
     pub(crate) const UNMASKED_SHARED_DEPTH: [Self; 9] = {
         let mut variants = [Self::OPAQUE; 9];
         let (mut from, mut to) = (0, 0);
         while from < Self::SHARED_DEPTH.len() {
             let variant = Self::SHARED_DEPTH[from];
-            if !(matches!(variant.shading, Shading::Character(_))
-                && matches!(variant.coverage, Coverage::AlphaTest))
-            {
+            let character = matches!(variant.shading, Shading::Character(_));
+            if !(character && (matches!(variant.coverage, Coverage::AlphaTest) || variant.two_sided)) {
                 variants[to] = variant;
                 to += 1;
             }
             from += 1;
         }
-        assert!(to == variants.len(), "every shared depth variant but the alpha-tested characters'");
+        assert!(to == variants.len(), "every shared depth variant but the masked or two-sided characters'");
         variants
     };
 
-    /// The anime character variants of `coverage` but hair's (`hair` false), or hair's alone,
-    /// with the layers or without.
-    const fn character_parts_but_hair<const N: usize>(coverage: Coverage, hair: bool) -> [Self; N] {
-        let parts = Self::character_parts(coverage);
+    /// The anime character variants of `coverage` on `two_sided` sides but hair's (`hair`
+    /// false), or hair's alone, with the layers or without.
+    const fn character_parts_but_hair<const N: usize>(
+        coverage: Coverage,
+        two_sided: bool,
+        hair: bool,
+    ) -> [Self; N] {
+        let parts = Self::character_parts(coverage, two_sided);
         let mut variants = [Self::OPAQUE; N];
         let (mut from, mut to) = (0, 0);
         while from < parts.len() {
@@ -653,22 +715,37 @@ impl SurfaceVariant {
         variants
     }
 
-    /// The anime character variants of `coverage`: one per part, then one per part with the
-    /// layers but eyes, which always have them.
-    const fn character_parts(coverage: Coverage) -> [Self; Self::CHARACTER_KINDS] {
-        let mut variants = [Self::OPAQUE; Self::CHARACTER_KINDS];
+    /// The anime character variants of `coverage` on `two_sided` sides: one per part, then one
+    /// per part with the layers but eyes, which always have them.
+    const fn character_parts(coverage: Coverage, two_sided: bool) -> [Self; Self::CHARACTER_PARTS] {
+        let mut variants = [Self::OPAQUE; Self::CHARACTER_PARTS];
+        let first = if two_sided { Self::CHARACTER_PARTS } else { 0 };
         let mut index = 0;
         while index < variants.len() {
-            let (shading, layers) = Self::PER_COVERAGE[index];
-            variants[index] = Self { coverage, shading, layers };
+            let (shading, layers, two_sided) = Self::PER_COVERAGE[first + index];
+            variants[index] = Self { coverage, shading, layers, two_sided };
             index += 1;
         }
         variants
     }
-    /// The surfaces' variants blended over the frame after the sky (foliage's never has draws);
-    /// fog cards ([`Self::FOG_CARD`]) blend after them, sorted back to front.
-    pub(crate) const TRANSPARENT: [Self; 9] = {
-        let mut variants = [Self::OPAQUE; 9];
+
+    /// The anime character variants of `coverage`, one-sided and then two-sided.
+    const fn character_kinds(coverage: Coverage) -> [Self; Self::CHARACTER_KINDS] {
+        let mut variants = [Self::OPAQUE; Self::CHARACTER_KINDS];
+        let (one, two) = (Self::character_parts(coverage, false), Self::character_parts(coverage, true));
+        let mut index = 0;
+        while index < Self::CHARACTER_PARTS {
+            variants[index] = one[index];
+            variants[Self::CHARACTER_PARTS + index] = two[index];
+            index += 1;
+        }
+        variants
+    }
+    /// The surfaces' variants blended over the frame after the sky (foliage's and the two-sided
+    /// characters' never have draws); fog cards ([`Self::FOG_CARD`]) blend after them, sorted
+    /// back to front.
+    pub(crate) const TRANSPARENT: [Self; 16] = {
+        let mut variants = [Self::OPAQUE; 16];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[Self::DEPTH_WRITING.len() + index];
@@ -678,10 +755,11 @@ impl SurfaceVariant {
     };
     /// Fog cards (M1 W3).
     pub(crate) const FOG_CARD: Self =
-        Self { coverage: Coverage::Transparent, shading: Shading::FogCard, layers: false };
+        Self { coverage: Coverage::Transparent, shading: Shading::FogCard, layers: false, two_sided: false };
     /// The variants whose draws can draw eyes through the character's hair
     /// ([`MaterialFlags::THROUGH_HAIR`]): faces (with the layers or without) and eyes that write
-    /// depth, then the eyes' layers over them (M1 C6).
+    /// depth, then the eyes' layers over them (M1 C6). Each has a pipeline of its own, which a
+    /// two-sided face or eye shares ([`Self::through_hair_index`]).
     pub(crate) const THROUGH_HAIR: [Self; 7] = [
         Self::character(Coverage::Opaque, Part::Face),
         Self::character(Coverage::Opaque, Part::Eye),
@@ -691,6 +769,22 @@ impl SurfaceVariant {
         Self::layered(Coverage::AlphaTest, Part::Face),
         Self::EYE_LAYERS,
     ];
+    /// Every variant whose draws can draw eyes through hair: [`Self::THROUGH_HAIR`], then the
+    /// two-sided faces and eyes (M1 C8), which draw through their one-sided twins' pipelines.
+    pub(crate) const DRAWS_THROUGH_HAIR: [Self; 13] = {
+        let mut variants = [Self::OPAQUE; 13];
+        let mut index = 0;
+        while index < Self::THROUGH_HAIR.len() {
+            variants[index] = Self::THROUGH_HAIR[index];
+            index += 1;
+        }
+        // Every one of them but the eyes' layers, which blend, on both sides.
+        while index < variants.len() {
+            variants[index] = Self::THROUGH_HAIR[index - Self::THROUGH_HAIR.len()].with_two_sided();
+            index += 1;
+        }
+        variants
+    };
     /// Transparent eyes: an eye's shadow, iris and highlight layers (M1 C6), which blend over
     /// their eye within the eye depth mask, in their layers' order.
     pub(crate) const EYE_LAYERS: Self = Self::character(Coverage::Transparent, Part::Eye);
@@ -698,27 +792,42 @@ impl SurfaceVariant {
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
     /// The anime character variant of `coverage` and `part` without the layers, but an eye's,
-    /// which always has them.
+    /// which always has them, one-sided.
     pub(crate) const fn character(coverage: Coverage, part: Part) -> Self {
-        Self { coverage, shading: Shading::Character(part), layers: matches!(part, Part::Eye) }
+        Self {
+            coverage,
+            shading: Shading::Character(part),
+            layers: matches!(part, Part::Eye),
+            two_sided: false,
+        }
     }
 
-    /// The anime character variant of `coverage` and `part` with the layers (M1 C7).
+    /// The anime character variant of `coverage` and `part` with the layers (M1 C7), one-sided.
     pub(crate) const fn layered(coverage: Coverage, part: Part) -> Self {
-        Self { coverage, shading: Shading::Character(part), layers: true }
+        Self { coverage, shading: Shading::Character(part), layers: true, two_sided: false }
     }
 
     pub(crate) const fn environment(coverage: Coverage) -> Self {
-        Self { coverage, shading: Shading::Environment, layers: false }
+        Self { coverage, shading: Shading::Environment, layers: false, two_sided: false }
     }
 
     pub(crate) const fn foliage(coverage: Coverage) -> Self {
-        Self { coverage, shading: Shading::Foliage, layers: false }
+        Self { coverage, shading: Shading::Foliage, layers: false, two_sided: false }
     }
 
     /// The same variant at `coverage`.
     pub(crate) const fn with_coverage(self, coverage: Coverage) -> Self {
         Self { coverage, ..self }
+    }
+
+    /// The same anime character variant drawn on both sides (M1 C8).
+    pub(crate) const fn with_two_sided(self) -> Self {
+        Self { two_sided: true, ..self }
+    }
+
+    /// The same variant drawn on its front alone: what its eyes through hair draw with.
+    pub(crate) const fn one_sided(self) -> Self {
+        Self { two_sided: false, ..self }
     }
 
     /// Its position in [`Self::ALL`].
@@ -731,7 +840,8 @@ impl SurfaceVariant {
             Shading::Environment => Self::CHARACTER_KINDS,
             Shading::Foliage => Self::CHARACTER_KINDS + 1,
         };
-        self.coverage.index() * Self::PER_COVERAGE.len() + within
+        let sides = if self.two_sided { Self::CHARACTER_PARTS } else { 0 };
+        self.coverage.index() * Self::PER_COVERAGE.len() + sides + within
     }
 
     /// The variant a material of `family` with `flags` draws with, on any mesh; `None` for a
@@ -742,9 +852,9 @@ impl SurfaceVariant {
 
     /// The surface shader's static permutation constants for the variant (`PERMUTATION_*` in
     /// `anime_character.wgsl`, `environment.wgsl` and `foliage.wgsl`): its coverage's
-    /// ([`Coverage::constants`], which outlines take alone), then its part's. Environment
-    /// pipelines add their tier's specular model, foliage's their tier's settings. Fog cards have
-    /// none (their pipelines add the depth fade).
+    /// ([`Coverage::constants`], which outlines take alone), then its part's, its layers' and its
+    /// sides'. Environment pipelines add their tier's specular model, foliage's their tier's
+    /// settings. Fog cards have none (their pipelines add the depth fade).
     pub(crate) fn constants(self) -> Vec<(&'static str, f64)> {
         debug_assert!(
             self != Self::foliage(Coverage::Transparent),
@@ -759,13 +869,19 @@ impl SurfaceVariant {
             if self.layers {
                 constants.push((override_constant::LAYERS, 1.0));
             }
+            if self.two_sided {
+                constants.push((override_constant::TWO_SIDED, 1.0));
+            }
         }
         constants
     }
 
-    /// Its position in [`Self::THROUGH_HAIR`], if it is there.
+    /// Its eyes-through-hair pipeline's position in [`Self::THROUGH_HAIR`], if it draws through
+    /// hair: a two-sided face or eye takes its one-sided twin's (M1 C8), since what shows through
+    /// the bangs is the face's front.
     pub(crate) fn through_hair_index(self) -> Option<usize> {
-        Self::THROUGH_HAIR.iter().position(|&variant| variant == self)
+        let front = self.one_sided();
+        Self::THROUGH_HAIR.iter().position(|&variant| variant == front)
     }
 }
 
@@ -806,6 +922,9 @@ pub(crate) mod override_constant {
     pub const HAIR: &str = "PERMUTATION_HAIR";
     pub const EYE: &str = "PERMUTATION_EYE";
     pub const LAYERS: &str = "PERMUTATION_LAYERS";
+    /// Two-sided surfaces (M1 C8; declared by `anime_character.wgsl` and `prepass.wgsl`): back
+    /// faces shade, and write the scene prepass's normals, with the flipped normal.
+    pub const TWO_SIDED: &str = "PERMUTATION_TWO_SIDED";
     /// The main pass's samples a pixel, for the proximity fade's dither (M1 C7; declared by
     /// `anime_character.wgsl` and `prepass.wgsl`): set under MSAA on the alpha-tested variants'
     /// covered pipelines, which cover a share of them, and on the masked prepasses, which keep
@@ -1041,6 +1160,10 @@ pub(crate) struct MeshPipelines {
     /// their hulls in the scene prepass, cut out by the alpha test and the proximity fade's
     /// dither as the main pass cuts them.
     masked: Option<MaskedPrepasses>,
+    /// The prepasses' pipelines for two-sided anime character surfaces (M1 C8), per
+    /// [`Coverage::DEPTH_WRITING`] entry: plain and masked. Each is built with the format's first
+    /// two-sided variant that draws through it.
+    two_sided: [TwoSidedPrepasses; Coverage::DEPTH_WRITING.len()],
     /// Eyes and brows through the character's hair (M1 C5), per [`SurfaceVariant::THROUGH_HAIR`]
     /// entry, built with the first draw of a face or eye material that draws through.
     through_hair: [Option<wgpu::RenderPipeline>; SurfaceVariant::THROUGH_HAIR.len()],
@@ -1073,22 +1196,119 @@ impl MaskedPrepasses {
         modules: &MeshModules,
         format: PositionFormat,
     ) -> Self {
+        let sides = Sides::One;
         Self {
-            character: build_character_prepass(device, target, modules, format, true, false),
-            character_hair: build_character_prepass(device, target, modules, format, true, true),
-            scene: build_scene_prepass(device, target, modules, format, true),
+            character: build_character_prepass(device, target, modules, format, true, false, sides),
+            character_hair: build_character_prepass(device, target, modules, format, true, true, sides),
+            scene: build_scene_prepass(device, target, modules, format, true, sides),
             outline: build_outline_prepass(device, target, modules, format, true),
         }
     }
 }
 
+/// Which faces of its triangles a prepass pipeline draws (M1 C8): the front alone, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sides {
+    One,
+    Two,
+}
+
+impl Sides {
+    /// The faces a pipeline culls.
+    fn cull(self) -> Option<wgpu::Face> {
+        match self {
+            Self::One => Some(wgpu::Face::Back),
+            Self::Two => None,
+        }
+    }
+}
+
+/// Builds a pipeline again with its builder when its program changed, or keeps the one built
+/// before ([`Pipelines::rebuilt`]).
+type Rebuild<'a> =
+    dyn FnMut(Program, &wgpu::RenderPipeline, &dyn Fn() -> wgpu::RenderPipeline) -> wgpu::RenderPipeline + 'a;
+
+/// The prepasses' pipelines for two-sided anime character surfaces of one coverage (M1 C8):
+/// the character prepass's, for every part but hair and for hair, and the scene prepass's,
+/// which cull nothing, the scene prepass writing back faces' flipped normals. Masked, as
+/// [`MaskedPrepasses`], for the alpha-tested coverage. Each is built with the first variant that
+/// draws through it; their hulls are the one-sided variants' (the outline prepass's).
+#[derive(Debug, Default)]
+pub(crate) struct TwoSidedPrepasses {
+    pub character: Option<wgpu::RenderPipeline>,
+    pub character_hair: Option<wgpu::RenderPipeline>,
+    pub scene: Option<wgpu::RenderPipeline>,
+}
+
+impl TwoSidedPrepasses {
+    /// Builds what `variant`, a two-sided anime character variant that writes depth, draws
+    /// through in the prepasses, unless it is built already.
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        (target, modules): (&PipelineTarget, &MeshModules),
+        format: PositionFormat,
+        variant: SurfaceVariant,
+    ) {
+        let masked = variant.coverage == Coverage::AlphaTest;
+        let hair = variant.shading == Shading::Character(Part::Hair);
+        let character = if hair { &mut self.character_hair } else { &mut self.character };
+        if character.is_none() {
+            let sides = Sides::Two;
+            *character = Some(build_character_prepass(device, target, modules, format, masked, hair, sides));
+        }
+        if self.scene.is_none() {
+            self.scene = Some(build_scene_prepass(device, target, modules, format, masked, Sides::Two));
+        }
+    }
+
+    /// The same pipelines built again from `modules` where `program` changed: the character
+    /// prepass's and scene prepass's are `prepass.wgsl`'s.
+    fn rebuilt(
+        &self,
+        device: &wgpu::Device,
+        (target, modules): (&PipelineTarget, &MeshModules),
+        format: PositionFormat,
+        masked: bool,
+        rebuild: &mut Rebuild<'_>,
+    ) -> Self {
+        let sides = Sides::Two;
+        let character = |hair| build_character_prepass(device, target, modules, format, masked, hair, sides);
+        Self {
+            character: self
+                .character
+                .as_ref()
+                .map(|old| rebuild(Program::Prepass, old, &|| character(false))),
+            character_hair: self
+                .character_hair
+                .as_ref()
+                .map(|old| rebuild(Program::Prepass, old, &|| character(true))),
+            scene: self.scene.as_ref().map(|old| {
+                rebuild(Program::Prepass, old, &|| {
+                    build_scene_prepass(device, target, modules, format, masked, sides)
+                })
+            }),
+        }
+    }
+
+    /// The pipelines built.
+    fn count(&self) -> usize {
+        [&self.character, &self.character_hair, &self.scene].into_iter().flatten().count()
+    }
+}
+
 impl MeshPipelines {
+    /// How many pipelines [`Self::character_prepasses`] lists.
+    pub(crate) const CHARACTER_PREPASSES: usize = 8;
+
     /// The character prepass's pipelines in drawing order, each with the mesh pass it draws and
     /// its variants: every part but hair, then hair, which writes the nearest surface's ID alone
     /// so the other keeps the nearest that isn't hair (M1 C6); each the opaque variants through
-    /// the plain pipeline and the alpha-tested ones through the masked one (M1 C7), once built.
-    pub(crate) fn character_prepasses(&self) -> [PrepassDraws<'_>; 4] {
+    /// the plain pipeline and the alpha-tested ones through the masked one (M1 C7), then the
+    /// two-sided ones through theirs (M1 C8), once built.
+    pub(crate) fn character_prepasses(&self) -> [PrepassDraws<'_>; Self::CHARACTER_PREPASSES] {
         let masked = self.masked.as_ref();
+        let [opaque, alpha_test] = &self.two_sided;
         [
             (
                 Some(&self.character_prepass),
@@ -1100,31 +1320,55 @@ impl MeshPipelines {
                 MeshPass::MaskedCharacterPrepass,
                 &SurfaceVariant::CHARACTER_ALPHA_TEST_BUT_HAIR,
             ),
+            (
+                opaque.character.as_ref(),
+                MeshPass::CharacterPrepass,
+                &SurfaceVariant::TWO_SIDED_OPAQUE_BUT_HAIR,
+            ),
+            (
+                alpha_test.character.as_ref(),
+                MeshPass::MaskedCharacterPrepass,
+                &SurfaceVariant::TWO_SIDED_ALPHA_TEST_BUT_HAIR,
+            ),
             (Some(&self.character_prepass_hair), MeshPass::CharacterPrepass, &SurfaceVariant::HAIR_OPAQUE),
             (
                 masked.map(|masked| &masked.character_hair),
                 MeshPass::MaskedCharacterPrepass,
                 &SurfaceVariant::HAIR_ALPHA_TEST,
             ),
+            (
+                opaque.character_hair.as_ref(),
+                MeshPass::CharacterPrepass,
+                &SurfaceVariant::TWO_SIDED_HAIR_OPAQUE,
+            ),
+            (
+                alpha_test.character_hair.as_ref(),
+                MeshPass::MaskedCharacterPrepass,
+                &SurfaceVariant::TWO_SIDED_HAIR_ALPHA_TEST,
+            ),
         ]
     }
 
     /// The scene prepass's surface pipelines but foliage's, likewise: every depth-writing
-    /// variant but foliage's through the plain one, the alpha-tested anime character variants
-    /// through the masked one.
-    pub(crate) fn scene_prepasses(&self) -> [PrepassDraws<'_>; 2] {
+    /// variant but foliage's through the plain one, the one-sided alpha-tested anime character
+    /// variants through the masked one, and the two-sided ones through theirs (M1 C8).
+    pub(crate) fn scene_prepasses(&self) -> [PrepassDraws<'_>; 4] {
+        let [opaque, alpha_test] = &self.two_sided;
         [
             (Some(&self.scene_prepass), MeshPass::ScenePrepass, &SurfaceVariant::UNMASKED_SHARED_DEPTH),
             (
                 self.masked.as_ref().map(|masked| &masked.scene),
                 MeshPass::MaskedScenePrepass,
-                &SurfaceVariant::CHARACTER_ALPHA_TEST,
+                &SurfaceVariant::ONE_SIDED_ALPHA_TEST,
             ),
+            (opaque.scene.as_ref(), MeshPass::ScenePrepass, &SurfaceVariant::TWO_SIDED_OPAQUE),
+            (alpha_test.scene.as_ref(), MeshPass::MaskedScenePrepass, &SurfaceVariant::TWO_SIDED_ALPHA_TEST),
         ]
     }
 
     /// The outline hulls' scene prepass pipelines, likewise: the opaque anime character
-    /// variants' hulls through the plain one, the alpha-tested ones' through the masked one.
+    /// variants' hulls through the plain one, the alpha-tested ones' through the masked one,
+    /// both sides alike (a hull is its surface's outer shell, M1 C8).
     pub(crate) fn outline_prepasses(&self) -> [PrepassDraws<'_>; 2] {
         [
             (self.outline_prepass.as_ref(), MeshPass::OutlinePrepass, &SurfaceVariant::CHARACTER_OPAQUE),
@@ -1176,7 +1420,11 @@ impl MeshPipelines {
         let own = match family {
             MaterialFamily::AnimeCharacter => {
                 let masked = if self.masked.is_some() { 4 } else { 0 };
-                self.outline.iter().flatten().count() + self.through_hair.iter().flatten().count() + masked
+                let two_sided: usize = self.two_sided.iter().map(TwoSidedPrepasses::count).sum();
+                self.outline.iter().flatten().count()
+                    + self.through_hair.iter().flatten().count()
+                    + masked
+                    + two_sided
             }
             MaterialFamily::Foliage => {
                 self.foliage_prepass.iter().flatten().count() + self.foliage_casters.iter().flatten().count()
@@ -1317,7 +1565,10 @@ impl MainPipeline {
             DrawSet::Outlines => {
                 SurfaceVariant::OUTLINED.contains(&variant).then_some(Self::Outline(variant.coverage))
             }
-            DrawSet::ThroughHair => variant.through_hair_index().map(|_| Self::ThroughHair(variant)),
+            // A two-sided face or eye draws through its one-sided twin's pipeline (M1 C8).
+            DrawSet::ThroughHair => {
+                variant.through_hair_index().map(|_| Self::ThroughHair(variant.one_sided()))
+            }
         }
     }
 }
@@ -1570,41 +1821,48 @@ impl Pipelines {
         for format in PositionFormat::ALL {
             let Some(old) = self.mesh(format) else { continue };
             let scene_prepass = rebuild(Program::Prepass, &old.scene_prepass, &|| {
-                build_scene_prepass(device, target, &modules, format, false)
+                build_scene_prepass(device, target, &modules, format, false, Sides::One)
             });
             let outline_prepass = old.outline_prepass.as_ref().map(|old| {
                 rebuild(Program::Outline, old, &|| {
                     build_outline_prepass(device, target, &modules, format, false)
                 })
             });
+            let one = Sides::One;
             let character_prepass = rebuild(Program::Prepass, &old.character_prepass, &|| {
-                build_character_prepass(device, target, &modules, format, false, false)
+                build_character_prepass(device, target, &modules, format, false, false, one)
             });
             let character_prepass_hair = rebuild(Program::Prepass, &old.character_prepass_hair, &|| {
-                build_character_prepass(device, target, &modules, format, false, true)
+                build_character_prepass(device, target, &modules, format, false, true, one)
             });
             let masked = old.masked.as_ref().map(|old| MaskedPrepasses {
                 character: rebuild(Program::Prepass, &old.character, &|| {
-                    build_character_prepass(device, target, &modules, format, true, false)
+                    build_character_prepass(device, target, &modules, format, true, false, one)
                 }),
                 character_hair: rebuild(Program::Prepass, &old.character_hair, &|| {
-                    build_character_prepass(device, target, &modules, format, true, true)
+                    build_character_prepass(device, target, &modules, format, true, true, one)
                 }),
                 scene: rebuild(Program::Prepass, &old.scene, &|| {
-                    build_scene_prepass(device, target, &modules, format, true)
+                    build_scene_prepass(device, target, &modules, format, true, one)
                 }),
                 outline: rebuild(Program::Outline, &old.outline, &|| {
                     build_outline_prepass(device, target, &modules, format, true)
                 }),
             });
+            let [opaque, alpha_test] = &old.two_sided;
+            let two_sided = [
+                opaque.rebuilt(device, (target, &modules), format, false, &mut rebuild),
+                alpha_test.rebuilt(device, (target, &modules), format, true, &mut rebuild),
+            ];
             let mut pipelines = MeshPipelines {
-                surfaces: Default::default(),
+                surfaces: std::array::from_fn(|_| None),
                 outline: Default::default(),
                 scene_prepass,
                 outline_prepass,
                 character_prepass,
                 character_prepass_hair,
                 masked,
+                two_sided,
                 through_hair: Default::default(),
                 foliage_prepass: Default::default(),
                 foliage_casters: Default::default(),
@@ -1657,18 +1915,20 @@ impl Pipelines {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
-        let (target, modules) = (&self.target, &self.modules);
-        let scene_prepass = build_scene_prepass(device, target, modules, format, false);
-        let character_prepass = build_character_prepass(device, target, modules, format, false, false);
-        let character_prepass_hair = build_character_prepass(device, target, modules, format, false, true);
+        let (target, modules, one) = (&self.target, &self.modules, Sides::One);
+        let scene_prepass = build_scene_prepass(device, target, modules, format, false, one);
+        let character_prepass = build_character_prepass(device, target, modules, format, false, false, one);
+        let character_prepass_hair =
+            build_character_prepass(device, target, modules, format, false, true, one);
         self.mesh[format_index(format)] = Some(MeshPipelines {
-            surfaces: Default::default(),
+            surfaces: std::array::from_fn(|_| None),
             outline: Default::default(),
             scene_prepass,
             outline_prepass: None,
             character_prepass,
             character_prepass_hair,
             masked: None,
+            two_sided: Default::default(),
             through_hair: Default::default(),
             foliage_prepass: Default::default(),
             foliage_casters: Default::default(),
@@ -1677,7 +1937,8 @@ impl Pipelines {
     }
 
     /// Builds the eyes-through-hair pipeline of `variant`, a face or eye variant that writes
-    /// depth, for `format`, whose mesh pipelines must exist, unless it does already.
+    /// depth, for `format`, whose mesh pipelines must exist, unless it does already: a two-sided
+    /// variant's is its one-sided twin's (M1 C8).
     pub(crate) fn prepare_through_hair(
         &mut self,
         device: &wgpu::Device,
@@ -1690,15 +1951,17 @@ impl Pipelines {
         if mesh.through_hair[index].is_some() {
             return;
         }
-        let pipeline = build_through_hair(device, &self.target, &self.modules, format, variant);
+        let front = variant.one_sided();
+        let pipeline = build_through_hair(device, &self.target, &self.modules, format, front);
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
         mesh.through_hair[index] = Some(pipeline);
     }
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
     /// and for anime characters the outline pipeline of its coverage and the outline hulls'
-    /// prepass pipeline (for alpha-tested ones the masked prepasses too, M1 C7), for foliage its
-    /// coverage's scene prepass and (with shadows) shadow caster, unless they do already.
+    /// prepass pipeline (for alpha-tested ones the masked prepasses too, M1 C7; for two-sided
+    /// ones the prepasses that draw both sides, M1 C8), for foliage its coverage's scene prepass
+    /// and (with shadows) shadow caster, unless they do already.
     pub(crate) fn prepare_variant(
         &mut self,
         device: &wgpu::Device,
@@ -1731,6 +1994,10 @@ impl Pipelines {
             && mesh.foliage_caster(coverage).is_none())
         .then(|| build_foliage_caster(device, &self.target, &self.modules, format, coverage));
         let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
+        if variant.two_sided && coverage != Coverage::Transparent {
+            let built = (&self.target, &self.modules);
+            mesh.two_sided[coverage.index()].prepare(device, built, format, variant);
+        }
         if let Some(prepass) = foliage_prepass {
             mesh.foliage_prepass[coverage.index()] = Some(prepass);
         }
@@ -1846,6 +2113,10 @@ fn build_surface(
                 fragment = Some("fs_anime_character_covered");
                 constants.push(samples);
             }
+            // Both faces of a two-sided surface draw (M1 C8).
+            if variant.two_sided {
+                cull = None;
+            }
             "anime character"
         }
         Shading::Environment => {
@@ -1935,27 +2206,33 @@ fn build_outline(
 }
 
 /// The scene prepass pipeline for meshes in `format`, or the masked one for alpha-tested anime
-/// character surfaces (M1 C7), on the family's layout for its group 3, which cuts them out.
+/// character surfaces (M1 C7), on the family's layout for its group 3, which cuts them out. On
+/// both `sides` (M1 C8) it culls nothing and writes back faces' normals flipped
+/// (`PERMUTATION_TWO_SIDED`).
 fn build_scene_prepass(
     device: &wgpu::Device,
     target: &PipelineTarget,
     modules: &MeshModules,
     format: PositionFormat,
     masked: bool,
+    sides: Sides,
 ) -> wgpu::RenderPipeline {
     let (name, pass, layout) = if masked {
         ("scene prepass masked", MeshPass::MaskedScenePrepass, target.character_family_layout())
     } else {
         ("scene prepass", MeshPass::ScenePrepass, &target.layout)
     };
+    let mut constants = target.prepass_constants(masked);
+    if sides == Sides::Two {
+        constants.push((override_constant::TWO_SIDED, 1.0));
+    }
     target.build_prepass(
         device,
-        name,
+        (name, sides.cull()),
         &modules.prepass,
         &pass.buffers(format),
-        Some(wgpu::Face::Back),
         &scene_prepass_targets(masked),
-        (layout, target.prepass_constants(masked).as_slice()),
+        (layout, constants.as_slice()),
     )
 }
 
@@ -1973,10 +2250,9 @@ fn build_foliage_prepass(
     constants.push(target.foliage.wind_constant());
     target.build_prepass(
         device,
-        "foliage prepass",
+        ("foliage prepass", foliage::cull(coverage)),
         &modules.foliage,
         &MeshPass::FoliagePrepass.buffers(format),
-        foliage::cull(coverage),
         &scene_prepass_targets(false),
         (&target.family_layouts[Shading::Foliage.scene_group()], &constants),
     )
@@ -2053,10 +2329,9 @@ fn build_outline_prepass(
     };
     target.build_prepass(
         device,
-        name,
+        (name, Some(wgpu::Face::Front)),
         &modules.outline,
         &pass.buffers(format),
-        Some(wgpu::Face::Front),
         &scene_prepass_targets(true),
         (layout, target.prepass_constants(masked).as_slice()),
     )
@@ -2065,7 +2340,8 @@ fn build_outline_prepass(
 /// The character prepass pipeline for meshes in `format` (skinning outputs are f32): depth, and
 /// each pixel's character IDs (M1 C5), on a layout without group 0, which binds what it writes;
 /// or the masked one for alpha-tested anime character surfaces (M1 C7), whose layout adds the
-/// family's group 3. `hair`'s writes the nearest surface's ID alone (M1 C6).
+/// family's group 3. `hair`'s writes the nearest surface's ID alone (M1 C6). On both `sides`
+/// (M1 C8) it culls nothing.
 fn build_character_prepass(
     device: &wgpu::Device,
     target: &PipelineTarget,
@@ -2073,6 +2349,7 @@ fn build_character_prepass(
     format: PositionFormat,
     masked: bool,
     hair: bool,
+    sides: Sides,
 ) -> wgpu::RenderPipeline {
     let (name, pass, layout) = if masked {
         ("character prepass masked", MeshPass::MaskedCharacterPrepass, &target.masked_character_layout)
@@ -2087,10 +2364,9 @@ fn build_character_prepass(
     })];
     target.build_prepass(
         device,
-        name,
+        (name, sides.cull()),
         &modules.prepass,
         &buffers,
-        Some(wgpu::Face::Back),
         &ids,
         (layout, target.prepass_constants(masked).as_slice()),
     )
@@ -2150,22 +2426,20 @@ impl PipelineTarget {
 
     /// A prepass's constants (M1 C7): a masked one's, under MSAA, the main pass's sample count,
     /// so it keeps the pixels where the main pass covers any sample of a fading character.
-    fn prepass_constants(&self, masked: bool) -> Option<(&'static str, f64)> {
-        self.covered(Coverage::AlphaTest).filter(|_| masked)
+    fn prepass_constants(&self, masked: bool) -> Vec<(&'static str, f64)> {
+        self.covered(Coverage::AlphaTest).filter(|_| masked).into_iter().collect()
     }
 
-    /// A prepass pipeline: `cull` faces culled, reverse-Z depth written, no multisampling (the
-    /// targets are sampled by later passes), and `color_targets` written by the
-    /// `fs_<entry>` entry point when there are any, on `layout` with its pipeline constants.
-    /// `name` is the entry points' suffix with spaces as underscores.
-    #[expect(clippy::too_many_arguments, reason = "a pipeline's states, each read once")]
+    /// A prepass pipeline named `name` with `cull` faces culled, reverse-Z depth written, no
+    /// multisampling (the targets are sampled by later passes), and `color_targets` written by
+    /// the `fs_<entry>` entry point when there are any, on `layout` with its pipeline
+    /// constants. `name` is the entry points' suffix with spaces as underscores.
     fn build_prepass(
         &self,
         device: &wgpu::Device,
-        name: &'static str,
+        (name, cull): (&'static str, Option<wgpu::Face>),
         module: &wgpu::ShaderModule,
         vertex_buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-        cull: Option<wgpu::Face>,
         color_targets: &[Option<wgpu::ColorTargetState>],
         (layout, constants): (&wgpu::PipelineLayout, &[(&str, f64)]),
     ) -> wgpu::RenderPipeline {
@@ -2313,7 +2587,11 @@ mod tests {
             assert_eq!((bit.0.count_ones(), all & bit.0), (1, 0), "one bit each, distinct");
             all | bit.0
         });
-        assert_eq!(all.count_ones(), 7, "the plan's eight bits but skinned and morph, and the layers");
+        assert_eq!(
+            all.count_ones(),
+            8,
+            "the plan's eight bits, the layers and two sides for skinned and morph"
+        );
         // Eyes through hair adds a pass, not a permutation: the variant stays the part's.
         for (flags, part) in [
             (MaterialFlags::empty(), Part::Body),
@@ -2364,19 +2642,86 @@ mod tests {
             let prepass = [
                 &SurfaceVariant::CHARACTER_OPAQUE_BUT_HAIR[..],
                 &SurfaceVariant::CHARACTER_ALPHA_TEST_BUT_HAIR,
+                &SurfaceVariant::TWO_SIDED_OPAQUE_BUT_HAIR,
+                &SurfaceVariant::TWO_SIDED_ALPHA_TEST_BUT_HAIR,
                 &SurfaceVariant::HAIR_OPAQUE,
                 &SurfaceVariant::HAIR_ALPHA_TEST,
+                &SurfaceVariant::TWO_SIDED_HAIR_OPAQUE,
+                &SurfaceVariant::TWO_SIDED_HAIR_ALPHA_TEST,
             ];
             let drawn = prepass.iter().filter(|set| set.contains(&variant)).count();
             assert_eq!(drawn, usize::from(character && depth), "{variant:?} in one character prepass set");
             assert!(!hair || !SurfaceVariant::CHARACTER_OPAQUE_BUT_HAIR.contains(&variant));
+            // Every depth-writing variant but foliage's is in one of the scene prepass's sets.
+            let scene = [
+                &SurfaceVariant::UNMASKED_SHARED_DEPTH[..],
+                &SurfaceVariant::ONE_SIDED_ALPHA_TEST,
+                &SurfaceVariant::TWO_SIDED_OPAQUE,
+                &SurfaceVariant::TWO_SIDED_ALPHA_TEST,
+            ];
+            let drawn = scene.iter().filter(|set| set.contains(&variant)).count();
+            let shared = depth && !matches!(variant.shading, Shading::Foliage | Shading::FogCard);
+            assert_eq!(drawn, usize::from(shared), "{variant:?} in one scene prepass set");
+            assert_eq!(SurfaceVariant::SHARED_DEPTH.contains(&variant), shared, "{variant:?}");
+            // Only anime characters draw both sides (M1 C8), and a variant's twin differs from it
+            // by its sides alone.
+            assert!(!variant.two_sided || character, "{variant:?}");
+            if character {
+                let twin = if variant.two_sided { variant.one_sided() } else { variant.with_two_sided() };
+                assert_eq!(twin.index().abs_diff(index), SurfaceVariant::CHARACTER_PARTS, "{variant:?}");
+                assert_eq!(
+                    (twin.coverage, twin.shading, twin.layers),
+                    (variant.coverage, variant.shading, variant.layers)
+                );
+            }
+            // A two-sided transparent variant has no draws.
+            let draws_through = SurfaceVariant::DRAWS_THROUGH_HAIR.contains(&variant);
+            let drawn = depth || !variant.two_sided;
+            assert_eq!(draws_through, drawn && variant.through_hair_index().is_some(), "{variant:?}");
         }
-        assert_eq!(SurfaceVariant::DEPTH_WRITING, SurfaceVariant::ALL[..18]);
+        assert_eq!(SurfaceVariant::DEPTH_WRITING, SurfaceVariant::ALL[..32]);
         assert!(SurfaceVariant::EYE_LAYERS.through_hair_index().is_some());
         assert!(!SurfaceVariant::CHARACTER_DEPTH_WRITING.contains(&SurfaceVariant::EYE_LAYERS));
         assert!(SurfaceVariant::THROUGH_HAIR.iter().all(|variant| variant.through_hair_index().is_some()));
-        // The six shadings at three coverages, three of the anime character's with the layers too,
-        // and fog cards.
-        assert_eq!(SurfaceVariant::ALL.len(), 3 * (6 + 3) + 1, "and fog cards");
+        // The eight shadings at three coverages: the anime character's four parts, three of them
+        // with the layers too (eyes always have them), on one side or both, the environment and
+        // foliage; and fog cards.
+        assert_eq!(SurfaceVariant::ALL.len(), 3 * (2 * (4 + 3) + 2) + 1, "and fog cards");
+    }
+
+    #[test]
+    fn double_sided_materials_draw_both_sides_unless_they_blend() {
+        for part_flag in
+            [MaterialFlags::empty(), MaterialFlags::FACE, MaterialFlags::HAIR, MaterialFlags::EYE]
+        {
+            for coverage_flag in [MaterialFlags::empty(), MaterialFlags::ALPHA_TEST] {
+                for layers in [MaterialFlags::empty(), MaterialFlags::LAYERS] {
+                    let flags = part_flag | coverage_flag | layers;
+                    let one = Permutation::new(flags).surface();
+                    let two = Permutation::new(flags | MaterialFlags::DOUBLE_SIDED).surface();
+                    assert!(!one.two_sided && two.two_sided, "{flags:?}");
+                    assert_eq!(two.one_sided(), one, "{flags:?}");
+                    assert!(two.constants().contains(&(override_constant::TWO_SIDED, 1.0)));
+                    assert!(!one.constants().iter().any(|&(name, _)| name == override_constant::TWO_SIDED));
+                    assert_eq!(two.through_hair_index(), one.through_hair_index(), "{flags:?}");
+                    assert_eq!(
+                        MainPipeline::of(two, DrawSet::Outlines),
+                        MainPipeline::of(one, DrawSet::Outlines)
+                    );
+                    assert_eq!(
+                        MainPipeline::of(two, DrawSet::ThroughHair),
+                        MainPipeline::of(one, DrawSet::ThroughHair)
+                    );
+                    assert_ne!(
+                        MainPipeline::of(two, DrawSet::Surfaces),
+                        MainPipeline::of(one, DrawSet::Surfaces)
+                    );
+                }
+            }
+            // Blended surfaces keep culling back faces: they draw unsorted.
+            let flags = part_flag | MaterialFlags::TRANSPARENT;
+            let blended = Permutation::new(flags | MaterialFlags::DOUBLE_SIDED).surface();
+            assert_eq!(blended, Permutation::new(flags).surface(), "{flags:?}");
+        }
     }
 }

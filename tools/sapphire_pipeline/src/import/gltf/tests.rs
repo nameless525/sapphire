@@ -183,6 +183,7 @@ fn maps_materials_and_their_extras() {
         "pbrMetallicRoughness": { "baseColorFactor": [0.5, 0.25, 0.125, 1.0] },
         "alphaMode": "MASK",
         "alphaCutoff": 0.3,
+        "doubleSided": true,
         "extras": {
             "shade_color": [0.1, 0.2, 0.3],
             "outline_color": [0.0, 0.0, 0.0, 0.5],
@@ -214,9 +215,11 @@ fn maps_materials_and_their_extras() {
     let names: Vec<&str> = imported.materials.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Skin", "Plain#1", "Plain#2", "#3", "#default"], "slot names are unique");
     let defaults = AnimeCharacterMaterial::default();
+    // `doubleSided` draws both faces (M1 C8); glTF's default is one-sided.
     let mut expected = AnimeCharacterMaterial {
         base_color: [0.5, 0.25, 0.125, 1.0],
         alpha: AlphaMode::Mask { cutoff: 0.3 },
+        double_sided: true,
         regions: vec![CharacterRegion {
             shade_color: [0.1, 0.2, 0.3],
             outline_color: [0.0, 0.0, 0.0],

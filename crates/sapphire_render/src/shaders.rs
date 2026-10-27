@@ -573,7 +573,10 @@ mod tests {
             (sources, line)
         };
         // A parse error in the last file of a program, and one in the first file of another.
-        let anchor = "fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {";
+        let anchor = concat!(
+            "fn fs_anime_character(in: CharacterVaryings, @builtin(front_facing) front: bool)",
+            " -> @location(0) vec4<f32> {",
+        );
         let (sources, line) = at(ShaderFile::AnimeCharacter, anchor, "    let broken = ;");
         assert!(sources.differs(&compiled_in, Program::AnimeCharacter));
         assert!(!sources.differs(&compiled_in, Program::Sky));
@@ -1794,6 +1797,7 @@ mod tests {
             override_constant::FACE,
             override_constant::HAIR,
             override_constant::EYE,
+            override_constant::TWO_SIDED,
         ];
         for constant in constants {
             assert!(
@@ -1822,7 +1826,7 @@ mod tests {
                     });
             }
         }
-        // The masked prepasses, under MSAA or not (M1 C7).
+        // The masked prepasses, under MSAA or not (M1 C7), on one side or both (M1 C8).
         let prepass = validate(Program::Prepass);
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -1830,14 +1834,21 @@ mod tests {
         )
         .validate(&prepass)
         .expect("validated above");
-        for samples in [1.0, 4.0] {
-            let constants: naga::back::PipelineConstants =
-                [(override_constant::FADE_SAMPLES.to_owned(), samples)].into_iter().collect();
+        for (samples, two_sided) in [(1.0, 0.0), (4.0, 0.0), (1.0, 1.0), (4.0, 1.0)] {
+            let constants: naga::back::PipelineConstants = [
+                (override_constant::FADE_SAMPLES.to_owned(), samples),
+                (override_constant::TWO_SIDED.to_owned(), two_sided),
+            ]
+            .into_iter()
+            .collect();
             for entry_point in &prepass.entry_points {
                 let stage = Some((entry_point.stage, entry_point.name.as_str()));
                 naga::back::pipeline_constants::process_overrides(&prepass, &info, stage, &constants)
                     .unwrap_or_else(|error| {
-                        panic!("prepass.wgsl {} ({samples}x): {error}", entry_point.name)
+                        panic!(
+                            "prepass.wgsl {} ({samples}x, two-sided {two_sided}): {error}",
+                            entry_point.name
+                        )
                     });
             }
         }

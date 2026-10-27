@@ -269,8 +269,13 @@ impl MaterialFlags {
     /// add or emission, `AnimeCharacterParams::FLAG_LAYERS`), whose shader compiles the layers'
     /// code in: materials without one pay nothing for it.
     pub const LAYERS: Self = Self(1 << 7);
+    /// An anime character material drawn on both sides (M1 C8, glTF's `doubleSided`): its
+    /// surfaces draw without back-face culling, back faces shading with the flipped normal, in
+    /// the main pass and both prepasses. Set only on materials that write depth: blended ones
+    /// keep culling until transparent draws are sorted.
+    pub const DOUBLE_SIDED: Self = Self(1 << 8);
 
-    const ALL: u32 = (1 << 8) - 1;
+    const ALL: u32 = (1 << 9) - 1;
 
     pub const fn empty() -> Self {
         Self(0)
@@ -336,9 +341,10 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 9: the sky family's sixth texture slot, the nebula, and how its card clouds are shaded in
-    /// `modes[1]` (M1 X1 part 2e). 8: the anime character family's layers (M1 C7): five vectors
-    /// of stockings, emission and
+    /// 10: the anime character family's double-sided flag ([`MaterialFlags::DOUBLE_SIDED`], M1
+    /// C8). 9: the sky family's sixth texture slot, the nebula, and how its card clouds are shaded
+    /// in `modes[1]` (M1 X1 part 2e). 8: the anime character family's layers (M1 C7): five
+    /// vectors of stockings, emission and
     /// specular settings and three vectors per region after the regions' rim settings, the
     /// layers' flags in `modes.x`, and a body's layer mask in the surface mask slot. 7: the
     /// foliage family's block packs its terminator's growth per meter (M1 W6), its canopy
@@ -355,7 +361,7 @@ impl Versioned for Material {
     /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
     /// generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 9;
+    const VERSION: u32 = 10;
 }
 
 /// What one texture slot binds.

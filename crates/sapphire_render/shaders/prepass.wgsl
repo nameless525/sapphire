@@ -39,6 +39,11 @@
 // no texture and never discard. The masked ones bind the anime character family's group 3 (its
 // base color map) and read the surface stream's UVs; the fade and the character's entry come
 // from the instance.
+//
+// Two-sided surfaces (M1 C8): two-sided anime character variants draw into both through copies
+// of the plain or masked pipelines that cull nothing, built with the first such variant. The
+// scene prepass's write a back face's normal flipped (`PERMUTATION_TWO_SIDED`), the side the
+// main pass shades. Their outline hulls are every variant's.
 
 // `ScenePrepassVaryings` and `ScenePrepassTargets` are frame.wgsl's: the outline hull's prepass
 // (outline.wgsl, M1 C4) writes the same targets.
@@ -85,9 +90,20 @@ fn vs_scene_prepass(
     return out;
 }
 
+// Two-sided anime character surfaces (M1 C8): their pipelines cull nothing, and back faces
+// write the flipped normal, the side the main pass shades (`facing` in anime_character.wgsl).
+override PERMUTATION_TWO_SIDED: bool = false;
+
+// The normal of the side the camera sees: one-sided pipelines cull back faces.
+fn facing_normal(normal: vec3<f32>, front: bool) -> vec3<f32> {
+    return select(normal, -normal, PERMUTATION_TWO_SIDED && !front);
+}
+
 @fragment
-fn fs_scene_prepass(in: ScenePrepassVaryings) -> ScenePrepassTargets {
-    return scene_prepass_targets(in);
+fn fs_scene_prepass(in: ScenePrepassVaryings, @builtin(front_facing) front: bool) -> ScenePrepassTargets {
+    var facing = in;
+    facing.world_normal = facing_normal(in.world_normal, front);
+    return scene_prepass_targets(facing);
 }
 
 // The main pass's samples a pixel, for the masked prepasses' dither (M1 C7; `faded_out` in
@@ -201,9 +217,13 @@ struct MaskedScenePrepassTargets {
 
 // The targets where the main pass keeps the pixel.
 @fragment
-fn fs_scene_prepass_masked(in: MaskedScenePrepassVaryings) -> MaskedScenePrepassTargets {
+fn fs_scene_prepass_masked(
+    in: MaskedScenePrepassVaryings,
+    @builtin(front_facing) front: bool,
+) -> MaskedScenePrepassTargets {
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
-    let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous));
+    let normal = facing_normal(in.world_normal, front);
+    let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, normal, in.current, in.previous));
     let outline = select(0.0, OUTLINE_MASK_FADING, in.fade > 0.0);
     if !masked_keeps(in.material, uv, in.clip_position.xy, in.fade, in.character) {
         discard;

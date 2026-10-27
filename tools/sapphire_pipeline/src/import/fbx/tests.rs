@@ -221,7 +221,11 @@ fn a_static_scene_imports_as_its_gltf_does() {
         for (a, b) in material.base_color.iter().zip(other.base_color) {
             assert!((a - b).abs() < 1e-6, "{name}: {:?} vs {:?}", material.base_color, other.base_color);
         }
-        let other = AnimeCharacterMaterial { base_color: material.base_color, ..other.clone() };
+        // Blender writes its materials' double-sidedness (backface culling off) into glTF's
+        // `doubleSided` but into nothing FBX's importers read (M1 C8).
+        assert!(other.double_sided && !material.double_sided, "{name}");
+        let other =
+            AnimeCharacterMaterial { base_color: material.base_color, double_sided: false, ..other.clone() };
         assert_eq!(*material, other, "{name}");
     }
     assert!(fbx.skin.is_none() && fbx.morph_targets.is_empty());

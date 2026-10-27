@@ -38,8 +38,8 @@ use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES, MeshPass,
-    NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant,
-    VELOCITY_FORMAT,
+    MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
+    SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, RebuiltPipelines, SunOnScreen};
 use crate::scene::GpuScene;
@@ -1596,10 +1596,11 @@ impl Renderer {
                 // the other ID keeps the nearest surface that isn't hair: the eye depth mask (M1
                 // C6). Each the opaque surfaces through the plain pipeline, then the alpha-tested
                 // ones (fading characters' among them, which the draw list moves there) through
-                // the masked one (M1 C7), cut out as the main pass cuts them.
+                // the masked one (M1 C7), cut out as the main pass cuts them, then the two-sided
+                // ones through theirs, which cull nothing (M1 C8).
                 let listed = |slot: u32| character_slots.listed(slot);
                 let set = DrawSet::Surfaces;
-                for prepass in 0..4 {
+                for prepass in 0..MeshPipelines::CHARACTER_PREPASSES {
                     for format in PositionFormat::ALL {
                         let Some(mesh) = pipelines.mesh(format) else { continue };
                         let (pipeline, kind, variants) = mesh.character_prepasses()[prepass];
@@ -1636,7 +1637,9 @@ impl Renderer {
                 // pipeline per format, but the alpha-tested anime character surfaces (fading
                 // characters' among them), which draw through the masked one (M1 C7), cut out
                 // as the main pass cuts them. The environment's alpha-tested surfaces aren't cut
-                // out yet (crate docs, "Later milestones"). Transparent surfaces write no depth.
+                // out yet (crate docs, "Later milestones"). Two-sided anime character surfaces
+                // draw through their own, which cull nothing (M1 C8). Transparent surfaces write
+                // no depth.
                 let set = DrawSet::Surfaces;
                 for format in PositionFormat::ALL {
                     let Some(mesh) = pipelines.mesh(format) else { continue };
@@ -2072,7 +2075,7 @@ pub(crate) fn draw_main_pass<'p>(
         .map(|variant| (variant, DrawSet::Surfaces))
         .into_iter()
         .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
-        .chain(SurfaceVariant::THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
+        .chain(SurfaceVariant::DRAWS_THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
     let mut scene_group = Some(0);
     for (variant, set) in groups {
         draw_main(pass, pipeline, draws, scene_bind_groups, &mut scene_group, variant, set, instance);

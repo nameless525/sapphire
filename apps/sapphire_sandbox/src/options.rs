@@ -72,6 +72,8 @@ pub(crate) struct Options {
     pub swatches: bool,
     /// `--materials`: place the material layer samples on the character's right (M1 C7).
     pub materials: bool,
+    /// `--two-sided`: place the two-sided garment samples on the character's left (M1 C8).
+    pub two_sided: bool,
     /// `--fade <0..1>`: draw the characters at this opacity, through the proximity fade's
     /// dither (M1 C7).
     pub fade: Option<f32>,
@@ -461,6 +463,7 @@ impl Options {
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
                 "--swatches" => options.swatches = true,
                 "--materials" => options.materials = true,
+                "--two-sided" => options.two_sided = true,
                 "--fade" => {
                     let opacity: f32 = number(&value("--fade")?, "--fade")?;
                     if !(0.0..=1.0).contains(&opacity) {
@@ -612,6 +615,11 @@ impl Options {
         };
         if options.fade.is_some() && options.proximity_fade {
             return Err("--fade and --proximity-fade are exclusive: each sets the opacity".to_owned());
+        }
+        if options.two_sided && options.swatches {
+            return Err(
+                "--two-sided and --swatches are exclusive: both stand on the character's left".to_owned()
+            );
         }
         if options.faces.is_some() && options.rim_rig.is_some() {
             return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
@@ -890,6 +898,14 @@ mod tests {
         assert!(parse(&["--fade", "1.5"]).is_err());
         assert!(parse(&["--fade", "NaN"]).is_err());
         assert!(parse(&["--fade", "0.5", "--proximity-fade"]).is_err(), "exclusive");
+    }
+
+    #[test]
+    fn two_sided_places_the_garments_on_the_swatches_side() {
+        let (options, unknown) = parse(&["--two-sided", "--materials"]).unwrap();
+        assert!(unknown.is_empty());
+        assert!(options.two_sided && !Options::default().two_sided);
+        assert!(parse(&["--two-sided", "--swatches"]).is_err(), "both stand on the character's left");
     }
 
     #[test]

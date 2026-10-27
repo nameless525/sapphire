@@ -135,9 +135,10 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 12: embedded materials of `Material::VERSION` 9 (M1 X1 part 2e's sky slots; the embedded
-    /// anime character blocks are as in 11). 11: embedded materials of `Material::VERSION` 8 (M1
-    /// C7's layers). 10: the optional
+    /// 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag). 12: embedded
+    /// materials of `Material::VERSION` 9 (M1 X1 part 2e's sky slots; the embedded anime
+    /// character blocks are as in 11). 11: embedded materials of `Material::VERSION` 8 (M1 C7's
+    /// layers). 10: the optional
     /// foliage stream ([`VertexStreams::foliage`], M1 W6), and embedded materials of
     /// `Material::VERSION` 7 (the foliage block's terminator growth). 9: embedded
     /// materials are `Material::VERSION` 6 (M1 C5's rim, hair shadow and eyes-through-hair
@@ -151,13 +152,13 @@ impl Versioned for Mesh {
     /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
     /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
     /// float vertices.
-    const VERSION: u32 = 12;
+    const VERSION: u32 = 13;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too.
 const _: () = assert!(
-    Mesh::VERSION == 12 && Material::VERSION == 9,
+    Mesh::VERSION == 13 && Material::VERSION == 10,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

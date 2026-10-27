@@ -21,6 +21,9 @@
 //! - **The material layer samples** (`--materials`, M1 C7): four spheres in a column on the
 //!   character's right and a leg beyond them, static, each with a [`RenderMesh`] and its
 //!   placement ([`Scene::spawn_layer_samples`], [`crate::layers`]).
+//! - **The garment samples** (`--two-sided`, M1 C8): a collar, a skirt and a ribbon on the
+//!   character's left, each one-sided and two-sided, static, each with a [`RenderMesh`] and its
+//!   placement ([`Scene::spawn_garments`], [`crate::garments`]).
 //! - **The face rig** (`--faces`, `--face-layout`): rows of the face test head well beside the
 //!   character, static, each with a [`FaceRig`] beside its [`RenderMesh`] and placement, which
 //!   the camera frames instead of the character ([`Scene::spawn_face_rig`], [`crate::faces`]).
@@ -103,6 +106,7 @@ use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
+use crate::garments;
 use crate::input::SimActions;
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
@@ -259,6 +263,8 @@ pub(crate) struct Scene {
     swatches: Option<[Entity; SWATCHES]>,
     /// The material layer samples, with `--materials`.
     layer_samples: Option<[Entity; SAMPLES]>,
+    /// The garment samples, with `--two-sided`.
+    garments: Option<[Entity; garments::SAMPLES]>,
     /// The face rig's heads, with `--faces`, and their layout.
     faces: Vec<Entity>,
     face_layout: FaceLayout,
@@ -371,6 +377,7 @@ impl Scene {
             stalk,
             swatches: None,
             layer_samples: None,
+            garments: None,
             faces: Vec::new(),
             face_layout: FaceLayout::default(),
             rim_figures: Vec::new(),
@@ -637,6 +644,27 @@ impl Scene {
     pub fn set_layer_sample_meshes(&mut self, meshes: [MeshHandle; SAMPLES]) {
         debug_assert!(self.layer_samples.is_some(), "no material samples were spawned");
         for (entity, mesh) in self.layer_samples.into_iter().flatten().zip(meshes) {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Places the garment samples (`--two-sided`, M1 C8) on the character's left, drawing
+    /// `meshes` in [`garments::SAMPLES`] order. They never move, so they are extracted once.
+    pub fn spawn_garments(&mut self, meshes: [MeshHandle; garments::SAMPLES]) {
+        let bounds = self.bounds;
+        let world = self.ecs.world_mut();
+        let mut index = 0;
+        self.garments = Some(meshes.map(|mesh| {
+            let place = RenderTransform(garments::placement(bounds, index));
+            index += 1;
+            world.spawn((RenderMesh(mesh), place)).id()
+        }));
+    }
+
+    /// Sets the meshes the garment samples draw again: after GPU device loss.
+    pub fn set_garment_meshes(&mut self, meshes: [MeshHandle; garments::SAMPLES]) {
+        debug_assert!(self.garments.is_some(), "no garment samples were spawned");
+        for (entity, mesh) in self.garments.into_iter().flatten().zip(meshes) {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
         }
     }

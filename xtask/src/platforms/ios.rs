@@ -10,17 +10,18 @@
 //!   free personal team.
 //!
 //! The profile is embedded as `embedded.mobileprovision` and its entitlements signed into the
-//! app. Without either, `bundle` signs ad hoc: everything is built and checked, but no device
-//! installs it. `run` needs both, and `--device <name or UDID>`, which
-//! `xcrun devicectl list devices` lists. The M1 exit run's runbook (`docs/m1-exit-run.md`) has
-//! the steps.
+//! app, its wildcards expanded to the app's own identifier as Xcode does (no device has run a
+//! wildcard profile's build yet). Without either, `bundle` signs ad hoc: everything is built
+//! and checked, but no device installs it. `run` needs both, and `--device <name or UDID>`,
+//! which `xcrun devicectl list devices` lists. The M1 exit run's runbook
+//! (`docs/m1-exit-run.md`) has the steps.
 //!
 //! As for the simulator, this bundles the cargo-built executable directly; the spec's Xcode
 //! project (§7.3) comes with store builds.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, bail, ensure};
 
@@ -98,8 +99,8 @@ fn signing(options: &Options) -> anyhow::Result<Option<(&str, &Path)>> {
     }
 }
 
-/// Embeds `profile` in `bundle` and signs it with `identity` and the profile's entitlements,
-/// after checking that the profile's App ID covers the app's bundle identifier.
+/// Embeds `profile` in `bundle` and signs it with `identity` and the entitlements the profile
+/// grants the app (see [`write_entitlements`]).
 fn sign(bundle: &Path, app: &App, identity: &str, profile: &Path) -> anyhow::Result<()> {
     let scratch = super::bundle_dir(Platform::Ios).join("signing");
     fs::create_dir_all(&scratch).with_context(|| format!("failed to create {}", scratch.display()))?;
@@ -108,25 +109,8 @@ fn sign(bundle: &Path, app: &App, identity: &str, profile: &Path) -> anyhow::Res
     let decoded = scratch.join("profile.plist");
     workspace::run(Command::new("security").args(["cms", "-D", "-i"]).arg(profile).arg("-o").arg(&decoded))?;
     let entitlements = scratch.join("entitlements.plist");
-    workspace::run(
-        Command::new("plutil")
-            .args(["-extract", "Entitlements", "xml1", "-o"])
-            .arg(&entitlements)
-            .arg(&decoded),
-    )?;
-    let app_id = workspace::output(
-        Command::new("plutil")
-            .args(["-extract", "Entitlements.application-identifier", "raw", "-o", "-"])
-            .arg(&decoded),
-    )?;
-    ensure!(
-        app_id_covers(app_id.trim(), &app.bundle_id),
-        "{} is for App ID {}, not {}: make a profile for this bundle identifier (or change bundle-id in \
-         the app's [package.metadata.sapphire] if Apple gave it to another team)",
-        profile.display(),
-        app_id.trim(),
-        app.bundle_id
-    );
+    write_entitlements(&decoded, &entitlements, &app.bundle_id)
+        .with_context(|| format!("signing with {}", profile.display()))?;
     fs::copy(profile, bundle.join("embedded.mobileprovision"))
         .with_context(|| format!("failed to embed {}", profile.display()))?;
     workspace::run(
@@ -137,28 +121,246 @@ fn sign(bundle: &Path, app: &App, identity: &str, profile: &Path) -> anyhow::Res
     )
 }
 
-/// Whether a profile's `application-identifier` (`TEAMID.dev.sapphire.sandbox`, or a wildcard
-/// such as `TEAMID.*` or `TEAMID.dev.*`) covers `bundle_id`.
-fn app_id_covers(application_id: &str, bundle_id: &str) -> bool {
-    let Some((_team, pattern)) = application_id.split_once('.') else { return false };
-    match pattern.strip_suffix('*') {
-        Some(prefix) => bundle_id.starts_with(prefix),
-        None => pattern == bundle_id,
+/// Writes to `out` the entitlements to sign the app with, from a decoded profile, after
+/// checking that the profile's App ID covers `bundle_id`.
+///
+/// A profile's entitlements are what it allows, not what an app is signed with: a wildcard
+/// profile allows `PREFIX.*`, while a signature names the app itself. So, as Xcode does,
+/// `application-identifier` and a keychain access group that are wildcards covering the app
+/// become `PREFIX.<bundle id>` (see [`concrete_app_id`] and [`concrete_keychain_groups`]);
+/// every other entitlement is signed as the profile has it. Not yet checked on a device.
+fn write_entitlements(decoded: &Path, out: &Path, bundle_id: &str) -> anyhow::Result<()> {
+    workspace::run(
+        Command::new("plutil").args(["-extract", "Entitlements", "xml1", "-o"]).arg(out).arg(decoded),
+    )?;
+    let app_id = workspace::output(
+        Command::new("plutil").args(["-extract", "application-identifier", "raw", "-o", "-"]).arg(out),
+    )?;
+    let app_id = app_id.trim();
+    let concrete = concrete_app_id(app_id, bundle_id).with_context(|| {
+        format!(
+            "the profile is for App ID {app_id}, not {bundle_id}: make a profile for this bundle identifier (or \
+             change bundle-id in the app's [package.metadata.sapphire] if Apple gave it to another team)"
+        )
+    })?;
+    if concrete != app_id {
+        workspace::run(
+            Command::new("plutil")
+                .args(["-replace", "application-identifier", "-string", &concrete])
+                .arg(out),
+        )?;
     }
+
+    // Absent from some profiles: `plutil` then fails, saying so.
+    let groups = Command::new("plutil")
+        .args(["-extract", "keychain-access-groups", "json", "-o", "-"])
+        .arg(out)
+        .stderr(Stdio::null())
+        .output()
+        .context("failed to run plutil")?;
+    if groups.status.success() {
+        let groups: Vec<String> = serde_json::from_slice(&groups.stdout)
+            .context("the profile's keychain-access-groups aren't strings")?;
+        let concrete = concrete_keychain_groups(&groups, app_id, bundle_id);
+        if concrete != groups {
+            let json = serde_json::to_string(&concrete).expect("strings serialize");
+            workspace::run(
+                Command::new("plutil").args(["-replace", "keychain-access-groups", "-json", &json]).arg(out),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The application identifier an app with `bundle_id` is signed with under a profile for
+/// `application_id`, or `None` if the profile doesn't cover it. Exact IDs
+/// (`ABCDE12345.dev.sapphire.sandbox`) give themselves; wildcards (`ABCDE12345.*`,
+/// `ABCDE12345.dev.*`) give their prefix and the bundle identifier. The prefix is the App
+/// ID's, which is usually but not always the team ID.
+fn concrete_app_id(application_id: &str, bundle_id: &str) -> Option<String> {
+    let (prefix, pattern) = application_id.split_once('.').filter(|(prefix, _)| !prefix.is_empty())?;
+    let covers = match pattern.strip_suffix('*') {
+        Some(start) => bundle_id.starts_with(start),
+        None => pattern == bundle_id,
+    };
+    covers.then(|| format!("{prefix}.{bundle_id}"))
+}
+
+/// The keychain access groups an app with `bundle_id` is signed with, from a profile's for
+/// `application_id`: a wildcard group with the App ID's prefix that covers the app
+/// (`ABCDE12345.*`) becomes the app's own, `ABCDE12345.<bundle id>`, Xcode's default. Other
+/// groups (`com.apple.token`, exact ones) stay, in order, without duplicates.
+fn concrete_keychain_groups(groups: &[String], application_id: &str, bundle_id: &str) -> Vec<String> {
+    let prefix = application_id.split_once('.').map_or(application_id, |(prefix, _)| prefix);
+    let mut concrete: Vec<String> = Vec::with_capacity(groups.len());
+    for group in groups {
+        let expanded = match group.split_once('.') {
+            Some((group_prefix, _)) if group_prefix == prefix && group.ends_with('*') => {
+                concrete_app_id(group, bundle_id)
+            }
+            _ => None,
+        };
+        let group = expanded.unwrap_or_else(|| group.clone());
+        if !concrete.contains(&group) {
+            concrete.push(group);
+        }
+    }
+    concrete
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const BUNDLE: &str = "dev.sapphire.sandbox";
+
     #[test]
     fn app_ids_cover_their_bundle_identifiers_and_wildcards() {
-        assert!(app_id_covers("ABCDE12345.dev.sapphire.sandbox", "dev.sapphire.sandbox"));
-        assert!(app_id_covers("ABCDE12345.*", "dev.sapphire.sandbox"));
-        assert!(app_id_covers("ABCDE12345.dev.sapphire.*", "dev.sapphire.sandbox"));
-        assert!(!app_id_covers("ABCDE12345.dev.sapphire.game", "dev.sapphire.sandbox"));
-        assert!(!app_id_covers("ABCDE12345.com.*", "dev.sapphire.sandbox"));
-        assert!(!app_id_covers("dev", "dev.sapphire.sandbox"), "no team");
+        let concrete = |application_id: &str| concrete_app_id(application_id, BUNDLE);
+        let own = Some("ABCDE12345.dev.sapphire.sandbox".to_owned());
+        assert_eq!(concrete("ABCDE12345.dev.sapphire.sandbox"), own, "exact: as is");
+        assert_eq!(concrete("ABCDE12345.*"), own);
+        assert_eq!(concrete("ABCDE12345.dev.sapphire.*"), own);
+        assert_eq!(concrete("ABCDE12345.dev.*"), own);
+        // The App ID's prefix, even where it isn't the team's.
+        assert_eq!(concrete("PREFIX9876.*").as_deref(), Some("PREFIX9876.dev.sapphire.sandbox"));
+        assert_eq!(concrete("ABCDE12345.dev.sapphire.game"), None);
+        assert_eq!(concrete("ABCDE12345.com.*"), None);
+        assert_eq!(concrete("ABCDE12345.dev.sapphire.sandbox.*"), None, "covers only longer identifiers");
+        assert_eq!(concrete("dev"), None, "no prefix");
+        assert_eq!(concrete(".*"), None, "an empty prefix");
+    }
+
+    #[test]
+    fn keychain_wildcards_become_the_apps_own_group() {
+        let groups = |groups: &[&str], application_id: &str| {
+            let groups: Vec<String> = groups.iter().map(|&group| group.to_owned()).collect();
+            concrete_keychain_groups(&groups, application_id, BUNDLE)
+        };
+        let own = "ABCDE12345.dev.sapphire.sandbox";
+        // Wildcard and exact profiles both carry the prefix's wildcard group; Xcode signs the app's own.
+        for app_id in ["ABCDE12345.*", own] {
+            assert_eq!(groups(&["ABCDE12345.*", "com.apple.token"], app_id), [own, "com.apple.token"]);
+        }
+        assert_eq!(groups(&["ABCDE12345.dev.*"], "ABCDE12345.*"), [own]);
+        // Already the app's own, or both: once.
+        assert_eq!(groups(&[own, "ABCDE12345.*"], own), [own]);
+        // Another prefix's groups, groups that don't cover the app and exact ones stay as the profile has them.
+        assert_eq!(
+            groups(&["OTHERTEAM1.*", "ABCDE12345.com.*", "ABCDE12345.shared"], own),
+            ["OTHERTEAM1.*", "ABCDE12345.com.*", "ABCDE12345.shared"]
+        );
+        assert!(groups(&[], own).is_empty());
+    }
+
+    /// The decoded profile of a wildcard App ID, with the entitlements such profiles carry.
+    const WILDCARD_PROFILE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Entitlements</key>
+	<dict>
+		<key>application-identifier</key>
+		<string>ABCDE12345.*</string>
+		<key>keychain-access-groups</key>
+		<array>
+			<string>ABCDE12345.*</string>
+			<string>com.apple.token</string>
+		</array>
+		<key>get-task-allow</key>
+		<true/>
+		<key>com.apple.developer.team-identifier</key>
+		<string>ABCDE12345</string>
+	</dict>
+	<key>Name</key>
+	<string>Wildcard Development</string>
+</dict>
+</plist>
+"#;
+
+    /// `write_entitlements` through the real `plutil`, on macOS hosts.
+    #[test]
+    fn signs_wildcard_profiles_with_the_apps_own_identifier() {
+        if std::env::consts::OS != "macos" {
+            return;
+        }
+        let scratch = std::env::temp_dir().join(format!("xtask-entitlements-{}", std::process::id()));
+        fs::create_dir_all(&scratch).unwrap();
+        let extract = |file: &Path, key: &str, format: &str| {
+            workspace::output(Command::new("plutil").args(["-extract", key, format, "-o", "-"]).arg(file))
+                .unwrap()
+        };
+        let cases = [
+            ("wildcard", WILDCARD_PROFILE.to_owned()),
+            (
+                "prefix",
+                WILDCARD_PROFILE.replace(
+                    "<string>ABCDE12345.*</string>\n\t\t<key>",
+                    "<string>ABCDE12345.dev.*</string>\n\t\t<key>",
+                ),
+            ),
+            (
+                "exact",
+                WILDCARD_PROFILE.replace(
+                    "<string>ABCDE12345.*</string>\n\t\t<key>",
+                    "<string>ABCDE12345.dev.sapphire.sandbox</string>\n\t\t<key>",
+                ),
+            ),
+        ];
+        for (name, profile) in cases {
+            let decoded = scratch.join(format!("{name}.plist"));
+            let out = scratch.join(format!("{name}.entitlements"));
+            fs::write(&decoded, profile).unwrap();
+            write_entitlements(&decoded, &out, BUNDLE).unwrap();
+            assert_eq!(
+                extract(&out, "application-identifier", "raw").trim(),
+                "ABCDE12345.dev.sapphire.sandbox",
+                "{name}"
+            );
+            assert_eq!(
+                extract(&out, "keychain-access-groups", "json").trim(),
+                r#"["ABCDE12345.dev.sapphire.sandbox","com.apple.token"]"#,
+                "{name}"
+            );
+            // The rest as the profile has it. (`plutil` key paths escape a key's dots.)
+            assert_eq!(extract(&out, "get-task-allow", "raw").trim(), "true", "{name}");
+            assert_eq!(
+                extract(&out, r"com\.apple\.developer\.team-identifier", "raw").trim(),
+                "ABCDE12345",
+                "{name}"
+            );
+        }
+
+        // A profile for another App ID is refused, naming it.
+        let decoded = scratch.join("other.plist");
+        fs::write(
+            &decoded,
+            WILDCARD_PROFILE.replace(
+                "<string>ABCDE12345.*</string>\n\t\t<key>",
+                "<string>ABCDE12345.com.*</string>\n\t\t<key>",
+            ),
+        )
+        .unwrap();
+        let error = write_entitlements(&decoded, &scratch.join("other.entitlements"), BUNDLE).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("the profile is for App ID ABCDE12345.com.*, not dev.sapphire.sandbox"),
+            "{error}"
+        );
+
+        // Without keychain groups, none are added.
+        let decoded = scratch.join("bare.plist");
+        let bare = WILDCARD_PROFILE.replace(
+            "\t\t<key>keychain-access-groups</key>\n\t\t<array>\n\t\t\t<string>ABCDE12345.*</string>\n\t\t\t<string>com.apple.token</string>\n\t\t</array>\n",
+            "",
+        );
+        assert!(!bare.contains("keychain"));
+        fs::write(&decoded, bare).unwrap();
+        let out = scratch.join("bare.entitlements");
+        write_entitlements(&decoded, &out, BUNDLE).unwrap();
+        assert!(!fs::read_to_string(&out).unwrap().contains("keychain-access-groups"));
+        workspace::remove_dir_if_exists(&scratch).unwrap();
     }
 
     #[test]

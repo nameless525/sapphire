@@ -140,7 +140,7 @@ Record per device: model, OS, the tier, the build's commit, and for each kind th
 
 ## Only a device can prove
 
-- **iPhone:** signing with a real identity and profile; `devicectl` installing and launching, the app receiving its arguments after `--` and its console reaching the terminal; `iproxy` reaching the app's loopback listener; a capture from an A-series GPU's surface (BGRA, as on the simulator); Wi-Fi's local network prompt, if any.
+- **iPhone:** signing with a real identity and profile, and with a wildcard App ID's profile (`<prefix>.*`), whose application identifier and keychain group xtask signs as the app's own, `<prefix>.<bundle id>`, as Xcode does; `devicectl` installing and launching, the app receiving its arguments after `--` and its console reaching the terminal; `iproxy` reaching the app's loopback listener; a capture from an A-series GPU's surface (BGRA, as on the simulator); Wi-Fi's local network prompt, if any.
 - **Android phone:** a real Vulkan driver's (Adreno, Mali) pipeline compile times for a pushed shader; the surface's format, which captures convert from; `adb reverse` on a USB-connected phone rather than the emulator; a 90 or 120 Hz panel taking the refresh-rate hint, and the frame limiter's cadence on its vsyncs.
 - **Both:** real frame times and GPU pass timings against the Mobile tiers' budgets, the tier a real device's memory selects, and how long a pushed shader holds a frame.
 

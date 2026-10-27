@@ -14,8 +14,8 @@
 // Kit pieces that meet share planes, and two placements' faces in one plane z-fight wherever
 // they draw differently. The cook fails on any it finds, naming both placements and where:
 // move one off the other's plane (a centimeter at house scale is plenty). `allow_coplanar`, at
-// the end, lets through the ones no camera can see, each entry saying why, and two known ones
-// that part 2 owes fixes for; an entry that lets nothing through fails the cook too.
+// the end, lets through only the ones no camera can see, each entry saying why; an entry that
+// lets nothing through fails the cook too.
 (
     type: "sapphire::pipeline::Assembly",
     version: 1,
@@ -124,13 +124,16 @@
             ],
             // No two slots share a plane where they overlap (z-fighting): the front segment stands
             // 1 cm proud (at house scale) of the wall under it, so the gable's trim hanging over
-            // the wall's top clears the plaster, and the back segment's front end sits inside the
-            // front segment's back frame; the back segment sits 2.6 cm lower, under that frame
-            // where its eave overhangs, which sinks its foot into the walls' planes (see
-            // allow_coplanar).
+            // the wall's top clears the plaster. The back segment sits on the walls' tops like the
+            // front one, shortened along its ridge (by 4.5%) to run from the back wall's face to
+            // the front segment's back bargeboard and stop there: the board's back face covers
+            // its whole cross-section, so the board closes the joint at the ridge and the eaves,
+            // and the segments meet back to back, never facing the same way in one plane (the
+            // back segment's eave underside lies in the board's underside's plane, so it must not
+            // reach into the board).
             "gable_roof": [
                 (piece: "kenney/roof-high-gable-detail", at: (0.0, 0.0, 0.003), turn: 90.0),
-                (piece: "kenney/roof-high-gable", at: (0.0, -0.008, -1.0), turn: 90.0),
+                (piece: "kenney/roof-high-gable", at: (0.0, 0.0, -1.02238), turn: 90.0, scale: (0.95524, 1.0, 1.0)),
             ],
             "house2": [
                 (piece: "@storey_ground", variant: Some("stone")),
@@ -152,8 +155,10 @@
                 (piece: "kenney/wall-arch-top", at: (0.5, 0.0, 0.9), turn: 90.0, variant: Some("stone")),
                 (piece: "kenney/wall-arch-top", at: (-0.5, 0.0, -0.9), turn: -90.0, variant: Some("stone")),
                 (piece: "kenney/wall-arch-top", at: (0.5, 0.0, -0.9), turn: -90.0, scale: (1.0, 1.0, -1.0), variant: Some("stone")),
-                (piece: "kenney/planks", at: (-0.5, 0.94, 0.0)),
-                (piece: "kenney/planks", at: (0.5, 0.94, 0.0)),
+                // The floor's planks, 0.3% short of the gate's depth (5 mm at each end at its
+                // scale), so their ends clear the corner posts' faces they would otherwise share.
+                (piece: "kenney/planks", at: (-0.5, 0.94, 0.0), scale: (1.0, 1.0, 0.997)),
+                (piece: "kenney/planks", at: (0.5, 0.94, 0.0), scale: (1.0, 1.0, 0.997)),
                 (piece: "kenney/wall-window-shutters", at: (-0.5, 1.0, 0.9), turn: 90.0),
                 (piece: "kenney/wall-window-shutters", at: (0.5, 1.0, 0.9), turn: 90.0),
                 (piece: "kenney/wall-window-glass", at: (-0.5, 1.0, -0.9), turn: -90.0),
@@ -314,12 +319,8 @@
             (
                 pieces: Some(("kenney/wall-arch-top", "kenney/planks")),
                 within: Some("gate"),
-                why: "The gatehouse's floor planks lie in its arches' tops, enclosed by the storey's walls and interior. Not hidden: the planks' ends meet the arches' corner posts in the open, front and back, a 10 cm band in one slot that the kit's gradient shades two ways. Part 2 owes the fix (planks a centimeter shorter).",
-            ),
-            (
-                pieces: Some(("kenney/wall*", "kenney/roof-high-gable")),
-                within: Some("house*"),
-                why: "Not hidden: the back roof segment hangs 2.6 cm into its top storey's walls (gable_roof), in their slots but shaded by other cells of the kit's gradient, a band on the houses' backs and outer sides that no shot of the stage sees. Part 2 owes the fix.",
+                region: Some(((-0.05, 3.0, -23.15), (6.45, 3.35, -20.05))),
+                why: "The gatehouse's floor planks rest on its arches: inside the walls they cross, their tops lie in the arches' tops and their sides in the arches' ends, under the storey's walls. The region stops 5 cm inside the gate's front and back faces, so the planks' ends there (cut short of the corner posts' faces) can't fight unseen.",
             ),
         ],
     ),

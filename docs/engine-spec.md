@@ -453,6 +453,13 @@ Each module below follows the same template:
 - **Panics:** a panic hook logs the panic, adds breadcrumbs (current zone, frame number, last 64 log lines) and, in shipping builds, aborts so a minidump is produced.
 - **Symbols:** shipping builds use `split-debuginfo`. Upload PDBs, dSYMs and Breakpad symbols from CI.
 
+**As built (review PA-001, PA-002, PA-003, PA-006):**
+
+- **Recovered panics keep native capture.** A panic the app recovers from (IO callbacks, decode workers, off-thread shader builds) asks the desktop monitor for a dump, at most 8 per run. The monitor numbers its dumps (`<run>.dmp`, then `<run>.<n>.dmp`) and serves until the app's lifeline closes, and the app reconnects after each panic dump, so a native crash later in the run still gets one. `CrashGuard::native_capture()` says `Minidump` only while the monitor is alive and connected. Under `panic = "abort"` the panic's dump stays the run's only one. `tests/monitor.rs` runs the real monitor (`harness = false`).
+- **The panic report is on disk before anything is symbolized.** The hook writes it with a placeholder backtrace, asks for the dump, then symbolizes and rewrites it. On Apple platforms the module table lists only the images the frames are in, found with `dladdr`: walking dyld's image list by index faulted while another thread unloaded a library.
+- **Startup cleanup never touches a live writer's file.** Writers hold a lock on their `.partial` until the rename. `install` removes one only if it is a crate report name from another run, went unmodified for 10 minutes before this run started, and its lock is free.
+- **Android publishes only complete records.** A signal record cut short by a full disk or an I/O error keeps its `.partial` name, which `pending_reports` never lists.
+
 ### 5.3 `sapphire_core` (L0)
 
 **Owns**

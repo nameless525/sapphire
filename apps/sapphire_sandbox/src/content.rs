@@ -556,19 +556,23 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<[MeshHandle; environment::FOG_CARDS.len()], AppInitError> {
-        let mut cards = Vec::with_capacity(environment::FOG_CARDS.len());
-        for id in environment::FOG_CARDS {
-            // Asking again tries a card that failed before, as the character does.
-            let card = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
-            let assets = &mut self.gpu;
-            let loaded = self.server.finish(&card, |upload| assets.upload(upload, renderer, gpu));
-            cards.push(card);
-            for unloaded in self.server.take_unloaded() {
-                self.gpu.unload(unloaded);
-            }
-            loaded.map_err(|error| AppInitError::msg(format!("a fog card didn't load: {error}")))?;
-        }
+        // Asking again tries a card that failed before, as the character does. Every card is
+        // asked for before the first is waited on, so their reads and decodes overlap, as the
+        // foliage's do (review PA-009); the server still uploads each card's map and material
+        // before its mesh.
+        let cards = environment::FOG_CARDS
+            .into_iter()
+            .map(|id| self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg))
+            .collect::<Result<Vec<_>, _>>()?;
+        let assets = &mut self.gpu;
+        let loaded: Result<(), _> = cards
+            .iter()
+            .try_for_each(|card| self.server.finish(card, |upload| assets.upload(upload, renderer, gpu)));
         self.fog_cards = cards;
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("a fog card didn't load: {error}")))?;
         Ok(environment::FOG_CARDS
             .map(|id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle))
     }

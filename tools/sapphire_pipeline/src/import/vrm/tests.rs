@@ -392,6 +392,39 @@ fn shading_shift_textures_become_ilm_shadow_bias() {
     assert_eq!(range(3.0), [0.5, 1.0], "offsets past ±1 clamp");
 }
 
+/// The review's AP-003 for VRM: the face instanced a second time, resting with its eyes shut,
+/// gets a `blink` target of its own, and the expressions binding the face's mesh drive both.
+#[test]
+fn vrm_expressions_drive_every_instance_of_a_mesh() {
+    let mut sample = samples::vrm1();
+    let nodes = sample.document["nodes"].as_array_mut().unwrap();
+    let face_mesh = nodes[node::FACE]["mesh"].clone();
+    nodes.push(json!({
+        "name": "FaceAgain", "mesh": face_mesh, "translation": [0.5, 1.45, 0.0], "weights": [1.0, 0.0]
+    }));
+    let again = nodes.len() - 1;
+    nodes[node::ROOT]["children"].as_array_mut().unwrap().push(again.into());
+    let import = import(&sample.to_glb(), Some(VrmVersion::V1)).unwrap();
+
+    let targets: Vec<(&str, f32)> = import
+        .mesh
+        .morph_targets
+        .iter()
+        .map(|target| (target.name.as_str(), target.default_weight))
+        .collect();
+    assert_eq!(targets, [("blink", 0.0), ("smile", 0.0), ("blink@FaceAgain", 1.0)], "smile rests alike");
+    let blink = import.rig.expression("blink").unwrap();
+    assert_eq!(
+        blink.morph_targets,
+        [
+            MorphTargetWeight { target: target(&import, "blink"), weight: 1.0 },
+            MorphTargetWeight { target: target(&import, "blink@FaceAgain"), weight: 1.0 },
+        ]
+    );
+    let happy = import.rig.expression("happy").unwrap();
+    assert_eq!(happy.morph_targets, [MorphTargetWeight { target: target(&import, "smile"), weight: 1.0 }]);
+}
+
 #[test]
 fn vrm_0_x_migrates_to_the_same_character() {
     let (v1, v0) = (import1(), import0());

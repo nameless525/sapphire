@@ -38,23 +38,32 @@ pub(super) fn build(
     for expression in &data.expressions {
         let what = || format!("expression {:?}", expression.name);
         // Targets merge by name across meshes (the glTF importer's rule), so binds of a face's
-        // and its lashes' `blink` are one target; it keeps the largest weight.
+        // and its lashes' `blink` are one target; it keeps the largest weight. A bind drives its
+        // mesh's target on every instance, which is more than one target where instances rest at
+        // different weights; a mesh outside the scene binds the target of its target's name.
         let mut weights: BTreeMap<u32, f32> = BTreeMap::new();
         for bind in &expression.morph_targets {
-            let mesh = document.meshes().nth(bind.mesh).expect("checked when the data was read");
-            let name = morph_target_name(&mesh, &morph_target_names(&mesh), bind.target);
-            let target =
-                scene.mesh.morph_targets.iter().position(|target| target.name == name).ok_or_else(|| {
-                    VrmImportError::reference(
-                        what(),
-                        format!(
-                            "binds morph target {name:?} of mesh {}, which isn't in the imported scene",
-                            bind.mesh
-                        ),
-                    )
-                })?;
-            let weight = weights.entry(target as u32).or_insert(0.0);
-            *weight = weight.max(bind.weight);
+            let targets = match scene.targets_of_morph.get(&(bind.mesh, bind.target)) {
+                Some(targets) => targets.clone(),
+                None => {
+                    let mesh = document.meshes().nth(bind.mesh).expect("checked when the data was read");
+                    let name = morph_target_name(&mesh, &morph_target_names(&mesh), bind.target);
+                    let target = scene.mesh.morph_targets.iter().position(|target| target.name == name);
+                    vec![target.ok_or_else(|| {
+                        VrmImportError::reference(
+                            what(),
+                            format!(
+                                "binds morph target {name:?} of mesh {}, which isn't in the imported scene",
+                                bind.mesh
+                            ),
+                        )
+                    })? as u32]
+                }
+            };
+            for target in targets {
+                let weight = weights.entry(target).or_insert(0.0);
+                *weight = weight.max(bind.weight);
+            }
         }
         // Binds of materials no primitive uses change nothing that draws, so they are dropped.
         let slot = |material: usize| scene.slot_of_material.get(&Some(material)).copied();

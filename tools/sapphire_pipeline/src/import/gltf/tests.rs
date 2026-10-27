@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use glam::{Quat, Vec4};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion, Rim};
@@ -665,6 +665,81 @@ fn imports_named_sparse_morph_targets_merged_across_meshes() {
     let target = (normal_matrix * (Vec3::new(0.0, -1.0, 1.0).normalize() + Vec3::Y)).normalize();
     assert_vec_eq((base + Vec3::from(blink.deltas[1].normal)).to_array(), target);
     assert_eq!(prop.deltas.len(), 3);
+}
+
+/// The review's AP-003 fixture: one mesh, a flat triangle whose `raise` target lifts it 1 m,
+/// instanced by a node per `(name, x, default weight)`, in that order.
+fn raised_instances(instances: &[(&str, f32, f32)]) -> Vec<u8> {
+    let triangle = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        indices: vec![0, 1, 2],
+        targets: vec![MorphGeometry { positions: vec![[0.0, 1.0, 0.0]; 3], normals: Vec::new() }],
+        ..Geometry::default()
+    };
+    let mut writer = GltfWriter::default();
+    let mesh = writer.add_mesh("Panel", &[(&triangle, None)]);
+    writer.set_mesh_field(mesh, "extras", json!({ "targetNames": ["raise"] }));
+    for &(name, x, weight) in instances {
+        let node = writer.add_node(
+            json!({ "name": name, "mesh": mesh, "translation": [x, 0.0, 0.0], "weights": [weight] }),
+        );
+        writer.add_root(node);
+    }
+    writer.to_glb()
+}
+
+/// Every vertex where `mesh`'s targets rest it, at their default weights.
+fn at_rest(mesh: &ImportedMesh) -> Vec<Vec3> {
+    let mut positions: Vec<Vec3> = mesh.vertices.iter().map(|v| Vec3::from(v.position)).collect();
+    for target in &mesh.morph_targets {
+        for delta in &target.deltas {
+            positions[delta.vertex as usize] += target.default_weight * Vec3::from(delta.position);
+        }
+    }
+    positions
+}
+
+#[test]
+fn instances_of_one_mesh_keep_their_own_morph_defaults() {
+    // Before AP-003 both instances merged into one `raise` at the first one's weight, 0: the
+    // second instance lost its raised pose.
+    let imported = import_slice(&raised_instances(&[("Left", 0.0, 0.0), ("Right", 2.0, 1.0)]), None).unwrap();
+    assert_cooks(&imported);
+    let targets: Vec<(&str, f32, usize)> = imported
+        .morph_targets
+        .iter()
+        .map(|target| (target.name.as_str(), target.default_weight, target.deltas.len()))
+        .collect();
+    assert_eq!(targets, [("raise", 0.0, 3), ("raise@Right", 1.0, 3)]);
+    let heights: Vec<f32> = at_rest(&imported).iter().map(|p| p.y).collect();
+    assert_eq!(heights, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], "the first triangle rests at 0, the second at 1");
+
+    // The scene's order picks which keeps the plain name, not where anything rests.
+    let reversed = import_slice(&raised_instances(&[("Right", 2.0, 1.0), ("Left", 0.0, 0.0)]), None).unwrap();
+    let names: Vec<&str> = reversed.morph_targets.iter().map(|target| target.name.as_str()).collect();
+    assert_eq!(names, ["raise", "raise@Left"]);
+    let rest = |mesh: &ImportedMesh| -> BTreeSet<[u32; 3]> {
+        at_rest(mesh).iter().map(|p| p.to_array().map(f32::to_bits)).collect()
+    };
+    assert_eq!(rest(&reversed), rest(&imported), "the same world geometry at rest");
+
+    // Instances at one weight still share a target, and a taken name gets a number.
+    let imported = import_slice(
+        &raised_instances(&[
+            ("Left", 0.0, 1.0),
+            ("Right", 2.0, 0.5),
+            ("Middle", 4.0, 1.0),
+            ("Right", 6.0, 0.25),
+        ]),
+        None,
+    )
+    .unwrap();
+    let targets: Vec<(&str, f32, usize)> = imported
+        .morph_targets
+        .iter()
+        .map(|target| (target.name.as_str(), target.default_weight, target.deltas.len()))
+        .collect();
+    assert_eq!(targets, [("raise", 1.0, 6), ("raise@Right", 0.5, 3), ("raise@Right#2", 0.25, 3)]);
 }
 
 #[test]

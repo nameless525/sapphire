@@ -67,7 +67,15 @@
 //! `<mesh>/<index>` without one, and targets with one name merge across nodes and meshes:
 //! a face, its eyelashes and its brows exported as separate objects then share one `blink`
 //! weight. Two targets of one primitive with one name are an error. A target's default weight
-//! is the node's `weights`, else the mesh's, else 0.
+//! is the node's `weights`, else the mesh's, else 0; a merged target takes the first one's.
+//! Instances of one mesh whose nodes rest a target at different weights are the exception
+//! (the review's AP-003): one target can't hold both, so the mesh's first instance merges as
+//! above, and each other default gets a target of its own, named `<name>@<node>` (the node's
+//! name, or `#<index>`; suffixed `#2`, `#3`… if taken), which that mesh's instances at that
+//! default share. Every instance then rests as its node says, whatever the scene's order;
+//! which one keeps the plain name follows the order. The scene import lists the targets each
+//! mesh's target went to (`SceneImport::targets_of_morph`), so a VRM expression binding a
+//! mesh's target drives it on every instance.
 //! Position deltas take the static node's linear transform; normal deltas become the
 //! difference of the transformed, normalized normals, exact at full weight. Vertices a target
 //! moves by less than [`MORPH_POSITION_EPSILON`] and turns by less than
@@ -105,12 +113,14 @@ use crate::mesh::{
 };
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file. 8: generated materials take the material's `doubleSided` (M1 C8). 7:
+/// for the same file. 9: instances of one mesh resting a morph target at different weights
+/// get a target each (the review's AP-003). 8: generated materials take the material's
+/// `doubleSided` (M1 C8). 7:
 /// generated materials carry the depth-offset rim's settings and per-region rim scales from
 /// material extras (M1 C5). 6: generated materials carry outlines v2's settings,
 /// and VRM's MToon maps its outline widths onto the width's curve and its outline lighting mix
 /// (M1 C4).
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 8 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 9 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -230,6 +240,9 @@ pub(crate) struct SceneImport {
     pub joint_of_node: HashMap<usize, u16>,
     /// The material slot of each glTF material a primitive uses (`None`: glTF's default).
     pub slot_of_material: HashMap<Option<usize>, u32>,
+    /// Per glTF mesh and morph target index, the merged targets its instances took, in
+    /// increasing order: one, unless instances rest at different weights.
+    pub targets_of_morph: HashMap<(usize, usize), Vec<u32>>,
 }
 
 /// Imports the default scene of a parsed document whose buffers are loaded. Nodes in
@@ -256,6 +269,7 @@ pub(crate) fn import_scene(
         slot_names: slot_names(document),
         skeleton,
         targets: HashMap::new(),
+        instances: HashMap::new(),
     };
     for (instance, scene_node) in nodes.iter().enumerate() {
         let node = document.nodes().nth(scene_node.node).expect("flattened from this document");
@@ -268,7 +282,17 @@ pub(crate) fn import_scene(
     let joint_of_node =
         builder.skeleton.as_ref().map(|skeleton| skeleton.joint_of.clone()).unwrap_or_default();
     let slot_of_material = builder.materials.clone();
-    Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material })
+    let targets_of_morph = builder
+        .instances
+        .iter()
+        .map(|(&morph, instances)| {
+            let mut targets: Vec<u32> = instances.iter().map(|&(_, target)| target as u32).collect();
+            targets.sort_unstable();
+            targets.dedup();
+            (morph, targets)
+        })
+        .collect();
+    Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material, targets_of_morph })
 }
 
 /// One visit of a node in the scene's depth-first walk. A node reached through two parents
@@ -646,6 +670,9 @@ struct Builder<'a> {
     skeleton: Option<Skeleton>,
     /// Morph target name → index into `mesh.morph_targets`.
     targets: HashMap<String, usize>,
+    /// Per glTF mesh and morph target index: each default weight (its bits) the mesh's instances
+    /// give the target, and the merged target that takes it.
+    instances: HashMap<(usize, usize), Vec<(u32, usize)>>,
 }
 
 /// A primitive's attributes, read and transformed into the mesh's space.
@@ -839,7 +866,7 @@ impl Builder<'_> {
         let defaults = node.weights().or(mesh.weights()).unwrap_or_default();
         let linear = Mat3::from_mat4(transform);
         let normal_matrix = linear.inverse().transpose();
-        // The merged targets this primitive has written to.
+        // The names of the targets this primitive has written to.
         let mut used = Vec::with_capacity(targets.len());
         for (k, (positions, normals, _tangents)) in targets.into_iter().enumerate() {
             let semantic = |what: &str| format!("morph target {k} {what}");
@@ -859,19 +886,12 @@ impl Builder<'_> {
                 }
             }
             let name = morph_target_name(mesh, &names, k);
-            let target = *self.targets.entry(name.clone()).or_insert_with(|| {
-                self.mesh.morph_targets.push(ImportedMorphTarget {
-                    name: name.clone(),
-                    default_weight: defaults.get(k).copied().unwrap_or(0.0),
-                    deltas: Vec::new(),
-                });
-                self.mesh.morph_targets.len() - 1
-            });
             // Two of one primitive's targets under one name would move the same vertices twice.
-            if used.contains(&target) {
+            if used.contains(&name) {
                 return Err(GltfImportError::DuplicateMorphTarget { at: at.clone(), name });
             }
-            used.push(target);
+            let target = self.morph_target(node, mesh, k, &name, defaults.get(k).copied().unwrap_or(0.0));
+            used.push(name);
             for (offset, &source) in sources.iter().enumerate() {
                 let s = source as usize;
                 let position = positions.as_ref().map_or(Vec3::ZERO, |p| linear * Vec3::from(p[s]));
@@ -898,6 +918,52 @@ impl Builder<'_> {
             }
         }
         Ok(())
+    }
+
+    /// The merged target that morph target `k` (named `name`) of `mesh`, instanced by `node` at
+    /// rest at `default`, adds its deltas to, made if there is none yet (see the module docs):
+    /// the target its mesh's instances at that default share, else for the mesh's first
+    /// instance the target of that name, else a target of its own.
+    fn morph_target(
+        &mut self,
+        node: &Node<'_>,
+        mesh: &Mesh<'_>,
+        k: usize,
+        name: &str,
+        default: f32,
+    ) -> usize {
+        // `+ 0.0` makes -0 and 0 one default.
+        let bits = (default + 0.0).to_bits();
+        let instances = self.instances.entry((mesh.index(), k)).or_default();
+        if let Some(&(_, target)) = instances.iter().find(|&&(seen, _)| seen == bits) {
+            return target;
+        }
+        let name = if instances.is_empty() {
+            name.to_owned()
+        } else {
+            // Another instance of the mesh, at rest at another weight: one target can't hold both
+            // defaults, so this instance's is a target of its own, named after its node.
+            let node = node.name().map_or_else(|| format!("#{}", node.index()), str::to_owned);
+            let split = format!("{name}@{node}");
+            let mut unique = split.clone();
+            for n in 2.. {
+                if !self.targets.contains_key(&unique) {
+                    break;
+                }
+                unique = format!("{split}#{n}");
+            }
+            unique
+        };
+        let target = *self.targets.entry(name.clone()).or_insert_with(|| {
+            self.mesh.morph_targets.push(ImportedMorphTarget {
+                name,
+                default_weight: default,
+                deltas: Vec::new(),
+            });
+            self.mesh.morph_targets.len() - 1
+        });
+        self.instances.entry((mesh.index(), k)).or_default().push((bits, target));
+        target
     }
 
     fn material_slot(&mut self, material: &Material<'_>) -> Result<u32, GltfImportError> {

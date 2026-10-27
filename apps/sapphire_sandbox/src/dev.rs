@@ -4,8 +4,9 @@
 //!
 //! Everything the windowed app and the offscreen modes do for them is here, so they hold one
 //! `dev` field and make a few calls, all compiled away without the feature. Hidden, the overlay
-//! costs a frame-time store per frame and a comparison per fixed step; idle, hot reload and live
-//! link one empty channel read per frame each.
+//! costs a frame-time store and a copy of the window's metrics per frame (its two-finger toggle
+//! measures with them), allocating nothing, and a comparison per fixed step; idle, hot reload and
+//! live link one empty channel read per frame each.
 
 use std::path::Path;
 use std::time::Duration;

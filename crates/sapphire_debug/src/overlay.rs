@@ -301,8 +301,17 @@ impl DebugOverlay {
         self.gpu_timing = executor.set_gpu_timing(gpu, app_timing || (self.visible && GPU_TIMING.get()));
     }
 
-    /// Builds this frame's UI, if shown. Its draw is added by [`Self::record`].
+    /// Builds this frame's UI, if shown. Its draw is added by [`Self::record`]. Call it every
+    /// frame, shown or hidden: hidden, it only takes the window's metrics, which the toggle
+    /// gesture measures with.
     pub fn update(&mut self, frame: &OverlayFrame<'_>) -> OverlayOutput {
+        // Hidden too, so the two-finger hold measures drift in the window as it is now: before
+        // its first shown frame the router knew no size, and a pinch passed for a hold (DT-002).
+        let zoom = UI_SCALE.get();
+        let metrics = frame.window;
+        let pixels_per_point = metrics.display_scale.max(0.25) * zoom;
+        self.input.set_metrics(&metrics, pixels_per_point);
+        self.router.set_window_size(metrics.size);
         if !self.visible {
             return OverlayOutput::default();
         }
@@ -310,11 +319,6 @@ impl DebugOverlay {
         let stopwatch = Stopwatch::start();
         let scope = alloc::AllocScope::begin();
 
-        let zoom = UI_SCALE.get();
-        let metrics = frame.window;
-        let pixels_per_point = metrics.display_scale.max(0.25) * zoom;
-        self.input.set_metrics(&metrics, pixels_per_point);
-        self.router.set_window_size(metrics.size);
         let screen = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(metrics.pixel_size.width as f32, metrics.pixel_size.height as f32) / pixels_per_point,

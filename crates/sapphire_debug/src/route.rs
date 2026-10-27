@@ -14,7 +14,8 @@
 //!   otherwise. Releases always reach the game, so nothing it holds sticks.
 //! - **Losing focus or the foreground** reaches both, and forgets every press.
 //! - **The toggle** belongs to neither: the toggle key (`` ` `` by default) and, on touch
-//!   screens, holding two fingers still for a second. The fingers of a hold that toggles are
+//!   screens, holding two fingers still for a second, which is timed only once a frame has given
+//!   the window's size to measure their drift in. The fingers of a hold that toggles are
 //!   taken from whoever had them: the game gets a cancel for each of its own
 //!   (`TouchPhase::Canceled`, which fires nothing a release would), and their remaining events go
 //!   nowhere.
@@ -91,8 +92,10 @@ pub(crate) struct Router {
     fingers: [Option<Finger>; MAX_FINGERS],
     /// The mouse, in window coordinates.
     pointer: (f32, f32),
-    /// The window's size in window coordinates, which touch positions are normalized to.
-    window_size: Size,
+    /// The window's size in window coordinates, which touch positions are normalized to, once a
+    /// frame has said it. Until then no hold is timed: without the size a finger's drift can't
+    /// be measured, and a pinch would pass for two fingers holding still.
+    window_size: Option<Size>,
     /// When two still fingers started holding.
     hold_since: Option<Timestamp>,
     /// What the last toggle gesture took, for the overlay to cancel.
@@ -106,14 +109,16 @@ impl Router {
             buttons: [None; 5],
             fingers: [None; MAX_FINGERS],
             pointer: (0.0, 0.0),
-            window_size: Size { width: 1, height: 1 },
+            window_size: None,
             hold_since: None,
             claimed: Vec::with_capacity(2),
         }
     }
 
+    /// The window's size in window coordinates now. Call it every frame, shown or hidden, before
+    /// the frame's events: the toggle gesture measures drift with it. An empty window has none.
     pub fn set_window_size(&mut self, size: Size) {
-        self.window_size = size;
+        self.window_size = Some(size).filter(|size| size.width > 0 && size.height > 0);
     }
 
     /// The fingers the last toggle took from their owners.
@@ -194,16 +199,18 @@ impl Router {
 
     fn touch(&mut self, touch: &TouchEvent, ui: &UiState<'_>) -> Route {
         let existing = self.fingers.iter().position(|f| f.is_some_and(|f| f.id == touch.finger));
-        let position = (touch.x * self.window_size.width as f32, touch.y * self.window_size.height as f32);
+        let position = self.position(touch);
         let slot = match (existing, touch.phase) {
             (Some(slot), _) => slot,
             (None, TouchPhase::Down) => {
                 let Some(free) = self.fingers.iter().position(Option::is_none) else {
                     return Route::default();
                 };
-                let over = ui.visible && (ui.covers)(position.0, position.1);
+                // Before the first frame no overlay window has been drawn to cover the finger.
+                let over = ui.visible && position.is_some_and(|(x, y)| (ui.covers)(x, y));
                 let owner = if over { Owner::Overlay } else { Owner::Game };
-                self.fingers[free] = Some(Finger { id: touch.finger, owner, last: *touch, anchor: position });
+                let anchor = position.unwrap_or_default();
+                self.fingers[free] = Some(Finger { id: touch.finger, owner, last: *touch, anchor });
                 self.rearm_hold(touch.timestamp);
                 free
             }
@@ -213,8 +220,11 @@ impl Router {
         let finger = self.fingers[slot].as_mut().expect("the slot is taken");
         finger.last = *touch;
         let owner = finger.owner;
-        let (dx, dy) = (position.0 - finger.anchor.0, position.1 - finger.anchor.1);
-        let drifted = dx * dx + dy * dy > HOLD_SLOP * HOLD_SLOP;
+        // Without the window's size no hold is being timed, so there is no drift to measure.
+        let drifted = position.is_some_and(|(x, y)| {
+            let (dx, dy) = (x - finger.anchor.0, y - finger.anchor.1);
+            dx * dx + dy * dy > HOLD_SLOP * HOLD_SLOP
+        });
         if matches!(touch.phase, TouchPhase::Up | TouchPhase::Canceled) {
             self.fingers[slot] = None;
             self.rearm_hold(touch.timestamp);
@@ -225,21 +235,28 @@ impl Router {
     }
 
     /// Starts timing a hold if exactly two fingers are down and neither was claimed yet, from
-    /// where they are now.
+    /// where they are now, once the window's size is known.
     fn rearm_hold(&mut self, now: Timestamp) {
+        let Some(size) = self.window_size else {
+            self.hold_since = None;
+            return;
+        };
         let mut down = self.fingers.iter_mut().flatten();
         let pair = (down.next(), down.next(), down.next());
         self.hold_since = match pair {
             (Some(a), Some(b), None) if a.owner != Owner::Nobody && b.owner != Owner::Nobody => {
                 for finger in [a, b] {
-                    let last = finger.last;
-                    finger.anchor =
-                        (last.x * self.window_size.width as f32, last.y * self.window_size.height as f32);
+                    finger.anchor = scale(&finger.last, size);
                 }
                 Some(now)
             }
             _ => None,
         };
+    }
+
+    /// Where `touch` is in window coordinates, once the window's size is known.
+    fn position(&self, touch: &TouchEvent) -> Option<(f32, f32)> {
+        self.window_size.map(|size| scale(touch, size))
     }
 
     fn forget(&mut self) {
@@ -255,6 +272,11 @@ impl Router {
             Owner::Nobody => Route::default(),
         }
     }
+}
+
+/// A touch's normalized position, in the window coordinates of a window of `size`.
+fn scale(touch: &TouchEvent, size: Size) -> (f32, f32) {
+    (touch.x * size.width as f32, touch.y * size.height as f32)
 }
 
 fn button_index(button: MouseButton) -> Option<usize> {
@@ -481,5 +503,59 @@ mod tests {
         // Lifting the third leaves a fresh pair, which may hold.
         router.route(&touch(2000, 3, TouchPhase::Up, 0.3), &hidden);
         assert!(router.poll(ms(3000)));
+    }
+
+    /// A pinch: two fingers spreading for 1.1 s, each moving 0.33 of the window's width.
+    fn pinch(router: &mut Router, ui: &UiState<'_>) {
+        router.route(&touch(0, 1, TouchPhase::Down, 0.4), ui);
+        router.route(&touch(0, 2, TouchPhase::Down, 0.6), ui);
+        for step in 1..=11 {
+            let spread = 0.03 * step as f32;
+            router.route(&touch(100 * step, 1, TouchPhase::Moved, 0.4 - spread), ui);
+            router.route(&touch(100 * step, 2, TouchPhase::Moved, 0.6 + spread), ui);
+        }
+    }
+
+    /// Two fingers holding still for 1.1 s.
+    fn hold(router: &mut Router, ui: &UiState<'_>) {
+        router.route(&touch(0, 1, TouchPhase::Down, 0.4), ui);
+        router.route(&touch(0, 2, TouchPhase::Down, 0.6), ui);
+        router.route(&touch(500, 1, TouchPhase::Moved, 0.402), ui);
+    }
+
+    fn lift(router: &mut Router, ui: &UiState<'_>) {
+        router.route(&touch(6000, 1, TouchPhase::Up, 0.5), ui);
+        router.route(&touch(6000, 2, TouchPhase::Up, 0.5), ui);
+    }
+
+    #[test]
+    fn no_hold_is_timed_until_the_window_size_is_known() {
+        // DT-002: a router no frame has told the window's size yet sees no drift, so it times no
+        // hold at all, still or not, and a pinch never toggles.
+        let hidden = ui(false, false);
+        let mut router = Router::new(Scancode::GRAVE);
+        pinch(&mut router, &hidden);
+        assert!(!router.poll(ms(1100)), "a moving pinch toggled");
+        assert!(!router.poll(ms(5000)));
+        lift(&mut router, &hidden);
+        hold(&mut router, &hidden);
+        assert!(!router.poll(ms(1100)), "no size, no hold");
+        lift(&mut router, &hidden);
+        router.set_window_size(Size { width: 0, height: 0 });
+        hold(&mut router, &hidden);
+        assert!(!router.poll(ms(1100)), "an empty window has no size");
+        lift(&mut router, &hidden);
+
+        // Once it is known, a pinch moves too far to hold and a still pair toggles, whichever
+        // way the window turns.
+        for size in [Size { width: 1000, height: 500 }, Size { width: 500, height: 1000 }] {
+            router.set_window_size(size);
+            pinch(&mut router, &hidden);
+            assert!(!router.poll(ms(1100)), "{size:?}: a moving pinch toggled");
+            lift(&mut router, &hidden);
+            hold(&mut router, &hidden);
+            assert!(router.poll(ms(1100)), "{size:?}: a still pair holds");
+            lift(&mut router, &hidden);
+        }
     }
 }

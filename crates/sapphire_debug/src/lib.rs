@@ -76,8 +76,9 @@
 //! executor.execute(&gpu, graph)?;
 //! ```
 //!
-//! Hidden, the overlay costs a few stores per frame (the frame-time ring) and a comparison per
-//! fixed step; it builds no UI, adds no pass and turns the graph's report and timings off.
+//! Hidden, the overlay costs a few stores per frame (the frame-time ring, and the window's
+//! metrics, which the two-finger toggle measures with) and a comparison per fixed step; it
+//! builds no UI, adds no pass, allocates nothing and turns the graph's report and timings off.
 //! Shown, it costs about what egui does: a few hundred allocations and some tens of
 //! microseconds per frame, which the stats panel reports separately ("of which overlay").
 //!

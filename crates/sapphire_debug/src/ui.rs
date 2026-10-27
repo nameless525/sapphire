@@ -111,6 +111,12 @@ impl UiMemory {
             day: TodPanel::default(),
         }
     }
+
+    /// Forgets the egui textures the panels made, for a new egui context: the overlay made one
+    /// on a new device. Everything else carries over.
+    pub fn reset_gpu_resources(&mut self) {
+        self.day.reset_gpu_resources();
+    }
 }
 
 /// What a frame's UI reads.

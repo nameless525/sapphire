@@ -95,7 +95,17 @@ impl TodControls {
 pub(crate) struct TodPanel {
     /// The day strip's colors and the timeline they were made from (its address and revision).
     strip: Option<((usize, u64), Vec<StripColumn>)>,
+    /// The preview, and its texture in the egui context that drew it last.
     preview: Option<(PreviewInputs, TextureHandle)>,
+}
+
+impl TodPanel {
+    /// Forgets what belongs to the egui context: the overlay replaced it (after device loss),
+    /// and a texture handle only means something to the context that made it. The preview is
+    /// made again in the new one when next drawn (DT-004).
+    pub fn reset_gpu_resources(&mut self) {
+        self.preview = None;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -748,6 +758,41 @@ mod tests {
         let rigged = render_preview(&tod.frame().look, Some(&lighting));
         let at = |x: usize, y: usize| rigged.pixels[y * PREVIEW_SIZE + x];
         assert!(brightness(at(62, 62)) > brightness(at(36, 36)) + 60, "lit from the lower right");
+    }
+
+    #[test]
+    fn a_new_egui_context_gets_the_preview_again() {
+        // DT-004: after device loss the overlay draws with a new egui context, and the preview's
+        // handle from the old one uploaded nothing to it.
+        let (_, tod) = time_of_day();
+        let mut state = TodPanel::default();
+        let lit_from_below = CharacterLighting {
+            key: DirectionalLight { direction: Vec3::Y, ..DirectionalLight::default() },
+            ..CharacterLighting::unstyled(DirectionalLight::default())
+        };
+        // A pass drawing the preview: the textures it uploaded, and the preview's.
+        let draw = |ctx: &egui::Context, state: &mut TodPanel, lighting: Option<CharacterLighting>| {
+            let mut output = ctx.run_pass(egui::RawInput::default(), |ctx| {
+                egui::Area::new(egui::Id::unique("sapphire_debug.tod_test"))
+                    .show(ctx, |ui| preview(ui, state, tod.frame(), lighting));
+            });
+            let uploaded: Vec<egui::TextureId> = output.textures_delta.set.keys().copied().collect();
+            output.textures_delta.clear();
+            (uploaded, state.preview.as_ref().expect("a preview").1.id())
+        };
+        let old = egui::Context::default();
+        let (uploaded, first) = draw(&old, &mut state, None);
+        assert!(uploaded.contains(&first));
+        assert!(!draw(&old, &mut state, None).0.contains(&first), "unchanged, not drawn again");
+
+        let new = egui::Context::default();
+        state.reset_gpu_resources();
+        let (uploaded, preview) = draw(&new, &mut state, None);
+        assert!(uploaded.contains(&preview), "the new context got the preview {preview:?}: {uploaded:?}");
+        // Changes after reach the new context.
+        let (uploaded, changed) = draw(&new, &mut state, Some(lit_from_below));
+        assert_eq!(changed, preview);
+        assert!(uploaded.contains(&preview), "the change reached the new context: {uploaded:?}");
     }
 
     #[test]

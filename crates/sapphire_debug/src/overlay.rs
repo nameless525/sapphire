@@ -195,11 +195,14 @@ impl DebugOverlay {
     }
 
     /// Rebuilds the GPU half on a new device (after device loss). The egui context starts over,
-    /// so its textures are sent again; panels, the console and time controls carry over.
+    /// so its textures are sent again, and the panels make theirs again in it; panels, the
+    /// console and time controls carry over.
     pub fn recreate_gpu(&mut self, gpu: &GpuContext, format: wgpu::TextureFormat) {
         self.renderer = OverlayRenderer::new(gpu, format);
         self.ctx = egui::Context::default();
         ui::style(&self.ctx);
+        // The time-of-day preview's handle belongs to the old context (DT-004).
+        self.memory.reset_gpu_resources();
         self.max_texture_side = gpu.caps().limits.max_texture_dimension_2d as usize;
     }
 

@@ -2,7 +2,6 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use crate::LOG_TARGET;
@@ -46,12 +45,6 @@ pub enum WatchError {
     Backend { path: PathBuf, message: String },
 }
 
-/// What the backend sends from its thread: one burst's changed paths, or errors.
-enum Report {
-    Changed(Vec<PathBuf>),
-    Errors(Vec<String>),
-}
-
 /// Watches directories, not recursively, for files that change, through `notify` 8.2 and a
 /// trailing-edge debounce: a burst of events is reported once the watched files have been quiet
 /// for the debounce time, however long the burst, so an editor's save or a cook's write to a
@@ -60,7 +53,6 @@ enum Report {
 /// reported, and allocates nothing while nothing changed.
 pub struct FileWatcher {
     backend: backend::Backend,
-    receiver: Receiver<Report>,
     /// Watched directories, canonical, by [`WatchId`].
     dirs: Vec<PathBuf>,
     changed: Vec<Changed>,
@@ -77,9 +69,8 @@ impl FileWatcher {
     /// A watcher that reports a burst once its files have been quiet for `debounce`. Fails with
     /// [`WatchError::Unsupported`] in builds without the backend.
     pub fn new(debounce: Duration) -> Result<Self, WatchError> {
-        let (sender, receiver) = mpsc::channel();
-        let backend = backend::Backend::new(debounce, sender)?;
-        Ok(Self { backend, receiver, dirs: Vec::new(), changed: Vec::new(), errors: Vec::new() })
+        let backend = backend::Backend::new(debounce)?;
+        Ok(Self { backend, dirs: Vec::new(), changed: Vec::new(), errors: Vec::new() })
     }
 
     /// Watches the files in directory `dir`, not its subdirectories. A directory watched already
@@ -107,32 +98,28 @@ impl FileWatcher {
     pub fn poll(&mut self) -> WatchEvents<'_> {
         self.changed.clear();
         self.errors.clear();
-        while let Ok(report) = self.receiver.try_recv() {
-            match report {
-                Report::Changed(paths) => {
-                    for path in paths {
-                        if let Some(changed) = self.locate(&path)
-                            && !self.changed.contains(&changed)
-                        {
-                            self.changed.push(changed);
-                        }
-                    }
+        let (dirs, changed, errors) = (&self.dirs, &mut self.changed, &mut self.errors);
+        self.backend.drain(
+            |path| {
+                if let Some(path) = locate(dirs, &path)
+                    && !changed.contains(&path)
+                {
+                    changed.push(path);
                 }
-                Report::Errors(errors) => self.errors.extend(errors),
-            }
-        }
+            },
+            |error| errors.push(error),
+        );
         WatchEvents { changed: &self.changed, errors: &self.errors }
     }
+}
 
-    /// The watched directory `path` is directly in, and its name there.
-    fn locate(&self, path: &Path) -> Option<Changed> {
-        let (parent, name) = (path.parent()?, path.file_name()?);
-        // A file's directory is still there when the file is gone; canonical, as `watch` keeps
-        // them.
-        let parent = std::fs::canonicalize(parent).ok()?;
-        let index = self.dirs.iter().position(|dir| *dir == parent)?;
-        Some(Changed { watch: WatchId(index), name: name.to_owned() })
-    }
+/// The directory of `dirs` that `path` is directly in, and its name there.
+fn locate(dirs: &[PathBuf], path: &Path) -> Option<Changed> {
+    let (parent, name) = (path.parent()?, path.file_name()?);
+    // A file's directory is still there when the file is gone; canonical, as `watch` keeps them.
+    let parent = std::fs::canonicalize(parent).ok()?;
+    let index = dirs.iter().position(|dir| *dir == parent)?;
+    Some(Changed { watch: WatchId(index), name: name.to_owned() })
 }
 
 #[cfg(feature = "notify")]
@@ -144,16 +131,26 @@ mod backend {
     use notify::event::{AccessKind, AccessMode};
     use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-    use super::{Report, WatchError};
+    use super::WatchError;
+
+    /// What the debounce thread sends: one burst's changed paths, or errors.
+    enum Report {
+        Changed(Vec<PathBuf>),
+        Errors(Vec<String>),
+    }
 
     /// `notify`'s recommended watcher for the platform (FSEvents, inotify,
-    /// ReadDirectoryChangesW), whose events a thread of its own debounces.
-    pub(super) struct Backend(RecommendedWatcher);
+    /// ReadDirectoryChangesW), whose events a thread of its own debounces into reports.
+    pub(super) struct Backend {
+        watcher: RecommendedWatcher,
+        reports: Receiver<Report>,
+    }
 
     impl Backend {
-        pub(super) fn new(debounce: Duration, reports: Sender<Report>) -> Result<Self, WatchError> {
+        pub(super) fn new(debounce: Duration) -> Result<Self, WatchError> {
             let backend_error = |message: String| WatchError::Backend { path: PathBuf::new(), message };
             let (events, received) = mpsc::channel();
+            let (sender, reports) = mpsc::channel();
             let watcher = notify::recommended_watcher(move |event| {
                 // A closed channel means the debounce thread is gone, and the watcher with it.
                 let _ = events.send(event);
@@ -161,13 +158,24 @@ mod backend {
             .map_err(|error| backend_error(error.to_string()))?;
             std::thread::Builder::new()
                 .name("sapphire-hot-reload".into())
-                .spawn(move || debounce_events(&received, debounce, &reports))
+                .spawn(move || debounce_events(&received, debounce, &sender))
                 .map_err(|error| backend_error(error.to_string()))?;
-            Ok(Self(watcher))
+            Ok(Self { watcher, reports })
         }
 
         pub(super) fn watch(&mut self, dir: &Path) -> Result<(), String> {
-            self.0.watch(dir, RecursiveMode::NonRecursive).map_err(|error| error.to_string())
+            self.watcher.watch(dir, RecursiveMode::NonRecursive).map_err(|error| error.to_string())
+        }
+
+        /// Hands each path and error reported since the last call to `changed` and `error`, in
+        /// the order they came.
+        pub(super) fn drain(&mut self, mut changed: impl FnMut(PathBuf), mut error: impl FnMut(String)) {
+            while let Ok(report) = self.reports.try_recv() {
+                match report {
+                    Report::Changed(paths) => paths.into_iter().for_each(&mut changed),
+                    Report::Errors(errors) => errors.into_iter().for_each(&mut error),
+                }
+            }
         }
     }
 
@@ -216,21 +224,25 @@ mod backend {
 
 #[cfg(not(feature = "notify"))]
 mod backend {
-    use std::path::Path;
-    use std::sync::mpsc::Sender;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::{Report, WatchError};
+    use super::WatchError;
 
-    /// No backend: builds without the `notify` feature (phones) watch nothing.
+    /// No backend: builds without the `notify` feature (phones) watch nothing. It is
+    /// uninhabited, so no [`super::FileWatcher`] exists in them and nothing is ever reported.
     pub(super) enum Backend {}
 
     impl Backend {
-        pub(super) fn new(_debounce: Duration, _reports: Sender<Report>) -> Result<Self, WatchError> {
+        pub(super) fn new(_debounce: Duration) -> Result<Self, WatchError> {
             Err(WatchError::Unsupported)
         }
 
         pub(super) fn watch(&mut self, _dir: &Path) -> Result<(), String> {
+            match *self {}
+        }
+
+        pub(super) fn drain(&mut self, _changed: impl FnMut(PathBuf), _error: impl FnMut(String)) {
             match *self {}
         }
     }

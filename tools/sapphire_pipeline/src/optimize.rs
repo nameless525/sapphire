@@ -5,19 +5,33 @@
 //!
 //! 1. **Submeshes merge by material**, so each material is one draw.
 //! 2. **The LOD chain** ([`LodSettings`]): each level simplifies the last one kept, submesh by
-//!    submesh, with meshoptimizer's attribute-aware simplifier. Normals weigh in, because the
-//!    two-tone light split is a hard threshold on them. Vertices that two submeshes share (a
-//!    material seam) are locked, so simplifying the submeshes independently can't open cracks
-//!    between them. A sidecar's `lock_border` locks the mesh's open border as well, for a mesh
-//!    cut from a larger surface whose edges must meet its neighbors' at every level (X1's far
-//!    mountains, cut into sectors). A level stops at its triangle target or its error budget, whichever comes
-//!    first, and is dropped if it saves less than [`MIN_LOD_REDUCTION`] of the last kept
-//!    level's triangles, or has none left. Since each level simplifies the one before, every
-//!    LOD's vertices are a subset of the previous LOD's, and its error is the sum of the steps:
-//!    an upper bound on its distance from LOD0. meshoptimizer's error estimate includes the
-//!    weighted normal deviation, so the errors (and the budgets they are held to) are
-//!    conservative as distances. A part that simplifies away (a speck smaller than the budget)
-//!    still counts toward its level's error.
+//!    submesh, with meshoptimizer's attribute-aware simplifier. It is deformation-aware (the
+//!    review's AP-005), since the mobile cook draws a simplified level as its LOD0:
+//!    - **Attributes** weigh in beside positions: normals, because the two-tone light split is
+//!      a hard threshold on them, and a skinned mesh's positions in two test poses (every joint
+//!      turned 45° from its parent, about X and about Z), so a level keeps the shape of bent
+//!      joints as well as of the rest pose: where the weights change, and the blend's curve
+//!      between. Vertex color doesn't weigh in: at a normal's weight it cost the far mountains a
+//!      tenth more triangles on phones, so a painted spot off every morph can still simplify
+//!      away.
+//!    - **Locks:** every vertex a morph target moves never moves, and neither do its
+//!      neighbors, so every triangle a target deforms stays LOD0's own at every level and the
+//!      rest of the mesh doesn't deform: at any weight a level strays from LOD0 only as far as
+//!      at rest. Vertices that two submeshes share (a material seam) are locked, so simplifying
+//!      the submeshes independently can't open cracks between them. A sidecar's `lock_border`
+//!      locks the mesh's open border as well, for a mesh cut from a larger surface whose edges
+//!      must meet its neighbors' at every level (X1's far mountains, cut into sectors).
+//!    - **Seams** where a vertex is split (hard normals, texture seams, material IDs) collapse
+//!      only along themselves, so both sides stay sealed: meshoptimizer's own rule.
+//!
+//!    A level stops at its triangle target or its error budget, whichever comes first, and is
+//!    dropped if it saves less than [`MIN_LOD_REDUCTION`] of the last kept level's triangles,
+//!    or has none left. Since each level simplifies the one before, every LOD's vertices are a
+//!    subset of the previous LOD's, and its error is the sum of the steps: an upper bound on
+//!    its distance from LOD0. meshoptimizer's error estimate includes the weighted attributes'
+//!    deviation, so the errors (and the budgets they are held to) are conservative as
+//!    distances. A part that simplifies away (a speck smaller than the budget) still counts
+//!    toward its level's error.
 //! 3. **The cook picks its levels.** The mobile cook drops the first
 //!    [`LodSettings::mobile_skip`] levels, so its LOD0 is lower-detail and it has fewer LODs.
 //! 4. **Triangles are reordered** in every LOD for the post-transform vertex cache, then for
@@ -30,13 +44,14 @@
 //!
 //! Every step is deterministic, so a cook of the same input writes the same bytes.
 
+use glam::{Mat3, Mat4, Vec3};
 use meshopt::{SimplifyOptions, VertexDataAdapter};
 use sapphire_assets::mesh::{Lod, Submesh};
 use serde::{Deserialize, Serialize};
 
 use crate::bake;
 use crate::cook::Cook;
-use crate::mesh::ImportedMesh;
+use crate::mesh::{ImportedMesh, ImportedSkin};
 
 /// A level must cut the triangle count by at least this fraction of the last kept level's,
 /// or it is dropped: a smaller saving isn't worth a LOD switch.
@@ -48,6 +63,21 @@ const OVERDRAW_THRESHOLD: f32 = 1.05;
 /// Weight of each normal component in the simplifier's error, relative to position error as a
 /// fraction of the mesh's extent. meshoptimizer's guidance for normals is 0.5–1.
 const NORMAL_WEIGHT: f32 = 0.5;
+
+/// How far each joint turns from its parent in the test poses a skinned mesh simplifies in
+/// (radians). A level's error bounds how far its surface strays from LOD0's in them, so it
+/// holds bends up to about this much within its budget; sharper ones stray further, about as
+/// the bends' chords (`2 sin(θ / 2)`) grow.
+const POSE_ANGLE: f32 = std::f32::consts::FRAC_PI_4;
+
+/// The axes the test poses turn every joint about, one pose each: limbs along Y (legs, spine,
+/// hair) bend both ways, and limbs along X (arms in a T pose) bend and twist.
+const POSE_AXES: [Vec3; 2] = [Vec3::X, Vec3::Z];
+
+/// Weight of each coordinate of a vertex's position in a test pose, as a fraction of the
+/// extent as position error's is, over the mesh's typical vertex spacing ([`spacing`]): a
+/// pose's surface then counts as the rest surface does.
+const POSE_WEIGHT: f32 = 1.0;
 
 /// LOD generation settings, part of a mesh's import settings
 /// ([`MeshSettings`](crate::meta::MeshSettings)). Loading checks them as [`Self::new`] does,
@@ -173,6 +203,8 @@ struct Part {
     indices: Vec<u32>,
     /// Accumulated relative error.
     error: f32,
+    /// The simplifier's attribute weights for this part ([`attribute_weights`]).
+    weights: Vec<f32>,
 }
 
 /// One level of the chain: its parts, and the largest of their errors.
@@ -239,6 +271,8 @@ fn lod_chain(
     seam_tolerance: f32,
     adapter: &VertexDataAdapter<'_>,
 ) -> Vec<Level> {
+    let scale = meshopt::simplify_scale(adapter);
+    let poses = if mesh.skin.is_some() { POSE_AXES.len() } else { 0 };
     let lod0 = Level {
         parts: mesh.lods[0]
             .submeshes
@@ -246,10 +280,12 @@ fn lod_chain(
             .map(|submesh| {
                 let range =
                     submesh.first_index as usize..(submesh.first_index + submesh.index_count) as usize;
+                let indices = mesh.indices[range].to_vec();
                 Part {
                     material: submesh.material,
-                    lod0_indices: range.len(),
-                    indices: mesh.indices[range].to_vec(),
+                    lod0_indices: indices.len(),
+                    weights: attribute_weights(poses, spacing(mesh, &indices, scale)),
+                    indices,
                     error: 0.0,
                 }
             })
@@ -260,9 +296,8 @@ fn lod_chain(
     if settings.levels.is_empty() {
         return chain;
     }
-    let attributes: Vec<f32> = mesh.vertices.iter().flat_map(|v| v.normal).collect();
-    let weights = [NORMAL_WEIGHT; 3];
-    let locks = seam_locks(mesh, seam_tolerance);
+    let attributes = simplifier_attributes(mesh, scale);
+    let locks = locks(mesh, seam_tolerance);
     let options = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
     for level in &settings.levels {
         let last = chain.last().expect("LOD0 is always there");
@@ -280,8 +315,8 @@ fn lod_chain(
                     &part.indices,
                     adapter,
                     &attributes,
-                    &weights,
-                    size_of::<[f32; 3]>(),
+                    &part.weights,
+                    size_of_val(part.weights.as_slice()),
                     &locks,
                     target,
                     budget,
@@ -304,13 +339,115 @@ fn lod_chain(
     chain
 }
 
-/// Per vertex: whether it lies on a seam between two submeshes (within `tolerance` of a
-/// vertex another submesh uses), and so must not move.
-fn seam_locks(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
+/// Per vertex, what the simplifier weighs beside its position: its normal and, for a skinned
+/// mesh, its position in each test pose ([`POSE_AXES`]) over `scale` (the extent), as positions
+/// are measured. [`attribute_weights`] gives their weights.
+fn simplifier_attributes(mesh: &ImportedMesh, scale: f32) -> Vec<f32> {
+    let poses: Vec<Vec<Vec3>> = match &mesh.skin {
+        Some(skin) => POSE_AXES.iter().map(|&axis| posed_positions(mesh, skin, axis, POSE_ANGLE)).collect(),
+        None => Vec::new(),
+    };
+    let mut attributes = Vec::with_capacity((3 + 3 * poses.len()) * mesh.vertices.len());
+    for (index, vertex) in mesh.vertices.iter().enumerate() {
+        attributes.extend(vertex.normal);
+        attributes.extend(poses.iter().flat_map(|pose| (pose[index] / scale).to_array()));
+    }
+    attributes
+}
+
+/// The weights of [`simplifier_attributes`] with `poses` test poses, for a part whose vertices
+/// lie `spacing` apart ([`spacing`]).
+fn attribute_weights(poses: usize, spacing: f32) -> Vec<f32> {
+    let mut weights = vec![NORMAL_WEIGHT; 3];
+    weights.extend(std::iter::repeat_n(POSE_WEIGHT / spacing, 3 * poses));
+    weights
+}
+
+/// How far apart the vertices of the triangles `indices` lie, on average, as a fraction of
+/// `scale` (the extent): the square root of the triangles' area round each vertex they use.
+/// meshoptimizer weighs an attribute's error by that area (a change of 1 across a region `d`
+/// wide counts as a distance of `d`), which suits slopes such as normals. A position in a test
+/// pose is a distance itself, so its weight is divided by this: it counts as the distance it
+/// strays over a region of LOD0's size, and more over a coarser level's larger ones. 1 for
+/// triangles without area.
+fn spacing(mesh: &ImportedMesh, indices: &[u32], scale: f32) -> f32 {
+    let triangles = indices.as_chunks::<3>().0;
+    let area: f32 = triangles
+        .iter()
+        .map(|triangle| {
+            let [a, b, c] = triangle.map(|index| Vec3::from(mesh.vertices[index as usize].position));
+            (b - a).cross(c - a).length() / 2.0
+        })
+        .sum();
+    let mut used = indices.to_vec();
+    used.sort_unstable();
+    used.dedup();
+    // Every triangle lies round each of its three corners.
+    let spacing = (3.0 * area / used.len() as f32).sqrt() / scale;
+    if spacing.is_finite() && spacing > 0.0 { spacing } else { 1.0 }
+}
+
+/// Each vertex of `mesh`, skinned by `skin` in a test pose: every joint turned `angle` about
+/// `axis` from its parent, round its own pivot. A joint's pivot is where its first palette
+/// entry's inverse bind matrix puts it. Joints without an entry (an armature's root) don't
+/// turn, so their children turn from the nearest ancestor that does.
+fn posed_positions(mesh: &ImportedMesh, skin: &ImportedSkin, axis: Vec3, angle: f32) -> Vec<Vec3> {
+    let mut pivots: Vec<Option<Vec3>> = vec![None; skin.joints.len()];
+    for bind in &skin.binds {
+        let pivot = Mat4::from_cols_array_2d(&bind.inverse_bind_matrix).inverse().w_axis.truncate();
+        if let Some(first @ None) = pivots.get_mut(usize::from(bind.joint))
+            && pivot.is_finite()
+        {
+            *first = Some(pivot);
+        }
+    }
+    // Per joint, its posed transform in mesh space: `rotation · x + translation`. Parents come
+    // first.
+    let turn = Mat3::from_axis_angle(axis, angle);
+    let mut posed: Vec<(Mat3, Vec3)> = Vec::with_capacity(skin.joints.len());
+    for (joint, pivot) in skin.joints.iter().zip(&pivots) {
+        let (rotation, translation) = joint
+            .parent
+            .and_then(|parent| posed.get(usize::from(parent)))
+            .copied()
+            .unwrap_or((Mat3::IDENTITY, Vec3::ZERO));
+        posed.push(match *pivot {
+            Some(pivot) => {
+                let turned = rotation * turn;
+                (turned, rotation * pivot + translation - turned * pivot)
+            }
+            None => (rotation, translation),
+        });
+    }
+    mesh.vertices
+        .iter()
+        .enumerate()
+        .map(|(index, vertex)| {
+            let position = Vec3::from(vertex.position);
+            // A vertex without weights, or bound to a palette entry or joint out of range (a mesh
+            // the packer will refuse), stays put.
+            let Some(influences) = skin.weights.get(index) else { return position };
+            influences.binds.iter().zip(influences.weights).fold(Vec3::ZERO, |sum, (&bind, weight)| {
+                let (rotation, translation) = skin
+                    .binds
+                    .get(usize::from(bind))
+                    .and_then(|bind| posed.get(usize::from(bind.joint)))
+                    .copied()
+                    .unwrap_or((Mat3::IDENTITY, Vec3::ZERO));
+                sum + weight * (rotation * position + translation)
+            })
+        })
+        .collect()
+}
+
+/// Per vertex: whether it must not move. That is a vertex on a seam between two submeshes
+/// (within `tolerance` of a vertex another submesh uses), and a vertex a morph target moves or
+/// that shares a triangle with one (by position, so a split vertex's copies count as one).
+fn locks(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
     let (group_of, group_count) = bake::weld(&mesh.vertices, tolerance);
     // Per weld group: the first submesh that uses it, and whether a second one does.
     let mut owner: Vec<Option<usize>> = vec![None; group_count];
-    let mut shared = vec![false; group_count];
+    let mut locked = vec![false; group_count];
     for (submesh, range) in mesh.lods[0].submeshes.iter().enumerate() {
         let indices =
             &mesh.indices[range.first_index as usize..(range.first_index + range.index_count) as usize];
@@ -318,12 +455,24 @@ fn seam_locks(mesh: &ImportedMesh, tolerance: f32) -> Vec<bool> {
             let group = group_of[index as usize];
             match owner[group] {
                 None => owner[group] = Some(submesh),
-                Some(first) if first != submesh => shared[group] = true,
+                Some(first) if first != submesh => locked[group] = true,
                 Some(_) => {}
             }
         }
     }
-    group_of.iter().map(|&group| shared[group]).collect()
+    let mut moved = vec![false; group_count];
+    for delta in mesh.morph_targets.iter().flat_map(|target| &target.deltas) {
+        moved[group_of[delta.vertex as usize]] = true;
+    }
+    if moved.contains(&true) {
+        for triangle in mesh.indices.as_chunks::<3>().0 {
+            let groups = triangle.map(|index| group_of[index as usize]);
+            if groups.iter().any(|&group| moved[group]) {
+                groups.iter().for_each(|&group| locked[group] = true);
+            }
+        }
+    }
+    group_of.iter().map(|&group| locked[group]).collect()
 }
 
 /// Renumbers the vertices coarsest LOD first, drops the ones no level uses, and writes the

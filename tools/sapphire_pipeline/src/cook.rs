@@ -136,8 +136,9 @@ pub struct Recipe {
 }
 
 /// Bake, optimization and LODs, packing and the `.smesh` writer. Bump its version whenever
-/// they change output for the same imported mesh.
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 2 };
+/// they change output for the same imported mesh. 3: deformation-aware LODs (the review's
+/// AP-005): what morph targets move is locked, and skinned meshes simplify in test poses too.
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 3 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
 pub(crate) const COOKED_EXTENSIONS: &[&str] =
@@ -1352,8 +1353,10 @@ mod tests {
     }
 
     /// Vertices above this height are raised by [`skinned_strip`]'s morph target. It lies
-    /// between rows, so quantization can't move a vertex across it.
-    const RAISED_ABOVE: f32 = 0.51;
+    /// between rows, so quantization can't move a vertex across it, and high enough that the
+    /// strip still simplifies on both cooks: the simplifier never moves a vertex a morph target
+    /// moves, nor its neighbors (the review's AP-005).
+    const RAISED_ABOVE: f32 = 0.76;
 
     /// A vertical strip of `rows` (40) quads from y = 0 to 1, skinned to two joints (the upper
     /// joint's weight is y) with one morph target, `raise`, that lifts the top half by 0.1.

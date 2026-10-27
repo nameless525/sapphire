@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use glam::Vec3;
 use std::collections::BTreeMap;
 
-use sapphire_assets::mesh::{Mesh, PositionFormat, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
+use sapphire_assets::mesh::{
+    Joint, JointTransform, Mesh, PositionFormat, SkinBind, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+};
 
 use super::*;
 use crate::mesh::{ImportedDelta, ImportedMorphTarget, ImportedSkin, SkinWeights};
@@ -363,5 +364,340 @@ fn settings_are_checked() {
         (vec![level(0.5, 0.01)], 2),
     ] {
         assert!(LodSettings::new(levels.clone(), skip).is_none(), "{levels:?} skipping {skip}");
+    }
+}
+
+/// A shipped mesh source (under `content/`), imported and baked as its cook does, with its
+/// sidecar's settings.
+fn shipped(source: &str) -> (ImportedMesh, crate::meta::MeshSettings) {
+    use crate::meta::ImportSettings;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content").join(source);
+    let importer = crate::meta::read(&crate::meta::sidecar_path(&path)).unwrap().importer;
+    let bytes = std::fs::read(&path).unwrap();
+    let (mut mesh, settings) = match importer {
+        ImportSettings::Gltf(settings) => (crate::import::gltf::import(&path).unwrap(), settings),
+        ImportSettings::Vrm(settings) => {
+            (crate::import::vrm::import(&bytes, settings.version).unwrap().mesh, settings.mesh)
+        }
+        other => panic!("{source} isn't a glTF or VRM mesh: {other:?}"),
+    };
+    bake::outline_normals(&mut mesh, &settings.outline);
+    (mesh, settings)
+}
+
+/// Per morph target: every (rest position, position delta) the mesh's kept vertices carry.
+fn morph_shapes(mesh: &ImportedMesh) -> Vec<BTreeSet<([u32; 3], [u32; 3])>> {
+    mesh.morph_targets
+        .iter()
+        .map(|target| {
+            target
+                .deltas
+                .iter()
+                .map(|delta| {
+                    let position = mesh.vertices[delta.vertex as usize].position;
+                    (position.map(f32::to_bits), delta.position.map(f32::to_bits))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Triangles per material slot name in `lod`.
+fn triangles_by_slot(mesh: &ImportedMesh, lod: usize) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for (submesh, indices) in lod_indices(mesh, lod) {
+        *counts.entry(mesh.materials[submesh.material as usize].name.clone()).or_default() +=
+            indices.len() / 3;
+    }
+    counts
+}
+
+/// The review's AP-005 on shipped content: the look-dev character and the faces sample hold
+/// expressions on phones, whose cook starts at a simplified level, so every vertex a morph
+/// target moves must still be there, with its delta, and phones must still save triangles.
+#[test]
+fn shipped_morph_meshes_keep_every_morph_on_phones() {
+    let mut failures = Vec::new();
+    for source in [
+        "third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm",
+        "samples/face/face_head.glb",
+    ] {
+        let (mesh, settings) = shipped(source);
+        let tolerance = settings.outline.weld_tolerance();
+        let [mut desktop, mut mobile] = [mesh.clone(), mesh];
+        optimize(&mut desktop, &settings.lods, tolerance, Cook::Desktop);
+        optimize(&mut mobile, &settings.lods, tolerance, Cook::Mobile);
+        for (label, cooked) in [("desktop", &desktop), ("mobile", &mobile)] {
+            for lod in 0..cooked.lods.len() {
+                eprintln!(
+                    "{source} {label} LOD{lod}: {} triangles, {} vertices, error {:.5} m, {:?}",
+                    triangles(cooked, lod),
+                    cooked.lods[lod].vertex_count,
+                    cooked.lods[lod].error,
+                    triangles_by_slot(cooked, lod),
+                );
+            }
+        }
+        let (full, light) = (morph_shapes(&desktop), morph_shapes(&mobile));
+        let lost: Vec<(&str, usize)> = full
+            .iter()
+            .zip(&light)
+            .zip(&desktop.morph_targets)
+            .filter(|((full, light), _)| full != light)
+            .map(|((full, light), target)| (target.name.as_str(), full.difference(light).count()))
+            .collect();
+        if !lost.is_empty() {
+            failures.push(format!("{source}: phones lose morph deltas (target, deltas lost): {lost:?}"));
+        }
+        // Phones still save triangles, and keep within the spec's hero character budget (§3.4).
+        if triangles(&mobile, 0) >= triangles(&desktop, 0) {
+            failures.push(format!("{source}: phones draw as many triangles as desktop"));
+        }
+        if triangles(&mobile, 0) > 30_000 {
+            failures.push(format!("{source}: {} triangles on phones, over 30k", triangles(&mobile, 0)));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The review's AP-005 witness: a 9 × 9 plane, flat to the simplifier, whose middle vertex
+/// alone carries a 10 m morph delta and black ambient occlusion. Before deformation-aware
+/// simplification the phone cook kept 10 of its 81 vertices, none of them that one, and
+/// reported an error under a millimetre.
+fn morph_witness() -> ImportedMesh {
+    const N: u32 = 9;
+    let middle = N * N / 2;
+    let mut mesh = ImportedMesh {
+        materials: vec![material("surface")],
+        lods: vec![Lod::default()],
+        ..ImportedMesh::default()
+    };
+    for z in 0..N {
+        for x in 0..N {
+            let middle = z * N + x == middle;
+            mesh.vertices.push(Vertex {
+                position: [x as f32, 0.0, z as f32],
+                normal: [0.0, 1.0, 0.0],
+                outline_normal: [0.0, 1.0, 0.0],
+                uv: [x as f32, z as f32],
+                color: if middle { [0, 0, 0] } else { [255, 255, 255] },
+                flags: VertexFlags::NONE,
+            });
+        }
+    }
+    for z in 0..N - 1 {
+        for x in 0..N - 1 {
+            let a = z * N + x;
+            mesh.indices.extend([a, a + N, a + 1, a + 1, a + N, a + N + 1]);
+        }
+    }
+    mesh.lods[0] = Lod {
+        vertex_count: N * N,
+        error: 0.0,
+        submeshes: vec![Submesh { first_index: 0, index_count: mesh.indices.len() as u32, material: 0 }],
+    };
+    mesh.authored_outline = vec![false; mesh.vertices.len()];
+    mesh.morph_targets = vec![ImportedMorphTarget {
+        name: "bump".into(),
+        default_weight: 1.0,
+        deltas: vec![ImportedDelta { vertex: middle, position: [0.0, 10.0, 0.0], normal: [0.0; 3] }],
+    }];
+    mesh
+}
+
+/// LOD `lod`'s triangles by corner positions, rotated to start at the smallest corner, so two
+/// meshes' triangles compare whatever their vertex numbering.
+fn triangle_positions(mesh: &ImportedMesh, lod: usize) -> BTreeSet<[[u32; 3]; 3]> {
+    lod_indices(mesh, lod)
+        .flat_map(|(_, indices)| indices.as_chunks::<3>().0.to_vec())
+        .map(|triangle| {
+            let corners = triangle.map(|index| mesh.vertices[index as usize].position.map(f32::to_bits));
+            let start = (0..3).min_by_key(|&k| corners[k]).unwrap();
+            [corners[start], corners[(start + 1) % 3], corners[(start + 2) % 3]]
+        })
+        .collect()
+}
+
+#[test]
+fn simplification_keeps_what_morph_targets_move() {
+    let source = morph_witness();
+    let settings = LodSettings::new(vec![LodLevel { triangle_ratio: 0.1, max_error: 0.001 }], 1).unwrap();
+    let mut desktop = source.clone();
+    optimize(&mut desktop, &settings, TOLERANCE, Cook::Desktop);
+    let mut mobile = source;
+    optimize(&mut mobile, &settings, TOLERANCE, Cook::Mobile);
+    assert_eq!(mobile.lods.len(), 1, "the phone cook starts at the simplified level");
+    eprintln!(
+        "witness on phones: {} of 81 vertices, {} triangles of 128, error {} m",
+        mobile.vertices.len(),
+        triangles(&mobile, 0),
+        mobile.lods[0].error
+    );
+    assert!(triangles(&mobile, 0) < triangles(&desktop, 0), "the rest of the plane still simplifies");
+    assert!(mobile.lods[0].error <= 0.001 * extent(&desktop), "within the level's budget");
+
+    // The vertex the target moves is still there, with its whole delta and its color.
+    let deltas = &mobile.morph_targets[0].deltas;
+    assert_eq!(deltas.len(), 1, "the delta survives");
+    let moved = mobile.vertices[deltas[0].vertex as usize];
+    assert_eq!((moved.position, deltas[0].position), ([4.0, 0.0, 4.0], [0.0, 10.0, 0.0]));
+    assert_eq!(moved.color, [0, 0, 0], "and so does its black ambient occlusion");
+
+    // Every triangle the target deforms is LOD0's own, so at any weight the deformed level
+    // differs from the deformed LOD0 only where neither moves: by the error at rest.
+    let deforming = |mesh: &ImportedMesh, lod: usize| -> BTreeSet<[[u32; 3]; 3]> {
+        let moved = moved.position.map(f32::to_bits);
+        triangle_positions(mesh, lod).into_iter().filter(|triangle| triangle.contains(&moved)).collect()
+    };
+    assert_eq!(deforming(&mobile, 0), deforming(&desktop, 0));
+    assert_eq!(deforming(&desktop, 0).len(), 6, "the six triangles round the middle of the grid");
+}
+
+/// A tube 2 m long and 0.2 m across along Y, in rings 2.5 cm apart, skinned to a lower joint at
+/// the origin and an upper one at 1 m whose weight rises linearly from 0.9 to 1.1 m: an elbow.
+/// At rest it is a straight cylinder, so positions and normals alone let the simplifier merge
+/// its rings freely, the blend's among them.
+fn elbow() -> ImportedMesh {
+    const RINGS: u32 = 80;
+    const SIDES: u32 = 16;
+    let mut mesh = ImportedMesh {
+        materials: vec![material("sleeve")],
+        lods: vec![Lod::default()],
+        ..ImportedMesh::default()
+    };
+    let mut weights = Vec::new();
+    for ring in 0..=RINGS {
+        let y = 2.0 * ring as f32 / RINGS as f32;
+        let upper = ((y - 0.9) / 0.2).clamp(0.0, 1.0);
+        for side in 0..SIDES {
+            let angle = TAU * side as f32 / SIDES as f32;
+            let normal = [angle.cos(), 0.0, angle.sin()];
+            mesh.vertices.push(Vertex {
+                position: [0.1 * normal[0], y, 0.1 * normal[2]],
+                normal,
+                outline_normal: normal,
+                uv: [side as f32 / SIDES as f32, y / 2.0],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
+            });
+            // Heaviest first.
+            let [(heavy, heavy_weight), (light, light_weight)] =
+                if upper >= 0.5 { [(1, upper), (0, 1.0 - upper)] } else { [(0, 1.0 - upper), (1, upper)] };
+            weights.push(SkinWeights {
+                binds: [heavy, light, 0, 0],
+                weights: [heavy_weight, light_weight, 0.0, 0.0],
+            });
+        }
+    }
+    for ring in 0..RINGS {
+        for side in 0..SIDES {
+            let (a, b) = (ring * SIDES + side, ring * SIDES + (side + 1) % SIDES);
+            mesh.indices.extend([a, a + SIDES, b, b, a + SIDES, b + SIDES]);
+        }
+    }
+    mesh.lods[0] = Lod {
+        vertex_count: mesh.vertices.len() as u32,
+        error: 0.0,
+        submeshes: vec![Submesh { first_index: 0, index_count: mesh.indices.len() as u32, material: 0 }],
+    };
+    mesh.authored_outline = vec![false; mesh.vertices.len()];
+    let joint = |name: &str, parent, y| Joint {
+        name: name.into(),
+        parent,
+        rest: JointTransform { translation: [0.0, y, 0.0], ..JointTransform::IDENTITY },
+    };
+    let translation = |y: f32| Mat4::from_translation(Vec3::new(0.0, y, 0.0)).to_cols_array_2d();
+    mesh.skin = Some(ImportedSkin {
+        joints: vec![joint("lower", None, 0.0), joint("upper", Some(0), 1.0)],
+        binds: vec![
+            SkinBind { joint: 0, inverse_bind_matrix: translation(0.0) },
+            SkinBind { joint: 1, inverse_bind_matrix: translation(-1.0) },
+        ],
+        weights,
+    });
+    mesh
+}
+
+/// The distance from `point` to the triangle `[a, b, c]` (Ericson, Real-Time Collision
+/// Detection, 5.1.5).
+fn distance_to_triangle(point: Vec3, [a, b, c]: [Vec3; 3]) -> f32 {
+    let (ab, ac, ap) = (b - a, c - a, point - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return point.distance(a);
+    }
+    let bp = point - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return point.distance(b);
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return point.distance(a + ab * (d1 / (d1 - d3)));
+    }
+    let cp = point - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return point.distance(c);
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return point.distance(a + ac * (d2 / (d2 - d6)));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return point.distance(b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    }
+    let denominator = 1.0 / (va + vb + vc);
+    point.distance(a + ab * (vb * denominator) + ac * (vc * denominator))
+}
+
+/// How far LOD `lod` of the elbow strays from its LOD0 with the upper joint bent `angle` about
+/// X: the farthest any bent LOD0 vertex lies from the bent level's surface.
+fn elbow_strays(mesh: &ImportedMesh, lod: usize, angle: f32) -> f32 {
+    let skin = mesh.skin.as_ref().unwrap();
+    let pivot = Vec3::new(0.0, 1.0, 0.0);
+    let bend = Mat3::from_rotation_x(angle);
+    let bent: Vec<Vec3> = mesh
+        .vertices
+        .iter()
+        .zip(&skin.weights)
+        .map(|(vertex, influences)| {
+            let position = Vec3::from(vertex.position);
+            let upper = pivot + bend * (position - pivot);
+            influences.binds.iter().zip(influences.weights).fold(Vec3::ZERO, |sum, (&bind, weight)| {
+                sum + weight * if bind == 1 { upper } else { position }
+            })
+        })
+        .collect();
+    let level: Vec<[Vec3; 3]> = lod_indices(mesh, lod)
+        .flat_map(|(_, indices)| indices.as_chunks::<3>().0.to_vec())
+        .map(|triangle| triangle.map(|index| bent[index as usize]))
+        .collect();
+    (0..mesh.lods[0].vertex_count as usize)
+        .map(|vertex| {
+            let point = bent[vertex];
+            level.iter().map(|&triangle| distance_to_triangle(point, triangle)).fold(f32::MAX, f32::min)
+        })
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn simplification_keeps_the_shape_of_bent_joints() {
+    let mut mesh = elbow();
+    optimize(&mut mesh, &LodSettings::default(), TOLERANCE, Cook::Desktop);
+    assert_eq!(mesh.lods.len(), 4, "the straight tube still simplifies to every level");
+    for lod in 1..mesh.lods.len() {
+        let error = mesh.lods[lod].error;
+        let [rest, posed, right] = [0.0, POSE_ANGLE, FRAC_PI_2].map(|angle| elbow_strays(&mesh, lod, angle));
+        eprintln!(
+            "elbow LOD{lod}: {} triangles, error {error:.4} m, strays {rest:.4} m at rest, {posed:.4} m \
+             bent {}°, {right:.4} m bent 90°",
+            triangles(&mesh, lod),
+            POSE_ANGLE.to_degrees(),
+        );
+        // The error bounds how far the level strays bent as far as the test poses, as at rest.
+        assert!(rest <= error, "LOD{lod} at rest: {rest} m against {error} m");
+        assert!(posed <= error, "LOD{lod} bent {}°: {posed} m against {error} m", POSE_ANGLE.to_degrees());
     }
 }

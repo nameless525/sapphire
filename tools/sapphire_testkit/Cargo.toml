@@ -12,6 +12,8 @@ name = "sapphire_testkit"
 path = "src/main.rs"
 
 [dependencies]
+# Scene deadlines and wall times, read from the clock rule R2 allows.
+sapphire_time.workspace = true
 nv-flip.workspace = true
 png.workspace = true
 thiserror.workspace = true

@@ -10,10 +10,22 @@
 //! - A scene with no golden for this family fails in CI (`CI` is set) and is skipped locally.
 //!   Its capture is kept as `.actual.png`, ready to commit.
 //! - [`Mode::Update`] writes this family's goldens from the captures instead of comparing.
+//!
+//! Each scene's sandbox writes its output to `<scene>.log` in the output directory and has a
+//! deadline (`--scene-timeout`, [`DEFAULT_SCENE_TIMEOUT`]): one that runs past it is killed, fails
+//! as timed out with its log's last lines, and the run goes on to the next scene (review BC-008).
+//! Every scene's line gives its wall time, and `timings.json` in the output directory lists them
+//! all (scene, family, seconds, status), rewritten after each scene so a cancelled run keeps what
+//! it had (review BC-107).
 
-use std::fs;
+use std::fmt::Write as _;
+use std::fs::{self, File};
+use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::Duration;
+
+use sapphire_time::Stopwatch;
 
 use crate::golden::{self, Image, Thresholds, backend_key};
 
@@ -21,6 +33,16 @@ use crate::golden::{self, Image, Thresholds, backend_key};
 const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
 /// Small enough for lavapipe and WARP to render each scene in a few seconds.
 const SIZE: &str = "640x360";
+/// How long a scene may take unless `--scene-timeout` says otherwise: about seven times the
+/// slowest scene on a CPU rasterizer (WARP's `foliage-ground`, about 130 s in CI), since a slow
+/// runner must not fail a scene that isn't hung.
+pub const DEFAULT_SCENE_TIMEOUT: Duration = Duration::from_secs(900);
+/// How many of a failed scene's last log lines its failure quotes.
+const LOG_TAIL_LINES: usize = 40;
+/// Waiting on a sandbox polls with exponential backoff from [`FIRST_POLL`] to [`MAX_POLL`]: quick
+/// scenes end within milliseconds of exiting, and slow ones cost no CPU.
+const FIRST_POLL: Duration = Duration::from_millis(1);
+const MAX_POLL: Duration = Duration::from_millis(50);
 
 pub struct Scene {
     pub name: &'static str,
@@ -2342,7 +2364,7 @@ pub struct Paths {
     pub content: PathBuf,
     /// `tests/golden`.
     pub goldens: PathBuf,
-    /// Captures, actuals and diffs; emptied first.
+    /// Captures, actuals, diffs, the scenes' logs and `timings.json`; emptied first.
     pub out: PathBuf,
 }
 
@@ -2388,109 +2410,343 @@ impl std::str::FromStr for Shard {
     }
 }
 
-/// Runs the selected scenes and returns one message per failure (empty: all passed).
-pub fn run(paths: &Paths, mode: Mode, selection: Selection<'_>) -> Result<Vec<String>, String> {
+/// Runs the selected scenes and returns one message per failure (empty: all passed). Each scene
+/// gets `timeout` (`--scene-timeout`; [`DEFAULT_SCENE_TIMEOUT`]).
+pub fn run(
+    paths: &Paths,
+    mode: Mode,
+    selection: Selection<'_>,
+    timeout: Duration,
+) -> Result<Vec<String>, String> {
     let scenes = scenes();
-    let selected: Vec<&Scene> = scenes
-        .iter()
-        .enumerate()
-        .filter(|&(position, scene)| match selection {
-            Selection::All => true,
-            Selection::Scene(name) => name == scene.name,
-            Selection::Shard(shard) => shard.holds(position),
-        })
-        .map(|(_, scene)| scene)
-        .collect();
+    let selected = select(&scenes, selection)?;
+    let sandbox = |_: &Scene| {
+        let mut command = Command::new(&paths.sandbox);
+        command.env(CONTENT_DIR_ENV, &paths.content);
+        command
+    };
+    run_scenes(&selected, paths, mode, timeout, &sandbox)
+}
+
+/// The scenes `selection` names, in their order.
+fn select<'s>(scenes: &'s [Scene], selection: Selection<'_>) -> Result<Vec<&'s Scene>, String> {
     match selection {
-        Selection::Scene(name) if selected.is_empty() => {
-            let names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
-            return Err(format!("no golden scene named {name:?}; scenes: {}", names.join(", ")));
-        }
-        Selection::Shard(shard) if selected.is_empty() => {
-            return Err(format!(
-                "shard {}/{} holds none of the {} scenes",
-                shard.index,
-                shard.count,
-                scenes.len()
-            ));
-        }
-        Selection::Shard(shard) => {
-            eprintln!("shard {}/{}: {} of {} scenes", shard.index, shard.count, selected.len(), scenes.len());
-        }
-        _ => {}
-    }
-    let io = |what: &str, path: &Path, error: std::io::Error| format!("{what} {}: {error}", path.display());
-    if paths.out.exists() {
-        fs::remove_dir_all(&paths.out).map_err(|e| io("failed to empty", &paths.out, e))?;
-    }
-    fs::create_dir_all(&paths.out).map_err(|e| io("failed to create", &paths.out, e))?;
-    let in_ci = std::env::var_os("CI").is_some();
-
-    let mut failures = Vec::new();
-    for scene in selected {
-        let capture = paths.out.join(format!("{}.png", scene.name));
-        let output = Command::new(&paths.sandbox)
-            .arg("--capture")
-            .arg(&capture)
-            .args(["--size", SIZE])
-            .args(scene.args)
-            .env(CONTENT_DIR_ENV, &paths.content)
-            .output()
-            .map_err(|e| io("failed to run", &paths.sandbox, e))?;
-        if !output.status.success() {
-            let log = String::from_utf8_lossy(&output.stderr);
-            failures.push(format!("{}: the sandbox failed ({}):\n{log}", scene.name, output.status));
-            continue;
-        }
-        let family = backend_family(&capture)?;
-        let golden_path = paths.goldens.join(format!("{}.{family}.png", scene.name));
-        let kept = paths.out.join(format!("{}.{family}.actual.png", scene.name));
-        let keep = || fs::copy(&capture, &kept).map(drop).map_err(|e| io("failed to write", &kept, e));
-
-        if mode == Mode::Update {
-            fs::create_dir_all(&paths.goldens).map_err(|e| io("failed to create", &paths.goldens, e))?;
-            fs::copy(&capture, &golden_path).map_err(|e| io("failed to write", &golden_path, e))?;
-            eprintln!("updated  {}", golden_path.display());
-            continue;
-        }
-        if !golden_path.is_file() {
-            keep()?;
-            let message = format!(
-                "{} [{family}]: no golden yet; the capture is at {} (`cargo xtask golden --update` adds it)",
-                scene.name,
-                kept.display()
-            );
-            if in_ci {
-                failures.push(message);
-            } else {
-                eprintln!("skipped  {message}");
+        Selection::All => Ok(scenes.iter().collect()),
+        Selection::Scene(name) => match scenes.iter().find(|scene| scene.name == name) {
+            Some(scene) => Ok(vec![scene]),
+            None => {
+                let names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
+                Err(format!("no golden scene named {name:?}; scenes: {}", names.join(", ")))
             }
-            continue;
-        }
-
-        let golden = Image::read_png(&golden_path).map_err(|e| e.to_string())?;
-        let actual = Image::read_png(&capture).map_err(|e| e.to_string())?;
-        let comparison = golden::compare(&golden, &actual, &scene.thresholds).map_err(|e| e.to_string())?;
-        let summary = format!(
-            "{} [{family}]: mean {:.4} (≤ {}), p{} {:.4} (≤ {}), max {:.3}",
-            scene.name,
-            comparison.mean,
-            scene.thresholds.mean,
-            comparison.percentile,
-            comparison.percentile_value,
-            scene.thresholds.percentile_max,
-            comparison.max,
-        );
-        if comparison.passes(&scene.thresholds) {
-            eprintln!("ok       {summary}");
-        } else {
-            keep()?;
-            let diff = paths.out.join(format!("{}.{family}.diff.png", scene.name));
-            comparison.error_map.write_png(&diff).map_err(|e| e.to_string())?;
-            failures.push(format!("{summary}\n    see {} and {}", kept.display(), diff.display()));
+        },
+        Selection::Shard(shard) => {
+            let held: Vec<&Scene> = scenes
+                .iter()
+                .enumerate()
+                .filter(|&(position, _)| shard.holds(position))
+                .map(|(_, scene)| scene)
+                .collect();
+            if held.is_empty() {
+                return Err(format!(
+                    "shard {}/{} holds none of the {} scenes",
+                    shard.index,
+                    shard.count,
+                    scenes.len()
+                ));
+            }
+            eprintln!("shard {}/{}: {} of {} scenes", shard.index, shard.count, held.len(), scenes.len());
+            Ok(held)
         }
     }
+}
+
+/// How a scene ended, as `timings.json` records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    /// Within its gates.
+    Ok,
+    /// Its golden written (`--update`).
+    Updated,
+    /// No golden for its family: a failure in CI, skipped locally.
+    NoGolden,
+    /// Outside its gates.
+    Failed,
+    /// The sandbox failed or left no adapter record.
+    Error,
+    /// Killed at its deadline.
+    TimedOut,
+}
+
+impl Status {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Updated => "updated",
+            Self::NoGolden => "no-golden",
+            Self::Failed => "failed",
+            Self::Error => "error",
+            Self::TimedOut => "timed-out",
+        }
+    }
+}
+
+/// One scene's result.
+struct Outcome {
+    status: Status,
+    /// Its backend family, when its sandbox wrote an adapter record.
+    family: Option<String>,
+    failure: Option<String>,
+}
+
+/// One scene's entry in `timings.json`.
+struct Timing {
+    scene: &'static str,
+    family: Option<String>,
+    seconds: f64,
+    status: Status,
+}
+
+/// Runs `selected` with the sandbox `sandbox` starts for each (its program and environment; the
+/// capture's arguments are added here).
+fn run_scenes(
+    selected: &[&Scene],
+    paths: &Paths,
+    mode: Mode,
+    timeout: Duration,
+    sandbox: &dyn Fn(&Scene) -> Command,
+) -> Result<Vec<String>, String> {
+    if paths.out.exists() {
+        fs::remove_dir_all(&paths.out).map_err(|e| io_error("failed to empty", &paths.out, e))?;
+    }
+    fs::create_dir_all(&paths.out).map_err(|e| io_error("failed to create", &paths.out, e))?;
+    let in_ci = std::env::var_os("CI").is_some();
+    let timings_path = paths.out.join("timings.json");
+
+    let run_clock = Stopwatch::start();
+    let mut failures = Vec::new();
+    let mut timings = Vec::with_capacity(selected.len());
+    for &scene in selected {
+        let clock = Stopwatch::start();
+        let outcome = run_scene(scene, paths, mode, timeout, in_ci, sandbox, &clock)?;
+        failures.extend(outcome.failure);
+        timings.push(Timing {
+            scene: scene.name,
+            family: outcome.family,
+            seconds: clock.elapsed().as_secs_f64(),
+            status: outcome.status,
+        });
+        write_timings(&timings_path, &timings)?;
+    }
+    eprintln!(
+        "{} scene(s) in {:.1} min; their times are in {}",
+        timings.len(),
+        run_clock.elapsed().as_secs_f64() / 60.0,
+        timings_path.display()
+    );
     Ok(failures)
+}
+
+/// Renders `scene` and checks it, printing one line with its time. `Err` stops the whole run: the
+/// sandbox can't be started, or the output can't be written. A scene that fails is an [`Outcome`].
+fn run_scene(
+    scene: &Scene,
+    paths: &Paths,
+    mode: Mode,
+    timeout: Duration,
+    in_ci: bool,
+    sandbox: &dyn Fn(&Scene) -> Command,
+    clock: &Stopwatch,
+) -> Result<Outcome, String> {
+    let seconds = || clock.elapsed().as_secs_f64();
+    let capture = paths.out.join(format!("{}.png", scene.name));
+    let log = paths.out.join(format!("{}.log", scene.name));
+    let mut command = sandbox(scene);
+    command.arg("--capture").arg(&capture).args(["--size", SIZE]).args(scene.args);
+    let exit = run_with_deadline(&mut command, &log, timeout)
+        .map_err(|e| format!("failed to run the sandbox for {} ({}): {e}", scene.name, log.display()))?;
+    let error = |status: Status, family: Option<String>, what: String| {
+        eprintln!("{:<8} {}: {what} (log: {})", status.name(), scene.name, log.display());
+        Outcome {
+            status,
+            family,
+            failure: Some(format!(
+                "{}: {what}; its log, {}, ends:\n{}",
+                scene.name,
+                log.display(),
+                log_tail(&log)
+            )),
+        }
+    };
+    let Some(exit) = exit else {
+        return Ok(error(Status::TimedOut, None, format!("timed out after {} s", timeout.as_secs())));
+    };
+    if !exit.success() {
+        let family = backend_family(&capture).ok();
+        return Ok(error(
+            Status::Error,
+            family,
+            format!("the sandbox failed ({exit}) after {:.1} s", seconds()),
+        ));
+    }
+    let family = match backend_family(&capture) {
+        Ok(family) => family,
+        Err(message) => return Ok(error(Status::Error, None, message)),
+    };
+    let outcome =
+        |status: Status, failure: Option<String>| Outcome { status, family: Some(family.clone()), failure };
+    let golden_path = paths.goldens.join(format!("{}.{family}.png", scene.name));
+    let kept = paths.out.join(format!("{}.{family}.actual.png", scene.name));
+    let keep = || fs::copy(&capture, &kept).map(drop).map_err(|e| io_error("failed to write", &kept, e));
+
+    if mode == Mode::Update {
+        fs::create_dir_all(&paths.goldens).map_err(|e| io_error("failed to create", &paths.goldens, e))?;
+        fs::copy(&capture, &golden_path).map_err(|e| io_error("failed to write", &golden_path, e))?;
+        eprintln!("updated  {} {:.1} s", golden_path.display(), seconds());
+        return Ok(outcome(Status::Updated, None));
+    }
+    if !golden_path.is_file() {
+        keep()?;
+        let message = format!(
+            "{} [{family}] {:.1} s: no golden yet; the capture is at {} (`cargo xtask golden --update` adds it)",
+            scene.name,
+            seconds(),
+            kept.display()
+        );
+        eprintln!("{:<8} {message}", if in_ci { "failed" } else { "skipped" });
+        return Ok(outcome(Status::NoGolden, in_ci.then_some(message)));
+    }
+
+    let golden = Image::read_png(&golden_path).map_err(|e| e.to_string())?;
+    let actual = Image::read_png(&capture).map_err(|e| e.to_string())?;
+    let comparison = golden::compare(&golden, &actual, &scene.thresholds).map_err(|e| e.to_string())?;
+    let summary = format!(
+        "{} [{family}] {:.1} s: mean {:.4} (≤ {}), p{} {:.4} (≤ {}), max {:.3}",
+        scene.name,
+        seconds(),
+        comparison.mean,
+        scene.thresholds.mean,
+        comparison.percentile,
+        comparison.percentile_value,
+        scene.thresholds.percentile_max,
+        comparison.max,
+    );
+    if comparison.passes(&scene.thresholds) {
+        eprintln!("ok       {summary}");
+        return Ok(outcome(Status::Ok, None));
+    }
+    keep()?;
+    let diff = paths.out.join(format!("{}.{family}.diff.png", scene.name));
+    comparison.error_map.write_png(&diff).map_err(|e| e.to_string())?;
+    eprintln!("failed   {summary}");
+    Ok(outcome(Status::Failed, Some(format!("{summary}\n    see {} and {}", kept.display(), diff.display()))))
+}
+
+/// Runs `command` with its output going to a new file at `log`, for at most `timeout`: the exit
+/// status, or `None` once a command that ran out of time has been killed and reaped.
+///
+/// A file, not a pipe: the sandbox's crash monitor inherits its output, so a pipe would stay open
+/// after the sandbox had gone, and an undrained one stalls the sandbox once it fills (64 KiB on
+/// Linux). Only the sandbox is killed: its crash monitor exits when its lifeline, a pipe only the
+/// sandbox holds, closes (`sapphire_crash`). A kill is `SIGKILL` (`TerminateProcess` on Windows),
+/// so a hung sandbox leaves no minidump; std has no portable way to send `SIGABRT` first.
+fn run_with_deadline(command: &mut Command, log: &Path, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let stdout = File::create(log)?;
+    let stderr = stdout.try_clone()?;
+    let mut child = command.stdin(Stdio::null()).stdout(stdout).stderr(stderr).spawn()?;
+    let waited = wait_with_deadline(&mut child, timeout);
+    if waited.is_err() {
+        // Never leave it running.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    waited
+}
+
+fn wait_with_deadline(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let clock = Stopwatch::start();
+    let mut delay = FIRST_POLL;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        let elapsed = clock.elapsed();
+        if elapsed >= timeout {
+            // An error means it exited meanwhile; the wait reaps it either way.
+            let _ = child.kill();
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(delay.min(timeout - elapsed));
+        delay = (delay * 2).min(MAX_POLL);
+    }
+}
+
+/// The last [`LOG_TAIL_LINES`] lines of a scene's log, indented, for its failure.
+fn log_tail(path: &Path) -> String {
+    const MAX_BYTES: u64 = 16 * 1024;
+    let read = || -> io::Result<String> {
+        let mut file = File::open(path)?;
+        let start = file.metadata()?.len().saturating_sub(MAX_BYTES);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let text = String::from_utf8_lossy(&bytes);
+        // A read from the middle starts inside a line.
+        let lines: Vec<&str> = text.lines().skip(usize::from(start > 0)).collect();
+        let first = lines.len().saturating_sub(LOG_TAIL_LINES);
+        Ok(lines[first..].iter().fold(String::new(), |mut tail, line| {
+            let _ = writeln!(tail, "    {line}");
+            tail
+        }))
+    };
+    match read() {
+        Ok(tail) if tail.is_empty() => "    (the log is empty)\n".to_owned(),
+        Ok(tail) => tail,
+        Err(error) => format!("    (the log can't be read: {error})\n"),
+    }
+}
+
+/// Writes every scene's time so far as a JSON array of `{scene, family, seconds, status}`. A run
+/// renders every scene on one backend, so a scene that left no adapter record (it timed out, say)
+/// takes the family the others named.
+fn write_timings(path: &Path, timings: &[Timing]) -> Result<(), String> {
+    let run_family = timings.iter().find_map(|timing| timing.family.as_deref());
+    let mut json = String::from("[\n");
+    for (i, timing) in timings.iter().enumerate() {
+        let family = timing.family.as_deref().or(run_family).map_or_else(|| "null".to_owned(), json_string);
+        let comma = if i + 1 < timings.len() { "," } else { "" };
+        let _ = writeln!(
+            json,
+            "  {{\"scene\": {}, \"family\": {family}, \"seconds\": {:.3}, \"status\": \"{}\"}}{comma}",
+            json_string(timing.scene),
+            timing.seconds,
+            timing.status.name()
+        );
+    }
+    json.push_str("]\n");
+    fs::write(path, json).map_err(|e| io_error("failed to write", path, e))
+}
+
+/// `text` as a JSON string.
+fn json_string(text: &str) -> String {
+    let mut json = String::with_capacity(text.len() + 2);
+    json.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => json.push_str("\\\""),
+            '\\' => json.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => {
+                let _ = write!(json, "\\u{:04x}", u32::from(c));
+            }
+            c => json.push(c),
+        }
+    }
+    json.push('"');
+    json
+}
+
+fn io_error(what: &str, path: &Path, error: io::Error) -> String {
+    format!("{what} {}: {error}", path.display())
 }
 
 /// The backend family of a capture, from the `<capture>.adapter.txt` the sandbox writes.
@@ -2507,6 +2763,8 @@ fn backend_family(capture: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use super::*;
 
     #[test]
@@ -2594,12 +2852,145 @@ mod tests {
             goldens: PathBuf::from("unused"),
             out: PathBuf::from("unused"),
         };
+        let run = |selection| run(&paths, Mode::Compare, selection, DEFAULT_SCENE_TIMEOUT).unwrap_err();
+        assert!(run(Selection::Scene("no-such-scene")).contains("turntable"));
+        assert!(run(Selection::Shard(Shard { index: 999, count: 999 })).contains("holds none"));
+    }
+
+    /// In a fake sandbox's environment: what it does (see [`fake_sandbox`]).
+    const FAKE_ENV: &str = "SAPPHIRE_TESTKIT_FAKE_SANDBOX";
+    /// In a fake crash monitor's environment: the file it writes as it exits.
+    const MONITOR_MARKER_ENV: &str = "SAPPHIRE_TESTKIT_FAKE_MONITOR_MARKER";
+
+    /// This test binary started again as a fake sandbox doing `behaviour`, with only
+    /// [`fake_sandbox`] selected. The runner adds the capture's arguments after the `--`, where the
+    /// test harness takes them as test names to match exactly, which they never do.
+    fn fake(behaviour: &'static str) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("the test binary"));
+        command
+            .args(["--exact", "scenes::tests::fake_sandbox", "--nocapture", "--"])
+            .env(FAKE_ENV, behaviour);
+        command
+    }
+
+    /// Not a test of its own: the stand-in for the sandbox and its crash monitor that
+    /// [`a_scene_past_its_deadline_is_stopped_and_the_run_goes_on`] starts (see [`fake`]). Without
+    /// [`FAKE_ENV`] it does nothing.
+    #[test]
+    fn fake_sandbox() {
+        let Ok(behaviour) = std::env::var(FAKE_ENV) else { return };
+        if behaviour == "monitor" {
+            // As `sapphire_crash`'s monitor does, it exits once the sandbox's end of its stdin closes.
+            let _ = io::stdin().read_to_end(&mut Vec::new());
+            fs::write(std::env::var(MONITOR_MARKER_ENV).expect("the marker's path"), "exited")
+                .expect("the marker");
+            return;
+        }
+        let args: Vec<String> = std::env::args().collect();
+        let capture = args.windows(2).find(|pair| pair[0] == "--capture").map(|pair| PathBuf::from(&pair[1]));
+        let capture = capture.expect("--capture <png>");
+        // Like the real monitor, it inherits this process's output and holds a lifeline only this
+        // process has, until this process is gone.
+        let mut monitor = fake("monitor")
+            .env(MONITOR_MARKER_ENV, capture.with_extension("monitor-exited"))
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("the fake monitor");
+        let lifeline = monitor.stdin.take();
+        // More than a pipe holds (64 KiB on Linux) on each of stdout and stderr.
+        let chatter = |lines: usize| {
+            for line in 0..lines {
+                writeln!(io::stdout(), "stdout line {line}: {}", "x".repeat(100)).expect("stdout");
+                eprintln!("stderr line {line}: {}", "x".repeat(100));
+            }
+        };
+        match behaviour.as_str() {
+            "hang" => {}
+            "stall" => {
+                chatter(1000);
+                eprintln!("stalling now");
+            }
+            "chatty" => {
+                chatter(2000);
+                fs::write(&capture, "unread by --update").expect("the capture");
+                let record = "backend=vulkan\nadapter=llvmpipe (fake)\n";
+                fs::write(capture.with_extension("adapter.txt"), record).expect("the adapter record");
+                // A clean exit closes the lifeline, as the real sandbox's does, and waits.
+                drop(lifeline);
+                monitor.wait().expect("the fake monitor's exit");
+                return;
+            }
+            other => panic!("no fake sandbox does {other:?}"),
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    #[test]
+    fn a_scene_past_its_deadline_is_stopped_and_the_run_goes_on() {
+        let dir = std::env::temp_dir().join(format!("sapphire_testkit_deadline_{}", std::process::id()));
+        let paths = Paths {
+            sandbox: PathBuf::from("unused"),
+            content: PathBuf::from("unused"),
+            goldens: dir.join("goldens"),
+            out: dir.join("out"),
+        };
+        let scene = |name| Scene { name, args: &["--plain-post"], thresholds: Thresholds::default() };
+        let scenes = [scene("fake-hang"), scene("fake-stall"), scene("fake-chatty")];
+        let selected: Vec<&Scene> = scenes.iter().collect();
+        let timeout = Duration::from_secs(3);
+        let sandbox = |scene: &Scene| fake(scene.name.strip_prefix("fake-").expect("a fake"));
+        let failures = run_scenes(&selected, &paths, Mode::Update, timeout, &sandbox).unwrap();
+
+        // Each hung scene fails as timed out, quoting the end of what it wrote.
+        assert_eq!(failures.len(), 2, "{failures:#?}");
+        assert!(failures[0].starts_with("fake-hang: timed out after 3 s"), "{}", failures[0]);
+        assert!(failures[1].starts_with("fake-stall: timed out after 3 s"), "{}", failures[1]);
+        assert!(failures[1].contains("stalling now"), "{}", failures[1]);
+        // Its log is kept, all of it.
+        let log = fs::read_to_string(paths.out.join("fake-stall.log")).unwrap();
         assert!(
-            run(&paths, Mode::Compare, Selection::Scene("no-such-scene")).unwrap_err().contains("turntable")
+            log.contains("stdout line 999")
+                && log.contains("stderr line 999")
+                && log.contains("stalling now")
         );
-        let past_the_end = Shard { index: 999, count: 999 };
-        assert!(
-            run(&paths, Mode::Compare, Selection::Shard(past_the_end)).unwrap_err().contains("holds none")
-        );
+        // The run went on: the next scene wrote far more than a pipe holds, and finished.
+        assert!(paths.goldens.join("fake-chatty.vulkan-lavapipe.png").is_file());
+        let log = fs::read_to_string(paths.out.join("fake-chatty.log")).unwrap();
+        assert!(log.contains("stdout line 1999") && log.contains("stderr line 1999"));
+
+        // `timings.json` has every scene, the hung ones stopped at their deadline (with slack for a
+        // busy machine) and named by the run's family.
+        let timings = fs::read_to_string(paths.out.join("timings.json")).unwrap();
+        let entries: Vec<&str> = timings.lines().filter(|line| line.contains("\"scene\"")).collect();
+        let expected = [("fake-hang", "timed-out"), ("fake-stall", "timed-out"), ("fake-chatty", "updated")];
+        assert_eq!(entries.len(), expected.len(), "{timings}");
+        for (entry, (scene, status)) in entries.iter().zip(expected) {
+            assert!(entry.contains(&format!("\"scene\": \"{scene}\"")), "{entry}");
+            assert!(entry.contains(&format!("\"status\": \"{status}\"")), "{entry}");
+            assert!(entry.contains("\"family\": \"vulkan-lavapipe\""), "{entry}");
+            let seconds: f64 = entry
+                .split("\"seconds\": ")
+                .nth(1)
+                .and_then(|rest| rest.split(',').next())
+                .unwrap()
+                .parse()
+                .unwrap();
+            if status == "timed-out" {
+                assert!((3.0..8.0).contains(&seconds), "{entry}");
+            }
+        }
+
+        // No crash monitor outlives its sandbox: each saw its lifeline close and left its marker.
+        let clock = Stopwatch::start();
+        for scene in &scenes {
+            let marker = paths.out.join(format!("{}.monitor-exited", scene.name));
+            while !marker.is_file() {
+                assert!(clock.elapsed() < Duration::from_secs(30), "{}'s monitor still runs", scene.name);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

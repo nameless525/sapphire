@@ -4,16 +4,21 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use sapphire_testkit::scenes::{self, Mode, Paths, Selection};
+use sapphire_testkit::scenes::{self, DEFAULT_SCENE_TIMEOUT, Mode, Paths, Selection};
 
 const USAGE: &str = "\
 Usage:
   sapphire_testkit golden --sandbox <exe> --content <dir> --goldens <dir> --out <dir>
                           [--update] [--scene <name> | --shard <index>/<count>]
+                          [--scene-timeout <seconds>]
       Render the golden scenes with the sandbox and compare them with the goldens.
       --shard renders every <count>-th scene from the <index>-th (from 1), so CI can split
-      a backend's scenes across runners.";
+      a backend's scenes across runners.
+      --scene-timeout stops a scene's sandbox after that long and fails the scene
+      (default 900). Each scene's output is in <out>/<scene>.log, and every scene's time
+      in <out>/timings.json.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -51,6 +56,13 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
     };
     let scene = value("--scene")?;
     let shard = value("--shard")?.map(|text| text.parse()).transpose()?;
+    let timeout = match value("--scene-timeout")? {
+        Some(text) => match text.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds),
+            _ => return Err(format!("invalid --scene-timeout {text:?}: expected whole seconds from 1")),
+        },
+        None => DEFAULT_SCENE_TIMEOUT,
+    };
     if let Some(unexpected) = args.first() {
         return Err(format!("unexpected argument `{unexpected}`"));
     }
@@ -60,5 +72,5 @@ fn run(mut args: Vec<String>) -> Result<Vec<String>, String> {
         (None, Some(shard)) => Selection::Shard(shard),
         (Some(_), Some(_)) => return Err("--scene and --shard can't be combined".into()),
     };
-    scenes::run(&paths, mode, selection)
+    scenes::run(&paths, mode, selection, timeout)
 }

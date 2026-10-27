@@ -69,7 +69,8 @@ pub enum RawInput {
     },
     /// Every held key, button, axis, finger and on-screen control lets go, firing nothing a
     /// release would: the window lost focus or the app left the foreground, so the real
-    /// releases may never arrive.
+    /// releases may never arrive. Sequences in progress are canceled too: a double tap waiting
+    /// for its second press goes idle, so the first press after the return starts a new one.
     ReleaseAll,
 }
 

@@ -147,15 +147,29 @@ fn since(now: Timestamp, earlier: Timestamp) -> u64 {
     now.as_nanos().saturating_sub(earlier.as_nanos())
 }
 
-/// Judges a binding whose source reads `actuated` at time `now`. `abort` means a drop in
-/// actuation is the device letting go (focus lost, a canceled touch), not the player releasing,
-/// so nothing a release would fire fires.
+/// How an evaluation takes a drop in actuation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Abort {
+    /// The player let go: releases fire.
+    No,
+    /// A device let go, not the player (a touch the OS canceled, a gamepad that disconnected),
+    /// so nothing a release would fire fires. Other devices' sequences carry on: a double tap
+    /// armed by a key stays armed when a pad disconnects.
+    Release,
+    /// Everything let go (focus or the foreground was lost): nothing a release would fire
+    /// fires, and sequences in progress end. A double tap waiting for its second press goes
+    /// idle at once, so the first press after the player comes back starts a new one.
+    All,
+}
+
+/// Judges a binding whose source reads `actuated` at time `now`; `abort` says whether a drop
+/// in actuation is the player releasing.
 pub(crate) fn evaluate(
     spec: TriggerSpec,
     memory: &mut Memory,
     actuated: bool,
     now: Timestamp,
-    abort: bool,
+    abort: Abort,
 ) -> Fire {
     let rising = actuated && !memory.actuated;
     let falling = !actuated && memory.actuated;
@@ -163,6 +177,9 @@ pub(crate) fn evaluate(
     if rising {
         memory.pressed_at = now;
         memory.spent = false;
+    }
+    if abort == Abort::All {
+        memory.armed_at = None;
     }
     if memory.suppressed {
         if !actuated {
@@ -173,7 +190,7 @@ pub(crate) fn evaluate(
             return Fire::IDLE;
         }
     }
-    let released = falling && !abort;
+    let released = falling && abort == Abort::No;
     let held = since(now, memory.pressed_at);
     match spec {
         TriggerSpec::Down => {
@@ -278,7 +295,7 @@ mod tests {
     fn run(trigger: Trigger, samples: &[(u64, bool)]) -> Vec<Fire> {
         let spec = TriggerSpec::compile(trigger).expect("valid trigger");
         let mut memory = Memory::default();
-        samples.iter().map(|&(t, actuated)| evaluate(spec, &mut memory, actuated, ms(t), false)).collect()
+        samples.iter().map(|&(t, actuated)| evaluate(spec, &mut memory, actuated, ms(t), Abort::No)).collect()
     }
 
     const I: Fire = Fire::IDLE;
@@ -330,18 +347,18 @@ mod tests {
     fn deadlines_mark_when_time_alone_changes_the_state() {
         let spec = TriggerSpec::compile(Trigger::Hold { seconds: 0.5 }).expect("valid");
         let mut memory = Memory::default();
-        evaluate(spec, &mut memory, true, ms(100), false);
+        evaluate(spec, &mut memory, true, ms(100), Abort::No);
         assert_eq!(deadline(spec, &memory), Some(ms(600)));
-        assert_eq!(evaluate(spec, &mut memory, true, ms(600), false), T);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(600), Abort::No), T);
         assert_eq!(deadline(spec, &memory), None, "a fired hold has nothing left to wait for");
 
         let spec = TriggerSpec::compile(Trigger::DoubleTap { seconds: 0.3 }).expect("valid");
         let mut memory = Memory::default();
-        evaluate(spec, &mut memory, true, ms(0), false);
+        evaluate(spec, &mut memory, true, ms(0), Abort::No);
         assert_eq!(deadline(spec, &memory), Some(ms(300)));
-        evaluate(spec, &mut memory, false, ms(100), false);
+        evaluate(spec, &mut memory, false, ms(100), Abort::No);
         assert_eq!(deadline(spec, &memory), Some(ms(400)), "the window for the second tap");
-        assert_eq!(evaluate(spec, &mut memory, false, ms(400), false), I);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(400), Abort::No), I);
         assert_eq!(deadline(spec, &memory), None);
     }
 
@@ -349,23 +366,46 @@ mod tests {
     fn aborted_releases_fire_nothing() {
         for trigger in [Trigger::Released, Trigger::Tap { seconds: 1.0 }, Trigger::DoubleTap { seconds: 1.0 }]
         {
-            let spec = TriggerSpec::compile(trigger).expect("valid");
-            let mut memory = Memory::default();
-            evaluate(spec, &mut memory, true, ms(0), false);
-            assert_eq!(evaluate(spec, &mut memory, false, ms(10), true), I, "{trigger:?}");
+            for abort in [Abort::Release, Abort::All] {
+                let spec = TriggerSpec::compile(trigger).expect("valid");
+                let mut memory = Memory::default();
+                evaluate(spec, &mut memory, true, ms(0), Abort::No);
+                assert_eq!(evaluate(spec, &mut memory, false, ms(10), abort), I, "{trigger:?}, {abort:?}");
+            }
         }
+    }
+
+    #[test]
+    fn releasing_everything_cancels_an_armed_double_tap() {
+        // Review FI-003: an armed double tap has no release left to abort, so only canceling
+        // the sequence keeps the next press from completing it.
+        let spec = TriggerSpec::compile(Trigger::DoubleTap { seconds: 0.3 }).expect("valid");
+        let mut memory = Memory::default();
+        evaluate(spec, &mut memory, true, ms(10), Abort::No);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(20), Abort::No), O, "armed");
+
+        // One device letting go leaves it armed.
+        let mut other_device = memory;
+        assert_eq!(evaluate(spec, &mut other_device, false, ms(40), Abort::Release), O);
+        assert_eq!(evaluate(spec, &mut other_device, true, ms(60), Abort::No), P);
+
+        assert_eq!(evaluate(spec, &mut memory, false, ms(40), Abort::All), I, "canceled at once");
+        assert_eq!(deadline(spec, &memory), None, "nothing left to wait for");
+        assert_eq!(evaluate(spec, &mut memory, true, ms(60), Abort::No), O, "a first tap");
+        assert_eq!(evaluate(spec, &mut memory, false, ms(70), Abort::No), O);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(100), Abort::No), P, "and its second");
     }
 
     #[test]
     fn inputs_held_on_entry_are_ignored_until_released() {
         let spec = TriggerSpec::compile(Trigger::Pressed).expect("valid");
         let mut memory = Memory::entering(true);
-        assert_eq!(evaluate(spec, &mut memory, true, ms(0), false), I);
-        assert_eq!(evaluate(spec, &mut memory, false, ms(10), false), I);
-        assert_eq!(evaluate(spec, &mut memory, true, ms(20), false), P, "a fresh press fires");
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(10), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(20), Abort::No), P, "a fresh press fires");
         // Down isn't an edge: a held stick keeps working.
         let spec = TriggerSpec::compile(Trigger::Down).expect("valid");
-        assert_eq!(evaluate(spec, &mut Memory::entering(true), true, ms(0), false), T);
+        assert_eq!(evaluate(spec, &mut Memory::entering(true), true, ms(0), Abort::No), T);
     }
 
     #[test]

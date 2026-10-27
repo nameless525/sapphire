@@ -85,6 +85,12 @@ impl Rig {
     fn value(&self, action: &str) -> Vec2 {
         self.input.state(self.action(action)).value()
     }
+
+    /// The app goes to the background at `t`.
+    fn background(&mut self, t: u64) {
+        self.input
+            .handle_event(&Event::Lifecycle { timestamp: ms(t), event: LifecycleEvent::WillEnterBackground });
+    }
 }
 
 #[test]
@@ -575,4 +581,89 @@ fn a_removed_gamepad_lets_go_of_its_buttons() {
     rig.push(12, RawInput::GamepadRemoved { pad: 0 });
     assert_eq!(rig.update(20), [ev("guard", Completed, 12)]);
     assert_eq!(rig.input.gamepads(), 0);
+}
+
+#[test]
+fn losing_focus_cancels_double_taps_waiting_for_their_second_press() {
+    // Review FI-003: a double tap armed by its first tap is a sequence in progress. Losing focus
+    // or the foreground cancels it at once, so the first press after resuming starts a new one.
+    let map = map(
+        r#"(name: "slow", kind: Button), (name: "dash", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "slow", source: Touch(Press), trigger: DoubleTap(seconds: 0.3)),
+            (action: "dash", source: Key(K), trigger: DoubleTap(seconds: 0.3)),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.touch(10, 0, TouchPhase::Down, 50.0, 50.0);
+    rig.touch(20, 0, TouchPhase::Up, 50.0, 50.0);
+    rig.key(21, Scancode::K, true);
+    rig.key(22, Scancode::K, false);
+    assert_eq!(rig.update(30), [ev("slow", Started, 10), ev("dash", Started, 21)]);
+    rig.background(40);
+    assert_eq!(
+        rig.update(50),
+        [ev("slow", Canceled, 40), ev("dash", Canceled, 40)],
+        "canceled when focus goes, not when the window closes"
+    );
+
+    rig.touch(60, 0, TouchPhase::Down, 50.0, 50.0);
+    rig.key(61, Scancode::K, true);
+    assert_eq!(rig.update(70), [ev("slow", Started, 60), ev("dash", Started, 61)], "new sequences");
+    // Two genuine taps after resuming still fire, once each.
+    rig.touch(80, 0, TouchPhase::Up, 50.0, 50.0);
+    rig.key(81, Scancode::K, false);
+    rig.touch(120, 0, TouchPhase::Down, 50.0, 50.0);
+    rig.key(121, Scancode::K, true);
+    assert_eq!(
+        rig.update(130),
+        [
+            ev("slow", Triggered, 120),
+            ev("slow", Completed, 120),
+            ev("dash", Triggered, 121),
+            ev("dash", Completed, 121),
+        ]
+    );
+}
+
+#[test]
+fn a_double_tap_across_a_focus_loss_in_one_frame_does_not_fire() {
+    // Review FI-003 within one frame, through the system's own release.
+    let map = map(
+        r#"(name: "slow", kind: Button)"#,
+        r#"(name: "main", bindings: [(action: "slow", source: Touch(Press), trigger: DoubleTap(seconds: 0.3))])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.touch(10, 0, TouchPhase::Down, 50.0, 50.0);
+    rig.touch(20, 0, TouchPhase::Up, 50.0, 50.0);
+    rig.input.release_all(ms(30));
+    rig.touch(40, 0, TouchPhase::Down, 50.0, 50.0);
+    rig.touch(50, 0, TouchPhase::Up, 50.0, 50.0);
+    assert_eq!(rig.update(60), [ev("slow", Started, 10), ev("slow", Canceled, 30), ev("slow", Started, 40)]);
+    // The tap after the release armed a double tap of its own.
+    rig.touch(100, 0, TouchPhase::Down, 50.0, 50.0);
+    assert_eq!(rig.update(110), [ev("slow", Triggered, 100), ev("slow", Completed, 100)]);
+}
+
+#[test]
+fn a_removed_gamepad_leaves_other_devices_sequences_alone() {
+    // Review FI-003's policy: only losing focus or the foreground cancels every sequence. A pad
+    // that disconnects lets go of what it held, and a keyboard double tap stays armed.
+    let map = map(
+        r#"(name: "dash", kind: Button), (name: "guard", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "dash", source: Key(K), trigger: DoubleTap(seconds: 0.3)),
+            (action: "guard", source: Pad(LeftShoulder)),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.push(2, RawInput::PadButton { pad: 0, button: PadButton::LeftShoulder, down: true });
+    rig.key(10, Scancode::K, true);
+    rig.key(20, Scancode::K, false);
+    assert_eq!(rig.update(30), [ev("guard", Started, 2), ev("guard", Triggered, 2), ev("dash", Started, 10)]);
+    rig.push(40, RawInput::GamepadRemoved { pad: 0 });
+    assert_eq!(rig.update(50), [ev("guard", Completed, 40)]);
+    rig.key(60, Scancode::K, true);
+    assert_eq!(rig.update(70), [ev("dash", Triggered, 60), ev("dash", Completed, 60)]);
 }

@@ -12,7 +12,7 @@ use crate::map::{ActionId, Channel, ContextId, InputMap, MapError, SourceId, Vir
 use crate::modifier;
 use crate::raw::{PlatformAdapter, RawInput};
 use crate::source::{Key, Source};
-use crate::trigger::{self, Memory, TriggerState};
+use crate::trigger::{self, Abort, Memory, TriggerState};
 
 /// The longest update [`Modifier::ScaleByDeltaTime`](crate::Modifier::ScaleByDeltaTime) sees,
 /// so a hitch or a return from the background doesn't fling a rate-driven value.
@@ -320,7 +320,8 @@ impl InputSystem {
         self.push(timestamp, RawInput::Virtual { control, value });
     }
 
-    /// Releases everything held at `timestamp`, firing nothing a release would.
+    /// Releases everything held at `timestamp`, firing nothing a release would, and cancels
+    /// sequences in progress: a double tap waiting for its second press goes idle then.
     pub fn release_all(&mut self, timestamp: Timestamp) {
         self.push(timestamp, RawInput::ReleaseAll);
     }
@@ -343,7 +344,7 @@ impl InputSystem {
         if self.contexts_changed {
             self.contexts_changed = false;
             self.rebuild_active();
-            self.evaluate(self.time, MotionPass::Keep, false);
+            self.evaluate(self.time, MotionPass::Keep, Abort::No);
         }
 
         // Taken out so `apply` can borrow the system; put back to keep its capacity.
@@ -358,7 +359,7 @@ impl InputSystem {
 
         let at = now.max(self.time);
         self.run_deadlines(at);
-        self.evaluate(at, MotionPass::All, false);
+        self.evaluate(at, MotionPass::All, Abort::No);
         self.frame += 1;
     }
 
@@ -439,7 +440,7 @@ impl InputSystem {
                     self.devices.used(DeviceKind::KeyboardMouse);
                 }
                 if self.devices.set_key(scancode, down) {
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::MouseButton { button, down } => {
@@ -450,7 +451,7 @@ impl InputSystem {
                     self.devices.used(DeviceKind::KeyboardMouse);
                 }
                 if self.devices.set_mouse(button, down) {
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::MouseMotion { delta } => {
@@ -466,7 +467,7 @@ impl InputSystem {
             RawInput::GamepadAdded { pad, kind } => self.devices.connect_pad(pad, kind),
             RawInput::GamepadRemoved { pad } => {
                 if self.devices.disconnect_pad(pad) {
-                    self.evaluate(now, MotionPass::Keep, true);
+                    self.evaluate(now, MotionPass::Keep, Abort::Release);
                 }
             }
             RawInput::PadButton { pad, button, down } => {
@@ -474,7 +475,7 @@ impl InputSystem {
                     return;
                 }
                 if self.devices.set_pad_button(pad, button, down) {
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::PadAxis { pad, axis, value } => {
@@ -483,7 +484,7 @@ impl InputSystem {
                     self.capture(|| Source::PadAxis(axis));
                 }
                 if self.devices.set_pad_axis(pad, axis, value) {
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::Touch { finger, phase, position } => {
@@ -494,7 +495,8 @@ impl InputSystem {
                 if let Some(change) = out.press
                     && self.devices.set_press(change == PressChange::Down)
                 {
-                    self.evaluate(now, MotionPass::Keep, change == PressChange::Cancel);
+                    let abort = if change == PressChange::Cancel { Abort::Release } else { Abort::No };
+                    self.evaluate(now, MotionPass::Keep, abort);
                 }
                 if let Some(drag) = out.drag {
                     self.add_motion(Channel::Drag, drag, now);
@@ -505,20 +507,20 @@ impl InputSystem {
                 if let Some(direction) = out.swipe {
                     // A swipe is an instant: it presses and releases at the same timestamp.
                     self.devices.set_swipe(direction, true);
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                     self.devices.set_swipe(direction, false);
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::Virtual { control, value } => {
                 if self.devices.set_virtual(control.index(), value) {
-                    self.evaluate(now, MotionPass::Keep, false);
+                    self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
             RawInput::ReleaseAll => {
                 self.devices.release_all();
                 self.gestures.reset();
-                self.evaluate(now, MotionPass::Keep, true);
+                self.evaluate(now, MotionPass::Keep, Abort::All);
             }
         }
     }
@@ -527,7 +529,7 @@ impl InputSystem {
     /// motion's timestamp. The rest only add up until the update's final evaluation.
     fn add_motion(&mut self, channel: Channel, delta: Vec2, now: Timestamp) {
         if self.devices.add_motion(channel, delta, self.frame) {
-            self.evaluate(now, MotionPass::Channel(channel), false);
+            self.evaluate(now, MotionPass::Channel(channel), Abort::No);
         }
     }
 
@@ -543,12 +545,12 @@ impl InputSystem {
                 return;
             }
             rounds -= 1;
-            self.evaluate(deadline.max(self.time), MotionPass::Keep, false);
+            self.evaluate(deadline.max(self.time), MotionPass::Keep, Abort::No);
         }
     }
 
     /// Judges every active binding at `now` and turns the changes into action events.
-    fn evaluate(&mut self, now: Timestamp, pass: MotionPass, abort: bool) {
+    fn evaluate(&mut self, now: Timestamp, pass: MotionPass, abort: Abort) {
         self.time = now;
         let map = &self.map;
         for &action in map.order() {

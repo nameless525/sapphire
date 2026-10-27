@@ -132,7 +132,7 @@ impl SandboxInput {
 #[cfg(test)]
 mod tests {
     use sapphire_input::{PadAxis, PadButton, RawInput};
-    use sapphire_platform::{GamepadType, Scancode, TouchPhase};
+    use sapphire_platform::{GamepadType, LifecycleEvent, Scancode, TouchPhase};
 
     use super::*;
 
@@ -278,6 +278,28 @@ mod tests {
         touch(&mut input, 1000, 0, TouchPhase::Down, 300.0, 300.0);
         input.update(ms(1600));
         assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: false, hitstop: true });
+    }
+
+    #[test]
+    fn leaving_the_foreground_cancels_a_half_finished_double_tap() {
+        // Review FI-003: a tap, then the app leaves the foreground; the first press after it
+        // comes back starts a new double tap rather than finishing the old one.
+        let mut input = input(false);
+        let touch = |input: &mut SandboxInput, t, phase| {
+            input.push(t, RawInput::Touch { finger: 0, phase, position: Vec2::new(300.0, 300.0) });
+        };
+        touch(&mut input, 10, TouchPhase::Down);
+        touch(&mut input, 60, TouchPhase::Up);
+        input.update(ms(70));
+        input.handle_event(&Event::Lifecycle {
+            timestamp: ms(80),
+            event: LifecycleEvent::WillEnterBackground,
+        });
+        input.update(ms(90));
+        touch(&mut input, 100, TouchPhase::Down);
+        touch(&mut input, 150, TouchPhase::Up);
+        input.update(ms(160));
+        assert_eq!(input.take_actions(), SimActions::default(), "no slow motion");
     }
 
     #[test]

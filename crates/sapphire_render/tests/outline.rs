@@ -376,10 +376,14 @@ fn at(pixels: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
 }
 
 /// Outline thickness in pixels where the middle row crosses the left half: each pixel's
-/// darkness against the grey sky and surface is its outline coverage.
+/// darkness against the grey sky and surface is its outline coverage. The grey is read from the
+/// row's first pixel, sky in every test, not assumed to be 0.5: linear 0.5 is sRGB code 187.52,
+/// which lavapipe rounds down to 187, and 0.6% of darkness on each of some 470 pixels read as
+/// 2.9 px of outline.
 fn left_outline_width(pixels: &[[u8; 4]]) -> f32 {
     let row = SIZE.1 / 2;
-    (0..SIZE.0 / 2).map(|x| (1.0 - linear(at(pixels, x, row)).x / 0.5).clamp(0.0, 1.0)).sum()
+    let grey = linear(at(pixels, 0, row)).x;
+    (0..SIZE.0 / 2).map(|x| (1.0 - linear(at(pixels, x, row)).x / grey).clamp(0.0, 1.0)).sum()
 }
 
 /// An `Rg16Float` texel's two values.

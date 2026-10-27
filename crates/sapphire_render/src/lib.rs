@@ -766,12 +766,12 @@
 //!   a cheaper sky filling the view, and its cubes as frame graph resources.
 //! - **The anime character shader** (see above): screen-space reflections on the desktop tiers
 //!   for the reflection add, which reads W5's prefiltered reflection cube at the region's
-//!   roughness on every tier today; VRM's MToon emission mapped onto the layers' emission; the
-//!   proximity fade could give fading pixels their own responsive weight, so temporal AA settles
-//!   the dither faster. Outlines take their width's region per vertex (the vertex stage reads no
-//!   textures): a width texture would make group 3 visible to it. Cooked MikkTSpace tangents
-//!   replace the normal map's screen-derivative frame (outline normals need none: their frame is
-//!   derived from the normal), and give Kajiya-Kay a strand direction of the mesh's own.
+//!   roughness on every tier today; the proximity fade could give fading pixels their own
+//!   responsive weight, so temporal AA settles the dither faster. Outlines take their width's
+//!   region per vertex (the vertex stage reads no textures): a width texture would make group 3
+//!   visible to it. Cooked MikkTSpace tangents replace the normal map's screen-derivative frame
+//!   (outline normals need none: their frame is derived from the normal), and give Kajiya-Kay a
+//!   strand direction of the mesh's own.
 //! - **Rim, hair and eyes through hair** (see above): a rim against the environment's depth
 //!   step too (today anything that isn't a character counts as far behind), from a scene depth
 //!   every tier keeps; a per-character rim scale in `CharacterData` if one material needs two;

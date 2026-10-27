@@ -4,6 +4,7 @@ use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use super::*;
 use crate::cook::{Cook, CookOptions, CookReport, cook_dir};
 use crate::import::vrm::VrmVersion;
+use crate::import::vrm::mtoon::TextureUse;
 use crate::import::vrm::samples::{self, SampleVrm};
 use crate::test_util::{TempDir, read_aligned};
 use crate::texture::{ColorSettings, MaskSettings, NormalSettings};
@@ -62,7 +63,9 @@ fn extraction_writes_textures_maps_and_bound_documents() {
     };
     assert_eq!(class("body_albedo"), TextureClass::Color(ColorSettings::default()), "base and shade");
     assert_eq!(class("body_normal"), TextureClass::Normal(NormalSettings::default()));
-    assert_eq!(class("body_rim"), TextureClass::Mask(MaskSettings::default()), "rim and UV animation masks");
+    // The rim image is Skin's UV animation mask and its rim multiply texture, which its layer mask
+    // holds (below).
+    assert_eq!(class("body_rim"), TextureClass::Mask(MaskSettings::default()), "the UV animation mask");
     assert_eq!(class("body_outline"), TextureClass::Mask(MaskSettings::default()));
     assert_eq!(class("matcap"), TextureClass::Color(ColorSettings::default()));
     // PNG images are copied byte for byte, JPEG ones decoded and written as PNG.
@@ -84,12 +87,42 @@ fn extraction_writes_textures_maps_and_bound_documents() {
     let ilm: IlmMap = sapphire_serialize::from_ron(&fs::read_to_string(&ilm_path).unwrap()).unwrap();
     assert_eq!(
         ilm.shadow_bias,
-        ChannelInput::Image { path: "body_shift.png".into(), channel: ImageChannel::R, range: [0.5, 0.75] }
+        ChannelInput::Image {
+            path: "body_shift.png".into(),
+            channel: ImageChannel::R,
+            range: [0.5, 0.75],
+            encoding: Encoding::Linear
+        }
     );
     assert_eq!(ilm.material_id, MaterialIdInput::Constant(0));
     assert!(matches!(importer(&ilm_path), ImportSettings::CharacterMap(MapSettings::Ilm(_))));
 
-    // The Skin document is the mapping with the extracted textures bound.
+    // Skin's layer mask (M1 C7): its rim multiply texture's brightest channel, R, decoded from
+    // sRGB, masks its matcap; nothing else is painted.
+    let rim_input = extracted(&scratch, "maps/body_rim.png");
+    assert!(rim_input.exists() && !meta::sidecar_path(&rim_input).exists());
+    assert_eq!(fs::read(&rim_input).unwrap(), import.image(samples::image::RIM).unwrap().bytes);
+    let layers_path = extracted(&scratch, "maps/body_rim.layers.ron");
+    let layers: LayerMaskMap =
+        sapphire_serialize::from_ron(&fs::read_to_string(&layers_path).unwrap()).unwrap();
+    assert_eq!(
+        layers,
+        LayerMaskMap {
+            size: None,
+            matcap: ChannelInput::Image {
+                path: "body_rim.png".into(),
+                channel: ImageChannel::R,
+                range: [0.0, 1.0],
+                encoding: Encoding::Srgb,
+            },
+            metallic: layer_mask::unpainted(),
+            emission: layer_mask::unpainted(),
+            stocking: layer_mask::unpainted(),
+        }
+    );
+    assert!(matches!(importer(&layers_path), ImportSettings::CharacterMap(MapSettings::LayerMask(_))));
+
+    // The Skin document is the mapping with the extracted textures and maps bound.
     let skin_path = extracted(&scratch, "materials/Skin.material.ron");
     assert!(matches!(importer(&skin_path), ImportSettings::Material(_)));
     let skin = document(&skin_path);
@@ -97,18 +130,16 @@ fn extraction_writes_textures_maps_and_bound_documents() {
     assert_eq!(skin.normal_map, Some(id(&texture("body_normal"))));
     assert_eq!(skin.control_map, Some(id(&ilm_path)));
     assert_eq!(skin.matcap.map(|matcap: Matcap| matcap.map), Some(id(&texture("matcap"))));
-    let mapped = import.slots[0].as_ref().unwrap().to_material(|_| None);
-    assert_eq!(
-        AnimeCharacterMaterial {
-            base_color_map: None,
-            normal_map: None,
-            control_map: None,
-            matcap: None,
-            light_split: mapped.light_split,
-            ..skin.clone()
-        },
-        AnimeCharacterMaterial { matcap: None, ..mapped }
-    );
+    assert_eq!(skin.layer_mask, Some(id(&layers_path)));
+    let mapped = import.slots[0].as_ref().unwrap().to_material(|binding| match binding {
+        Binding::Texture(TextureUse::BaseColor) => Some(id(&texture("body_albedo"))),
+        Binding::Texture(TextureUse::Normal) => Some(id(&texture("body_normal"))),
+        Binding::Texture(TextureUse::Matcap) => Some(id(&texture("matcap"))),
+        Binding::ControlMap => Some(id(&ilm_path)),
+        Binding::LayerMask => Some(id(&layers_path)),
+        Binding::Texture(_) => None,
+    });
+    assert_eq!(skin, mapped);
     // With its control map, the shading shift is per texel, so the threshold is the factor's.
     assert!((skin.light_split.threshold - 0.1).abs() < 1e-6, "{:?}", skin.light_split);
     let lashes = document(&extracted(&scratch, "materials/Lashes.material.ron"));
@@ -135,8 +166,78 @@ fn extraction_writes_textures_maps_and_bound_documents() {
     let bound: Vec<Option<AssetId>> = cooked.textures.iter().map(|binding| binding.texture).collect();
     assert_eq!(bound[AnimeCharacterMaterial::CONTROL], Some(id(&ilm_path)));
     assert_eq!(bound[AnimeCharacterMaterial::MATCAP], Some(id(&texture("matcap"))));
+    assert_eq!(bound[AnimeCharacterMaterial::SURFACE_MASK], Some(id(&layers_path)));
     assert!(report.assets.iter().any(|asset| asset.source == ilm_path), "the ILM map cooks");
-    assert!(!report.assets.iter().any(|asset| asset.source == input), "its input is part of it");
+    assert!(report.assets.iter().any(|asset| asset.source == layers_path), "the layer mask cooks");
+    for input in [input, rim_input] {
+        assert!(!report.assets.iter().any(|asset| asset.source == input), "{input:?} is part of a map");
+    }
+}
+
+#[test]
+fn extraction_writes_the_glow_into_the_layer_mask() {
+    let scratch = TempDir::new("extract_glow");
+    // Skin glows through the outline image, (0, rising, 0): its G is the glow, and its hue
+    // green. Hair glows through the same image at another strength; Lashes, unlit, doesn't.
+    let mut sample = samples::vrm1();
+    let materials = &mut sample.document["materials"];
+    for (material, factor) in
+        [(samples::material::SKIN, [1.0, 0.5, 0.25]), (samples::material::HAIR, [0.5; 3])]
+    {
+        materials[material]["emissiveFactor"] = serde_json::json!(factor);
+        materials[material]["emissiveTexture"] = serde_json::json!({ "index": samples::image::OUTLINE });
+    }
+    let source = tree(&scratch, &sample);
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    let bound: Vec<&str> = extraction.bound.iter().map(|(slot, _)| slot.as_str()).collect();
+    assert_eq!(bound, ["Skin", "Hair", "Lashes"], "Hair's glow is textured now");
+
+    let read = |name: &str| -> LayerMaskMap {
+        sapphire_serialize::from_ron(&fs::read_to_string(extracted(&scratch, name)).unwrap()).unwrap()
+    };
+    let glow = ChannelInput::Image {
+        path: "body_outline.png".into(),
+        channel: ImageChannel::G,
+        range: [0.0, 1.0],
+        encoding: Encoding::Srgb,
+    };
+    // Skin's mask holds its matcap's mask and its glow, named after both images; Hair's, the
+    // glow alone (it has no matcap to mask).
+    let skin_layers = read("maps/body_rim-body_outline.layers.ron");
+    assert_eq!((&skin_layers.matcap, &skin_layers.emission), (&layers_of_rim(), &glow));
+    let hair_layers = read("maps/body_outline.layers.ron");
+    assert_eq!((&hair_layers.matcap, &hair_layers.emission), (&layer_mask::unpainted(), &glow));
+    let skin = document(&extracted(&scratch, "materials/Skin.material.ron"));
+    let hair = document(&extracted(&scratch, "materials/Hair.material.ron"));
+    assert_eq!(skin.layer_mask, Some(id(&extracted(&scratch, "maps/body_rim-body_outline.layers.ron"))));
+    assert_eq!(hair.layer_mask, Some(id(&extracted(&scratch, "maps/body_outline.layers.ron"))));
+    // The glows take the rest of the texture's hue, steady.
+    assert_eq!((skin.regions[0].emission, hair.regions[0].emission), ([0.0, 0.5, 0.0], [0.0, 0.5, 0.0]));
+    assert_eq!((skin.emission.period, hair.emission.period), (0.0, 0.0));
+    // Written out, for the artist to see and change.
+    let text: String = fs::read_to_string(extracted(&scratch, "materials/Hair.material.ron"))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    assert!(text.contains("emission:(0.0,0.5,0.0)") && text.contains("period:0.0"), "{text}");
+    // The emissive image is a map input only: no texture of its own.
+    assert!(extracted(&scratch, "maps/body_outline.png").exists());
+    assert!(!extracted(&scratch, "textures/body_outline-color.png").exists());
+
+    let report = cook(&scratch);
+    for layers in ["maps/body_rim-body_outline.layers.ron", "maps/body_outline.layers.ron"] {
+        assert!(report.assets.iter().any(|asset| asset.source == extracted(&scratch, layers)), "{layers}");
+    }
+}
+
+/// The layer mask input a sample material's rim multiply texture becomes: its R, sRGB.
+fn layers_of_rim() -> ChannelInput {
+    ChannelInput::Image {
+        path: "body_rim.png".into(),
+        channel: ImageChannel::R,
+        range: [0.0, 1.0],
+        encoding: Encoding::Srgb,
+    }
 }
 
 #[test]

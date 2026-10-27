@@ -27,8 +27,8 @@
 //! - [`texture`]: texture classes and their per-cook formats, mip chains, and compression
 //!   through ctt into KTX2 [`Texture`](sapphire_assets::texture::Texture)s.
 //! - [`character_maps`]: the anime character maps, generated from RON documents and cooked
-//!   as textures: SDF face maps from threshold masks, ramps from color stops, and ILM maps
-//!   packed from separate masks.
+//!   as textures: SDF face maps from threshold masks, ramps from color stops, and ILM maps and
+//!   layer masks (M1 C7) packed from separate masks or color textures' channels.
 //! - [`material`]: material documents (`.material.ron`) cooked to
 //!   [`Material`](sapphire_assets::material::Material)s, checked against the textures (and
 //!   character maps) they reference, whose swizzles they record.
@@ -76,10 +76,11 @@
 //! # Later milestones
 //!
 //! - FBX through `ufbx`.
-//! - VRM: as the anime character family gains slots (C1–C7: a rim mask, emission, a shade map,
-//!   UV animation, a cull mode), the MToon mapping fills them, and extraction binds the
-//!   textures it already writes. `VRMC_springBone_extended_collider` and VRMA animations
-//!   (`VRMC_vrm_animation`) with M2's animation.
+//! - VRM: as the anime character family gains what MToon still has and it lacks (a rim mask, a
+//!   shade map, UV animation, a cull mode, a GI flattening per material), the MToon mapping
+//!   fills it, and extraction binds the textures it already writes.
+//!   `VRMC_springBone_extended_collider` and VRMA animations (`VRMC_vrm_animation`) with M2's
+//!   animation.
 //! - Skeletons as assets of their own, shared by meshes and animation clips (ozz archives,
 //!   M2); today each skinned mesh embeds its skeleton, and a VRM's rig indexes its mesh's.
 //! - Pack groups per zone, character and encounter once those exist as documents (see

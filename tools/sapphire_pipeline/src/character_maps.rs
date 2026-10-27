@@ -1,19 +1,21 @@
-//! Anime character maps (M1 A7): SDF face maps, ramps and ILM maps, generated from RON
-//! documents and cooked as textures.
+//! Anime character maps (M1 A7): SDF face maps, ramps, ILM maps and layer masks, generated from
+//! RON documents and cooked as textures.
 //!
-//! The anime character shader (C1, C3) reads three authored maps besides its color and
-//! normal maps (spec §5.12): an SDF face-shadow map, ramp rows by material ID, and an ILM
-//! map of painted masks. Each is a [`sapphire_serialize::document`] with a `.meta` sidecar
-//! like any source asset, named by a compound extension:
+//! The anime character shader (C1, C3, C7) reads four authored maps besides its color and
+//! normal maps (spec §5.12): an SDF face-shadow map, ramp rows by material ID, an ILM map of
+//! painted masks, and a body's layer mask (M1 C7). Each is a [`sapphire_serialize::document`]
+//! with a `.meta` sidecar like any source asset, named by a compound extension:
 //!
 //! | Document | Type | Inputs | Generates | Texture class |
 //! |---|---|---|---|---|
 //! | `<name>.facesdf.ron` | [`FaceSdfMap`] | Threshold masks per light angle | The face's threshold map ([`face_sdf`]) | SDF: R16 or RG16 on desktop, R8 or RG8 on mobile |
 //! | `<name>.ramp.ron` | [`RampMap`] | None: color stops | Day and night rows per material ID ([`ramp`]) | Ramp: RGBA8 sRGB |
 //! | `<name>.ilm.ron` | [`IlmMap`] | Grayscale masks per channel | The four channels packed ([`ilm`]) | ILM: BC7, ASTC 4×4 |
+//! | `<name>.layers.ron` | [`LayerMaskMap`] | Grayscale masks, or color textures' channels, per channel | The four channels packed ([`layer_mask`]) | Mask: BC7, ASTC 4×4 |
 //!
 //! What the generated texels mean (the ILM channel assignment, the ramp rows, the SDF
-//! angle encoding) is `sapphire_assets::character_maps`, shared with the shader.
+//! angle encoding, the layer mask's channels) is `sapphire_assets::character_maps`, shared with
+//! the shader.
 //!
 //! # Inputs
 //!
@@ -21,8 +23,9 @@
 //! directory, `/`-separated. An input is **part of the document's asset, not an asset of
 //! its own**: a cook leaves the images that documents in the content tree read out of its
 //! sources, so they get no sidecar and no cooked texture of their own, as a glTF's external
-//! buffers don't. Inputs are decoded as linear data whatever their encoding, and must all
-//! have the document's size: maps are generated at their inputs' resolution.
+//! buffers don't. Inputs are decoded as linear data, but for the ILM and layer mask channels
+//! that say their image is sRGB-encoded ([`ilm::Encoding`]), and must all have the document's
+//! size: maps are generated at their inputs' resolution.
 //!
 //! # Recipes and the cache key
 //!
@@ -51,6 +54,7 @@
 
 pub mod face_sdf;
 pub mod ilm;
+pub mod layer_mask;
 pub mod ramp;
 
 mod distance;
@@ -68,13 +72,14 @@ use serde::{Deserialize, Serialize};
 
 pub use self::face_sdf::{FaceSdfError, FaceSdfMap, FaceSdfSettings};
 pub use self::ilm::{IlmError, IlmMap};
+pub use self::layer_mask::{LayerMaskError, LayerMaskMap};
 pub use self::ramp::{RampBakeSettings, RampError, RampMap};
 use crate::cache::Stage;
 use crate::cook::Cook;
 use crate::import::image::{
     self as image_import, ChannelLayout, ImageImportError, SourceFormat, SourceImage, Transfer,
 };
-use crate::texture::{self, IlmSettings, TextureClass, TextureError, TextureSettings};
+use crate::texture::{self, IlmSettings, MaskSettings, TextureClass, TextureError, TextureSettings};
 
 /// The kinds of map document, each known by its compound extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -82,11 +87,12 @@ pub enum MapKind {
     FaceSdf,
     Ramp,
     Ilm,
+    LayerMask,
 }
 
 impl MapKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 3] = [Self::FaceSdf, Self::Ramp, Self::Ilm];
+    pub const ALL: [Self; 4] = [Self::FaceSdf, Self::Ramp, Self::Ilm, Self::LayerMask];
 
     /// The end of a document's file name, lowercase.
     pub fn suffix(self) -> &'static str {
@@ -94,6 +100,7 @@ impl MapKind {
             Self::FaceSdf => ".facesdf.ron",
             Self::Ramp => ".ramp.ron",
             Self::Ilm => ".ilm.ron",
+            Self::LayerMask => ".layers.ron",
         }
     }
 
@@ -103,6 +110,7 @@ impl MapKind {
             Self::FaceSdf => "face SDF",
             Self::Ramp => "ramp",
             Self::Ilm => "ILM",
+            Self::LayerMask => "layer mask",
         }
     }
 
@@ -119,6 +127,7 @@ impl MapKind {
             Self::FaceSdf => MapSettings::FaceSdf(FaceSdfSettings::default()),
             Self::Ramp => MapSettings::Ramp(RampBakeSettings::default()),
             Self::Ilm => MapSettings::Ilm(IlmSettings::default()),
+            Self::LayerMask => MapSettings::LayerMask(MaskSettings::default()),
         }
     }
 
@@ -128,6 +137,7 @@ impl MapKind {
             Self::FaceSdf => face_sdf::IMPORTER,
             Self::Ramp => ramp::IMPORTER,
             Self::Ilm => ilm::IMPORTER,
+            Self::LayerMask => layer_mask::IMPORTER,
         }
     }
 }
@@ -139,6 +149,8 @@ pub enum MapSettings {
     FaceSdf(FaceSdfSettings),
     Ramp(RampBakeSettings),
     Ilm(IlmSettings),
+    /// A layer mask cooks as a mask (M1 C7).
+    LayerMask(MaskSettings),
 }
 
 impl MapSettings {
@@ -148,6 +160,7 @@ impl MapSettings {
             Self::FaceSdf(_) => MapKind::FaceSdf,
             Self::Ramp(_) => MapKind::Ramp,
             Self::Ilm(_) => MapKind::Ilm,
+            Self::LayerMask(_) => MapKind::LayerMask,
         }
     }
 }
@@ -214,6 +227,8 @@ pub enum MapError {
     Ramp(#[from] RampError),
     #[error(transparent)]
     Ilm(#[from] IlmError),
+    #[error(transparent)]
+    LayerMask(#[from] LayerMaskError),
     #[error("failed to cook the generated map")]
     Texture(#[source] Box<TextureError>),
 }
@@ -235,6 +250,9 @@ pub fn generate(path: &Path, bytes: &[u8], settings: &MapSettings) -> Result<Gen
         MapSettings::FaceSdf(settings) => face_sdf::generate(&read_document(kind, bytes)?, settings, &inputs),
         MapSettings::Ramp(settings) => ramp::generate(&read_document(kind, bytes)?, settings),
         MapSettings::Ilm(settings) => ilm::generate(&read_document(kind, bytes)?, settings, &inputs),
+        MapSettings::LayerMask(settings) => {
+            layer_mask::generate(&read_document(kind, bytes)?, settings, &inputs)
+        }
     }
 }
 
@@ -258,6 +276,7 @@ pub fn inputs(kind: MapKind, bytes: &[u8]) -> Result<Vec<String>, MapError> {
         MapKind::FaceSdf => read_document::<FaceSdfMap>(kind, bytes)?.inputs(),
         MapKind::Ramp => Vec::new(),
         MapKind::Ilm => read_document::<IlmMap>(kind, bytes)?.inputs(),
+        MapKind::LayerMask => read_document::<LayerMaskMap>(kind, bytes)?.inputs(),
     })
 }
 
@@ -291,7 +310,7 @@ pub fn resolve_input(document: &Path, input: &str) -> Result<PathBuf, MapError> 
 
 /// A generated map as a PNG file: the ramp class as 8-bit sRGB RGBA, the others as 16-bit
 /// linear values (gray for one-channel SDF maps, RGB with blue 0 for two-channel ones, RGBA
-/// for ILM maps).
+/// for ILM maps and layer masks).
 pub fn to_png(map: &GeneratedMap) -> image::ImageResult<Vec<u8>> {
     let SourceImage { width, height, layout, ref pixels, .. } = map.image;
     let unorm16 = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
@@ -344,12 +363,18 @@ struct Inputs<'a> {
 impl Inputs<'_> {
     /// The input image the document names `input`, decoded as linear data.
     fn image(&self, input: &str) -> Result<(PathBuf, SourceImage), MapError> {
+        self.image_as(input, Transfer::Linear)
+    }
+
+    /// The input image the document names `input`, its RGB decoded by `transfer` (alpha and
+    /// float samples stay linear, as the image importer reads them).
+    fn image_as(&self, input: &str, transfer: Transfer) -> Result<(PathBuf, SourceImage), MapError> {
         let path = resolve_input(self.document, input)?;
         let format =
             SourceFormat::from_path(&path).ok_or_else(|| MapError::UnsupportedInput(path.clone()))?;
         let bytes =
             std::fs::read(&path).map_err(|source| MapError::ReadInput { path: path.clone(), source })?;
-        let image = image_import::import_slice(&bytes, format, Transfer::Linear)
+        let image = image_import::import_slice(&bytes, format, transfer)
             .map_err(|source| MapError::ImportInput { path: path.clone(), source: Box::new(source) })?;
         let size = [image.width, image.height];
         if size.iter().any(|&side| side > MAX_TEXTURE_DIMENSION) {

@@ -33,7 +33,7 @@ use sapphire_assets::material::{
 };
 use sapphire_serialize::to_ron;
 
-use crate::character_maps::ilm::{ChannelInput, ImageChannel, MaterialIdInput};
+use crate::character_maps::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
 use crate::character_maps::ramp::{ColorStop, Interpolation, MaterialRamps, Ramp, SrgbColor};
 use crate::character_maps::{IlmMap, RampMap};
 
@@ -116,6 +116,7 @@ pub fn ilm_document() -> String {
             path: SHADOW_BIAS_FILE_NAME.to_owned(),
             channel: ImageChannel::R,
             range: [0.0, 1.0],
+            encoding: Encoding::Linear,
         },
         specular_threshold: ChannelInput::Constant(0.5),
         material_id: MaterialIdInput::Image {

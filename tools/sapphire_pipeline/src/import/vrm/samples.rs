@@ -136,6 +136,31 @@ impl SampleVrm {
     pub fn to_glb(&self) -> Vec<u8> {
         glb(&self.document, &self.bin)
     }
+
+    /// Adds a PNG image named `name` in a buffer view of its own, and a texture showing it;
+    /// returns the texture's index (also the image's, as for the sample's own).
+    pub fn add_png_texture(&mut self, name: &str, png: &[u8]) -> usize {
+        let view = self.document["bufferViews"].as_array().expect("buffer views").len();
+        let offset = self.bin.len();
+        self.bin.extend_from_slice(png);
+        self.document["buffers"][0]["byteLength"] = self.bin.len().into();
+        let push = |array: &mut Value, value: Value| {
+            let array = array.as_array_mut().expect("an array");
+            array.push(value);
+            array.len() - 1
+        };
+        push(
+            &mut self.document["bufferViews"],
+            json!({ "buffer": 0, "byteOffset": offset, "byteLength": png.len() }),
+        );
+        let image = push(
+            &mut self.document["images"],
+            json!({ "name": name, "mimeType": "image/png", "bufferView": view }),
+        );
+        let texture = push(&mut self.document["textures"], json!({ "source": image }));
+        assert_eq!(texture, image, "the sample's textures and images pair by index");
+        texture
+    }
 }
 
 /// The VRM 1.0 character.

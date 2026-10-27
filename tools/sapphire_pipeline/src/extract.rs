@@ -22,21 +22,23 @@
 //!
 //! | Path | Sidecar | What |
 //! |---|---|---|
-//! | `textures/<image>.png` | `Texture((class: …))` | An image a material uses, classed by its use ([`TextureUse::class`](crate::import::vrm::mtoon::TextureUse::class)): color for base, shade, matcap and emission; normal for normal maps; a mask for rim, outline-width and UV-animation masks. An image used in two classes is written once per class, `<image>-<class>.png` |
-//! | `maps/<image>.png` | none | A shading shift texture, as the input of the ILM documents beside it: part of their assets (A7) |
+//! | `textures/<image>.png` | `Texture((class: …))` | An image a material uses, classed by its use ([`TextureUse::class`](crate::import::vrm::mtoon::TextureUse::class)): color for base, shade, matcap, rim multiply and emissive textures; normal for normal maps; a mask for outline-width and UV-animation masks. An image used in two classes is written once per class, `<image>-<class>.png` |
+//! | `maps/<image>.png` | none | A shading shift texture, or a texture a layer mask holds, as the input of the documents beside it: part of their assets (A7) |
 //! | `maps/<image>.ilm.ron` | `CharacterMap(Ilm(…))` | A control map: the input's channel as the shadow bias over the range its material's scale gives ([`ShadingShift::shadow_bias_range`](crate::import::vrm::mtoon::ShadingShift::shadow_bias_range)), the other channels neutral; one per image and range |
-//! | `materials/<slot>.material.ron` | `Material(())` | The slot's anime character material ([`Mtoon::to_material`]) binding those textures, or for a slot that isn't MToon the material its importer generated |
+//! | `maps/<images>.layers.ron` | `CharacterMap(LayerMask(…))` | A body's layer mask (M1 C7; [`Mtoon::layer_mask`]): R the rim multiply texture's brightest channel, masking the matcap, and B the emissive texture's, painting the glow, both decoded from sRGB, the other channels 1; one per pair of inputs, named after their images |
+//! | `materials/<slot>.material.ron` | `Material(())` | The slot's anime character material ([`Mtoon::to_material`]) binding those textures and maps, or for a slot that isn't MToon the material its importer generated |
 //!
 //! and the source's sidecar binds each slot to its document (`materials: {"Skin": "<id>"}`).
 //!
-//! **Slots:** by default those whose documents bind a texture (base color, normal, matcap or a
-//! control map): the ones a generated material can't draw as authored. `--all` extracts every
-//! slot, as starting points for authoring. A slot the sidecar already binds is left alone.
+//! **Slots:** by default those whose documents bind a texture (base color, normal or matcap, a
+//! control map or a layer mask): the ones a generated material can't draw as authored. `--all`
+//! extracts every slot, as starting points for authoring. A slot the sidecar already binds is
+//! left alone.
 //!
 //! **Images:** every image an extracted MToon material uses is written, including those the
-//! anime character family can't bind yet (a shade texture other than the base color's, rim,
-//! outline-width and UV-animation masks, emission), so nothing authored is lost; they cook,
-//! unreferenced, until C5 and C7 give them slots. PNG images are copied byte for byte; JPEG
+//! anime character family can't bind (a shade texture other than the base color's, a rim
+//! multiply or emissive texture no layer mask holds, outline-width and UV-animation masks), so
+//! nothing authored is lost; they cook, unreferenced. PNG images are copied byte for byte; JPEG
 //! images are decoded and written as PNG, which the texture importer reads. Block compression
 //! needs sizes that are multiples of 4; an image that isn't fails its texture's cook with A2's
 //! message, and is the artist's to resize (VRM exporters write powers of two).
@@ -65,14 +67,15 @@ use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::ilm::{NEUTRAL, SPECULAR_MASK, SPECULAR_THRESHOLD};
 use sapphire_assets::material::AnimeCharacterMaterial;
 
-use crate::character_maps::ilm::{ChannelInput, IlmMap, ImageChannel, MaterialIdInput};
+use crate::character_maps::ilm::{ChannelInput, Encoding, IlmMap, ImageChannel, MaterialIdInput};
+use crate::character_maps::layer_mask::{self, LayerMaskMap};
 use crate::character_maps::{MapKind, MapSettings};
 use crate::import::gltf::{self, GltfImportError};
-use crate::import::vrm::mtoon::{Channel, Mtoon};
+use crate::import::vrm::mtoon::{Binding, Channel, LayerTexture, Mtoon};
 use crate::import::vrm::{self, ImageFormat, VrmImport, VrmImportError};
 use crate::material::MaterialSettings;
 use crate::meta::{self, AssetMeta, ImportSettings, MetaError};
-use crate::texture::{IlmSettings, TextureClass, TextureSettings};
+use crate::texture::{IlmSettings, MaskSettings, TextureClass, TextureSettings};
 
 /// Options for [`extract_materials`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -223,13 +226,17 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                 resolved.write(import, mtoon, &names, &root, &mut writer)?;
                 let texture_of =
                     |usage| mtoon.textures().into_iter().find(|&(found, _)| found == usage).map(|(_, t)| t);
-                mtoon.to_material(|usage| {
-                    let texture = texture_of(usage)?;
-                    let image = import.image_of(texture.texture);
-                    match usage.class() {
-                        Some(class) => resolved.textures.get(&(image, class.name())).copied(),
-                        None => resolved.maps.get(&map_key(mtoon, image, texture.channel)?).copied(),
+                mtoon.to_material(|binding| match binding {
+                    Binding::Texture(usage) => {
+                        let image = import.image_of(texture_of(usage)?.texture);
+                        resolved.textures.get(&(image, usage.class()?.name())).copied()
                     }
+                    Binding::ControlMap => {
+                        let shift = mtoon.shading_shift_texture?.texture;
+                        let key = map_key(mtoon, import.image_of(shift.texture), shift.channel)?;
+                        resolved.maps.get(&key).copied()
+                    }
+                    Binding::LayerMask => resolved.layers.get(&layer_key(import, mtoon)?).copied(),
                 })
             }
             _ => slot.generated.clone(),
@@ -292,6 +299,28 @@ fn map_key(mtoon: &Mtoon, image: usize, channel: Channel) -> Option<MapKey> {
     Some((image, channel, mtoon.shading_shift_texture?.shadow_bias_range().map(f32::to_bits)))
 }
 
+/// A layer mask document's key: the image and channel its R (the matcap's mask) and its B (the
+/// glow) read, if any. One document stands for each.
+type LayerKey = [Option<(usize, Channel)>; 2];
+
+/// The layer mask document key of a material, if it has a layer mask ([`Mtoon::layer_mask`]).
+fn layer_key(import: &VrmImport, mtoon: &Mtoon) -> Option<LayerKey> {
+    let mask = mtoon.layer_mask()?;
+    let input = |texture: Option<LayerTexture>| {
+        texture.map(|texture| (import.image_of(texture.texture.texture), texture.channel))
+    };
+    Some([input(mask.matcap), input(mask.emission)])
+}
+
+/// The ILM and layer mask documents' name for a channel.
+fn image_channel(channel: Channel) -> ImageChannel {
+    match channel {
+        Channel::R | Channel::Rgba => ImageChannel::R,
+        Channel::G => ImageChannel::G,
+        Channel::B => ImageChannel::B,
+    }
+}
+
 /// The file names of everything a source can extract, decided over all its slots and every
 /// image its MToon materials use, whatever one run extracts: a file name then always stands
 /// for the same slot, texture or map while the source stays the same.
@@ -300,10 +329,12 @@ struct Names {
     materials: Vec<String>,
     /// Per image and texture class name, the texture's file name.
     textures: BTreeMap<(usize, &'static str), String>,
-    /// Per image, the file name of its copy as an ILM input.
+    /// Per image, the file name of its copy as an ILM or layer mask input.
     inputs: BTreeMap<usize, String>,
     /// Per ILM document key ([`map_key`]), the document's file stem and its range.
     maps: BTreeMap<MapKey, (String, [f32; 2])>,
+    /// Per layer mask document key ([`layer_key`]), the document's file stem.
+    layers: BTreeMap<LayerKey, String>,
     /// Per image and texture class name, the class.
     classes: BTreeMap<(usize, &'static str), TextureClass>,
 }
@@ -316,10 +347,12 @@ impl Names {
             textures: BTreeMap::new(),
             inputs: BTreeMap::new(),
             maps: BTreeMap::new(),
+            layers: BTreeMap::new(),
             classes: BTreeMap::new(),
         };
         let Some(import) = import else { return names };
         let mut maps = BTreeMap::new();
+        let mut layers = BTreeSet::new();
         for mtoon in slots.iter().filter_map(|slot| slot.mtoon.as_ref()) {
             for (usage, texture) in mtoon.textures() {
                 let image = import.image_of(texture.texture);
@@ -333,12 +366,15 @@ impl Names {
                     }
                 }
             }
+            layers.extend(layer_key(import, mtoon));
         }
+        let layer_inputs = |key: &LayerKey| key.iter().flatten().map(|&(image, _)| image).collect::<Vec<_>>();
         let images: BTreeSet<usize> = names
             .classes
             .keys()
             .map(|&(image, _)| image)
             .chain(maps.keys().map(|&(image, ..)| image))
+            .chain(layers.iter().flat_map(layer_inputs))
             .collect();
         let mut image_names = UniqueNames::default();
         let base: BTreeMap<usize, String> = images
@@ -370,6 +406,18 @@ impl Names {
             names.inputs.insert(image, format!("{}.png", base[&image]));
             names.maps.insert(key, (documents.claim(&base[&image], &base[&image]), range));
         }
+        // Layer masks are named after their inputs' images, R's then B's.
+        let mut documents = UniqueNames::default();
+        for key in layers {
+            let images = layer_inputs(&key);
+            for &image in &images {
+                names.inputs.insert(image, format!("{}.png", base[&image]));
+            }
+            let mut stems: Vec<&str> = images.iter().map(|image| base[image].as_str()).collect();
+            stems.dedup();
+            let stem = stems.join("-");
+            names.layers.insert(key, documents.claim(&stem, &stem));
+        }
         names
     }
 }
@@ -381,10 +429,13 @@ struct Resolved {
     textures: BTreeMap<(usize, &'static str), AssetId>,
     /// ILM documents by [`map_key`].
     maps: BTreeMap<MapKey, AssetId>,
+    /// Layer mask documents by [`layer_key`].
+    layers: BTreeMap<LayerKey, AssetId>,
 }
 
 impl Resolved {
-    /// Writes (or finds) the textures, ILM inputs and ILM documents `mtoon` uses.
+    /// Writes (or finds) the textures, map inputs, ILM documents and layer mask document
+    /// `mtoon` uses.
     fn write(
         &mut self,
         import: &VrmImport,
@@ -409,18 +460,17 @@ impl Resolved {
             if self.maps.contains_key(&key) {
                 continue;
             }
-            let input = &names.inputs[&image];
-            writer.file(&root.join("maps").join(input), || png(import, image))?;
+            let input = Self::input(import, image, names, root, writer)?;
             let (stem, range) = &names.maps[&key];
-            let channel = match texture.channel {
-                Channel::R | Channel::Rgba => ImageChannel::R,
-                Channel::G => ImageChannel::G,
-                Channel::B => ImageChannel::B,
-            };
             let document = IlmMap {
                 size: None,
                 specular_mask: ChannelInput::Constant(NEUTRAL[SPECULAR_MASK]),
-                shadow_bias: ChannelInput::Image { path: input.clone(), channel, range: *range },
+                shadow_bias: ChannelInput::Image {
+                    path: input,
+                    channel: image_channel(texture.channel),
+                    range: *range,
+                    encoding: Encoding::Linear,
+                },
                 specular_threshold: ChannelInput::Constant(NEUTRAL[SPECULAR_THRESHOLD]),
                 material_id: MaterialIdInput::Constant(0),
             };
@@ -430,7 +480,49 @@ impl Resolved {
             let settings = ImportSettings::CharacterMap(MapSettings::Ilm(IlmSettings::default()));
             self.maps.insert(key, writer.sidecar(&path, settings)?);
         }
+        if let Some(key) = layer_key(import, mtoon)
+            && !self.layers.contains_key(&key)
+        {
+            // Each painted channel is its texture's brightest, decoded from sRGB; the rest are 1.
+            let mut channel = |held: Option<(usize, Channel)>| match held {
+                Some((image, channel)) => Ok(ChannelInput::Image {
+                    path: Self::input(import, image, names, root, writer)?,
+                    channel: image_channel(channel),
+                    range: [0.0, 1.0],
+                    encoding: Encoding::Srgb,
+                }),
+                None => Ok::<_, ExtractError>(layer_mask::unpainted()),
+            };
+            let [matcap, emission] = key;
+            let document = LayerMaskMap {
+                size: None,
+                matcap: channel(matcap)?,
+                metallic: layer_mask::unpainted(),
+                emission: channel(emission)?,
+                stocking: layer_mask::unpainted(),
+            };
+            let stem = &names.layers[&key];
+            let path = root.join("maps").join(format!("{stem}{}", MapKind::LayerMask.suffix()));
+            let text =
+                sapphire_serialize::to_ron(&document).expect("a layer mask document always serializes");
+            writer.file(&path, || Ok(text.into_bytes()))?;
+            let settings = ImportSettings::CharacterMap(MapSettings::LayerMask(MaskSettings::default()));
+            self.layers.insert(key, writer.sidecar(&path, settings)?);
+        }
         Ok(())
+    }
+
+    /// Writes (or finds) image `image`'s copy among the map inputs, and gives its file name.
+    fn input(
+        import: &VrmImport,
+        image: usize,
+        names: &Names,
+        root: &Path,
+        writer: &mut Writer,
+    ) -> Result<String, ExtractError> {
+        let input = &names.inputs[&image];
+        writer.file(&root.join("maps").join(input), || png(import, image))?;
+        Ok(input.clone())
     }
 }
 

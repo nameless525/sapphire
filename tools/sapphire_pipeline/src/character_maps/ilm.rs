@@ -9,7 +9,9 @@
 //! - **A channel's input** is one channel of an image (`R` by default, which is the gray of
 //!   a grayscale image), mapped from `[0, 1]` onto a `range` (by default `[0, 1]`; `[1, 0]`
 //!   inverts, `[0, 0.5]` turns an AO bake into a shadow bias that only darkens), or a
-//!   constant.
+//!   constant. An image's channel is linear data unless the input says it is sRGB-encoded
+//!   ([`Encoding`]), as a color texture's are. Layer masks ([`super::layer_mask`]) take the
+//!   same inputs.
 //! - **A channel left out** takes its neutral value: no specular, a shadow bias of 0.5 (no
 //!   shift), a specular threshold of 0.5, material ID 0.
 //! - **Material IDs** are constants, or gray levels painted in an image: each texel takes the
@@ -31,7 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{GeneratedMap, Inputs, MapError, check_size, with_image_importer};
 use crate::cache::Stage;
-use crate::import::image::{ChannelLayout, SourceImage};
+use crate::import::image::{ChannelLayout, SourceImage, Transfer};
 use crate::texture::{IlmSettings, TextureClass};
 
 /// This importer, as cache keys know it: reading the document and its masks, and packing
@@ -77,13 +79,13 @@ fn neutral_specular_threshold() -> ChannelInput {
     ChannelInput::Constant(ilm::NEUTRAL[ilm::SPECULAR_THRESHOLD])
 }
 
-/// Where one of the R, G and B channels comes from.
+/// Where one of the R, G and B channels comes from (and each of a layer mask's four).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ChannelInput {
     /// Every texel holds this value, 0 to 1.
     Constant(f32),
-    /// One channel of an image, mapped from `[0, 1]` onto `range`.
+    /// One channel of an image, decoded as `encoding` says, mapped from `[0, 1]` onto `range`.
     Image {
         /// Relative to the document.
         path: String,
@@ -91,7 +93,97 @@ pub enum ChannelInput {
         channel: ImageChannel,
         #[serde(default = "full_range", skip_serializing_if = "is_full_range")]
         range: [f32; 2],
+        #[serde(default, skip_serializing_if = "Encoding::is_linear")]
+        encoding: Encoding,
     },
+}
+
+impl ChannelInput {
+    /// The image it reads, with its encoding, if any.
+    pub(super) fn image(&self) -> Option<(String, Encoding)> {
+        match self {
+            Self::Image { path, encoding, .. } => Some((path.clone(), *encoding)),
+            Self::Constant(_) => None,
+        }
+    }
+
+    /// Fails with `error` unless the constant, or both ends of the range, are within 0 to 1.
+    pub(super) fn check_unit<E>(&self, error: impl Fn(f32) -> E) -> Result<(), E> {
+        let unit = |value: f32| if (0.0..=1.0).contains(&value) { Ok(()) } else { Err(error(value)) };
+        match self {
+            Self::Constant(value) => unit(*value),
+            Self::Image { range, .. } => range.iter().try_for_each(|&value| unit(value)),
+        }
+    }
+
+    /// Writes this input into channel `c` of `pixels`, reading its image from `images`.
+    pub(super) fn fill(&self, pixels: &mut [[f32; 4]], c: usize, images: &InputImages) {
+        match self {
+            Self::Constant(value) => pixels.iter_mut().for_each(|pixel| pixel[c] = *value),
+            Self::Image { path, channel, range: [low, high], encoding } => {
+                for (pixel, source) in pixels.iter_mut().zip(&images.get(path, *encoding).pixels) {
+                    pixel[c] = (low + (high - low) * source[channel.index()]).clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
+}
+
+/// How an input image's samples encode a channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Encoding {
+    /// Linear data, taken as it is: a painted mask.
+    #[default]
+    Linear,
+    /// sRGB: a color texture, its R, G and B decoded to linear light first, as a VRM's emissive
+    /// texture holds its glow (M1 C7's layer masks). Alpha and float images are linear whatever
+    /// this says, as the image importer reads them.
+    Srgb,
+}
+
+impl Encoding {
+    fn is_linear(&self) -> bool {
+        *self == Self::Linear
+    }
+
+    fn transfer(self) -> Transfer {
+        match self {
+            Self::Linear => Transfer::Linear,
+            Self::Srgb => Transfer::Srgb,
+        }
+    }
+}
+
+/// The images a document's inputs read, each decoded once for each encoding it is read in.
+pub(super) struct InputImages(Vec<((String, Encoding), SourceImage)>);
+
+impl InputImages {
+    /// Reads every image `wanted` names, checking each has the map's size: `size` if the
+    /// document gives one, else the first image's. Returns that size too, `None` when the
+    /// document neither names an image nor gives one.
+    pub(super) fn read(
+        inputs: &Inputs<'_>,
+        wanted: impl IntoIterator<Item = (String, Encoding)>,
+        mut size: Option<[u32; 2]>,
+    ) -> Result<(Option<[u32; 2]>, Self), MapError> {
+        let mut images: Vec<((String, Encoding), SourceImage)> = Vec::new();
+        for (input, encoding) in wanted {
+            if images.iter().any(|((path, read), _)| *path == input && *read == encoding) {
+                continue;
+            }
+            let (path, image) = inputs.image_as(&input, encoding.transfer())?;
+            let expected = *size.get_or_insert([image.width, image.height]);
+            check_size(&path, &image, expected)?;
+            images.push(((input, encoding), image));
+        }
+        Ok((size, Self(images)))
+    }
+
+    /// The image read for `path` in `encoding`, which [`Self::read`] was given.
+    fn get(&self, path: &str, encoding: Encoding) -> &SourceImage {
+        let found = self.0.iter().find(|((input, read), _)| input == path && *read == encoding);
+        &found.expect("every input was read").1
+    }
 }
 
 fn full_range() -> [f32; 2] {
@@ -185,12 +277,15 @@ impl IlmMap {
 
     /// Every image path, in channel order. Repeats are kept.
     pub fn inputs(&self) -> Vec<String> {
-        let colors = self.color_channels().into_iter().filter_map(|(_, input)| match input {
-            ChannelInput::Image { path, .. } => Some(path.clone()),
-            ChannelInput::Constant(_) => None,
-        });
+        self.images().into_iter().map(|(path, _)| path).collect()
+    }
+
+    /// Every image path with the encoding it is read in, in channel order: the material IDs
+    /// are linear.
+    fn images(&self) -> Vec<(String, Encoding)> {
+        let colors = self.color_channels().into_iter().filter_map(|(_, input)| input.image());
         let ids = match &self.material_id {
-            MaterialIdInput::Image { path, .. } => Some(path.clone()),
+            MaterialIdInput::Image { path, .. } => Some((path.clone(), Encoding::Linear)),
             MaterialIdInput::Constant(_) => None,
         };
         colors.chain(ids).collect()
@@ -207,12 +302,7 @@ impl IlmMap {
             if (0.0..=1.0).contains(&value) { Ok(()) } else { Err(IlmError::Value { channel, value }) }
         };
         for (channel, input) in self.color_channels() {
-            match input {
-                ChannelInput::Constant(value) => unit(channel, *value)?,
-                ChannelInput::Image { range, .. } => {
-                    range.iter().try_for_each(|&value| unit(channel, value))?
-                }
-            }
+            input.check_unit(|value| IlmError::Value { channel, value })?;
         }
         match &self.material_id {
             MaterialIdInput::Constant(id) if MaterialId::new(*id).is_none() => Err(IlmError::MaterialId(*id)),
@@ -234,31 +324,13 @@ pub(super) fn generate(
     inputs: &Inputs<'_>,
 ) -> Result<GeneratedMap, MapError> {
     map.validate()?;
-    let mut size = map.size;
-    let mut images: Vec<(String, SourceImage)> = Vec::new();
-    for input in map.inputs() {
-        if images.iter().any(|(path, _)| *path == input) {
-            continue;
-        }
-        let (path, image) = inputs.image(&input)?;
-        let expected = *size.get_or_insert([image.width, image.height]);
-        check_size(&path, &image, expected)?;
-        images.push((input, image));
-    }
+    let (size, images) = InputImages::read(inputs, map.images(), map.size)?;
     let [width, height] = size.ok_or(IlmError::NoSize)?;
     let texels = width as usize * height as usize;
-    let image = |path: &str| &images.iter().find(|(input, _)| input == path).expect("every input was read").1;
 
     let mut pixels = vec![[0.0; 4]; texels];
     for (c, (_, input)) in map.color_channels().into_iter().enumerate() {
-        match input {
-            ChannelInput::Constant(value) => pixels.iter_mut().for_each(|pixel| pixel[c] = *value),
-            ChannelInput::Image { path, channel, range: [low, high] } => {
-                for (pixel, source) in pixels.iter_mut().zip(&image(path).pixels) {
-                    pixel[c] = (low + (high - low) * source[channel.index()]).clamp(0.0, 1.0);
-                }
-            }
-        }
+        input.fill(&mut pixels, c, &images);
     }
     let id = ilm::MATERIAL_ID;
     match &map.material_id {
@@ -267,7 +339,7 @@ pub(super) fn generate(
             pixels.iter_mut().for_each(|pixel| pixel[id] = value);
         }
         MaterialIdInput::Image { path, channel, levels } => {
-            for (pixel, source) in pixels.iter_mut().zip(&image(path).pixels) {
+            for (pixel, source) in pixels.iter_mut().zip(&images.get(path, Encoding::Linear).pixels) {
                 pixel[id] = ilm::encode_material_id(nearest_id(source[channel.index()], levels));
             }
         }
@@ -334,7 +406,8 @@ mod tests {
             error(|m| m.specular_mask = ChannelInput::Image {
                 path: "a.png".into(),
                 channel: ImageChannel::R,
-                range: [0.0, f32::NAN]
+                range: [0.0, f32::NAN],
+                encoding: Encoding::Linear,
             }),
             "specular_mask: NaN is outside 0 to 1"
         );

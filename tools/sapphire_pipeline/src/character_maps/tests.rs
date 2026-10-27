@@ -10,13 +10,13 @@ use sapphire_assets::texture::{AstcBlock, Texture, TextureFormat};
 use sapphire_serialize::{from_ron, to_ron};
 
 use super::face_sdf::ThresholdMask;
-use super::ilm::{ChannelInput, ImageChannel, MaterialIdInput};
+use super::ilm::{ChannelInput, Encoding, ImageChannel, MaterialIdInput};
 use super::ramp::{ColorStop, Interpolation, MaterialRamps, Ramp, SrgbColor};
 use super::*;
 use crate::cook::{CookError, CookOptions, CookReport, CookStatus, cook_dir};
 use crate::meta::{self, AssetMeta, ImportSettings, sidecar_path};
 use crate::test_util::TempDir;
-use crate::texture::SdfPrecision;
+use crate::texture::{MaskSettings, SdfPrecision};
 
 /// The lit region of the test face at a light angle: a disc whose radius shrinks with the
 /// angle, centered left of the middle, so the shadow sweeps in from the right.
@@ -145,12 +145,14 @@ fn ilm_document() -> IlmMap {
             path: "masks/spec.png".into(),
             channel: ImageChannel::R,
             range: [0.0, 1.0],
+            encoding: Encoding::Linear,
         },
         // The same mask, inverted and halved, as a shadow bias.
         shadow_bias: ChannelInput::Image {
             path: "masks/spec.png".into(),
             channel: ImageChannel::R,
             range: [0.5, 0.0],
+            encoding: Encoding::Linear,
         },
         specular_threshold: ChannelInput::Constant(0.5),
         // Genshin-style levels: 75/255 ≈ 0.29 is nearest 0.3, ID 1.
@@ -215,15 +217,50 @@ fn documents_round_trip_and_read_as_documented() {
     assert_eq!(ilm.specular_threshold, ChannelInput::Constant(0.5));
     assert_eq!(
         ilm.shadow_bias,
-        ChannelInput::Image { path: "ao.png".into(), channel: ImageChannel::R, range: [0.0, 0.5] }
+        ChannelInput::Image {
+            path: "ao.png".into(),
+            channel: ImageChannel::R,
+            range: [0.0, 0.5],
+            encoding: Encoding::Linear
+        }
     );
+    // Layer masks: a channel left out is 1, what an unbound mask reads; an input may be sRGB.
+    let layers: LayerMaskMap = from_ron(
+        r#"(type: "sapphire::pipeline::LayerMaskMap", version: 1, data: (
+            emission: Image(path: "glow.png", channel: G, encoding: Srgb),
+        ))"#,
+    )
+    .unwrap();
+    assert_eq!(
+        [&layers.matcap, &layers.metallic, &layers.stocking],
+        [&ChannelInput::Constant(1.0); 3],
+        "left out: unpainted"
+    );
+    assert_eq!(
+        layers.emission,
+        ChannelInput::Image {
+            path: "glow.png".into(),
+            channel: ImageChannel::G,
+            range: [0.0, 1.0],
+            encoding: Encoding::Srgb
+        }
+    );
+    assert_eq!(from_ron::<LayerMaskMap>(&to_ron(&layers).unwrap()).unwrap(), layers);
+    // A linear input, the default, isn't written out: ILM documents read as they did.
+    assert!(!to_ron(&ilm).unwrap().contains("encoding"), "{}", to_ron(&ilm).unwrap());
 
     // Typos are errors, not silently ignored settings.
     for typo in [
         r#"(type: "sapphire::pipeline::FaceSdfMap", version: 1, data: (horizontal: [], vertcal: []))"#,
         r#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (shadow_bias: Image(path: "a.png", rnage: (0.0, 1.0))))"#,
+        r#"(type: "sapphire::pipeline::LayerMaskMap", version: 1, data: (emision: Constant(0.5)))"#,
     ] {
-        assert!(from_ron::<FaceSdfMap>(typo).is_err() && from_ron::<IlmMap>(typo).is_err(), "{typo}");
+        assert!(
+            from_ron::<FaceSdfMap>(typo).is_err()
+                && from_ron::<IlmMap>(typo).is_err()
+                && from_ron::<LayerMaskMap>(typo).is_err(),
+            "{typo}"
+        );
     }
     let error = from_ron::<RampMap>(
         r#"(type: "sapphire::pipeline::RampMap", version: 1, data: (materials: [(day: (stops: [(at: 0.0, color: "red")]))]))"#,
@@ -237,6 +274,7 @@ fn document_kinds_go_by_their_compound_extensions() {
     assert_eq!(MapKind::for_path(Path::new("a/face.facesdf.ron")), Some(MapKind::FaceSdf));
     assert_eq!(MapKind::for_path(Path::new("Body.RAMP.RON")), Some(MapKind::Ramp));
     assert_eq!(MapKind::for_path(Path::new("body.ilm.ron")), Some(MapKind::Ilm));
+    assert_eq!(MapKind::for_path(Path::new("hair.layers.ron")), Some(MapKind::LayerMask));
     assert_eq!(MapKind::for_path(Path::new(".ramp.ron")), None);
     assert_eq!(MapKind::for_path(Path::new("material.ron")), None);
     for kind in MapKind::ALL {
@@ -248,7 +286,7 @@ fn document_kinds_go_by_their_compound_extensions() {
         assert_eq!(kind.default_settings().kind(), kind);
     }
     // Importers that decode masks carry the image importer's version.
-    for kind in [MapKind::FaceSdf, MapKind::Ilm] {
+    for kind in [MapKind::FaceSdf, MapKind::Ilm, MapKind::LayerMask] {
         assert_eq!(kind.importer().version & 0xffff, image_import::IMPORTER.version);
         assert_eq!(kind.importer().version >> 16, 1);
     }
@@ -418,6 +456,80 @@ fn ilm_channels_pack_in_order_with_defaults() {
     let error =
         generate(&sizeless, &fs::read(&sizeless).unwrap(), &MapKind::Ilm.default_settings()).unwrap_err();
     assert!(matches!(error, MapError::Ilm(IlmError::NoSize)), "{error:?}");
+}
+
+#[test]
+fn layer_masks_pack_in_order_unpainted_at_one_and_decode_srgb_inputs() {
+    let tree = Tree::new("maps_layers");
+    let body = tree.source().join("body");
+    // A color texture: G rises across, R and B constant.
+    let glow = image::RgbImage::from_fn(16, 8, |x, _| image::Rgb([40, (x * 17) as u8, 200]));
+    write_png(&body.join("textures/glow.png"), glow.into());
+    let path = body.join("body.layers.ron");
+    let document = LayerMaskMap {
+        size: None,
+        matcap: ChannelInput::Image {
+            path: "masks/spec.png".into(),
+            channel: ImageChannel::R,
+            range: [1.0, 0.0],
+            encoding: Encoding::Linear,
+        },
+        metallic: layer_mask::unpainted(),
+        emission: ChannelInput::Image {
+            path: "textures/glow.png".into(),
+            channel: ImageChannel::G,
+            range: [0.0, 1.0],
+            encoding: Encoding::Srgb,
+        },
+        stocking: ChannelInput::Constant(0.25),
+    };
+    tree.write_document(&path, &document);
+    let map = generate(&path, &fs::read(&path).unwrap(), &MapKind::LayerMask.default_settings()).unwrap();
+    assert_eq!(map.class, TextureClass::Mask(MaskSettings::default()));
+    assert_eq!((map.image.width, map.image.height), (16, 8));
+    for x in [0, 5, 15] {
+        let value = f32::from((x * 17) as u8) / 255.0;
+        let [r, g, b, a] = map.image.pixels[x as usize];
+        assert!((r - (1.0 - value)).abs() < 1e-6, "R: the matcap's mask, a linear mask inverted");
+        assert_eq!(g, 1.0, "G: metallic, unpainted");
+        assert!((b - crate::color::srgb_to_linear(value)).abs() < 1e-6, "B: the glow, decoded from sRGB");
+        assert_eq!(a, 0.25, "A: the constant");
+    }
+
+    // The tree cooks it as a four-channel mask, its inputs part of it.
+    let report = tree.cook(Cook::Desktop);
+    let names: Vec<String> = statuses(&report).into_iter().map(|(name, _)| name).collect();
+    assert!(names.contains(&"body.layers.ron".to_owned()), "{names:?}");
+    assert!(!names.contains(&"glow.png".to_owned()), "an input, not an asset: {names:?}");
+    let (desc, _) = texture(&tree.out(Cook::Desktop).join("body/body.layers.ktx2"));
+    assert_eq!(desc.format, TextureFormat::Bc7RgbaUnorm);
+    tree.cook(Cook::Mobile);
+    let (desc, _) = texture(&tree.out(Cook::Mobile).join("body/body.layers.ktx2"));
+    assert_eq!(desc.format, TextureFormat::Astc { block: AstcBlock::B4x4, srgb: false });
+
+    // Inputs share a size, and a document of constants gives one.
+    write_png(&body.join("textures/small.png"), image::RgbImage::new(8, 8).into());
+    let mismatched = LayerMaskMap {
+        emission: ChannelInput::Image {
+            path: "textures/small.png".into(),
+            channel: ImageChannel::R,
+            range: [0.0, 1.0],
+            encoding: Encoding::Srgb,
+        },
+        ..document
+    };
+    tree.write_document(&path, &mismatched);
+    let error =
+        generate(&path, &fs::read(&path).unwrap(), &MapKind::LayerMask.default_settings()).unwrap_err();
+    assert!(matches!(error, MapError::InputSize { found: [8, 8], expected: [16, 8], .. }), "{error:?}");
+    let empty = r#"(type: "sapphire::pipeline::LayerMaskMap", version: 1, data: ())"#;
+    fs::write(&path, empty).unwrap();
+    let error =
+        generate(&path, &fs::read(&path).unwrap(), &MapKind::LayerMask.default_settings()).unwrap_err();
+    assert!(matches!(error, MapError::LayerMask(LayerMaskError::NoSize)), "{error:?}");
+    tree.write_document(&path, &LayerMaskMap { size: Some([4, 4]), ..from_ron(empty).unwrap() });
+    let map = generate(&path, &fs::read(&path).unwrap(), &MapKind::LayerMask.default_settings()).unwrap();
+    assert!(map.image.pixels.iter().all(|pixel| *pixel == [1.0; 4]), "unpainted everywhere");
 }
 
 #[test]

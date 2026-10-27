@@ -3,7 +3,8 @@ use std::fs;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterSurface, DiffuseMode, MaterialDocument, Rim,
+    AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterSurface, DiffuseMode, Emission, MatcapBlend,
+    MatcapChannel, MaterialDocument, MaterialFlags, Rim,
 };
 use sapphire_assets::mesh::{Mesh, PositionFormat, SlotMaterial};
 use sapphire_assets::rig::{
@@ -12,7 +13,7 @@ use sapphire_assets::rig::{
 };
 use serde_json::{Value, json};
 
-use super::mtoon::{Channel, Mtoon, OutlineWidth, ShadingShift, TextureRef, TextureUse};
+use super::mtoon::{Binding, Channel, LayerMask, Mtoon, OutlineWidth, ShadingShift, TextureRef, TextureUse};
 use super::samples::{self, SampleVrm, image, material, node};
 use super::*;
 use crate::color::srgb_to_linear;
@@ -24,6 +25,9 @@ const EPS: f32 = 1e-5;
 
 /// The mean of the sample's shading shift image, `(x + y) × 16` over 8 × 8 texels: 112 / 255.
 const SHIFT_MEAN: f32 = 112.0 / 255.0;
+
+/// The linear mean color of the sample's rim image, `(255, x × 20, 0)` in sRGB.
+const RIM_MEAN: [f32; 3] = [1.0, 0.091_391_19, 0.0];
 
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < EPS
@@ -186,12 +190,23 @@ fn mtoon_1_0_parses_every_field() {
         (skin.rim_color, skin.rim_fresnel_power, skin.rim_lift, skin.rim_lighting_mix),
         ([0.4, 0.2, 0.2], 2.0, 0.1, 0.5)
     );
-    assert_eq!(skin.rim_multiply_texture, reference(image::RIM, Channel::Rgba));
+    // The rim multiply texture is measured as color: (1, rising G, 0), brightest in R.
+    let rim = skin.rim_multiply_texture.expect("a rim multiply texture");
+    assert_eq!(
+        (rim.texture, rim.channel, rim.size),
+        (TextureRef { texture: image::RIM, channel: Channel::Rgba }, Channel::R, [image::SIZE; 2])
+    );
+    assert!(close3(rim.mean, RIM_MEAN), "measured on import: {:?}", rim.mean);
+    assert_eq!(rim.hue(), rim.mean, "its R is 1 throughout");
     assert_eq!(skin.outline_width, OutlineWidth::World(0.002));
     assert_eq!(skin.outline_width_multiply_texture, reference(image::OUTLINE, Channel::G));
     assert_eq!(skin.outline_color, [0.1, 0.05, 0.05]);
+    assert_eq!((skin.emissive, skin.emissive_texture), ([0.0; 3], None), "glTF's default: black");
     assert_eq!(skin.uv_animation_mask_texture, reference(image::RIM, Channel::B));
     assert!(skin.is_textured());
+    // The rim multiply texture masks the matcap, so the layer mask holds it rather than a
+    // texture of its own.
+    assert_eq!(skin.layer_mask(), Some(LayerMask { matcap: Some(rim), emission: None }));
     let uses: Vec<TextureUse> = skin.textures().into_iter().map(|(usage, _)| usage).collect();
     assert_eq!(
         uses,
@@ -201,11 +216,13 @@ fn mtoon_1_0_parses_every_field() {
             TextureUse::Normal,
             TextureUse::ShadingShift,
             TextureUse::Matcap,
-            TextureUse::RimMultiply,
             TextureUse::OutlineWidth,
             TextureUse::UvAnimationMask,
         ]
     );
+    let unmasked = Mtoon { matcap_texture: None, ..skin.clone() };
+    assert_eq!(unmasked.layer_mask(), None, "no matcap for it to mask");
+    assert!(unmasked.textures().contains(&(TextureUse::RimMultiply, rim.texture)), "kept as a texture");
 
     let hair = import.slots[1].clone().expect("Hair is MToon");
     assert_eq!(
@@ -237,21 +254,31 @@ fn mtoon_1_0_parses_every_field() {
     assert_eq!((unused.outline_width, unused.outline_color), (OutlineWidth::None, [0.0; 3]));
 }
 
-/// A distinct asset ID per texture use, for checking which slot binds which.
+/// A distinct asset ID per binding, for checking which slot binds which.
+fn bind_id(binding: Binding) -> AssetId {
+    let byte = match binding {
+        Binding::Texture(usage) => usage as u8 + 1,
+        Binding::ControlMap => 100,
+        Binding::LayerMask => 101,
+    };
+    AssetId::from_bytes([byte; 16])
+}
+
+/// [`bind_id`] for a texture use.
 fn use_id(usage: TextureUse) -> AssetId {
-    AssetId::from_bytes([usage as u8 + 1; 16])
+    bind_id(Binding::Texture(usage))
 }
 
 #[test]
 fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     let import = import1();
     let skin = import.slots[0].clone().unwrap();
-    let material = skin.to_material(|usage| Some(use_id(usage)));
+    let material = skin.to_material(|binding| Some(bind_id(binding)));
     assert_eq!(material.surface, CharacterSurface::Body);
     assert_eq!(material.base_color, [0.8, 0.6, 1.0, 1.0]);
     assert_eq!(material.base_color_map, Some(use_id(TextureUse::BaseColor)));
     assert_eq!(material.normal_map, Some(use_id(TextureUse::Normal)));
-    assert_eq!(material.control_map, Some(use_id(TextureUse::ShadingShift)));
+    assert_eq!(material.control_map, Some(bind_id(Binding::ControlMap)));
     assert_eq!(material.alpha, AlphaMode::Opaque);
     // linearstep(−1 + 0.8, 1 − 0.8, N·L − 0.1): centered at N·L = 0.1, half-width 0.2.
     assert!(close(material.light_split.threshold, 0.1) && close(material.light_split.softness, 0.2));
@@ -259,7 +286,9 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     let [region] = &material.regions[..] else { panic!("one region") };
     assert!(close3(region.shade_color, [0.5, 0.5, 0.5]), "shade over base: {:?}", region.shade_color);
     assert_eq!((region.outline_color, region.outline_width), ([0.1, 0.05, 0.05], 1.0));
-    assert!(close3(region.rim_color, [1.0, 0.5, 0.5]));
+    // The rim color (0.4, 0.2, 0.2) × the rim multiply texture's mean color, which the
+    // depth-offset rim can't take per texel: strength 0.4 in R, the tint the rest.
+    assert!(close3(region.rim_color, [1.0, 0.5 * RIM_MEAN[1], 0.0]), "{:?}", region.rim_color);
     assert!(close(material.rim.strength, 0.4));
     // The Fresnel gate at half intensity, where (1 − N·V + 0.1)² = ½; the depth-offset rim's own
     // width (M1 C5), and the lighting mix as its light gate.
@@ -269,6 +298,13 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     let matcap = material.matcap.unwrap();
     assert_eq!(matcap.map, use_id(TextureUse::Matcap));
     assert!(close(matcap.strength, 0.5) && close(matcap.shadow_strength, 0.25));
+    // C7's matcap, added as MToon's is, tinted by the factor (0.5, 0.4, 0.5) over its strength
+    // and by the rim multiply texture's hue: its R masks the matcap through the layer mask.
+    assert_eq!((region.matcap.channel, region.matcap.blend), (MatcapChannel::Rgb, MatcapBlend::Add));
+    assert!(close3(region.matcap.color, [1.0, 0.8 * RIM_MEAN[1], 0.0]), "{:?}", region.matcap.color);
+    assert_eq!(material.layer_mask, Some(bind_id(Binding::LayerMask)));
+    assert_eq!(region.emission, [0.0; 3], "no glow");
+    assert_eq!(material.emission, Emission::default(), "nothing to make steady");
     // 2 mm seen from 2 m through 45°, at 1080 pixels.
     let expected = 0.002 / (4.0 * 22.5f32.to_radians().tan()) * 1080.0;
     assert!(close(material.outline.width, expected), "{}", material.outline.width);
@@ -280,7 +316,9 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     for distance in [0.5, 2.0, 10.0] {
         assert!(close(curve.scale(distance) * distance, 2.0), "{distance} m");
     }
-    assert_eq!(material.outline.lighting, 1.0, "MToon's outlineLightingMixFactor, 1 by default");
+    // MToon's outlineLightingMixFactor, 1 here: the line × its surface's lit color, the albedo
+    // and the light both.
+    assert_eq!((material.outline.lighting, material.outline.albedo), (1.0, 1.0));
     assert_eq!(material.specular, AnimeCharacterMaterial::default().specular, "MToon has no specular");
 
     // The import binds no textures, so the generated material draws with factors alone.
@@ -289,10 +327,13 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     // Without its control map, the shading shift texture's mean offset joins the threshold.
     assert!(close(generated.light_split.threshold, 0.1 - 0.5 * SHIFT_MEAN), "{:?}", generated.light_split);
     assert!(
-        generated.base_color_map.is_none() && generated.control_map.is_none() && generated.matcap.is_none()
+        generated.base_color_map.is_none()
+            && generated.control_map.is_none()
+            && generated.matcap.is_none()
+            && generated.layer_mask.is_none()
     );
     // Uses the material has no texture for are never asked for.
-    let hair = import.slots[1].clone().unwrap().to_material(|usage| Some(use_id(usage)));
+    let hair = import.slots[1].clone().unwrap().to_material(|binding| Some(bind_id(binding)));
     assert_eq!((hair.base_color_map, hair.control_map, hair.matcap), (None, None, None));
     assert!(close(hair.outline.width, 0.004 * 1080.0));
     // A screen width holds in pixels from the camera out to the cutoff.
@@ -300,7 +341,8 @@ fn mtoon_maps_onto_anime_character_materials_field_by_field() {
     assert_eq!((hair.outline.curve.near, hair.outline.curve.far), ((0.0, 1.0), (cutoff, 1.0)));
     assert!([0.05, 3.0, 50.0].iter().all(|&distance| close(hair.outline.curve.scale(distance), 1.0)));
     let unlit_lines = Mtoon { outline_lighting_mix: 0.25, ..import.slots[1].clone().unwrap() };
-    assert_eq!(unlit_lines.to_material(|_| None).outline.lighting, 0.25);
+    let outline = unlit_lines.to_material(|_| None).outline;
+    assert_eq!((outline.lighting, outline.albedo), (0.25, 0.25));
     assert!(close3(hair.regions[0].shade_color, [0.25, 0.25, 1.0]));
     assert_eq!(hair.alpha, AlphaMode::Mask { cutoff: 0.3 });
     // Unlit: both sides the same color, no rim, no outline, a hard split.
@@ -457,8 +499,15 @@ fn mtoon_0_x_properties_migrate() {
     assert_eq!(skin.rim_color, decode([0.5, 0.25, 0.25]));
     assert_eq!((skin.rim_fresnel_power, skin.rim_lift, skin.rim_lighting_mix), (2.0, 0.1, 0.5));
     assert_eq!((skin.matcap_factor, skin.matcap_texture.map(|t| t.texture)), ([1.0; 3], Some(image::MATCAP)));
+    // `_RimTexture` is 1.0's rim multiply texture, measured as color.
+    let rim = skin.rim_multiply_texture.expect("`_RimTexture`");
+    assert_eq!((rim.texture.texture, rim.channel), (image::RIM, Channel::R));
+    assert!(close3(rim.mean, RIM_MEAN), "{:?}", rim.mean);
     assert_eq!(skin.normal_texture.map(|t| t.texture), Some(image::NORMAL));
     assert_eq!(skin.shade_multiply_texture.map(|t| t.texture), Some(image::ALBEDO));
+    // `_OutlineColorMode` 1, mixed lighting: `_OutlineLightingMix` is 1.0's lighting mix.
+    assert_eq!(skin.outline_lighting_mix, 1.0);
+    assert_eq!((skin.emissive, skin.emissive_texture), ([0.0; 3], None), "0.x's default: black");
 
     // 0.x's ramp from `_ShadeShift` to lerp(1, shift, toony) is 1.0's split: N·L from −0.1 to
     // 0.08 (before the grade's shift).
@@ -473,9 +522,175 @@ fn mtoon_0_x_properties_migrate() {
     assert_eq!(hair.alpha, AlphaMode::Mask { cutoff: 0.3 });
     // MToon 0.x's shader defaults fill in what a material leaves out.
     assert_eq!(hair.shading_toony, 0.9 + 0.1 * 0.5);
+    // `_OutlineColorMode` 0, a fixed color, by default: the line unlit, whatever
+    // `_OutlineLightingMix` says (1 by default).
+    assert_eq!(hair.outline_lighting_mix, 0.0);
+    let outline = v0.mesh.materials[1].generated.outline;
+    assert_eq!((outline.lighting, outline.albedo), (0.0, 0.0));
     let lashes = v0.slots[3].clone().expect("VRM/UnlitCutout is unlit");
     assert_eq!((lashes.alpha, lashes.shading_toony), (AlphaMode::Mask { cutoff: 0.4 }, 1.0));
     assert_eq!(v0.slots[2], None);
+}
+
+/// The linear mean of the sample's outline image, `(0, x × 255 / 7, 0)` in sRGB: one hue,
+/// green.
+const OUTLINE_MEAN: [f32; 3] = [0.0, 0.335_925_7, 0.0];
+
+/// Adds `extension` to the sample's material `material` with `value`, listing it as used.
+fn add_material_extension(sample: &mut SampleVrm, material: usize, extension: &str, value: Value) {
+    sample.document["materials"][material]["extensions"][extension] = value;
+    let used = sample.document["extensionsUsed"].as_array_mut().expect("extensions used");
+    if !used.iter().any(|name| name == extension) {
+        used.push(json!(extension));
+    }
+}
+
+#[test]
+fn mtoon_emission_and_matcap_textures_map_onto_the_layers() {
+    // Skin glows (0.5, 0.25, 1) at strength 4 through the outline image (one hue, green); Hair
+    // glows without a texture.
+    let mut sample = samples::vrm1();
+    let materials = &mut sample.document["materials"];
+    materials[material::SKIN]["emissiveFactor"] = json!([0.5, 0.25, 1.0]);
+    materials[material::SKIN]["emissiveTexture"] = json!({ "index": image::OUTLINE });
+    materials[material::HAIR]["emissiveFactor"] = json!([0.0, 0.5, 0.25]);
+    add_material_extension(
+        &mut sample,
+        material::SKIN,
+        "KHR_materials_emissive_strength",
+        json!({ "emissiveStrength": 4.0 }),
+    );
+    let glowing = import(&sample.to_glb(), Some(VrmVersion::V1)).expect("the glowing sample imports");
+    let skin = glowing.slots[0].clone().unwrap();
+    assert_eq!(skin.emissive, [2.0, 1.0, 4.0], "the factor × the strength");
+    let glow = skin.emissive_texture.expect("an emissive texture");
+    assert_eq!(
+        (glow.texture.texture, glow.channel, glow.size),
+        (image::OUTLINE, Channel::G, [image::SIZE; 2])
+    );
+    assert!(close3(glow.mean, OUTLINE_MEAN), "{:?}", glow.mean);
+    assert_eq!(glow.hue(), [0.0, 1.0, 0.0]);
+    let rim = skin.rim_multiply_texture.unwrap();
+    assert_eq!(skin.layer_mask(), Some(LayerMask { matcap: Some(rim), emission: Some(glow) }));
+    assert!(!skin.textures().iter().any(|&(usage, _)| usage == TextureUse::Emissive), "the mask holds it");
+
+    // Extracted, the layer mask's B paints the glow, and the region's color takes the rest of
+    // the texture's hue: (2, 1, 4) × (0, 1, 0). Steady, blooming as the world's light.
+    let bound = skin.to_material(|binding| Some(bind_id(binding)));
+    assert_eq!(bound.layer_mask, Some(bind_id(Binding::LayerMask)));
+    assert_eq!(bound.regions[0].emission, [0.0, 1.0, 0.0]);
+    assert_eq!(bound.emission, Emission { period: 0.0, ..Emission::default() });
+    assert!(bound.flags().contains(MaterialFlags::LAYERS));
+    bound.validate().expect("a valid material");
+    // Generated, it binds no mask, so it glows at the texture's mean everywhere.
+    let generated = &glowing.mesh.materials[0].generated;
+    assert_eq!(*generated, skin.to_material(|_| None));
+    assert_eq!(generated.layer_mask, None);
+    assert!(close3(generated.regions[0].emission, [0.0, OUTLINE_MEAN[1], 0.0]), "{:?}", generated.regions[0]);
+    assert_eq!(generated.emission.period, 0.0);
+    assert!(generated.flags().contains(MaterialFlags::LAYERS), "the glow is a layer (M1 C7)");
+    generated.validate().expect("a valid material");
+    // Without a texture, the factor glows as it is, and there's no mask to bind.
+    let hair = glowing.slots[1].clone().unwrap();
+    assert_eq!((hair.emissive, hair.layer_mask()), ([0.0, 0.5, 0.25], None));
+    let hair = hair.to_material(|binding| Some(bind_id(binding)));
+    assert_eq!((hair.regions[0].emission, hair.layer_mask), ([0.0, 0.5, 0.25], None));
+    assert_eq!(hair.emission.period, 0.0);
+    // Unlit materials shade their base color alone: no glow.
+    let mut unlit = samples::vrm1();
+    unlit.document["materials"][material::LASHES]["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
+    let unlit = import(&unlit.to_glb(), None).unwrap();
+    assert_eq!(unlit.slots[3].as_ref().unwrap().emissive, [0.0; 3]);
+    assert_eq!(unlit.mesh.materials[3].generated.regions[0].emission, [0.0; 3]);
+
+    // An emissive texture of another size than the rim multiply texture's: the mask holds the
+    // glow alone, the rim multiply texture stays a texture of its own, and the matcap takes its
+    // mean color, as everything does that no bound mask holds. Here the rim multiply texture is
+    // the green outline image too, so its hue and its mean differ.
+    let mut sample = samples::vrm1();
+    let big = sample.add_png_texture("big_glow", &samples::png(16, |_, _| [255, 255, 255, 255]));
+    sample.document["materials"][material::SKIN]["emissiveFactor"] = json!([1.0, 1.0, 1.0]);
+    sample.document["materials"][material::SKIN]["emissiveTexture"] = json!({ "index": big });
+    let mtoon = &mut sample.document["materials"][material::SKIN]["extensions"]["VRMC_materials_mtoon"];
+    mtoon["rimMultiplyTexture"] = json!({ "index": image::OUTLINE });
+    let mismatched = import(&sample.to_glb(), None).unwrap();
+    let skin = mismatched.slots[0].clone().unwrap();
+    let mask = skin.layer_mask().expect("a layer mask");
+    assert_eq!((mask.matcap, mask.emission.map(|glow| glow.size)), (None, Some([16, 16])));
+    let rim = skin.rim_multiply_texture.unwrap();
+    assert!(skin.textures().contains(&(TextureUse::RimMultiply, rim.texture)));
+    let bound = skin.to_material(|binding| Some(bind_id(binding)));
+    assert!(
+        close3(bound.regions[0].matcap.color, [0.0, 0.8 * OUTLINE_MEAN[1], 0.0]),
+        "{:?}",
+        bound.regions[0].matcap
+    );
+    assert_eq!(bound.regions[0].emission, [1.0; 3], "a white texture's hue");
+    // An eye binds its own mask in the layer mask's slot: its glow and matcap take the means.
+    let eye = Mtoon { eye: Some(EyeShading::default()), ..skin.clone() };
+    assert_eq!(eye.layer_mask(), None);
+    let eye = eye.to_material(|binding| Some(bind_id(binding)));
+    assert_eq!((eye.layer_mask, eye.regions[0].emission), (None, [1.0; 3]));
+    eye.validate().expect("a valid eye");
+
+    // VRM's older HDR multiplier where a file has no emissive strength; the strength wins.
+    let mut sample = samples::vrm1();
+    sample.document["materials"][material::HAIR]["emissiveFactor"] = json!([0.5, 0.5, 0.5]);
+    add_material_extension(
+        &mut sample,
+        material::HAIR,
+        "VRMC_materials_hdr_emissiveMultiplier",
+        json!({ "emissiveMultiplier": 3.0 }),
+    );
+    let emissive =
+        |sample: &SampleVrm| import(&sample.to_glb(), None).unwrap().slots[1].as_ref().unwrap().emissive;
+    assert_eq!(emissive(&sample), [1.5; 3]);
+    add_material_extension(&mut sample, material::HAIR, "KHR_materials_emissive_strength", json!({}));
+    assert_eq!(emissive(&sample), [0.5; 3], "the strength's default, 1");
+    add_material_extension(
+        &mut sample,
+        material::HAIR,
+        "KHR_materials_emissive_strength",
+        json!({ "emissiveStrength": "bright" }),
+    );
+    let error = import(&sample.to_glb(), None).unwrap_err();
+    assert!(
+        matches!(error, VrmImportError::Extension { extension: "KHR_materials_emissive_strength", .. }),
+        "{error:?}"
+    );
+
+    // VRM 0.x: `_EmissionColor` (sRGB) and `_EmissionMap`.
+    let mut sample = samples::vrm0();
+    let skin = &mut sample.document["extensions"]["VRM"]["materialProperties"][0];
+    skin["vectorProperties"]["_EmissionColor"] = json!([1.0, 0.5, 0.25, 1.0]);
+    skin["textureProperties"]["_EmissionMap"] = json!(image::OUTLINE);
+    let v0 = import(&sample.to_glb(), Some(VrmVersion::V0)).unwrap();
+    let skin = v0.slots[0].as_ref().unwrap();
+    assert_eq!(skin.emissive, [1.0, srgb_to_linear(0.5), srgb_to_linear(0.25)]);
+    assert_eq!(
+        skin.emissive_texture.map(|glow| (glow.texture.texture, glow.channel)),
+        Some((image::OUTLINE, Channel::G))
+    );
+    let bound = skin.to_material(|binding| Some(bind_id(binding)));
+    assert_eq!(bound.regions[0].emission, [0.0, srgb_to_linear(0.5), 0.0]);
+    assert_eq!(bound.layer_mask, Some(bind_id(Binding::LayerMask)));
+}
+
+#[test]
+fn materials_without_glow_or_matcap_keep_the_layers_off() {
+    let import = import1();
+    for slot in [0, 1, 3] {
+        let generated = &import.mesh.materials[slot].generated;
+        let [region] = &generated.regions[..] else { panic!("one region") };
+        assert_eq!(region.emission, [0.0; 3], "slot {slot}");
+        assert_eq!(region.matcap, Default::default(), "slot {slot}");
+        assert_eq!((generated.layer_mask, generated.emission), (None, Emission::default()), "slot {slot}");
+        assert!(!generated.flags().contains(MaterialFlags::LAYERS), "slot {slot}: no layer");
+    }
+    // Hair has no textures at all: extracted, it binds nothing either.
+    let hair = import.slots[1].clone().unwrap();
+    assert_eq!((hair.layer_mask(), hair.is_textured()), (None, false));
+    assert_eq!(hair.to_material(|binding| Some(bind_id(binding))), import.mesh.materials[1].generated);
 }
 
 #[test]
@@ -1010,7 +1225,7 @@ fn vroid_names_give_the_stylized_gis_region_weights() {
         assert_eq!(material, generated(&original, name), "{renamed_name}");
         // Extraction writes the same weights out (`Mtoon::to_material` with textures bound).
         let mtoon = renamed.slots[slot(&renamed, renamed_name) as usize].as_ref().expect("MToon");
-        let bound = mtoon.to_material(|usage| Some(use_id(usage)));
+        let bound = mtoon.to_material(|binding| Some(bind_id(binding)));
         assert_eq!(bound.regions[0].gi, generated(&renamed, renamed_name).regions[0].gi);
         bound.validate().expect("a valid material");
     }

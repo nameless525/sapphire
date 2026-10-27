@@ -72,7 +72,7 @@ use vrm_spec::vrmc_vrm_1_0::VRMCVrmSchema;
 use self::data::VrmData;
 use self::mtoon::{Mtoon, OutlineWidth, TextureCheck};
 use crate::cache::Stage;
-use crate::color::unorm8;
+use crate::color::{srgb_to_linear, unorm8};
 use crate::cook::{Recipe, SubAsset};
 use crate::import::gltf::{self as gltf_import, GltfImportError, SceneImport};
 use crate::mesh::ImportedMesh;
@@ -80,11 +80,13 @@ use crate::meta::MeshSettings;
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// the mesh is that importer's, so a bump there must recook VRM files too. Bump the high bits
-/// whenever the VRM part of the output changes for the same file. 4: VRoid Studio's face, skin
-/// and hair materials take the stylized GI's region weights (M1 C2 follow-up). 3: VRoid
-/// Studio's eye materials map onto anime eyes' layers (M1 C6). 2: MToon's rim maps onto the
-/// depth-offset rim's Fresnel gate and light gate (M1 C5).
-pub const IMPORTER: Stage = Stage { name: "vrm", version: (4 << 16) | gltf_import::IMPORTER.version };
+/// whenever the VRM part of the output changes for the same file. 5: MToon's emission, matcap
+/// tint and rim multiply texture map onto M1 C7's layers, and its outline lighting mix takes
+/// the albedo too (M1 C7 follow-up). 4: VRoid Studio's face, skin and hair materials take the
+/// stylized GI's region weights (M1 C2 follow-up). 3: VRoid Studio's eye materials map onto
+/// anime eyes' layers (M1 C6). 2: MToon's rim maps onto the depth-offset rim's Fresnel gate and
+/// light gate (M1 C5).
+pub const IMPORTER: Stage = Stage { name: "vrm", version: (5 << 16) | gltf_import::IMPORTER.version };
 
 /// An iris's parallax depth (M1 C6): this share of its height, in meters.
 const IRIS_PARALLAX: f32 = 0.1;
@@ -507,6 +509,19 @@ impl<'a> Images<'a> {
         };
         image::load_from_memory_with_format(embedded.bytes, format)
             .map_err(|source| VrmImportError::Decode { index, source })
+    }
+
+    /// The mean color of image `index` as color (sRGB decoded to linear), and its size.
+    fn mean_color(self, index: usize) -> Result<([f32; 3], [u32; 2]), VrmImportError> {
+        let decoded = self.decode(index)?.into_rgba32f();
+        let mut sum = [0.0f64; 3];
+        for pixel in decoded.pixels() {
+            for (total, &value) in sum.iter_mut().zip(&pixel.0) {
+                *total += f64::from(srgb_to_linear(value));
+            }
+        }
+        let texels = (decoded.width() as usize * decoded.height() as usize).max(1) as f64;
+        Ok((sum.map(|total| (total / texels) as f32), [decoded.width(), decoded.height()]))
     }
 
     /// One channel of image `index`, decoded (linear: data textures aren't sRGB).

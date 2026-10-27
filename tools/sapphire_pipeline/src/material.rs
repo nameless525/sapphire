@@ -96,6 +96,7 @@ impl TextureKind {
                 MapKind::FaceSdf => Self::Sdf,
                 MapKind::Ramp => Self::Ramp,
                 MapKind::Ilm => Self::Ilm,
+                MapKind::LayerMask => Self::Mask,
             },
             ImportSettings::Gltf(_)
             | ImportSettings::Vrm(_)
@@ -301,6 +302,7 @@ mod tests {
         assert_eq!(kind(MapKind::FaceSdf), Some(TextureKind::Sdf));
         assert_eq!(kind(MapKind::Ramp), Some(TextureKind::Ramp));
         assert_eq!(kind(MapKind::Ilm), Some(TextureKind::Ilm));
+        assert_eq!(kind(MapKind::LayerMask), Some(TextureKind::Mask), "a body's layer mask (M1 C7)");
         let color =
             ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) });
         assert_eq!(TextureKind::of(&color), Some(TextureKind::Color));

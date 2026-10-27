@@ -321,8 +321,12 @@ impl InputSystem {
     }
 
     /// Releases everything held at `timestamp`, firing nothing a release would, and cancels
-    /// sequences in progress: a double tap waiting for its second press goes idle then.
+    /// sequences in progress: a double tap waiting for its second press goes idle then. As
+    /// when [`handle_event`](Self::handle_event) sees focus go, the fingers down now are
+    /// forgotten at once, so fingers landing later find slots even if the old ones' releases
+    /// never come.
     pub fn release_all(&mut self, timestamp: Timestamp) {
+        self.adapter.release_fingers();
         self.push(timestamp, RawInput::ReleaseAll);
     }
 

@@ -4,11 +4,14 @@
 
 use sapphire_input::ActionEventKind::{Canceled, Completed, Started, Triggered};
 use sapphire_input::{
-    ActionEventKind, ActionId, DeviceKind, GamepadFamily, InputMap, InputSystem, Key, PadAxis, PadButton,
-    RawInput, RebindError, Source, Timestamp,
+    ActionEventKind, ActionId, DeviceKind, GamepadFamily, InputMap, InputSystem, Key, MAX_FINGERS, PadAxis,
+    PadButton, RawInput, RebindError, Source, Timestamp,
 };
 use sapphire_math::Vec2;
-use sapphire_platform::{Event, GamepadType, LifecycleEvent, Scancode, TouchPhase};
+use sapphire_platform::{
+    Event, FingerId, GamepadType, LifecycleEvent, Scancode, TouchDeviceId, TouchEvent, TouchPhase,
+    WindowEvent, WindowId,
+};
 
 fn ms(ms: u64) -> Timestamp {
     Timestamp::from_nanos(ms * 1_000_000)
@@ -86,10 +89,33 @@ impl Rig {
         self.input.state(self.action(action)).value()
     }
 
+    /// A platform touch at the middle of the window, as SDL reports one: by finger id, which
+    /// the system maps to a slot.
+    fn platform_touch(&mut self, t: u64, id: u64, phase: TouchPhase) {
+        self.input.handle_event(&Event::Touch(TouchEvent {
+            timestamp: ms(t),
+            window: WindowId::from_raw(1),
+            finger: FingerId::new(TouchDeviceId::from_raw(1), id),
+            phase,
+            x: 0.5,
+            y: 0.5,
+            pressure: 1.0,
+        }));
+    }
+
     /// The app goes to the background at `t`.
     fn background(&mut self, t: u64) {
         self.input
             .handle_event(&Event::Lifecycle { timestamp: ms(t), event: LifecycleEvent::WillEnterBackground });
+    }
+
+    /// The window loses focus at `t`.
+    fn focus_lost(&mut self, t: u64) {
+        self.input.handle_event(&Event::Window {
+            timestamp: ms(t),
+            window: WindowId::from_raw(1),
+            event: WindowEvent::FocusLost,
+        });
     }
 }
 
@@ -581,6 +607,70 @@ fn a_removed_gamepad_lets_go_of_its_buttons() {
     rig.push(12, RawInput::GamepadRemoved { pad: 0 });
     assert_eq!(rig.update(20), [ev("guard", Completed, 12)]);
     assert_eq!(rig.input.gamepads(), 0);
+}
+
+#[test]
+fn losing_focus_frees_the_slots_of_fingers_whose_releases_never_come() {
+    // Review FI-001: a finger down when focus or the foreground goes may never be released.
+    // Its id must not keep a slot, or new fingers run out of them.
+    let map = map(
+        r#"(name: "press", kind: Button)"#,
+        r#"(name: "main", bindings: [(action: "press", source: Touch(Press), trigger: Pressed)])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.input.set_window_size(1000.0, 500.0);
+    let pressed = |t| [ev("press", Started, t), ev("press", Triggered, t), ev("press", Completed, t)];
+    for round in 0..2 * MAX_FINGERS as u64 {
+        let t = 100 * (round + 1);
+        rig.platform_touch(t, round, TouchPhase::Down);
+        if round % 2 == 0 {
+            rig.background(t + 10);
+        } else {
+            rig.focus_lost(t + 10);
+        }
+        assert_eq!(rig.update_for(t + 20, "press"), pressed(t), "finger {round}");
+    }
+    // Releasing everything through the system does the same.
+    for round in 0..2 * MAX_FINGERS as u64 {
+        let t = 10_000 + 100 * round;
+        rig.platform_touch(t, 1000 + round, TouchPhase::Down);
+        rig.input.release_all(ms(t + 10));
+        assert_eq!(rig.update_for(t + 20, "press"), pressed(t), "finger {}", 1000 + round);
+    }
+}
+
+#[test]
+fn fingers_after_a_focus_loss_in_the_same_frame_keep_their_slots() {
+    // Review FI-001, within one frame: slots are freed as the loss is translated, before the
+    // fingers after it land, and those keep their slots until they lift, in a later frame too.
+    let map = map(
+        r#"(name: "tap", kind: Button)"#,
+        r#"(name: "main", bindings: [(action: "tap", source: Touch(Press), trigger: Tap(seconds: 0.2))])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.input.set_window_size(1000.0, 500.0);
+    let mut expected = Vec::new();
+    for round in 0..2 * MAX_FINGERS as u64 {
+        rig.platform_touch(10 + 2 * round, round, TouchPhase::Down);
+        rig.focus_lost(11 + 2 * round);
+        expected.extend([ev("tap", Started, 10 + 2 * round), ev("tap", Canceled, 11 + 2 * round)]);
+    }
+    rig.platform_touch(60, 500, TouchPhase::Down);
+    expected.push(ev("tap", Started, 60));
+    assert_eq!(rig.update(70), expected);
+    rig.platform_touch(80, 500, TouchPhase::Up);
+    assert_eq!(rig.update(90), [ev("tap", Triggered, 80), ev("tap", Completed, 80)]);
+    // The interrupted fingers' late releases find no finger and change nothing.
+    for round in 0..2 * MAX_FINGERS as u64 {
+        rig.platform_touch(100, round, TouchPhase::Up);
+    }
+    assert_eq!(rig.update(110), []);
+    rig.platform_touch(120, 600, TouchPhase::Down);
+    rig.platform_touch(130, 600, TouchPhase::Up);
+    assert_eq!(
+        rig.update(140),
+        [ev("tap", Started, 120), ev("tap", Triggered, 130), ev("tap", Completed, 130)]
+    );
 }
 
 #[test]

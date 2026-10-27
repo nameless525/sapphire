@@ -135,15 +135,27 @@ impl PlatformAdapter {
             }
             Event::Window { timestamp, event: WindowEvent::FocusLost, .. }
             | Event::Lifecycle { timestamp, event: LifecycleEvent::WillEnterBackground } => {
+                // Here, not when the release is applied: fingers that land after it, in the
+                // same frame, take slots before then.
+                self.release_fingers();
                 (timestamp, RawInput::ReleaseAll)
             }
             _ => return None,
         })
     }
+
+    /// Forgets every finger. Once focus or the foreground is lost their releases may never
+    /// come, and fingers landing later need the slots. A late event from an old finger finds
+    /// no slot and is dropped, like the gestures it belonged to. Gamepads keep their slots:
+    /// they are still connected.
+    pub fn release_fingers(&mut self) {
+        self.fingers = [None; MAX_FINGERS];
+    }
 }
 
 /// The slot `id` occupies, claiming a free one if `claim` (a finger whose release was lost
-/// keeps its slot). `None` when it has none, or all are taken.
+/// keeps its slot until focus or the foreground is lost). `None` when it has none, or all are
+/// taken.
 fn slot<T: Copy + PartialEq>(slots: &mut [Option<T>], id: T, claim: bool) -> Option<usize> {
     if let Some(index) = slots.iter().position(|&s| s == Some(id)) {
         return Some(index);
@@ -176,6 +188,55 @@ mod tests {
     #[test]
     fn touches_scale_to_window_points() {
         assert_eq!(touch_position(0.5, 0.25, Vec2::new(1920.0, 1080.0)), Vec2::new(960.0, 270.0));
+    }
+
+    /// The slot a touch by finger `id` lands in, if it gets one.
+    fn slot_of(adapter: &mut PlatformAdapter, id: u64, phase: TouchPhase) -> Option<usize> {
+        let touch = sapphire_platform::TouchEvent {
+            timestamp: Timestamp::from_nanos(1),
+            window: sapphire_platform::WindowId::from_raw(1),
+            finger: FingerId::new(sapphire_platform::TouchDeviceId::from_raw(1), id),
+            phase,
+            x: 0.5,
+            y: 0.5,
+            pressure: 1.0,
+        };
+        match adapter.translate(&Event::Touch(touch)) {
+            Some((_, RawInput::Touch { finger, .. })) => Some(finger),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn losing_focus_frees_every_finger_slot() {
+        // Review FI-001: the releases of fingers down when focus goes may never come, so their
+        // slots are freed as the loss is translated, before any later finger lands.
+        let mut adapter = PlatformAdapter::default();
+        assert_eq!(slot_of(&mut adapter, 7, TouchPhase::Down), Some(0));
+        assert_eq!(slot_of(&mut adapter, 8, TouchPhase::Down), Some(1));
+        let at = Timestamp::from_nanos(5);
+        let lost = Event::Window {
+            timestamp: at,
+            window: sapphire_platform::WindowId::from_raw(1),
+            event: WindowEvent::FocusLost,
+        };
+        assert_eq!(adapter.translate(&lost), Some((at, RawInput::ReleaseAll)));
+        assert_eq!(slot_of(&mut adapter, 9, TouchPhase::Down), Some(0), "the lost fingers' slots are free");
+        assert_eq!(slot_of(&mut adapter, 7, TouchPhase::Up), None, "a late release finds no finger");
+        assert_eq!(slot_of(&mut adapter, 8, TouchPhase::Moved), None);
+        assert_eq!(slot_of(&mut adapter, 9, TouchPhase::Up), Some(0));
+        for id in 0..MAX_FINGERS {
+            assert_eq!(
+                slot_of(&mut adapter, 100 + id as u64, TouchPhase::Down),
+                Some(id),
+                "every slot is free"
+            );
+        }
+
+        // Going to the background frees them too.
+        let background = Event::Lifecycle { timestamp: at, event: LifecycleEvent::WillEnterBackground };
+        assert_eq!(adapter.translate(&background), Some((at, RawInput::ReleaseAll)));
+        assert_eq!(slot_of(&mut adapter, 200, TouchPhase::Down), Some(0));
     }
 
     #[test]

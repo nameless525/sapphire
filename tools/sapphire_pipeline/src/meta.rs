@@ -594,6 +594,12 @@ mod tests {
         assert_eq!(settings.position_format, PositionFormat::Float32);
         assert_eq!(settings.lods.levels().len(), 1);
         assert_eq!(settings.lods.mobile_skip(), 0);
+        assert!(!settings.lods.locks_border(), "borders simplify unless a sidecar locks them");
+        let locked = short.replace("Gltf(())", "Gltf((lods: (lock_border: true)))");
+        let settings =
+            from_ron::<AssetMeta>(&locked).unwrap().importer.mesh().expect("mesh settings").clone();
+        assert_eq!(settings.lods, LodSettings::default().lock_border(true));
+        assert!(to_ron(&from_ron::<AssetMeta>(&locked).unwrap()).unwrap().contains("lock_border: true"));
         let no_lods = short.replace("Gltf(())", "Gltf((lods: (levels: [])))");
         let settings =
             from_ron::<AssetMeta>(&no_lods).unwrap().importer.mesh().expect("mesh settings").clone();

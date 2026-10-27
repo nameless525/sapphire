@@ -8,7 +8,9 @@
 //!    submesh, with meshoptimizer's attribute-aware simplifier. Normals weigh in, because the
 //!    two-tone light split is a hard threshold on them. Vertices that two submeshes share (a
 //!    material seam) are locked, so simplifying the submeshes independently can't open cracks
-//!    between them. A level stops at its triangle target or its error budget, whichever comes
+//!    between them. A sidecar's `lock_border` locks the mesh's open border as well, for a mesh
+//!    cut from a larger surface whose edges must meet its neighbors' at every level (X1's far
+//!    mountains, cut into sectors). A level stops at its triangle target or its error budget, whichever comes
 //!    first, and is dropped if it saves less than [`MIN_LOD_REDUCTION`] of the last kept
 //!    level's triangles, or has none left. Since each level simplifies the one before, every
 //!    LOD's vertices are a subset of the previous LOD's, and its error is the sum of the steps:
@@ -55,6 +57,9 @@ const NORMAL_WEIGHT: f32 = 0.5;
 pub struct LodSettings {
     levels: Vec<LodLevel>,
     mobile_skip: u32,
+    /// Written only when set, so sidecars without it read and write as they did.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    lock_border: bool,
 }
 
 /// One simplified level of the chain.
@@ -78,11 +83,12 @@ struct LodFields {
     /// Left out: [`DEFAULT_MOBILE_SKIP`], or every level if there are fewer, so `levels: []`
     /// alone turns LODs off on both cooks.
     mobile_skip: Option<u32>,
+    lock_border: bool,
 }
 
 impl Default for LodFields {
     fn default() -> Self {
-        Self { levels: LodSettings::default().levels, mobile_skip: None }
+        Self { levels: LodSettings::default().levels, mobile_skip: None, lock_border: false }
     }
 }
 
@@ -92,7 +98,9 @@ impl TryFrom<LodFields> for LodSettings {
     fn try_from(fields: LodFields) -> Result<Self, Self::Error> {
         let levels = u32::try_from(fields.levels.len()).unwrap_or(u32::MAX);
         let mobile_skip = fields.mobile_skip.unwrap_or(DEFAULT_MOBILE_SKIP.min(levels));
-        Self::new(fields.levels, mobile_skip).ok_or(
+        let settings =
+            Self::new(fields.levels, mobile_skip).map(|settings| settings.lock_border(fields.lock_border));
+        settings.ok_or(
             "LOD triangle_ratio must be in (0, 1) and decrease level by level, max_error must be \
              finite, at least 0 and never decrease, and mobile_skip can't exceed the levels",
         )
@@ -107,6 +115,7 @@ impl Default for LodSettings {
         Self {
             levels: vec![level(0.5, 0.002), level(0.25, 0.01), level(0.125, 0.03)],
             mobile_skip: DEFAULT_MOBILE_SKIP,
+            lock_border: false,
         }
     }
 }
@@ -126,12 +135,23 @@ impl LodSettings {
             }
             previous = level;
         }
-        (mobile_skip as usize <= levels.len()).then_some(Self { levels, mobile_skip })
+        (mobile_skip as usize <= levels.len()).then_some(Self { levels, mobile_skip, lock_border: false })
     }
 
     /// No LODs: LOD0 alone, on both cooks.
     pub fn none() -> Self {
-        Self { levels: Vec::new(), mobile_skip: 0 }
+        Self { levels: Vec::new(), mobile_skip: 0, lock_border: false }
+    }
+
+    /// These settings with the mesh's open border locked at every level (`lock`) or free to
+    /// simplify along itself (the default).
+    pub fn lock_border(self, lock: bool) -> Self {
+        Self { lock_border: lock, ..self }
+    }
+
+    /// Whether every level keeps the mesh's open border where it is.
+    pub fn locks_border(&self) -> bool {
+        self.lock_border
     }
 
     pub fn levels(&self) -> &[LodLevel] {
@@ -243,6 +263,7 @@ fn lod_chain(
     let attributes: Vec<f32> = mesh.vertices.iter().flat_map(|v| v.normal).collect();
     let weights = [NORMAL_WEIGHT; 3];
     let locks = seam_locks(mesh, seam_tolerance);
+    let options = if settings.lock_border { SimplifyOptions::LockBorder } else { SimplifyOptions::None };
     for level in &settings.levels {
         let last = chain.last().expect("LOD0 is always there");
         let parts: Vec<Part> = last
@@ -264,7 +285,7 @@ fn lod_chain(
                     &locks,
                     target,
                     budget,
-                    SimplifyOptions::None,
+                    options,
                     Some(&mut step_error),
                 );
                 Part { indices, error: part.error + step_error, ..part.clone() }

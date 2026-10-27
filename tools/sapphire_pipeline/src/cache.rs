@@ -361,7 +361,8 @@ mod tests {
             ],
         ];
         // Every mesh setting: the bake's weld, the LOD chain (each field of a level, the level
-        // count and the mobile skip), the position format and the material bindings.
+        // count, the mobile skip and the border lock), the position format and the material
+        // bindings.
         fn mesh_settings(edit: impl FnOnce(&mut MeshSettings)) -> ImportSettings {
             let mut mesh = MeshSettings::default();
             edit(&mut mesh);
@@ -374,6 +375,7 @@ mod tests {
             mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.4, 0.002)], 0).unwrap()),
             mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.003)], 0).unwrap()),
             mesh_settings(|m| m.lods = LodSettings::new(vec![level(0.5, 0.002)], 0).unwrap()),
+            mesh_settings(|m| m.lods = LodSettings::default().lock_border(true)),
             mesh_settings(|m| m.position_format = PositionFormat::Float32),
             mesh_settings(|m| {
                 m.materials.insert("Skin".into(), AssetId::from_bytes([5; 16]));

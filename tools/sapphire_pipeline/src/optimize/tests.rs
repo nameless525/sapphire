@@ -168,6 +168,69 @@ fn material_seams_never_open() {
     }
 }
 
+/// A rolling heightfield of `cells` × `cells` quads, one material: a tile cut from a larger
+/// surface, its edges open.
+fn heightfield_tile(cells: u32) -> ImportedMesh {
+    let mut mesh = ImportedMesh {
+        materials: vec![material("ground")],
+        lods: vec![Lod::default()],
+        ..ImportedMesh::default()
+    };
+    for row in 0..=cells {
+        for column in 0..=cells {
+            let (x, z) = (column as f32 / cells as f32, row as f32 / cells as f32);
+            let y = 0.1 * (x * 9.0).sin() * (z * 7.0).cos();
+            mesh.vertices.push(Vertex {
+                position: [x, y, z],
+                normal: [0.0, 1.0, 0.0],
+                outline_normal: [0.0, 1.0, 0.0],
+                uv: [x, z],
+                color: VERTEX_COLOR_NEUTRAL,
+                flags: VertexFlags::NONE,
+            });
+        }
+    }
+    let stride = cells + 1;
+    for row in 0..cells {
+        for column in 0..cells {
+            let a = row * stride + column;
+            mesh.indices.extend([a, a + stride, a + 1, a + 1, a + stride, a + stride + 1]);
+        }
+    }
+    mesh.lods[0].submeshes.push(Submesh {
+        first_index: 0,
+        index_count: mesh.indices.len() as u32,
+        material: 0,
+    });
+    mesh.authored_outline = vec![false; mesh.vertices.len()];
+    mesh.lods[0].vertex_count = mesh.vertices.len() as u32;
+    mesh
+}
+
+#[test]
+fn locked_borders_stay_whole_at_every_level() {
+    let border = |mesh: &ImportedMesh, lod: usize| -> BTreeSet<[u32; 3]> {
+        lod_indices(mesh, lod)
+            .flat_map(|(_, indices)| indices.iter().map(|&index| mesh.vertices[index as usize].position))
+            .filter(|p| [p[0], p[2]].iter().any(|&c| c == 0.0 || c == 1.0))
+            .map(|p| p.map(f32::to_bits))
+            .collect()
+    };
+    let settings = LodSettings::default();
+    let mut free = heightfield_tile(32);
+    optimize(&mut free, &settings, TOLERANCE, Cook::Desktop);
+    let whole = border(&free, 0);
+    assert_eq!(whole.len(), 4 * 32, "the tile's border");
+    assert!((1..free.lods.len()).any(|lod| border(&free, lod) != whole), "free borders simplify");
+    let mut locked = heightfield_tile(32);
+    optimize(&mut locked, &settings.clone().lock_border(true), TOLERANCE, Cook::Desktop);
+    assert!(locked.lods.len() > 1, "the inside still simplifies");
+    for lod in 1..locked.lods.len() {
+        assert_eq!(border(&locked, lod), whole, "LOD{lod} keeps every border vertex");
+        assert!(triangles(&locked, lod) < triangles(&locked, 0));
+    }
+}
+
 #[test]
 fn submeshes_merge_by_material() {
     let mut mesh = two_material_sphere(8, 12);

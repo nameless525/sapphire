@@ -22,6 +22,10 @@ use serde::{Deserialize, Serialize};
 /// "Once" means a pulse: the action triggers and completes at the same instant. A tap or
 /// double tap held too long cancels instead. Chords are the binding's `chord` field: an action
 /// that must be triggered for the binding to fire at all.
+///
+/// Durations are in seconds, rounded to whole microseconds. One that rounds to less than a
+/// microsecond, or comes to 2^64 nanoseconds (about 584 years) or more, makes the binding
+/// invalid ([`MapError::InvalidBinding`](crate::MapError::InvalidBinding)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::input"]
 pub enum Trigger {
@@ -62,15 +66,6 @@ pub(crate) enum TriggerSpec {
 
 impl TriggerSpec {
     pub fn compile(trigger: Trigger) -> Result<Self, &'static str> {
-        // Rounded to whole microseconds: `0.2_f32` is 0.200000003 s, and an authored 200 ms
-        // must be 200 ms exactly.
-        let nanos = |seconds: f32| {
-            if seconds > 0.0 && seconds.is_finite() {
-                Ok((f64::from(seconds) * 1e6).round() as u64 * 1000)
-            } else {
-                Err("trigger durations must be positive")
-            }
-        };
         Ok(match trigger {
             Trigger::Down => Self::Down,
             Trigger::Pressed => Self::Pressed,
@@ -80,6 +75,21 @@ impl TriggerSpec {
             Trigger::DoubleTap { seconds } => Self::DoubleTap(nanos(seconds)?),
         })
     }
+}
+
+/// An authored duration in nanoseconds, rounded to whole microseconds: `0.2_f32` is
+/// 0.200000003 s, and an authored 200 ms must be 200 ms exactly. A bindings document can hold
+/// any finite number, so durations that round to nothing or don't fit are errors, not panics.
+fn nanos(seconds: f32) -> Result<u64, &'static str> {
+    if !(seconds > 0.0 && seconds.is_finite()) {
+        return Err("trigger durations must be positive");
+    }
+    let micros = (f64::from(seconds) * 1e6).round();
+    if micros < 1.0 {
+        return Err("trigger durations must be at least a microsecond");
+    }
+    // The cast saturates, and the product overflows past 2^64 ns, about 584 years.
+    (micros as u64).checked_mul(1000).ok_or("trigger durations must be under 584 years")
 }
 
 /// A binding's state after an evaluation.
@@ -359,9 +369,42 @@ mod tests {
     }
 
     #[test]
-    fn durations_must_be_positive() {
-        assert!(TriggerSpec::compile(Trigger::Hold { seconds: 0.0 }).is_err());
-        assert!(TriggerSpec::compile(Trigger::Tap { seconds: f32::INFINITY }).is_err());
-        assert_eq!(TriggerSpec::compile(Trigger::Hold { seconds: 0.5 }), Ok(TriggerSpec::Hold(500_000_000)));
+    fn durations_must_be_positive_and_fit_in_nanoseconds() {
+        // Review FI-004: every finite duration either compiles or is rejected; none panics or
+        // wraps.
+        let nanos = |seconds| {
+            let compiled =
+                [Trigger::Hold { seconds }, Trigger::Tap { seconds }, Trigger::DoubleTap { seconds }].map(
+                    |trigger| match TriggerSpec::compile(trigger) {
+                        Ok(TriggerSpec::Hold(n) | TriggerSpec::Tap(n) | TriggerSpec::DoubleTap(n)) => Some(n),
+                        Ok(other) => panic!("{trigger:?} compiled to {other:?}"),
+                        Err(_) => None,
+                    },
+                );
+            assert!(compiled.iter().all(|&n| n == compiled[0]), "{seconds} s: {compiled:?}");
+            compiled[0]
+        };
+        // The longest that fits is the largest f32 below 2^64 ns; the next one up is past it.
+        let longest = 18_446_743_552.0;
+        let rejected = [
+            1e20,
+            f32::MAX,
+            18_446_745_600.0,
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            1e-7,
+            4.9e-7,
+        ];
+        for seconds in rejected {
+            assert_eq!(nanos(seconds), None, "{seconds} s");
+        }
+        assert_eq!(nanos(1e-6), Some(1_000), "one microsecond, the shortest");
+        assert_eq!(nanos(0.2), Some(200_000_000), "an authored 200 ms is 200 ms exactly");
+        assert_eq!(nanos(0.5), Some(500_000_000));
+        assert_eq!(nanos(longest), Some(18_446_743_552_000_000_000));
     }
 }

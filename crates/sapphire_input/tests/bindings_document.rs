@@ -3,8 +3,8 @@
 
 use sapphire_input::{
     ActionDesc, ActionKind, Axes, BindingDesc, ContextDesc, DeadZoneShape, Gesture, GestureSettings,
-    InputBindings, InputMap, Key, Modifier, MouseButton, PadAxis, PadButton, Source, Stick, SwipeDirection,
-    Trigger,
+    InputBindings, InputMap, Key, MapError, Modifier, MouseButton, PadAxis, PadButton, Source, Stick,
+    SwipeDirection, Trigger,
 };
 use sapphire_reflect::TypeRegistry;
 
@@ -125,4 +125,27 @@ fn compile_errors_point_into_the_document() {
     ))"#;
     let error = InputMap::from_ron(text).expect_err("misspelled key");
     assert!(error.to_string().contains("3:"), "{error}");
+}
+
+#[test]
+fn out_of_range_trigger_durations_are_binding_errors() {
+    // Review FI-004: a user's bindings document can hold any finite duration. One too short to
+    // round to a microsecond, or too long for 64-bit nanoseconds, is an invalid binding.
+    for seconds in ["1e20", "3.4e38", "1e-7"] {
+        for trigger in ["Hold", "Tap", "DoubleTap"] {
+            let text = format!(
+                r#"(type: "sapphire::input::InputBindings", version: 1, data: (
+                    actions: [(name: "charge", kind: Button)],
+                    contexts: [(name: "combat", bindings: [
+                        (action: "charge", source: Key(J), trigger: {trigger}(seconds: {seconds})),
+                    ])],
+                ))"#
+            );
+            let error = InputMap::from_ron(&text).expect_err("out of range");
+            assert!(
+                matches!(error, MapError::InvalidBinding { ref context, binding: 0, .. } if context == "combat"),
+                "{trigger}({seconds} s): {error}"
+            );
+        }
+    }
 }

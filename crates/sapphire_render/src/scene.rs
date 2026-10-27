@@ -18,6 +18,9 @@
 //!   given each slot its fade, rebuilds the draw list if it is stale; the frame's uploads pass
 //!   then writes the dirty slots, in contiguous runs, and the draw records after a rebuild,
 //!   through the staging belt.
+//! - Both buffers stay within their device limits (review RA-004): slots past the instance
+//!   buffer's are neither uploaded nor drawn, and the draw list takes whole instances, in slot
+//!   order, while their draws fit the records' ([`DrawLimits`]).
 //!
 //! The commands are for the CPU-driven submission path, which is portable everywhere: each
 //! draw binds the mesh's vertices and its draw record by buffer offset. The GPU-driven path
@@ -74,6 +77,10 @@ pub(crate) struct GpuScene {
     changed: u32,
     /// Draw list rebuilds since creation.
     builds: u32,
+    /// Live instances in slots past the instance buffer's limit, which don't draw.
+    instances_over_limit: u32,
+    /// An instance or a draw past its buffer's limit was logged: each is logged once.
+    warned: [bool; 2],
 }
 
 impl GpuScene {
@@ -101,7 +108,14 @@ impl GpuScene {
             last_frame: None,
             changed: 0,
             builds: 0,
+            instances_over_limit: 0,
+            warned: [false; 2],
         }
+    }
+
+    /// The slots the instance buffer can hold: instances in later slots don't draw.
+    fn slot_limit(&self) -> u32 {
+        u32::try_from(self.instances.max_items(INSTANCE_BYTES)).unwrap_or(u32::MAX)
     }
 
     /// Applies packet `frame`'s instance deltas, marking the draw list stale if the drawn set
@@ -126,10 +140,23 @@ impl GpuScene {
         if self.slots.apply(deltas) {
             self.draws_stale = true;
         }
+        // Slots past the buffer's limit (a storage binding: 699 050 instances on the device floor)
+        // are neither uploaded nor drawn (review RA-004), so the buffer never needs more.
+        let limit = self.slot_limit();
+        self.instances_over_limit = to_u32(self.slots.live_past(limit));
+        if self.instances_over_limit > 0 && !std::mem::replace(&mut self.warned[0], true) {
+            tracing::warn!(
+                target: crate::LOG_TARGET,
+                instances = self.instances_over_limit,
+                limit,
+                "the instance buffer is full: instances past its limit don't draw"
+            );
+        }
+        let held = (self.slots.len() as u64).min(u64::from(limit));
         // The old buffer holds every slot uploaded so far: a GPU copy keeps them all without
         // sending them again.
         let uploaded = self.instances.buffer().size();
-        self.instances.reserve(device, queue, self.slots.len() as u64 * INSTANCE_BYTES, uploaded)
+        self.instances.reserve(device, queue, held * INSTANCE_BYTES, uploaded)
     }
 
     /// Rebuilds the draw list if the drawn set changed since it was built, and makes room for
@@ -149,8 +176,19 @@ impl GpuScene {
             let (family, flags, _) = material(handle);
             (family, flags)
         };
-        self.draw_list.build(meshes, material_kind, |handle| material(handle).2, &self.slots);
-        // The records are uploaded whole after every rebuild, so nothing needs keeping.
+        let max_draws = usize::try_from(self.draws.max_items(DRAW_BYTES)).unwrap_or(usize::MAX);
+        let limits = DrawLimits { slots: self.slot_limit(), draws: max_draws };
+        self.draw_list.build(meshes, material_kind, |handle| material(handle).2, &self.slots, limits);
+        if self.draw_list.over_limit > 0 && !std::mem::replace(&mut self.warned[1], true) {
+            tracing::warn!(
+                target: crate::LOG_TARGET,
+                draws = self.draw_list.over_limit,
+                limit = max_draws,
+                "the draw records are full: instances whose draws pass their limit don't draw"
+            );
+        }
+        // The records are uploaded whole after every rebuild, so nothing needs keeping. They fit:
+        // the list holds no more than the limit.
         self.draws.reserve(device, queue, size_of_val(self.draw_list.draws.as_slice()) as u64, 0);
         self.draws_stale = false;
         self.draws_unsent = true;
@@ -189,9 +227,11 @@ impl GpuScene {
     /// Splits the scene between a frame's passes: the uploads pass writes what changed, and
     /// the draw passes read the draw list and its record buffer.
     pub(crate) fn split_for_record(&mut self) -> (SceneUpload<'_>, &DrawList, &GrowableBuffer) {
+        let limit = self.slot_limit();
         let Self { slots, draw_list, instances, draws, draws_unsent, .. } = self;
         let upload = SceneUpload {
             slots,
+            limit,
             instances: instances.buffer(),
             draw_records: (&draw_list.draws, draws.buffer()),
             draws_unsent,
@@ -202,6 +242,12 @@ impl GpuScene {
     /// Instances drawn.
     pub(crate) fn live_instances(&self) -> u32 {
         to_u32(self.slots.live_count())
+    }
+
+    /// Live instances in slots past the instance buffer's limit after the last `prepare`: they
+    /// don't draw.
+    pub(crate) fn instances_over_limit(&self) -> u32 {
+        self.instances_over_limit
     }
 
     /// Surface draws, per [`SurfaceVariant::ALL`] entry.
@@ -227,21 +273,33 @@ impl GpuScene {
     pub(crate) fn growths(&self) -> u32 {
         self.instances.growths() + self.draws.growths()
     }
+
+    /// New buffers that hold at most `instances` instances and `draws` draw records, for tests
+    /// of full ones. Before the first instance is added.
+    #[cfg(test)]
+    pub(crate) fn limit(&mut self, device: &wgpu::Device, instances: u64, draws: u64) {
+        assert_eq!(self.slots.len(), 0, "limit the scene before adding instances");
+        self.instances = self.instances.limited(device, 256 * INSTANCE_BYTES, instances * INSTANCE_BYTES);
+        self.draws = self.draws.limited(device, 1024 * DRAW_BYTES, draws * DRAW_BYTES);
+    }
 }
 
 /// The scene's share of a frame's uploads pass.
 pub(crate) struct SceneUpload<'a> {
     slots: &'a mut InstanceSlots,
+    /// The slots the instance buffer holds.
+    limit: u32,
     instances: &'a wgpu::Buffer,
     draw_records: (&'a [DrawData], &'a wgpu::Buffer),
     draws_unsent: &'a mut bool,
 }
 
 impl SceneUpload<'_> {
-    /// Writes the dirty slots and, after a rebuild, the draw records through `belt`.
+    /// Writes the dirty slots the instance buffer holds and, after a rebuild, the draw records
+    /// through `belt`.
     pub(crate) fn write(self, belt: &mut wgpu::util::StagingBelt, encoder: &mut wgpu::CommandEncoder) {
-        let Self { slots, instances, draw_records: (records, record_buffer), draws_unsent } = self;
-        slots.flush(|first, data| {
+        let Self { slots, limit, instances, draw_records: (records, record_buffer), draws_unsent } = self;
+        slots.flush(limit, |first, data| {
             buffer::stage(
                 belt,
                 encoder,
@@ -419,6 +477,13 @@ impl InstanceSlots {
         self.ids.len()
     }
 
+    /// Live instances in slot `limit` or later.
+    pub(crate) fn live_past(&self, limit: u32) -> usize {
+        self.slots
+            .get(limit as usize..)
+            .map_or(0, |past| past.iter().filter(|slot| slot.id.is_some()).count())
+    }
+
     /// The slot of a live instance.
     pub(crate) fn slot(&self, id: InstanceId) -> Option<u32> {
         self.ids.get(&id).copied()
@@ -464,13 +529,15 @@ impl InstanceSlots {
             .map(|(index, slot)| (to_u32(index), slot.mesh))
     }
 
-    /// Hands each run of consecutive dirty slots to `write` (first slot, data), for a frame
-    /// that draws them. The slots then settle: one that moved stays dirty, so the next drawn
-    /// frame uploads it at rest (its previous transform equal to its current one) unless it
-    /// moves again; the others are marked clean.
-    fn flush(&mut self, mut write: impl FnMut(u32, &[InstanceData])) {
+    /// Hands each run of consecutive dirty slots below `limit` to `write` (first slot, data), for
+    /// a frame that draws them; slots past it are past the instance buffer's, and don't draw. The
+    /// slots then settle: one that moved stays dirty, so the next drawn frame uploads it at rest
+    /// (its previous transform equal to its current one) unless it moves again; the others are
+    /// marked clean.
+    fn flush(&mut self, limit: u32, mut write: impl FnMut(u32, &[InstanceData])) {
         self.dirty.sort_unstable();
-        for run in self.dirty.chunk_by(|&a, &b| b == a + 1) {
+        let held = self.dirty.partition_point(|&slot| slot < limit);
+        for run in self.dirty[..held].chunk_by(|&a, &b| b == a + 1) {
             let (first, last) = (run[0], run[run.len() - 1]);
             write(first, &self.data[first as usize..=last as usize]);
         }
@@ -558,6 +625,8 @@ pub(crate) struct DrawList {
     /// their opaque ones are drawn through the alpha-tested variants, which the prepasses draw
     /// through their masked pipelines.
     pub faded: u32,
+    /// Draws left out because they would pass the draw records' limit ([`DrawLimits`]).
+    pub over_limit: u32,
 }
 
 impl Default for DrawList {
@@ -568,8 +637,24 @@ impl Default for DrawList {
             deformed: std::array::from_fn(|_| Vec::new()),
             foliage_instances: 0,
             faded: 0,
+            over_limit: 0,
         }
     }
+}
+
+/// What a draw list may hold, so its buffers stay within their limits (review RA-004): the
+/// instances in slots below `slots` (the instance buffer's), and at most `draws` draws (the draw
+/// records'). Instances are taken whole, in slot order, until one doesn't fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DrawLimits {
+    pub slots: u32,
+    pub draws: usize,
+}
+
+impl DrawLimits {
+    /// No limit.
+    #[cfg(test)]
+    pub(crate) const NONE: Self = Self { slots: u32::MAX, draws: usize::MAX };
 }
 
 impl DrawList {
@@ -577,12 +662,14 @@ impl DrawList {
     /// of its material's family and flags (`material_kind`) on its mesh (`pipelines::mesh_draw`),
     /// or for an opaque anime character surface of a fading instance, its alpha-tested variant.
     /// Eye layers then go in their `layer`'s order (M1 C6), and in slot order within a layer.
+    /// Instances past `limits` are left out.
     pub(crate) fn build(
         &mut self,
         meshes: &[MeshRecord],
         material_kind: impl Fn(MaterialHandle) -> (MaterialFamily, MaterialFlags),
         layer: impl Fn(MaterialHandle) -> u32,
         slots: &InstanceSlots,
+        limits: DrawLimits,
     ) {
         profiling::scope!("DrawList::build");
         self.draws.clear();
@@ -594,10 +681,20 @@ impl DrawList {
         }
         self.foliage_instances = 0;
         self.faded = 0;
-        for (slot, mesh) in slots.live() {
+        self.over_limit = 0;
+        let mut full = false;
+        // In slot order, so every slot after one past the limit is past it too.
+        for (slot, mesh) in slots.live().take_while(|&(slot, _)| slot < limits.slots) {
             let record = meshes.get(mesh.index());
             debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
             let Some(record) = record else { continue };
+            // Whole instances: once one doesn't fit, it and every later one are left out, so a
+            // smaller one never slips in after a bigger one that didn't.
+            full = full || limits.draws - self.draws.len() < record.lods[0].len();
+            if full {
+                self.over_limit += to_u32(record.lods[0].len());
+                continue;
+            }
             let (skinned, morphed) = record
                 .deform()
                 .map_or((false, false), |source| (source.skin.is_some(), source.morphs.is_some()));
@@ -680,6 +777,9 @@ fn to_u32(len: usize) -> u32 {
 }
 
 #[cfg(test)]
+mod gpu_tests;
+
+#[cfg(test)]
 mod tests {
     use glam::Vec3;
     use sapphire_assets::mesh::PositionFormat;
@@ -723,7 +823,7 @@ mod tests {
     /// Flushes and returns the runs written: (first slot, slot count).
     fn flushed(slots: &mut InstanceSlots) -> Vec<(u32, usize)> {
         let mut runs = Vec::new();
-        slots.flush(|first, data| runs.push((first, data.len())));
+        slots.flush(u32::MAX, |first, data| runs.push((first, data.len())));
         runs
     }
 
@@ -777,7 +877,7 @@ mod tests {
         slots.apply(&deltas(&[instance(1, 0, 3.0)], &[]));
         assert_eq!((previous_x(&slots, 0), x(&slots, 0)), (1.0, 3.0));
         let mut written = Vec::new();
-        slots.flush(|_, data| {
+        slots.flush(u32::MAX, |_, data| {
             written
                 .extend(data.iter().map(|d| (d.previous_world_from_object[3][0], d.world_from_object[3][0])))
         });
@@ -785,7 +885,7 @@ mod tests {
 
         // Held still: drawn once more at rest, then no more uploads.
         written.clear();
-        slots.flush(|_, data| {
+        slots.flush(u32::MAX, |_, data| {
             written
                 .extend(data.iter().map(|d| (d.previous_world_from_object[3][0], d.world_from_object[3][0])))
         });
@@ -886,6 +986,78 @@ mod tests {
     }
 
     #[test]
+    fn slots_past_the_limit_are_never_written() {
+        // Review RA-004: the instance buffer holds 5 slots.
+        let mut slots = InstanceSlots::default();
+        let flushed = |slots: &mut InstanceSlots| {
+            let mut runs = Vec::new();
+            slots.flush(5, |first, data| runs.push((first, data.len())));
+            runs
+        };
+        let ids: Vec<_> = (0..8).map(|id| instance(id, 0, 0.0)).collect();
+        slots.apply(&deltas(&ids, &[]));
+        assert_eq!((slots.live_past(4), slots.live_past(5), slots.live_past(8)), (4, 3, 0));
+        assert_eq!(flushed(&mut slots), [(0, 5)]);
+        let moved: Vec<_> = [6, 2, 4, 5].into_iter().map(|id| instance(id, 0, 1.0)).collect();
+        slots.apply(&deltas(&moved, &[]));
+        assert_eq!(flushed(&mut slots), [(2, 1), (4, 1)], "and the moved ones past it settle unwritten");
+        assert_eq!(flushed(&mut slots), [(2, 1), (4, 1)]);
+        assert_eq!(flushed(&mut slots), []);
+        // Freed slots are reused most recently freed first: one past the limit, whose new
+        // instance doesn't draw, then one within it, whose new instance does.
+        slots.apply(&deltas(&[], &[1, 6]));
+        assert_eq!(slots.live_past(5), 2);
+        slots.apply(&deltas(&[instance(9, 0, 0.0)], &[]));
+        assert_eq!((slot_of(&slots, 9), slots.live_past(5)), (Some(6), 3), "the last freed goes first");
+        slots.apply(&deltas(&[instance(10, 0, 0.0)], &[]));
+        assert_eq!(slot_of(&slots, 10), Some(1));
+        assert_eq!(flushed(&mut slots), [(1, 1)]);
+    }
+
+    #[test]
+    fn draw_lists_take_whole_instances_within_their_limits() {
+        let identity = Dequantize { position_scale: [1.0; 3], ..Dequantize::default() };
+        let submesh = |first_index| SubmeshDraw { first_index, index_count: 3, material: material(0) };
+        let mesh = |lod: Vec<SubmeshDraw>| MeshRecord {
+            streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 0 },
+            dequantize: identity,
+            lods: vec![lod],
+            lod_vertices: vec![3],
+            placement: Placement::default(),
+            slots: Vec::new(),
+            bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            foliage: None,
+        };
+        // One draw, then two.
+        let meshes = [mesh(vec![submesh(0)]), mesh(vec![submesh(0), submesh(3)])];
+        let kind = |_| (MaterialFamily::Environment, MaterialFlags::empty());
+        let mut slots = InstanceSlots::default();
+        // Slots 0 to 3: one, two, one and two draws.
+        let ids = [instance(0, 0, 0.0), instance(1, 1, 0.0), instance(2, 0, 0.0), instance(3, 1, 0.0)];
+        slots.apply(&deltas(&ids, &[]));
+        let mut list = DrawList::default();
+        let drawn = |list: &DrawList| -> Vec<u32> { list.draws.iter().map(|draw| draw.instance).collect() };
+        // Draw limits just above, at and just below what the instances need, and below what the
+        // second needs: it is left out whole, and the third, which would fit, with it.
+        for (draws, expected, over) in [
+            (7, vec![0, 1, 1, 2, 3, 3], 0),
+            (6, vec![0, 1, 1, 2, 3, 3], 0),
+            (5, vec![0, 1, 1, 2], 2),
+            (2, vec![0], 5),
+        ] {
+            list.build(&meshes, kind, |_| 0, &slots, DrawLimits { slots: u32::MAX, draws });
+            assert_eq!((drawn(&list), list.over_limit), (expected, over), "room for {draws} draws");
+        }
+        // Slot limits: the instances in later slots aren't listed (their count is the scene's).
+        for (limit, expected) in
+            [(5, vec![0, 1, 1, 2, 3, 3]), (4, vec![0, 1, 1, 2, 3, 3]), (3, vec![0, 1, 1, 2])]
+        {
+            list.build(&meshes, kind, |_| 0, &slots, DrawLimits { slots: limit, draws: usize::MAX });
+            assert_eq!((drawn(&list), list.over_limit), (expected, 0), "room for {limit} slots");
+        }
+    }
+
+    #[test]
     fn draw_list_expands_live_slots_into_one_draw_per_lod0_submesh() {
         let quantized = Dequantize {
             position_offset: [-1.0; 3],
@@ -964,7 +1136,7 @@ mod tests {
             (MaterialFamily::AnimeCharacter, flags)
         };
         let mut list = DrawList::default();
-        list.build(&meshes, flags, |_| 0, &slots);
+        list.build(&meshes, flags, |_| 0, &slots, DrawLimits::NONE);
 
         // Slot 0 is free; draws refer to instances by slot, carry their mesh's dequantization,
         // and draw LOD0.
@@ -1023,7 +1195,7 @@ mod tests {
 
         // Rebuilding reuses the vectors instead of appending.
         slots.apply(&deltas(&[], &[3, 5]));
-        list.build(&meshes, flags, |_| 0, &slots);
+        list.build(&meshes, flags, |_| 0, &slots, DrawLimits::NONE);
         assert_eq!(list.draws.len(), 3);
         assert_eq!(SurfaceVariant::ALL.map(|variant| list.len(variant)), lens([0, 1, 1, 1]));
     }
@@ -1078,7 +1250,7 @@ mod tests {
         let mut slots = InstanceSlots::default();
         slots.apply(&deltas(&[instance(1, 0, 0.0), instance(2, 1, 0.0), instance(3, 0, 1.0)], &[]));
         let mut list = DrawList::default();
-        list.build(&meshes, kind, |_| 0, &slots);
+        list.build(&meshes, kind, |_| 0, &slots, DrawLimits::NONE);
 
         // Each variant is a pipeline: its draws gather from every instance and submesh, in slot
         // order, whatever order the submeshes alternate in.
@@ -1160,7 +1332,7 @@ mod tests {
         let trees = [instance(1, 0, 0.0), instance(2, 0, 5.0)];
         slots.apply(&deltas(&[trees[0], trees[1], instance(3, 1, 0.0), instance(4, 2, 0.0)], &[]));
         let mut list = DrawList::default();
-        list.build(&meshes, kind, |_| 0, &slots);
+        list.build(&meshes, kind, |_| 0, &slots, DrawLimits::NONE);
         let draws = |variant: SurfaceVariant| -> Vec<(u32, u32, u32)> {
             list.commands[format_index(PositionFormat::Unorm16)][variant.index()]
                 .iter()
@@ -1173,7 +1345,7 @@ mod tests {
         assert_eq!(list.foliage_instances, 3, "two trees and the grass");
         assert_eq!(list.outlines(), 0, "foliage draws no hull");
         slots.apply(&deltas(&[], &[1]));
-        list.build(&meshes, kind, |_| 0, &slots);
+        list.build(&meshes, kind, |_| 0, &slots, DrawLimits::NONE);
         assert_eq!(list.foliage_instances, 2);
     }
 

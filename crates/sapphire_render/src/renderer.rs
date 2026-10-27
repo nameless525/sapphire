@@ -290,6 +290,14 @@ pub struct RenderStats {
     pub foliage_pipelines: u32,
     /// Instances in the persistent scene after the last prepared frame.
     pub instances: u32,
+    /// Of [`Self::instances`], those in slots past the instance buffer's limit (a storage
+    /// binding: 699 050 instances on the device floor), which don't draw (review RA-004). An
+    /// instance keeps its slot while it lives; new ones take freed slots first.
+    pub instances_over_limit: u32,
+    /// Draws past the draw records' limit (5.6 million on the device floor) that the last
+    /// rebuilt draw list left out (review RA-004): whole instances, in slot order, from the first
+    /// that doesn't fit, which don't draw.
+    pub draws_over_limit: u32,
     /// Instances the last prepared packet added or changed; each is uploaded.
     pub changed_instances: u32,
     /// Times the draw list was rebuilt since the renderer was created: only when instances
@@ -1305,6 +1313,16 @@ impl Renderer {
     /// packets' frame numbers. A new renderer starts with no instances, so its first packet
     /// must add every instance; an app that replaces its renderer (after device loss)
     /// re-extracts everything.
+    ///
+    /// It can't fail: a packet that would fill a buffer past its device's limit degrades the
+    /// frame instead (review RA-004), and each kind is logged once. Instances in slots past the
+    /// instance buffer's limit don't draw ([`RenderStats::instances_over_limit`]), nor do
+    /// instances whose draws would pass the draw records' ([`RenderStats::draws_over_limit`]);
+    /// per-object light lists past theirs aren't chosen ([`LightStats::lists_over_limit`]); poses
+    /// that would pass a frame's skinning data wait for the next recorded frame
+    /// ([`SkinningStats::deferred_poses`]), and deformed instances whose outputs don't fit don't
+    /// draw ([`SkinningStats::unplaced`]). The limits are storage bindings, at least 128 MiB:
+    /// hundreds of thousands of instances.
     pub fn prepare(&mut self, gpu: &GpuContext, packet: &FramePacket) {
         profiling::scope!("Renderer::prepare");
         debug_assert!(
@@ -1430,6 +1448,8 @@ impl Renderer {
         let outlines = self.outlines.counts();
         (self.stats.outline_draws, self.stats.outlines_culled) = (outlines.drawn, outlines.culled);
         self.stats.instances = self.scene.live_instances();
+        self.stats.instances_over_limit = self.scene.instances_over_limit();
+        self.stats.draws_over_limit = self.scene.draw_list().over_limit;
         self.stats.changed_instances = self.scene.changed_instances();
         self.stats.draw_list_builds = self.scene.draw_list_builds();
         self.stats.lut_bakes = self.post.bakes();
@@ -2190,6 +2210,36 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn sky(&self) -> &Sky {
         &self.sky
+    }
+
+    /// Gives the buffers that grow with the scene new, smaller limits, for tests of full ones
+    /// (review RA-004): `instances` instances and `draws` draw records, `light_lists` per-object
+    /// lists (on that path) and `skinning_frame` bytes of a frame's skinning jobs, palettes and
+    /// weights. Before the first frame is prepared.
+    #[cfg(test)]
+    pub(crate) fn limit_buffers(
+        &mut self,
+        instances: u64,
+        draws: u64,
+        light_lists: Option<u64>,
+        skinning_frame: Option<u64>,
+    ) {
+        self.scene.limit(&self.device, instances, draws);
+        self.scene_bind_groups = create_scene_bind_groups(
+            &self.device,
+            &self.layouts,
+            &self.scene,
+            &self.materials,
+            &self.fog_cards,
+            &self.wind,
+        );
+        if let Some(slots) = light_lists {
+            self.lights.limit_lists(&self.device, slots);
+            self.rebuild_frame_bind_group();
+        }
+        if let Some(bytes) = skinning_frame {
+            self.skinning.limit_frame(&self.device, bytes);
+        }
     }
 
     fn update_pool_stats(&mut self) {

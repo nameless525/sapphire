@@ -126,6 +126,11 @@ pub struct SkinningStats {
     /// device floor, about 4 million vertices across all instances). They get outputs once room
     /// frees up.
     pub unplaced: u32,
+    /// Poses the last recorded frame left for the next (review RA-004): its jobs, palettes and
+    /// weights are one storage binding too, and these would have passed its limit (about 2 800
+    /// poses of 1 000 joints on the device floor). Their instances keep drawing their last pose,
+    /// or nothing before their first.
+    pub deferred_poses: u32,
 }
 
 /// One instance's work in the frame's dispatch (WGSL `Job` in `shaders/skinning.wgsl`, read as
@@ -209,11 +214,21 @@ pub(crate) struct Skinning {
     instances: Vec<Option<Deformed>>,
     /// Slots with a deformed instance.
     live: Vec<u32>,
-    /// Slots that took a pending skin since the last record; may repeat or be stale.
+    /// Slots that took a pending skin since the last record; may repeat or be stale. Those a
+    /// record left waiting come first.
     queued: Vec<u32>,
+    /// Scratch for the slots a record leaves waiting.
+    waiting: Vec<u32>,
     /// Pending poses' palettes and weights, kept until the frame that uploads them has run.
     palettes: Vec<PaletteRows>,
     weights: Vec<f32>,
+    /// The palettes and weights the recorded frame uploads: the first of each. The rest are the
+    /// poses it left waiting.
+    uploaded: (usize, usize),
+    /// Poses the last record left waiting ([`SkinningStats::deferred_poses`]).
+    deferred: u32,
+    /// Poses were left waiting and logged: once.
+    warned: bool,
     /// The last record took the pending skins: the next prepare starts afresh.
     recorded: bool,
     /// The recorded frame's jobs, in dispatch order.
@@ -247,8 +262,12 @@ impl Skinning {
             instances: Vec::new(),
             live: Vec::new(),
             queued: Vec::new(),
+            waiting: Vec::new(),
             palettes: Vec::new(),
             weights: Vec::new(),
+            uploaded: (0, 0),
+            deferred: 0,
+            warned: false,
             recorded: false,
             jobs: Vec::new(),
             workgroups: 0,
@@ -326,8 +345,21 @@ impl Skinning {
     ) {
         profiling::scope!("Skinning::prepare");
         if std::mem::take(&mut self.recorded) {
-            self.palettes.clear();
-            self.weights.clear();
+            // What the recorded frame uploaded goes: everything, unless it left poses waiting,
+            // whose palettes and weights follow (review RA-004) and move to the front.
+            let (palettes, weights) = std::mem::take(&mut self.uploaded);
+            self.palettes.drain(..palettes);
+            self.weights.drain(..weights);
+            for &slot in &self.queued {
+                if let Some(Some(Deformed {
+                    pending: Some(Pending::Pose { palette, weights: first, .. }),
+                    ..
+                })) = self.instances.get_mut(slot as usize)
+                {
+                    *palette -= palettes as u32;
+                    *first -= weights as u32;
+                }
+            }
         }
         for &slot in slots.freed() {
             self.remove(slot);
@@ -373,6 +405,7 @@ impl Skinning {
             output_bytes: u64::from(self.ranges.end()) * OUTPUT_VERTEX_BYTES,
             ignored_poses: ignored,
             unplaced: self.unplaced.len() as u32,
+            deferred_poses: self.deferred,
         };
     }
 
@@ -494,6 +527,7 @@ impl Skinning {
             }
         }
         let records = meshes.records();
+        self.admit(records);
         for &slot in &self.queued {
             let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::as_mut) else {
                 continue;
@@ -510,21 +544,24 @@ impl Skinning {
             self.jobs.push(job(source, pending, vertex_count, self.workgroups, outputs));
             self.workgroups += vertex_count.div_ceil(WORKGROUP_SIZE);
         }
+        // The poses left waiting go first in the next record.
         self.queued.clear();
+        std::mem::swap(&mut self.queued, &mut self.waiting);
         if self.jobs.is_empty() {
             return;
         }
         // The palettes follow the header and jobs, and the weights the palettes, so the jobs'
         // offsets become absolute in the frame buffer.
         let palette_row = 1 + JOB_ROWS * self.jobs.len() as u32;
-        let weight_word = 4 * (palette_row + 3 * self.palettes.len() as u32);
+        let weight_word = 4 * (palette_row + 3 * self.uploaded.0 as u32);
         for job in &mut self.jobs {
             job.palette += palette_row;
             job.weights += weight_word;
         }
-        let bytes = u64::from(weight_word) * 4 + size_of_val(self.weights.as_slice()) as u64;
+        let bytes = frame_bytes(self.jobs.len(), self.uploaded.0, self.uploaded.1);
+        debug_assert!(self.frame.fits(bytes), "admitted within the limit");
         // Rewritten whole every frame, so nothing needs keeping.
-        self.stale |= self.frame.reserve(device, queue, bytes.next_multiple_of(16), 0);
+        self.stale |= self.frame.reserve(device, queue, bytes, 0);
         if std::mem::take(&mut self.stale) || self.bind_group.is_none() {
             let pass = self.pass.as_ref().expect("enabled with the first deformable mesh");
             self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -542,6 +579,84 @@ impl Skinning {
         }
     }
 
+    /// Decides which pending skins the recorded frame takes (review RA-004), leaving them in
+    /// `queued` and the rest in `waiting`. The frame's header, jobs, palettes and weights are one
+    /// storage buffer: when they fit its limit, as they always do in practice, every pending skin
+    /// is taken with every palette and weight since the last record, as before. Otherwise skins
+    /// are taken in the order they were queued while they fit, and the others keep their poses
+    /// for the next record: the palettes and weights are put in order, the frame's first (the
+    /// `uploaded` ones), then the waiting poses'.
+    fn admit(&mut self, records: &[MeshRecord]) {
+        let Self { queued, waiting, instances, palettes, weights, frame, .. } = self;
+        waiting.clear();
+        let pending = |slot: &u32| {
+            instances
+                .get(*slot as usize)
+                .is_some_and(|state| state.as_ref().is_some_and(|state| state.pending.is_some()))
+        };
+        // Repeated slots count twice here, which only errs toward taking the path below.
+        let jobs = queued.iter().filter(|slot| pending(slot)).count();
+        if frame.fits(frame_bytes(jobs, palettes.len(), weights.len())) {
+            self.uploaded = (palettes.len(), weights.len());
+            self.deferred = 0;
+            return;
+        }
+        // Each slot once, in the order queued.
+        let mut seen = vec![false; instances.len()];
+        queued.retain(|&slot| seen.get_mut(slot as usize).is_some_and(|seen| !std::mem::replace(seen, true)));
+        let (mut taken_palettes, mut taken_weights) = (Vec::new(), Vec::new());
+        let (mut waiting_palettes, mut waiting_weights) = (Vec::new(), Vec::new());
+        let (mut jobs, mut rows, mut words) = (0, 0, 0);
+        queued.retain(|&slot| {
+            let Some(state) = instances[slot as usize].as_mut() else { return false };
+            let Some(pending) = state.pending else { return false };
+            let source =
+                records[state.mesh.index()].deform().expect("deformed instances have deformable meshes");
+            let (len, targets) = match pending {
+                Pending::Pose { .. } => (source.palette_len() as usize, source.morph_targets() as usize),
+                Pending::Rest => (0, 0),
+            };
+            let taken = frame.fits(frame_bytes(jobs + 1, rows + len, words + targets));
+            let (into_palettes, into_weights) = if taken {
+                (jobs, rows, words) = (jobs + 1, rows + len, words + targets);
+                (&mut taken_palettes, &mut taken_weights)
+            } else {
+                waiting.push(slot);
+                (&mut waiting_palettes, &mut waiting_weights)
+            };
+            if let Pending::Pose { palette, weights: first, morphs } = pending {
+                let at = (into_palettes.len() as u32, into_weights.len() as u32);
+                into_palettes.extend_from_slice(&palettes[palette as usize..][..len]);
+                into_weights.extend_from_slice(&weights[first as usize..][..targets]);
+                state.pending = Some(Pending::Pose { palette: at.0, weights: at.1, morphs });
+            }
+            taken
+        });
+        // The waiting poses' palettes and weights follow the frame's.
+        let uploaded = (taken_palettes.len(), taken_weights.len());
+        for &slot in waiting.iter() {
+            if let Some(Deformed { pending: Some(Pending::Pose { palette, weights: first, .. }), .. }) =
+                instances[slot as usize].as_mut()
+            {
+                *palette += uploaded.0 as u32;
+                *first += uploaded.1 as u32;
+            }
+        }
+        taken_palettes.append(&mut waiting_palettes);
+        taken_weights.append(&mut waiting_weights);
+        (*palettes, *weights) = (taken_palettes, taken_weights);
+        self.uploaded = uploaded;
+        self.deferred = waiting.len() as u32;
+        if self.deferred > 0 && !std::mem::replace(&mut self.warned, true) {
+            tracing::warn!(
+                target: crate::LOG_TARGET,
+                poses = self.deferred,
+                limit = self.frame.max_size(),
+                "a frame's skinning data is full: poses past its limit wait for the next frame"
+            );
+        }
+    }
+
     /// This recorded frame's skinning work, if it has any.
     pub(crate) fn frame(&self) -> Option<SkinningFrame<'_>> {
         if self.jobs.is_empty() {
@@ -554,8 +669,8 @@ impl Skinning {
             buffer: self.frame.buffer(),
             header: [self.jobs.len() as u32, self.workgroups, 0, 0],
             jobs: &self.jobs,
-            palettes: &self.palettes,
-            weights: &self.weights,
+            palettes: &self.palettes[..self.uploaded.0],
+            weights: &self.weights[..self.uploaded.1],
             workgroups: self.workgroups,
         })
     }
@@ -572,6 +687,14 @@ impl Skinning {
     /// Times either buffer grew.
     pub(crate) fn growths(&self) -> u32 {
         self.outputs.growths() + self.frame.growths()
+    }
+
+    /// A new frame buffer that holds at most `bytes` of jobs, palettes and weights, for tests of
+    /// a full one.
+    #[cfg(test)]
+    pub(crate) fn limit_frame(&mut self, device: &wgpu::Device, bytes: u64) {
+        self.frame = self.frame.limited(device, 0, bytes);
+        self.stale = true;
     }
 }
 
@@ -639,10 +762,20 @@ impl SkinnedOutputs<'_> {
         self.buffer
     }
 
-    /// The instance in `slot`'s streams, if it is deformed.
+    /// The instance in `slot`'s streams, if it is deformed and has been skinned: one whose first
+    /// skin waits for room in a frame's data (review RA-004) has nothing to draw yet.
     pub(crate) fn get(&self, slot: u32) -> Option<InstanceOutputs> {
-        self.instances.get(slot as usize)?.as_ref().map(Deformed::outputs)
+        self.instances.get(slot as usize)?.as_ref().filter(|state| state.drawn).map(Deformed::outputs)
     }
+}
+
+/// The bytes of a frame's skinning data with `jobs` jobs, `palettes` palette matrices and
+/// `weights` morph weights: the 16-byte header, the jobs, the palettes and the weights, rounded
+/// up to 16 bytes.
+fn frame_bytes(jobs: usize, palettes: usize, weights: usize) -> u64 {
+    let rows = 1 + u64::from(JOB_ROWS) * jobs as u64;
+    let palettes = palettes as u64 * size_of::<PaletteRows>() as u64;
+    (rows * 16 + palettes + weights as u64 * 4).next_multiple_of(16)
 }
 
 /// The job that skins an instance of `source` into `outputs`, starting at workgroup

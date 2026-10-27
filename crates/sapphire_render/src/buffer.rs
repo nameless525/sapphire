@@ -41,12 +41,32 @@ impl GrowableBuffer {
         self.max_size
     }
 
+    /// Whether `needed` bytes are within [`Self::max_size`], so [`Self::reserve`] can make room
+    /// for them. Owners admit work by it before changing any state (review RA-004): what doesn't
+    /// fit is left out or waits, and nothing is written past the buffer's end.
+    pub(crate) fn fits(&self, needed: u64) -> bool {
+        needed <= self.max_size
+    }
+
+    /// How many items of `item_bytes` fit within [`Self::max_size`].
+    pub(crate) fn max_items(&self, item_bytes: u64) -> u64 {
+        self.max_size / item_bytes
+    }
+
     pub(crate) fn growths(&self) -> u32 {
         self.growths
     }
 
-    /// Ensures room for `needed` bytes (at most [`Self::max_size`]), copying the first `keep`
-    /// bytes into the new buffer if it has to grow. Returns `true` when the buffer was replaced.
+    /// A new buffer of this one's label and use that holds at most `max_size` bytes, starting at
+    /// `capacity`, for tests of a full one. Bind groups that hold this one must be rebuilt.
+    #[cfg(test)]
+    pub(crate) fn limited(&self, device: &wgpu::Device, capacity: u64, max_size: u64) -> Self {
+        Self::new(device, self.label, self.usage, capacity.min(max_size), max_size)
+    }
+
+    /// Ensures room for `needed` bytes, copying the first `keep` bytes into the new buffer if it
+    /// has to grow. Returns `true` when the buffer was replaced. `needed` must [fit](Self::fits):
+    /// debug builds assert it, and release builds clamp, leaving the buffer too small.
     pub(crate) fn reserve(
         &mut self,
         device: &wgpu::Device,
@@ -209,6 +229,17 @@ mod tests {
         ranges.free(a, 4);
         assert_eq!(ranges.end(), 0);
         assert_eq!(ranges.allocate(7), 0);
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn work_fits_up_to_the_limit() {
+        use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let buffer = GrowableBuffer::new(gpu.device(), "test", wgpu::BufferUsages::STORAGE, 64, 1024);
+        assert_eq!([1023, 1024, 1025].map(|needed| buffer.fits(needed)), [true, true, false]);
+        assert_eq!([192, 1024, 1025].map(|item| buffer.max_items(item)), [5, 1, 0]);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use super::reference;
 use crate::graph::{FrameGraph, GraphExecutor, TextureId};
 use crate::{
     CameraData, CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, FramePacketRing,
-    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, ViewData,
+    InstanceId, MeshHandle, MeshInstance, Msaa, RenderSettings, Renderer, SkinningStats, ViewData,
 };
 
 /// `material` embedded in a mesh's material slot, as the glTF importer embeds one.
@@ -551,4 +551,167 @@ fn prepass_depth_equals_the_main_pass_depth() {
     eprintln!("{covered} character pixels: {equal} equal to the main depth, {behind_prop} behind the prop");
     assert!(covered > 400 && behind_prop > 50, "the character fills part of the image, partly hidden");
     assert_eq!(equal + behind_prop, covered);
+}
+
+/// A palette and morph weights.
+type Pose = (Vec<Affine3A>, Vec<f32>);
+
+/// A random pose of `mesh`.
+fn random_pose(rng: &mut Rng, mesh: &Mesh) -> Pose {
+    let joints = mesh.skin.as_ref().expect("skinned").binds.len();
+    ((0..joints).map(|_| rng.affine()).collect(), vec![rng.next(), 0.0, rng.range(-0.5, 1.5)])
+}
+
+/// A renderer whose frame data for skinning holds `limit` bytes, skinning frames of poses and
+/// reading its outputs back.
+struct Skinner {
+    gpu: GpuContext,
+    renderer: Renderer,
+    packets: FramePacketRing,
+    executor: GraphExecutor,
+    view: wgpu::TextureView,
+}
+
+impl Skinner {
+    fn new(limit: u64) -> Self {
+        let gpu = gpu();
+        let mut renderer =
+            Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
+                .expect("renderer");
+        renderer.limit_buffers(1024, 1024, None, Some(limit));
+        let view = target(&gpu, (64, 64)).create_view(&Default::default());
+        Self { gpu, renderer, packets: FramePacketRing::new(), executor: GraphExecutor::new(), view }
+    }
+
+    /// Prepares and records a frame that adds `added` instances (ID, mesh) and poses `poses`
+    /// (ID, pose): the skinning stats its `prepare` gave, and the outputs' words once it ran.
+    fn frame(&mut self, added: &[(u64, MeshHandle)], poses: &[(u64, &Pose)]) -> (SkinningStats, Vec<u32>) {
+        let packet = self.packets.begin();
+        packet.views.push(ViewData::new(camera(1.0)));
+        for &(id, mesh) in added {
+            packet.instances.changed.push(MeshInstance {
+                id: InstanceId(id),
+                mesh,
+                transform: Mat4::IDENTITY,
+            });
+        }
+        for &(id, (palette, weights)) in poses {
+            packet.push_skinned(InstanceId(id), palette.iter().copied(), weights.iter().copied());
+        }
+        self.renderer.prepare(&self.gpu, self.packets.current());
+        let stats = self.renderer.stats().skinning;
+        let outputs = self.renderer.skinning().outputs().buffer().clone();
+        let copy = readback(&self.gpu, outputs.size());
+        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut graph = FrameGraph::new();
+        let target_id = graph.import_texture("target", &self.view);
+        self.renderer.record(&mut graph, target_id);
+        let (outputs, copy_ref) = (&outputs, &copy);
+        graph.add_pass("read outputs").side_effect().record(move |ctx| {
+            ctx.encoder.copy_buffer_to_buffer(outputs, 0, copy_ref, 0, outputs.size());
+        });
+        self.executor.execute(&self.gpu, graph).expect("a valid graph");
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        (stats, read_words(&self.gpu, &copy))
+    }
+
+    /// The largest relative error of the positions the instance in `slot` holds in `words`
+    /// against `mesh` in `pose`, skinned and morphed on the CPU; `None` if it has nothing to draw.
+    fn error(&self, words: &[u32], slot: u32, mesh: &Mesh, pose: &Pose) -> Option<f32> {
+        let positions = (self.renderer.skinning().outputs().get(slot)?.positions / 4) as usize;
+        let expected = reference::deform(mesh, &pose.0, &pose.1);
+        Some(expected.iter().enumerate().fold(0.0f32, |worst, (v, vertex)| {
+            let p =
+                Vec3::from_array(std::array::from_fn(|axis| f32::from_bits(words[positions + 3 * v + axis])));
+            let expected = Vec3::from(vertex.position);
+            worst.max((p - expected).abs().max_element() / (1.0 + expected.length()))
+        }))
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn poses_past_the_frame_limit_wait_for_the_next_frame() {
+    // A frame's jobs, palettes and weights go up as one storage buffer (review RA-004). Two
+    // instances posed in one packet need 16 bytes of header, two 80-byte jobs, 340 palette
+    // matrices of 48 bytes and six weights, rounded up to 16 bytes: 16 528 bytes. With room for
+    // that or more both are skinned at once; with less, the second waits for the next recorded
+    // frame, its pose kept, and has nothing to draw until then.
+    const WHOLE: u64 = 16_528;
+    let mut rng = Rng(31);
+    let meshes = [
+        random_mesh(&mut rng, 600, 40, PositionFormat::Unorm16),
+        random_mesh(&mut rng, 300, 300, PositionFormat::Float32),
+    ];
+    for (limit, deferred) in [(WHOLE + 16, 0), (WHOLE, 0), (WHOLE - 1, 1), (WHOLE - 16, 1)] {
+        let mut skinner = Skinner::new(limit);
+        let added: Vec<_> = meshes
+            .iter()
+            .enumerate()
+            .map(|(id, mesh)| (id as u64, upload(&mut skinner.renderer, mesh)))
+            .collect();
+        let poses: Vec<Pose> = meshes.iter().map(|mesh| random_pose(&mut rng, mesh)).collect();
+        let posed: Vec<_> = poses.iter().enumerate().map(|(id, pose)| (id as u64, pose)).collect();
+        // The first frame poses both.
+        let (stats, words) = skinner.frame(&added, &posed);
+        assert_eq!((stats.skinned, stats.deferred_poses), (2, 0));
+        let first = skinner.error(&words, 0, &meshes[0], &poses[0]).expect("skinned");
+        assert!(first < 2e-6, "limit {limit}: {first}");
+        let second = skinner.error(&words, 1, &meshes[1], &poses[1]);
+        if deferred == 1 {
+            assert_eq!(second, None, "limit {limit}: nothing to draw before its first skin");
+        } else {
+            assert!(second.is_some_and(|error| error < 2e-6), "limit {limit}: {second:?}");
+        }
+        // The second poses nothing: a waiting pose is skinned now.
+        let (stats, words) = skinner.frame(&[], &[]);
+        assert_eq!((stats.skinned, stats.deferred_poses), (deferred, deferred));
+        for (slot, (mesh, pose)) in meshes.iter().zip(&poses).enumerate() {
+            let error = skinner.error(&words, slot as u32, mesh, pose).expect("skinned");
+            assert!(error < 2e-6, "limit {limit}, instance {slot}: {error}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn waiting_poses_take_turns_and_keep_their_latest_pose() {
+    // Room for one pose a frame: a 16-byte header, an 80-byte job, 40 palette matrices and three
+    // weights, rounded up to 16 bytes. Three instances wait in turn, in the order they were
+    // queued, and a waiting instance posed again is skinned with its latest pose.
+    const ONE: u64 = 2032;
+    let mut rng = Rng(37);
+    let mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    let mut skinner = Skinner::new(ONE);
+    let handle = upload(&mut skinner.renderer, &mesh);
+    let added = [(0, handle), (1, handle), (2, handle)];
+    let first: Vec<Pose> = (0..3).map(|_| random_pose(&mut rng, &mesh)).collect();
+    let second: Vec<Pose> = (0..2).map(|_| random_pose(&mut rng, &mesh)).collect();
+    let error =
+        |skinner: &Skinner, words: &[u32], slot: u32, pose: &Pose| skinner.error(words, slot, &mesh, pose);
+    let close = |error: Option<f32>| error.is_some_and(|error| error < 2e-6);
+
+    // All three posed: the first is skinned, the others wait.
+    let (stats, words) = skinner.frame(&added, &[(0, &first[0]), (1, &first[1]), (2, &first[2])]);
+    assert_eq!((stats.skinned, stats.deferred_poses), (3, 0));
+    assert!(close(error(&skinner, &words, 0, &first[0])));
+    assert_eq!((error(&skinner, &words, 1, &first[1]), error(&skinner, &words, 2, &first[2])), (None, None));
+    // The first and second posed again: the second, first in line, takes its new pose.
+    let (stats, words) = skinner.frame(&[], &[(0, &second[0]), (1, &second[1])]);
+    assert_eq!((stats.skinned, stats.deferred_poses), (3, 2));
+    assert!(close(error(&skinner, &words, 1, &second[1])), "the latest pose");
+    assert!(close(error(&skinner, &words, 0, &first[0])), "still its first pose");
+    assert_eq!(error(&skinner, &words, 2, &first[2]), None);
+    // Nothing posed: the third, then the first with its second pose.
+    let (stats, words) = skinner.frame(&[], &[]);
+    assert_eq!((stats.skinned, stats.deferred_poses), (2, 2));
+    assert!(close(error(&skinner, &words, 2, &first[2])));
+    assert!(close(error(&skinner, &words, 0, &first[0])));
+    let (stats, words) = skinner.frame(&[], &[]);
+    assert_eq!((stats.skinned, stats.deferred_poses), (1, 1));
+    assert!(close(error(&skinner, &words, 0, &second[0])));
+    assert!(close(error(&skinner, &words, 1, &second[1])) && close(error(&skinner, &words, 2, &first[2])));
+    let (stats, _) = skinner.frame(&[], &[]);
+    assert_eq!((stats.skinned, stats.deferred_poses), (0, 0));
 }

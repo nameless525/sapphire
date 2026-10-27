@@ -107,6 +107,11 @@ pub struct LightStats {
     pub list_capacity: u32,
     /// Per-object path: instances whose lists were chosen again.
     pub object_lists: u32,
+    /// Per-object path: live instances past the list buffer's limit, which get no list (review
+    /// RA-004). A list takes a sixteenth of an instance's bytes under the same device limit, so
+    /// they are past the instance buffer's too, and don't draw
+    /// ([`RenderStats::instances_over_limit`](crate::RenderStats::instances_over_limit)).
+    pub lists_over_limit: u32,
 }
 
 /// One light as the GPU reads it (WGSL `LocalLight` in `shaders/lights.wgsl`).
@@ -230,6 +235,8 @@ pub(crate) struct Lights {
     bin: bool,
     uniforms: LightUniforms,
     stats: LightStats,
+    /// Instances past the list buffer's limit were logged: once.
+    warned: bool,
 }
 
 impl Lights {
@@ -297,6 +304,7 @@ impl Lights {
             bin: false,
             uniforms: LightUniforms::default(),
             stats: LightStats::default(),
+            warned: false,
         }
     }
 
@@ -346,7 +354,7 @@ impl Lights {
         self.unsent |= changed;
 
         let drawn = self.packed.len() as u32;
-        let mut replaced = false;
+        let (mut replaced, mut lists_over_limit) = (false, 0);
         let mode = match self.path {
             _ if drawn == 0 => ListMode::None,
             LightPath::Clustered => {
@@ -354,11 +362,24 @@ impl Lights {
                 ListMode::Clusters
             }
             LightPath::PerObject => {
+                // Slots past the buffer's limit get no list (review RA-004).
+                let limit = u32::try_from(self.lists.max_items(LIST_BYTES)).unwrap_or(u32::MAX);
+                lists_over_limit = u32::try_from(slots.live_past(limit)).unwrap_or(u32::MAX);
+                if lists_over_limit > 0 && !std::mem::replace(&mut self.warned, true) {
+                    tracing::warn!(
+                        target: crate::LOG_TARGET,
+                        instances = lists_over_limit,
+                        limit,
+                        "the per-object light lists are full: instances past their limit get none"
+                    );
+                }
+                let listed = (slots.len() as u64).min(u64::from(limit));
                 // The old buffer holds every list uploaded so far: a GPU copy keeps them.
                 let uploaded = self.lists.buffer().size();
-                replaced = self.lists.reserve(device, queue, slots.len() as u64 * LIST_BYTES, uploaded);
+                replaced = self.lists.reserve(device, queue, listed * LIST_BYTES, uploaded);
                 let bounds = |mesh: MeshHandle| meshes.get(mesh.index()).map(|record| record.bounds);
-                self.objects.update(&self.packed, changed, slots, &packet.instances.changed, bounds);
+                let changed_instances = &packet.instances.changed;
+                self.objects.update(&self.packed, changed, slots, changed_instances, limit, bounds);
                 ListMode::Objects
             }
         };
@@ -373,6 +394,7 @@ impl Lights {
             clusters: if self.bin { clusters::CLUSTER_COUNT } else { 0 },
             list_capacity: self.capacity,
             object_lists: if mode == ListMode::Objects { self.objects.chosen() } else { 0 },
+            lists_over_limit,
         };
         replaced
     }
@@ -399,6 +421,14 @@ impl Lights {
     /// Times the list buffer grew.
     pub(crate) fn growths(&self) -> u32 {
         self.lists.growths()
+    }
+
+    /// On the per-object path, a new list buffer that holds at most `slots` lists, for tests of
+    /// a full one. The frame's bind group must be rebuilt.
+    #[cfg(test)]
+    pub(crate) fn limit_lists(&mut self, device: &wgpu::Device, slots: u64) {
+        assert_eq!(self.path, LightPath::PerObject, "only the per-object lists grow");
+        self.lists = self.lists.limited(device, 256 * LIST_BYTES, slots * LIST_BYTES);
     }
 
     /// On the per-object path, the lights each instance slot's pixels walk in the last prepared

@@ -160,26 +160,29 @@ impl ObjectLists {
     /// Chooses lists from `lights`: every live instance's if the lights changed since the last
     /// update (or it was invalidated), otherwise only the `changed` instances' (the packet's
     /// additions and changes, already applied to `slots`). `bounds` gives each mesh's
-    /// object-space bounding sphere.
+    /// object-space bounding sphere. Only slots below `limit`, the list buffer's, get lists
+    /// (review RA-004).
     pub(crate) fn update(
         &mut self,
         lights: &[GpuLight],
         lights_changed: bool,
         slots: &InstanceSlots,
         changed: &[MeshInstance],
+        limit: u32,
         bounds: impl Fn(MeshHandle) -> Option<Sphere>,
     ) {
         profiling::scope!("ObjectLists::update");
-        self.lists.resize(slots.len(), ObjectLightList::default());
-        self.queued.resize(slots.len(), false);
+        let listed = slots.len().min(limit as usize);
+        self.lists.resize(listed, ObjectLightList::default());
+        self.queued.resize(listed, false);
         self.chosen = 0;
         if std::mem::take(&mut self.stale) || lights_changed {
-            for (slot, mesh, transform) in slots.live_transforms() {
+            for (slot, mesh, transform) in slots.live_transforms().take_while(|&(slot, ..)| slot < limit) {
                 self.choose(lights, slot, bounds(mesh), transform);
             }
         } else {
             for instance in changed {
-                if let Some(slot) = slots.slot(instance.id) {
+                if let Some(slot) = slots.slot(instance.id).filter(|&slot| slot < limit) {
                     self.choose(lights, slot, bounds(instance.mesh), instance.transform);
                 }
             }
@@ -454,8 +457,25 @@ mod tests {
         let nan = MeshInstance { transform: Mat4::from_scale(Vec3::NAN), ..instance(1, 0.0) };
         apply(&mut slots, &[nan, instance(2, 0.0)]);
         let lights = [point(Vec3::new(0.0, 1.0, 0.0), 1.0, 2.0)];
-        lists.update(&lights, true, &slots, &[], |_| Some(UNIT));
+        lists.update(&lights, true, &slots, &[], u32::MAX, |_| Some(UNIT));
         assert_eq!((lists.lists[0].lights(), lists.lists[1].lights()), (vec![], vec![0]));
+    }
+
+    #[test]
+    fn slots_past_the_limit_get_no_list() {
+        // Review RA-004: the list buffer holds two lists.
+        let mut lists = ObjectLists::default();
+        let mut slots = InstanceSlots::default();
+        let three = [instance(1, 0.0), instance(2, 0.0), instance(3, 0.0)];
+        apply(&mut slots, &three);
+        let lights = [point(Vec3::new(0.0, 1.0, 0.0), 1.0, 2.0)];
+        lists.update(&lights, true, &slots, &three, 2, |_| Some(UNIT));
+        assert_eq!((lists.chosen(), lists.lists.len()), (2, 2));
+        assert_eq!(flushed(&mut lists), [(0, 2)]);
+        let moved = [instance(1, 0.1), instance(3, 0.1)];
+        apply(&mut slots, &moved);
+        lists.update(&lights, false, &slots, &moved, 2, |_| Some(UNIT));
+        assert_eq!(lists.chosen(), 1, "only the moved instance within the limit");
     }
 
     #[test]
@@ -514,7 +534,7 @@ mod tests {
         apply(&mut slots, &three);
         let lights = [point(Vec3::new(0.0, 1.0, 0.0), 1.0, 2.0), point(Vec3::new(20.0, 1.0, 0.0), 1.0, 2.0)];
 
-        lists.update(&lights, true, &slots, &three, bounds);
+        lists.update(&lights, true, &slots, &three, u32::MAX, bounds);
         assert_eq!(lists.chosen(), 3, "new lights: every instance");
         assert_eq!(lists.lists[0].lights(), [0]);
         assert_eq!(lists.lists[1].lights(), Vec::<u32>::new());
@@ -525,19 +545,19 @@ mod tests {
         // Same lights: only the instance that moved is chosen again.
         let moved = [instance(2, 0.5)];
         apply(&mut slots, &moved);
-        lists.update(&lights, false, &slots, &moved, bounds);
+        lists.update(&lights, false, &slots, &moved, u32::MAX, bounds);
         assert_eq!(lists.chosen(), 1);
         assert_eq!(lists.lists[1].lights(), [0]);
         assert_eq!(flushed(&mut lists), [(1, 1)]);
 
         // Unchanged lists aren't uploaded again.
-        lists.update(&lights, true, &slots, &[], bounds);
+        lists.update(&lights, true, &slots, &[], u32::MAX, bounds);
         assert_eq!(lists.chosen(), 3);
         assert_eq!(flushed(&mut lists), []);
 
         // After a frame without a view, everything is chosen again.
         lists.invalidate();
-        lists.update(&lights, false, &slots, &[], bounds);
+        lists.update(&lights, false, &slots, &[], u32::MAX, bounds);
         assert_eq!(lists.chosen(), 3);
     }
 }

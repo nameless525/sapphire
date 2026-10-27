@@ -52,10 +52,20 @@ const TRANSPARENT: f32 = 1e-6;
 pub fn chain(level0: Level, filter: MipFilter, count: u32) -> Vec<Level> {
     let count = count.clamp(1, full_mip_count(level0.width, level0.height));
     let mut levels = Vec::with_capacity(count as usize);
+    // Every level samples level 0, and a color level samples it widened (`widen`): widen it once
+    // for the chain rather than once a level (112 MiB a level at 2048²). The footprints and their
+    // order of summation don't change, so the levels are bit for bit `downsample`'s.
+    let wide = (filter == MipFilter::Color && count > 1).then(|| widen(&level0));
     for i in 1..count {
         let width = (level0.width >> i).max(1);
         let height = (level0.height >> i).max(1);
-        levels.push(downsample(&level0, width, height, filter));
+        levels.push(match &wide {
+            Some(wide) => {
+                let pixels = narrow(resample(wide, (level0.width, level0.height), (width, height)));
+                Level { width, height, pixels }
+            }
+            None => downsample(&level0, width, height, filter),
+        });
     }
     levels.insert(0, level0);
     levels
@@ -64,19 +74,7 @@ pub fn chain(level0: Level, filter: MipFilter, count: u32) -> Vec<Level> {
 /// The area average of `source` at `width × height`.
 pub fn downsample(source: &Level, width: u32, height: u32, filter: MipFilter) -> Level {
     let pixels = match filter {
-        // Premultiplied RGB, alpha, and plain RGB for footprints with no alpha at all.
-        MipFilter::Color => {
-            let wide: Vec<[f32; 7]> =
-                source.pixels.iter().map(|&[r, g, b, a]| [r * a, g * a, b * a, a, r, g, b]).collect();
-            resample(&wide, (source.width, source.height), (width, height))
-                .into_iter()
-                .map(
-                    |[pr, pg, pb, a, r, g, b]| {
-                        if a > TRANSPARENT { [pr / a, pg / a, pb / a, a] } else { [r, g, b, a] }
-                    },
-                )
-                .collect()
-        }
+        MipFilter::Color => narrow(resample(&widen(source), (source.width, source.height), (width, height))),
         MipFilter::Normal => resample(&source.pixels, (source.width, source.height), (width, height))
             .into_iter()
             .map(|[x, y, z, w]| {
@@ -87,6 +85,24 @@ pub fn downsample(source: &Level, width: u32, height: u32, filter: MipFilter) ->
         MipFilter::Data => resample(&source.pixels, (source.width, source.height), (width, height)),
     };
     Level { width, height, pixels }
+}
+
+/// A color level's texels as [`MipFilter::Color`] averages them: premultiplied RGB, alpha, and
+/// plain RGB for footprints with no alpha at all.
+fn widen(source: &Level) -> Vec<[f32; 7]> {
+    source.pixels.iter().map(|&[r, g, b, a]| [r * a, g * a, b * a, a, r, g, b]).collect()
+}
+
+/// Averaged texels from [`widen`], as RGBA: premultiplied RGB divided by alpha, or a fully
+/// transparent footprint's plain average.
+fn narrow(wide: Vec<[f32; 7]>) -> Vec<[f32; 4]> {
+    wide.into_iter()
+        .map(
+            |[pr, pg, pb, a, r, g, b]| {
+                if a > TRANSPARENT { [pr / a, pg / a, pb / a, a] } else { [r, g, b, a] }
+            },
+        )
+        .collect()
 }
 
 /// `v` scaled to unit length, or `+Z` if it has (almost) none: an average of opposing
@@ -252,6 +268,40 @@ mod tests {
         // A fully transparent footprint keeps its plain color average.
         let clear = level(2, 1, |x, _| [x as f32, 0.5, 0.0, 0.0]);
         assert!(close(downsample(&clear, 1, 1, MipFilter::Color).pixels[0], [0.5, 0.5, 0.0, 0.0], 1e-6));
+    }
+
+    #[test]
+    fn color_chains_are_bit_for_bit_each_level_downsampled_alone() {
+        // Chains widen level 0 once (review AP-007); every level must still be exactly what
+        // averaging level 0 for that level alone gives, transparent footprints included.
+        let texel = |x: u32, y: u32| {
+            let alpha = if (x / 3 + y / 2).is_multiple_of(4) {
+                0.0
+            } else {
+                ((x * 19 + y * 31) % 256) as f32 / 255.0
+            };
+            [((x * 13 + y * 3) % 256) as f32 / 255.0, ((x * 2 + y * 17) % 256) as f32 / 255.0, 0.3, alpha]
+        };
+        for (width, height) in [(1, 1), (5, 7), (37, 23), (64, 64), (300, 17)] {
+            let level0 = level(width, height, texel);
+            for count in [1, 2, u32::MAX] {
+                let levels = chain(level0.clone(), MipFilter::Color, count);
+                assert_eq!(levels[0], level0);
+                for found in &levels[1..] {
+                    let alone = downsample(&level0, found.width, found.height, MipFilter::Color);
+                    let bits = |level: &Level| -> Vec<[u32; 4]> {
+                        level.pixels.iter().map(|pixel| pixel.map(f32::to_bits)).collect()
+                    };
+                    assert_eq!(
+                        bits(found),
+                        bits(&alone),
+                        "{width}x{height} at {}x{}",
+                        found.width,
+                        found.height
+                    );
+                }
+            }
+        }
     }
 
     #[test]

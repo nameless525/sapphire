@@ -57,7 +57,8 @@ fn unshape(s: f32) -> f32 {
     SHAPER_EPSILON * ((s * shaper_range()).exp2() - 1.0)
 }
 
-/// What one LUT is baked from. Built from sanitized parameters, so comparing keys is exact.
+/// What one LUT is baked from. Built from sanitized parameters, so comparing keys is exact, and
+/// without the grade at filter strength 0, which bakes the same LUT whatever the grade.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LutKey {
     curve: ToneCurve,
@@ -96,7 +97,12 @@ impl LutKey {
             gamma: finite_clamp3(grade.gamma, 0.1, 10.0, neutral.gamma),
             gain: finite_clamp3(grade.gain, 0.0, 4.0, neutral.gain),
         };
-        Self { curve, grade, strength: finite_clamp(strength, 0.0, 1.0, 1.0) }
+        let strength = finite_clamp(strength, 0.0, 1.0, 1.0);
+        // At strength 0 the LUT is the tone curve alone whatever the grade, so the key forgets
+        // the grade and grade changes with the filter off bake nothing (review PW-007). Only the
+        // key: the frame's grades stay as authored for when the filter comes back.
+        let grade = if strength == 0.0 { neutral } else { grade };
+        Self { curve, grade, strength }
     }
 }
 
@@ -450,6 +456,70 @@ mod tests {
         lut(ToneCurve::default(), strong, 1.0).bake(&mut full);
         assert!(off == neutral, "strength 0 is the neutral grade");
         assert!(full != neutral, "the grade does something");
+    }
+
+    /// The key `LutKey::new` made before review PW-007: the sanitized grade kept at strength 0.
+    fn key_keeping_the_grade(curve: &ToneCurve, grade: &ColorGrade, strength: f32) -> LutKey {
+        LutKey { strength: LutKey::new(curve, grade, strength).strength, ..LutKey::new(curve, grade, 1.0) }
+    }
+
+    #[test]
+    fn at_strength_zero_keys_and_texels_ignore_the_grade() {
+        // Review PW-007: the filter off bakes the neutral LUT whatever the grade, so its key no
+        // longer names the grade, and grade changes bake nothing new. The tone curve still counts.
+        let curve = ToneCurve::default();
+        let neutral = LutKey::new(&curve, &ColorGrade::NEUTRAL, 0.0);
+        let mut expected = vec![0; LUT_TEXELS];
+        Lut::new(&neutral).bake(&mut expected);
+        let mut texels = vec![0; LUT_TEXELS];
+        for temperature in [-2.0, -0.1, 0.0, 0.7, 2.0, f32::NAN] {
+            let grade = ColorGrade { temperature, tint: 0.7, contrast: 1.3, ..ColorGrade::NEUTRAL };
+            let key = LutKey::new(&curve, &grade, 0.0);
+            assert_eq!(key, neutral);
+            Lut::new(&key).bake(&mut texels);
+            assert!(texels == expected, "temperature {temperature}");
+            assert_ne!(LutKey::new(&curve, &grade, 0.5), neutral);
+        }
+        let steeper = ToneCurve { contrast: 1.2, ..curve };
+        assert_ne!(LutKey::new(&steeper, &ColorGrade::NEUTRAL, 0.0), neutral);
+
+        // The review's 60 cases: every texel is as the grade-keeping key bakes it.
+        let mut before = vec![0; LUT_TEXELS];
+        let mut cases = 0;
+        for temperature in [-2.0, 0.0, 0.9, 2.0, f32::NAN] {
+            for strength in [-1.0, -0.0, 0.0, 0.5, 1.0, f32::NAN] {
+                for contrast in [1.0, 1.3] {
+                    let grade = ColorGrade { temperature, tint: 0.2, ..ColorGrade::NEUTRAL };
+                    let tone = ToneCurve { contrast, ..ToneCurve::default() };
+                    Lut::new(&key_keeping_the_grade(&tone, &grade, strength)).bake(&mut before);
+                    Lut::new(&LutKey::new(&tone, &grade, strength)).bake(&mut texels);
+                    assert!(texels == before, "{temperature} {strength} {contrast}");
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 60);
+    }
+
+    /// LUT bakes over the review's burst: 32 frames, each with a new grade, at filter `strength`,
+    /// keyed by `key`.
+    fn burst_bakes(strength: f32, key: fn(&ToneCurve, &ColorGrade, f32) -> LutKey) -> usize {
+        let mut slots = LutSlots::default();
+        let mut bakes = 0;
+        for frame in 0..32 {
+            let temperature = (frame % 8) as f32 * 0.1;
+            let grade = ColorGrade { temperature, tint: 0.2, contrast: 1.05, ..ColorGrade::NEUTRAL };
+            let assignment = slots.assign(key(&ToneCurve::default(), &grade, strength), None);
+            bakes += assignment.stale.iter().filter(|stale| **stale).count();
+        }
+        bakes
+    }
+
+    #[test]
+    fn grade_changes_with_the_filter_off_bake_once() {
+        assert_eq!(burst_bakes(0.0, key_keeping_the_grade), 32, "before review PW-007");
+        assert_eq!(burst_bakes(0.0, LutKey::new), 1);
+        assert_eq!(burst_bakes(0.5, LutKey::new), 32, "a visible grade bakes as it changes");
     }
 
     #[test]

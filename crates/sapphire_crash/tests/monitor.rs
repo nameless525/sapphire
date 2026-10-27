@@ -12,6 +12,9 @@
 //! child reports what it saw on stdout, one `key=value` line per step, and the parent checks it.
 //! The monitor inherits the child's stdout, so stdout reaching end-of-file also proves that the
 //! monitor exited once the child was gone.
+//!
+//! The native-crash scenario runs only on CI or with `SAPPHIRE_CRASH_TESTS=1`, since each run
+//! leaves an OS crash report behind (see `native_crash_enabled`).
 
 // The child's stdout is the channel back to the parent.
 #![allow(clippy::print_stdout)]
@@ -51,11 +54,32 @@ mod desktop {
             return;
         }
 
-        two_recovered_panics_then_a_native_crash();
+        if native_crash_enabled() {
+            two_recovered_panics_then_a_native_crash();
+        } else {
+            println!(
+                "monitor: skipping the native-crash scenario (it leaves an OS crash report behind); \
+                 set {NATIVE_CRASH_ENV}=1 to run it, as CI does"
+            );
+        }
         panic_dumps_stop_at_the_cap();
         #[cfg(unix)]
         capture_reports_a_dead_monitor();
         println!("monitor: ok");
+    }
+
+    /// Asks for the scenario that ends in a real native crash outside CI.
+    const NATIVE_CRASH_ENV: &str = "SAPPHIRE_CRASH_TESTS";
+
+    /// Whether to run the scenario that ends in a real native crash: on CI (GitHub Actions sets
+    /// `CI`), or when [`NATIVE_CRASH_ENV`] is `1`. On macOS each run leaves a crash report in
+    /// `~/Library/Logs/DiagnosticReports`, which shouldn't pile up on a machine where the tests
+    /// run over and over. The panic-only scenarios, recovered panics' dumps included, run
+    /// everywhere.
+    fn native_crash_enabled() -> bool {
+        let ci =
+            std::env::var_os("CI").is_some_and(|value| !value.is_empty() && value != "0" && value != "false");
+        ci || std::env::var_os(NATIVE_CRASH_ENV).is_some_and(|value| value == "1")
     }
 
     // ---------------------------------------------------------------------------------------

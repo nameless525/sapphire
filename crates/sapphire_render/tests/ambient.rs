@@ -346,16 +346,7 @@ impl Harness {
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
         let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
-        let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let target = Self::target(&gpu, (SIDE, SIDE));
         Self {
             gpu,
             renderer,
@@ -370,6 +361,20 @@ impl Harness {
             added: Vec::new(),
             next_id: 0,
         }
+    }
+
+    /// A readable target of `width` × `height` pixels.
+    fn target(gpu: &GpuContext, (width, height): (u32, u32)) -> wgpu::Texture {
+        gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
     }
 
     fn looking(eye: Vec3, target: Vec3) -> CameraData {
@@ -484,10 +489,11 @@ impl Harness {
     }
 
     fn read_back(&self) -> Vec<[u8; 4]> {
-        let padded = (SIDE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let (width, height) = (self.target.width(), self.target.height());
+        let padded = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = self.gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: u64::from(padded * SIDE),
+            size: u64::from(padded * height),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -499,7 +505,7 @@ impl Harness {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
-                    rows_per_image: Some(SIDE),
+                    rows_per_image: Some(height),
                 },
             },
             self.target.size(),
@@ -510,7 +516,7 @@ impl Harness {
         let mapped = buffer.get_mapped_range(..).expect("mapped");
         mapped
             .chunks_exact(padded as usize)
-            .flat_map(|row| row[..SIDE as usize * 4].as_chunks::<4>().0.iter().copied())
+            .flat_map(|row| row[..width as usize * 4].as_chunks::<4>().0.iter().copied())
             .collect()
     }
 }
@@ -880,6 +886,74 @@ fn gtao_darkens_creases_and_holds_still() {
     let (a, b) = (settled.at(crease).x, next.at(crease).x);
     assert!((a - b).abs() < 0.01, "still: {a} then {b}");
     assert!(a < 0.95 * open, "and dark: {a} against {open}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn gtao_leaves_scenes_too_small_for_its_mips_open() {
+    // Review PW-001: GTAO's half-resolution view distance has `GTAO_DEPTH_MIPS` (4) mips, which a
+    // texture needs 8 texels a side for, so a scene 14 pixels or less on both sides failed
+    // validation. There GTAO now makes no textures and dispatches nothing, and the environment
+    // reads the open stand-in, as without GTAO; growing the scene again brings it back, and
+    // shrinking it again drops it without leaving stale occlusion. Without temporal AA and with
+    // it, under MSAA and without.
+    let occlusion = AmbientOcclusion { capsules: false, gtao: Some(GtaoSettings::DESKTOP) };
+    let scene = |settings: RenderSettings| {
+        let mut harness = Harness::new(settings);
+        harness.ground();
+        harness.environment(cuboid(Vec3::new(0.0, 0.5, 0.0), Vec3::splat(0.5)));
+        harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 };
+        harness.camera = Harness::looking(Vec3::new(2.0, 2.5, 3.0), Vec3::new(0.2, 0.2, 0.2));
+        harness
+    };
+    // Target size and render scale, and the GTAO texture size expected: none below 15 pixels.
+    let sizes = [
+        ((1, 1), 1.0, (0, 0)),
+        ((8, 8), 1.0, (0, 0)),
+        ((14, 14), 1.0, (0, 0)),
+        ((15, 15), 1.0, (8, 8)),
+        ((1, 64), 1.0, (1, 32)),
+        ((32, 32), 0.25, (0, 0)),
+        ((64, 64), 1.0, (32, 32)),
+        ((8, 8), 1.0, (0, 0)),
+    ];
+    for base in [
+        settings(occlusion),
+        RenderSettings { msaa: Msaa::X4, ..settings(occlusion) },
+        RenderSettings { temporal: true, ..settings(occlusion) },
+    ] {
+        let mut harness = scene(base);
+        let mut open = scene(RenderSettings { ambient_occlusion: AmbientOcclusion::OFF, ..base });
+        let mut first_tiny = None;
+        for (size, scale, expected) in sizes {
+            for harness in [&mut harness, &mut open] {
+                harness.target = Harness::target(&harness.gpu, size);
+                harness.renderer.set_render_scale(scale);
+            }
+            let what = format!("{size:?} at {scale}, temporal {}, {:?}", base.temporal, base.msaa);
+            let frame = harness.render();
+            // Rendered every frame too, so temporal AA's jitter and history keep in step.
+            let reference = open.render();
+            assert_eq!(frame.stats.ambient.gtao_size, expected, "{what}");
+            assert_eq!(frame.stats.ambient.dispatches, if expected == (0, 0) { 0 } else { 3 }, "{what}");
+            if expected != (0, 0) {
+                continue;
+            }
+            // Open occlusion: as the renderer without GTAO draws it.
+            let worst = frame
+                .pixels
+                .iter()
+                .zip(&reference.pixels)
+                .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)))
+                .max()
+                .expect("pixels");
+            assert!(worst <= 1, "{what}: up to {worst} code values from no GTAO");
+            if size == (8, 8) {
+                let first = first_tiny.get_or_insert_with(|| frame.pixels.clone());
+                assert!(base.temporal || *first == frame.pixels, "{what}: the same frame as before");
+            }
+        }
+    }
 }
 
 #[test]

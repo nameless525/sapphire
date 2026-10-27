@@ -139,7 +139,8 @@
 //!   grid's spacing: GTAO is contact occlusion, and the grid's sky visibility carries occlusion at
 //!   larger scales, so the two layer rather than count the same creases twice. Its 4 × 4
 //!   pattern moves every frame under temporal AA, whose resolve averages it, and holds still
-//!   without.
+//!   without. A scene too small for the view distance's mips (14 pixels or fewer on both sides)
+//!   gets none: no textures, no dispatches, and the environment reads open occlusion.
 //! - **Characters are capsule AO's alone:** GTAO leaves out every pixel where a character (the
 //!   character prepass's depth, M1 C5) or an outline hull (the scene prepass's outline mask, M1
 //!   C4) is the nearest surface, as it leaves out the sky, so neither occludes the world around
@@ -383,6 +384,10 @@ pub(crate) const PREFILTER_WORKGROUP: u32 = 8;
 pub(crate) const GTAO_WORKGROUP: u32 = 8;
 /// Mips of GTAO's half-resolution view distance (WGSL `GTAO_DEPTH_MIPS`).
 pub(crate) const GTAO_DEPTH_MIPS: u32 = 4;
+/// The fewest texels the view distance's longer side can have: a texture has a mip only while
+/// its longer side still halves to a texel. Scenes whose half resolution is smaller (14 pixels
+/// or fewer on both sides) get no GTAO.
+const GTAO_MIN_SIDE: u32 = 1 << (GTAO_DEPTH_MIPS - 1);
 /// GTAO's view distance: one float, writable as a storage texture on every WebGPU device.
 const GTAO_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 /// GGX samples per texel of each rougher reflection mip: each filters the mip before it, already
@@ -795,6 +800,10 @@ struct Reflection {
 #[derive(Debug)]
 struct Gtao {
     settings: GtaoSettings,
+    /// The scene's size last fitted to ([`Ambient::fit`]); `None` before the first frame.
+    fitted: Option<(u32, u32)>,
+    /// `None` also while the scene is too small for the view distance's mips
+    /// ([`GTAO_MIN_SIDE`]).
     textures: Option<GtaoTextures>,
 }
 
@@ -1288,7 +1297,7 @@ impl Ambient {
             ..Default::default()
         });
         let placeholders = Placeholders::new(device, queue);
-        let gtao = occlusion.gtao.map(|settings| Gtao { settings, textures: None });
+        let gtao = occlusion.gtao.map(|settings| Gtao { settings, fitted: None, textures: None });
         let compute_frame = compute_frame_group(
             device,
             &ambient_layouts,
@@ -1610,15 +1619,24 @@ impl Ambient {
         }
     }
 
-    /// Makes GTAO's textures fit a scene of `size` pixels, before a frame records. Returns
-    /// whether they were made, so the frame group, which binds the output, must be rebuilt.
+    /// Makes GTAO's textures fit a scene of `size` pixels, before a frame records, or drops them
+    /// for a scene too small for the view distance's mips ([`GTAO_MIN_SIDE`]): GTAO then
+    /// dispatches nothing and the environment reads the open stand-in, as without GTAO (review
+    /// PW-001). Returns whether the output changed, so the frame group, which binds it, must be
+    /// rebuilt.
     pub(crate) fn fit(&mut self, size: (u32, u32)) -> bool {
         let Some(gtao) = &mut self.gtao else { return false };
-        if gtao.textures.as_ref().is_some_and(|textures| textures.scene == size) {
+        if gtao.fitted == Some(size) {
             return false;
         }
-        gtao.textures = Some(GtaoTextures::new(&self.device, &self.layouts, &self.uniform_buffer, size));
+        gtao.fitted = Some(size);
         let half = (size.0.div_ceil(2), size.1.div_ceil(2));
+        if half.0.max(half.1) < GTAO_MIN_SIDE {
+            self.block.ambient.occlusion_size = [1.0; 4];
+            self.stats.gtao_size = (0, 0);
+            return gtao.textures.take().is_some();
+        }
+        gtao.textures = Some(GtaoTextures::new(&self.device, &self.layouts, &self.uniform_buffer, size));
         self.block.ambient.occlusion_size =
             [half.0 as f32, half.1 as f32, (half.0 as f32).recip(), (half.1 as f32).recip()];
         self.stats.gtao_size = half;

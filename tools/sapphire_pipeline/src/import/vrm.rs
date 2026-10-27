@@ -75,6 +75,7 @@ use crate::cache::Stage;
 use crate::color::{srgb_to_linear, unorm8};
 use crate::cook::{Recipe, SubAsset};
 use crate::import::gltf::{self as gltf_import, GltfImportError, SceneImport};
+use crate::import::image::{self as image_import, ImageImportError};
 use crate::mesh::ImportedMesh;
 use crate::meta::MeshSettings;
 
@@ -508,8 +509,17 @@ impl<'a> Images<'a> {
             ImageFormat::Png => image::ImageFormat::Png,
             ImageFormat::Jpeg => image::ImageFormat::Jpeg,
         };
-        image::load_from_memory_with_format(embedded.bytes, format)
-            .map_err(|source| VrmImportError::Decode { index, source })
+        // Within the texture importer's budget, checked from the header: the shade and mask
+        // reads expand every texel to `f32`.
+        image_import::decode(embedded.bytes, format, image_import::SOURCE_BUDGET).map_err(|error| match error
+        {
+            ImageImportError::Decode(source) => VrmImportError::Decode { index, source },
+            ImageImportError::TooLarge { width, height, budget } => VrmImportError::Image {
+                index,
+                problem: format!("is {width} × {height} texels, over the pipeline's budget of {budget}"),
+            },
+            other => VrmImportError::Image { index, problem: other.to_string() },
+        })
     }
 
     /// The mean color of image `index` as color (sRGB decoded to linear), and its size.

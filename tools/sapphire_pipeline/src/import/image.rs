@@ -16,9 +16,17 @@
 //! them. Rows are top to bottom (TGA's bottom-up origin is flipped by the decoder), which is
 //! the order textures are uploaded in.
 //!
+//! A source's size is checked against [`SOURCE_BUDGET`] from its header, before any pixel is
+//! decoded, so an oversized or hostile file fails at once, naming its size.
+//!
 //! A source file is self-contained, so this importer lists no dependencies for the cache key.
 
+use std::fmt;
+use std::io::Cursor;
 use std::path::Path;
+
+use image::ImageDecoder;
+use sapphire_assets::texture::MAX_TEXTURE_DIMENSION;
 
 use crate::cache::Stage;
 use crate::color::srgb_to_linear;
@@ -26,6 +34,41 @@ use crate::color::srgb_to_linear;
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file.
 pub const IMPORTER: Stage = Stage { name: "image", version: 1 };
+
+/// The largest image the pipeline decodes: a size on each side and a count of texels in all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TexelBudget {
+    /// The most texels on a side.
+    pub side: u32,
+    /// The most texels in all.
+    pub texels: u64,
+}
+
+/// What every source image the pipeline decodes must fit: 16384 texels on a side, the most a
+/// cooked texture may have ([`MAX_TEXTURE_DIMENSION`]), and 64 Mi texels in all (8192 × 8192, or
+/// 16384 × 4096). Every source becomes linear `f32` RGBA, 16 bytes a texel, and a texture's cook
+/// holds more than one such copy (its prepared level 0 and the mip chain), so the texel count is
+/// what bounds a cook's memory: 1 GiB for one expanded copy at the limit. The largest committed
+/// sources (2048 × 2048, 4096 × 576) use at most a sixteenth of it.
+pub const SOURCE_BUDGET: TexelBudget = TexelBudget { side: MAX_TEXTURE_DIMENSION, texels: 64 << 20 };
+
+impl TexelBudget {
+    /// Whether a `width × height` image fits.
+    pub fn fits(self, width: u32, height: u32) -> bool {
+        width <= self.side && height <= self.side && u64::from(width) * u64::from(height) <= self.texels
+    }
+}
+
+impl fmt::Display for TexelBudget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let texels = if self.texels.is_multiple_of(1 << 20) {
+            format!("{} Mi", self.texels >> 20)
+        } else {
+            self.texels.to_string()
+        };
+        write!(f, "{} texels on a side and {texels} texels in all", self.side)
+    }
+}
 
 /// The source formats this importer reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +184,10 @@ pub enum ImageImportError {
     UnsupportedLayout(image::ColorType),
     #[error("the image is empty")]
     Empty,
+    #[error(
+        "the image is {width} × {height} texels, over the pipeline's budget of {budget}; shrink or split it"
+    )]
+    TooLarge { width: u32, height: u32, budget: TexelBudget },
     #[error("pixel ({x}, {y}) has a non-finite value, which no texture format can hold")]
     NonFinite { x: u32, y: u32 },
 }
@@ -151,8 +198,39 @@ pub fn import_slice(
     format: SourceFormat,
     transfer: Transfer,
 ) -> Result<SourceImage, ImageImportError> {
-    let decoded = image::load_from_memory_with_format(bytes, format.image_format())
+    import_within(bytes, format, transfer, SOURCE_BUDGET)
+}
+
+/// Decodes `bytes` as `format`, as [`image::load_from_memory_with_format`] does, once the
+/// header shows the image within `budget`: an image over it fails before any pixel is decoded.
+pub fn decode(
+    bytes: &[u8],
+    format: image::ImageFormat,
+    budget: TexelBudget,
+) -> Result<image::DynamicImage, ImageImportError> {
+    let mut decoder = image::ImageReader::with_format(Cursor::new(bytes), format)
+        .into_decoder()
         .map_err(ImageImportError::Decode)?;
+    let (width, height) = decoder.dimensions();
+    if !budget.fits(width, height) {
+        return Err(ImageImportError::TooLarge { width, height, budget });
+    }
+    // What `ImageReader::decode` does after reading the header: the decoded image counts
+    // against the decoder's allocation limit.
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes()).map_err(ImageImportError::Decode)?;
+    decoder.set_limits(limits).map_err(ImageImportError::Decode)?;
+    image::DynamicImage::from_decoder(decoder).map_err(ImageImportError::Decode)
+}
+
+/// [`import_slice`] within `budget`.
+fn import_within(
+    bytes: &[u8],
+    format: SourceFormat,
+    transfer: Transfer,
+    budget: TexelBudget,
+) -> Result<SourceImage, ImageImportError> {
+    let decoded = decode(bytes, format.image_format(), budget)?;
     let (width, height) = (decoded.width(), decoded.height());
     if width == 0 || height == 0 {
         return Err(ImageImportError::Empty);
@@ -323,5 +401,114 @@ mod tests {
         ));
         assert_eq!(SourceImage::new(2, 2, ChannelLayout::Rgba, vec![[0.0; 4]; 3]), None);
         assert_eq!(SourceImage::new(0, 2, ChannelLayout::Rgba, Vec::new()), None);
+    }
+
+    /// A PNG declaring `width × height` 8-bit gray, with an empty IDAT: a few dozen bytes whose
+    /// header passes for an image of any size, as a hostile or broken file's can.
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        fn crc(bytes: &[u8]) -> u32 {
+            let mut crc = !0u32;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            !crc
+        }
+        let chunk = |png: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+            png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let start = png.len();
+            png.extend_from_slice(kind);
+            png.extend_from_slice(data);
+            let crc = crc(&png[start..]);
+            png.extend_from_slice(&crc.to_be_bytes());
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut header = Vec::new();
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header.extend_from_slice(&[8, 0, 0, 0, 0]);
+        chunk(&mut png, b"IHDR", &header);
+        chunk(&mut png, b"IDAT", &[]);
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    #[test]
+    fn oversized_images_fail_from_their_header() {
+        // Too wide, too tall, or within both sides but over the texel count: refused before a
+        // pixel buffer exists (an import that decoded would fail on the empty IDAT instead).
+        for (width, height) in [(16385, 1), (1, 16385), (16384, 4097), (8193, 8192), (30000, 30000)] {
+            let error =
+                import_slice(&png_header(width, height), SourceFormat::Png, Transfer::Linear).unwrap_err();
+            assert!(
+                matches!(error, ImageImportError::TooLarge { width: w, height: h, budget } if (w, h) == (width, height) && budget == SOURCE_BUDGET),
+                "{width}x{height}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(&format!("{width} × {height} texels")), "{message}");
+            assert!(message.contains("16384 texels on a side and 64 Mi texels in all"), "{message}");
+        }
+        // A header whose image wouldn't fit the decoder's own allocation limit (512 MiB) fails
+        // there, as it reads the header: also before any pixel buffer exists.
+        let huge = import_slice(&png_header(0x7FFF_FFFF, 0x7FFF_FFFF), SourceFormat::Png, Transfer::Linear);
+        assert!(matches!(huge, Err(ImageImportError::Decode(image::ImageError::Limits(_)))), "{huge:?}");
+        // Within the budget, the header passes and the missing pixels fail the decode.
+        assert!(matches!(
+            import_slice(&png_header(16, 16), SourceFormat::Png, Transfer::Linear),
+            Err(ImageImportError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn the_budget_holds_at_its_edges() {
+        assert!(SOURCE_BUDGET.fits(16384, 4096) && SOURCE_BUDGET.fits(4096, 16384));
+        assert!(SOURCE_BUDGET.fits(8192, 8192) && SOURCE_BUDGET.fits(1, 1));
+        assert!(!SOURCE_BUDGET.fits(16384, 4097) && !SOURCE_BUDGET.fits(8192, 8193));
+        assert!(!SOURCE_BUDGET.fits(16385, 1) && !SOURCE_BUDGET.fits(1, 16385));
+        assert!(!SOURCE_BUDGET.fits(u32::MAX, u32::MAX), "no overflow");
+        assert_eq!(SOURCE_BUDGET.texels, 8192 * 8192);
+    }
+
+    #[test]
+    fn images_within_the_budget_decode_as_before() {
+        // A valid image over a smaller budget fails by its size, on either limit.
+        let rgba = image::RgbaImage::from_fn(8, 4, |x, y| image::Rgba([x as u8 * 30, y as u8 * 60, 7, 200]));
+        let png = encode(DynamicImage::ImageRgba8(rgba), image::ImageFormat::Png);
+        for budget in [TexelBudget { side: 7, texels: 1000 }, TexelBudget { side: 8, texels: 31 }] {
+            assert!(matches!(
+                import_within(&png, SourceFormat::Png, Transfer::Srgb, budget),
+                Err(ImageImportError::TooLarge { width: 8, height: 4, .. })
+            ));
+        }
+        assert!(
+            import_within(&png, SourceFormat::Png, Transfer::Srgb, TexelBudget { side: 8, texels: 32 })
+                .is_ok()
+        );
+
+        // Within it, every format decodes to exactly what decoding without the check gives.
+        let gray16 = image::ImageBuffer::<image::Luma<u16>, _>::from_fn(5, 3, |x, y| {
+            image::Luma([(x * 9000 + y) as u16])
+        });
+        let hdr =
+            image::Rgba32FImage::from_fn(3, 2, |x, y| image::Rgba([x as f32 * 2.5, y as f32, 0.25, 1.0]));
+        let samples = [
+            (png, image::ImageFormat::Png),
+            (encode(DynamicImage::ImageLuma16(gray16), image::ImageFormat::Png), image::ImageFormat::Png),
+            (
+                encode(DynamicImage::ImageRgba8(image::RgbaImage::new(3, 5)), image::ImageFormat::Tga),
+                image::ImageFormat::Tga,
+            ),
+            (
+                encode(DynamicImage::ImageRgba32F(hdr), image::ImageFormat::OpenExr),
+                image::ImageFormat::OpenExr,
+            ),
+        ];
+        for (bytes, format) in samples {
+            let checked = decode(&bytes, format, SOURCE_BUDGET).unwrap();
+            let plain = image::load_from_memory_with_format(&bytes, format).unwrap();
+            assert_eq!(checked, plain, "{format:?}");
+        }
     }
 }

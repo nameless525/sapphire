@@ -343,13 +343,13 @@ pub struct FramePacket {
 
 | Crate | Layer | Purpose | Key dependencies | Milestone |
 |---|---|---|---|---|
-| `sapphire_platform` | L0 | App lifecycle, windows, surfaces, events, file IO, threads, system info | `sdl3-sys`, `raw-window-handle` | M0 |
-| `sapphire_crash` | L0 | Crash capture; upload deferred (M0 status) | `crash-handler`, `minidumper`; `sentry` once upload returns | M0 |
-| `sapphire_core` | L1 | Allocators, handles, names, logging, profiling, cvars | `mimalloc`, `bumpalo`, `slotmap`, `tracing`, `profiling` | M0 |
-| `sapphire_math` | L1 | Vectors, transforms, bounds, curves, springs, RNG | `glam`, `libm`, `rand_pcg` | M0 |
+| `sapphire_platform` | L1 | App lifecycle, windows, surfaces, events, file IO, threads, system info | `sdl3-sys`, `raw-window-handle` | M0 |
+| `sapphire_crash` | L1 | Crash capture; upload deferred (M0 status) | `crash-handler`, `minidumper`; `sentry` once upload returns | M0 |
+| `sapphire_core` | L0 | Allocators, handles, names, logging, profiling, cvars | `mimalloc`, `bumpalo`, `slotmap`, `tracing`, `profiling` | M0 |
+| `sapphire_math` | L0 | Vectors, transforms, bounds, curves, springs, RNG | `glam`, `libm`, `rand_pcg` | M0 |
 | `sapphire_jobs` | L1 | The single task pool, scopes, parallel loops | `bevy_tasks` | M0 |
 | `sapphire_ecs` | L2 | Re-exported bevy_ecs, schedules, conventions | `bevy_ecs` (pinned) | M1 |
-| `sapphire_time` | L2 | Clock domains, fixed-step driver, interpolation | — | M0 |
+| `sapphire_time` | L1 | Clock domains, fixed-step driver, interpolation | — | M0 |
 | `sapphire_reflect` | L2 | Type registry, stable type names, schema versions | `bevy_reflect` | M1 |
 | `sapphire_serialize` | L2 | Authored (RON), cooked (rkyv) and save/network (postcard) formats | `serde`, `ron`, `rkyv`, `postcard` | M1 |
 | `sapphire_assets` | L2 | Handles, packs, async loading, residency, hot reload | `zstd`, `lz4_flex`, `memmap2`, `blake3` | M1 |
@@ -388,7 +388,7 @@ Each module below follows the same template:
 
 ---
 
-### 5.1 `sapphire_platform` (L0)
+### 5.1 `sapphire_platform` (L1)
 
 **Owns**
 
@@ -443,7 +443,7 @@ Each module below follows the same template:
 
 - A `platform_smoke` example per platform, built in CI. It must boot, clear the screen, echo input and survive background → foreground on device.
 
-### 5.2 `sapphire_crash` (L0)
+### 5.2 `sapphire_crash` (L1)
 
 **How**
 
@@ -453,7 +453,7 @@ Each module below follows the same template:
 - **Panics:** a panic hook logs the panic, adds breadcrumbs (current zone, frame number, last 64 log lines) and, in shipping builds, aborts so a minidump is produced.
 - **Symbols:** shipping builds use `split-debuginfo`. Upload PDBs, dSYMs and Breakpad symbols from CI.
 
-### 5.3 `sapphire_core` (L1)
+### 5.3 `sapphire_core` (L0)
 
 **Owns**
 
@@ -478,7 +478,7 @@ Each module below follows the same template:
   - **As built (M1 A9):** live link sets cvars by name through the app's `CvarRegistry` (`sapphire_livelink::set_cvar`), between frames, with the console's typed parse and range errors and its suggestions for near names (§5.29). Config files and the command line still come later.
 - **Errors:** `thiserror` in libraries; `anyhow` only in tools. Soft assertions (`ensure!`) log once and continue in shipping builds.
 
-### 5.4 `sapphire_math` (L1)
+### 5.4 `sapphire_math` (L0)
 
 - **glam 0.34:** `Vec3A`, `Quat`, `Mat4` and `Affine3A` for hot paths.
 - **Engine types:**
@@ -524,7 +524,7 @@ Each module below follows the same template:
 - **Allocation (R6):** bevy builds a schedule on its first run, which allocates. `Ecs::startup` builds them all up front, so the fixed step allocates nothing from the first frame on (tested). Input that logs is applied just before the steps, not inside them. Spawning a new archetype mid-step also allocates (the query caches grow), so gameplay spawns will need pre-sized pools.
 - **Derives:** a crate that derives `Component` or `Resource` lists `bevy_ecs` directly as well, because bevy's derive macros find the crate by name. The workspace pins one version.
 
-### 5.7 `sapphire_time` (L2)
+### 5.7 `sapphire_time` (L1)
 
 - **Clocks** are as in §4.5. The fixed rate is **60 Hz on every platform**, because combat frame data is authored at 60.
 - **Accumulator driver:** at most 4 steps per frame. Mobile at 30 fps runs 2 steps per frame.
@@ -2425,6 +2425,27 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 **M1 exit run:** [m1-exit-run.md](m1-exit-run.md) is the procedure for exit test 1 and the phones' budget measurements: the six edits (ramp, character and environment materials, time-of-day key, cvar, WGSL), the commands per target (desktop headless, iOS Simulator, Android emulator, an Android phone through `adb reverse`, an iPhone through `cargo xtask run --platform ios` and `iproxy`), what to measure and record, and what only a device can prove. It was rehearsed on 2026-10-26 on everything but the phones (§5.29).
 
+**M1 status (2026-10-27): done, pending devices.**
+
+- **The decision.** There is no test hardware for now: no iPhone or Android phone, and no Windows or Linux machine with a GPU. So M1 is called done with its device checks still owed, and work pauses before M2. [m2-handoff.md](m2-handoff.md) is what M2 inherits: what was deferred, the device checks, what it builds on and the known risks.
+- **Exit test 1, iteration: verified on the desktop, the iOS Simulator and the Android emulator.** From the look-dev hero shot, a ramp, a character material, an environment material, a time-of-day key, a cvar and two WGSL sources were each pushed over live link, seen in a capture, undone and seen gone (X2's rehearsal on 2026-10-26, and the desktop again on 2026-10-27 with C7 and the look-dev stage's own day; [m1-exit-run.md](m1-exit-run.md), §5.29).
+  - Push to reply took 2 to 138 ms on every target, except a cold shader compile. Content adds its cook, 0.5 to 1 s. On the desktop, hot reload applied a saved document in 0.12 to 0.30 s and content in 0.66 to 0.79 s with its cook.
+  - Shaders now build off the frame thread (M1 A8 follow-up 2, live link protocol 3; §5.12, "Materials, shaders and PSOs"). In the rehearsal a cold compile held the frame for 1.7 to 3.5 s. Now no frame is held: a cold `post.wgsl` or `anime_character.wgsl` push shows after 1.8 to 2.1 s on the desktop, with no frame over 15 ms, and after 2.3 to 2.7 s on the iOS Simulator, with no display-link tick missed. The emulator wasn't run again.
+  - The first cook after editing a WGSL source or the default day takes 0.5 to 1.1 s, where it took 22 to 72 s (M1 A8 follow-up, §5.27).
+- **Exit test 2, the look: the scene is built; its budgets are measured on this Mac only.**
+  - The scene is X1's look-dev stage (`--look-dev wide|hero|sky|street|face`): the VRM character with an authored ramp, ILM and SDF face map, in a Jinzhou-style town of the project's own with a few CC0 pieces, through the stage's own day and night with the post stack on. It was judged against Wuthering Waves reference frames kept outside the repository. Its goldens and benches keep W5's AO off, and the town has no probe grid, so W5's probes and AO show in the courtyard's `ambient-*` scenes instead, and P3's screen effects in the `effects-*` scenes.
+  - On the Apple M5 (release builds at 1080p, AO off), the wide and hero shots take about 4.2 ms of GPU time on Desktop-High (X1 part 2f; C8's adoption added 5 to 24 µs to the main pass) and the street 6.6 ms (part 2b). With the Mobile tiers' settings, at 1280×590 or 1080p, Mobile-High took 1.1 to 4.3 ms and Mobile-Low 1.0 to 3.3 ms (parts 2a to 2c). That is far inside the GPU frames of §3.1 (8–12, 13 and 26 ms), but the M5 is none of §3.1's reference devices.
+  - The iOS Simulator held the hero shot at 30 fps on Mobile-Low, every frame 33.3 ms. The Simulator and the emulator draw on the Mac's GPU, so neither says what a phone does. Windows and Linux render the look-dev scenes only on CI's software rasterizers, for goldens.
+- **Exit test 3, golden images: passing on all three backends.** There are 95 scenes, each with its own golden on Metal (this Mac, and `macos-26` in CI), lavapipe (Mesa 26.1.3) and WARP 1.0.21. The default gates are a FLIP mean of 0.01 and a 99th percentile of 0.3.
+  - Every pull request runs them all. Lavapipe runs in two shards and WARP in four, both required; Metal runs in one job, informational until it has run clean for two weeks (Q6).
+  - At 87 scenes, each lavapipe and WARP shard took 11 to 14 minutes with its build, and the Metal job 17 (CI run 40493256145, `main` at bc3389c).
+- **Still open, all of it needing devices:**
+  - Exit test 1 on an iPhone and on an Android phone ([m1-exit-run.md](m1-exit-run.md)). `cargo xtask run --platform ios` has never run on a phone; it needs the user's Apple signing identity.
+  - Exit test 2's Mobile budgets on phones, measured throttled (§3), and the tier a real phone's memory selects.
+  - F7's ProMotion check and F8's 90 and 120 Hz phone check (§6.2).
+  - Windows and Linux hardware, still open from M0 (above), the Steam Deck included.
+  - The open questions that need devices (§11): Q3 (the Steam Deck: native or Proton), Q4 (Windows' default backend), Q5 (on-tile MSAA on Mali, Adreno and Apple GPUs, and Metal binary archives), Q9 (device floors, throttled) and Q14 (Android pre-rotation).
+
 
 ---
 
@@ -2434,9 +2455,9 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 |---|---|---|
 | Q1 | ~~Does the SDL3 entry flow work from Rust?~~ **Answered in M0:** yes. `SDL_RunApp` runs on the iOS simulator, and an exported `SDL_main` with SDL's JNI symbols links for Android (see Android results in ADR 0002). | M0 spike |
 | Q2 | ~~Android 16 KB page alignment~~ **Answered in M0:** NDK r28+ defaults already produce 16 KB-aligned `.so` files; the rustflag in `.cargo/config.toml` is belt and braces. | M0 |
-| Q3 | Steam Deck: native Linux build, or the Windows build under Proton? Prefer native. | M0 |
-| Q4 | Which Windows default backend, Vulkan or DX12, based on Intel / AMD / NVIDIA driver testing? | M1 |
-| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). **M1 R7:** the phone tiers keep 4× MSAA as transient attachments, held there by a GPU test; the measurement on Mali, Adreno and Apple devices moves to M2. | M1 |
+| Q3 | Steam Deck: native Linux build, or the Windows build under Proton? Prefer native. | M0; still open at M1's close, for want of a Deck (§10, M1 status) |
+| Q4 | Which Windows default backend, Vulkan or DX12, based on Intel / AMD / NVIDIA driver testing? | M1; still open at its close, for want of Windows hardware (§10, M1 status) |
+| Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). **M1 R7:** the phone tiers keep 4× MSAA as transient attachments, held there by a GPU test; the measurement on Mali, Adreno and Apple devices moves to M2. | M1; the device measurements are still open at its close (§10, M1 status) |
 | Q6 | ~~Do hosted CI runners expose a GPU for Metal golden images?~~ **Answered (M1 plan):** yes. GitHub's macOS arm64 runners expose Metal as "Apple Paravirtual device", and wgpu runs its image tests there on every PR (shader validation is broken there; 3 vCPU). Goldens run per PR on lavapipe, WARP and `macos-26` Metal. | M1 |
 | Q7 | Does ozz-animation-rs cover offline animation building, or is the C++ ozz tooling needed in the cooker? **Partly answered (M1 research):** it has no offline tools, so the cooker needs the C++ ozz tooling. It also needs **nightly Rust** (`portable_simd`), which conflicts with the pinned stable toolchain, so the runtime choice is open too. | Start of M2 |
 | Q8 | FMOD license tier and cost; if blocked, the `kira` backend becomes primary. | M2 |

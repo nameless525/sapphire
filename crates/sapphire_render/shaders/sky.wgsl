@@ -557,8 +557,10 @@ fn lit_cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f3
 // (`CLOUD_BACKLIGHT`): anime skies keep a backlit cloud's sun side lit, and add the rim.
 fn lit_cloud(texel: vec4<f32>, dir: vec3<f32>, edge: f32, threshold: f32) -> vec3<f32> {
     let toward_viewer = -dir;
-    // Horizontal, and never zero: the band stops short of the zenith.
-    let across = normalize(vec3<f32>(-dir.z, 0.0, dir.x));
+    // Horizontal. A map tall enough for the band to reach the zenith makes it zero straight up,
+    // where any horizontal axis serves: chosen before normalizing, which leaves zero indeterminate.
+    let flat = vec3<f32>(-dir.z, 0.0, dir.x);
+    let across = normalize(select(vec3<f32>(1.0, 0.0, 0.0), flat, dot(flat, flat) > 1e-12));
     let up = cross(toward_viewer, across);
     let key = frame.sun_direction.xyz;
     var light = vec3<f32>(dot(key, across), dot(key, up), dot(key, toward_viewer));

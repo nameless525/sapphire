@@ -500,6 +500,60 @@ fn lit_card_clouds_are_shaded_by_the_key_light() {
 
 #[test]
 #[ignore = "needs a GPU"]
+fn lit_card_clouds_shade_the_zenith_like_the_sky_around_it() {
+    // Review WI-005: a lit cloud map tall enough for its band to reach the zenith (height over
+    // width at least about 0.165 a repeat; here square, once around) shades a pixel looking
+    // straight up in a frame across the band, whose horizontal axis is zero there: normalized, it
+    // was NaN, and the pixel took the shade tone. A one-pixel target looks exactly along the
+    // camera's axis (a larger one's middle pixel misses it by the rasterizer's rounding). The
+    // map is the same lobe everywhere, tilted across the band, just inside its edge (so rimmed)
+    // and open to the sky; with the key light straight above or below, the lobes around the
+    // zenith are lit alike, so the one pixel must match a 33-pixel frame's middle at the same
+    // pixel size.
+    let lights = [Vec3::Y, Vec3::NEG_Y];
+    let shots = |side: u32| {
+        let mut harness = Harness::new(RenderSettings::default(), (side, side));
+        let map = harness.texture((64, 64), |_, _| [0.8, 0.5, 0.505, 1.0]);
+        let cirrus = harness.texture((4, 4), |_, _| [0.0; 4]);
+        let material = SkyMaterial {
+            clouds: CloudLayer { shading: CloudShading::Lit, ..cloud_material([0.0; 2]).clouds },
+            ..cloud_material([0.0; 2])
+        };
+        let handle = harness.upload_clouds(&material, &map, &cirrus);
+        harness.look(Vec3::Y, 40.0 * side as f32 / 33.0);
+        if side == 1 {
+            assert_eq!(harness.direction(0, 0), Vec3::Y, "the one pixel looks straight up");
+        }
+        let images = lights.map(|light| {
+            harness.render(|packet| {
+                packet.sky_material = Some(handle);
+                packet.sun = key_light(light);
+                packet.sky_layers.clouds = CloudLight {
+                    lit: Vec3::new(0.9, 0.6, 0.3),
+                    shade: Vec3::new(0.2, 0.3, 0.5),
+                    coverage: 1.0,
+                    ..CloudLight::default()
+                };
+            })
+        });
+        assert!(harness.renderer.stats().sky.lit_clouds);
+        images
+    };
+    let zenith = shots(1);
+    let around = shots(33);
+    for ((light, zenith), around) in lights.into_iter().zip(zenith).zip(around) {
+        let at = |(x, y): (usize, usize)| around[y * 33 + x];
+        let middle = at((16, 16));
+        for (x, y) in [(15, 16), (17, 16), (16, 15), (16, 17), (15, 15), (17, 17)] {
+            assert!(at((x, y)).abs_diff_eq(middle, 0.01), "{light}: shaded alike around the zenith");
+        }
+        let zenith = zenith[0];
+        assert!(zenith.abs_diff_eq(middle, 0.02), "{light}: {zenith} at the zenith, {middle} beside it");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn the_nebula_glows_in_its_keyed_colors_and_not_by_day() {
     let mut harness = Harness::new(RenderSettings::default(), (128, 128));
     // A nebula map whose channels are even densities over the whole sphere: 0.5 broad cloud,

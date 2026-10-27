@@ -2430,7 +2430,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 | `cargo xtask run --platform desktop\|ios-sim\|ios\|android` | Builds, cooks, deploys and launches, with live link enabled |
 | `cargo xtask package <platform> --profile shipping` | Produces store-ready artifacts and uploads symbols |
 | `cargo xtask replay <file\|dir>` | Runs headless combat replays |
-| `cargo xtask golden [--update] [--scene <name> \| --shard <i>/<n>]` | Runs golden-image render tests; CI splits the CPU rasterizers' scenes across runners with `--shard` |
+| `cargo xtask golden [--update] [--scene <name> \| --shard <i>/<n>] [--scene-timeout <s>]` | Runs golden-image render tests, each scene with a deadline; CI splits the CPU rasterizers' scenes across runners by their CI times with `--shard` (§9) |
 | `cargo xtask link status\|cvar\|push\|capture\|watch` | Live link's desktop tool (§5.29): reads a running dev build's state, sets cvars, pushes packs (only what changed), documents and WGSL sources, captures the next frame the device draws as a PNG, or watches and pushes them as they change; each command says how long the device took to answer |
 
 ---
@@ -2441,9 +2441,10 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 |---|---|---|
 | Every PR | fmt, clippy (with R2 lints), rustdoc (warnings denied, private items included), `check-layers`, `cargo-deny`, `cargo-nextest` | Linux |
 | Every PR | Build desktop binaries | macOS, Windows, Linux |
-| Every PR | Compile-only builds for iOS (device and simulator) and Android | macOS (iOS), Linux (Android) |
+| Every PR | Compile-only builds for iOS (device, and the simulator with `dev`) and Android (with and without `dev`) | macOS (iOS), Linux (Android) |
 | Every PR | Combat replay suite | macOS, Windows, Linux |
 | Every PR | Golden images: lavapipe (Vulkan) and WARP (DX12), required; Metal (paravirtual GPU), informational until stable | Linux, Windows, macOS |
+| Every PR | GPU tests: the `#[ignore]`d GPU suites on lavapipe, required; then a `dev` sandbox offscreen, driven over live link | Linux (Windows on trial) |
 | Nightly | Full cook of both `desktop` and `mobile`; package all 5 platforms | Mixed |
 | Nightly | Device smoke: install, boot, load a zone, 2 minutes of scripted combat, collect frame times and memory | Self-hosted Mac mini with an iPhone and an Android phone attached |
 | Weekly | Thermal soak: 30 minutes of combat on Mobile-Low devices; budget regression report | Same |
@@ -2461,6 +2462,14 @@ A change can't merge if any of these fail:
 3. **Golden images:** within `nv-flip` tolerance per backend. Rendered with the sandbox's offscreen `--capture` mode (M0), so no window is needed.
 4. **Allocations:** the zero-allocation assertion (R6, simulation thread inside the fixed step) during the replay suite.
 5. **Budgets:** no budget in §3 regresses by more than 10% on the nightly device run without a recorded waiver.
+
+- **As built (review BC-008 and BC-107, the golden harness):**
+  - **Deadlines.** Each scene's sandbox writes its output to `target/golden/<scene>.log` (a file, not a pipe: the crash monitor inherits it) and has a deadline, the testkit's `--scene-timeout` (900 s by default, which `cargo xtask golden` passes on; the slowest scene takes about 130 s on WARP). A scene past it is killed, fails as timed out with the last 40 lines of its log, and the run goes on to the next. Only the sandbox is killed, with `SIGKILL` (`TerminateProcess` on Windows), and its crash monitor exits when its lifeline closes. A hung scene leaves no minidump: a `SIGABRT` first would need a signal API that std lacks, and Windows has no counterpart. A test runs the runner against a fake sandbox (the test binary run again, with a fake crash monitor of its own) that hangs, or writes over 100 KiB to each of stdout and stderr and stalls: both fail within the deadline with their logs kept, both monitors exit, and the scene after them, which writes twice that and exits, passes.
+  - **Times.** Every scene's line gives its wall time, and `target/golden/timings.json` lists them (scene, family, seconds and status: `ok`, `updated`, `no-golden`, `failed`, `error` or `timed-out`), rewritten after each scene so a cancelled job keeps what it had. CI uploads both with the captures. In CI, the minidumps are gathered when a golden job fails or is cancelled (as a job past its time limit is), and the serial-passes replay runs only when it fails: a new push cancels a PR's run in progress, where the replay would cost every golden job minutes, and a hung scene now fails at its deadline. Each step has its own time limit.
+  - **Shards by cost.** `--shard` splits a family's scenes by their CI times, a table in the testkit (`scenes/costs.rs`: the medians of four `main` runs' times on lavapipe and WARP, read from their logs) chosen by the backend `SAPPHIRE_GPU_BACKEND` forces: costliest first, each scene joins the slice with the least so far, and each slice keeps the list's order. A scene missing from the table counts as the costliest; tests check that every shard count CI uses (and 1 to 6) holds every scene exactly once, a scene without a cost included, and that the table names no scene that is gone. Any other backend deals the scenes out in turn, as before. On the same runs, the slowest shard's scenes go from 10.4 to 8.2 minutes on lavapipe (two shards) and from 9.3 to 7.9 on WARP (four); each held-out run, split by the other three's medians, gains 1.6–3.2 and 0.8–1.8 minutes. Refresh the table from the jobs' `timings.json` as scenes change.
+- **As built (review BC-001 and BC-002, GPU tests and `dev` builds in CI):**
+  - The `GPU tests` job runs every `#[ignore]`d GPU test of `sapphire_render`, `sapphire_rhi`, `sapphire_world` and the sandbox's `dev` half on lavapipe (`--tests -- --ignored --test-threads=1`), with the golden jobs' environment; it is required. On Metal (Apple M5, `SAPPHIRE_GPU_DEBUG=none`) the suites run 232, 5, 4 and 1 tests in about a minute. A test a CPU rasterizer can't run skips itself, naming the adapter and why; none does so far. `sapphire_rhi`'s Apple-only surface test runs only on Macs, locally. `sapphire_crash`'s ignored test isn't a GPU test.
+  - The same job runs a `dev` sandbox offscreen on a private port and drives it with live link's tool: its status, a cvar, a capture and a document that doesn't parse, which the app must refuse and count; then it must quit with status 0 on `SIGTERM`. The iOS job builds the simulator with `dev` (the device build stays the shipping one), and the Android job bundles a `dev` APK after the default one.
 
 ---
 

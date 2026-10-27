@@ -5,14 +5,16 @@
 //! # What this crate owns
 //!
 //! - **The process-wide panic hook.** It writes a panic report (message, location, thread,
-//!   timestamps, raw frame instruction pointers and the loaded-module table) into the dump
+//!   timestamps, raw frame instruction pointers and the modules they are in) into the dump
 //!   directory, logs the panic through `tracing`, then chains to the previous hook. The report is
 //!   written synchronously before the hook returns, so it survives the shipping profile's
-//!   `panic = "abort"`. The IPs and module debug ids let a stripped build be symbolicated offline
-//!   (`atos -o <binary> -l <base> <ip>`), since a stripped `Backtrace` prints names without
-//!   addresses. On desktop, when the monitor is active, the hook also asks it for a minidump of
-//!   the panicking thread, which is the only dump Windows can produce under `panic = "abort"`
-//!   (Rust aborts there through `__fastfail`, bypassing the exception handler).
+//!   `panic = "abort"`. It is written before the backtrace is symbolized and rewritten with the
+//!   names after, so a fault while symbolizing costs only the names. The IPs and module debug ids
+//!   let a stripped build be symbolicated offline (`atos -o <binary> -l <base> <ip>`), since a
+//!   stripped `Backtrace` prints names without addresses. On desktop, when the monitor is
+//!   active, the hook also asks it for a minidump of the panicking thread, which is the only
+//!   dump Windows can produce under `panic = "abort"` (Rust aborts there through `__fastfail`,
+//!   bypassing the exception handler).
 //! - **Native crash capture**, per platform:
 //!   - *Desktop (macOS, Windows, Linux):* [`install`] re-launches the current executable as a
 //!     crash monitor and connects to it with `minidumper`. A `crash-handler` hook in the app asks

@@ -229,9 +229,10 @@ pub(crate) struct ModuleId {
 /// The contents of a `<run>.panic-<n>.txt` file.
 ///
 /// The format is plain text so a human can read it straight from disk. It records raw frame
-/// instruction pointers and the loaded-module table (base + debug id) so a stripped shipping
-/// build can still be symbolicated offline, where the symbolized `backtrace` text is only useful
-/// in a build that kept its symbols.
+/// instruction pointers and the module table (base + debug id) so a stripped shipping build can
+/// still be symbolicated offline, where the symbolized `backtrace` text is only useful in a
+/// build that kept its symbols. The hook writes the report before it symbolizes, so a report
+/// whose process ended meanwhile keeps a placeholder in `backtrace`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PanicReport {
     pub app_name: String,
@@ -242,7 +243,8 @@ pub(crate) struct PanicReport {
     pub location: String,
     pub unix_time_ms: u64,
     pub uptime_ms: u64,
-    /// Loaded modules at crash time, for offline symbolication of [`Self::frames`].
+    /// Modules for offline symbolication of [`Self::frames`]: on Apple platforms the images the
+    /// frames are in, on Linux and Android every loaded module.
     pub modules: Vec<ModuleId>,
     /// Raw instruction pointers of the panicking thread, innermost first.
     pub frames: Vec<u64>,

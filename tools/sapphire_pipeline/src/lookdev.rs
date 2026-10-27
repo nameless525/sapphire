@@ -378,7 +378,8 @@ mod tests {
 
     /// The character's look-dev materials name its parts, which MToon doesn't, so the character
     /// prepass's IDs tell its face, hair and eyes from its body (M1 C5); they are written as the
-    /// anime character document's current version, and the strands read the generated hair mask.
+    /// anime character document's current version, the strands read the generated hair mask, and
+    /// the eye parts draw the layers the VRM import gives VRoid's names (M1 C6).
     #[test]
     fn the_character_materials_name_its_parts() {
         use sapphire_assets::material::{AnimeCharacterMaterial, AnyMaterialDocument, CharacterSurface};
@@ -406,6 +407,9 @@ mod tests {
                 }
                 CharacterSurface::Eye(eye) => {
                     assert_eq!(eye.through_hair.is_some(), name != "EyeWhite_00_EYE", "{name}");
+                    // The layer the VRM import maps VRoid's name onto (M1 C6).
+                    let layer = crate::import::vrm::vroid_eye_layer(name);
+                    assert_eq!(Some(eye.layer), layer, "{name}");
                     "eye"
                 }
             };

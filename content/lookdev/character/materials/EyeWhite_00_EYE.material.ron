@@ -3,8 +3,10 @@
     version: 2,
     data: (
         surface: Eye((
+            layer: Eye,
             mask_map: None,
             parallax: 0.0,
+            iris: None,
             through_hair: None,
         )),
         base_color: (1.0, 1.0, 1.0, 1.0),

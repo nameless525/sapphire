@@ -3,8 +3,15 @@
     version: 2,
     data: (
         surface: Eye((
+            layer: Highlight((
+                drift: 0.0003,
+                drift_rate: 0.3,
+                sparkle: 0.6,
+                sparkle_rate: 0.4,
+            )),
             mask_map: None,
             parallax: 0.0,
+            iris: None,
             through_hair: Some((
                 opacity: 0.5,
                 fade_yaw: 70.0,
@@ -14,7 +21,7 @@
         )),
         base_color: (1.0, 1.0, 1.0, 1.0),
         base_color_map: Some("ca79b127-d372-4035-8881-48aea278e3ca"),
-        alpha: Opaque,
+        alpha: Blend,
         control_map: None,
         normal_map: None,
         light_split: (

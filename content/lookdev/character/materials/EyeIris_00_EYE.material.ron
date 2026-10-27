@@ -3,8 +3,13 @@
     version: 2,
     data: (
         surface: Eye((
+            layer: Iris,
             mask_map: None,
-            parallax: 0.0,
+            parallax: 0.0026132823,
+            iris: Some((
+                center: (0.74815094, 0.50948787),
+                radius: (0.1084657, 0.24567941),
+            )),
             through_hair: Some((
                 opacity: 0.5,
                 fade_yaw: 70.0,
@@ -14,7 +19,7 @@
         )),
         base_color: (1.0, 1.0, 1.0, 1.0),
         base_color_map: Some("73233f14-3ade-4908-b056-d8496b0accb3"),
-        alpha: Opaque,
+        alpha: Blend,
         control_map: None,
         normal_map: None,
         light_split: (

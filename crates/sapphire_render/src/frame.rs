@@ -619,18 +619,13 @@ impl CharacterBody {
     }
 
     /// The body moved by `transform`: its ends placed, its radius grown by the transform's
-    /// largest scale.
+    /// largest stretch, so it still holds the body it held. For rotation and scale that's the
+    /// largest scale; a sheared transform grows it by a bound that never falls short.
     pub fn transformed(&self, transform: Mat4) -> Self {
-        let scale = transform
-            .x_axis
-            .truncate()
-            .length()
-            .max(transform.y_axis.truncate().length())
-            .max(transform.z_axis.truncate().length());
         Self {
             base: transform.transform_point3(self.base),
             top: transform.transform_point3(self.top),
-            radius: self.radius * scale,
+            radius: self.radius * crate::bounds::max_stretch(transform),
         }
     }
 }

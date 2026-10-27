@@ -1608,6 +1608,69 @@ mod tests {
         assert!((tan - 22.5f32.to_radians().tan()).abs() < 1e-7, "{tan}");
     }
 
+    /// The outline mask's codes (M1 C4, C7) agree across the passes that write and read them, and
+    /// fall on the right side of each reader's thresholds as the R8Unorm target stores them.
+    #[test]
+    fn wgsl_outline_mask_codes_match_rust() {
+        use crate::pipelines::outline_mask;
+        for program in [Program::Prepass, Program::Outline] {
+            let module = validate(program);
+            assert_eq!(wgsl_f32(&module, "OUTLINE_MASK_LINE"), outline_mask::LINE, "{program:?}");
+            assert_eq!(wgsl_f32(&module, "OUTLINE_MASK_FADING"), outline_mask::FADING, "{program:?}");
+            assert_eq!(
+                wgsl_f32(&module, "OUTLINE_MASK_FADING_LINE"),
+                outline_mask::FADING_LINE,
+                "{program:?}"
+            );
+        }
+        let temporal = validate(Program::Temporal);
+        let (lines, fades) =
+            (wgsl_f32(&temporal, "OUTLINE_MASK_LINES"), wgsl_f32(&temporal, "OUTLINE_MASK_FADES"));
+        let stored = |value: f32| (value * 255.0).round() / 255.0;
+        assert!(stored(outline_mask::LINE) > lines, "lines are lines to temporal AA");
+        for fading in [outline_mask::FADING, outline_mask::FADING_LINE] {
+            assert!(stored(fading) > fades && stored(fading) <= lines, "{fading} fades");
+        }
+        // GTAO leaves out hulls above 0.5 (occlusion.wgsl).
+        assert!(stored(outline_mask::FADING) < 0.5 && stored(outline_mask::FADING_LINE) > 0.5);
+    }
+
+    /// The proximity fade's dither order (M1 C7, `FADE_ORDER` in frame.wgsl) holds each of its
+    /// sixteen values once, and every 3 × 3 block of its 4 × 4 tiling holds one of any three
+    /// values in a row (cyclically): temporal AA's neighborhood sees both the character and what
+    /// lies behind it whenever each takes at least 3 of the 16 thresholds.
+    #[test]
+    fn the_fades_dither_order_leaves_no_3_by_3_block_one_sided() {
+        let module = validate(Program::Environment);
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some("FADE_ORDER"))
+            .expect("FADE_ORDER");
+        let naga::Expression::Compose { ref components, .. } = module.global_expressions[constant.init]
+        else {
+            panic!("FADE_ORDER is a vec4<u32>");
+        };
+        let rows: Vec<u32> = components
+            .iter()
+            .map(|&component| match module.global_expressions[component] {
+                naga::Expression::Literal(naga::Literal::U32(row)) => row,
+                ref other => panic!("{other:?}"),
+            })
+            .collect();
+        let order = |x: usize, y: usize| (rows[y % 4] >> ((x % 4) * 4)) & 15;
+        let mut values: Vec<u32> = (0..16).map(|i| order(i % 4, i / 4)).collect();
+        values.sort_unstable();
+        assert_eq!(values, (0..16).collect::<Vec<_>>(), "{rows:x?}");
+        for first in 0..16 {
+            let run = [first, (first + 1) % 16, (first + 2) % 16];
+            for (x, y) in (0..4).flat_map(|y| (0..4).map(move |x| (x, y))) {
+                let held = (0..9).any(|i| run.contains(&order(x + i % 3, y + i / 3)));
+                assert!(held, "the block at ({x}, {y}) misses {run:?}");
+            }
+        }
+    }
+
     /// Every static permutation of every mesh pass specializes and validates: what each variant's
     /// pipeline compiles (the GPU tests build them on the device too).
     #[test]

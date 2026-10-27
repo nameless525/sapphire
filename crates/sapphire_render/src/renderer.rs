@@ -1348,6 +1348,7 @@ impl Renderer {
             self.stats.temporal = temporal.stats();
         }
         let jitter = temporal_frame.map_or([0.0; 2], |frame| frame.jitter);
+        let fade_turn = temporal_frame.map_or(0.0, |frame| frame.fade_turn);
         let temporal_reset = temporal_frame.is_some_and(|frame| frame.reset.is_some());
         // The wind, and the last drawn frame's for velocity, which a cut holds still as it does
         // the camera.
@@ -1467,9 +1468,11 @@ impl Renderer {
             let (uniforms, buffer) = passes.uniforms();
             (uniforms, buffer.clone())
         });
-        let view = ViewUniforms::new(&camera, size, previous_clip_from_world, jitter);
-        // A debug view draws through the main view without temporal AA's jitter, so it holds
-        // still (M1 F5). Boxed, so the uploads' pass doesn't grow by a view while none shows.
+        let view =
+            ViewUniforms::new(&camera, size, previous_clip_from_world, jitter).with_fade_turn(fade_turn);
+        // A debug view draws through the main view without temporal AA's jitter or the fade's
+        // turn, so it holds still (M1 F5). Boxed, so the uploads' pass doesn't grow by a view
+        // while none shows.
         let debug_view = debug_views.as_deref().filter(|views| views.shown() != DebugView::Off);
         let debug_upload = debug_view.map(|views| {
             Box::new((views.view_uniforms(), ViewUniforms::new(&camera, size, clip_from_world, [0.0; 2])))

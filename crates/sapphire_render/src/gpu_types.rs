@@ -110,6 +110,9 @@ pub(crate) struct ViewUniforms {
     /// xy: this frame's jitter in pixels, x right and y down (the image moves by it); zw: the
     /// same in NDC. Zero without temporal AA.
     pub jitter: [f32; 4],
+    /// x: the proximity fade's turn this frame (M1 C7, [`crate::temporal::fade_turn`]): a
+    /// sixteenth under temporal AA, 0 without and in every other view.
+    pub dither: [f32; 4],
 }
 
 impl ViewUniforms {
@@ -136,7 +139,13 @@ impl ViewUniforms {
             viewport: [width, height, width.recip(), height.recip()],
             unjittered_clip_from_world: (camera.proj * camera.view).to_cols_array_2d(),
             jitter: [jitter[0], jitter[1], ndc.x, ndc.y],
+            dither: [0.0; 4],
         }
+    }
+
+    /// The view with the proximity fade's dither turned by `turn` this frame (M1 C7).
+    pub(crate) fn with_fade_turn(self, turn: f32) -> Self {
+        Self { dither: [turn, 0.0, 0.0, 0.0], ..self }
     }
 }
 

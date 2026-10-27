@@ -143,7 +143,8 @@ fn cs_gtao_depths(
     let pixel = vec2<i32>(min(vec2<f32>(texel * 2u), gtao.size.zw - 1.0));
     // The character prepass writes the scene prepass's depth bit for bit where a character is
     // nearest, less where something stands in front, and 0 where no character is (as temporal
-    // AA's responsive mask reads them); the outline mask is 1 where a hull is nearest.
+    // AA's responsive mask reads them); the outline mask is above 0.5 where a hull is nearest (1,
+    // or a fading character's 0.75, M1 C7).
     let depth = textureLoad(gtao_depth, pixel, 0);
     let character = textureLoad(gtao_character_depth, pixel, 0);
     let hull = textureLoad(gtao_outlines, pixel, 0).r;

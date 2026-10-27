@@ -515,39 +515,48 @@
 //! - **Layers** over the base shading, each off until a region turns it on, so materials from
 //!   before them draw exactly as they did (but for a matcap they named, which now shades), and
 //!   each a branch on the block's flags
-//!   (`AnimeCharacterParams::FLAG_SPECULAR` and on, `modes.x` bits 12–16), **no permutation
-//!   bit:** the stylized highlight (thresholded Blinn or minimal GGX of N·H on the key light,
+//!   (`AnimeCharacterParams::FLAG_SPECULAR` and on, `modes.x` bits 12–16), compiled in only for
+//!   materials with a layer (`MaterialFlags::LAYERS`, the permutation bit that took the skinned
+//!   bit's place) and for eyes: the stylized highlight (thresholded Blinn or minimal GGX of N·H on the key light,
 //!   sized by the control map's B and masked by its R, on the lit side, tinted by the albedo);
 //!   the matcap (one color or four grayscale spheremaps by the view-space normal, added in the
 //!   key light or multiplying the albedo, at a lit and a shadow strength); the reflection add
 //!   (above metallic 0.9: W5's reflection cube along the reflected view, the sky at the
-//!   ambient's scale, at the region's roughness's mip, × the albedo, on every tier); stockings (denier by N·V, a sheen along the fabric's UV axis and a weave faded to
-//!   its average before it aliases); and emission, unlit, breathing over a period at a phase per
+//!   ambient's scale, at the region's roughness's mip, × the albedo, on every tier, which the
+//!   ambient pass prefilters while a reflective material draws, grid or not); stockings (denier
+//!   by N·V, a sheen along the fabric's UV axis and a weave faded to its average before it
+//!   aliases); and emission, unlit, breathing over a period at a phase per
 //!   instance slot. A body's layer mask (the surface mask slot: R matcap, G metallic, B
 //!   emission, A stocking density) paints where each shows. An emissive pixel's glow share ×
 //!   the material's bloom is written as the world's share of the pixel (scene color alpha), so
 //!   post blooms it as the world's light while the character around it keeps its restrained
-//!   bloom (P2's character mask). With no layer on, the branches cost a few percent of the main
-//!   pass's character pixels, the uber-shader having grown (spec §5.12 has the measurements).
+//!   bloom (P2's character mask). Compiled into every variant, the never-taken branches cost
+//!   the main pass a few percent; behind the bit, materials without a layer pay nothing for
+//!   them (spec §5.12 has the measurements).
 //! - **The proximity fade** ([`CharacterInstance::opacity`], which `sapphire_world::fade`
-//!   resolves from the camera's distance to the body): a screen-space dither, a 4 × 4 Bayer
-//!   matrix turned by the character's entry and the frame's jitter, that every pass drawing the
-//!   character shares (the `characters` module's docs have the passes): its opaque draws move to
+//!   resolves from the camera's distance to the body): a screen-space 4 × 4 ordered dither,
+//!   turned by the character's entry and, under temporal AA, through its sixteen thresholds in a
+//!   16-frame cycle, that every pass drawing the character shares (the `characters` module's docs have the passes): its opaque draws move to
 //!   the alpha-tested variants while it fades, so opaque pipelines never discard; the character
 //!   and scene prepasses and the outline hulls' prepass draw those variants through masked
 //!   pipelines (`prepass.wgsl`, `outline.wgsl`'s `*_masked`), which bind the family's group 3 and
 //!   cut out by the alpha test (the base color's alpha × its map's against the cutoff) and the
 //!   dither as the main pass does, so the rim, the bangs' shadow, eyes through hair, the
 //!   responsive mask and reprojection see the character where it is drawn and alpha-tested
-//!   cards at their drawn shape. Under temporal AA the turning pattern resolves into a blend;
+//!   cards at their drawn shape. Under temporal AA the turning pattern resolves into a blend:
+//!   the masked scene prepasses mark a fading character's surfaces and hulls in the outline
+//!   mask, and the responsive mask gives them the world's reactivity, so the history keeps every
+//!   turn of the pattern, moving or not, and the dither's order puts the character and what lies
+//!   behind it in every 3 × 3 neighborhood from a fade of 3/16 to 13/16, so the resolve's clip
+//!   keeps the blend;
 //!   under MSAA the alpha-tested variants' covered entry points (`fs_*_covered`) write a share
 //!   of each pixel's samples instead, and the single-sampled prepasses keep the pixels where it
 //!   isn't empty. A fading character takes no rim; its shadow stays whole. Only the anime
 //!   character family fades.
-//! - **Cutting pixels out** (the alpha test, the dither): decided early, discarded at the
-//!   fragment stage's one exit after the shading, with only quads cut out whole leaving early
-//!   (`quad_any`): on Metal a pixel discarded while the rest of its quad shades on can still
-//!   write depth and color.
+//! - **Cutting pixels out** (the alpha test, the dither): decided after every derivative,
+//!   discarded at the entry points' one exit after the shading, with only quads cut out whole
+//!   leaving early (frame.wgsl's `quad_any`; docs/conventions.md): Apple's Metal compiler has
+//!   miscompiled earlier per-pixel discards, writing the cut pixels black with their depth.
 //! - **Counters:** [`RenderStats::faded_characters`] and [`RenderStats::faded_draws`].
 //!
 //! # The environment shader (M1 W4)

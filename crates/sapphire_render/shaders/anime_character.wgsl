@@ -1305,8 +1305,10 @@ fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
 @fragment
 fn fs_anime_character(in: CharacterVaryings) -> @location(0) vec4<f32> {
     let pixel = character_pixel(in);
-    // The one exit, where the pixels cut out leave (docs/conventions.md).
-    if !pixel.kept {
+    // The one exit, where the pixels cut out leave (docs/conventions.md). Opaque variants never
+    // discard, whether or not the compiler inlines the shading: a reachable discard would cost
+    // them the GPU's hidden surface removal.
+    if (PERMUTATION_ALPHA_TEST || PERMUTATION_TRANSPARENT) && !pixel.kept {
         discard;
     }
     return pixel.color;

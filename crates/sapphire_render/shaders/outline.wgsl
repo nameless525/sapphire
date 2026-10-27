@@ -34,9 +34,10 @@
 // outline normal) and its diffuse mode's shadow color (`shade_tint`, bands or ramp), plus the
 // rig's stylized GI flattened toward the camera (`character_gi` with the view direction as the
 // line's normal; in regions with a sphere weight, faces' and hair's, that normal turns toward the
-// head sphere's by the weight, as their surfaces' do), by the material's lighting weight. Lines darken at night and take the light's tint, and go into a
-// cast shadow with their surface (M1 R4: `cast_shadow_at`, a face's whole). Local lights don't
-// reach them; outline hulls cast no shadow. Where the material has a control map its material ID picks the region's color per
+// head sphere's by the weight, as their surfaces' do), by the material's lighting weight. Lines
+// darken at night and take the light's tint, and go into a cast shadow with their surface (M1
+// R4: `cast_shadow_at`, a face's whole). Local lights don't reach them; outline hulls cast no
+// shadow. Where the material has a control map its material ID picks the region's color per
 // pixel, as on the surface; the width scale is the vertex's region's (the vertex stage reads no
 // textures). Alpha is the character's, post's character mask (M1 P2): 0 on a character's line,
 // as on the character it outlines, so the line belongs to the character's bloom, and 1 on an
@@ -272,8 +273,9 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
 @fragment
 fn fs_outline(in: OutlineVaryings) -> @location(0) vec4<f32> {
     let pixel = outline_pixel(in);
-    // The one exit, where the pixels cut out leave (docs/conventions.md).
-    if !pixel.kept {
+    // The one exit, where the pixels cut out leave (docs/conventions.md); never in the opaque
+    // permutation (as the surfaces').
+    if PERMUTATION_ALPHA_TEST && !pixel.kept {
         discard;
     }
     return pixel.color;
@@ -382,7 +384,7 @@ fn outline_prepass_targets(in: OutlinePrepassVaryings) -> OutlinePrepassTargets 
     // Below a thousandth of a pixel the derivatives' rounding is all there is: a hull that holds
     // still keeps exactly no velocity.
     let line = velocity - select(vec2<f32>(0.0), sliding, dot(sliding, sliding) > 1e-12);
-    return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, 1.0);
+    return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, OUTLINE_MASK_LINE);
 }
 
 // An alpha-tested or fading character's hull in the scene prepass (M1 C7): `OutlinePrepassVaryings`,
@@ -436,8 +438,10 @@ fn fs_outline_prepass_masked(in: MaskedOutlinePrepassVaryings) -> OutlinePrepass
         alpha *= sample_material(base_color_map, materials[material].swizzles, CHARACTER_BASE_COLOR, uv).a;
     }
     let cut = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u && alpha < materials[material].split.w;
+    // A fading character's lines (M1 C7) are its own, for temporal AA's responsive mask.
+    let outline = select(OUTLINE_MASK_LINE, OUTLINE_MASK_FADING_LINE, in.fade > 0.0);
     if cut || faded_out(in.fade, in.clip_position.xy, in.character, FADE_SAMPLES) {
         discard;
     }
-    return targets;
+    return OutlinePrepassTargets(targets.normal, targets.velocity, outline);
 }

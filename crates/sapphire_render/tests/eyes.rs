@@ -1,7 +1,7 @@
 //! Tests of anime eyes' layers that need a GPU (M1 C6): the layers' order and the eye depth
 //! mask that clips them, a lid closing over them, the parallax refraction fake's shift, the
-//! highlights' drift and sparkle on the frame's clock, eyes through hair under a closed lid, and
-//! the fog over the layers. Run with
+//! highlights' drift and sparkle on the frame's clock, eyes through hair under a closed lid, the
+//! fog over the layers, and the proximity fade's dither over them (M1 C7). Run with
 //! `cargo test -p sapphire_render --test eyes -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky and no outline; characters are listed with white key
@@ -498,6 +498,62 @@ fn a_lid_over_the_eye_takes_its_layers_with_it_whatever_their_depth() {
     assert_near(frame.at(Vec3::new(0.4, 0.35, 0.0)), LID, "the shadow under the lid");
     assert_near(frame.at(Vec3::new(0.0, -0.2, 0.0)), IRIS, "the iris below the lid");
     assert_near(frame.at(Vec3::new(0.4, -0.2, 0.0)), WHITE, "the eye white below the lid");
+}
+
+/// The gray of the backdrop behind a fading eye, a prop lit head-on.
+const BACKDROP: [f32; 3] = [0.3, 0.3, 0.3];
+
+/// The pixels within `radius` pixels of where `point` projects, each either `color` (the
+/// character) or the backdrop behind it: how many show `color`, and how many there are.
+fn dithered(frame: &Frame, point: Vec3, radius: i32, color: [f32; 3], what: &str) -> (usize, usize) {
+    let (cx, cy) = frame.project(point);
+    let (mut shown, mut total) = (0, 0);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let pixel = frame.linear((cx as i32 + dx) as usize, (cy as i32 + dy) as usize);
+            let near = |target: [f32; 3]| pixel.iter().zip(target).all(|(a, e)| (a - e).abs() < TOLERANCE);
+            assert!(near(color) || near(BACKDROP), "{what}: {pixel:?} is neither {color:?} nor the backdrop");
+            shown += usize::from(near(color));
+            total += 1;
+        }
+    }
+    (shown, total)
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn a_fading_characters_eye_layers_fade_with_it() {
+    let mut harness = Harness::new();
+    let eye = layered_eye(&mut harness, &[]);
+    harness.character(eye);
+    // A gray backdrop behind the character that isn't one, so a hole the dither cuts can't pass
+    // for black (docs/conventions.md, "Fragment stages that cut pixels out").
+    let backdrop = harness.material(&flat_material(CharacterSurface::Body, BACKDROP, AlphaMode::Opaque, 1.0));
+    let backdrop = harness.mesh(&[rect((-3.0, -3.0), (3.0, 3.0), -0.3)], &[backdrop]);
+    harness.added.push(MeshInstance { id: InstanceId(1000), mesh: backdrop, transform: Mat4::IDENTITY });
+    // Half faded (M1 C7): every layer keeps the pixels the eye and the skin keep, the proximity
+    // fade's dither, and blends over them alone. Where the dither leaves the character out, the
+    // backdrop shows, never a layer over it or the eye white through the iris.
+    harness.characters[0].opacity = 0.5;
+    let half = harness.render();
+    let shade = mix(WHITE, scale(SHADOW, 0.25), 0.5);
+    for (point, color, what) in [
+        (Vec3::new(0.0, -0.15, 0.0), IRIS, "the iris"),
+        (Vec3::new(0.4, 0.35, 0.0), shade, "the lid's shadow"),
+        (Vec3::new(0.4, -0.2, 0.0), WHITE, "the eye white"),
+        (Vec3::new(0.75, 0.0, 0.0), SKIN, "the skin"),
+    ] {
+        let (shown, total) = dithered(&half, point, 3, color, what);
+        let share = shown as f32 / total as f32;
+        assert!((share - 0.5).abs() < 0.15, "{what}: {shown} of {total} pixels shown");
+    }
+    assert_eq!((half.stats.faded_characters, half.stats.character_prepass.eye_layer_draws), (1, 3));
+    // Wholly faded: no layer is left behind, though all three still draw.
+    harness.characters[0].opacity = 0.0;
+    let gone = harness.render();
+    for (point, what) in [(Vec3::ZERO, "the iris"), (Vec3::new(0.1, 0.1, 0.0), "the highlight")] {
+        assert_eq!(dithered(&gone, point, 6, IRIS, what).0, 0, "{what}: the backdrop alone");
+    }
 }
 
 /// Where the pupil (at the eye's center) appears on an eye at z = 0 one meter wide, under a

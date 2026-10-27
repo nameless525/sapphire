@@ -277,8 +277,8 @@ fn assert_coherent(frame: &Frame, inside: &[usize], drawn: impl Fn(usize) -> boo
 #[test]
 #[ignore = "needs a GPU"]
 fn the_prepasses_keep_a_fading_characters_pixels_where_the_main_pass_does() {
-    // Single-sampled, under temporal AA: the dither turns with the jitter, the same in every
-    // pass of a frame. The main pass's depth shows what it kept.
+    // Single-sampled, under temporal AA: the dither turns every frame, the same in every pass
+    // of a frame. The main pass's depth shows what it kept.
     let mut scene =
         Scene::new(RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() });
     let whole = scene.render(1.0);

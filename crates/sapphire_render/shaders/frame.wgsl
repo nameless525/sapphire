@@ -95,6 +95,9 @@ struct ViewUniforms {
     // xy: this frame's jitter in pixels (x right, y down: the image moves by it); zw: in NDC.
     // Zero without temporal AA.
     jitter: vec4<f32>,
+    // x: the proximity fade's turn this frame (M1 C7; `temporal::fade_turn`): a sixteenth under
+    // temporal AA, 0 without.
+    dither: vec4<f32>,
 }
 
 struct InstanceData {
@@ -243,31 +246,40 @@ fn view_distance(position: vec3<f32>) -> f32 {
 // The proximity fade (M1 C7; the `characters` module has the design): a fading character covers
 // a share of its pixels, 1 − its fade, picked by a screen-space dither that every pass drawing it
 // shares, so its surfaces, outlines, eyes through hair and its depth, IDs and velocity in the
-// prepasses all keep the same pixels. The pattern is a 4 × 4 Bayer matrix, its thresholds turned
-// per character (so two fading characters keep different pixels) and per frame under temporal AA
-// by the jitter, which then averages the pattern into a blend; without the jitter it holds still.
+// prepasses all keep the same pixels. The pattern is a 4 × 4 ordered dither (`fade_order`), its
+// thresholds turned per character (so two fading characters keep different pixels) and per frame
+// under temporal AA by sixteenths over a 16-frame cycle (`view.dither`), so every pixel takes
+// each of the sixteen thresholds once a cycle and the history averages the pattern into an even
+// blend; without temporal AA it holds still.
 // Under MSAA a pixel covers a run of its samples instead: as many as its share, the dither
 // rounding between levels.
 
 // The thresholds' turn per character entry: the golden ratio's fraction.
 const FADE_ENTRY_STEP: f32 = 0.618034;
 
-// The 4 × 4 Bayer matrix at `pixel`: 0 to 15, each value once in every 4 × 4 block.
-fn bayer4(pixel: vec2<u32>) -> u32 {
-    let x = pixel.x;
-    let y = pixel.y;
-    let fine = (((x ^ y) & 1u) << 1u) | (y & 1u);
-    let coarse = ((((x >> 1u) ^ (y >> 1u)) & 1u) << 1u) | ((y >> 1u) & 1u);
-    return fine * 4u + coarse;
+// The fade's dither order: 0 to 15, each once in every 4 × 4 block, a row per component, 4 bits
+// a cell with x = 0 in the lowest. Any three consecutive values (cyclically, as the turns take
+// them) lie in three different rows and columns, so every 3 × 3 block of pixels holds one of
+// them, which a Bayer matrix's don't: wherever at least 3 of the 16 thresholds keep the character
+// and 3 show what lies behind it, temporal AA's 3 × 3 neighborhood sees both, and its clip keeps
+// the history's blend rather than pulling it to this frame's color. Of such orders, it is the
+// most even a search found (a Gaussian energy over every run of consecutive values, on the
+// tiled plane: within 2% of Bayer's).
+const FADE_ORDER = vec4<u32>(0xE4A1u, 0xB8F5u, 0x307Du, 0x6C29u);
+
+// The fade's dither order at `pixel` (`FADE_ORDER`).
+fn fade_order(pixel: vec2<u32>) -> u32 {
+    let row = FADE_ORDER[pixel.y & 3u];
+    return (row >> ((pixel.x & 3u) * 4u)) & 15u;
 }
 
 // The fade's threshold at framebuffer position `pixel` for character entry `character`, in
 // [0, 1): sixteen evenly spaced values in every 4 × 4 block, turned by the entry and this frame's
-// jitter (zero without temporal AA).
+// turn (zero without temporal AA).
 fn fade_threshold(pixel: vec2<f32>, character: u32) -> f32 {
-    let bayer = f32(bayer4(vec2<u32>(floor(pixel)) & vec2<u32>(3u)));
-    let turn = fract(view.jitter.x) + fract(f32(character) * FADE_ENTRY_STEP);
-    return fract((bayer + 0.5) / 16.0 + turn);
+    let order = f32(fade_order(vec2<u32>(floor(pixel))));
+    let turn = view.dither.x + fract(f32(character) * FADE_ENTRY_STEP);
+    return fract((order + 0.5) / 16.0 + turn);
 }
 
 // How many of a pixel's `samples` a character faded by `fade` covers there, at `threshold`: its
@@ -308,6 +320,15 @@ struct ScenePrepassVaryings {
 }
 
 // The scene prepass's color targets.
+// The scene prepass's outline mask (`pipelines::outline_mask`): 1 where an outline hull is the
+// nearest surface (M1 C4). A fading character's surfaces write 0.25 and its hulls 0.75 (M1 C7),
+// which temporal AA's responsive mask reads to let the proximity fade's dither accumulate into a
+// blend; GTAO leaves every hull out (above 0.5) and the character's surfaces through the
+// character prepass.
+const OUTLINE_MASK_LINE: f32 = 1.0;
+const OUTLINE_MASK_FADING: f32 = 0.25;
+const OUTLINE_MASK_FADING_LINE: f32 = 0.75;
+
 struct ScenePrepassTargets {
     // World-space unit normal, octahedral (`oct_encode`).
     @location(0) normal: vec2<f32>,

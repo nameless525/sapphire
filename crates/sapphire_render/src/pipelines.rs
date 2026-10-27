@@ -40,7 +40,8 @@ pub(crate) const NORMALS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16
 /// fraction of a pixel at 4K up to about half the screen per frame.
 pub(crate) const VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
-/// The scene prepass's outline mask (M1 C4): 1 where an outline hull is the nearest surface.
+/// The scene prepass's outline mask (M1 C4): 1 where an outline hull is the nearest surface; a
+/// fading character's surfaces and hulls write their own codes ([`outline_mask`], M1 C7).
 pub(crate) const OUTLINES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// The color target of a debug view's replay of the main pass ([`Replay`]), which its copies
@@ -59,8 +60,22 @@ pub(crate) fn replay_depth_format(device: &wgpu::Device) -> wgpu::TextureFormat 
     }
 }
 
+/// The outline mask's values (`OUTLINE_MASK_*` in `frame.wgsl`). Temporal AA's responsive mask
+/// gives a fading character's pixels the world's reactivity, so the proximity fade's dither
+/// resolves into a blend; GTAO leaves out every hull, whatever it outlines (above 0.5).
+#[cfg_attr(not(test), expect(dead_code, reason = "the shaders write and read them; tests check they agree"))]
+pub(crate) mod outline_mask {
+    /// An outline hull.
+    pub const LINE: f32 = 1.0;
+    /// A fading character's surface (M1 C7), which the masked scene prepass writes.
+    pub const FADING: f32 = 0.25;
+    /// A fading character's outline hull (M1 C7).
+    pub const FADING_LINE: f32 = 0.75;
+}
+
 /// The scene prepass's color targets: normals, velocity and the outline mask, which only the
-/// hulls write (`outlines`); surfaces leave it as cleared, drawn before the hulls.
+/// hulls and the masked surfaces write (`outlines`, M1 C7: a fading character's); the others
+/// leave it as cleared, drawn before them.
 fn scene_prepass_targets(outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] {
     let mask = if outlines { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
     [
@@ -1902,7 +1917,7 @@ fn build_scene_prepass(
         &modules.prepass,
         &pass.buffers(format),
         Some(wgpu::Face::Back),
-        &scene_prepass_targets(false),
+        &scene_prepass_targets(masked),
         (layout, target.prepass_constants(masked).as_slice()),
     )
 }

@@ -87,6 +87,12 @@ fn vs_fullscreen(@builtin(vertex_index) index: u32) -> FullscreenVaryings {
     return out;
 }
 
+// The outline mask's codes (frame.wgsl's `OUTLINE_MASK_*`, which this file can't include): a
+// line's 1 lies above the first threshold; a fading character's surfaces (0.25) and hulls (0.75)
+// between the two.
+const OUTLINE_MASK_LINES: f32 = 0.875;
+const OUTLINE_MASK_FADES: f32 = 0.125;
+
 // The responsive mask (R8Unorm, the scene's size): each pixel's reactivity, the share of the
 // moving history cap it gives up (FSR's reactive mask is fractional too). 0 on the world,
 // characters' reactivity where a character is the nearest surface, lines' where an outline hull
@@ -95,6 +101,13 @@ fn vs_fullscreen(@builtin(vertex_index) index: u32) -> FullscreenVaryings {
 // and less where something stands in front; it is cleared to 0 where no character is. The scene
 // prepass's outline mask is 1 where a hull is nearest (M1 C4): lines, whatever they outline,
 // are drawn from the current frame in motion, as Blue Protocol protects its outlines from blur.
+//
+// A fading character (M1 C7) is drawn through the proximity fade's screen-space dither, which
+// turns every frame: it takes the world's 0, surfaces and lines alike (the masked prepasses mark
+// them in the outline mask), so the history keeps every turn of the pattern, as it does where the
+// dither shows what lies behind, and the resolve blends them into the fade rather than showing
+// this frame's screen door. The pattern's order puts both in every 3 × 3 neighborhood from a
+// fade of 3/16 to 13/16 (`FADE_ORDER` in frame.wgsl), so the clip keeps the blend.
 @fragment
 fn fs_responsive_mask(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(in.position.xy);
@@ -102,7 +115,8 @@ fn fs_responsive_mask(in: FullscreenVaryings) -> @location(0) vec4<f32> {
     let scene = textureLoad(mask_scene_depth, pixel, 0);
     let outline = textureLoad(outline_mask, pixel, 0).r;
     var reactivity = select(0.0, taa.response.y, character > 0.0 && character >= scene);
-    reactivity = select(reactivity, taa.outlines.x, outline > 0.5);
+    reactivity = select(reactivity, taa.outlines.x, outline > OUTLINE_MASK_LINES);
+    reactivity = select(reactivity, 0.0, outline > OUTLINE_MASK_FADES && outline <= OUTLINE_MASK_LINES);
     return vec4<f32>(reactivity, 0.0, 0.0, 0.0);
 }
 

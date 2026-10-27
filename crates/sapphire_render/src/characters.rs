@@ -37,8 +37,11 @@
 //!   AA's responsive mask) and the scene prepass's depth and velocity show what lies behind the
 //!   character through its holes, as through an alpha-tested surface's cutouts. Opaque variants
 //!   keep the plain pipelines, which never discard.
-//! - **Under temporal AA** the dither turns every frame with the jitter, which the resolve
-//!   averages into a blend; under MSAA (the phones) the alpha-tested variants write a sample mask
+//! - **Under temporal AA** the dither turns every frame, through all sixteen of its thresholds
+//!   in a 16-frame cycle ([`crate::temporal::fade_turn`]), which the resolve averages into a
+//!   blend: a fading character's pixels take the world's reactivity, and the dither's order puts
+//!   the character and what lies behind it in every 3 × 3 neighborhood (from a fade of 3/16 to
+//!   13/16), so the clip keeps the blend; under MSAA (the phones) the alpha-tested variants write a sample mask
 //!   (`fs_*_covered`): a share of each pixel's samples, the dither rounding between the levels,
 //!   so the resolve blends there too, and the single-sample prepasses keep the pixels where that
 //!   share isn't empty. Without either the pattern holds still.

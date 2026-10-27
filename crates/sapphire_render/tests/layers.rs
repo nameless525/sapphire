@@ -958,20 +958,52 @@ fn under_msaa_a_fading_character_covers_its_share_of_every_pixels_samples() {
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn temporal_aa_resolves_the_fades_dither_into_a_blend() {
+    // The pattern turns every frame through all sixteen of its thresholds, which the history
+    // averages: the pixels inside are at the blend, with no pattern left, at any opacity. At 0.8
+    // three of the sixteen show the wall, which every 3 × 3 neighborhood holds one of, so the
+    // clip keeps the blend there too.
+    for opacity in [0.5, 0.3, 0.8] {
+        let mut harness =
+            Harness::with(RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() });
+        let character = fade_scene(&mut harness, 0.0);
+        harness.opacity(character, opacity);
+        let mut frame = harness.render();
+        for _ in 0..64 {
+            frame = harness.render();
+        }
+        let pixels = frame.around(Vec3::new(0.0, 0.0, 0.5), 12);
+        let greens: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
+        let mean = greens.iter().sum::<f32>() / greens.len() as f32;
+        let spread = greens.iter().map(|g| (g - mean).abs()).fold(0.0, f32::max);
+        eprintln!("opacity {opacity}: mean {mean}, spread {spread}");
+        // Green from the wall's 0.3 to the ball's 0.6.
+        assert!((mean - (0.3 + 0.3 * opacity)).abs() < 0.03, "the blend's green at {opacity}: {mean}");
+        assert!(spread < 0.03, "resolved, not a screen door, at {opacity}: {spread}");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn temporal_aa_resolves_a_moving_fades_dither_too() {
     let mut harness =
         Harness::with(RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() });
-    let character = fade_scene(&mut harness, 0.0);
+    let character = fade_scene(&mut harness, 4.0);
     harness.opacity(character, 0.5);
+    // The camera circles the ball, so every pixel of it moves: a character's moving pixels would
+    // give up most of their history (its reactivity), keeping each frame's screen door. A fading
+    // one takes the world's, so the pattern still resolves into the blend, its lines too.
     let mut frame = harness.render();
-    for _ in 0..40 {
+    for step in 1..=40 {
+        let angle = (step as f32 * 0.6).to_radians();
+        let eye = Vec3::new(3.0 * angle.sin(), 0.0, 3.0 * angle.cos());
+        harness.camera = CameraData::look_at(eye, Vec3::ZERO, Vec3::Y, 0.66, 1.0, 0.05);
         frame = harness.render();
     }
-    // The pattern turns every frame with the jitter, which the history averages: the pixels
-    // inside are near the blend, none near either color.
     let pixels = frame.around(Vec3::new(0.0, 0.0, 0.5), 12);
     let greens: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
     let mean = greens.iter().sum::<f32>() / greens.len() as f32;
     let spread = greens.iter().map(|g| (g - mean).abs()).fold(0.0, f32::max);
-    assert!((mean - 0.45).abs() < 0.06, "the blend's green: {mean}");
-    assert!(spread < 0.12, "resolved, not a screen door: {spread}");
+    // With a moving character's reactivity, the spread was 0.052; with the world's, 0.036.
+    assert!((mean - 0.45).abs() < 0.03, "the blend's green: {mean}");
+    assert!(spread < 0.045, "resolved, not a screen door: {spread}");
 }

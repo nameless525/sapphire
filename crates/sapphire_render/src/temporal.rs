@@ -23,7 +23,11 @@
 //!    where a character (an instance the frame lists as one, since M1 C5; a skinned or morphed
 //!    instance before) is the nearest surface, from the character prepass's depth against the
 //!    scene prepass's; lines' (1) where an outline hull is, from the scene prepass's outline
-//!    mask (M1 C4, P1); 0 elsewhere.
+//!    mask (M1 C4, P1); 0 elsewhere, and on a fading character's surfaces and lines, which the
+//!    masked prepasses mark in the outline mask (M1 C7), so the history keeps every turn of the
+//!    proximity fade's dither. That dither turns by [`fade_turn`], its own 16-frame cycle, so
+//!    every pixel takes each of its sixteen thresholds once a cycle and the resolve averages
+//!    them into the fade.
 //! 4. **The resolve** (`taa` pass), a compute pass at the output's size, on HDR scene color
 //!    before bloom and the tone curve, in a tonemap-weighted space (see `shaders/temporal.wgsl`,
 //!    whose header also says how it is kept fast):
@@ -484,7 +488,22 @@ pub(crate) struct Temporal {
 pub(crate) struct TemporalFrame {
     /// The projection's jitter in scene pixels, x right and y down.
     pub jitter: [f32; 2],
+    /// The proximity fade's dither turn ([`fade_turn`]).
+    pub fade_turn: f32,
     pub reset: Option<HistoryReset>,
+}
+
+/// Frames in the proximity fade's dither cycle (M1 C7): one per threshold of its 4 × 4 matrix.
+pub const FADE_TURNS: u32 = 16;
+
+/// The proximity fade's dither turn in `frame` (M1 C7, `fade_threshold` in `frame.wgsl`): the
+/// radical inverse of the frame in a [`FADE_TURNS`]-frame cycle, so over a cycle every pixel
+/// takes each of the matrix's sixteen thresholds once, in an order that spreads them evenly, and
+/// the history blends them into the fade with no pattern left. Its own cycle rather than the
+/// jitter's: the jitter has eight phases at native resolution, and Halton's x over them turns
+/// unevenly (its eighth is a sixteenth off), which left a faint screen door.
+pub fn fade_turn(frame: u64) -> f32 {
+    halton((frame % u64::from(FADE_TURNS)) as u32, 2)
 }
 
 impl Temporal {
@@ -545,6 +564,7 @@ impl Temporal {
         let phases = jitter_phases(input.1, output.1);
         let index = (self.frames % u64::from(phases)) as u32;
         let jitter = jitter(self.frames, phases);
+        let fade_turn = fade_turn(self.frames);
         self.frames += 1;
 
         self.passes.uniforms = TemporalUniforms {
@@ -580,7 +600,7 @@ impl Temporal {
             resets: self.stats.resets + u32::from(reset.is_some()),
             reset,
         };
-        TemporalFrame { jitter, reset }
+        TemporalFrame { jitter, fade_turn, reset }
     }
 
     /// The textures this frame imports, and the passes it records, borrowed apart.
@@ -869,6 +889,18 @@ mod tests {
 
     use super::*;
     use crate::CameraData;
+
+    #[test]
+    fn the_fade_turns_through_every_sixteenth_once_a_cycle() {
+        let turns: Vec<f32> = (0..u64::from(FADE_TURNS)).map(fade_turn).collect();
+        let mut sixteenths: Vec<u32> = turns.iter().map(|turn| (turn * 16.0) as u32).collect();
+        assert!(turns.iter().all(|turn| (turn * 16.0).fract() == 0.0), "{turns:?}");
+        sixteenths.sort_unstable();
+        assert_eq!(sixteenths, (0..16).collect::<Vec<_>>());
+        // Spread: any two frames in a row are half a turn apart, any four a quarter's spacing.
+        assert_eq!(turns[..4], [0.0, 0.5, 0.25, 0.75]);
+        assert_eq!(fade_turn(u64::from(FADE_TURNS) + 3), turns[3], "a cycle");
+    }
 
     #[test]
     fn jitter_follows_halton_2_3_from_its_second_element() {

@@ -191,13 +191,22 @@ fn vs_scene_prepass_masked(
     return out;
 }
 
+// `ScenePrepassTargets` and the outline mask, which a fading character's surfaces mark (M1 C7):
+// the masked pipeline writes it, its alpha-tested surfaces 0, as the target is cleared.
+struct MaskedScenePrepassTargets {
+    @location(0) normal: vec2<f32>,
+    @location(1) velocity: vec2<f32>,
+    @location(2) outline: f32,
+}
+
 // The targets where the main pass keeps the pixel.
 @fragment
-fn fs_scene_prepass_masked(in: MaskedScenePrepassVaryings) -> ScenePrepassTargets {
+fn fs_scene_prepass_masked(in: MaskedScenePrepassVaryings) -> MaskedScenePrepassTargets {
     let uv = MaterialUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous));
+    let outline = select(0.0, OUTLINE_MASK_FADING, in.fade > 0.0);
     if !masked_keeps(in.material, uv, in.clip_position.xy, in.fade, in.character) {
         discard;
     }
-    return targets;
+    return MaskedScenePrepassTargets(targets.normal, targets.velocity, outline);
 }

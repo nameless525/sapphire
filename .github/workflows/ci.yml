@@ -264,6 +264,9 @@ jobs:
   # on the golden jobs' pinned CPU rasterizers, with the same environment. A test that a CPU
   # rasterizer can't run skips itself, naming the adapter and why (spec §9 lists them); none is
   # skipped for failing. `--tests` leaves the doctests to the Test job.
+  #
+  # The lavapipe job then runs a development build headless and drives it over live link (review
+  # BC-002), as the M1 exit run's desktop leg does: no other job starts a `dev` app.
   gpu-tests:
     name: GPU tests (${{ matrix.family }})
     strategy:
@@ -321,6 +324,72 @@ jobs:
         run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (sandbox, dev)
         run: cargo test --package sapphire_sandbox --features dev --locked --lib -- --ignored --test-threads=1
+      - name: Cook the desktop content
+        if: runner.os == 'Linux'
+        run: cargo --locked xtask --locked content
+      - name: Build the dev sandbox and the live-link tool
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --package sapphire_sandbox --features dev --locked
+          cargo build --package sapphire_livelink --locked
+      # The dev sandbox offscreen on a private port: the tool reads its status, sets a cvar,
+      # captures a frame and pushes a document that doesn't parse, which the app must refuse and
+      # count while it goes on drawing; then it must quit cleanly on SIGTERM. `--frames` bounds a
+      # run that the quit never reaches, and the step's limit everything else.
+      - name: Live-link smoke (dev sandbox, offscreen)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          out=target/live-link-smoke
+          mkdir -p "$out"
+          addr=127.0.0.1:47811
+          SAPPHIRE_CONTENT_DIR="$PWD/target/content/desktop" target/debug/sapphire_sandbox --offscreen \
+            --size 640x360 --frames 36000 --live-link "$addr" > "$out/sandbox.log" 2>&1 &
+          app=$!
+          trap 'kill -KILL "$app" 2>/dev/null || true' EXIT
+          link() { timeout 120 target/debug/sapphire_livelink --addr "$addr" "$@"; }
+          # It answers once it has built the scene's pipelines, slowly on a CPU rasterizer.
+          for attempt in $(seq 240); do
+            if link status > "$out/status.log" 2>&1; then break; fi
+            if ! kill -0 "$app" 2>/dev/null || [ "$attempt" = 240 ]; then
+              echo "::error::the dev sandbox never answered on $addr"
+              tail -n 50 "$out/sandbox.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$out/status.log"
+          link cvar r.outline_distance 0.5
+          link capture "$out/capture.png"
+          test -s "$out/capture.png"
+          printf '(not a document' > "$out/malformed.ron"
+          if link push "$out/malformed.ron" 2> "$out/push.log"; then
+            echo "::error::the dev sandbox applied a malformed document"
+            exit 1
+          fi
+          cat "$out/push.log"
+          # Refused by the app, which names the file, rather than a lost connection.
+          grep -q "malformed.ron: " "$out/push.log"
+          link status 2> "$out/status-after.log"
+          cat "$out/status-after.log"
+          grep -q ", 1 refused," "$out/status-after.log"
+          kill -TERM "$app"
+          code=0
+          wait "$app" || code=$?
+          tail -n 20 "$out/sandbox.log"
+          if [ "$code" != 0 ]; then
+            echo "::error::the dev sandbox exited with $code"
+            exit 1
+          fi
+      - name: Upload the live-link smoke's logs
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-link-smoke
+          path: target/live-link-smoke/
+          if-no-files-found: ignore
+          retention-days: 7
 
   mobile-build-ios:
     name: Mobile build (iOS)
@@ -339,8 +408,11 @@ jobs:
       # (`___isPlatformVersionAtLeast`, see sapphire_platform/build.rs) and only release links failed.
       - name: Build for device (release)
         run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --release --locked
-      - name: Build for simulator
-        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios-sim --locked
+      # The simulator builds the development configuration (`dev`: the debug overlay, live link,
+      # and hot reload without its desktop file watcher), which the M1 exit run's simulator leg
+      # runs (review BC-002); the device build above stays the shipping one, without it.
+      - name: Build for simulator (dev)
+        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios-sim --features dev --locked
 
   mobile-build-android:
     name: Mobile build (Android)
@@ -367,3 +439,10 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
           cargo --locked xtask --locked bundle --platform android
+      # The development configuration as well (live link, and hot reload without the desktop file
+      # watcher), which the M1 exit run's emulator and phone legs run (review BC-002). The cook is
+      # cached by now, so this adds the dev library and a Gradle run.
+      - name: Bundle the APK (dev)
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
+          cargo --locked xtask --locked bundle --platform android --features dev

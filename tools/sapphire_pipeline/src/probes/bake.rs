@@ -17,8 +17,12 @@ use super::bvh::{Bvh, Hit};
 pub struct BakeMaterial {
     /// Linear RGB: the base color times its map's mean.
     pub albedo: Vec3,
-    /// Linear RGB light it emits.
+    /// Linear RGB light it emits, as authored: each key shows its own share
+    /// ([`Self::emission_under`]).
     pub emission: Vec3,
+    /// The share of the emission that shines at every hour, 0 to 1; the rest follows each key's
+    /// emission scale (M1 W1's keyed emission), as the renderer draws it.
+    pub emission_steady: f32,
     /// The lit side's wrapped falloff.
     pub wrap: f32,
     /// The material's tint on the key light it keeps in shadow (times the key's own).
@@ -38,11 +42,20 @@ impl Default for BakeMaterial {
         Self {
             albedo: Vec3::splat(0.5),
             emission: Vec3::ZERO,
+            emission_steady: 0.0,
             wrap: 0.0,
             shadow_tint: Vec3::ONE,
             two_sided: false,
             cutout: None,
         }
+    }
+}
+
+impl BakeMaterial {
+    /// The light it emits under `key`: the key's emission scale on all but the steady share, as
+    /// `environment.wgsl` scales it, so a lantern dark by day lights nothing then.
+    pub fn emission_under(&self, key: &BakeKey) -> Vec3 {
+        self.emission * (key.emission + (1.0 - key.emission) * self.emission_steady)
     }
 }
 
@@ -99,6 +112,9 @@ pub struct BakeKey {
     pub radiance: Vec3,
     /// What the key light keeps inside shadows.
     pub shadow_tint: Vec3,
+    /// How much of materials' authored emission shows (time of day's emission key, M1 W1's
+    /// keyed emission; [`BakeMaterial::emission_under`]).
+    pub emission: f32,
     /// The sky's radiance, L2 per channel (`sapphire_render::ambient::sky_radiance`).
     pub sky: [[f32; sh::L2]; 3],
 }
@@ -523,7 +539,7 @@ fn light_surfels(
         let sky = sky_irradiance(&transfers[key], &found[index].visibility, surfel.normal);
         let origin = surfel.position + surfel.face * RAY_OFFSET;
         material.albedo * (key_light(rays, &keys[key], material, origin, surfel.normal) + sky)
-            + material.emission
+            + material.emission_under(&keys[key])
     });
     let far: Vec<Vec<Vec3>> = parallel_map(surfels.surfels.len(), |index| {
         found[index]
@@ -536,7 +552,7 @@ fn light_surfels(
                     // Out of the surfels' reach: the open sky, unoccluded.
                     let sky = sky_irradiance(transfer, &sh::project_constant(1.0), normal);
                     material.albedo * (key_light(rays, key, material, origin, normal) + sky)
-                        + material.emission
+                        + material.emission_under(key)
                 })
             })
             .collect()
@@ -637,7 +653,7 @@ fn bake_probes(
                         let origin = point + normal * RAY_OFFSET;
                         let sky = sky_irradiance(transfer, &sh::project_constant(1.0), normal);
                         material.albedo * (key_light(rays, &keys[key], material, origin, normal) + sky)
-                            + material.emission
+                            + material.emission_under(&keys[key])
                     }
                     Target::Blocked => Vec3::ZERO,
                 };

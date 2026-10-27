@@ -348,6 +348,39 @@ fn a_broken_document_is_refused_and_the_old_one_kept() {
     assert_eq!(app.timeline, expected);
 }
 
+/// A day that keys the world's emission (M1 W1's keyed emission), pushed as an artist edits the
+/// default day: a new group in every key, carried like the others.
+#[test]
+fn a_pushed_day_keys_the_worlds_emission() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    let day = include_str!("../../sapphire_world/default_day.ron");
+    assert_eq!(app.timeline.evaluate(10.0).emission, 1.0, "the default day: as authored");
+    // Lanterns a tenth as bright from sunrise to sunset, full from dusk to dawn.
+    let mut keyed = day.to_owned();
+    for (time, scale) in [("6.5", 0.1), ("10.0", 0.1), ("14.0", 0.1), ("17.5", 0.1), ("18.75", 0.1)]
+        .into_iter()
+        .chain([("0.0", 1.0), ("5.0", 1.0), ("20.0", 1.0)])
+    {
+        let key = format!("time: {time},");
+        assert_eq!(keyed.matches(&key).count(), 1, "{key}");
+        keyed = keyed.replacen(&key, &format!("{key} emission: {scale},"), 1);
+    }
+    let expected = TodTimeline::from_ron(&keyed).unwrap();
+    let owner = app.serve(on_client(app.address(), move |client| {
+        client.push_document("default_day.ron", keyed).unwrap()
+    }));
+    assert_eq!(owner, "the default day");
+    assert_eq!(app.timeline, expected);
+    assert_eq!(app.timeline.evaluate(10.0).emission, 0.1, "dim by day");
+    assert_eq!(app.timeline.evaluate(22.0).emission, 1.0, "full at night");
+    let sunset = app.timeline.evaluate(19.5).emission;
+    assert!(sunset > 0.1 && sunset < 1.0, "coming on at dusk: {sunset}");
+}
+
 #[test]
 fn cvars_are_set_by_name() {
     let mut app = App::new({

@@ -67,6 +67,8 @@ fn documents() -> Vec<AnyMaterialDocument> {
             ..Terminator::default()
         },
         wrap: 0.4,
+        emission: [1.2, 0.6, 0.2],
+        emission_steady: 0.25,
         ..EnvironmentMaterial::default()
     };
     let foliage =
@@ -194,6 +196,10 @@ fn validation_names_the_field() {
     assert!(error(character(|m| m.regions[0].gi.skin = f32::NAN)).starts_with("regions[0].gi.skin"));
     let environment = EnvironmentMaterial { roughness_range: [0.6, 0.2], ..EnvironmentMaterial::default() };
     assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("roughness_range"));
+    for steady in [-0.1, 1.5, f32::NAN] {
+        let environment = EnvironmentMaterial { emission_steady: steady, ..EnvironmentMaterial::default() };
+        assert!(error(AnyMaterialDocument::Environment(environment)).starts_with("emission_steady"));
+    }
     let foliage = FoliageMaterial { wrap: 3.0, ..FoliageMaterial::default() };
     assert!(error(AnyMaterialDocument::Foliage(foliage)).starts_with("wrap"));
     let sky = SkyMaterial { sun: Disc { size: f32::INFINITY, softness: 0.1 }, ..SkyMaterial::default() };
@@ -817,4 +823,25 @@ fn documents_from_before_the_layers_take_none() {
     let params = material.gpu_params(&[Swizzle::IDENTITY; 8]);
     assert_eq!(params.modes[0] & AnimeCharacterParams::FLAG_LAYERS, 0);
     assert_eq!(material.textures()[AnimeCharacterMaterial::SURFACE_MASK], None);
+}
+
+/// The share of an environment material's emission kept steady at every hour (M1 W1's keyed
+/// emission) packs into the emission vector's alpha, which blocks cooked before it hold as 0, its
+/// default; documents write it only when set, so those from before it read and write as they
+/// did.
+#[test]
+fn environment_emission_keeps_its_steady_share_in_the_blocks_alpha() {
+    let swizzles = [Swizzle::IDENTITY; EnvironmentMaterial::TEXTURE_SLOTS.len()];
+    let lantern = EnvironmentMaterial { emission: [2.4, 1.4, 0.55], ..EnvironmentMaterial::default() };
+    assert_eq!(lantern.gpu_params(&swizzles).emission, [2.4, 1.4, 0.55, 0.0], "all of it keyed");
+    let sign = EnvironmentMaterial { emission_steady: 1.0, ..lantern.clone() };
+    assert_eq!(sign.gpu_params(&swizzles).emission, [2.4, 1.4, 0.55, 1.0], "all of it steady");
+
+    // A document without the field, as every one before it: read and written as it was.
+    let written = to_ron(&lantern).unwrap();
+    assert!(!written.contains("emission_steady"), "left out at its default: {written}");
+    assert_eq!(from_ron::<EnvironmentMaterial>(&written).unwrap(), lantern);
+    let text = to_ron(&sign).unwrap();
+    assert!(text.contains("emission_steady: 1.0"), "{text}");
+    assert_eq!(from_ron::<EnvironmentMaterial>(&text).unwrap(), sign);
 }

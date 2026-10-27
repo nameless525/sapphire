@@ -65,6 +65,7 @@ fn sunny_key(hours: f32) -> BakeKey {
         radiance: Vec3::ONE,
         shadow_tint: Vec3::splat(0.2),
         sky,
+        emission: 1.0,
     }
 }
 
@@ -210,6 +211,32 @@ fn bounce_follows_the_keys_and_its_strength() {
     let l1 =
         bake(&floor_and_wall(), &keys, &BakeSettings { visibility_coefficients: 4, ..settings() }).unwrap();
     assert_eq!(l1.visibility.len(), l1.probe_data.len() * 4);
+}
+
+#[test]
+fn emission_bounces_as_each_key_shows_it() {
+    // Keys without sun or sky, so what reaches a probe is the floor's glow alone: none of the
+    // authored emission, half and all of it (M1 W1's keyed emission).
+    let mut dark = sunny_key(0.0);
+    dark.radiance = Vec3::ZERO;
+    dark.sky = [[0.0; sh::L2]; 3];
+    let keys = [0.0, 0.5, 1.0].map(|emission| BakeKey { hours: 8.0 * emission, emission, ..dark });
+    let glowing = |steady: f32| {
+        let mut scene = floor_and_wall();
+        scene.materials[0].emission = Vec3::new(0.6, 0.3, 0.1);
+        scene.materials[0].emission_steady = steady;
+        bake(&scene, &keys, &settings()).unwrap()
+    };
+    let (keyed, steady) = (glowing(0.0), glowing(1.0));
+    let at = probe(&keyed, [8, 2, 6]).unwrap();
+    let glow = |grid: &ProbeGrid, key: usize| bounce(grid, at, key, Vec3::NEG_Y);
+    assert_eq!(glow(&keyed, 0), Vec3::ZERO, "dark: no glow, no bounce");
+    let (half, full) = (glow(&keyed, 1), glow(&keyed, 2));
+    assert!(full.x > 0.1, "the floor's glow: {full}");
+    assert!((half - full * 0.5).abs().max_element() < 0.01 * full.max_element(), "{half} vs {full}");
+    for key in 0..keys.len() {
+        assert_eq!(glow(&steady, key), full, "key {key}: a steady glow lights every key alike");
+    }
 }
 
 #[test]
@@ -416,6 +443,11 @@ fn the_cache_key_follows_the_resolved_keys() {
     let mut moved = day.clone();
     moved[2].sky[1][4] = f32::from_bits(moved[2].sky[1][4].to_bits() + 1);
     assert_ne!(keys_hash(&day), keys_hash(&moved));
+    // The default day shows emission as authored at every key; a keyed scale bakes again.
+    assert!(day.iter().all(|key| key.emission == 1.0));
+    let mut dimmed = day.clone();
+    dimmed[3].emission = 0.1;
+    assert_ne!(keys_hash(&day), keys_hash(&dimmed));
 }
 
 /// [`floor_and_wall`]'s floor without the wall, and a 2 m square card 0.5 m over the probe at

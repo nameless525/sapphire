@@ -8,11 +8,11 @@
 //! - **Views and scene constants** are rewritten whole every frame; they are small. The scene
 //!   constants are the frame's look: the key light, the sun and moon, the sky gradient and the
 //!   sky's layers over it (discs, stars, clouds), ambient light, fog, the shadow tint, the
-//!   character rig's key light, the day/night factor and post-processing. Time of day resolves
-//!   all of them from one set of keys (`sapphire_world::tod`, M1 W1; look pillar 1); the
-//!   renderer sees only the values. The weather's wetness ([`Weather`]) joins them, dry until
-//!   weather fills it, and the wind foliage sways in ([`Wind`], M1 W6), calm until the world
-//!   sends one.
+//!   character rig's key light, the day/night factor, the emission scale and post-processing.
+//!   Time of day resolves all of them from one set of keys (`sapphire_world::tod`, M1 W1; look
+//!   pillar 1); the renderer sees only the values. The weather's wetness ([`Weather`]) joins
+//!   them, dry until weather fills it, and the wind foliage sways in ([`Wind`], M1 W6), calm
+//!   until the world sends one.
 //! - **Local lights** are rewritten whole every frame too: a frame has a few dozen at most
 //!   (spec §3.4), and the renderer culls and lists them per frame anyway.
 //! - **Characters** are rewritten whole every frame as well: each [`CharacterInstance`] gives an
@@ -53,7 +53,7 @@ const RING_SIZE: usize = 3;
 ///
 /// One scene constant is carried for the package that will read it and drawn from nothing yet:
 /// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FramePacket {
     /// Numbers packets in extraction order. Consecutive packets differ by one, which is how
     /// the renderer checks that it saw them all.
@@ -105,6 +105,15 @@ pub struct FramePacket {
     /// "Ramps"), and anything else that has a day and a night look. The frame uniforms carry it
     /// as `day_night`.
     pub day_night: f32,
+    /// How much of the world's authored emission shows (time of day's emission key, M1 W1's
+    /// keyed emission): the environment shader multiplies its materials' emission by it, but
+    /// for the share each keeps steady at every hour (the material's
+    /// [`emission_steady`](sapphire_assets::material::EnvironmentMaterial::emission_steady)), so
+    /// lanterns and lit windows can rest pale by day and glow at night under one exposure. 1,
+    /// the default, draws emission as authored, as does a value that isn't finite; a negative
+    /// one draws none. Characters' emission never follows it: their glow is part of their
+    /// design at any hour.
+    pub emission_scale: f32,
     /// Presentation time in seconds, read from the owning clock (rule R2), for animation:
     /// cloud drift and star twinkle. It is never wrapped: the renderer reduces it as each use
     /// needs, in `f64`, so motion keeps its precision in long sessions and never jumps. Shaders
@@ -187,6 +196,7 @@ impl FramePacket {
             wind,
             character_light,
             day_night,
+            emission_scale,
             time_seconds,
             post,
             lights,
@@ -211,6 +221,7 @@ impl FramePacket {
         *wind = Wind::default();
         *character_light = CharacterLight::default();
         *day_night = 0.0;
+        *emission_scale = 1.0;
         *time_seconds = 0.0;
         *post = PostParams::default();
         lights.clear();
@@ -220,6 +231,39 @@ impl FramePacket {
         skinned.clear();
         palettes.clear();
         morph_weights.clear();
+    }
+}
+
+/// An empty frame 0 in the renderer's default look: no views, lights, characters or instances,
+/// and every scene constant at its type's default, but emission, which shows as authored.
+impl Default for FramePacket {
+    fn default() -> Self {
+        Self {
+            frame: 0,
+            views: Vec::new(),
+            sun: DirectionalLight::default(),
+            sky: SkyGradient::default(),
+            celestial: Celestial::default(),
+            sky_layers: SkyLayers::default(),
+            sky_material: None,
+            ambient: AmbientLight::default(),
+            probe_keys: ProbeKeys::default(),
+            fog: Fog::default(),
+            shadow_tint: Vec3::ZERO,
+            weather: Weather::default(),
+            wind: Wind::default(),
+            character_light: CharacterLight::default(),
+            day_night: 0.0,
+            emission_scale: 1.0,
+            time_seconds: 0.0,
+            post: PostParams::default(),
+            lights: Vec::new(),
+            characters: Vec::new(),
+            instances: InstanceDeltas::default(),
+            skinned: Vec::new(),
+            palettes: Vec::new(),
+            morph_weights: Vec::new(),
+        }
     }
 }
 
@@ -973,6 +1017,7 @@ mod tests {
         packet.weather = Weather { wetness: 0.5, puddles: 0.25 };
         packet.wind = Wind { direction: Vec3::Z, strength: 1.5, gustiness: 0.5 };
         packet.day_night = 1.0;
+        packet.emission_scale = 0.25;
         packet.time_seconds = 1.5;
         packet.lights.push(LocalLight {
             position: Vec3::Y,

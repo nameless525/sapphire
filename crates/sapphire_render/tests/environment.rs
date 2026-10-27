@@ -1,6 +1,7 @@
 //! Environment shader tests that need a GPU (M1 W4): the key light through wrap lighting and a
 //! terminator that widens with distance, the shadow tint and band, the cast-shadow hook's lit
-//! default, distance desaturation, the tiers' specular, emission, local lights, both families on
+//! default, distance desaturation, the tiers' specular, emission and time of day's scale on it,
+//! local lights, both families on
 //! one mesh, the prepasses and temporal AA over the world, and hot reload. Run with
 //! `cargo test -p sapphire_render --test environment -- --ignored`.
 //!
@@ -107,6 +108,8 @@ struct Model<'a> {
     key: Vec3,
     ambient: AmbientLight,
     shadow_tint: Vec3,
+    /// Time of day's emission scale (`FramePacket::emission_scale`).
+    emission_scale: f32,
     /// The band's ramp, sampled as the GPU does (one row, linear, clamped).
     band: Option<&'a [[f32; 4]]>,
     /// The mask map's texel, the same everywhere (all 1 without a map): AO, cavity, specular
@@ -158,7 +161,7 @@ impl Model<'_> {
         diffuse * (key + ambient)
             + self.key * surface.specular(l, n_dot_l) * lit
             + surface.ambient_specular(&self.ambient)
-            + Vec3::from(m.emission)
+            + Vec3::from(m.emission) * (self.emission_scale + (1.0 - self.emission_scale) * m.emission_steady)
     }
 }
 
@@ -448,6 +451,7 @@ struct Harness {
     sun: DirectionalLight,
     ambient: AmbientLight,
     shadow_tint: Vec3,
+    emission_scale: f32,
     lights: Vec<LocalLight>,
     added: Vec<MeshInstance>,
     next_id: u64,
@@ -478,6 +482,7 @@ impl Harness {
             sun: DirectionalLight { direction: Vec3::NEG_X, color: Vec3::ONE, intensity: 1.0 },
             ambient: AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 },
             shadow_tint: Vec3::ZERO,
+            emission_scale: 1.0,
             lights: Vec::new(),
             added: Vec::new(),
             next_id: 0,
@@ -509,6 +514,7 @@ impl Harness {
             key: self.sun.color * self.sun.intensity,
             ambient: self.ambient,
             shadow_tint: self.shadow_tint,
+            emission_scale: self.emission_scale,
             band: None,
             mask: [1.0; 4],
         }
@@ -565,6 +571,7 @@ impl Harness {
         packet.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
         packet.ambient = self.ambient;
         packet.shadow_tint = self.shadow_tint;
+        packet.emission_scale = self.emission_scale;
         packet.post = passthrough();
         packet.lights.extend_from_slice(&self.lights);
         packet.instances.changed.append(&mut self.added);
@@ -949,6 +956,46 @@ fn emission_adds_its_light_on_either_side() {
     let lit = harness.render();
     let grey = Vec3::splat(Vec3::new(0.5, 0.2, 0.2).dot(LUMINANCE));
     assert!((lit.linear(x, y) - (grey + expected)).abs().max_element() < TOLERANCE, "{}", lit.linear(x, y));
+}
+
+/// Time of day's emission scale (M1 W1's keyed emission): a lantern's glow follows it, a sign's
+/// stays steady, and one halfway between keeps half, each over the same lit albedo.
+#[test]
+#[ignore = "needs a GPU"]
+fn time_of_day_scales_emission_but_for_its_steady_share() {
+    let mut harness = Harness::exact();
+    let steady = [0.0, 0.5, 1.0];
+    let materials = steady.map(|emission_steady| EnvironmentMaterial {
+        emission: [0.3, 0.25, 0.15],
+        emission_steady,
+        ..plain(Vec3::splat(0.2))
+    });
+    let handles = materials.clone().map(|material| harness.environment(&material, &[]));
+    // Three squares side by side, facing the camera and the key light.
+    let centers = [-0.6, 0.0, 0.6].map(|x| Vec3::new(x, 0.0, 0.0));
+    let squares = centers.map(|center| square(center, Vec3::Z, Vec3::X, 0.25));
+    let mesh = harness.mesh(&mesh(squares.to_vec()), &handles);
+    harness.sun.direction = Vec3::NEG_Z;
+    harness.camera = CameraData::look_at(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y, 0.6, 1.0, 0.05);
+    harness.add(mesh, Mat4::IDENTITY);
+    // As authored, a tenth of it (by day), none, and twice it (a night's boost).
+    for scale in [1.0, 0.1, 0.0, 2.0] {
+        harness.emission_scale = scale;
+        let frame = harness.render();
+        for ((center, material), steady) in centers.iter().zip(&materials).zip(steady) {
+            let shown = scale + (1.0 - scale) * steady;
+            let expected = Vec3::splat(0.2) + Vec3::from(material.emission) * shown;
+            let (x, y) = frame.pixel_of(*center);
+            let found = frame.linear(x, y);
+            assert!(
+                (found - expected).abs().max_element() < TOLERANCE,
+                "×{scale}, {steady} of it steady: {found}, expected {expected}"
+            );
+            let model = harness.model(material, EnvironmentSpecular::Full);
+            let modeled = model.shade(*center, Vec3::Z, frame.camera.position);
+            assert!((modeled - expected).abs().max_element() < 1e-5, "the model: {modeled} vs {expected}");
+        }
+    }
 }
 
 #[test]

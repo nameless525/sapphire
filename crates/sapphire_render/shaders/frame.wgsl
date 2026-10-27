@@ -42,6 +42,10 @@ struct FrameUniforms {
     day_night: f32,
     // The scale on materials' outline LOD cutoffs (M1 C4, outline.wgsl).
     outline_distance: f32,
+    // How much of the world's authored emission shows (time of day's emission key,
+    // `FramePacket::emission_scale`, M1 W1's keyed emission): environment.wgsl multiplies its
+    // materials' emission by it, but for the share each keeps steady. Never negative.
+    emission_scale: f32,
     // Ambient light (time of day's `FramePacket::ambient`), color × intensity: rgb from the
     // sky above and from the ground below (see `ambient_light`).
     ambient_sky: vec4<f32>,

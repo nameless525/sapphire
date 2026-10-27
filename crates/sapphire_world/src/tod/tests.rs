@@ -946,3 +946,123 @@ fn probe_keys_follow_the_hour_and_cutscenes() {
     assert_eq!(keys, [(3, 1.0 - weight), (6, weight)], "the day key, and the sunset key");
     assert!((keys.iter().map(|(_, w)| w).sum::<f32>() - 1.0).abs() < 1e-6);
 }
+
+/// The default day with the world's emission keyed for lanterns and lit windows (M1 W1's keyed
+/// emission): full through the night and the blue hour, dimming after sunrise to a tenth by day,
+/// coming back from golden hour.
+fn lantern_day() -> TodTimeline {
+    let scales = [1.0, 1.0, 0.4, 0.1, 0.1, 0.25, 0.6, 1.0];
+    let day = TodTimeline::default_day();
+    let keys =
+        day.keys().iter().zip(scales).map(|(key, scale)| TodKey { emission: Some(scale), ..key.clone() });
+    TodTimeline::new(keys.collect()).expect("valid")
+}
+
+#[test]
+fn timelines_without_an_emission_scale_show_emission_as_authored() {
+    let old = TodTimeline::from_ron(TIMELINE_BEFORE_SKY_LAYERS).expect("an older document loads");
+    let day = TodTimeline::default_day();
+    for timeline in [&old, &day] {
+        assert!(timeline.is_complete(), "it can still be the base timeline");
+        assert!(!timeline.groups().contains(TodGroup::Emission));
+        for quarter in 0..96 {
+            assert_eq!(timeline.evaluate(quarter as f32 / 4.0).emission, 1.0, "{}", quarter as f32 / 4.0);
+        }
+    }
+    // Through the resolve, as the packet's default draws it.
+    let (_, mut tod) = time_of_day(22.0);
+    let mut packet = FramePacket { emission_scale: 0.5, ..FramePacket::default() };
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.emission_scale, FramePacket::default().emission_scale);
+    assert_eq!(packet.emission_scale, 1.0);
+}
+
+#[test]
+fn the_emission_scale_is_keyed_like_any_value() {
+    // Exactly each key's value on it, and between keys the first key's eased weight of the way
+    // to the next, as every scalar blends.
+    let keyed = lantern_day();
+    assert!(keyed.is_complete() && keyed.groups().contains(TodGroup::Emission));
+    for key in keyed.keys() {
+        let expected = key.emission.expect("every key sets it");
+        assert_eq!(keyed.evaluate(key.time).emission.to_bits(), expected.to_bits(), "{}", key.time);
+    }
+    for hours in [3.0, 6.0, 8.25, 12.0, 16.0, 18.0, 19.5, 22.0] {
+        let Segment { from, to, weight } = keyed.segment(hours);
+        let (a, b) = (keyed.keys()[from].emission.unwrap(), keyed.keys()[to].emission.unwrap());
+        let evaluated = keyed.evaluate(hours).emission;
+        assert!((evaluated - (a + (b - a) * weight)).abs() < 1e-6, "{hours}: {evaluated}");
+        assert!((a.min(b)..=a.max(b)).contains(&evaluated), "{hours}: between its keys");
+    }
+    // Linear keys wrap at midnight like the rest: from 20:00's 1.0 to 6:00's 0.2 over ten hours.
+    let wrapping = TodTimeline::new(vec![
+        TodKey { emission: Some(0.2), ..key(6.0) },
+        TodKey { emission: Some(1.0), ..key(20.0) },
+    ])
+    .expect("valid");
+    assert!((wrapping.evaluate(1.0).emission - 0.6).abs() < 1e-6, "halfway through the night");
+    assert!((wrapping.evaluate(4.0).emission - 0.36).abs() < 1e-6, "toward dawn");
+    assert!((wrapping.evaluate(13.0).emission - 0.6).abs() < 1e-6, "halfway through the day");
+
+    // Resolved into the frame packet, with every other value as the default day's.
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(keyed, clock, DAY).expect("a complete base");
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.emission_scale, 0.1, "dim by day");
+    let (_, mut plain) = time_of_day(DAY);
+    let mut expected = FramePacket::default();
+    plain.resolve(Vec3::ZERO, 0.0).write(&mut expected);
+    assert_eq!(packet, FramePacket { emission_scale: 0.1, ..expected });
+    tod.clock_mut().set_hours(22.0);
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.emission_scale, 1.0, "full at night");
+}
+
+#[test]
+fn emission_scale_keys_round_trip_and_are_checked() {
+    let day = lantern_day();
+    let text = day.to_ron().expect("write");
+    assert!(text.contains("emission: Some(0.1),"), "written beside the other groups");
+    assert_eq!(TodTimeline::from_ron(&text).expect("read"), day);
+    // Every key of a timeline sets it, or none does.
+    let mut keys = day.keys().to_vec();
+    keys[4].emission = None;
+    let error = TodTimeline::new(keys).unwrap_err();
+    assert!(matches!(error, TodError::MixedGroups { key: 4, .. }), "{error}");
+    let negative = TodTimeline::new(vec![TodKey { emission: Some(-0.5), ..key(12.0) }]).unwrap_err();
+    let problem = "must be finite and not negative";
+    assert_eq!(negative, TodError::Invalid { key: 0, field: "emission", problem });
+}
+
+#[test]
+fn zones_and_cutscenes_override_the_emission_scale() {
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(lantern_day(), clock, DAY).expect("a complete base");
+    let base = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(base.look.emission, 0.1);
+    // A festival street whose lanterns burn all day: a zone that sets the emission alone.
+    let festival = TodKey { emission: Some(1.0), ..key(0.0) };
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 10.0 };
+    let street = TodVolume { blend_distance: 4.0, ..TodVolume::new(shape, zone(festival.clone())) };
+    let zone_id = tod.add_volume(street);
+    let inside = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(inside.look.emission, 1.0, "inside the zone: its lanterns");
+    assert_eq!(inside.look.sky, base.look.sky, "groups the zone doesn't set stay the base's");
+    let edge = tod.resolve(Vec3::new(12.0, 0.0, 0.0), 0.0).look.emission;
+    assert!(edge > 0.1 && edge < 1.0, "blending out over its edge: {edge}");
+    assert_eq!(tod.resolve(Vec3::new(100.0, 0.0, 0.0), 0.0).look.emission, 0.1, "outside: the day's");
+    tod.remove_volume(zone_id);
+    // A shot that lights them, eased in like its other values, and what the renderer reads.
+    let shot = TodCutscene::new(4.0, 1.0, 1.0, None, vec![festival], None).expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(2.0);
+    let mut packet = FramePacket::default();
+    tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
+    assert_eq!(packet.emission_scale, 1.0, "fully in: the shot's, in the frame packet");
+    tod.seek_cutscene(0.5);
+    let easing = tod.resolve(Vec3::ZERO, 0.0).look.emission;
+    assert!(easing > 0.1 && easing < 1.0, "easing in: {easing}");
+    tod.stop_cutscene();
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.emission, 0.1);
+}

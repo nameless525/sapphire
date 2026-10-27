@@ -913,6 +913,7 @@ mod tests {
                     clusters,
                     day_night,
                     outline_distance,
+                    emission_scale,
                     ambient_sky,
                     ambient_ground,
                     shadow_tint,

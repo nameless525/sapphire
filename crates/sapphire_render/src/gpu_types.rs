@@ -37,8 +37,11 @@ pub(crate) struct FrameUniforms {
     /// The scale on materials' outline LOD cutoffs ([`crate::Renderer::set_outline_distance`],
     /// M1 C4).
     pub outline_distance: f32,
+    /// How much of the world's authored emission shows (`FramePacket::emission_scale`, M1 W1's
+    /// keyed emission), made safe by [`emission_scale()`].
+    pub emission_scale: f32,
     /// Pads to the next vector, as WGSL aligns it.
-    pub padding: [f32; 2],
+    pub padding: f32,
     /// rgb: ambient light from above (`FramePacket::ambient`, sky × intensity).
     pub ambient_sky: [f32; 4],
     /// rgb: ambient light from below (ground × intensity).
@@ -66,7 +69,8 @@ impl FrameUniforms {
             clusters: lights.clusters,
             day_night: frame.day_night,
             outline_distance,
-            padding: [0.0; 2],
+            emission_scale: emission_scale(frame.emission_scale),
+            padding: 0.0,
             ambient_sky: (frame.ambient.sky * frame.ambient.intensity).extend(0.0).to_array(),
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
@@ -80,6 +84,13 @@ impl FrameUniforms {
 /// finite.
 pub(crate) fn wrap_time(seconds: f64) -> f32 {
     if seconds.is_finite() { seconds.rem_euclid(SHADER_TIME_PERIOD) as f32 } else { 0.0 }
+}
+
+/// The packet's emission scale as shaders read it: never negative, and 1 (as authored) for a
+/// value that isn't finite, so a bad packet can't take every material's emission, or with it
+/// the whole world, to infinity or NaN.
+pub(crate) fn emission_scale(scale: f32) -> f32 {
+    if scale.is_finite() { scale.max(0.0) } else { 1.0 }
 }
 
 /// One view: a camera rendering into a target of a given size (WGSL `ViewUniforms`, group 1,
@@ -244,6 +255,18 @@ pub(crate) struct Dequantize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_emission_scale_reaches_shaders_finite_and_never_negative() {
+        let uniforms = |scale: f32| {
+            let frame = FramePacket { emission_scale: scale, ..FramePacket::default() };
+            FrameUniforms::new(&frame, LightUniforms::default(), 1.0).emission_scale
+        };
+        assert_eq!(uniforms(1.0), 1.0, "the default: as authored");
+        assert_eq!((uniforms(0.15), uniforms(2.5), uniforms(0.0)), (0.15, 2.5, 0.0));
+        assert_eq!(uniforms(-0.5), 0.0, "none, never a negative light");
+        assert_eq!((uniforms(f32::NAN), uniforms(f32::INFINITY)), (1.0, 1.0), "as authored");
+    }
 
     #[test]
     fn normal_matrix_handles_non_uniform_and_degenerate_scale() {

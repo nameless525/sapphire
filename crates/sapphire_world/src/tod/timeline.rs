@@ -18,7 +18,7 @@ const DEFAULT_DAY: &str = include_str!("../../default_day.ron");
 /// A day of looks: [`TodKey`]s at times of day, blended between neighbors and wrapping from the
 /// last key of the day to the first of the next (a `TodTimeline` document, schema 1).
 ///
-/// The base timeline sets every group in every key but the sky's optional layers
+/// The base timeline sets every group in every key but the optional ones
 /// ([`Self::is_complete`]); a zone's timeline may set only the groups it overrides. Either way every key sets the same groups, the keys'
 /// times increase, and every value is in range: a timeline is valid however it was made,
 /// deserialization included. It has a stable type path but no `Reflect`, which could build or
@@ -89,8 +89,9 @@ impl TodTimeline {
         self.groups
     }
 
-    /// Whether the keys set every group the base timeline must: all but the sky's layers
-    /// ([`TodGroup::SKY_LAYERS`](super::TodGroup::SKY_LAYERS)), which draw nothing where unset.
+    /// Whether the keys set every group the base timeline must: all but the optional ones
+    /// ([`TodGroup::OPTIONAL`](super::TodGroup::OPTIONAL): the sky's and post's layers, which draw
+    /// nothing where unset, and the emission scale, which shows emission as authored).
     pub fn is_complete(&self) -> bool {
         TodGroups::REQUIRED.first_missing_from(self.groups).is_none()
     }

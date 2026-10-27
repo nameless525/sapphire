@@ -583,7 +583,9 @@
 //!   The tier picks the model ([`EnvironmentSpecular`]): full on desktop, approximate on
 //!   Mobile-High, none on Mobile-Low.
 //! - **Distance desaturation** greys the albedo with view distance, keeping the light's hue;
-//!   **emission** adds HDR light.
+//!   **emission** adds HDR light, as much of it as time of day's emission scale shows
+//!   ([`FramePacket::emission_scale`], M1 W1's keyed emission) but for the share its material
+//!   keeps steady at every hour.
 //! - **Local lights** come from the same lists the anime character shader walks.
 //! - **Cast shadows** enter through one function, `cast_shadow`, which R4 fills with
 //!   `shadow_visibility()` (`frame.wgsl`): the key light's visibility past the cascades (the

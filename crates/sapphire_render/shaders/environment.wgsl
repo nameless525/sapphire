@@ -68,7 +68,11 @@
 //   material's start distance to its end, by its desaturation amount, eased: distant surfaces
 //   read as painted color masses while the frame's light keeps its time of day hue. Emission
 //   keeps its color.
-// - **Emission** (color × map) adds HDR light unaffected by lighting, so it blooms.
+// - **Emission** (color × map) adds HDR light unaffected by lighting, so it blooms. Time of day
+//   decides how much of it shows (`frame.emission_scale`, M1 W1's keyed emission), but for the
+//   share the material keeps steady at every hour (its block's `emission.a`): lanterns and lit
+//   windows rest pale by day and glow at night under one exposure, while a sign that glows by
+//   day too keeps its light.
 // - **Fog** (M1 W3) covers the final color, lit and emitting, as it does every world pass's
 //   (`fogged` in frame.wgsl): distance and height fog colored by the sky's horizon.
 //
@@ -488,7 +492,8 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
         let list = light_list(in.clip_position, in.instance);
         color += local_lighting(surface, list, in.world_position, derivatives);
     }
-    var emission = environment_materials[material].emission.rgb;
+    let emission_params = environment_materials[material].emission;
+    var emission = emission_params.rgb * mix(frame.emission_scale, 1.0, emission_params.a);
     if material_has_texture(modes, ENVIRONMENT_EMISSION) {
         emission *= sample_material(emission_map, swizzles, ENVIRONMENT_EMISSION, uv).rgb;
     }

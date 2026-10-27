@@ -20,7 +20,8 @@ use crate::texture::Swizzle;
 ///
 /// PBR inputs bent toward a painted read: diffuse wrap, a terminator whose width grows with
 /// distance, an authored shadow tint, a clamped specular in a narrow roughness range, and
-/// distance desaturation. Time of day supplies the shadow tint and ambient these modulate.
+/// distance desaturation. Time of day supplies the shadow tint and ambient these modulate, and
+/// decides how much of the emission shows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[reflect(Document)]
@@ -49,9 +50,21 @@ pub struct EnvironmentMaterial {
     /// side and in cast shadow: shadows take a color, never grey.
     pub shadow_tint: [f32; 3],
     pub distance: DistanceStylization,
-    /// Linear RGB × intensity; multiplies `emission_map`.
+    /// Linear RGB × intensity; multiplies `emission_map`. Time of day scales it by its emission
+    /// key (M1 W1's keyed emission), but for the share kept steady.
     pub emission: [f32; 3],
     pub emission_map: Option<AssetId>,
+    /// The share of the emission that shines the same at every hour, 0 to 1 (M1 W1's keyed
+    /// emission). 0, the default, leaves all of it to time of day's emission key, as paper
+    /// lanterns and lit windows want: pale by day, glowing at night. 1 keeps it as authored
+    /// whatever the hour, for a sign or a crystal that glows by day too. Written only when set,
+    /// so documents from before it read and write as they did.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub emission_steady: f32,
+}
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl Versioned for EnvironmentMaterial {
@@ -77,6 +90,7 @@ impl Default for EnvironmentMaterial {
             distance: DistanceStylization::default(),
             emission: [0.0; 3],
             emission_map: None,
+            emission_steady: 0.0,
         }
     }
 }
@@ -136,7 +150,9 @@ pub struct EnvironmentParams {
     pub shadow_tint: [f32; 4],
     /// x: start; y: end (meters); z: desaturation; w: 0.
     pub distance: [f32; 4],
-    /// rgb: emission × intensity; a: 0.
+    /// rgb: emission × intensity; a: the share of it kept steady at every hour
+    /// ([`EnvironmentMaterial::emission_steady`]), the rest following time of day's emission
+    /// scale. Blocks cooked before it hold 0 there, which is the default, so they need no recook.
     pub emission: [f32; 4],
     /// x: flags (bit `i` for texture slot `i`, then `FLAG_*`).
     pub modes: [u32; 4],
@@ -183,7 +199,7 @@ impl EnvironmentMaterial {
             terminator: [self.terminator.width, self.terminator.growth, band, 0.0],
             shadow_tint: rgb_w(self.shadow_tint, 0.0),
             distance: self.distance.gpu(),
-            emission: rgb_w(self.emission, 0.0),
+            emission: rgb_w(self.emission, self.emission_steady),
             modes: [flags, 0, 0, 0],
             swizzles: pack_swizzles(swizzles),
         }
@@ -215,7 +231,8 @@ impl MaterialDocument for EnvironmentMaterial {
         }
         color("shadow_tint", &self.shadow_tint)?;
         self.distance.validate("distance")?;
-        color("emission", &self.emission)
+        color("emission", &self.emission)?;
+        unit("emission_steady", self.emission_steady)
     }
 
     fn textures(&self) -> Vec<Option<AssetId>> {

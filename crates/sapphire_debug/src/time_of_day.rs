@@ -499,6 +499,10 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
         ui.label("Day/night");
         ui.monospace(format!("{:.2}", look.day_night));
         ui.end_row();
+        // How much of the world's authored emission shows (M1 W1's keyed emission).
+        ui.label("Emission");
+        ui.monospace(format!("×{:.2}", look.emission));
+        ui.end_row();
         let post = look.post();
         ui.label("Post");
         ui.monospace(format!(

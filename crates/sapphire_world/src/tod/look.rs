@@ -49,6 +49,9 @@ pub struct TodLook {
     pub character_bloom: CharacterBloom,
     pub gradients: [GradientLayer; MAX_GRADIENT_LAYERS],
     pub lens_flare: LensFlare,
+    /// How much of the world's authored emission shows, 1 as authored (M1 W1's keyed emission;
+    /// [`FramePacket::emission_scale`]).
+    pub emission: f32,
 }
 
 impl Default for TodLook {
@@ -78,6 +81,8 @@ impl Default for TodLook {
             character_bloom: post.character_bloom,
             gradients: post.gradients,
             lens_flare: post.lens_flare,
+            // As authored, as the packet's default draws it.
+            emission: 1.0,
         }
     }
 }
@@ -138,7 +143,7 @@ impl TodLook {
 
     /// Writes the look into `packet`'s scene constants: the key light, the sun, moon and
     /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character light,
-    /// day/night factor and post-processing.
+    /// day/night factor, emission scale and post-processing.
     pub fn write(&self, packet: &mut FramePacket) {
         packet.sun = self.key_light();
         packet.celestial = Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere };
@@ -150,6 +155,7 @@ impl TodLook {
         packet.shadow_tint = self.shadow_tint;
         packet.character_light = self.character_light;
         packet.day_night = self.day_night;
+        packet.emission_scale = self.emission;
         packet.post = self.post();
     }
 
@@ -193,6 +199,7 @@ impl TodLook {
         group(&mut self.character_bloom, from_bloom, to_bloom, segment, weight);
         group(&mut self.gradients, from.gradients.as_ref(), to.gradients.as_ref(), segment, weight);
         group(&mut self.lens_flare, from.lens_flare.as_ref(), to.lens_flare.as_ref(), segment, weight);
+        group(&mut self.emission, from.emission.as_ref(), to.emission.as_ref(), segment, weight);
     }
 }
 
@@ -603,6 +610,7 @@ impl Mix for TodLook {
             character_bloom: self.character_bloom.mix(&other.character_bloom, t),
             gradients: self.gradients.mix(&other.gradients, t),
             lens_flare: self.lens_flare.mix(&other.lens_flare, t),
+            emission: self.emission.mix(&other.emission, t),
         }
     }
 }
@@ -696,7 +704,7 @@ impl Resolve for CharacterKey {
     }
 }
 
-/// The day/night factor, exposure and star brightness.
+/// The day/night factor, exposure, star brightness and the emission scale.
 impl Resolve for f32 {
     type Value = f32;
 

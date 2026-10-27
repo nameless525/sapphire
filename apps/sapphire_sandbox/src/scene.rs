@@ -1399,6 +1399,31 @@ mod tests {
     }
 
     #[test]
+    fn a_day_that_keys_the_emission_reaches_the_packet() {
+        let mut scene = scene();
+        let emission = |scene: &mut Scene, hours: f32| {
+            scene.set_day(hours, None);
+            scene.step();
+            let scale = scene.frame_packet(1.0, Some((1920, 1080))).emission_scale;
+            scene.end_frame();
+            scale
+        };
+        assert_eq!(emission(&mut scene, 13.0), 1.0, "the default day shows emission as authored");
+        // An edited day replaces it as hot reload and live link apply one
+        // (`reload::Document::DefaultDay`): lanterns a tenth as bright from sunrise to sunset
+        // (M1 W1's keyed emission).
+        let day = TodTimeline::default_day();
+        let keys = day.keys().iter().map(|key| {
+            let scale = if (6.5..=18.75).contains(&key.time) { 0.1 } else { 1.0 };
+            sapphire_world::tod::TodKey { emission: Some(scale), ..key.clone() }
+        });
+        let keyed = TodTimeline::new(keys.collect()).expect("valid");
+        scene.time_of_day_mut().set_timeline(keyed).expect("complete");
+        assert_eq!(emission(&mut scene, 13.0), 0.1, "dim by day");
+        assert_eq!(emission(&mut scene, 23.0), 1.0, "full at night");
+    }
+
+    #[test]
     fn the_character_is_lit_by_its_light_rig() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         let character = InstanceId(scene.character.to_bits());

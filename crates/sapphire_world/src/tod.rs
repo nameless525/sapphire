@@ -11,10 +11,11 @@
 //! - **[`TodTimeline`]** (a `TodTimeline` RON document): [`TodKey`]s at hours of the day, each
 //!   setting groups of values ([`TodGroup`]: sun, moon, sky, ambient, fog, shadow tint,
 //!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars and
-//!   clouds, and post's layers: diffusion, character bloom, gradients and lens flare). The base
-//!   timeline sets them all but the sky's and post's layers, which are optional: a timeline
-//!   without them, as every timeline before them was, draws the sky's gradient alone and post as
-//!   it was ([`sapphire_render::PostParams::plain`]).
+//!   clouds, post's layers: diffusion, character bloom, gradients and lens flare, and the world's
+//!   emission scale). The base timeline sets them all but the sky's and post's layers and the
+//!   emission scale, which are optional ([`TodGroup::OPTIONAL`]): a timeline without them, as
+//!   every timeline before them was, draws the sky's gradient alone, post as it was
+//!   ([`sapphire_render::PostParams::plain`]) and emission as authored.
 //!   [`TodTimeline::default_day`] is the shipped one, compiled in until packs (A4) carry
 //!   timelines as content.
 //! - **[`TodVolume`]**: a zone's override, a timeline that sets every group or only some, blended
@@ -68,6 +69,13 @@
 //! blend (the frame uniforms' `day_night`), and fog is drawn over the world, the characters and
 //! the sky, and lights fog cards (W3). The rest is carried for the packages that read it: ambient
 //! on the environment (W4, W5) and the shadow tint (R4, W4).
+//!
+//! The emission scale (M1 W1's keyed emission) multiplies the environment's authored emission
+//! (W4), but for the share a material keeps steady, so lanterns and lit windows rest pale by day
+//! and glow at night under the same exposure; the probe bake (W5) lights each of its keys'
+//! emission by that key's scale. Characters' own glow (C7's emission layers) is part of their
+//! design and shows the same at every hour, so it never follows the scale; foliage and fog cards
+//! have no emission.
 //!
 //! # The celestial sphere
 //!
@@ -132,8 +140,8 @@ pub enum TodError {
     #[error("key {key}: `{field}` {problem}")]
     Invalid { key: usize, field: &'static str, problem: &'static str },
     #[error(
-        "the base timeline must set every group but the sky's and post's optional layers, and its keys \
-         have no `{0}`"
+        "the base timeline must set every group but the optional ones (the sky's and post's layers and \
+         the emission scale), and its keys have no `{0}`"
     )]
     Incomplete(TodGroup),
     #[error("cutscene: `{field}` {problem}")]

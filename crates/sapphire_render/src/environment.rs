@@ -6,8 +6,9 @@
 //! pillar 4: soft ambient light and tinted shadows). Its header has the model: the world's key
 //! light through a terminator remap whose width grows with distance, wrap lighting, time of
 //! day's shadow tint, a terminator band, the ambient hemisphere, GGX specular under a clamp,
-//! distance desaturation and emission, and the cast-shadow hook (`cast_shadow`) that shadows
-//! (R4) fill. Its materials are cooked
+//! distance desaturation and emission (by time of day's emission scale, but for the share a
+//! material keeps steady), and the cast-shadow hook (`cast_shadow`) that shadows (R4) fill. Its
+//! materials are cooked
 //! [`EnvironmentMaterial`](sapphire_assets::material::EnvironmentMaterial)s, drawn on meshes
 //! beside the anime character family's (see the crate docs, "Material families on meshes").
 //! Foliage (M1 W6, [`crate::foliage`]) is lit by the same model, sharing its wrap and distance

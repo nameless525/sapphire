@@ -7,10 +7,10 @@
 //! the materials their slots name and those materials' color maps, and time of day's default
 //! day for the keys' light, all of it part of the cache key ([`Dependency::Asset`] for every
 //! mesh and material, by key, and the keys as the bake reads them, resolved: each key's hour,
-//! light, shadow tint and sky radiance by their bits, so a change to the timeline or to the code
-//! that resolves it, time of day's evaluation, its key light, the celestial sphere or
-//! `sky_radiance`, bakes again): a changed mesh, material, map or key bakes the grid again, and
-//! an unchanged tree takes it from the cache.
+//! light, shadow tint, sky radiance and emission scale by their bits, so a change to the timeline
+//! or to the code that resolves it, time of day's evaluation, its key light, the celestial sphere
+//! or `sky_radiance`, bakes again): a changed mesh, material, map or key bakes the grid again,
+//! and an unchanged tree takes it from the cache.
 //!
 //! # The bake ([`bake::bake`])
 //!
@@ -28,7 +28,9 @@
 //! 3. **Direct light**, per time-of-day key: the key's sun or moon through W4's environment
 //!    shading (wrapped Lambert on the lit side, a shadow ray, and in shadow the key's shadow tint
 //!    times the material's kept), plus the key's sky through the surfel's visibility, times the
-//!    albedo, plus emission (the lanterns light their surroundings). The sky is
+//!    albedo, plus emission (the lanterns light their surroundings), as much of it as the key's
+//!    emission scale shows (M1 W1's keyed emission) but for the material's steady share, as the
+//!    renderer draws it: a lantern dark by day lights nothing in the day's keys. The sky is
 //!    `sapphire_render::ambient::sky_radiance`: the key's gradient at its authored ambient
 //!    strength, as the renderer relights it.
 //! 4. **Bounces:** [`ProbeGridDocument::bounces`] − 1 passes in which every surfel adds the light
@@ -333,7 +335,8 @@ fn keys_hash(keys: &[BakeKey]) -> blake3::Hash {
             .chain(key.to_light.to_array())
             .chain(key.radiance.to_array())
             .chain(key.shadow_tint.to_array())
-            .chain(key.sky.iter().flatten().copied());
+            .chain(key.sky.iter().flatten().copied())
+            .chain([key.emission]);
         for value in values {
             hasher.update(&value.to_bits().to_le_bytes());
         }
@@ -358,6 +361,7 @@ pub fn keys(timeline: BakeTimeline) -> Vec<BakeKey> {
                 radiance: light.color * light.intensity.max(0.0),
                 shadow_tint: look.shadow_tint,
                 sky: sapphire_render::ambient::sky_radiance(&look.sky, &look.ambient),
+                emission: look.emission,
             }
         })
         .collect()
@@ -488,6 +492,7 @@ fn bake_material<'a>(
             let material = BakeMaterial {
                 albedo: base * mean_color(material.base_color_map, input)?,
                 emission: emission * mean_color(material.emission_map, input)?,
+                emission_steady: material.emission_steady,
                 wrap: material.wrap,
                 shadow_tint: Vec3::from(material.shadow_tint),
                 ..BakeMaterial::default()

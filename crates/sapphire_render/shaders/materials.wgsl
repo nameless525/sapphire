@@ -164,7 +164,9 @@ struct EnvironmentParams {
     shadow_tint: vec4<f32>,
     // x: start; y: end (meters); z: desaturation at the end.
     distance: vec4<f32>,
-    // rgb: emission × intensity; multiplies the emission map.
+    // rgb: emission × intensity; multiplies the emission map. a: the share of it that shines the
+    // same at every hour, 0 to 1; the rest follows time of day's emission scale
+    // (`frame.emission_scale`, M1 W1's keyed emission).
     emission: vec4<f32>,
     // x: bound slots, then ENVIRONMENT_FLAG_*.
     modes: vec4<u32>,

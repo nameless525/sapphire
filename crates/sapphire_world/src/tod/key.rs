@@ -82,6 +82,15 @@ pub struct TodKey {
     /// The lens flare from the sun (M1 P2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lens_flare: Option<LensFlareKey>,
+    /// How much of the world's authored emission shows: environment materials' emission × this,
+    /// 1 as authored (M1 W1's keyed emission; the renderer reads it as
+    /// [`sapphire_render::FramePacket::emission_scale`]). Exposure can't tell a lantern from the
+    /// light around it, so a lantern bright enough to bloom at night would glow at noon too;
+    /// keyed down by day, paper lanterns and lit windows rest pale and come on at dusk. A
+    /// material can keep a share of its emission steady at every hour (its `emission_steady`),
+    /// and characters' emission never follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emission: Option<f32>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -554,10 +563,11 @@ pub enum TodGroup {
     CharacterBloom,
     Gradients,
     LensFlare,
+    Emission,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -577,6 +587,7 @@ impl TodGroup {
         Self::CharacterBloom,
         Self::Gradients,
         Self::LensFlare,
+        Self::Emission,
     ];
 
     /// The sky's layers over its gradient (M1 W2): optional even in the base timeline, where a
@@ -589,6 +600,21 @@ impl TodGroup {
     /// draw post as they did ([`sapphire_render::PostParams::plain`]).
     pub const POST_LAYERS: [Self; 4] =
         [Self::Diffusion, Self::CharacterBloom, Self::Gradients, Self::LensFlare];
+
+    /// Every group the base timeline may leave out: the sky's layers ([`Self::SKY_LAYERS`]),
+    /// post's ([`Self::POST_LAYERS`]) and the emission scale (M1 W1's keyed emission), which a
+    /// timeline that leaves it out keeps at 1, as authored. Each draws where unset as every
+    /// timeline written before it drew.
+    pub const OPTIONAL: [Self; 8] = [
+        Self::Discs,
+        Self::Stars,
+        Self::Clouds,
+        Self::Diffusion,
+        Self::CharacterBloom,
+        Self::Gradients,
+        Self::LensFlare,
+        Self::Emission,
+    ];
 
     /// The group's field name in a key.
     pub fn name(self) -> &'static str {
@@ -612,6 +638,7 @@ impl TodGroup {
             Self::CharacterBloom => "character_bloom",
             Self::Gradients => "gradients",
             Self::LensFlare => "lens_flare",
+            Self::Emission => "emission",
         }
     }
 
@@ -633,18 +660,13 @@ pub struct TodGroups(u32);
 impl TodGroups {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self((1 << TodGroup::ALL.len()) - 1);
-    /// What the base timeline must set: every group but the sky's layers
-    /// ([`TodGroup::SKY_LAYERS`]) and post's ([`TodGroup::POST_LAYERS`]).
+    /// What the base timeline must set: every group but the optional ones
+    /// ([`TodGroup::OPTIONAL`]: the sky's layers, post's and the emission scale).
     pub const REQUIRED: Self = {
         let mut bits = Self::ALL.0;
         let mut index = 0;
-        while index < TodGroup::SKY_LAYERS.len() {
-            bits &= !(1 << TodGroup::SKY_LAYERS[index] as u32);
-            index += 1;
-        }
-        let mut index = 0;
-        while index < TodGroup::POST_LAYERS.len() {
-            bits &= !(1 << TodGroup::POST_LAYERS[index] as u32);
+        while index < TodGroup::OPTIONAL.len() {
+            bits &= !(1 << TodGroup::OPTIONAL[index] as u32);
             index += 1;
         }
         Self(bits)
@@ -712,6 +734,7 @@ impl TodKey {
             (TodGroup::CharacterBloom, self.character_bloom.is_some()),
             (TodGroup::Gradients, self.gradients.is_some()),
             (TodGroup::LensFlare, self.lens_flare.is_some()),
+            (TodGroup::Emission, self.emission.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -834,6 +857,9 @@ impl TodKey {
             non_negative(flare.intensity, "lens_flare.intensity")?;
             color(flare.color, "lens_flare.color")?;
         }
+        if let Some(emission) = self.emission {
+            non_negative(emission, "emission")?;
+        }
         Ok(())
     }
 }
@@ -914,6 +940,12 @@ mod tests {
         assert_eq!(groups.to_string(), "fog, exposure");
         assert_eq!(TodKey::default().groups(), TodGroups::NONE);
         assert_eq!(TodGroups::ALL.iter().count(), TodGroup::ALL.len());
+        let keyed = TodKey { emission: Some(0.2), ..TodKey::default() };
+        assert_eq!(keyed.groups().iter().collect::<Vec<_>>(), [TodGroup::Emission]);
+        assert_eq!(keyed.groups().to_string(), "emission");
+        assert!(!TodGroups::REQUIRED.contains(TodGroup::Emission), "the base timeline may leave it out");
+        let optional = TodGroup::OPTIONAL.len();
+        assert_eq!(TodGroups::REQUIRED.iter().count(), TodGroup::ALL.len() - optional);
         assert_eq!(TodGroups::ALL.first_missing_from(groups), Some(TodGroup::Sun));
         assert_eq!(groups.first_missing_from(TodGroups::ALL), None);
     }
@@ -949,5 +981,10 @@ mod tests {
         assert_eq!(check(TodKey { fog: Some(fog), ..TodKey::default() }), Some("fog.far.density"));
         let bloom = BloomKey { knee: 2.0, ..BloomKey::default() };
         assert_eq!(check(TodKey { bloom: Some(bloom), ..TodKey::default() }), Some("bloom.knee"));
+        assert_eq!(check(TodKey { emission: Some(0.0), ..TodKey::default() }), None, "none shows");
+        assert_eq!(check(TodKey { emission: Some(2.5), ..TodKey::default() }), None, "a night boost");
+        for wrong in [-0.1, f32::NAN, f32::INFINITY] {
+            assert_eq!(check(TodKey { emission: Some(wrong), ..TodKey::default() }), Some("emission"));
+        }
     }
 }

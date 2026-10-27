@@ -1,12 +1,12 @@
 //! macOS: bundle the host build as a signed `.app`, and run the bundled executable.
 //! `--platform desktop` runs the unbundled build instead.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Command;
 
 use super::apple::{self, BundleLayout};
-use super::{App, Options, Platform};
+use super::{App, CONTENT_DIR_ENV, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace;
 
@@ -28,12 +28,32 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     Ok(layout.root)
 }
 
-/// Bundles, then runs the bundled executable in the foreground, so content resolves from
-/// the bundle as it does for players and the console stays attached.
+/// Bundles, then runs the bundled executable in the foreground, so the console stays
+/// attached (see [`launch_command`] for where its content comes from).
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let bundle = bundle(app, options)?;
     let executable = BundleLayout::macos(bundle).executable_dir.join(&app.package);
-    super::launch(Command::new(executable).args(args), options)
+    let inherited = std::env::var_os(CONTENT_DIR_ENV);
+    super::launch(&mut launch_command(executable, args, options, inherited.as_deref()), options)
+}
+
+/// Runs the bundled `executable` with `args`. Content resolves from the bundle as it does for
+/// players, except in builds that hot reload (`--features dev`): they read the desktop cook,
+/// `target/content/desktop/`, which `cargo xtask content` rewrites while they run, since the
+/// bundle's copy never changes. A `SAPPHIRE_CONTENT_DIR` the caller set, `inherited`, wins.
+fn launch_command(
+    executable: PathBuf,
+    args: &[String],
+    options: &Options,
+    inherited: Option<&OsStr>,
+) -> Command {
+    let mut command = Command::new(executable);
+    command.args(args);
+    // The platform layer ignores an empty one too.
+    if super::takes_recooks(options) && inherited.is_none_or(OsStr::is_empty) {
+        command.env(CONTENT_DIR_ENV, content::cooked_dir(Cook::Desktop));
+    }
+    command
 }
 
 /// Extra environment for building for macOS. SDL's CMake build fails without an explicit
@@ -46,4 +66,42 @@ pub fn build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
     }
     let sdk = workspace::output(Command::new("xcrun").args(["--sdk", "macosx", "--show-sdk-path"]))?;
     Ok(vec![("SDKROOT", sdk.trim().into())])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `SAPPHIRE_CONTENT_DIR` a run of a build with `features` sets, if any, given the
+    /// caller's `inherited` one.
+    fn content_dir(features: &[&str], inherited: Option<&str>) -> Option<PathBuf> {
+        let options = Options {
+            features: features.iter().map(|&feature| feature.to_owned()).collect(),
+            ..Options::default()
+        };
+        let args = ["--frames".to_owned(), "10".to_owned()];
+        let command =
+            launch_command("App.app/Contents/MacOS/app".into(), &args, &options, inherited.map(OsStr::new));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["--frames", "10"]);
+        let mut envs = command.get_envs();
+        let content = envs.next().map(|(name, value)| {
+            assert_eq!(name, CONTENT_DIR_ENV);
+            PathBuf::from(value.expect("set, not removed"))
+        });
+        assert!(envs.next().is_none(), "only the content directory is set");
+        content
+    }
+
+    #[test]
+    fn hot_reloading_runs_read_the_cook_not_the_bundle() {
+        let cooked = Some(content::cooked_dir(Cook::Desktop));
+        assert!(cooked.as_ref().is_some_and(|dir| dir.ends_with("target/content/desktop")));
+        assert_eq!(content_dir(&["dev"], None), cooked);
+        assert_eq!(content_dir(&["tracy", "dev"], None), cooked);
+        assert_eq!(content_dir(&["dev"], Some("")), cooked, "an empty one is no choice");
+        // The caller's choice stands, and builds without hot reload read the bundle as players do.
+        assert_eq!(content_dir(&["dev"], Some("/elsewhere")), None);
+        assert_eq!(content_dir(&[], None), None);
+        assert_eq!(content_dir(&["tracy"], None), None);
+    }
 }

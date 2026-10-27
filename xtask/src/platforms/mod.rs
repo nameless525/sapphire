@@ -263,6 +263,13 @@ fn executable(
     }
 }
 
+/// Whether the build hot reloads its content (the sandbox's `dev` feature, spec §5.10), so a
+/// recook while it runs is the point rather than a hazard, and it should read the cook itself
+/// rather than a copy.
+fn takes_recooks(options: &Options) -> bool {
+    options.features.iter().any(|feature| feature == "dev")
+}
+
 /// Runs `command` in the foreground, or with `--dry-run` prints it instead.
 fn launch(command: &mut Command, options: &Options) -> anyhow::Result<()> {
     if options.dry_run {
@@ -317,6 +324,18 @@ mod tests {
         assert_eq!("android".parse::<Platform>().unwrap(), Platform::Android);
         let err = "iphone".parse::<Platform>().unwrap_err().to_string();
         assert_eq!(err, "unknown platform `iphone`; expected one of: desktop, macos, ios-sim, ios, android");
+    }
+
+    #[test]
+    fn only_hot_reloading_builds_let_the_content_be_recooked_while_they_run() {
+        let options = |features: &[&str]| Options {
+            features: features.iter().map(|&feature| feature.to_owned()).collect(),
+            ..Options::default()
+        };
+        assert!(takes_recooks(&options(&["dev"])));
+        assert!(takes_recooks(&options(&["tracy", "dev"])));
+        assert!(!takes_recooks(&options(&[])));
+        assert!(!takes_recooks(&options(&["tracy"])));
     }
 
     #[test]

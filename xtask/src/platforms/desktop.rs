@@ -40,14 +40,8 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     // Held while the app runs, so no other xtask run recooks the content under it, unless the
     // build hot reloads: it remounts the packs `cargo xtask content` rewrites while it runs
     // (written under temporary names and renamed into place), so a recook must not wait for it.
-    let _held = (!takes_recooks(options)).then_some(content);
+    let _held = (!super::takes_recooks(options)).then_some(content);
     super::launch(&mut command, options)
-}
-
-/// Whether the build hot reloads its content (the sandbox's `dev` feature, spec §5.10), so a
-/// recook while it runs is the point rather than a hazard.
-fn takes_recooks(options: &Options) -> bool {
-    options.features.iter().any(|feature| feature == "dev")
 }
 
 /// Cooks for desktop and builds for the host: what [`run`] launches.
@@ -60,21 +54,4 @@ pub fn prepare(app: &App, options: &Options) -> anyhow::Result<(content::Cooked,
 /// Host-specific build environment: only macOS needs any (see [`macos::build_env`]).
 pub fn build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
     if std::env::consts::OS == "macos" { macos::build_env() } else { Ok(Vec::new()) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_hot_reloading_builds_let_the_content_be_recooked_while_they_run() {
-        let options = |features: &[&str]| Options {
-            features: features.iter().map(|&feature| feature.to_owned()).collect(),
-            ..Options::default()
-        };
-        assert!(takes_recooks(&options(&["dev"])));
-        assert!(takes_recooks(&options(&["tracy", "dev"])));
-        assert!(!takes_recooks(&options(&[])));
-        assert!(!takes_recooks(&options(&["tracy"])));
-    }
 }

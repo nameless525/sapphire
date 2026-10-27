@@ -61,7 +61,7 @@ cargo xtask run --platform android
 Each command cooks the sample content, builds the sandbox, packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames, and `-- --look-dev hero` shows the look-dev stage (also `wide`, `sky`, `street` and `face`). `--release` builds optimized, `--features dev` adds the debug overlay, hot reload and live link, and `--dry-run` builds and packages but prints the launch command instead of running it.
 
 - **desktop** runs the build in place against `target/content/desktop/` (through `SAPPHIRE_CONTENT_DIR`). Use it to test on Windows and Linux hardware. `cargo xtask bundle --platform desktop` makes a self-contained `target/desktop/SapphireSandbox/` directory (the executable plus `content/`) to copy to another machine.
-- **macos** builds and signs `target/macos/SapphireSandbox.app`, then runs the executable inside it.
+- **macos** builds and signs `target/macos/SapphireSandbox.app`, then runs the executable inside it, which reads the content bundled with it as a player's copy does. A `--features dev` build reads `target/content/desktop/` instead (through `SAPPHIRE_CONTENT_DIR`, unless you set it), so `cargo xtask content` reaches it while it runs.
 - **ios-sim** boots a simulator headless if none is booted; add `--show` to also open Simulator.app.
 - **android** uses the connected device, or boots the `sapphire_api36` AVD headless (`-no-window -gpu host`), and returns when the app exits.
 

@@ -11,12 +11,16 @@
 //! # Owns
 //!
 //! - [`FileWatcher`]: directories watched for changed files, debounced on a thread of its own.
-//!   The debounce is trailing-edge: a burst is reported once its files have been quiet for the
-//!   debounce time, however long it lasted. `notify-debouncer-full` was the alternative: it
-//!   reports each event once that event is older than the timeout, found by a thread waking
-//!   four times per timeout, so a burst longer than that splits into several reports, and idle
-//!   it wakes 40 times a second at 100 ms. Its rename stitching isn't needed, since only the
-//!   names that changed matter, and a rename's event carries both.
+//!   The debounce is trailing-edge, per file: a file is reported once it has been quiet for the
+//!   debounce time, and changes to other files, in any watched directory, never hold it back. A
+//!   file written without pause is reported every two seconds all the same (review DT-006: one
+//!   debounce for everything let a file written every few milliseconds hold back every change
+//!   for as long as it was written). The thread blocks while no file waits, and otherwise wakes
+//!   when the next is due. `notify-debouncer-full` was the alternative: it reports each event
+//!   once that event is older than the timeout, found by a thread waking four times per
+//!   timeout, so a burst longer than that splits into several reports, and idle it wakes 40
+//!   times a second at 100 ms. Its rename stitching isn't needed, since only the names that
+//!   changed matter, and a rename's event carries both.
 //! - [`HotReload`], the engine's dev loop: the content root's packs ([`HotReload::watch_packs`]),
 //!   the renderer's WGSL sources ([`HotReload::watch_shaders`]) and documents compiled into the
 //!   engine or the app ([`HotReload::watch_document`]), reported as packs to remount, shader
@@ -82,7 +86,8 @@ pub use watch::{Changed, FileWatcher, WatchError, WatchEvents, WatchId};
 pub(crate) const LOG_TARGET: &str = "sapphire::hot_reload";
 
 /// How long a file must be quiet before its change is reported: long enough to take an editor's
-/// save or a cook's write and rename as one change, short enough to feel immediate.
+/// save or a cook's write and rename as one change, short enough to feel immediate. A file
+/// written without pause waits two seconds at most ([`FileWatcher`]).
 pub const DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// A document watched with [`HotReload::watch_document`].
@@ -124,7 +129,8 @@ pub struct HotReload {
 
 impl HotReload {
     /// Hot reload watching nothing yet, reporting a file once it has been quiet for `debounce`
-    /// ([`DEBOUNCE`] suits the dev loop). Fails in builds without the file-watching backend.
+    /// ([`DEBOUNCE`] suits the dev loop), or every two seconds while it is written without
+    /// pause. Fails in builds without the file-watching backend.
     pub fn new(debounce: Duration) -> Result<Self, WatchError> {
         Ok(Self {
             watcher: FileWatcher::new(debounce)?,

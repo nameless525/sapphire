@@ -12,6 +12,8 @@ license.workspace = true
 sapphire_assets.workspace = true
 # The shader files the renderer is built from, and the sources it takes.
 sapphire_render.workspace = true
+# The debounce thread's clock: how long each changed file has been quiet (rule R2).
+sapphire_time.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # The file-watching backend (see `[features]`).
@@ -27,8 +29,6 @@ default = ["notify"]
 notify = ["dep:notify"]
 
 [dev-dependencies]
-# Tests time the pauses in a burst of writes.
-sapphire_time.workspace = true
 # The compiled-in documents that `sources::default_day` and `sources::default_light_rigs` are
 # checked against.
 sapphire_world.workspace = true

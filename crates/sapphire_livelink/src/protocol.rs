@@ -29,6 +29,10 @@
 //! 3. The tool streams those ranges in order, in chunks of at most [`CHUNK_LEN`]
 //!    ([`RequestBody::PackChunk`]), then [`RequestBody::PackEnd`], whose reply says what the
 //!    device swapped in ([`ReplyBody::PackApplied`]).
+//!
+//! A capture ([`RequestBody::Capture`]) is answered once the device has drawn its next frame,
+//! with that frame as a PNG ([`Capture`]), so the desktop sees what any device shows without
+//! tools of its own (a phone's screenshot tools, a window to look at).
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -39,8 +43,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol this build speaks. Raise it with any change to the preamble, the framing or a
-/// message's layout.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// message's layout. Version 2 (M1 X2's rehearsal) added [`RequestBody::Capture`].
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -187,6 +191,9 @@ pub enum RequestBody {
     /// Every range is sent: the device assembles the pack and swaps it in.
     /// [`ReplyBody::PackApplied`].
     PackEnd,
+    /// The next frame the device draws, as a PNG: [`ReplyBody::Captured`]. Everything applied
+    /// before the request came shows in it.
+    Capture,
 }
 
 impl RequestBody {
@@ -200,6 +207,7 @@ impl RequestBody {
             Self::PackBegin { .. } => "pack",
             Self::PackChunk { .. } => "pack chunk",
             Self::PackEnd => "pack end",
+            Self::Capture => "capture",
         }
     }
 }
@@ -229,6 +237,7 @@ impl fmt::Debug for RequestBody {
                 f.debug_struct("PackChunk").field("offset", offset).field("bytes", &bytes.len()).finish()
             }
             Self::PackEnd => f.write_str("PackEnd"),
+            Self::Capture => f.write_str("Capture"),
         }
     }
 }
@@ -271,6 +280,8 @@ pub enum ReplyBody {
     PackApplied(PackOutcome),
     /// The request failed: the device keeps what it had.
     Error(String),
+    /// The frame a [`RequestBody::Capture`] asked for.
+    Captured(Capture),
 }
 
 impl ReplyBody {
@@ -284,7 +295,39 @@ impl ReplyBody {
             Self::PackNeed { .. } => "pack need",
             Self::PackApplied(_) => "pack applied",
             Self::Error(_) => "error",
+            Self::Captured(_) => "captured",
         }
+    }
+}
+
+/// The largest PNG a [`Capture`] carries: a frame, less room for the rest of the reply.
+pub const MAX_CAPTURE: usize = MAX_FRAME - 1024;
+
+/// A frame the device drew, for [`RequestBody::Capture`]: what the display shows (the overlay
+/// included, when it does) as an 8-bit sRGB PNG, at the frame's size, or halved until the PNG
+/// fits [`MAX_CAPTURE`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capture {
+    /// The frame's number, as the status counts them.
+    pub frame: u64,
+    /// The frame's size in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// How many times the image was halved to fit: the PNG is that much smaller than the frame.
+    pub halved: u32,
+    pub png: Vec<u8>,
+}
+
+impl fmt::Debug for Capture {
+    // The image is long; its size says enough.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Capture")
+            .field("frame", &self.frame)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("halved", &self.halved)
+            .field("png", &self.png.len())
+            .finish()
     }
 }
 
@@ -416,6 +459,7 @@ mod tests {
             RequestBody::PackBegin { name: "shared".into(), len: 4096, head: vec![1; 300] },
             RequestBody::PackChunk { offset: 300, bytes: vec![7; CHUNK_LEN] },
             RequestBody::PackEnd,
+            RequestBody::Capture,
         ];
         for (id, body) in requests.into_iter().enumerate() {
             let request = Request { id: id as u32, body };
@@ -444,6 +488,15 @@ mod tests {
             ReplyBody::PackNeed { ranges: vec![ByteRange { offset: 512, len: 64 }] },
             ReplyBody::PackApplied(outcome),
             ReplyBody::Error("no".into()),
+            ReplyBody::Captured(Capture { frame: 7, width: 640, height: 360, halved: 0, png: vec![9; 4000] }),
+            // The largest a capture carries still fits a frame.
+            ReplyBody::Captured(Capture {
+                frame: u64::MAX,
+                width: u32::MAX,
+                height: u32::MAX,
+                halved: u32::MAX,
+                png: vec![1; MAX_CAPTURE],
+            }),
         ];
         for (id, body) in replies.into_iter().enumerate() {
             let reply = Reply { id: id as u32, body };

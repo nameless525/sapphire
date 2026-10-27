@@ -1,6 +1,8 @@
 //! Live link for development builds (spec §5.29, M1 A9): a dev build takes TCP connections from
 //! the desktop, which pushes cooked packs, documents, shader sources and cvars to it; the device
-//! applies each through the calls desktop hot reload uses (M1 A8) and answers how it went.
+//! applies each through the calls desktop hot reload uses (M1 A8) and answers how it went. The
+//! desktop can also ask for the next frame the device draws (M1 X2's rehearsal), which is how it
+//! sees what a phone shows.
 //!
 //! A `dev_only` crate (`xtask/layers.toml`): apps reach it through their `dev` feature (rule R8),
 //! so shipping builds never link it. It runs on every platform, phones included: a phone has no
@@ -20,11 +22,14 @@
 //!   cvar through the app's `CvarRegistry`.
 //! - The desktop half. [`Client`], and the `sapphire_livelink` tool built on it (`src/main.rs`),
 //!   which `cargo xtask link` builds and runs: `status`, `cvar`, `push` (packs, documents,
-//!   shaders) and `watch`, which pushes what changes: packs after `cargo xtask content`, edited
-//!   documents and WGSL sources.
+//!   shaders), `capture` (the device's next frame, as a PNG) and `watch`, which pushes what
+//!   changes: packs after `cargo xtask content`, edited documents and WGSL sources. Each command
+//!   says how long the device took to answer.
 //!
 //! # Does not own
 //!
+//! - Drawing captures: the app draws the frame a capture asks for into a texture it reads back,
+//!   and compresses it ([`protocol::Capture`]).
 //! - Applying documents and shaders: the app hands a document to the owner of the type its
 //!   envelope names (time of day's `TimeOfDay::set_timeline`, the character light rig presets'
 //!   library, the screen effect presets' library), and shader sources to
@@ -85,8 +90,8 @@
 //!
 //! # Later milestones
 //!
-//! - Device to desktop: logs, screenshots and Tracy (spec §5.29); a stats stream rather than the
-//!   status the tool asks for.
+//! - Device to desktop: logs and Tracy (spec §5.29); a stats stream rather than the status the
+//!   tool asks for; captures larger than a frame sent in pieces rather than halved.
 //! - Pushing editor change records (spec §5.28), replay files, the quality tier table and input
 //!   bindings.
 //! - A pairing token before LAN use is routine, and taking a pushed pack back to the app's own.

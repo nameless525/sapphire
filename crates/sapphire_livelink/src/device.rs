@@ -74,6 +74,9 @@ pub enum Push {
     /// A pack received whole: [`PushedPack::apply`] swaps it in, and a [`ReloadTracker`]
     /// answers once its reloads land.
     Pack { pack: PushedPack, reply: Responder },
+    /// A frame to capture: the app reads back the next frame it draws and answers with
+    /// [`ReplyBody::Captured`].
+    Capture { reply: Responder },
 }
 
 /// Answers one request, on the connection it came from. Replying never blocks: the
@@ -95,7 +98,8 @@ impl Responder {
     pub fn reply(self, body: ReplyBody) {
         match &body {
             ReplyBody::Error(_) => self.shared.refused.fetch_add(1, Ordering::Relaxed),
-            ReplyBody::Status(_) | ReplyBody::PackNeed { .. } => 0,
+            // Reads, which change nothing.
+            ReplyBody::Status(_) | ReplyBody::PackNeed { .. } | ReplyBody::Captured(_) => 0,
             _ => self.shared.applied.fetch_add(1, Ordering::Relaxed),
         };
         // A closed connection no longer wants it; one whose tool reads none of its replies has it
@@ -521,6 +525,7 @@ impl Session<'_> {
                 Some(Err(error)) => reply.refuse(error),
                 None => reply.refuse("a pack end came with no pack being pushed"),
             },
+            RequestBody::Capture => self.forward(Push::Capture { reply }),
         }
     }
 }

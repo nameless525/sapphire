@@ -7,8 +7,8 @@ use std::time::Duration;
 use sapphire_assets::pack::{PackError, PackHeader};
 
 use crate::protocol::{
-    CHUNK_LEN, DeviceStatus, LinkError, PackOutcome, Preamble, Reply, ReplyBody, Request, RequestBody,
-    SourceFile, read_frame, write_frame,
+    CHUNK_LEN, Capture, DeviceStatus, LinkError, PackOutcome, Preamble, Reply, ReplyBody, Request,
+    RequestBody, SourceFile, read_frame, write_frame,
 };
 
 /// How long a device has to answer a request, and to connect. Pushed packs get
@@ -79,6 +79,15 @@ impl Client {
         match self.request(RequestBody::Shaders { files }, Self::PACK_TIMEOUT)? {
             ReplyBody::ShadersApplied { programs, pipelines } => Ok((programs, pipelines)),
             other => Err(unexpected("shaders applied", &other)),
+        }
+    }
+
+    /// The next frame the device draws, as a PNG, with everything applied before it.
+    pub fn capture(&mut self) -> Result<Capture, LinkError> {
+        // A phone reads the frame back and compresses it, which takes it a moment.
+        match self.request(RequestBody::Capture, Self::PACK_TIMEOUT)? {
+            ReplyBody::Captured(capture) => Ok(capture),
+            other => Err(unexpected("captured", &other)),
         }
     }
 

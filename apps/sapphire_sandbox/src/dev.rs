@@ -26,7 +26,7 @@ use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::content::Content;
 use crate::input::SandboxInput;
-use crate::link::{Link, LinkFrame};
+use crate::link::{CaptureRequest, Link, LinkFrame};
 use crate::options::Options;
 use crate::reload::Reload;
 use crate::scene::Scene;
@@ -129,6 +129,17 @@ impl DevTools {
             frame_time: self.frame_time,
         };
         self.link.update(&changes, frame);
+    }
+
+    /// The captures live link asked for, if any: the frame about to be drawn answers them
+    /// ([`crate::link::FrameCapture`]).
+    pub fn take_capture(&mut self) -> Option<CaptureRequest> {
+        self.link.take_capture()
+    }
+
+    /// Frames begun since the app started, as live link's status counts them.
+    pub fn frames(&self) -> u64 {
+        self.frames
     }
 
     /// A new renderer (a tier change, device loss) builds the shaders hot reload gave the last.

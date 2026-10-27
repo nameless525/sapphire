@@ -11,6 +11,7 @@ use anyhow::{Context as _, bail};
 use sapphire_hot_reload::{DEBOUNCE, FileWatcher, WatchId, sources};
 use sapphire_livelink::protocol::{DeviceStatus, PackOutcome, SourceFile};
 use sapphire_livelink::{Client, DEFAULT_PORT, LinkError};
+use sapphire_time::Stopwatch;
 
 const USAGE: &str = "\
 Usage: sapphire_livelink [--addr <host:port> | --listen <host:port>] [--content <dir>] <command>
@@ -28,10 +29,15 @@ Commands:
       Push packs (.spack, named by their stem: only the assets the device lacks are sent), RON
       documents (.ron: the device applies them by the type their envelope names) and WGSL
       sources (.wgsl). With no files, push every pack of the device's cook in --content.
-  watch
+  capture <png>
+      Write the next frame the device draws, with everything pushed before it, to <png>.
+  watch [<document>...]
       Push what changes, until interrupted: the packs of the device's cook in --content when
       `cargo xtask content --cook <cook>` rewrites them, the renderer's WGSL sources, the default
-      day's timeline, the character light rig presets and the screen effect presets.
+      day's timeline, the character light rig presets, the screen effect presets and the RON
+      documents named (a scene's own timeline, say).
+
+Each command says how long the device took to answer, from the request to its reply.
 
 Options:
   --addr <host:port>    The device to connect to.
@@ -77,12 +83,17 @@ fn run(args: Vec<String>) -> anyhow::Result<()> {
             Ok(())
         }
         ("cvar", [name, value]) => {
-            let (name, value) = target.connect()?.set_cvar(name, value)?;
-            eprintln!("{name} = {value}");
+            let mut client = target.connect()?;
+            let stopwatch = Stopwatch::start();
+            let (name, value) = client.set_cvar(name, value)?;
+            eprintln!("{name} = {value}{}", took(&stopwatch));
             Ok(())
         }
         ("push", files) => push(&mut target, content.as_deref(), files),
-        ("watch", []) => watch(&mut target, content.as_deref()),
+        ("capture", [path]) => capture(&mut target, Path::new(path)),
+        ("watch", documents) => {
+            watch(&mut target, content.as_deref(), documents.iter().map(PathBuf::from).collect())
+        }
         (command, rest) => bail!("unknown command or arguments: {command} {}\n\n{USAGE}", rest.join(" ")),
     }
 }
@@ -178,15 +189,17 @@ impl Item {
                     .and_then(|stem| stem.to_str())
                     .context("a pack's name is its file's stem")?;
                 let bytes = std::fs::read(path).with_context(|| format!("can't read {}", path.display()))?;
+                let stopwatch = Stopwatch::start();
                 let outcome = client.push_pack(name, &bytes)?;
-                print_pack(name, &outcome);
+                print_pack(name, &outcome, &stopwatch);
             }
             Self::Document(path) => {
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("can't read {}", path.display()))?;
                 let origin = file_name(path);
+                let stopwatch = Stopwatch::start();
                 let owner = client.push_document(&origin, text)?;
-                eprintln!("{origin}: replaced {owner}");
+                eprintln!("{origin}: replaced the {owner}{}", took(&stopwatch));
             }
             Self::Shaders(paths) => {
                 let files = paths
@@ -198,8 +211,13 @@ impl Item {
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let names: Vec<String> = files.iter().map(|file| file.name.clone()).collect();
+                let stopwatch = Stopwatch::start();
                 let (programs, pipelines) = client.push_shaders(files)?;
-                eprintln!("{}: {programs} programs and {pipelines} pipelines rebuilt", names.join(", "));
+                eprintln!(
+                    "{}: {programs} programs and {pipelines} pipelines rebuilt{}",
+                    names.join(", "),
+                    took(&stopwatch)
+                );
             }
         }
         Ok(())
@@ -208,6 +226,32 @@ impl Item {
 
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+}
+
+/// How long since `stopwatch` started, from a request to its reply, for messages.
+fn took(stopwatch: &Stopwatch) -> String {
+    format!(" (in {:.1} ms)", stopwatch.elapsed().as_secs_f64() * 1000.0)
+}
+
+/// `capture`: the device's next frame, written to `path`.
+fn capture(target: &mut Target, path: &Path) -> anyhow::Result<()> {
+    let mut client = target.connect()?;
+    let stopwatch = Stopwatch::start();
+    let capture = client.capture()?;
+    let elapsed = took(&stopwatch);
+    std::fs::write(path, &capture.png).with_context(|| format!("can't write {}", path.display()))?;
+    let halved = match capture.halved {
+        0 => String::new(),
+        times => format!(", halved {times} times to fit a frame"),
+    };
+    eprintln!(
+        "frame {} ({}x{}{halved}) written to {}{elapsed}",
+        capture.frame,
+        capture.width,
+        capture.height,
+        path.display()
+    );
+    Ok(())
 }
 
 /// `push`: the files given, or every pack of the device's cook.
@@ -255,8 +299,14 @@ fn packs_in(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(packs)
 }
 
-/// `watch`: pushes what changes, reconnecting when the device goes away.
-fn watch(target: &mut Target, content: Option<&Path>) -> anyhow::Result<()> {
+/// `watch`: pushes what changes, `extra` documents among it, reconnecting when the device goes
+/// away.
+fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> anyhow::Result<()> {
+    for document in &extra {
+        if document.extension().is_none_or(|extension| extension != "ron") || !document.is_file() {
+            bail!("{}: not a RON document to watch", document.display());
+        }
+    }
     let mut client = target.connect()?;
     let status = client.status()?;
     print_status(&status);
@@ -281,8 +331,9 @@ fn watch(target: &mut Target, content: Option<&Path>) -> anyhow::Result<()> {
     let shaders = watcher.watch(&shader_dir)?;
     eprintln!("watching {}", shader_dir.display());
     let mut documents: Vec<(WatchId, OsString, PathBuf)> = Vec::new();
-    for path in [sources::default_day(), sources::default_light_rigs(), sources::default_screen_effects()] {
-        let dir = path.parent().context("a document is in a directory")?;
+    let engine = [sources::default_day(), sources::default_light_rigs(), sources::default_screen_effects()];
+    for path in engine.into_iter().chain(extra) {
+        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().context("a document is a file")?.to_owned();
         documents.push((watcher.watch(dir)?, name, path.clone()));
         eprintln!("watching {}", path.display());
@@ -369,13 +420,18 @@ fn print_status(status: &DeviceStatus) {
     }
 }
 
-fn print_pack(name: &str, outcome: &PackOutcome) {
+fn print_pack(name: &str, outcome: &PackOutcome, stopwatch: &Stopwatch) {
     let applied = if outcome.mounted {
         format!("{} changed, {} removed, {} reloading", outcome.changed, outcome.removed, outcome.reloading)
     } else {
         "not mounted by the app; served to whatever mounts it".to_owned()
     };
-    eprintln!("pack {name}: sent {} of {}; {applied}", size(outcome.received), size(outcome.len));
+    eprintln!(
+        "pack {name}: sent {} of {}; {applied}{}",
+        size(outcome.received),
+        size(outcome.len),
+        took(stopwatch)
+    );
     for asset in &outcome.reloaded {
         eprintln!("  {} {} is now generation {}", asset.kind, asset.id, asset.generation);
     }

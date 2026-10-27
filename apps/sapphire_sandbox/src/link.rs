@@ -8,7 +8,11 @@
 //! - a document goes to the owner of the type its envelope names ([`Document`]): the default
 //!   day's timeline, the character light rig presets or the screen effect presets;
 //! - shader sources replace those files in what the renderer builds with;
-//! - a cvar is set through the overlay's registry, as the console does.
+//! - a cvar is set through the overlay's registry, as the console does;
+//! - a capture is answered with the next frame the app draws ([`FrameCapture`]): the windowed
+//!   app draws that frame into a texture it reads back instead of its surface, and the offscreen
+//!   `--offscreen` mode into one beside its own target. The PNG is compressed on a thread of its
+//!   own.
 //!
 //! Whatever is refused (a document that doesn't parse, shaders that don't compile, a pack the
 //! asset server won't mount) keeps what it had; the tool hears why, and the overlay's stats panel
@@ -24,14 +28,17 @@ use std::time::Duration;
 use sapphire_assets::AssetChange;
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::LiveLinkStatus;
-use sapphire_livelink::protocol::{DeviceStatus, ReplyBody, SourceFile};
+use sapphire_livelink::protocol::{Capture, DeviceStatus, MAX_CAPTURE, ReplyBody, SourceFile};
 use sapphire_livelink::{LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, set_cvar};
 use sapphire_platform::{App as _, DeviceClass, Os, SystemInfo};
+use sapphire_render::graph::{FrameGraph, TextureId};
 use sapphire_render::{Renderer, ShaderFile};
+use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
+use crate::capture::{Readback, compress};
 use crate::content::Content;
 use crate::options::LiveLinkOption;
 use crate::reload::{Document, Reload, error_chain, shader_report};
@@ -42,6 +49,9 @@ const SHOWN_ERRORS: usize = 4;
 /// The most pushes applied in one frame; the rest wait for the next, so a tool sending many can't
 /// hold a frame.
 const PUSHES_PER_FRAME: usize = 4;
+/// The most captures waiting for a frame; they share it. More are refused, so a tool asking
+/// while nothing draws (the app in the background) can't grow the list.
+const WAITING_CAPTURES: usize = 8;
 
 /// Live link's state in the app.
 pub(crate) struct Link {
@@ -55,6 +65,8 @@ pub(crate) struct Link {
     cook: &'static str,
     /// The last refusals, newest last.
     errors: Vec<String>,
+    /// Captures waiting for the next frame drawn.
+    captures: Vec<Responder>,
 }
 
 /// What applying pushes reads and changes, once a frame.
@@ -96,6 +108,7 @@ impl Link {
                 DeviceClass::Mobile => "mobile",
             },
             errors: Vec::new(),
+            captures: Vec::new(),
         };
         let mode = match option {
             Some(LiveLinkOption::Off) => {
@@ -198,6 +211,12 @@ impl Link {
                         }
                     }
                 }
+                Push::Capture { reply } if self.captures.len() < WAITING_CAPTURES => {
+                    self.captures.push(reply)
+                }
+                Push::Capture { reply } => {
+                    reply.refuse(format!("{WAITING_CAPTURES} captures wait for a frame already"))
+                }
             }
         }
         if self.tracker.waiting() {
@@ -205,6 +224,11 @@ impl Link {
         }
         let excess = self.errors.len().saturating_sub(SHOWN_ERRORS);
         self.errors.drain(..excess);
+    }
+
+    /// The captures waiting for a frame, if any. Allocates nothing while none wait.
+    pub fn take_capture(&mut self) -> Option<CaptureRequest> {
+        (!self.captures.is_empty()).then(|| CaptureRequest { replies: std::mem::take(&mut self.captures) })
     }
 
     /// What the overlay shows.
@@ -261,4 +285,101 @@ fn refuse(errors: &mut Vec<String>, reply: Responder, error: String) {
     tracing::warn!(target: LOG_TARGET, error, "live link refused a push");
     errors.push(error.clone());
     reply.refuse(error);
+}
+
+/// Captures live link asked for, which the next frame drawn answers ([`FrameCapture`]).
+pub(crate) struct CaptureRequest {
+    replies: Vec<Responder>,
+}
+
+/// A frame drawn for [`CaptureRequest`]s: into a texture of its own, the size and format of
+/// the frame the app would otherwise draw, which is read back once the frame has run.
+pub(crate) struct FrameCapture {
+    request: CaptureRequest,
+    view: wgpu::TextureView,
+    size: (u32, u32),
+    format: wgpu::TextureFormat,
+    readback: Readback,
+}
+
+impl FrameCapture {
+    /// A `size` frame in `format`, an 8-bit RGBA or BGRA format as surfaces and offscreen
+    /// targets are.
+    pub fn new(
+        gpu: &GpuContext,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+        request: CaptureRequest,
+    ) -> Self {
+        let (width, height) = size;
+        let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: gpu.label("live link capture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self { request, view, size, format, readback: Readback::new(gpu, width, height) }
+    }
+
+    /// What the frame draws into, in place of the surface's image or the offscreen target.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Adds the copy of the frame's `target` (this capture's [`Self::view`]) for reading back,
+    /// after every pass that draws it.
+    pub fn record<'f>(&'f self, graph: &mut FrameGraph<'f>, target: TextureId) {
+        self.readback.record(graph, target);
+    }
+
+    /// Once frame number `frame` (as the status counts them) has been submitted: reads it back,
+    /// waiting for the GPU, and answers the captures from a thread of its own, which compresses
+    /// the PNG.
+    pub fn finish(self, gpu: &GpuContext, frame: u64) {
+        let Self { request: CaptureRequest { replies }, size: (width, height), format, readback, .. } = self;
+        let mut pixels = match readback.read(gpu) {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                for reply in replies {
+                    reply.refuse(format!("the frame couldn't be read back: {error}"));
+                }
+                return;
+            }
+        };
+        if matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+        }
+        let spawned = std::thread::Builder::new().name("sapphire-capture".into()).spawn(move || {
+            let stopwatch = Stopwatch::start();
+            match compress(width, height, pixels, MAX_CAPTURE) {
+                Ok((halved, png)) => {
+                    tracing::info!(target: LOG_TARGET, frame, width, height, halved, bytes = png.len(), elapsed = ?stopwatch.elapsed(), "live link captured a frame");
+                    for reply in replies {
+                        let capture = Capture { frame, width, height, halved, png: png.clone() };
+                        reply.reply(ReplyBody::Captured(capture));
+                    }
+                }
+                Err(error) => {
+                    for reply in replies {
+                        reply.refuse(format!("the frame couldn't be compressed: {error}"));
+                    }
+                }
+            }
+        });
+        // The captures, dropped unanswered, time out on the tool's side.
+        if let Err(error) = spawned {
+            tracing::warn!(target: LOG_TARGET, %error, "live link couldn't compress a capture");
+        }
+    }
 }

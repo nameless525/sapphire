@@ -12,7 +12,7 @@ use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
 use sapphire_render::{MaterialHandle, MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
-    RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget, wgpu,
+    RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget, wgpu,
 };
 use sapphire_time::{
     FixedStepConfig, FixedStepDriver, FixedSteps, RealClock, ScaleHandle, ScaleSource, Stopwatch,
@@ -25,6 +25,8 @@ use crate::dev::{DevTools, FrameState};
 use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::SandboxInput;
+#[cfg(feature = "dev")]
+use crate::link::FrameCapture;
 use crate::lookdev::TownMeshes;
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
@@ -377,31 +379,50 @@ impl SandboxApp {
         presentation: Duration,
     ) -> Result<bool, GraphError> {
         profiling::scope!("render");
+        // A capture live link asked for draws this frame into a texture it reads back, in place
+        // of the surface's image: the display shows the frame before for one more refresh.
+        #[cfg(feature = "dev")]
+        let capture = match self.surface.as_ref().and_then(RenderSurface::size) {
+            Some(size) => self
+                .dev
+                .take_capture()
+                .map(|request| FrameCapture::new(&self.gpu, size, self.format, request)),
+            None => None,
+        };
+        #[cfg(feature = "dev")]
+        let acquire = capture.is_none();
+        #[cfg(not(feature = "dev"))]
+        let acquire = true;
         // The frame borrows the surface until the end of this block.
         let skipped = {
-            let (frame, skipped) = match self.surface.as_mut().map(RenderSurface::acquire) {
+            let (frame, skipped) = match self.surface.as_mut().filter(|_| acquire).map(RenderSurface::acquire)
+            {
                 Some(SurfaceAcquire::Frame(frame)) => (Some(frame), None),
                 Some(SurfaceAcquire::Skip(reason)) => (None, Some(reason)),
                 None => (None, None),
             };
             stopwatch.lap();
+            // What the frame draws into, and its size.
+            let target = frame.as_ref().map(|frame| (frame.view(), frame.size()));
+            #[cfg(feature = "dev")]
+            let target = target.or_else(|| capture.as_ref().map(|capture| (capture.view(), capture.size())));
             // Every frame is extracted and prepared, drawn or not, so the renderer's persistent
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
-            let packet = self.scene.frame_packet(alpha, frame.as_ref().map(SurfaceFrame::size));
+            let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size));
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
             self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
             self.renderer.prepare(&self.gpu, packet);
-            if let Some(frame) = frame {
+            if let Some((view, size)) = target {
                 let timing = FrameTiming::new(&self.graph, self.frame_time);
-                self.renderer.set_render_scale(self.quality.render_scale(frame.size(), &timing));
+                self.renderer.set_render_scale(self.quality.render_scale(size, &timing));
                 // The overlay's own frame is no stage of the game's; its panel shows its cost.
                 #[cfg(feature = "dev")]
                 let overlay = {
                     let started = Stopwatch::start();
-                    let (width, height) = frame.size();
+                    let (width, height) = size;
                     let window = sapphire_debug::WindowMetrics {
                         pixel_size: sapphire_platform::Size { width, height },
                         ..sapphire_debug::WindowMetrics::of(&self.window, self.dev.focused())
@@ -428,12 +449,22 @@ impl SandboxApp {
                 };
                 let mut graph = FrameGraph::new();
                 // The renderer sizes its attachments from the frame itself.
-                let target = graph.import_texture("swapchain", frame.view());
+                let target = graph.import_texture("swapchain", view);
                 self.renderer.record(&mut graph, target);
                 #[cfg(feature = "dev")]
                 self.dev.record(&mut graph, target);
+                #[cfg(feature = "dev")]
+                if let Some(capture) = &capture {
+                    capture.record(&mut graph, target);
+                }
                 self.graph.execute(&self.gpu, graph)?;
                 self.stages.render = stopwatch.lap().saturating_sub(overlay);
+                #[cfg(feature = "dev")]
+                if let Some(capture) = capture {
+                    capture.finish(&self.gpu, self.dev.frames());
+                }
+                // A captured frame isn't presented.
+                let Some(frame) = frame else { return Ok(false) };
                 frame.present();
                 return Ok(true);
             }

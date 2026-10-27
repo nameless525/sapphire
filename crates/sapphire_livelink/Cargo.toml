@@ -21,6 +21,8 @@ sapphire_core.workspace = true
 sapphire_jobs.workspace = true
 # Pushed documents name their type in their envelope.
 sapphire_serialize.workspace = true
+# The tool times each request, from sending it to its reply.
+sapphire_time.workspace = true
 postcard.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -35,8 +37,6 @@ sapphire_hot_reload.workspace = true
 sapphire_hot_reload = { workspace = true, features = ["notify"] }
 
 [dev-dependencies]
-# Loopback tests time the dial loop's waits.
-sapphire_time.workspace = true
 # Loopback tests push a time-of-day timeline, as the sandbox does.
 sapphire_world.workspace = true
 

@@ -36,7 +36,8 @@
 //! character light rig presets, all without a restart; and live link (`link.rs`, M1 A9), on by default on every
 //! platform, listening on the loopback interface (127.0.0.1:7811): `cargo xtask link` pushes
 //! the same edits from the desktop (packs, sending only the assets that changed; the two
-//! documents; WGSL sources) and sets cvars, on a phone as on the desktop.
+//! documents; WGSL sources), sets cvars and captures the next frame drawn, on a phone as on the
+//! desktop.
 //! Without the feature none of it is compiled.
 //!
 //! # Arguments

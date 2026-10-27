@@ -16,7 +16,7 @@ use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, Handle, LoadPriority, MemoryPackSource,
 };
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarRegistry};
-use sapphire_livelink::protocol::{DeviceStatus, Preamble, ReplyBody};
+use sapphire_livelink::protocol::{Capture, DeviceStatus, Preamble, ReplyBody};
 use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
 };
@@ -154,6 +154,14 @@ impl App {
                     Ok(outcome) => self.tracker.track(reply, outcome),
                     Err(error) => reply.refuse(error.to_string()),
                 },
+                // A frame "drawn": its number in every byte, as large as a phone's PNG gets.
+                Push::Capture { reply } => reply.reply(ReplyBody::Captured(Capture {
+                    frame: self.frame,
+                    width: 2556,
+                    height: 1179,
+                    halved: 0,
+                    png: vec![self.frame as u8; 3 << 20],
+                })),
             }
         }
     }
@@ -227,6 +235,28 @@ fn a_pushed_material_change_reloads_behind_the_same_handle() {
         app.serve(on_client(app.address(), move |client| client.push_pack("shared", &again).unwrap()));
     assert_eq!((outcome.changed, outcome.reloading, outcome.received), (0, 0, 0));
     assert_eq!(app.server.generation(&handle), 1);
+}
+
+#[test]
+fn a_capture_answers_with_the_frame_drawn_after_what_came_before_it() {
+    let base = MemoryPackSource::new();
+    base.insert("shared", shared([1.0; 4]));
+    let mut app = App::new(base);
+    let day = include_str!("../../sapphire_world/default_day.ron");
+    let (applied_by, capture) = app.serve(on_client(app.address(), |client| {
+        client.push_document("default_day.ron", day.to_owned()).unwrap();
+        let applied_by = client.status().unwrap().frame;
+        (applied_by, client.capture().unwrap())
+    }));
+    // The status came from the frame that applied the document or a later one, and the capture
+    // from that frame or a later one still: the same frame when the request arrives while that
+    // frame is still taking what came in (the sandbox draws after applying, so it shows).
+    assert!(capture.frame >= applied_by, "captured in frame {}, before {applied_by}", capture.frame);
+    assert_eq!((capture.width, capture.height, capture.halved), (2556, 1179, 0));
+    assert_eq!(capture.png.len(), 3 << 20, "a reply of megabytes crosses whole");
+    assert!(capture.png.iter().all(|&byte| byte == capture.frame as u8));
+    let counters = app.link.counters();
+    assert_eq!((counters.applied, counters.refused), (1, 0), "the document applied; a capture is a read");
 }
 
 #[test]

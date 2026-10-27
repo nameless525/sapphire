@@ -589,9 +589,9 @@ impl Renderer {
         let meshes = MeshPool::new(&device);
         let mut materials = Materials::new(&device, gpu.queue());
         let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
-        // Reflections only where environment specular reads them.
-        let reflections = (settings.environment.specular != crate::EnvironmentSpecular::Off)
-            .then_some(settings.reflections);
+        // The environment reads the reflection cube only with specular on; characters' reflection
+        // add on every tier (M1 C7).
+        let environment_reflects = settings.environment.specular != crate::EnvironmentSpecular::Off;
         let mut ambient = Ambient::new(
             &device,
             gpu.queue(),
@@ -601,7 +601,8 @@ impl Renderer {
             settings.ambient_occlusion,
             settings.environment.probes,
             settings.temporal,
-            reflections,
+            settings.reflections,
+            environment_reflects,
             gpu.pipeline_cache(),
             &shaders,
         );
@@ -727,17 +728,23 @@ impl Renderer {
         material: &ArchivedMaterial,
         textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
     ) -> Result<(), RenderError> {
-        let before = self.materials.record(handle).map(|record| (record.flags, record.layer));
+        let before =
+            self.materials.record(handle).map(|record| (record.flags, record.layer, record.reflects));
         self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)?;
         let flags = material.flags();
-        let layer = self.materials.record(handle).map_or(0, |record| record.layer);
+        let (layer, reflects) =
+            self.materials.record(handle).map_or((0, false), |record| (record.layer, record.reflects));
         // An eye that moves to another layer keeps its pipelines, but its draws move among the
-        // variant's (M1 C6).
-        if before.is_some_and(|(before, old_layer)| before == flags && old_layer != layer) {
+        // variant's (M1 C6). A material that starts or stops reflecting changes whether the
+        // ambient pass prefilters the reflection cube, which the draw list's rebuild decides
+        // (M1 C7).
+        if before.is_some_and(|(before, old_layer, reflected)| {
+            before == flags && (old_layer != layer || reflected != reflects)
+        }) {
             self.scene.meshes_changed();
         }
         // Only the families meshes draw with pick pipelines by their flags.
-        if before.map(|(flags, _)| flags) != Some(flags)
+        if before.map(|(flags, ..)| flags) != Some(flags)
             && let Some(variant) = SurfaceVariant::of_material(material.family, flags)
         {
             // A new static permutation: its draws move to other pipelines, built for every
@@ -1786,9 +1793,24 @@ impl Renderer {
 
     /// Builds the pipelines the rebuilt draw list needs that no upload has (M1 C7): a fading
     /// character's opaque draws move to alpha-tested variants, with their outlines, eyes through
-    /// hair and the prepasses' masked pipelines. Building here, on the calling thread, can hitch
-    /// once, as a material edit into a new variant does.
+    /// hair and the prepasses' masked pipelines; and a reflective character material's draws
+    /// make the ambient pass prefilter the reflection cube, building its pipelines the first time.
+    /// Building here, on the calling thread, can hitch once, as a material edit into a new
+    /// variant does.
     fn prepare_drawn_pipelines(&mut self) {
+        let list = self.scene.draw_list();
+        let materials = &self.materials;
+        let reflects =
+            |material: MaterialHandle| materials.record(material).is_some_and(|record| record.reflects);
+        let reflective = SurfaceVariant::ALL.into_iter().any(|variant| {
+            matches!(variant.shading, Shading::Character(_))
+                && (list.commands.iter().any(|commands| {
+                    commands[variant.index()].iter().any(|command| reflects(command.material))
+                }) || list.deformed[variant.index()].iter().any(|draw| reflects(draw.material)))
+        });
+        if self.ambient.set_reflective(reflective, &self.shaders) {
+            self.rebuild_frame_bind_group();
+        }
         let list = self.scene.draw_list();
         for (format_slot, format) in PositionFormat::ALL.into_iter().enumerate() {
             let deformed = format == PositionFormat::Float32;

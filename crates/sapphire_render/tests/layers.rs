@@ -1,6 +1,7 @@
 //! Tests of the anime character shader's layers and the proximity fade that need a GPU (M1 C7):
 //! the stylized highlight's shape, threshold, mask and side; the matcap's channels, blends and
-//! strengths; the reflection add's gate and strength; stockings by N·V and their sheen; emission,
+//! strengths; the reflection add's gate, strength and roughness, and the ambient work it makes
+//! run; stockings by N·V and their sheen; emission,
 //! its breath and its bloom; the layer mask; and the fade's dither, whole or none at the ends,
 //! its share of pixels, its outlines, rim and draw list, under MSAA and temporal AA; and
 //! alpha-tested surfaces cut out of the character prepass as the main pass cuts them. Run with
@@ -31,6 +32,7 @@ use sapphire_render::{
     MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, SkyGradient,
     ToneCurve, ViewData, Vignette,
 };
+use sapphire_math::sh;
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -585,11 +587,27 @@ fn the_matcap_takes_its_shadow_strength_and_the_layer_masks_r() {
 }
 
 /// A ball in `albedo` that reflects by `metallic`.
-fn metal(albedo: [f32; 3], metallic: f32) -> AnimeCharacterMaterial {
+fn metal(albedo: [f32; 3], metallic: f32, roughness: f32) -> AnimeCharacterMaterial {
     with_region(flat(albedo), |region| {
         region.metallic = metallic;
-        region.roughness = 0.0;
+        region.roughness = roughness;
     })
+}
+
+/// Per channel, the scale M1 W5's projection gives the sky cube's radiance in the reflection
+/// cube: the authored ambient sky over the L1 irradiance the sky gives a surface facing straight
+/// up (`ambient::sky_radiance` has it analytically).
+fn ambient_scale(sky: SkyGradient, ambient: AmbientLight) -> Vec3 {
+    let directions = sh::fibonacci_directions(8192);
+    let solid_angle = 4.0 * std::f32::consts::PI / directions.len() as f32;
+    let mut channels = [sh::Projection::<{ sh::L2 }>::default(); 3];
+    for &d in &directions {
+        for (channel, value) in channels.iter_mut().zip(sky_color(sky, d).to_array()) {
+            channel.add(d, value, solid_angle);
+        }
+    }
+    let open = channels.map(|channel| sh::evaluate(&sh::irradiance(channel.coefficients)[..sh::L1], Vec3::Y));
+    ambient.sky * ambient.intensity / Vec3::from(open)
 }
 
 #[test]
@@ -604,32 +622,57 @@ fn the_reflection_add_shows_the_sky_at_the_ambients_strength_above_the_gate() {
     harness.ambient =
         AmbientLight { sky: Vec3::new(0.3, 0.3, 0.35), ground: Vec3::new(0.1, 0.1, 0.1), intensity: 1.0 };
     let albedo = [0.8, 0.6, 0.4];
-    let (material, _) = ball(&mut harness, &metal(albedo, 0.0));
+    let (material, _) = ball(&mut harness, &metal(albedo, 0.0, 0.0));
     // No key light: the ambient and the sky stay within the 8-bit range.
     harness.characters[0].lighting.key.intensity = 0.0;
     let plain = harness.render();
-    harness.update(material, &metal(albedo, 1.0));
+    // Nothing reflects: no ambient pass, pipeline or cube (M1 W5, "Nothing for work nothing
+    // reads"), without a grid.
+    let off = plain.stats.ambient;
+    assert_eq!((off.pipelines, off.dispatches, off.reflection_mips), (0, 0, 0));
+    harness.update(material, &metal(albedo, 1.0, 0.0));
     let reflecting = harness.render();
-    let open = harness.sky.horizon.lerp(harness.sky.zenith, 0.8);
-    let strength = harness.ambient.sky * harness.ambient.intensity / open;
+    // The projection's three pipelines and the prefilter, built when the reflective material
+    // first drew, and every face of the cube prefiltered that frame: the projection's three
+    // dispatches (the faces' threads, the faces, the sky light), then one per mip.
+    let on = reflecting.stats.ambient;
+    assert_eq!((on.pipelines, on.reflection_size, on.prefiltered_faces), (4, 128, 6));
+    assert_eq!(on.dispatches, 3 + on.reflection_mips);
+    // The cube's mip 0 is the sky at the ambient's scale (W5's projection).
+    let strength = ambient_scale(harness.sky, harness.ambient);
     let camera = harness.camera.position;
-    // Reflections well above and below the horizon, where the sky cube's texels follow the
-    // gradient (at the horizon its sqrt bends within a texel).
-    for normal in [Vec3::new(0.0, 0.35, 0.94), Vec3::new(0.0, 0.6, 0.8), Vec3::new(-0.5, -0.3, 0.81)] {
+    let reflected = |normal: Vec3| {
         let point = on_sphere(0.5, normal);
         let view = (camera - point).normalize();
         let n = normal.normalize();
-        let reflected = 2.0 * n.dot(view) * n - view;
-        let sky = sky_color(harness.sky, reflected) * strength * Vec3::from(albedo);
+        (point, 2.0 * n.dot(view) * n - view)
+    };
+    // Reflections well above and below the horizon, where the sky cube's texels follow the
+    // gradient (at the horizon its sqrt bends within a texel).
+    let normals = [Vec3::new(0.0, 0.35, 0.94), Vec3::new(0.0, 0.6, 0.8), Vec3::new(-0.5, -0.3, 0.81)];
+    for normal in normals {
+        let (point, direction) = reflected(normal);
+        let sky = sky_color(harness.sky, direction) * strength * Vec3::from(albedo);
         let expected = add(plain.at(point), sky.to_array());
-        assert_near(reflecting.at(point), expected, &format!("the sky along {reflected:?}"));
+        assert_near(reflecting.at(point), expected, &format!("the sky along {direction:?}"));
     }
-    // Below the gate, none; the layer mask's G scales metallic under it too.
-    harness.update(material, &metal(albedo, 0.89));
+    // The next frames prefilter the face the sky cube draws.
+    assert_eq!(harness.render().stats.ambient.prefiltered_faces, 7);
+    // A rough metal reads a rougher mip: the gradient between the zenith and below the horizon
+    // blurs toward its mean.
+    harness.update(material, &metal(albedo, 1.0, 1.0));
+    let rough = harness.render();
+    let (above, below) = (reflected(normals[1]).0, reflected(normals[2]).0);
+    let spread = |frame: &Frame| (Vec3::from(frame.at(above)) - Vec3::from(frame.at(below))).length();
+    assert!(spread(&rough) < 0.9 * spread(&reflecting), "{} vs {}", spread(&rough), spread(&reflecting));
+    // Below the gate, none, and no ambient work; the layer mask's G scales metallic under it too.
+    harness.update(material, &metal(albedo, 0.89, 0.0));
     let point = Vec3::new(0.0, 0.0, 0.5);
-    assert_near(harness.render().at(point), plain.at(point), "metallic 0.89");
+    let below_gate = harness.render();
+    assert_near(below_gate.at(point), plain.at(point), "metallic 0.89");
+    assert_eq!(below_gate.stats.ambient.dispatches, 0, "nothing reflects");
     harness.texture(MASK, 4, 4, |_, _| [1.0, 0.5, 1.0, 1.0]);
-    let masked = AnimeCharacterMaterial { layer_mask: Some(id(MASK)), ..metal(albedo, 1.0) };
+    let masked = AnimeCharacterMaterial { layer_mask: Some(id(MASK)), ..metal(albedo, 1.0, 0.0) };
     harness.update(material, &masked);
     assert_near(harness.render().at(point), plain.at(point), "1 × the mask's 0.5");
 }

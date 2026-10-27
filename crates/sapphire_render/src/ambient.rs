@@ -20,9 +20,10 @@
 //!   another brick), rows of up to 64 bricks, and five sub-volumes stacked along z: red's,
 //!   green's and blue's L1 irradiance, the sky visibility's L1, and the probe data.
 //!
-//! Each frame with a grid or GTAO, one compute pass runs before the main pass ([`PASSES`]: the
-//! frame graph opens one compute pass for all of it, after the sky cube's face and the scene
-//! prepass), each of its dispatches only when due (`probes.wgsl`, `occlusion.wgsl`):
+//! Each frame with a grid, GTAO or a reflective character (M1 C7, below), one compute pass runs
+//! before the main pass ([`PASSES`]: the frame graph opens one compute pass for all of it, after
+//! the sky cube's face and the scene prepass), each of its dispatches only when due
+//! (`probes.wgsl`, `occlusion.wgsl`):
 //!
 //! 1. **The sky's projection:** the sky cube projected to L2 SH, scaled per channel so a surface
 //!    facing straight up under the open sky receives time of day's authored ambient sky (in the
@@ -106,9 +107,17 @@
 //! lobe for the difference of their roughnesses, 32 importance samples a texel. The environment's
 //! ambient specular reads the mip for its roughness where the grid's sky visibility along the
 //! reflection vector sees the sky, and the grid's irradiance from that direction where geometry
-//! blocks it. The cube and its prefilter are made with the first grid, since nothing reads them
-//! without one. C7's reflection add builds on the same cube; reflection probes come later (see
-//! "Later milestones").
+//! blocks it. The cube and its prefilter are made with the first grid where environment specular
+//! is on, since the environment reads them through the grid alone.
+//!
+//! Anime characters' reflection add (M1 C7, `anime_character.wgsl`) reads the same cube on every
+//! tier, grid or not, at its region's roughness. The renderer says whether a reflective material
+//! (`AnimeCharacterParams::FLAG_REFLECTION`) is in the draw list ([`Ambient::set_reflective`]):
+//! the first time one is, the cube (at the tier's size, environment specular or not), the
+//! projection, which the prefilter's scale reads, and the prefilter are made, and while one is,
+//! both run as they do for a grid, all six faces again when they start after a pause. Without a
+//! grid nothing else runs: the relight and the characters' pass wait for one. Reflection probes
+//! come later (see "Later milestones").
 //!
 //! # Ambient occlusion
 //!
@@ -152,16 +161,18 @@
 //! the light-cluster pass and [`PASSES`]. Measured on the M5 at 1080p in the courtyard with its
 //! grid (spec §5.12 "Lighting" has the numbers).
 //!
-//! **Nothing for work nothing reads.** A renderer without a grid or GTAO records no ambient pass,
-//! builds none of its pipelines (nor their module), makes no reflection cube, and stages its
-//! uniforms only when they change, which is once: content and tiers without them pay nothing they
-//! can measure. Pipelines are built when their work can first run ([`AmbientPipelines`]): GTAO's
-//! three with a renderer whose tier has it, the grid's light (the projection's three, the relight
-//! and the characters', and the prefilter with the reflection cube) with the first grid, a
-//! load-time cost, and kept after it. Built with every renderer, W5's seven had cost each process
-//! about 0.75 s on the M5 with Metal's shader cache cold (10 ms warm), and far more on CI's
-//! software backends, which compile them again for every golden scene: WARP's scenes took 60–75 s
-//! instead of 9.
+//! **Nothing for work nothing reads.** A renderer without a grid, GTAO or a reflective character
+//! records no ambient pass, builds none of its pipelines (nor their module), makes no reflection
+//! cube, and stages its uniforms only when they change, which is once: content and tiers without
+//! them pay nothing they can measure. Pipelines are built when their work can first run
+//! ([`AmbientPipelines`]): GTAO's three with a renderer whose tier has it, the grid's light (the
+//! projection's three, the relight and the characters', and the prefilter with the reflection
+//! cube) with the first grid, a load-time cost, and the projection's three and the prefilter with
+//! the first reflective character material drawn (M1 C7), at the draw-list rebuild that adds it,
+//! as a new surface variant's pipelines are; each is kept after it. Built with every renderer,
+//! W5's seven had cost each process about 0.75 s on the M5 with Metal's shader cache cold (10 ms
+//! warm), and far more on CI's software backends, which compile them again for every golden
+//! scene: WARP's scenes took 60–75 s instead of 9.
 //!
 //! **No workgroup memory in the projection.** W5 projected the sky in one workgroup whose threads
 //! added up their sums in workgroup memory behind `workgroupBarrier`s, in a loop over the faces.
@@ -634,11 +645,13 @@ pub struct AmbientStats {
     /// Bricks the last frame relit: all of them when a grid arrives or the light jumps, a slice
     /// after a small change, none while nothing changes.
     pub relit_bricks: u32,
-    /// The ambient pass's pipelines built: none without a grid or GTAO; GTAO's three with the
-    /// renderer, and the grid's light's five (six with the prefilter) when a grid first arrives.
+    /// The ambient pass's pipelines built: none without a grid, GTAO or a reflective character;
+    /// GTAO's three with the renderer, the grid's light's five (six with the prefilter) when a
+    /// grid first arrives, and the projection's three and the prefilter when a reflective
+    /// character first draws (M1 C7).
     pub pipelines: u32,
-    /// Compute dispatches the last recorded frame's ambient pass made: none without a grid or
-    /// GTAO, when the pass doesn't run.
+    /// Compute dispatches the last recorded frame's ambient pass made: none without a grid, GTAO
+    /// or a reflective character, when the pass doesn't run.
     pub dispatches: u32,
 }
 
@@ -659,10 +672,15 @@ pub(crate) struct Ambient {
     sampler: wgpu::Sampler,
     placeholders: Placeholders,
     grid: Option<GpuGrid>,
-    /// The tier's reflection cube, with environment specular on.
-    reflections: Option<ReflectionSettings>,
-    /// The cube, made with the grid's light pipelines when a grid first arrives: nothing reads it
-    /// without one.
+    /// The tier's reflection cube.
+    reflections: ReflectionSettings,
+    /// Environment specular reads the cube, through a grid.
+    environment_reflects: bool,
+    /// A reflective character material is in the draw list (M1 C7), whose reflection add reads the
+    /// cube, grid or not.
+    reflective: bool,
+    /// The cube, made when a grid first arrives with environment specular on, or a reflective
+    /// character first draws.
     reflection: Option<Reflection>,
     gtao: Option<Gtao>,
     /// WGSL `SkyLight`, which the projection writes and the relight and prefilter read.
@@ -678,7 +696,7 @@ pub(crate) struct Ambient {
     /// the atlas, the brick table and the sampler.
     compute_frame: wgpu::BindGroup,
     /// The projection's group 3: the sky cube and the sky light, read-write. Made with the
-    /// grid's light pipelines.
+    /// projection's pipeline.
     projection_group: Option<wgpu::BindGroup>,
     /// [`Self::block`] as last staged: a frame stages it only when it changed.
     staged: Option<AmbientBlock>,
@@ -730,6 +748,8 @@ struct GpuGrid {
 struct RelightSchedule {
     /// Every brick is due: a grid arrived.
     all: bool,
+    /// Every face is due: the reflection cube's prefilter starts again after a pause (M1 C7).
+    reproject: bool,
     /// The last frame's keys, and the authored ambient sky the projection last ran with.
     keys: ProbeKeys,
     sky: Vec3,
@@ -753,12 +773,19 @@ impl RelightSchedule {
         Self { all: true, ..Self::default() }
     }
 
+    /// Projects (and prefilters) every face next, as when a grid arrives, the bricks as their
+    /// schedule says.
+    fn reproject(&mut self) {
+        self.reproject = true;
+    }
+
     /// The work of a frame of a grid of `kept` bricks whose sky cube drew `faces`, which blends
     /// `keys` under the authored ambient sky `sky`. A jump in the sky also projects it again, so
     /// the relight reads the authored light the frame it changes.
     fn frame(&mut self, kept: u32, faces: Range<u32>, keys: ProbeKeys, sky: Vec3) -> RelightWork {
         let arrived = std::mem::take(&mut self.all);
-        let faces = if arrived { 0..6 } else { faces };
+        let reproject = std::mem::take(&mut self.reproject);
+        let faces = if arrived || reproject { 0..6 } else { faces };
         let sky_jump =
             arrived || (sky - self.sky).abs().max_element() > SKY_JUMP * sky.max(self.sky).max_element();
         let jump = sky_jump || keys_change(&self.keys, &keys) > KEY_JUMP;
@@ -886,31 +913,35 @@ struct AmbientLayouts {
 }
 
 /// The ambient pass's pipelines, each group built only once the renderer can run its work (see
-/// the module docs, "Cost"): the grid's light when a grid first arrives, the prefilter with it
-/// where there is a reflection cube, and GTAO's with the renderer on tiers that have it. Without
-/// a grid or GTAO there are none, and no module is made. [`Ambient::rebuilt_pipelines`]' result.
+/// the module docs, "Cost"): the sky's projection's three with the first grid or reflective
+/// character, the reflection cube's prefilter with the cube, the grid's relight and characters'
+/// pass when a grid first arrives, and GTAO's with the renderer on tiers that have it. Without
+/// any of them there are none, and no module is made. [`Ambient::rebuilt_pipelines`]' result.
 #[derive(Debug, Default)]
 pub(crate) struct AmbientPipelines {
-    light: Option<LightPipelines>,
+    projection: Option<ProjectionPipelines>,
+    prefilter: Option<wgpu::ComputePipeline>,
+    grid: Option<GridPipelines>,
     occlusion: Option<OcclusionPipelines>,
 }
 
-/// The grid's light work's pipelines: the sky's projection (each face's threads' sums, a face's
-/// sum and the sky light), the relight and the characters', and the reflection cube's prefilter
-/// where there is one.
+/// The sky's projection's pipelines: each face's threads' sums, a face's sum and the sky light.
 #[derive(Debug)]
-struct LightPipelines {
+struct ProjectionPipelines {
     projection: wgpu::ComputePipeline,
     projection_faces: wgpu::ComputePipeline,
     sky_light: wgpu::ComputePipeline,
-    relight: wgpu::ComputePipeline,
-    character: wgpu::ComputePipeline,
-    prefilter: Option<wgpu::ComputePipeline>,
 }
 
-impl LightPipelines {
-    /// Pipelines but the prefilter.
-    const COUNT: u32 = 5;
+impl ProjectionPipelines {
+    const COUNT: u32 = 3;
+}
+
+/// The grid's own work's pipelines: the relight and the characters'.
+#[derive(Debug)]
+struct GridPipelines {
+    relight: wgpu::ComputePipeline,
+    character: wgpu::ComputePipeline,
 }
 
 /// GTAO's pipelines: the depth prefilter, the search and the blur.
@@ -924,11 +955,29 @@ struct OcclusionPipelines {
 /// Which of the ambient pass's pipelines to build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct PipelineSet {
-    /// The grid's light.
-    light: bool,
-    /// The prefilter, with the light.
+    /// The sky's projection.
+    projection: bool,
+    /// The reflection cube's prefilter.
     prefilter: bool,
+    /// The grid's relight and the characters' pass.
+    grid: bool,
     occlusion: bool,
+}
+
+impl PipelineSet {
+    /// Those of `self` that `built` lacks.
+    fn without(self, built: Self) -> Self {
+        Self {
+            projection: self.projection && !built.projection,
+            prefilter: self.prefilter && !built.prefilter,
+            grid: self.grid && !built.grid,
+            occlusion: self.occlusion && !built.occlusion,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self == Self::default()
+    }
 }
 
 impl AmbientPipelines {
@@ -940,7 +989,7 @@ impl AmbientPipelines {
         sources: &ShaderSources,
         set: PipelineSet,
     ) -> Self {
-        if !set.light && !set.occlusion {
+        if set.is_empty() {
             return Self::default();
         }
         let module = shaders::module(device, Program::Ambient, sources);
@@ -955,11 +1004,13 @@ impl AmbientPipelines {
             })
         };
         Self {
-            light: set.light.then(|| LightPipelines {
+            projection: set.projection.then(|| ProjectionPipelines {
                 projection: build(0, "cs_sky_projection"),
                 projection_faces: build(0, "cs_sky_projection_faces"),
                 sky_light: build(0, "cs_sky_light"),
-                prefilter: set.prefilter.then(|| build(1, "cs_prefilter")),
+            }),
+            prefilter: set.prefilter.then(|| build(1, "cs_prefilter")),
+            grid: set.grid.then(|| GridPipelines {
                 relight: build(2, "cs_relight"),
                 character: build(3, "cs_character_ambient"),
             }),
@@ -974,16 +1025,29 @@ impl AmbientPipelines {
     /// The groups built.
     fn set(&self) -> PipelineSet {
         PipelineSet {
-            light: self.light.is_some(),
-            prefilter: self.light.as_ref().is_some_and(|light| light.prefilter.is_some()),
+            projection: self.projection.is_some(),
+            prefilter: self.prefilter.is_some(),
+            grid: self.grid.is_some(),
             occlusion: self.occlusion.is_some(),
         }
+    }
+
+    /// Adds the groups `built` has that these lack.
+    fn add(&mut self, built: Self) {
+        let Self { projection, prefilter, grid, occlusion } = built;
+        self.projection = self.projection.take().or(projection);
+        self.prefilter = self.prefilter.take().or(prefilter);
+        self.grid = self.grid.take().or(grid);
+        self.occlusion = self.occlusion.take().or(occlusion);
     }
 
     /// Pipelines built.
     pub(crate) fn count(&self) -> u32 {
         let set = self.set();
-        LightPipelines::COUNT * u32::from(set.light) + u32::from(set.prefilter) + 3 * u32::from(set.occlusion)
+        ProjectionPipelines::COUNT * u32::from(set.projection)
+            + u32::from(set.prefilter)
+            + 2 * u32::from(set.grid)
+            + 3 * u32::from(set.occlusion)
     }
 }
 
@@ -1217,10 +1281,11 @@ impl Placeholders {
 
 impl Ambient {
     /// The ambient light and occlusion of a renderer with `occlusion`, a grid read per `lookup`,
-    /// temporal AA or not, and `reflections` (none with environment specular off, which never
-    /// reads them). `sky_cube` is the sky's cube, which the projection and the prefilter read.
-    /// Builds GTAO's pipelines if `occlusion` has it; the grid's light, its pipelines and the
-    /// reflection cube wait for a grid ([`Self::set_grid`]).
+    /// temporal AA or not, and a reflection cube of `reflections`, which the environment reads
+    /// if `environment_reflects` (environment specular on). `sky_cube` is the sky's cube, which
+    /// the projection and the prefilter read. Builds GTAO's pipelines if `occlusion` has it; the
+    /// grid's light, its pipelines and the reflection cube wait for a grid ([`Self::set_grid`])
+    /// or a reflective character ([`Self::set_reflective`]).
     #[expect(
         clippy::too_many_arguments,
         reason = "the renderer's shared buffers and layouts, and the tier's settings, each read once"
@@ -1234,7 +1299,8 @@ impl Ambient {
         occlusion: AmbientOcclusion,
         lookup: ProbeLookup,
         temporal: bool,
-        reflections: Option<ReflectionSettings>,
+        reflections: ReflectionSettings,
+        environment_reflects: bool,
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
     ) -> Self {
@@ -1290,6 +1356,8 @@ impl Ambient {
             placeholders,
             grid: None,
             reflections,
+            environment_reflects,
+            reflective: false,
             reflection: None,
             gtao,
             sky_light,
@@ -1349,9 +1417,9 @@ impl Ambient {
     }
 
     /// Uploads `grid`, replacing any grid there was, or removes it (`None`). The first grid also
-    /// builds the light work's pipelines from `sources` and makes the reflection cube, both kept
-    /// for the grids after it. The frame group and the environment pipelines must then be rebuilt
-    /// ([`Self::frame_entries`], [`Self::constants`]).
+    /// builds the light work's pipelines from `sources` and, with environment specular on, makes
+    /// the reflection cube, all kept for the grids after it. The frame group and the environment
+    /// pipelines must then be rebuilt ([`Self::frame_entries`], [`Self::constants`]).
     pub(crate) fn set_grid(
         &mut self,
         queue: &wgpu::Queue,
@@ -1363,8 +1431,12 @@ impl Ambient {
                 GpuGrid::new(&self.device, queue, &self.layouts, &self.sky_light, &self.uniform_buffer, grid)
             })
             .transpose()?;
-        if self.grid.is_some() && self.pipelines.light.is_none() {
-            self.prepare_light(sources);
+        if self.grid.is_some() {
+            let prefilter = self.environment_reflects;
+            self.prepare_work(
+                sources,
+                PipelineSet { projection: true, prefilter, grid: true, occlusion: false },
+            );
         }
         let (atlas, bricks) = self
             .grid
@@ -1433,49 +1505,78 @@ impl Ambient {
         Ok(())
     }
 
-    /// Builds the grid's light work, when the first grid arrives: its pipelines from `sources`,
-    /// the projection's group and, with environment specular on, the reflection cube and its
-    /// prefilter.
-    fn prepare_light(&mut self, sources: &ShaderSources) {
-        let reflection = self.reflections.map(|settings| {
-            Reflection::new(
+    /// Says whether a reflective character material is in the draw list (M1 C7), whose
+    /// reflection add reads the cube. The first time one is builds the projection and the
+    /// prefilter from `sources` and makes the cube, if a grid hasn't; while one is, the pass
+    /// prefilters the faces the sky cube draws, every face when that starts again after a pause.
+    /// Returns whether the cube was made, so the frame group must be rebuilt
+    /// ([`Self::frame_entries`]).
+    pub(crate) fn set_reflective(&mut self, reflective: bool, sources: &ShaderSources) -> bool {
+        if reflective == self.reflective {
+            return false;
+        }
+        self.reflective = reflective;
+        if !reflective {
+            return false;
+        }
+        // The environment's prefilter kept the cube current, or it missed what the sky drew since.
+        if !(self.grid.is_some() && self.environment_reflects) {
+            self.schedule.reproject();
+        }
+        let made = self.reflection.is_none();
+        self.prepare_work(
+            sources,
+            PipelineSet { projection: true, prefilter: true, ..PipelineSet::default() },
+        );
+        made
+    }
+
+    /// Builds what `set`'s work needs that isn't built yet: its pipelines from `sources`, the
+    /// projection's group with the projection, the reflection cube with the prefilter.
+    fn prepare_work(&mut self, sources: &ShaderSources, set: PipelineSet) {
+        if set.prefilter && self.reflection.is_none() {
+            let reflection = Reflection::new(
                 &self.device,
                 &self.layouts,
-                settings,
+                self.reflections,
                 &self.sky_cube,
                 &self.sky_light,
                 &self.uniform_buffer,
-            )
-        });
-        let set = PipelineSet { light: true, prefilter: reflection.is_some(), occlusion: false };
-        let built = AmbientPipelines::new(&self.device, &self.layouts, self.cache.as_ref(), sources, set);
-        self.pipelines.light = built.light;
-        // The projection threads' sums, which the next dispatch adds up: the pass's own, kept
-        // alive by the group.
-        let partials = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("sky projection sums"),
-            size: PROJECTION_PARTIALS_BYTES,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        self.projection_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("sky projection"),
-            layout: &self.layouts.projection,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.sky_cube),
-                },
-                wgpu::BindGroupEntry { binding: 5, resource: self.sky_light.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: partials.as_entire_binding() },
-            ],
-        }));
-        let mips = reflection.as_ref().map_or(0, |reflection| reflection.mips);
-        self.block.ambient.atlas_texel[3] = mips.saturating_sub(1) as f32;
-        self.stats.reflection_size = reflection.as_ref().map_or(0, |reflection| reflection.size);
-        self.stats.reflection_mips = mips;
-        self.stats.pipelines = self.pipelines.count();
-        self.reflection = reflection;
+            );
+            self.block.ambient.atlas_texel[3] = reflection.mips.saturating_sub(1) as f32;
+            self.stats.reflection_size = reflection.size;
+            self.stats.reflection_mips = reflection.mips;
+            self.reflection = Some(reflection);
+        }
+        if set.projection && self.projection_group.is_none() {
+            // The projection threads' sums, which the next dispatch adds up: the pass's own, kept
+            // alive by the group.
+            let partials = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("sky projection sums"),
+                size: PROJECTION_PARTIALS_BYTES,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            self.projection_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sky projection"),
+                layout: &self.layouts.projection,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.sky_cube),
+                    },
+                    wgpu::BindGroupEntry { binding: 5, resource: self.sky_light.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 8, resource: partials.as_entire_binding() },
+                ],
+            }));
+        }
+        let missing = set.without(self.pipelines.set());
+        if !missing.is_empty() {
+            let built =
+                AmbientPipelines::new(&self.device, &self.layouts, self.cache.as_ref(), sources, missing);
+            self.pipelines.add(built);
+            self.stats.pipelines = self.pipelines.count();
+        }
     }
 
     /// Points the character pass at the characters' buffer, after it was replaced.
@@ -1527,10 +1628,11 @@ impl Ambient {
         }
         self.block.ambient.counts = [capsules, entries, 0, 0];
         self.stats.capsules = capsules;
+        // The projection's sky, with a grid or for a reflective character's cube.
+        self.sky = packet.ambient.sky * packet.ambient.intensity;
         if let Some(grid) = &self.grid {
             let keys = if packet.probe_keys.is_valid() { packet.probe_keys } else { ProbeKeys::default() };
             self.keys = keys;
-            self.sky = packet.ambient.sky * packet.ambient.intensity;
             self.stats.blended_keys = keys
                 .keys
                 .iter()
@@ -1566,6 +1668,8 @@ impl Ambient {
             ref mut block,
             ref uniform_buffer,
             ref grid,
+            environment_reflects,
+            reflective,
             ref reflection,
             ref mut gtao,
             ref layouts,
@@ -1582,16 +1686,17 @@ impl Ambient {
             ..
         } = *self;
         let mut light = None;
-        // The light pipelines are built with the first grid.
-        if let (Some(grid), Some(light_pipelines)) = (grid, &pipelines.light) {
-            let work = schedule.frame(grid.kept, faces, keys, sky);
+        // The cube is read while the environment reads it through a grid, or a reflective
+        // character draws (M1 C7).
+        let reflected =
+            reflection.as_ref().filter(|_| reflective || (environment_reflects && grid.is_some()));
+        // The projection is built with the first grid or reflective character.
+        if let (true, Some(projection), Some(projection_group)) =
+            (grid.is_some() || reflected.is_some(), &pipelines.projection, projection_group)
+        {
+            let kept = grid.as_ref().map_or(0, |grid| grid.kept);
+            let work = schedule.frame(kept, faces, keys, sky);
             let texels = [work.bricks.start * BRICK_PROBES, work.bricks.end * BRICK_PROBES];
-            block.relight = RelightUniforms {
-                keys: keys.keys,
-                weights: keys.weights,
-                slice: [texels[0], texels[1], 0, 0],
-                ..grid.relight
-            };
             stats.relit_bricks = work.bricks.len() as u32;
             block.ambient.counts[2..].copy_from_slice(&[work.faces.start, work.faces.len() as u32]);
             // The prefilter, for the faces the projection projects (whose scale mip 0 reads).
@@ -1599,7 +1704,7 @@ impl Ambient {
             let projected = faces.len() as u32;
             let mut prefilter = None;
             if let (Some(reflection), Some(pipeline)) =
-                (reflection.as_ref().filter(|_| !faces.is_empty()), &light_pipelines.prefilter)
+                (reflected.filter(|_| !faces.is_empty()), &pipelines.prefilter)
             {
                 stats.prefiltered_faces += u64::from(faces.len() as u32);
                 for (region, uniforms) in
@@ -1609,20 +1714,33 @@ impl Ambient {
                 }
                 prefilter = Some(PrefilterWork { pipeline, reflection, faces });
             }
-            let entries = block.ambient.counts[1];
-            light = Some(LightWork {
-                pipelines: light_pipelines,
-                compute_frame,
-                projection: projection_group
-                    .as_ref()
-                    .filter(|_| work.project)
-                    .map(|group| (group, projected)),
-                prefilter,
-                relight: (texels[1] > texels[0]).then_some((&grid.relight_group, texels[1] - texels[0])),
-                characters: character_group
+            // The grid's own work, with its pipelines (built with the first grid).
+            let mut relight = None;
+            let mut characters = None;
+            if let (Some(grid), Some(grid_pipelines)) = (grid, &pipelines.grid) {
+                block.relight = RelightUniforms {
+                    keys: keys.keys,
+                    weights: keys.weights,
+                    slice: [texels[0], texels[1], 0, 0],
+                    ..grid.relight
+                };
+                relight = (texels[1] > texels[0]).then_some((
+                    &grid_pipelines.relight,
+                    &grid.relight_group,
+                    texels[1] - texels[0],
+                ));
+                let entries = block.ambient.counts[1];
+                characters = character_group
                     .as_ref()
                     .filter(|_| entries > 1)
-                    .map(|group| (group, entries - 1)),
+                    .map(|group| (&grid_pipelines.character, group, entries - 1));
+            }
+            light = Some(LightWork {
+                compute_frame,
+                projection: work.project.then_some((projection, projection_group, projected)),
+                prefilter,
+                relight,
+                characters,
             });
         }
         let occlusion = gtao.as_mut().and_then(|gtao| {
@@ -2135,31 +2253,31 @@ struct PrefilterWork<'a> {
     faces: Range<u32>,
 }
 
-/// A frame's grid work: the sky's projection (its group and the faces it projects), the
-/// prefilter, the relight (its group and the texels it relights) and the characters (their group
-/// and the entries past the fallback), each only when due.
+/// A frame's light work, each part with its pipelines and only when due: the sky's projection
+/// (its group and the faces it projects), the prefilter, and with a grid the relight (its group
+/// and the texels it relights) and the characters (their group and the entries past the
+/// fallback).
 struct LightWork<'a> {
-    pipelines: &'a LightPipelines,
     compute_frame: &'a wgpu::BindGroup,
-    projection: Option<(&'a wgpu::BindGroup, u32)>,
+    projection: Option<(&'a ProjectionPipelines, &'a wgpu::BindGroup, u32)>,
     prefilter: Option<PrefilterWork<'a>>,
-    relight: Option<(&'a wgpu::BindGroup, u32)>,
-    characters: Option<(&'a wgpu::BindGroup, u32)>,
+    relight: Option<(&'a wgpu::ComputePipeline, &'a wgpu::BindGroup, u32)>,
+    characters: Option<(&'a wgpu::ComputePipeline, &'a wgpu::BindGroup, u32)>,
 }
 
 impl LightWork<'_> {
     /// The dispatches it makes: the projection's three (the sky light's alone when it projects
     /// no face), one per mip for the prefilter, and one for each other part due.
     fn dispatches(&self) -> u32 {
-        self.projection.map_or(0, |(_, faces)| if faces > 0 { 3 } else { 1 })
+        self.projection.map_or(0, |(_, _, faces)| if faces > 0 { 3 } else { 1 })
             + self.prefilter.as_ref().map_or(0, |prefilter| prefilter.reflection.mips)
             + u32::from(self.relight.is_some())
             + u32::from(self.characters.is_some())
     }
 
     fn dispatch(self, pass: &mut wgpu::ComputePass<'_>) {
-        let Self { pipelines, compute_frame, projection, prefilter, relight, characters } = self;
-        if let Some((group, faces)) = projection {
+        let Self { compute_frame, projection, prefilter, relight, characters } = self;
+        if let Some((pipelines, group, faces)) = projection {
             // The three share a layout, so the groups stay bound; wgpu orders each dispatch's
             // writes before the next one's reads.
             pass.set_bind_group(0, compute_frame, &[]);
@@ -2182,13 +2300,13 @@ impl LightWork<'_> {
                 pass.dispatch_workgroups(size, size, faces.len() as u32);
             }
         }
-        if let Some((group, texels)) = relight {
-            pass.set_pipeline(&pipelines.relight);
+        if let Some((pipeline, group, texels)) = relight {
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(3, group, &[]);
             pass.dispatch_workgroups(texels.div_ceil(WORKGROUP), 1, 1);
         }
-        if let Some((group, count)) = characters {
-            pass.set_pipeline(&pipelines.character);
+        if let Some((pipeline, group, count)) = characters {
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, compute_frame, &[]);
             pass.set_bind_group(1, group, &[]);
             pass.dispatch_workgroups(count.div_ceil(WORKGROUP), 1, 1);
@@ -2378,6 +2496,11 @@ mod tests {
         assert_eq!(schedule.frame(10, 0..0, drift(0.1), sky * 1.2), work(true, 0..0, 0..10));
         assert_eq!(schedule.frame(10, 0..0, drift(0.1), sky * 1.21), work(false, 0..0, 0..0));
         // A key entering at no weight is no change of the blend's light.
+        // A reflective character's prefilter starting again (M1 C7): every face, and the bricks
+        // in slices, as after any projection.
+        schedule.reproject();
+        assert_eq!(schedule.frame(10, 0..0, drift(0.1), sky * 1.21), work(true, 0..6, 3..6));
+        assert_eq!(schedule.frame(0, 3..4, keys, sky), work(true, 3..4, 0..0), "no grid: faces alone");
         let entering = ProbeKeys { keys: [2, 3, 4, 0], ..drift(0.1) };
         assert!(keys_change(&drift(0.1), &entering) == 0.0);
         assert!((keys_change(&keys, &ProbeKeys::single(2)) - 1.0).abs() < 1e-6);

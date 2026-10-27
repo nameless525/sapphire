@@ -291,11 +291,11 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
 
     // A shared file: every program that includes it (the environment's, fog cards' and foliage's
     // too, with no pipeline built from them yet, the shadow passes', M1 R4, which build nothing
-    // with shadows off, the ambient pass's, M1 W5, which builds nothing without a grid or GTAO,
-    // and the debug views', M1 F5, which build nothing while none shows), and every pipeline
-    // built from them (the sky's six, surface, outline, scene prepass, outline prepass, the
-    // character prepass's two (hair's writes one ID, M1 C6), and the light clusters' two:
-    // view-space lights and binning).
+    // with shadows off, the ambient pass's, M1 W5, which builds nothing without a grid, GTAO or
+    // a reflective character, M1 C7, and the debug views', M1 F5, which build nothing while none
+    // shows), and every pipeline built from them (the sky's six, surface, outline, scene prepass,
+    // outline prepass, the character prepass's two (hair's writes one ID, M1 C6), and the light
+    // clusters' two: view-space lights and binning).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");

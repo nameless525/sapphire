@@ -54,18 +54,26 @@ impl MaterialHandle {
     }
 }
 
-/// The draw order of `material`'s draws within their surface variant: an anime character eye's
-/// layer, 0 for anything else ([`MaterialRecord::layer`]).
-fn layer(material: &ArchivedMaterial) -> u32 {
+/// An anime character material's modes (`AnimeCharacterParams::modes`); `None` for another
+/// family.
+fn character_modes(material: &ArchivedMaterial) -> Option<[u32; 4]> {
     if material.family != MaterialFamily::AnimeCharacter {
-        return 0;
+        return None;
     }
     let offset = std::mem::offset_of!(AnimeCharacterParams, modes);
     // Validated materials hold a whole block.
-    material
-        .params()
-        .get(offset..offset + 16)
-        .map_or(0, |bytes| AnimeCharacterParams::eye_layer(bytemuck::pod_read_unaligned(bytes)))
+    material.params().get(offset..offset + 16).map(bytemuck::pod_read_unaligned)
+}
+
+/// The draw order of `material`'s draws within their surface variant: an anime character eye's
+/// layer, 0 for anything else ([`MaterialRecord::layer`]).
+fn layer(material: &ArchivedMaterial) -> u32 {
+    character_modes(material).map_or(0, AnimeCharacterParams::eye_layer)
+}
+
+/// Whether `material` reads the reflection cube ([`MaterialRecord::reflects`]).
+fn reflects(material: &ArchivedMaterial) -> bool {
+    character_modes(material).is_some_and(|modes| modes[0] & AnimeCharacterParams::FLAG_REFLECTION != 0)
 }
 
 /// Room in each family's buffer before it first grows, in slots.
@@ -99,6 +107,9 @@ pub(crate) struct MaterialRecord {
     /// `AnimeCharacterParams::EYE_LAYER_*`), each drawn over the ones before it; 0 for anything
     /// else.
     pub layer: u32,
+    /// An anime character material with the reflection add (M1 C7), which reads the reflection
+    /// cube: the ambient pass prefilters it while one draws.
+    pub reflects: bool,
     /// Group 3.
     pub bind_group: wgpu::BindGroup,
 }
@@ -230,8 +241,8 @@ impl Materials {
         // mirror, so a GPU copy of the old buffer keeps everything.
         let replaced = buffer.buffer.reserve(device, queue, needed, buffer.buffer.buffer().size());
         buffer.push(material.params());
-        let layer = layer(material);
-        self.records.push(MaterialRecord { family, slot, flags: material.flags(), layer, bind_group });
+        let (flags, layer, reflects) = (material.flags(), layer(material), reflects(material));
+        self.records.push(MaterialRecord { family, slot, flags, layer, reflects, bind_group });
         Ok((handle, replaced))
     }
 
@@ -256,6 +267,7 @@ impl Materials {
         record.bind_group = bind_group;
         record.flags = material.flags();
         record.layer = layer(material);
+        record.reflects = reflects(material);
         self.families[record.family.index()].write(record.slot, material.params());
         Ok(())
     }

@@ -15,6 +15,7 @@ Third-party bytes live only here. Files extracted byte for byte from a source (a
 |---|---|---|---|---|
 | [vrm1_constraint_twist_sample](vrm1_constraint_twist_sample/) | VRM 1.0 anime character (VRoid-style, MToon materials) | pixiv Inc. | VRM Public License 1.0 | M1 X1, the look-dev character |
 | [kenney_fantasy_town_kit](kenney_fantasy_town_kit/) | Modular fantasy town: walls, roofs, roads, fountain, trees, stalls | Kenney | CC0 1.0 | M1 X1, the environment slice's base geometry |
+| [vvaytoyek_chinese_pavilion](vvaytoyek_chinese_pavilion/) | A Chinese four-corner garden pavilion: timber frame, tile roof (FBX) | VVayToyek | CC0 1.0 | M1 X1 part 2, a hero piece of the Jinzhou-style town |
 
 ## Rules
 
@@ -28,3 +29,4 @@ Third-party bytes live only here. Files extracted byte for byte from a source (a
 - **The anime aesthetic.** Sapphire is an engine for anime-aesthetic games (Wuthering Waves, Zenless Zone Zero), so third-party content serves that look.
   - Characters are anime characters.
   - Environment kits are base geometry for an anime game's world. The Fantasy Town Kit ships as a flat-palette, low-poly casual kit. It must be re-materialed in Sapphire's environment family (authored colors and gradients under the time-of-day light), scaled to the character's proportions and composed as an anime game's town (a Genshin Mondstadt or WuWa square) before a frame of it counts as the look.
+  - The pavilion ships in flat lacquer red-orange and near-black, with no textures. X1 converts it to glTF, re-materials it in the Jinzhou palette of the look target (white plaster, charcoal tile, warm timber) and scales it to the character.

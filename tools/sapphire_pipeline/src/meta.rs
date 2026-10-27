@@ -436,11 +436,13 @@ pub(crate) fn staging_path(path: &Path) -> PathBuf {
 pub(crate) fn rewrite(path: &Path, meta: &AssetMeta) -> Result<(), MetaError> {
     let text = to_ron(meta).expect("an AssetMeta always serializes");
     let write_error = |source| MetaError::Write { path: path.to_owned(), source };
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".tmp");
-    let temp = PathBuf::from(temp);
-    fs::write(&temp, text).map_err(write_error)?;
-    fs::rename(&temp, path).map_err(write_error)
+    // Staged as `create` stages, so two writers never share a temporary file.
+    let staged = staging_path(path);
+    let written = fs::write(&staged, text).and_then(|()| fs::rename(&staged, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    written.map_err(write_error)
 }
 
 /// The source assets and sidecars under a content root.
@@ -918,5 +920,10 @@ mod tests {
         assert!(create(&fresh, &other).unwrap());
         assert_eq!(read(&fresh).unwrap(), other);
         assert_eq!(listing(dir.path()), ["a.glb.meta", "b.glb.meta"]);
+
+        // Rewriting (explicit commands only) replaces it, staged as creating is.
+        rewrite(&sidecar, &other).unwrap();
+        assert_eq!(read(&sidecar).unwrap(), other);
+        assert_eq!(listing(dir.path()), ["a.glb.meta", "b.glb.meta"], "no staged file is left");
     }
 }

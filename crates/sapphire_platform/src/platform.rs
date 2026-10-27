@@ -165,8 +165,11 @@ impl Platform {
     ///
     /// On iOS the engine's display link asks the display for exactly this rate, so a ProMotion
     /// panel can run at it rather than 120 Hz, and starts each frame on a vsync, holding back any
-    /// vsync that comes before the frame is due (ADR 0003). On desktop and Android,
-    /// where presentation paces frames, it is what [`Self::frame_pacing`] measures against.
+    /// vsync that comes before the frame is due (ADR 0003). On Android the engine's frame limiter
+    /// does the same with the choreographer's vsyncs, and the windows the app renders to ask the
+    /// display for this rate (`ANativeWindow_setFrameRate`, Android 11 and later), so a 120 Hz
+    /// panel can drop to one the rate divides (ADR 0004). On desktop, where presentation paces
+    /// frames, it is what [`Self::frame_pacing`] measures against.
     pub fn set_frame_rate(&mut self, rate: Option<NonZeroU32>) {
         self.frame_clock.set_frame_rate(rate);
     }
@@ -176,11 +179,12 @@ impl Platform {
         self.frame_clock.pacing()
     }
 
-    /// The current frame's interval since the frame before where a display link paces frames
-    /// (iOS): the time between the vsyncs the two are shown at, so steady frames advance the
-    /// simulation and animation by exactly the target interval. In the background it is at most
-    /// one target interval. `None` where presentation paces frames; measure with
-    /// `sapphire_time`'s `RealClock` there.
+    /// The current frame's interval since the frame before where vsyncs start frames: the time
+    /// between the vsyncs the two are shown at on iOS (the display link's), and between the vsyncs
+    /// they start on on Android (the choreographer's), so steady frames advance the simulation and
+    /// animation by exactly the target interval. In the background it is at most one target
+    /// interval. `None` where presentation paces frames (desktop); measure with `sapphire_time`'s
+    /// `RealClock` there.
     pub fn frame_delta(&self) -> Option<Duration> {
         self.frame_clock.display_interval()
     }

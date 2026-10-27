@@ -13,8 +13,8 @@
 //! - **Panels**: stats and budgets (frame time, CPU stages against spec §3.2, the GPU frame,
 //!   the prepasses (M1 C5), temporal AA's passes and post's (bloom, tonemap and LUT, M1 P2)
 //!   against §3.3, allocations, the quality tier with the render scale and dynamic resolution's
-//!   state, frame pacing (the platform's `FramePacing`, M1 F7: what paces frames, the target rate
-//!   and the frames on time, missed, doubled and held back), `RenderStats` with the character
+//!   state, frame pacing (the platform's `FramePacing`, M1 F7 and F8: what paces frames, the
+//!   target rate and the frames on time, missed, doubled and held back), `RenderStats` with the character
 //!   prepass's draws and readers (M1 C5), temporal AA's sizes, jitter and history resets, the
 //!   compositing layers post drew and the fog's layers and cards (M1 W3),
 //!   `GraphStats` and the transient pool, the last-used input device, the asset server's

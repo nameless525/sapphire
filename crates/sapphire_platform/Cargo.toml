@@ -48,6 +48,11 @@ objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString"] }
 objc2-quartz-core = { workspace = true, features = ["objc2-core-foundation", "CADisplayLink", "CAFrameRateRange"] }
 
+# Android frame pacing (M1 F8, ADR 0004): `CLOCK_MONOTONIC`, the choreographer's clock, and
+# resolving the NDK functions newer than the app's minimum API level at run time.
+[target.'cfg(target_os = "android")'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 # The lifecycle test injects raw SDL events to exercise re-entrant dispatch.
 sdl3-sys.workspace = true

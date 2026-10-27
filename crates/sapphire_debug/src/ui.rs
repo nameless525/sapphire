@@ -659,7 +659,8 @@ fn quality(ui: &mut Ui, frame: &OverlayFrame<'_>) {
     });
 }
 
-/// How the platform paces frames against the tier's rate, and how evenly they have come (M1 F7).
+/// How the platform paces frames against the tier's rate, and how evenly they have come (M1 F7,
+/// F8).
 fn pacing(ui: &mut Ui, frame: &OverlayFrame<'_>) {
     let Some(pacing) = frame.pacing else { return };
     egui::Grid::new("pacing").num_columns(2).show(ui, |ui| {
@@ -672,6 +673,8 @@ fn pacing(ui: &mut Ui, frame: &OverlayFrame<'_>) {
         let how = match (pacing.source, pacing.target) {
             (PacingSource::DisplayLink, Some(rate)) => format!("display link at {rate} fps{display}"),
             (PacingSource::DisplayLink, None) => format!("display link at the display's rate{display}"),
+            (PacingSource::Choreographer, Some(rate)) => format!("vsync limiter at {rate} fps{display}"),
+            (PacingSource::Choreographer, None) => format!("vsync limiter at the display's rate{display}"),
             (PacingSource::Presentation, Some(rate)) => {
                 format!("presentation (FIFO), against {rate} fps{display}")
             }
@@ -680,7 +683,7 @@ fn pacing(ui: &mut Ui, frame: &OverlayFrame<'_>) {
         row(ui, "Frame pacing", how);
         let stats = pacing.stats;
         let held = match pacing.source {
-            PacingSource::DisplayLink => format!(", {} ticks held", stats.held),
+            PacingSource::DisplayLink | PacingSource::Choreographer => format!(", {} ticks held", stats.held),
             PacingSource::Presentation => String::new(),
         };
         row(

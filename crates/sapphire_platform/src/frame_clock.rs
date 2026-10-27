@@ -3,8 +3,10 @@
 //!
 //! [`FrameClock`] belongs to the [`Platform`](crate::Platform) and runs before every
 //! [`App::iterate`](crate::App::iterate). It takes the frame's tick from its source (the engine's
-//! display link on iOS, the time the frame begins elsewhere), asks the [`FramePacer`] whether the
-//! tick becomes a frame, and keeps the display's refresh current from SDL's display events.
+//! display link on iOS, the engine's vsync loop on Android, the time the frame begins on desktop),
+//! asks the [`FramePacer`] whether the tick becomes a frame, and keeps the display's refresh
+//! current: from the choreographer's reports on Android 11 and later, else from SDL's display
+//! events.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -13,18 +15,21 @@ use sdl3_sys::events::{SDL_Event, SDL_EventType};
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_WasInit};
 use sdl3_sys::video::{SDL_DisplayID, SDL_GetCurrentDisplayMode, SDL_GetPrimaryDisplay};
 
+use crate::LOG_TARGET;
 use crate::pacing::{FramePacer, PacingSource, PacingStats};
 
 /// How frames are paced, and how evenly they come: a snapshot for stats panels and logs (rule R9).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FramePacing {
     pub source: PacingSource,
-    /// The frame rate frames are paced to (a display link) or measured against (presentation);
-    /// `None`: the display's own rate, unmeasured.
+    /// The frame rate frames are paced to (a display link or the choreographer's limiter) or
+    /// measured against (presentation); `None`: the display's own rate, unmeasured.
     pub target: Option<NonZeroU32>,
-    /// The display's refresh rate in Hz (its highest, on a variable-rate display), if known.
+    /// The display's refresh rate in Hz, if known: an iPhone's highest; on Android the rate the
+    /// choreographer reports, which a frame-rate override can make the app's own (30 Hz vsyncs on
+    /// a 60 Hz panel).
     pub refresh_hz: Option<f32>,
-    /// This frame's interval since the frame before: whole refreshes on a display link.
+    /// This frame's interval since the frame before: whole refreshes where vsyncs start frames.
     pub interval: Duration,
     pub stats: PacingStats,
 }
@@ -37,6 +42,9 @@ pub(crate) struct FrameClock {
     display: Option<u32>,
     /// The refresh must be read again before the next frame (a display or its mode changed).
     refresh_stale: bool,
+    /// The refresh period the vsync source last reported (Android's choreographer), which takes
+    /// precedence over SDL's display mode.
+    reported_refresh: Option<Duration>,
     refresh_hz: Option<f32>,
     /// The current frame's interval.
     interval: Duration,
@@ -44,13 +52,19 @@ pub(crate) struct FrameClock {
 
 impl FrameClock {
     pub fn new() -> Self {
-        let source =
-            if cfg!(target_os = "ios") { PacingSource::DisplayLink } else { PacingSource::Presentation };
+        let source = if cfg!(target_os = "ios") {
+            PacingSource::DisplayLink
+        } else if cfg!(target_os = "android") {
+            PacingSource::Choreographer
+        } else {
+            PacingSource::Presentation
+        };
         Self {
             source,
             pacer: FramePacer::new(source),
             display: None,
             refresh_stale: true,
+            reported_refresh: None,
             refresh_hz: None,
             interval: Duration::ZERO,
         }
@@ -60,6 +74,8 @@ impl FrameClock {
         self.pacer.set_target(rate);
         #[cfg(target_os = "ios")]
         crate::ios_loop::set_frame_rate(rate);
+        #[cfg(target_os = "android")]
+        crate::android_loop::set_frame_rate(rate);
     }
 
     pub fn pacing(&self) -> FramePacing {
@@ -72,25 +88,37 @@ impl FrameClock {
         }
     }
 
-    /// The frame's interval where a display link paces frames: the time between the vsyncs the
-    /// frames are shown at, free of the scheduling jitter a clock read as the frame begins would
-    /// carry.
+    /// The frame's interval where vsyncs start frames (a display link, the choreographer's
+    /// limiter): the time between the frames' vsyncs, free of the scheduling jitter a clock read
+    /// as the frame begins would carry.
     pub fn display_interval(&self) -> Option<Duration> {
-        (self.source == PacingSource::DisplayLink).then_some(self.interval)
+        (self.source != PacingSource::Presentation).then_some(self.interval)
     }
 
     /// Runs before each [`App::iterate`](crate::App::iterate): whether this tick becomes a frame.
     pub fn begin_frame(&mut self) -> bool {
+        let reported = reported_refresh();
+        if reported != self.reported_refresh {
+            self.reported_refresh = reported;
+            self.refresh_stale = true;
+            if let Some(period) = reported {
+                tracing::info!(target: LOG_TARGET, hz = format_args!("{:.2}", hz(period)), "display refresh reported");
+            }
+        }
         if self.refresh_stale {
             self.refresh_stale = false;
-            let refresh = display_refresh(self.display);
+            let refresh = self
+                .reported_refresh
+                .map(|period| (hz(period), period))
+                .or_else(|| display_refresh(self.display));
             self.refresh_hz = refresh.map(|(hz, _)| hz);
             self.pacer.set_refresh(refresh.map(|(_, period)| period));
         }
         let Some(vsync) = frame_tick() else {
-            // iOS, outside the display link's tick: only the link starts frames there, and SDL
-            // 3.4.18 iterates from nowhere else. Should a later SDL do so, no frame beats one
-            // run unpaced with a stale interval.
+            // Outside a vsync's tick: on iOS only the display link starts frames, and SDL 3.4.18
+            // iterates from nowhere else (should a later SDL do so, no frame beats one run unpaced
+            // with a stale interval); on Android the tick's vsync was dropped because the app came
+            // back during its event pump, and the loop's next vsync starts the frame.
             return false;
         };
         match self.pacer.tick(vsync) {
@@ -107,9 +135,13 @@ impl FrameClock {
         self.pacer.pause();
     }
 
-    /// The app is back: the next frame starts the cadence afresh.
+    /// The app is back: the next frame starts the cadence afresh. On Android the tick being
+    /// iterated came before the trip (SDL's event pump blocks while the app is paused), so it is
+    /// dropped: the next vsync starts that frame.
     pub fn resume(&mut self) {
         self.pacer.resume();
+        #[cfg(target_os = "android")]
+        crate::android_loop::discard_vsync();
     }
 
     /// Follows the display frames are shown on and its mode, from SDL's raw events.
@@ -145,16 +177,41 @@ fn frame_tick() -> Option<u64> {
     crate::ios_loop::take_vsync()
 }
 
+/// The frame's tick in nanoseconds: the vsync the engine's loop waited for, unless it was dropped.
+#[cfg(target_os = "android")]
+fn frame_tick() -> Option<u64> {
+    crate::android_loop::take_vsync()
+}
+
 /// The frame's tick in nanoseconds: now, on the clock event timestamps use.
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
 fn frame_tick() -> Option<u64> {
     // SAFETY: SDL_GetTicksNS has no preconditions.
     Some(unsafe { sdl3_sys::timer::SDL_GetTicksNS() })
 }
 
+/// The display's refresh period as the vsync source reports it: Android's choreographer, from
+/// Android 11 (API 30).
+#[cfg(target_os = "android")]
+fn reported_refresh() -> Option<Duration> {
+    crate::android_loop::refresh_period()
+}
+
+/// The display's refresh period as the vsync source reports it: no source reports one here.
+#[cfg(not(target_os = "android"))]
+fn reported_refresh() -> Option<Duration> {
+    None
+}
+
+/// A refresh period as a rate.
+fn hz(period: Duration) -> f32 {
+    (1.0 / period.as_secs_f64()) as f32
+}
+
 /// The refresh rate of `display`, or of the primary display, in Hz and as a period; `None`
-/// without video (headless runs) or if SDL doesn't know it. SDL reports a phone's highest rate
-/// (`UIScreen.maximumFramesPerSecond` on iOS).
+/// without video (headless runs) or if SDL doesn't know it. SDL reports an iPhone's highest rate
+/// (`UIScreen.maximumFramesPerSecond`), and an Android phone's rate when its surface last changed
+/// size (`Display.getRefreshRate()`), which the choreographer's reports supersede.
 fn display_refresh(display: Option<u32>) -> Option<(f32, Duration)> {
     // SAFETY: SDL_WasInit has no preconditions.
     if unsafe { SDL_WasInit(SDL_INIT_VIDEO) } != SDL_INIT_VIDEO {

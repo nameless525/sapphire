@@ -407,7 +407,9 @@ impl Drop for WindowInner {
 ///   so wgpu never touches freed memory. Drop the surface and this handle on
 ///   `WillEnterBackground`, and take a new handle on `DidEnterForeground`: the OS hands
 ///   the app a different `ANativeWindow` each time (see
-///   [`LifecycleEvent`](crate::LifecycleEvent)).
+///   [`LifecycleEvent`](crate::LifecycleEvent)). While a handle holds it, the window asks the
+///   display for the rate set with [`Platform::set_frame_rate`](crate::Platform::set_frame_rate)
+///   (`ANativeWindow_setFrameRate`, Android 11 and later).
 ///
 /// The handle also keeps the SDL window itself alive, so the native objects stay valid
 /// even if the [`Window`] is dropped first.
@@ -474,6 +476,10 @@ impl AndroidWindowRef {
         }
         // SAFETY: locked above.
         unsafe { SDL_UnlockProperties(props) };
+        if let Some(window) = window {
+            // The window the app renders to asks the display for the target frame rate (ADR 0004).
+            crate::android_loop::window_acquired(window);
+        }
         Self(window)
     }
 
@@ -491,6 +497,7 @@ impl AndroidWindowRef {
 impl Drop for AndroidWindowRef {
     fn drop(&mut self) {
         if let Some(window) = self.0 {
+            crate::android_loop::window_released(window);
             // SAFETY: the reference was taken in `acquire` and is released exactly once.
             unsafe { ndk::ANativeWindow_release(window.as_ptr()) };
         }

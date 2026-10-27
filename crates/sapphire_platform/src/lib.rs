@@ -5,7 +5,8 @@
 //!
 //! - **Entry and lifecycle** through SDL's main callbacks on every platform: [`run`]
 //!   from `fn main` on desktop and iOS, [`export_android_main!`] on Android. The app
-//!   implements [`App`]. On iOS the engine's display link drives them (see "Frame pacing").
+//!   implements [`App`]. On iOS the engine's display link drives them, and on Android the
+//!   engine's vsync loop (see "Frame pacing").
 //! - **The OS window** ([`Window`]) and the [`SurfaceHandle`] the renderer builds its
 //!   surface from: a `CAMetalLayer` on Apple platforms, `raw-window-handle` 0.6 handles
 //!   elsewhere, kept alive for as long as the surface needs them.
@@ -22,7 +23,7 @@
 //!   with cancellation and completion callbacks (spec §4.3). The asset server reads packs
 //!   through it; decoding happens on the job system's workers, not here.
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
-//! - **Frame pacing** (M1 F7): when [`App::iterate`] runs, at the rate the app sets with
+//! - **Frame pacing** (M1 F7, F8): when [`App::iterate`] runs, at the rate the app sets with
 //!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below.
 //!
 //! # Does not own
@@ -37,9 +38,13 @@
 //! - Memory-mapping pack files where the OS allows (desktop, iOS, and packs downloaded into
 //!   Android's internal storage, spec §6.4), so raw blocks are read in place; and the IO
 //!   thread's priority above normal, with the job system's thread priorities (spec §5.5).
-//! - Frame pacing beyond iOS's display link (spec §6.2): desktop's player frame cap and Android's
-//!   limiter with `ANativeWindow_setFrameRate`, both on the same pacer; and timed presentation
-//!   once wgpu can present at a chosen time.
+//! - Desktop's player frame cap (spec §6.2) on the same pacer. Android's loop has the shape it
+//!   needs (the engine waits before each iteration and the pacer gates it), but a desktop has no
+//!   vsync to wait for through SDL: the cap would sleep to the time the pacer says the next frame
+//!   is due, on the clock, and let FIFO's present keep frames on vsyncs.
+//! - Timed presentation once wgpu can present at a chosen time (Metal's present time on iOS,
+//!   `VK_GOOGLE_display_timing` on Android), so frames that finish early on a panel faster than
+//!   the target are still shown at even intervals.
 //!
 //! # Threading
 //!
@@ -53,7 +58,7 @@
 //!
 //! The app sets the frame rate it is built for (the quality tier's) with
 //! [`Platform::set_frame_rate`]; what that does depends on what starts frames (spec §6.2,
-//! ADR 0003):
+//! ADR 0003 for iOS, ADR 0004 for Android):
 //!
 //! - **iOS:** the engine's `CADisplayLink` drives SDL's main callbacks in place of SDL's own link,
 //!   which ran at the display's full rate (up to 120 Hz on ProMotion). The link asks the display
@@ -62,19 +67,26 @@
 //!   which asked for 80–120 Hz, is stopped. Event dispatch, lifecycle events and quitting stay
 //!   SDL's, through SDL's own main-callback functions. [`Platform::frame_delta`] is the time
 //!   between the vsyncs frames are shown at, for the simulation and animation.
-//! - **Desktop and Android:** SDL's loop runs frames back to back and presentation (FIFO) waits
-//!   for vsync, as before; the target is what the stats measure against.
+//! - **Android:** the engine's loop runs SDL's main callbacks in place of SDL's back-to-back loop,
+//!   waiting before each iteration for a vsync from the NDK's `AChoreographer`, on the SDL thread's
+//!   own looper (the thread sleeps between vsyncs). The pacer starts a frame on the vsyncs the
+//!   target rate is due on and holds back the rest, so a 30 fps tier draws 30 frames a second
+//!   whatever the panel's rate. The windows the app renders to ask the display for the target rate
+//!   (`ANativeWindow_setFrameRate`, Android 11 and later), and the choreographer reports the
+//!   refresh as it changes. Event dispatch, lifecycle events and quitting stay SDL's.
+//!   [`Platform::frame_delta`] is the time between the vsyncs frames start on.
+//! - **Desktop:** SDL's loop runs frames back to back and presentation (FIFO) waits for vsync, as
+//!   before; the target is what the stats measure against.
 //!
 //! [`Platform::frame_pacing`] reports the source, the target, the display's refresh and the
 //! counters (on time, missed, doubled, held back) for stats panels.
 //!
 //! The decisions are a pure function of the ticks' vsync times (`pacing.rs`), unit-tested with
 //! injected timestamps. They count whole refreshes, so the target rate holds, never exceeded, on
-//! panels it doesn't divide (60 fps at 90 or 144 Hz), as Android's will need. Frames start on
-//! time; when each is shown is presentation's (FIFO's)
-//! call. Presenting at a chosen time (Metal's minimum present duration, `CAMetalDisplayLink`,
-//! Vulkan's present timing) would hold intervals even for a frame that finishes early on a panel
-//! faster than the target, and waits for wgpu to expose it.
+//! panels it doesn't divide (60 fps at 90 or 144 Hz). Frames start on time; when each is shown is
+//! presentation's (FIFO's) call. Presenting at a chosen time (Metal's minimum present duration,
+//! `CAMetalDisplayLink`, Vulkan's present timing) would hold intervals even for a frame that
+//! finishes early on a panel faster than the target, and waits for wgpu to expose it.
 //!
 //! # Android packaging
 //!
@@ -114,6 +126,8 @@ unsafe extern "C" {}
 /// `tracing` target for everything this crate logs.
 const LOG_TARGET: &str = "sapphire::platform";
 
+#[cfg(target_os = "android")]
+mod android_loop;
 mod app;
 mod content;
 mod dirs;

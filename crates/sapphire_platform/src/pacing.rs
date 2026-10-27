@@ -3,8 +3,9 @@
 //!
 //! [`FramePacer`] is pure: it reads no clock and is fed each display tick's vsync time, so its
 //! decisions and counters are deterministic. The platform's frame clock feeds it: the engine's
-//! display link on iOS, where it also holds back ticks that come before a frame is due, and the
-//! time each frame begins elsewhere, where presentation paces frames and the pacer only measures.
+//! display link on iOS and the choreographer's vsyncs on Android, where it also holds back ticks
+//! that come before a frame is due (Android's frame limiter), and the time each frame begins on
+//! desktop, where presentation paces frames and the pacer only measures.
 //!
 //! # Frames due on whole refreshes
 //!
@@ -17,6 +18,17 @@
 //! timestamp noise can't move a decision and a reported refresh a little off the panel's can't
 //! drift. Without a known refresh, a frame is due once the target interval has passed, within a
 //! quarter of it.
+//!
+//! # Vsyncs faster than the refresh says
+//!
+//! On Android the vsyncs can speed up before the platform hears of it: the choreographer reports a
+//! lifted frame-rate override (the app's vsyncs going from 30 back to 60 Hz) only after the vsyncs
+//! change. A vsync taken for two refreshes when it is one would start frames early, so under
+//! choreographer pacing a tick less than three quarters of the refresh set after the tick before
+//! divides that refresh by the whole number nearest the ratio (2 to 8) until the next one is set.
+//! A refresh shorter than the panel's is safe, whole vsyncs being whole multiples of it. A tick
+//! more than eight times sooner is taken for one off the vsyncs (Android's loop iterates on the
+//! clock when vsyncs stop) and changes nothing.
 
 use std::cmp::Ordering;
 use std::num::NonZeroU32;
@@ -36,8 +48,12 @@ pub enum PacingSource {
     /// The engine's display link starts each frame on a vsync at the target rate, holding back any
     /// vsync that comes before the frame is due (iOS, ADR 0003).
     DisplayLink,
+    /// The engine's frame limiter: its loop waits for each vsync from Android's choreographer and
+    /// starts a frame on the vsyncs the target rate is due on, holding back the rest, while the
+    /// window asks the display for the target rate (Android, ADR 0004).
+    Choreographer,
     /// SDL's loop runs frames back to back and presentation paces them, FIFO waiting for vsync
-    /// (desktop and Android). The target rate is measured against, not enforced.
+    /// (desktop). The target rate is measured against, not enforced.
     Presentation,
 }
 
@@ -56,10 +72,11 @@ pub struct PacingStats {
     /// again: for each frame later than its refresh, the intervals it was late by, at least one.
     pub missed: u64,
     /// Measured frames that came before they were due, faster than the target rate: the judder of
-    /// a 60 fps game on a display link running at 120 Hz. A display link holds such ticks back, so
-    /// only presentation pacing counts them.
+    /// a 60 fps game on a display link running at 120 Hz. A display link and the choreographer's
+    /// limiter hold such ticks back, so only presentation pacing counts them.
     pub doubled: u64,
-    /// Display ticks held back so frames keep the target rate (display-link pacing only).
+    /// Display ticks held back so frames keep the target rate (display-link and choreographer
+    /// pacing).
     pub held: u64,
     /// The latest frame's interval since the frame before.
     pub last_interval: Duration,
@@ -69,12 +86,18 @@ pub struct PacingStats {
 /// module docs).
 #[derive(Clone, Debug)]
 pub(crate) struct FramePacer {
-    /// Hold back ticks that come before a frame is due (display-link pacing), or let every tick
-    /// through and only measure (presentation pacing).
+    /// Hold back ticks that come before a frame is due (display-link and choreographer pacing), or
+    /// let every tick through and only measure (presentation pacing).
     gate: bool,
+    /// Shorten the refresh when ticks come faster than it (choreographer pacing; module docs).
+    follow_faster_ticks: bool,
     target: Option<NonZeroU32>,
     /// The display's shortest refresh period, if known.
     refresh: Option<Duration>,
+    /// The refresh as last set, which ticks faster than it may divide (choreographer pacing).
+    refresh_set: Option<Duration>,
+    /// The vsync time of the last tick, held or let through, in nanoseconds (choreographer pacing).
+    last_tick: Option<u64>,
     /// The vsync time of the last frame let through, in nanoseconds.
     last: Option<u64>,
     /// What the frames so far have overpaid, in refreshes (0 up to 1), which the next one owes
@@ -90,7 +113,8 @@ pub(crate) struct FramePacer {
 
 /// Where a frame came against the refresh it was due on.
 enum Landing {
-    /// Before it was due: a display link holds the tick back; presentation counts it doubled.
+    /// Before it was due: a display link or the limiter holds the tick back; presentation counts it
+    /// doubled.
     Early,
     /// On the refresh it was due, overpaying `carry` of a refresh.
     OnTime { carry: f64 },
@@ -99,12 +123,15 @@ enum Landing {
 }
 
 impl FramePacer {
-    /// A pacer that holds back early ticks if `source` is a display link.
+    /// A pacer that holds back early ticks unless presentation paces frames.
     pub fn new(source: PacingSource) -> Self {
         Self {
-            gate: source == PacingSource::DisplayLink,
+            gate: source != PacingSource::Presentation,
+            follow_faster_ticks: source == PacingSource::Choreographer,
             target: None,
             refresh: None,
+            refresh_set: None,
+            last_tick: None,
             last: None,
             carry: 0.0,
             paused: false,
@@ -131,6 +158,7 @@ impl FramePacer {
     /// if unknown.
     pub fn set_refresh(&mut self, refresh: Option<Duration>) {
         self.refresh = refresh.filter(|refresh| !refresh.is_zero());
+        self.refresh_set = self.refresh;
     }
 
     pub fn stats(&self) -> PacingStats {
@@ -157,6 +185,11 @@ impl FramePacer {
     /// held back. The first frame, and the first after [`Self::resume`], get one target interval
     /// (or one refresh), so time spent away isn't simulated.
     pub fn tick(&mut self, vsync_ns: u64) -> Option<Duration> {
+        if self.follow_faster_ticks
+            && let Some(previous) = self.last_tick.replace(vsync_ns)
+        {
+            self.follow_faster_vsyncs(vsync_ns.saturating_sub(previous));
+        }
         let nominal = self.nominal_interval();
         // A tick from before the last frame means the clock changed under the pacer: start afresh
         // rather than measure a negative interval.
@@ -198,6 +231,23 @@ impl FramePacer {
         self.stats.frames += 1;
         self.stats.last_interval = interval;
         Some(interval)
+    }
+
+    /// Divides the refresh set when a tick comes `spacing` nanoseconds after the tick before, less
+    /// than three quarters of it (module docs). The refresh only ever shortens, to an eighth of the
+    /// one set at most, and two ticks for one vsync change nothing.
+    fn follow_faster_vsyncs(&mut self, spacing: u64) {
+        let Some(set) = self.refresh_set else { return };
+        let set = u64::try_from(set.as_nanos()).unwrap_or(u64::MAX);
+        if spacing == 0 || spacing.saturating_mul(4) >= set.saturating_mul(3) {
+            return;
+        }
+        let divisor = set.saturating_add(spacing / 2) / spacing;
+        if divisor > 8 {
+            return;
+        }
+        let divided = Duration::from_nanos(set / divisor.max(2));
+        self.refresh = Some(self.refresh.map_or(divided, |refresh| refresh.min(divided)));
     }
 
     /// The target interval, never shorter than a refresh: a display that can't reach the target
@@ -530,5 +580,224 @@ mod tests {
         run(&mut pacer, vsyncs(1_000_000_000, 60, 5));
         assert_eq!(pacer.tick(10), Some(Duration::from_nanos(16_666_666)));
         assert_eq!(pacer.stats().missed + pacer.stats().doubled, 0);
+    }
+
+    /// The choreographer's limiter (Android) at `target` fps on a display refreshing at
+    /// `display_hz`.
+    fn limiter(target: u32, display_hz: u64) -> FramePacer {
+        let mut pacer = FramePacer::new(PacingSource::Choreographer);
+        pacer.set_target(rate(target));
+        pacer.set_refresh(Some(refresh(display_hz)));
+        pacer
+    }
+
+    /// Android's vsync loop from `from` until `until` (nanoseconds), on a panel refreshing at `hz`
+    /// whose vsyncs fall on `phase` plus whole periods. Each wait gets the first vsync after it
+    /// posts its frame callback, so a held tick (whose events take 0.1 ms) is followed by the next
+    /// vsync, and a frame by the first vsync after `work(frame)` nanoseconds of its work. Returns
+    /// the intervals of the frames let through, in microseconds, and the time the loop got to.
+    fn choreographer_loop(
+        pacer: &mut FramePacer,
+        (phase, hz): (u64, u64),
+        from: u64,
+        until: u64,
+        mut work: impl FnMut(usize) -> u64,
+    ) -> (Vec<u128>, u64) {
+        let vsync = |k: u64| phase + k * NANOS_PER_SECOND / hz;
+        let (mut frames, mut now, mut k) = (Vec::new(), from, 0);
+        loop {
+            while vsync(k) <= now {
+                k += 1;
+            }
+            if vsync(k) > until {
+                return (frames, now);
+            }
+            now = match pacer.tick(vsync(k)) {
+                Some(interval) => {
+                    frames.push(interval.as_micros());
+                    vsync(k) + work(frames.len() - 1)
+                }
+                None => vsync(k) + 100_000,
+            };
+        }
+    }
+
+    /// Every interval is `expected` microseconds, give or take the nanosecond the vsyncs' whole
+    /// nanoseconds round away.
+    fn all_near(intervals: &[u128], expected: u128) -> bool {
+        intervals.iter().all(|&us| us.abs_diff(expected) <= 1)
+    }
+
+    #[test]
+    fn the_limiter_holds_30_and_60_fps_on_60_90_and_120_hz_panels() {
+        // Frames working 6 ms, under a refresh on every panel, so the loop sees every vsync: those a
+        // frame is due on start one, and the rest are held.
+        let cases: [(u64, u32, &[u128]); 6] = [
+            (60, 30, &[33_333]),
+            (60, 60, &[16_666]),
+            (90, 30, &[33_333]),
+            (90, 60, &[22_222, 11_111]),
+            (120, 30, &[33_333]),
+            (120, 60, &[16_666]),
+        ];
+        for (hz, target, cadence) in cases {
+            let mut pacer = limiter(target, hz);
+            let (frames, _) =
+                choreographer_loop(&mut pacer, (0, hz), 0, 10 * NANOS_PER_SECOND, |_| 6_000_000);
+            let cycle = frames[1..].chunks(cadence.len());
+            assert!(
+                cycle
+                    .clone()
+                    .all(|chunk| chunk.iter().zip(cadence).all(|(&us, &want)| us.abs_diff(want) <= 1))
+            );
+            let stats = pacer.stats();
+            assert_eq!(stats.frames + stats.held, 10 * hz, "every vsync was a tick at {hz} Hz");
+            assert!(stats.frames.abs_diff(10 * u64::from(target)) <= 1, "{target} fps at {hz} Hz: {stats:?}");
+            assert!(all_on_time(&pacer), "{target} fps at {hz} Hz: {stats:?}");
+        }
+    }
+
+    #[test]
+    fn the_limiter_sleeps_through_the_vsyncs_a_frame_works_over() {
+        // 60 fps at 120 Hz with frames working 12 ms: the first vsync after each frame's work is
+        // the one the next frame is due on, so none is seen early and none is held.
+        let mut pacer = limiter(60, 120);
+        let (frames, _) = choreographer_loop(&mut pacer, (0, 120), 0, 5 * NANOS_PER_SECOND, |_| 12_000_000);
+        assert!(all_near(&frames[1..], 16_666), "{frames:?}");
+        assert_eq!(pacer.stats().held, 0);
+        assert!(all_on_time(&pacer), "{:?}", pacer.stats());
+    }
+
+    #[test]
+    fn a_late_frame_counts_its_missed_interval_and_the_cadence_restarts() {
+        // 30 fps at 60 Hz. The tenth frame works 40 ms, past its 33.3 ms interval, so the next
+        // starts on the first vsync after it, three refreshes on (one interval missed), and the
+        // cadence restarts from there rather than catch up with a short interval.
+        let mut pacer = limiter(30, 60);
+        let work = |frame| if frame == 10 { 40_000_000 } else { 6_000_000 };
+        let (frames, _) = choreographer_loop(&mut pacer, (0, 60), 0, 2 * NANOS_PER_SECOND, work);
+        assert!(all_near(&frames[1..11], 33_333) && all_near(&frames[12..], 33_333), "{frames:?}");
+        assert_eq!(frames[11].abs_diff(50_000), 0, "{frames:?}");
+        let stats = pacer.stats();
+        assert_eq!((stats.missed, stats.doubled, stats.on_time), (1, 0, stats.measured - 1));
+
+        // 60 fps at 120 Hz, the fifth frame working 20 ms: three refreshes where two were due.
+        let mut pacer = limiter(60, 120);
+        let work = |frame| if frame == 5 { 20_000_000 } else { 6_000_000 };
+        let (frames, _) = choreographer_loop(&mut pacer, (0, 120), 0, NANOS_PER_SECOND, work);
+        assert_eq!(frames[6], 25_000, "{frames:?}");
+        assert!(all_near(&frames[7..], 16_666), "{frames:?}");
+        assert_eq!((pacer.stats().missed, pacer.stats().doubled), (1, 0));
+    }
+
+    #[test]
+    fn the_target_holds_while_the_hint_drops_the_panel_from_120_to_60_hz() {
+        // 30 fps on a 120 Hz panel, until the refresh hint takes it to 60 Hz. The choreographer
+        // reports the new period half a second after the vsyncs change: meanwhile the pacer counts
+        // each 60 Hz vsync as two of the 120 Hz refreshes it knows, which holds the target too.
+        let mut pacer = limiter(30, 120);
+        let second = NANOS_PER_SECOND;
+        let (mut frames, now) = choreographer_loop(&mut pacer, (0, 120), 0, second, |_| 6_000_000);
+        let (more, now) = choreographer_loop(&mut pacer, (second, 60), now, second * 3 / 2, |_| 6_000_000);
+        frames.extend(more);
+        pacer.set_refresh(Some(refresh(60)));
+        let (more, _) = choreographer_loop(&mut pacer, (second, 60), now, second * 5 / 2, |_| 6_000_000);
+        frames.extend(more);
+        // The frames fell on odd 120 Hz vsyncs, which the 60 Hz panel no longer has: the frame due
+        // on one comes on the next 60 Hz vsync, a refresh late, and the cadence holds from there.
+        let off_cadence: Vec<_> = frames[1..].iter().filter(|&&us| us.abs_diff(33_333) > 1).collect();
+        assert_eq!(off_cadence, [&41_666], "{frames:?}");
+        assert_eq!(frames.len(), 75);
+        assert_eq!((pacer.stats().missed, pacer.stats().doubled), (1, 0));
+    }
+
+    #[test]
+    fn a_refresh_reported_faster_than_the_panel_holds_the_target() {
+        // The hint took a 120 Hz panel to 60 Hz before the choreographer said so: a 60 Hz vsync is
+        // two of the refreshes the pacer knows, so 60 fps runs on every vsync and 30 on every second.
+        for (target, every) in [(60, 16_666), (30, 33_333)] {
+            let mut pacer = limiter(target, 120);
+            let (frames, _) = choreographer_loop(&mut pacer, (0, 60), 0, 2 * NANOS_PER_SECOND, |_| 6_000_000);
+            assert!(all_near(&frames[1..], every), "{frames:?}");
+            assert!(all_on_time(&pacer), "{:?}", pacer.stats());
+        }
+    }
+
+    #[test]
+    fn the_limiter_starts_afresh_after_a_trip_to_the_background() {
+        // SDL's event pump blocks while the app is paused, so no tick comes in the background, and
+        // the tick that was waiting as the app left is dropped once it is back (`android_loop`).
+        // The first vsync after the return starts a frame at once, with one target interval, and
+        // the cadence holds from there, on the panel's new vsync phase.
+        let mut pacer = limiter(30, 60);
+        let (_, now) = choreographer_loop(&mut pacer, (0, 60), 0, 2 * NANOS_PER_SECOND, |_| 6_000_000);
+        pacer.pause();
+        pacer.resume();
+        let back = now + 5 * NANOS_PER_SECOND + 3_000_000;
+        let (frames, _) =
+            choreographer_loop(&mut pacer, (back, 60), back, back + 2 * NANOS_PER_SECOND, |_| 6_000_000);
+        assert_eq!(frames[0], 33_333, "the first frame back gets one target interval");
+        assert!(all_near(&frames[1..], 33_333), "{frames:?}");
+        // Measured: every frame but the first and the first back.
+        let stats = pacer.stats();
+        assert_eq!(
+            (stats.measured, stats.on_time, stats.missed, stats.doubled),
+            (stats.frames - 2, stats.measured, 0, 0)
+        );
+    }
+
+    #[test]
+    fn vsyncs_faster_than_the_reported_refresh_never_start_a_frame_early() {
+        // 30 fps under a 30 Hz frame-rate override that is lifted: the vsyncs go to 60 Hz, half a
+        // millisecond off the 30 Hz ones, while the pacer still counts 33.3 ms refreshes. Taken as a
+        // whole refresh, the first 60 Hz vsync (17.2 ms on) would start a frame; it shows the faster
+        // vsyncs instead, the refresh is halved, and frames keep 33.3 ms. The report of 60 Hz that
+        // follows changes nothing.
+        let second = NANOS_PER_SECOND;
+        let mut pacer = limiter(30, 30);
+        let (mut frames, now) = choreographer_loop(&mut pacer, (0, 30), 0, second, |_| 6_000_000);
+        let lifted = (second + 500_000, 60);
+        let (more, now) = choreographer_loop(&mut pacer, lifted, now, 2 * second, |_| 6_000_000);
+        frames.extend(more);
+        assert_eq!(pacer.refresh, Some(refresh(30) / 2));
+        pacer.set_refresh(Some(refresh(60)));
+        let (more, _) = choreographer_loop(&mut pacer, lifted, now, 3 * second, |_| 6_000_000);
+        frames.extend(more);
+        assert!(frames[1..].iter().all(|&us| us >= 33_333), "{frames:?}");
+        assert_eq!(frames[30], 33_833, "the vsyncs' new phase, once: {frames:?}");
+        assert!(all_near(&frames[31..], 33_333), "{frames:?}");
+        let stats = pacer.stats();
+        assert_eq!((stats.on_time, stats.missed, stats.doubled), (stats.measured, 0, 0));
+    }
+
+    #[test]
+    fn a_tick_off_the_vsyncs_keeps_the_cadence() {
+        // No vsync came for 100 ms, so Android's loop iterated on the clock, and the vsyncs resume
+        // 11.7 ms after that tick: the refresh is halved, which whole vsyncs still divide, and the
+        // frames keep 33.3 ms on the vsyncs once the one after the clock's has restarted them.
+        let mut pacer = limiter(30, 60);
+        let period = NANOS_PER_SECOND / 60;
+        let mut frames = run(&mut pacer, (0..=10).map(|i| i * period));
+        frames.extend(run(&mut pacer, [10 * period + 105_000_000]));
+        frames.extend(run(&mut pacer, (17..=40).map(|i| i * period)));
+        assert!(frames[6] == 105_000 && frames[7].abs_diff(45_000) <= 1, "{frames:?}");
+        assert!(all_near(&frames[8..], 33_333), "{frames:?}");
+        assert_eq!(pacer.stats().doubled, 0);
+        assert_eq!(pacer.refresh, Some(refresh(60) / 2));
+    }
+
+    #[test]
+    fn a_tick_just_before_a_vsync_changes_no_refresh() {
+        // The clock's tick 0.5 ms before a vsync would be the vsyncs running 33 times faster, which
+        // no panel does: the refresh stays, the vsync is held, and the cadence restarts from the
+        // clock's frame, on the vsyncs.
+        let mut pacer = limiter(30, 60);
+        let period = NANOS_PER_SECOND / 60;
+        let mut frames = run(&mut pacer, (0..=10).map(|i| i * period));
+        frames.extend(run(&mut pacer, [17 * period - 500_000]));
+        frames.extend(run(&mut pacer, (17..=40).map(|i| i * period)));
+        assert_eq!(pacer.refresh, Some(refresh(60)));
+        assert!(frames[7].abs_diff(33_833) <= 1 && all_near(&frames[8..], 33_333), "{frames:?}");
+        assert_eq!(pacer.stats().doubled, 0);
     }
 }

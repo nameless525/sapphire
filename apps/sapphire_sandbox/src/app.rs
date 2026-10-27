@@ -121,7 +121,7 @@ impl App for SandboxApp {
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
-        // the display for it.
+        // the display for it, and on Android its frame limiter holds it and the window asks for it.
         platform.set_frame_rate(quality.frame_rate());
         let mut content = Content::new(platform, options.character(), options.sky())?;
         if options.keeps_character_mesh() {
@@ -254,8 +254,9 @@ impl App for SandboxApp {
 
     fn iterate(&mut self, platform: &mut Platform) -> AppControl {
         let measured = self.real.update();
-        // Where a display link paces frames (iOS), the frame's time is its interval in whole
-        // vsyncs, so steady frames run whole fixed steps whatever the scheduler's jitter.
+        // Where vsyncs start frames (iOS's display link, Android's frame limiter), the frame's time
+        // is its interval in whole vsyncs, so steady frames run whole fixed steps whatever the
+        // scheduler's jitter.
         let frame_time = platform.frame_delta().unwrap_or(measured);
         let pacing = platform.frame_pacing();
         self.frame_time = if self.steady { frame_time } else { Duration::ZERO };

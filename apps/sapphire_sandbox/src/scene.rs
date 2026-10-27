@@ -66,9 +66,9 @@
 //!   and extracted the instances, it resolves each character's light rig for the frame's camera
 //!   into the packet's characters (M1 C2), with its face (M1 C3) and its body (M1 R4): the
 //!   turntable's head turning with it and its body a capsule from its feet to its head, each rim
-//!   rig figure's key turned to its angles, and each face rig head lit from its own angles, its
-//!   body a sphere around it. Both run there rather than as `Extract` systems, which would cost
-//!   an allocation a frame each.
+//!   rig figure's key turned to its angles, and each face rig head lit from its own angles (or by
+//!   its GI alone, in the GI layouts), its body a sphere around it. Both run there rather than as
+//!   `Extract` systems, which would cost an allocation a frame each.
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
@@ -870,7 +870,7 @@ impl Scene {
         }
         self.ecs.extract();
         let figure = self.figure;
-        let (characters, heads) = (&mut self.characters, &mut self.heads);
+        let (characters, heads, face_layout) = (&mut self.characters, &mut self.heads, self.face_layout);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.packet_mut();
             // The rigs are resolved for the camera; without one nothing draws.
@@ -903,12 +903,13 @@ impl Scene {
                     body,
                 });
             }
-            // The face rig's heads, in the default preset turned to each head's angles.
+            // The face rig's heads, in the default preset turned to each head's angles, or by its
+            // GI alone in the GI layouts.
             let preset = rigs.rig(LightRigId::DEFAULT);
             for (entity, rig, transform) in heads.iter(world) {
                 let center = transform.0.transform_point3(Vec3::ZERO);
                 let lighting = frame.character_lighting(preset, &camera, center);
-                let (lighting, face) = faces::character(rig, transform.0, lighting);
+                let (lighting, face) = faces::character(face_layout, rig, transform.0, lighting);
                 let body = CharacterBody::capsule(center, center, HEAD_BODY_RADIUS);
                 packet.characters.push(CharacterInstance {
                     id: extract::instance_id(entity),
@@ -1284,6 +1285,31 @@ mod tests {
             assert!(head.forward.abs_diff_eq(spun.transform_vector3(Vec3::Z), 1e-6));
             scene.end_frame();
         }
+    }
+
+    #[test]
+    fn the_gi_face_layouts_light_the_heads_by_their_gi_alone() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        scene.spawn_face_rig(MeshHandle::from_raw(1), FaceLayout::GiClamped);
+        let heads: Vec<_> = scene.faces.iter().map(|head| InstanceId(head.to_bits())).collect();
+        let turntable = InstanceId(scene.character.to_bits());
+        scene.step();
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let preset = LightRigLibrary::default_rigs().rig(LightRigId::DEFAULT).gi;
+        for id in &heads {
+            let lighting = packet.characters.iter().find(|c| c.id == *id).expect("listed").lighting;
+            assert_eq!(lighting.key.intensity, 0.0, "the key light is off");
+            assert_eq!(lighting.gi.intensity, preset.intensity * faces::GI_EXPOSURE);
+            let clamp = (lighting.gi.max_saturation, lighting.gi.max_value);
+            assert_eq!(clamp, (faces::CLAMPED_GI.saturation, faces::CLAMPED_GI.value));
+            assert_eq!(
+                (lighting.gi.camera_bias, lighting.gi.skin_tint),
+                (preset.camera_bias, preset.skin_tint.into())
+            );
+        }
+        let character = packet.characters.iter().find(|c| c.id == turntable).expect("listed");
+        assert!(character.lighting.key.intensity > 0.0, "the turntable keeps its key light");
+        scene.end_frame();
     }
 
     #[test]

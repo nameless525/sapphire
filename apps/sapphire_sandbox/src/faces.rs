@@ -1,15 +1,18 @@
 //! The face look-dev rig (`--faces`, M1 C3 and C5): rows of the face test head, each lit by a key
 //! light of its own from an angle in head space, the way an artist checks a face map and hair: a
 //! yaw sweep across both sides, top light and expressions; the bangs' shadow; the hair's
-//! highlights; eyes and brows through the bangs.
+//! highlights; eyes and brows through the bangs; and the character light rig's stylized GI alone
+//! (M1 C2).
 //!
 //! - **The head** is content: the pipeline's face sample (`samples::face`), loaded by ID with
 //!   its face, hair, bangs and brow materials and their maps through the asset server
-//!   ([`Content::face_head`]).
+//!   ([`Content::face_head`]). Its face region takes the GI's sphere and skin tint, its hair and
+//!   bangs the sphere (`RegionGi`): the only sample content that takes either.
 //! - **Each head is a character**, lit by the character light rig (M1 C2) like the turntable's:
 //!   [`Scene::frame_packet`] lists every head with the default preset's lighting resolved for
 //!   it, its key light turned to the head's [`FaceRig`] angles in head space, and its face, the
-//!   head's pose and the rig's expression ([`character`]).
+//!   head's pose and the rig's expression ([`character`]). The GI layouts switch the key light
+//!   off instead ([`FaceLayout::light`]).
 //! - **Layouts** (`--face-layout`, [`FaceLayout`]), each rows left to right as the camera sees
 //!   them ([`FaceLayout::rows`]):
 //!   - `lights` (the default, M1 C3): the heads face the camera, so the face map's shapes read
@@ -25,6 +28,18 @@
 //!   - `turn` (M1 C5): heads turning from the camera, front to three-quarter to past the eyes'
 //!     fade, then nodding up and down past it: eyes and brows show through the bangs, fading as
 //!     the camera leaves the face.
+//!   - `gi` (M1 C2): heads lit by the default preset's stylized GI alone, the key light off and
+//!     the GI raised [`GI_EXPOSURE`] times, so the GI's own shading shows in the mid-tones: the
+//!     ambient hemisphere's sky above and ground below, seen through normals rounded toward the
+//!     head's sphere (the jaw, drawn out below it, takes the sphere's and darkens) and bent
+//!     toward the camera, the skin tint on the face, and the hair mask's and gloom's occlusion.
+//!     The first row faces the camera, turns 60° and nods down and up; the second turns either
+//!     way nodding up at its ends, and between them has two heads in gloom, one facing the camera
+//!     and one turned and nodding down. The preset's value ceiling stays just out of daylight's
+//!     reach there, and its saturation ceiling well out of it.
+//!   - `gi-clamped` (M1 C2): the same heads, their GI clamped hard ([`CLAMPED_GI`]): saturation
+//!     held to 0.2 and value to 0.3, which greys their color and flattens their sky sides before
+//!     the skin tint warms the face again.
 //!
 //! The heads never move, so their instances are extracted once; their characters are listed
 //! every frame, as every character's are.
@@ -84,6 +99,41 @@ const fn posed(turn: f32, nod: f32, yaw: f32, elevation: f32) -> FaceRig {
     FaceRig { yaw, elevation, expression: FaceExpression { blush: 0.0, gloom: 0.0 }, turn, nod }
 }
 
+/// A head of the GI layouts (M1 C2), turned and nodding from the camera, with a gloom: their key
+/// light is off, so its angles are the front's.
+const fn gi_head(turn: f32, nod: f32, gloom: f32) -> FaceRig {
+    FaceRig { expression: FaceExpression { blush: 0.0, gloom }, ..posed(turn, nod, 0.0, 0.0) }
+}
+
+/// How a layout lights its heads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum HeadLight {
+    /// The default preset's lighting, its key light turned to each head's angles.
+    Key,
+    /// The default preset's stylized GI alone (M1 C2): the key light off and the GI raised
+    /// [`GI_EXPOSURE`] times, under `ceilings` instead of the preset's where given.
+    Gi { ceilings: Option<GiCeilings> },
+}
+
+/// The ceilings of the stylized GI's HSV clamp (M1 C2): saturation, 0 to 1, and value (the
+/// brightest channel), linear light.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GiCeilings {
+    pub saturation: f32,
+    pub value: f32,
+}
+
+/// How many times the GI layouts raise the default preset's GI. With the key light off, the GI
+/// then reads in the mid-tones rather than near black: daylight's ambient sky (10:00 to 17:30)
+/// takes it to a value of about 0.45 to 0.48, just under the preset's ceiling of 0.5.
+pub(crate) const GI_EXPOSURE: f32 = 4.0;
+
+/// `gi-clamped`'s ceilings, inside the raised GI's range so the clamp shows on every head:
+/// daylight's ambient is about 0.2 to 0.4 saturated, and at [`GI_EXPOSURE`] its value runs from
+/// about 0.1 facing the ground to 0.48 facing the sky, so the saturation ceiling greys all of it
+/// and the value ceiling flattens the sky side.
+pub(crate) const CLAMPED_GI: GiCeilings = GiCeilings { saturation: 0.2, value: 0.3 };
+
 /// Which heads the rig shows (`--face-layout`): see the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum FaceLayout {
@@ -92,11 +142,14 @@ pub(crate) enum FaceLayout {
     Hair,
     Highlights,
     Turn,
+    Gi,
+    GiClamped,
 }
 
 impl FaceLayout {
     #[cfg(test)]
-    pub const ALL: [Self; 4] = [Self::Lights, Self::Hair, Self::Highlights, Self::Turn];
+    pub const ALL: [Self; 6] =
+        [Self::Lights, Self::Hair, Self::Highlights, Self::Turn, Self::Gi, Self::GiClamped];
 
     /// The layout `--face-layout` names.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -105,6 +158,8 @@ impl FaceLayout {
             "hair" => Some(Self::Hair),
             "highlights" => Some(Self::Highlights),
             "turn" => Some(Self::Turn),
+            "gi" => Some(Self::Gi),
+            "gi-clamped" => Some(Self::GiClamped),
             _ => None,
         }
     }
@@ -116,6 +171,16 @@ impl FaceLayout {
             Self::Hair => &HAIR,
             Self::Highlights => &HIGHLIGHTS,
             Self::Turn => &TURN,
+            Self::Gi | Self::GiClamped => &GI,
+        }
+    }
+
+    /// How the layout lights its heads: the GI layouts by their GI alone (M1 C2).
+    pub fn light(self) -> HeadLight {
+        match self {
+            Self::Lights | Self::Hair | Self::Highlights | Self::Turn => HeadLight::Key,
+            Self::Gi => HeadLight::Gi { ceilings: None },
+            Self::GiClamped => HeadLight::Gi { ceilings: Some(CLAMPED_GI) },
         }
     }
 
@@ -170,6 +235,18 @@ const TURN: [&[FaceRig]; 2] = [
         posed(0.0, 20.0, 30.0, 30.0),
         posed(-35.0, 15.0, 30.0, 30.0),
         posed(0.0, 55.0, 30.0, 30.0),
+    ],
+];
+
+// The GI layouts' heads (M1 C2): the poses that show the hemisphere's sky and ground on the
+// face, the jaw and the hair from every side, then two in gloom.
+const GI: [&[FaceRig]; 2] = [
+    &[gi_head(0.0, 0.0, 0.0), gi_head(60.0, 0.0, 0.0), gi_head(0.0, 30.0, 0.0), gi_head(0.0, -35.0, 0.0)],
+    &[
+        gi_head(-40.0, -20.0, 0.0),
+        gi_head(0.0, 0.0, 1.0),
+        gi_head(35.0, 10.0, 1.0),
+        gi_head(40.0, -20.0, 0.0),
     ],
 ];
 
@@ -231,10 +308,12 @@ pub(crate) fn heads(bounds: [[f32; 3]; 2], layout: FaceLayout, camera: &OrbitCam
     heads
 }
 
-/// A rig head's character data this frame, from `lighting` resolved for it: the key light turned
-/// to the rig's angles in the head's space, and its face. The head is the mesh's, placed by
-/// `transform` (its model faces +Z with +Y up, centered on its origin).
+/// A rig head's character data this frame in `layout`, from `lighting` resolved for it: the key
+/// light turned to the rig's angles in the head's space, or in the GI layouts switched off and
+/// the GI raised and clamped as [`FaceLayout::light`] says; and its face. The head is the mesh's,
+/// placed by `transform` (its model faces +Z with +Y up, centered on its origin).
 pub(crate) fn character(
+    layout: FaceLayout,
     rig: &FaceRig,
     transform: Mat4,
     mut lighting: CharacterLighting,
@@ -243,12 +322,19 @@ pub(crate) fn character(
         HeadBasis { forward: transform.transform_vector3(Vec3::Z), up: transform.transform_vector3(Vec3::Y) };
     let (forward, up) = head.orthonormalized().unwrap_or((Vec3::Z, Vec3::Y));
     lighting.key.direction = -rig.toward_key(forward, up);
+    if let HeadLight::Gi { ceilings } = layout.light() {
+        lighting.key.intensity = 0.0;
+        lighting.gi.intensity *= GI_EXPOSURE;
+        if let Some(GiCeilings { saturation, value }) = ceilings {
+            (lighting.gi.max_saturation, lighting.gi.max_value) = (saturation, value);
+        }
+    }
     (lighting, CharacterFace { head, expression: rig.expression })
 }
 
 #[cfg(test)]
 mod tests {
-    use sapphire_render::DirectionalLight;
+    use sapphire_render::{CharacterGi, DirectionalLight};
 
     use super::*;
 
@@ -267,7 +353,7 @@ mod tests {
         for layout in FaceLayout::ALL {
             let camera = camera(BOUNDS, layout);
             for (rig, transform) in heads(BOUNDS, layout, &camera) {
-                let (lighting, face) = character(&rig, transform, resolved);
+                let (lighting, face) = character(layout, &rig, transform, resolved);
                 let (yaw, elevation) = (rig.yaw.to_radians(), rig.elevation.to_radians());
                 let expected =
                     Vec3::new(yaw.sin() * elevation.cos(), elevation.sin(), yaw.cos() * elevation.cos());
@@ -277,6 +363,46 @@ mod tests {
                 assert_eq!(lighting.key.color, sun.color, "only the direction is the rig's");
             }
         }
+    }
+
+    #[test]
+    fn the_gi_layouts_light_heads_by_their_gi_alone() {
+        let sun = DirectionalLight { direction: Vec3::new(0.55, -0.7, -0.45), ..DirectionalLight::default() };
+        // As the default preset resolves.
+        let gi = CharacterGi {
+            head: Some(Vec3::new(-3.0, 1.1, 0.0)),
+            intensity: 1.0,
+            camera_bias: 0.3,
+            max_saturation: 0.6,
+            max_value: 0.5,
+            skin_tint: Vec3::new(1.12, 0.96, 0.86),
+        };
+        let resolved = CharacterLighting { gi, ..CharacterLighting::unstyled(sun) };
+        for layout in FaceLayout::ALL {
+            let camera = camera(BOUNDS, layout);
+            for (rig, transform) in heads(BOUNDS, layout, &camera) {
+                let (lighting, _) = character(layout, &rig, transform, resolved);
+                let mut expected = CharacterLighting { key: lighting.key, ..resolved };
+                match layout.light() {
+                    HeadLight::Key => assert_eq!(lighting.key.intensity, sun.intensity),
+                    HeadLight::Gi { ceilings } => {
+                        assert_eq!(lighting.key.intensity, 0.0, "the key light is off");
+                        expected.gi.intensity = GI_EXPOSURE;
+                        if let Some(ceilings) = ceilings {
+                            (expected.gi.max_saturation, expected.gi.max_value) =
+                                (ceilings.saturation, ceilings.value);
+                        }
+                    }
+                }
+                assert_eq!(lighting, expected, "{layout:?}: the rest of the rig as resolved");
+                assert!(lighting.is_valid());
+            }
+        }
+        assert_eq!(FaceLayout::Gi.light(), HeadLight::Gi { ceilings: None }, "the preset's ceilings");
+        assert_eq!(FaceLayout::GiClamped.light(), HeadLight::Gi { ceilings: Some(CLAMPED_GI) });
+        assert_eq!(FaceLayout::Gi.rows(), FaceLayout::GiClamped.rows(), "the same heads");
+        let gloomy = GI.iter().flat_map(|row| row.iter()).filter(|rig| rig.expression.gloom > 0.0);
+        assert_eq!(gloomy.count(), 2, "gloom's occlusion shows in the GI");
     }
 
     #[test]
@@ -315,7 +441,8 @@ mod tests {
 
     #[test]
     fn layouts_are_named_as_the_command_line_spells_them() {
-        for (name, layout) in ["lights", "hair", "highlights", "turn"].into_iter().zip(FaceLayout::ALL) {
+        let names = ["lights", "hair", "highlights", "turn", "gi", "gi-clamped"];
+        for (name, layout) in names.into_iter().zip(FaceLayout::ALL) {
             assert_eq!(FaceLayout::from_name(name), Some(layout));
         }
         assert_eq!(FaceLayout::from_name("bangs"), None);

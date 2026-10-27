@@ -62,8 +62,13 @@ pub struct Scene {
 /// no scene did before, with ambient occlusion off and no probe grid like every scene but W5's.
 /// The look-dev scenes (M1 X1) pin Desktop-High, the tier whose look they judge, and ambient
 /// occlusion off, as every scene but W5's: every other landed feature draws in them, as a game
-/// would.
-pub fn scenes() -> [Scene; 63] {
+/// would. The stylized GI scenes (M1 C2's follow-up) light the face rig by the character light
+/// rig's GI alone, its key light off (`--face-layout gi` and `gi-clamped`), at hours whose keys the
+/// night character light fix leaves as they were (17:30 and 10:00), and pin what the face scenes
+/// pin, so they show the GI alone: each of its steps (the sphere and the camera bias on the GI's
+/// normals, the HSV clamp's saturation and value, the skin tint, the occlusion) fails one of them
+/// when broken.
+pub fn scenes() -> [Scene; 65] {
     [
         Scene {
             name: "turntable-start",
@@ -1532,6 +1537,60 @@ pub fn scenes() -> [Scene; 63] {
                 "off",
                 "--capture-frames",
                 "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The default light rig preset's stylized GI alone (M1 C2) at golden hour, the key light
+        // off and the GI raised four-fold: the face rig turned and nodding every way under the
+        // amber sky's light above and the violet ground's below, through normals rounded toward
+        // the head's sphere (the jaw darkens with it) and bent toward the camera; the face in
+        // the skin tint; the bangs' roots and two heads' gloom occluded.
+        Scene {
+            name: "gi-golden-hour",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "gi",
+                "--time-of-day",
+                "17.5",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same heads by day, their GI clamped hard (saturation 0.2, value 0.3): the sky's
+        // blue and the ground's violet greyed, the sky sides flattened to one value, and the
+        // face warmed again by the skin tint.
+        Scene {
+            name: "gi-clamped",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "gi-clamped",
+                "--time-of-day",
+                "10",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
             ],
             thresholds: Thresholds::default(),
         },

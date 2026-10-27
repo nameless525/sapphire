@@ -232,5 +232,6 @@ pub struct GraphStats {
     pub transient_slots: u32,
     /// Command buffers recorded, more than one when recording in parallel.
     pub command_buffers: u32,
+    /// The transient pool's textures and their estimated bytes, now and at their peak.
     pub pool: TransientStats,
 }

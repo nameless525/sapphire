@@ -109,6 +109,9 @@ fn graphs_cull_share_pooled_textures_and_record_in_parallel() {
     // Each copy overlaps only its neighbours, so two textures carry the whole chain.
     assert_eq!((stats.transients, stats.transient_slots), (7, 2));
     assert_eq!(stats.pool.created, 2, "the second frame reused the first frame's textures");
+    // Two 4 × 4 RGBA8 textures, estimated (review RA-O06).
+    let bytes = 2 * u64::from(SIZE * SIZE * 4);
+    assert_eq!((stats.pool.bytes, stats.pool.peak_bytes), (bytes, bytes));
     assert!(stats.command_buffers > 1, "9 passes record in parallel: {stats:?}");
 }
 

@@ -490,8 +490,12 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             ui,
             "Texture pool",
             format!(
-                "{} resident, {} created, {} evicted",
-                graph.pool.textures, graph.pool.created, graph.pool.evicted
+                "{} resident (~{}, peak {}), {} created, {} evicted",
+                graph.pool.textures,
+                format_bytes(graph.pool.bytes),
+                format_bytes(graph.pool.peak_bytes),
+                graph.pool.created,
+                graph.pool.evicted
             ),
         );
         row(ui, "Input", device_name(frame.input_device, frame.gamepads));

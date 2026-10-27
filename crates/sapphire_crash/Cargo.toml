@@ -27,5 +27,10 @@ libc.workspace = true
 [dev-dependencies]
 tracing-subscriber.workspace = true
 
+# Runs the real crash monitor, which re-launches the test binary, so the test owns `main`.
+[[test]]
+name = "monitor"
+harness = false
+
 [lints]
 workspace = true

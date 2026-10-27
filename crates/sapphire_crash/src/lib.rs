@@ -18,7 +18,9 @@
 //!     crash monitor and connects to it with `minidumper`. A `crash-handler` hook in the app asks
 //!     the monitor to write a minidump of the crashed process from the outside, which is the
 //!     robust path. The panic hook also asks the monitor for a dump of the panicking thread, so
-//!     panics produce a minidump on all three desktops, Windows included.
+//!     panics produce a minidump on all three desktops, Windows included. A panic the app
+//!     recovers from doesn't use the monitor up: it numbers its dumps and keeps serving, so a
+//!     native crash later in the run still gets one. A run asks for at most 8 panic dumps.
 //!   - *Android:* `crash-handler` runs in-process and writes a small signal record (signal,
 //!     fault address, registers, `/proc/self/maps`) with async-signal-safe calls only, then
 //!     passes the signal on to the previous handler so `debuggerd` still writes its tombstone.
@@ -189,12 +191,14 @@ pub enum CrashError {
 /// Which native (non-panic) crash capture is running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeCapture {
-    /// Desktop: a monitor process writes a minidump (`<run>.dmp`) when the app crashes.
+    /// Desktop: a monitor process writes a minidump when the app crashes (`<run>.dmp`, or
+    /// `<run>.<n>.dmp` after the run's panics have asked for dumps of their own).
     Minidump,
     /// Android: an in-process signal handler writes a signal record (`<run>.native.txt`).
     SignalRecord,
-    /// Panics only: on iOS (native capture comes with the Xcode project), or because native
-    /// capture failed to start, in which case [`install`] logged why.
+    /// Panics only: on iOS (native capture comes with the Xcode project), because native capture
+    /// failed to start, in which case [`install`] logged why, or because the desktop monitor has
+    /// since gone away.
     None,
 }
 
@@ -207,11 +211,15 @@ pub struct CrashGuard {
 }
 
 impl CrashGuard {
-    /// Which native crash capture is running.
+    /// Which native crash capture is running now. On desktop that is
+    /// [`NativeCapture::Minidump`] only while the monitor process is alive and connected, so a
+    /// native crash at this moment would get a dump; recovered panics don't change it.
     pub fn native_capture(&self) -> NativeCapture {
-        match self.native {
+        match &self.native {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-            Native::Monitor { .. } => NativeCapture::Minidump,
+            Native::Monitor { capture } if capture.is_active() => NativeCapture::Minidump,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            Native::Monitor { .. } => NativeCapture::None,
             #[cfg(target_os = "android")]
             Native::Signal { .. } => NativeCapture::SignalRecord,
             Native::None => NativeCapture::None,
@@ -233,11 +241,11 @@ impl Drop for CrashGuard {
     }
 }
 
-/// The running native capture. Its payload is only ever dropped: dropping stops the capture.
+/// The running native capture. Dropping its payload stops the capture.
 enum Native {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     Monitor {
-        _capture: monitor::MonitorCapture,
+        capture: monitor::MonitorCapture,
     },
     #[cfg(target_os = "android")]
     Signal {
@@ -279,7 +287,7 @@ pub fn run_monitor_if_requested() {
 /// Requests a native minidump of the panicking thread, on desktop with the monitor active.
 ///
 /// Returns `false` if there is no native handler to ask (iOS, Android, or the monitor failed to
-/// start). Used only by the panic hook.
+/// start or has gone) or the dump could not be written. Used only by the panic hook.
 fn request_native_panic_dump() -> bool {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
@@ -365,7 +373,7 @@ fn install_inner(config: CrashConfig) -> Result<CrashGuard, CrashError> {
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn start_native(config: &CrashConfig, run_id: &str) -> Native {
     match monitor::MonitorCapture::start(&config.dump_dir, run_id) {
-        Ok(capture) => Native::Monitor { _capture: capture },
+        Ok(capture) => Native::Monitor { capture },
         Err(err) => {
             tracing::warn!(
                 target: "sapphire::crash",

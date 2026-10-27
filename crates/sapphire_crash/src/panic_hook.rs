@@ -17,13 +17,17 @@ pub(crate) struct HookContext {
     pub dump_dir: PathBuf,
 }
 
+/// How many panics per run get a native minidump. Panics the app recovers from (an IO callback,
+/// a decode worker, an off-thread shader build) each ask for one, so a panic loop would otherwise
+/// fill the disk; every panic still gets its text report.
+const MAX_PANIC_DUMPS: u32 = 8;
+
 struct HookState {
     context: HookContext,
     armed: AtomicBool,
     next_seq: AtomicU32,
-    /// Set once a native minidump of a panic has been requested, so repeated or concurrent panics
-    /// do not ask the (now exited) monitor again.
-    dump_requested: AtomicBool,
+    /// Native minidumps requested for panics so far, up to [`MAX_PANIC_DUMPS`].
+    panic_dumps: AtomicU32,
     started: Instant,
 }
 
@@ -50,7 +54,7 @@ pub(crate) fn install(context: HookContext) -> Registration {
         context,
         armed: AtomicBool::new(true),
         next_seq: AtomicU32::new(0),
-        dump_requested: AtomicBool::new(false),
+        panic_dumps: AtomicU32::new(0),
         started,
     });
 
@@ -79,9 +83,10 @@ impl HookState {
         // On desktop, when the out-of-process monitor is active, also ask it to write a minidump
         // of this panicking thread. That gives a fully symbolicatable artifact even in a stripped
         // shipping build, and it is the only way to get a dump on Windows, where `panic = "abort"`
-        // terminates through `__fastfail` and bypasses the structured-exception handler. Done only
-        // once: the monitor exits after writing a dump.
-        if !self.dump_requested.swap(true, Ordering::Relaxed) {
+        // terminates through `__fastfail` and bypasses the structured-exception handler. The
+        // monitor outlives the dump, since the app may recover from this panic, and a run asks
+        // for at most `MAX_PANIC_DUMPS` of them.
+        if self.claim_panic_dump() {
             crate::request_native_panic_dump();
         }
 
@@ -102,6 +107,15 @@ impl HookState {
                 report.message,
             ),
         }
+    }
+
+    /// Counts a panic dump against the run's [`MAX_PANIC_DUMPS`]; `false` once they are used up.
+    fn claim_panic_dump(&self) -> bool {
+        self.panic_dumps
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |dumps| {
+                (dumps < MAX_PANIC_DUMPS).then_some(dumps + 1)
+            })
+            .is_ok()
     }
 
     fn describe(&self, info: &PanicHookInfo<'_>) -> PanicReport {

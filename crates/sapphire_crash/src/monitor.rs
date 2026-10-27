@@ -6,18 +6,25 @@
 //! crashes, `crash-handler` sends the crash context over the socket and blocks until the monitor
 //! has written `<run>.dmp`.
 //!
+//! A panic the app recovers from (an IO callback, a decode worker, an off-thread shader build)
+//! also asks for a dump, so the monitor outlives its dumps: it numbers them (`<run>.dmp`, then
+//! `<run>.1.dmp`, `<run>.2.dmp`…) and keeps serving, and the app reconnects after each panic dump
+//! (see `Connection`), so a native crash later in the run still gets its own dump.
+//!
 //! The monitor's stdin is a pipe whose write end only the app holds, and the app never writes
 //! to it. When the app goes away for any reason (clean exit, crash after its dump, `SIGKILL`),
 //! the OS closes the pipe and the monitor sees end-of-file and exits. No polling, no pid checks.
 
+use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, LocalKey};
 use std::time::Duration;
 
 use crash_handler::{CrashEventResult, CrashHandler};
@@ -62,16 +69,87 @@ pub(crate) enum MonitorError {
     Handler(crash_handler::Error),
 }
 
-/// The crash handler of the active monitor, so the panic hook can ask it for a dump of the
-/// panicking thread (`request_panic_dump`). It is an `Arc` shared with the owning
-/// [`MonitorCapture`]; clearing it here plus dropping the capture's clone detaches the handler.
-static PANIC_DUMP_HANDLER: Mutex<Option<Arc<CrashHandler>>> = Mutex::new(None);
+/// The link to the active monitor, so the panic hook can ask it for a dump of the panicking
+/// thread (`request_panic_dump`). [`MonitorCapture`] fills it at start and empties it on drop,
+/// which detaches the crash handler.
+static LINK: Mutex<Option<Link>> = Mutex::new(None);
 
-/// The app side: a running monitor plus the crash handler that talks to it.
+thread_local! {
+    /// Set while this thread asks the monitor for a panic dump, so a panic raised inside that
+    /// request (in crash-handler or minidumper) doesn't ask again and deadlock on [`LINK`].
+    static REQUESTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The app side: a running monitor plus the crash handler that talks to it (in [`LINK`]).
 pub(crate) struct MonitorCapture {
-    handler: Option<Arc<CrashHandler>>,
-    monitor: Child,
+    /// Behind a lock so `is_active` can poll it through `&self`.
+    monitor: Mutex<Child>,
     lifeline: Option<ChildStdin>,
+}
+
+/// The crash handler and the connection its crash event requests dumps through.
+struct Link {
+    handler: CrashHandler,
+    connection: Arc<Connection>,
+    socket: SocketId,
+}
+
+/// The monitor connection the crash event sends its dump request through.
+///
+/// minidumper's server closes a connection once it has written a dump for it, and keeps serving.
+/// So after a panic dump the app connects again and swaps the new connection in, which keeps
+/// native capture working after a recovered panic. The crash event reads the current connection
+/// with one atomic load, which is safe in a signal handler. A replaced connection is retired
+/// rather than freed, because a crash on another thread may be using it; retired connections
+/// (at most one per panic dump) are freed with the handler.
+struct Connection {
+    current: AtomicPtr<Client>,
+    /// Boxed so a retired client stays at the address a crash event may have loaded.
+    #[allow(clippy::vec_box)]
+    retired: Mutex<Vec<Box<Client>>>,
+}
+
+impl Connection {
+    fn new(client: Client) -> Self {
+        Self { current: AtomicPtr::new(Box::into_raw(Box::new(client))), retired: Mutex::new(Vec::new()) }
+    }
+
+    /// Sends a crash's dump request and waits until the monitor has written the dump.
+    /// Async-signal-safe: no allocation and no locks.
+    fn request_dump(&self, context: &crash_handler::CrashContext) -> bool {
+        // SAFETY: a non-null pointer here came from `Box::into_raw` and is freed only in `drop`,
+        // after the crash handler holding this connection has been detached: a replaced client
+        // moves to `retired` instead.
+        let client = unsafe { self.current.load(Ordering::Acquire).as_ref() };
+        client.is_some_and(|client| client.request_dump(context).is_ok())
+    }
+
+    fn is_connected(&self) -> bool {
+        !self.current.load(Ordering::Acquire).is_null()
+    }
+
+    /// Makes `client` the connection crash events use; `None` leaves them none.
+    fn replace(&self, client: Option<Client>) {
+        let new = client.map_or(ptr::null_mut(), |client| Box::into_raw(Box::new(client)));
+        let old = self.current.swap(new, Ordering::AcqRel);
+        if !old.is_null() {
+            // SAFETY: `old` came from `Box::into_raw` and was just unpublished; it is retired, not
+            // freed, because a crash event on another thread may have loaded it already.
+            let old = unsafe { Box::from_raw(old) };
+            self.retired.lock().unwrap_or_else(|poison| poison.into_inner()).push(old);
+        }
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        let current = *self.current.get_mut();
+        if !current.is_null() {
+            // SAFETY: dropping the last `Arc` means the crash handler (whose event held the other)
+            // is detached, so nothing can be using the client any more.
+            drop(unsafe { Box::from_raw(current) });
+        }
+    }
 }
 
 impl MonitorCapture {
@@ -92,20 +170,24 @@ impl MonitorCapture {
             .map_err(MonitorError::Spawn)?;
         let lifeline = monitor.stdin.take();
 
-        let handler = connect(&socket, &mut monitor).and_then(|client| {
+        let attached = connect(&socket, &mut monitor).and_then(|client| {
+            let connection = Arc::new(Connection::new(client));
+            let event_connection = Arc::clone(&connection);
             // SAFETY: the event runs in a crashed process (inside a signal handler on Linux), so
-            // it must not allocate or take locks the crashing code might hold. It only calls
-            // `Client::request_dump`, which sends a fixed-size message over the already-connected
-            // socket (a Mach message on macOS) and blocks on the monitor's acknowledgement.
+            // it must not allocate or take locks the crashing code might hold. It only loads the
+            // current connection atomically and calls `Client::request_dump`, which sends a
+            // fixed-size message over the already-connected socket (a Mach message on macOS) and
+            // blocks on the monitor's acknowledgement.
             let event = unsafe {
                 crash_handler::make_crash_event(move |context| {
-                    CrashEventResult::Handled(client.request_dump(context).is_ok())
+                    CrashEventResult::Handled(event_connection.request_dump(context))
                 })
             };
-            CrashHandler::attach(event).map_err(MonitorError::Handler)
+            let handler = CrashHandler::attach(event).map_err(MonitorError::Handler)?;
+            Ok((handler, connection))
         });
-        let handler = match handler {
-            Ok(handler) => Arc::new(handler),
+        let (handler, connection) = match attached {
+            Ok(attached) => attached,
             Err(err) => {
                 // Dropping the lifeline would stop it too, but don't leave it to chance.
                 let _ = monitor.kill();
@@ -118,50 +200,95 @@ impl MonitorCapture {
         #[cfg(target_os = "linux")]
         handler.set_ptracer(Some(monitor.id()));
 
-        // Publish the handler so the panic hook can request a dump of a panicking thread.
-        *lock_handler() = Some(Arc::clone(&handler));
+        // Publish the link so the panic hook can request a dump of a panicking thread.
+        *lock_link() = Some(Link { handler, connection, socket });
 
-        Ok(Self { handler: Some(handler), monitor, lifeline })
+        Ok(Self { monitor: Mutex::new(monitor), lifeline })
+    }
+
+    /// Whether a native crash would get a dump now: the monitor is running and the crash
+    /// handler has a connection to it.
+    pub(crate) fn is_active(&self) -> bool {
+        let connected = lock_link().as_ref().is_some_and(|link| link.connection.is_connected());
+        let mut monitor = self.monitor.lock().unwrap_or_else(|poison| poison.into_inner());
+        connected && matches!(monitor.try_wait(), Ok(None))
     }
 }
 
 impl Drop for MonitorCapture {
     fn drop(&mut self) {
-        // Detach first, so no crash request can reach a monitor that is shutting down. The handler
-        // detaches when its last `Arc` drops, so clear the shared slot before the owned clone.
-        *lock_handler() = None;
-        self.handler = None;
+        // Detach first, so no crash request can reach a monitor that is shutting down.
+        drop(lock_link().take());
         // Closing the lifeline tells the monitor to exit.
         self.lifeline = None;
+        let monitor = self.monitor.get_mut().unwrap_or_else(|poison| poison.into_inner());
         let mut backoff = Backoff::new(EXIT_TIMEOUT);
         loop {
-            match self.monitor.try_wait() {
+            match monitor.try_wait() {
                 Ok(Some(_)) => return,
                 Ok(None) if backoff.sleep() => {}
                 Ok(None) | Err(_) => break,
             }
         }
         tracing::warn!(target: "sapphire::crash", "the crash monitor did not shut down cleanly; killing it");
-        let _ = self.monitor.kill();
-        let _ = self.monitor.wait();
+        let _ = monitor.kill();
+        let _ = monitor.wait();
     }
 }
 
-fn lock_handler() -> std::sync::MutexGuard<'static, Option<Arc<CrashHandler>>> {
-    // The slot only holds a handle; a poisoned lock carries no broken invariant.
-    PANIC_DUMP_HANDLER.lock().unwrap_or_else(|poison| poison.into_inner())
+fn lock_link() -> MutexGuard<'static, Option<Link>> {
+    // The slot only holds handles; a poisoned lock carries no broken invariant.
+    LINK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// Asks the active monitor to write a minidump of the calling (panicking) thread.
+/// Asks the active monitor to write a minidump of the calling (panicking) thread, then
+/// reconnects, so later panics and native crashes still reach the monitor.
 ///
-/// Returns `false` if no monitor is running. The crash handler's `simulate_*` path runs our crash
-/// event, which requests the dump over the existing connection and blocks until it is written;
-/// the monitor then exits, so this is meaningful only once per run.
+/// Returns whether the dump was written: `false` without a monitor, or when this thread is
+/// already asking (a panic inside the request). The crash handler's `simulate_*` path runs our
+/// crash event, which requests the dump and blocks until it is written. The monitor keeps
+/// running, but closes the connection the dump came through, so this connects again; if that
+/// fails, the monitor is gone and native capture is off (`is_active`).
 pub(crate) fn request_panic_dump() -> bool {
-    let guard = lock_handler();
-    let Some(handler) = guard.as_ref() else {
+    if REQUESTING.try_with(|requesting| requesting.replace(true)).unwrap_or(true) {
+        return false;
+    }
+    let _reset = ResetOnDrop(&REQUESTING);
+    let guard = lock_link();
+    let Some(link) = guard.as_ref() else {
         return false;
     };
+    let dumped = simulate_crash(&link.handler);
+    if dumped && cfg!(panic = "abort") {
+        // Under `panic = "abort"` (the shipping profile) no panic is recovered: the abort that
+        // follows would only write this dump again, so leave the crash event no connection.
+        link.connection.replace(None);
+        return dumped;
+    }
+    match Client::with_name(link.socket.name()) {
+        Ok(client) => link.connection.replace(Some(client)),
+        Err(err) => {
+            link.connection.replace(None);
+            tracing::warn!(
+                target: "sapphire::crash",
+                "cannot reconnect to the crash monitor after a panic dump; native crash capture is off: {err}",
+            );
+        }
+    }
+    dumped
+}
+
+/// Clears a thread-local flag when dropped, unwinding included.
+struct ResetOnDrop(&'static LocalKey<Cell<bool>>);
+
+impl Drop for ResetOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.try_with(|flag| flag.set(false));
+    }
+}
+
+/// Runs the crash event for the calling thread as if it had crashed.
+fn simulate_crash(handler: &CrashHandler) -> bool {
     #[cfg(target_os = "linux")]
     {
         use crash_handler::Signal;
@@ -310,7 +437,7 @@ fn serve(args: MonitorArgs) -> Result<(), minidumper::Error> {
     let mut server = Server::with_name(socket.name())?;
     let shutdown = Arc::new(AtomicBool::new(false));
     watch_lifeline(Arc::clone(&shutdown))?;
-    let writer = DumpWriter { dump_dir: args.dump_dir, run_id: args.run_id };
+    let writer = DumpWriter::new(args.dump_dir, args.run_id);
     server.run(Box::new(writer), &shutdown, None)
 }
 
@@ -332,45 +459,58 @@ fn watch_lifeline(shutdown: Arc<AtomicBool>) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes the app's minidump to `<run>.dmp` (through `<run>.dmp.partial`).
+/// Writes the app's minidumps, `<run>.dmp` and then `<run>.<n>.dmp`, each through its
+/// `.partial` file.
+///
+/// It keeps serving after a dump: a panic the app recovered from asks for one too, and the run
+/// goes on. The lifeline ends the monitor once the app is gone.
 struct DumpWriter {
     dump_dir: PathBuf,
     run_id: String,
+    /// Dumps started so far, which numbers the next one.
+    started: AtomicU32,
+    /// The final name of the dump being written; the server writes one at a time.
+    writing: Mutex<Option<String>>,
 }
 
 impl DumpWriter {
-    fn final_path(&self) -> PathBuf {
-        self.dump_dir.join(report::minidump_file_name(&self.run_id))
+    fn new(dump_dir: PathBuf, run_id: String) -> Self {
+        Self { dump_dir, run_id, started: AtomicU32::new(0), writing: Mutex::new(None) }
     }
 
-    fn finish(&self, dump: MinidumpBinary) -> io::Result<PathBuf> {
+    fn lock_writing(&self) -> MutexGuard<'_, Option<String>> {
+        self.writing.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn finish(&self, dump: MinidumpBinary, final_name: &str) -> io::Result<()> {
         dump.file.sync_all()?;
-        let final_path = self.final_path();
-        fs::rename(&dump.path, &final_path)?;
-        Ok(final_path)
+        // The partial's lock goes with `dump.file`, after the rename.
+        fs::rename(&dump.path, self.dump_dir.join(final_name))
     }
 }
 
 impl ServerHandler for DumpWriter {
     fn create_minidump_file(&self) -> Result<(File, PathBuf), io::Error> {
-        let path = self.dump_dir.join(report::partial_name(&report::minidump_file_name(&self.run_id)));
+        let seq = self.started.fetch_add(1, Ordering::Relaxed);
+        let name = report::minidump_file_name(&self.run_id, seq);
+        let path = self.dump_dir.join(report::partial_name(&name));
         // Locked until `finish` has renamed it and the dump's file is dropped, so another
         // process's startup cleanup leaves it alone (`report::cleanup_stale_partials`).
         let file = report::create_partial(&path)?;
+        *self.lock_writing() = Some(name);
         Ok((file, path))
     }
 
     fn on_minidump_created(&self, result: Result<MinidumpBinary, minidumper::Error>) -> LoopAction {
-        let partial = self.dump_dir.join(report::partial_name(&report::minidump_file_name(&self.run_id)));
-        match result.map_err(io::Error::other).and_then(|dump| self.finish(dump)) {
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("sapphire_crash monitor: failed to write the minidump: {err}");
-                let _ = fs::remove_file(partial);
-            }
+        if let Some(name) = self.lock_writing().take()
+            && let Err(err) = result.map_err(io::Error::other).and_then(|dump| self.finish(dump, &name))
+        {
+            eprintln!("sapphire_crash monitor: failed to write the minidump: {err}");
+            let _ = fs::remove_file(self.dump_dir.join(report::partial_name(&name)));
         }
-        // The app has crashed; there is nothing left to monitor.
-        LoopAction::Exit
+        // A dump doesn't mean the app is gone: a recovered panic asks for one and the run goes
+        // on, so keep serving until the lifeline closes.
+        LoopAction::Continue
     }
 
     fn on_message(&self, _kind: u32, _buffer: Vec<u8>) {

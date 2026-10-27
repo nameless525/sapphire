@@ -5,9 +5,12 @@
 //!
 //! | File | Written by |
 //! |---|---|
-//! | `<run>.dmp` | the desktop crash monitor |
+//! | `<run>.dmp`, then `<run>.<n>.dmp` | the desktop crash monitor, `n` counting its dumps within the run |
 //! | `<run>.panic-<n>.txt` | the panic hook, `n` counting panics within the run |
 //! | `<run>.native.txt` | Android's in-process signal handler |
+//!
+//! A run can leave several minidumps: the panic hook asks the monitor for one per panic (up to a
+//! cap), and the app may recover from a panic and crash natively later.
 //!
 //! Files are written under a `.partial` name and renamed into place once complete, so readers
 //! never see half a report. The writer holds an exclusive lock on its `.partial` file until the
@@ -36,7 +39,8 @@ const TEXT_SUFFIX: &str = ".txt";
 /// What kind of crash artifact a [`PendingReport`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReportKind {
-    /// A minidump written by the desktop crash monitor (`<run>.dmp`).
+    /// A minidump written by the desktop crash monitor (`<run>.dmp`, and `<run>.<n>.dmp` for a
+    /// run's later dumps).
     Minidump,
     /// A panic report written by the panic hook (`<run>.panic-<n>.txt`, plain text).
     Panic,
@@ -50,6 +54,8 @@ pub enum ReportKind {
 pub struct PendingReport {
     kind: ReportKind,
     run_id: String,
+    /// The report's number among its run's reports of the same kind, which orders them.
+    seq: u32,
     path: PathBuf,
 }
 
@@ -71,7 +77,8 @@ impl PendingReport {
     }
 }
 
-/// Lists the complete crash reports in `dir`, oldest run first.
+/// Lists the complete crash reports in `dir`, oldest run first, then by kind, then in the order
+/// the run wrote them.
 ///
 /// This is what previous runs left behind: call it at startup to find reports to upload or show.
 /// Files still being written and files this crate did not write are skipped. A missing directory
@@ -96,33 +103,43 @@ pub fn pending_reports(dir: impl AsRef<Path>) -> Result<Vec<PendingReport>, Cras
             continue;
         }
         let file_name = entry.file_name();
-        let Some((kind, run_id)) = file_name.to_str().and_then(classify) else {
+        let Some((kind, run_id, seq)) = file_name.to_str().and_then(classify) else {
             continue;
         };
-        reports.push(PendingReport { kind, run_id: run_id.to_owned(), path: entry.path() });
+        reports.push(PendingReport { kind, run_id: run_id.to_owned(), seq, path: entry.path() });
     }
-    reports.sort_by(|a, b| (&a.run_id, a.kind, &a.path).cmp(&(&b.run_id, b.kind, &b.path)));
+    reports.sort_by(|a, b| (&a.run_id, a.kind, a.seq, &a.path).cmp(&(&b.run_id, b.kind, b.seq, &b.path)));
     Ok(reports)
 }
 
-/// Splits a report file name into its kind and run ID, or `None` if it is not a finished report.
-fn classify(file_name: &str) -> Option<(ReportKind, &str)> {
+/// Splits a report file name into its kind, run ID and number within the run, or `None` if it
+/// is not a finished report.
+fn classify(file_name: &str) -> Option<(ReportKind, &str, u32)> {
     let (run_id, suffix) = file_name.split_once('.')?;
     if !is_valid_run_id(run_id) {
         return None;
     }
-    let kind = match suffix {
-        MINIDUMP_SUFFIX => ReportKind::Minidump,
-        NATIVE_SUFFIX => ReportKind::NativeSignal,
+    let (kind, seq) = match suffix {
+        MINIDUMP_SUFFIX => (ReportKind::Minidump, 0),
+        NATIVE_SUFFIX => (ReportKind::NativeSignal, 0),
         _ => {
-            let seq = suffix.strip_prefix(PANIC_PREFIX)?.strip_suffix(TEXT_SUFFIX)?;
-            if seq.is_empty() || !seq.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
+            if let Some(seq) = suffix.strip_suffix(MINIDUMP_SUFFIX).and_then(|seq| seq.strip_suffix('.')) {
+                (ReportKind::Minidump, parse_seq(seq)?)
+            } else {
+                let seq = suffix.strip_prefix(PANIC_PREFIX)?.strip_suffix(TEXT_SUFFIX)?;
+                (ReportKind::Panic, parse_seq(seq)?)
             }
-            ReportKind::Panic
         }
     };
-    Some((kind, run_id))
+    Some((kind, run_id, seq))
+}
+
+/// A report's number within its run: plain decimal digits.
+fn parse_seq(digits: &str) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// A run ID: start time in Unix milliseconds (zero-padded so names sort) and the process ID.
@@ -134,9 +151,11 @@ pub(crate) fn is_valid_run_id(run_id: &str) -> bool {
     !run_id.is_empty() && run_id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
 }
 
+/// The name of a run's `seq`-th minidump, counting from 0: `<run>.dmp`, then `<run>.<seq>.dmp`.
+/// The first keeps the name a run with a single crash always had.
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", test))]
-pub(crate) fn minidump_file_name(run_id: &str) -> String {
-    format!("{run_id}.{MINIDUMP_SUFFIX}")
+pub(crate) fn minidump_file_name(run_id: &str, seq: u32) -> String {
+    if seq == 0 { format!("{run_id}.{MINIDUMP_SUFFIX}") } else { format!("{run_id}.{seq}.{MINIDUMP_SUFFIX}") }
 }
 
 pub(crate) fn panic_file_name(run_id: &str, seq: u32) -> String {
@@ -355,7 +374,7 @@ pub(crate) fn cleanup_stale_partials(dir: &Path, current_run_id: &str) {
             continue;
         };
         // The stem is the final report name, e.g. `<run>.dmp`; anything else isn't ours.
-        let Some((_, run_id)) = classify(stem) else {
+        let Some((_, run_id, _)) = classify(stem) else {
             continue;
         };
         if run_id == current_run_id {
@@ -436,15 +455,22 @@ mod tests {
     #[test]
     fn classifies_report_names() {
         let run = "0001761300000123-4242";
-        assert_eq!(classify(&minidump_file_name(run)), Some((ReportKind::Minidump, run)));
-        assert_eq!(classify(&panic_file_name(run, 0)), Some((ReportKind::Panic, run)));
-        assert_eq!(classify(&panic_file_name(run, 17)), Some((ReportKind::Panic, run)));
-        assert_eq!(classify(&native_file_name(run)), Some((ReportKind::NativeSignal, run)));
+        assert_eq!(minidump_file_name(run, 0), format!("{run}.dmp"));
+        assert_eq!(minidump_file_name(run, 3), format!("{run}.3.dmp"));
+        assert_eq!(classify(&minidump_file_name(run, 0)), Some((ReportKind::Minidump, run, 0)));
+        assert_eq!(classify(&minidump_file_name(run, 3)), Some((ReportKind::Minidump, run, 3)));
+        assert_eq!(classify(&panic_file_name(run, 0)), Some((ReportKind::Panic, run, 0)));
+        assert_eq!(classify(&panic_file_name(run, 17)), Some((ReportKind::Panic, run, 17)));
+        assert_eq!(classify(&native_file_name(run)), Some((ReportKind::NativeSignal, run, 0)));
 
-        assert_eq!(classify(&partial_name(&minidump_file_name(run))), None);
+        assert_eq!(classify(&partial_name(&minidump_file_name(run, 0))), None);
+        assert_eq!(classify(&partial_name(&minidump_file_name(run, 1))), None);
         assert_eq!(classify(&partial_name(&panic_file_name(run, 0))), None);
         assert_eq!(classify(&format!("{run}.panic-.txt")), None);
         assert_eq!(classify(&format!("{run}.panic-x.txt")), None);
+        assert_eq!(classify(&format!("{run}..dmp")), None);
+        assert_eq!(classify(&format!("{run}.x.dmp")), None);
+        assert_eq!(classify(&format!("{run}.99999999999.dmp")), None);
         assert_eq!(classify(&format!("{run}.log")), None);
         assert_eq!(classify("notes.dmp"), None);
         assert_eq!(classify(".dmp"), None);
@@ -522,7 +548,8 @@ mod tests {
         let old_run = new_run_id(WRITER_START_MS, 10);
         let current_run = new_run_id(CURRENT_START_MS, 20);
         for name in [
-            partial_name(&minidump_file_name(&old_run)),
+            partial_name(&minidump_file_name(&old_run, 0)),
+            partial_name(&minidump_file_name(&old_run, 2)),
             partial_name(&panic_file_name(&old_run, 3)),
             partial_name(&native_file_name(&old_run)),
         ] {
@@ -530,9 +557,9 @@ mod tests {
         }
         // This run's own partial (none exist at install time, and one would be live) and a
         // finished report are kept.
-        let current_partial = partial_name(&minidump_file_name(&current_run));
+        let current_partial = partial_name(&minidump_file_name(&current_run, 0));
         drop(partial_from(dir.path(), &current_partial, &current_run, HOUR));
-        let finished = minidump_file_name(&old_run);
+        let finished = minidump_file_name(&old_run, 0);
         drop(partial_from(dir.path(), &finished, &current_run, HOUR));
 
         cleanup_stale_partials(dir.path(), &current_run);
@@ -546,7 +573,7 @@ mod tests {
         let dir = ScratchDir::new("cleanup-live");
         let writer_run = new_run_id(WRITER_START_MS, 10);
         let current_run = new_run_id(CURRENT_START_MS, 20);
-        let name = partial_name(&minidump_file_name(&writer_run));
+        let name = partial_name(&minidump_file_name(&writer_run, 0));
         let writer = create_partial(&dir.path().join(&name)).expect("the writer's partial");
         writer.set_modified(run_start(&current_run).expect("run start") - HOUR).expect("set mtime");
 
@@ -555,7 +582,7 @@ mod tests {
 
         // The writer finishes: its rename still finds the file, and with the file closed a later
         // cleanup leaves the finished report alone.
-        let finished = minidump_file_name(&writer_run);
+        let finished = minidump_file_name(&writer_run, 0);
         fs::rename(dir.path().join(&name), dir.path().join(&finished)).expect("rename");
         drop(writer);
         cleanup_stale_partials(dir.path(), &current_run);
@@ -619,26 +646,34 @@ mod tests {
         let old_run = new_run_id(1_000, 10);
         let new_run = new_run_id(2_000, 20);
         for name in [
-            panic_file_name(&new_run, 0),
-            minidump_file_name(&new_run),
+            panic_file_name(&new_run, 10),
+            minidump_file_name(&new_run, 2),
+            panic_file_name(&new_run, 2),
+            minidump_file_name(&new_run, 10),
+            minidump_file_name(&new_run, 0),
             panic_file_name(&old_run, 1),
             native_file_name(&old_run),
-            partial_name(&minidump_file_name(&old_run)),
+            partial_name(&minidump_file_name(&old_run, 0)),
             "unrelated.txt".to_owned(),
         ] {
             fs::write(dir.path().join(name), b"x").expect("write");
         }
-        fs::create_dir(dir.path().join(minidump_file_name("123-4"))).expect("mkdir");
+        fs::create_dir(dir.path().join(minidump_file_name("123-4", 0))).expect("mkdir");
 
         let reports = pending_reports(dir.path()).expect("list");
-        let summary: Vec<_> = reports.iter().map(|r| (r.run_id(), r.kind())).collect();
+        let summary: Vec<_> = reports.iter().map(|r| (r.run_id(), r.kind(), r.seq)).collect();
+        // Within a run, reports of a kind come in the order the run wrote them (not by name, which
+        // would put `.10.dmp` before `.2.dmp` and both before `.dmp`).
         assert_eq!(
             summary,
             [
-                (old_run.as_str(), ReportKind::Panic),
-                (old_run.as_str(), ReportKind::NativeSignal),
-                (new_run.as_str(), ReportKind::Minidump),
-                (new_run.as_str(), ReportKind::Panic),
+                (old_run.as_str(), ReportKind::Panic, 1),
+                (old_run.as_str(), ReportKind::NativeSignal, 0),
+                (new_run.as_str(), ReportKind::Minidump, 0),
+                (new_run.as_str(), ReportKind::Minidump, 2),
+                (new_run.as_str(), ReportKind::Minidump, 10),
+                (new_run.as_str(), ReportKind::Panic, 2),
+                (new_run.as_str(), ReportKind::Panic, 10),
             ]
         );
         assert!(reports.iter().all(|r| r.path().starts_with(dir.path())));

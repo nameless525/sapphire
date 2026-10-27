@@ -90,8 +90,9 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
 
 /// Bundles, picks the connected device (booting the emulator if there is none), installs
 /// and launches, then streams the app's logcat until the app exits or Ctrl-C. Succeeds only
-/// if the app's main function returned: a process that ends without it, a logcat that stops
-/// under a running app and a device that drops all fail the run.
+/// if the app's main function returned, with status 0 where the app logs it: a nonzero
+/// status, a process that ends without returning, a logcat that stops under a running app
+/// and a device that drops all fail the run.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let apk = bundle(app, options)?;
     let sdk = sdk_dir()?;
@@ -139,6 +140,11 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
 
 /// SDLActivity logs this once `SDL_main` has returned, whatever it returned.
 const MAIN_FINISHED: &str = "Finished main function";
+
+/// The platform layer's `android_main` logs this (tag `sapphire`, info), then the integer
+/// status, as the app's main function returns: `main returned status=<n>`. Builds from
+/// before it have only [`MAIN_FINISHED`].
+const MAIN_RETURNED: &str = "main returned status=";
 
 /// What a process logs as it crashes: bionic for a fatal signal (a Rust panic aborts, and
 /// crash capture passes the signal on), the Java runtime for an uncaught exception.
@@ -209,6 +215,9 @@ enum Stop {
 struct AppLog {
     /// SDLActivity logged [`MAIN_FINISHED`].
     main_finished: bool,
+    /// The status the app's main function returned, where the platform layer logged it
+    /// ([`MAIN_RETURNED`]).
+    status: Option<i32>,
     /// The first line that reported a crash.
     crash: Option<String>,
 }
@@ -220,6 +229,12 @@ impl AppLog {
             self.main_finished = true;
             return true;
         }
+        if let Some((_, rest)) = line.split_once(MAIN_RETURNED)
+            && let Some(Ok(status)) = rest.split_whitespace().next().map(str::parse)
+        {
+            self.status = Some(status);
+            return true;
+        }
         if self.crash.is_none() && CRASH_MARKERS.iter().any(|marker| line.contains(marker)) {
             self.crash = Some(line.trim().to_owned());
         }
@@ -227,10 +242,15 @@ impl AppLog {
     }
 
     /// The run's result once following stopped: `stop` is `None` when the main function
-    /// returned, and `logcat` is how logcat exited. Only a returned main function succeeds:
-    /// SDL's line carries no exit status, so an app that fails from main still passes here.
-    /// Ctrl-C never gets here; it ends xtask and leaves the app running.
+    /// returned, and `logcat` is how logcat exited. Only a returned main function succeeds,
+    /// and only with status 0 where the platform layer logged it ([`MAIN_RETURNED`]). Without
+    /// that line SDL's carries no status, so an app that fails from main passes there. Ctrl-C
+    /// never gets here; it ends xtask and leaves the app running.
     fn outcome(&self, stop: Option<Stop>, logcat: &str) -> anyhow::Result<&'static str> {
+        if let Some(status) = self.status {
+            ensure!(status == 0, "the app's main function returned status {status}");
+            return Ok("the app's main function returned status 0");
+        }
         let Some(stop) = stop.filter(|_| !self.main_finished) else {
             return Ok("the app's main function returned");
         };
@@ -849,6 +869,35 @@ mod tests {
         assert_eq!(error(&java, Some(Stop::ProcessGone)), format!("the app crashed: {JAVA_CRASH}"));
         // A lost device stays the reason, crash or not: the process may still be running.
         assert!(error(&native, lost()).starts_with("lost the device"));
+    }
+
+    #[test]
+    fn the_logged_status_decides_where_the_app_logs_one() {
+        const FINISHED: &str = "10-27 12:00:09.000  4242  4260 V SDL     : Finished main function";
+        let returned = |status: &str| {
+            format!("10-27 12:00:09.000  4242  4260 I sapphire: main returned status={status}")
+        };
+
+        let mut log = AppLog::default();
+        assert!(log.observe(&returned("0")), "the status line says main returned");
+        log.observe(FINISHED);
+        assert_eq!(log.status, Some(0));
+        assert_eq!(log.outcome(None, "signal: 9").unwrap(), "the app's main function returned status 0");
+
+        for (status, shown) in [("1", 1), ("-1", -1), ("101", 101)] {
+            let failed = app_log(&[&returned(status), FINISHED]);
+            assert_eq!(failed.status, Some(shown));
+            let error = failed.outcome(None, "signal: 9").unwrap_err().to_string();
+            assert_eq!(error, format!("the app's main function returned status {shown}"));
+            // Whatever stopped the following: main returned, and with that status.
+            assert!(failed.outcome(Some(Stop::ProcessGone), "exit status: 0").is_err());
+        }
+        assert!(app_log(&[&returned("0")]).outcome(Some(Stop::LogcatEnded), "exit status: 0").is_ok());
+
+        // Not a status: the line is no status line, and SDL's line still decides.
+        let garbled = app_log(&[&returned("x"), FINISHED]);
+        assert_eq!(garbled.status, None);
+        assert!(garbled.outcome(None, "signal: 9").is_ok());
     }
 
     /// A stand-in for adb that plays the scenario named by its serial (`-s <scenario>`): the

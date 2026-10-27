@@ -315,9 +315,11 @@ impl EguiInput {
                 TouchPhase::Up | TouchPhase::Canceled => None,
             };
         }
-        // The first finger down is egui's pointer until it lifts.
+        // The first finger down is egui's pointer until it lifts. Its position replaces a lifted
+        // finger's whose pointer-gone hasn't gone out yet: that would lose it.
         if touch.phase == TouchPhase::Down && self.pointer_finger.is_none() {
             self.pointer_finger = Some(finger);
+            self.pointer_gone_next = false;
         }
         if self.pointer_finger != Some(finger) {
             return;
@@ -841,6 +843,30 @@ mod tests {
     }
 
     const AWAY: Pos2 = Pos2::new(600.0, 400.0);
+
+    #[test]
+    fn a_finger_taking_over_the_pointer_in_the_lift_frame_still_taps() {
+        // Found in the review-overlay batch: the finger driving egui's pointer lifts and another
+        // lands in the same frame. The lift's pointer-gone opened the next pass while the new
+        // finger was down, so egui lost its position and the widget its press would click.
+        let mut ui = Ui::new();
+        let at = ui.button.center();
+        ui.push(&touch_at(1, TouchPhase::Down, AWAY), Some(0));
+        ui.frame();
+        ui.push(&touch_at(1, TouchPhase::Up, AWAY), Some(0));
+        ui.push(&touch_at(2, TouchPhase::Down, at), Some(1));
+        ui.frame();
+        // The new finger holds still for a frame, then lifts.
+        ui.frame();
+        assert!(ui.down(), "the new finger is still down");
+        assert!(ui.ctx.input(|input| input.pointer.latest_pos()).is_some(), "where it is");
+        ui.push(&touch_at(2, TouchPhase::Up, at), Some(1));
+        ui.frame();
+        assert_eq!((ui.clicks, ui.down()), (1, false), "the new finger taps");
+        // Lifted with no finger after it, the pointer still goes in the next pass.
+        ui.frame();
+        assert!(ui.ctx.input(|input| input.pointer.latest_pos()).is_none());
+    }
 
     #[test]
     fn taps_and_clicks_still_click() {

@@ -195,12 +195,19 @@ impl Reload {
         scene: &mut Scene,
     ) {
         let Some(hot) = &mut self.hot else { return };
-        // Reloads land frames after their pack changed, so their failures show as they come.
+        // Reloads land frames after their pack changed, so they are told of as they come: the
+        // moment an edit shows.
         for change in changes {
-            if let AssetChange::ReloadFailed { id, kind, error } = change {
-                let error = format!("{kind} {id}: {}", error_chain(error));
-                tracing::warn!(target: LOG_TARGET, error, "hot reload");
-                self.errors.push(error);
+            match change {
+                AssetChange::Reloaded { id, kind, generation, .. } => {
+                    tracing::info!(target: LOG_TARGET, %id, %kind, generation, "asset swapped in");
+                }
+                AssetChange::ReloadFailed { id, kind, error } => {
+                    let error = format!("{kind} {id}: {}", error_chain(error));
+                    tracing::warn!(target: LOG_TARGET, error, "hot reload");
+                    self.errors.push(error);
+                }
+                AssetChange::Removed { .. } => {}
             }
         }
         let Changes { packs, shaders, documents, mut errors } = hot.poll();

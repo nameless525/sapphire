@@ -90,7 +90,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, Fog, FramePacket, HeadBasis, LightKind, LocalLight,
-    MaterialHandle, MeshHandle, SkyLayers, ViewData, Wind,
+    MaterialHandle, MeshHandle, PostVariants, SkyLayers, ViewData, Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::fade::ProximityFade;
@@ -279,6 +279,8 @@ pub(crate) struct Scene {
     sharpening: Option<f32>,
     /// How the characters fade (`--fade`, `--proximity-fade`).
     fade: Fade,
+    /// The post variants of the presets [`Self::push_effect`] pushed (`--post-effect`).
+    pushed_effects: PostVariants,
 }
 
 impl Scene {
@@ -361,6 +363,7 @@ impl Scene {
             plain_post: false,
             sharpening: None,
             fade: Fade::Off,
+            pushed_effects: PostVariants::NONE,
         }
     }
 
@@ -495,7 +498,7 @@ impl Scene {
     /// scene runs (`--post-effect <preset>@<seconds>`, for captures and benches). Fails with the
     /// presets' names if there is none of that name.
     pub fn push_effect(&mut self, name: &str, at: Option<f32>) -> Result<(), String> {
-        self.with_screen_effects(|stack, library| {
+        let variants = self.with_screen_effects(|stack, library| {
             let Some(preset) = library.find(name).and_then(|id| library.preset(id)) else {
                 let names: Vec<&str> = library.names().collect();
                 return Err(format!("no screen effect preset {name:?}; presets: {}", names.join(", ")));
@@ -504,8 +507,25 @@ impl Scene {
             if at.is_some() {
                 stack.hold(push, at);
             }
-            Ok(())
-        })
+            Ok(preset.post_variants())
+        })?;
+        self.pushed_effects |= variants;
+        Ok(())
+    }
+
+    /// The post variants of the screen effects this scene may push (M1 P3), which the app has
+    /// the renderer prewarm ([`Renderer::prewarm_post`](sapphire_render::Renderer::prewarm_post))
+    /// whenever it makes one or the presets change, so an effect shows on the frame it fires: in
+    /// `dev` builds every preset's, since the overlay's effects panel fires any of them, and
+    /// otherwise those [`Self::push_effect`] pushed (`--post-effect`), the only ones the sandbox
+    /// fires without the overlay. A golden scene without effects so builds none of their
+    /// pipelines.
+    pub fn effect_variants(&self) -> PostVariants {
+        if cfg!(feature = "dev") {
+            self.ecs.world().resource::<EffectLibrary>().post_variants() | self.pushed_effects
+        } else {
+            self.pushed_effects
+        }
     }
 
     /// Runs `f` on the effect stack and the presets. Allocation-free, so it may run inside fixed
@@ -1442,6 +1462,19 @@ mod tests {
         }
         assert_eq!(effects(&mut scene), sapphire_render::PostEffects::NONE);
         scene.end_frame();
+    }
+
+    #[test]
+    fn the_scene_asks_for_the_effect_variants_it_may_push() {
+        // The overlay fires any preset in `dev` builds; otherwise only `--post-effect` pushes.
+        let mut scene = scene();
+        let every = if cfg!(feature = "dev") { PostVariants::SCREEN_EFFECTS } else { PostVariants::NONE };
+        assert_eq!(scene.effect_variants(), every);
+        scene.push_effect("radial_blur", None).expect("a sample preset");
+        let lens = PostVariants { lens_effects: true, ..PostVariants::NONE };
+        assert_eq!(scene.effect_variants(), every | lens);
+        scene.push_effect("inversion", Some(0.0)).expect("a sample preset");
+        assert_eq!(scene.effect_variants(), PostVariants::SCREEN_EFFECTS);
     }
 
     #[test]

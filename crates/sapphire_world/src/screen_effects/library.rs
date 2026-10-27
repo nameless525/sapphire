@@ -3,6 +3,7 @@
 use bevy_ecs::prelude::Resource;
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
+use sapphire_render::{PostEffects, PostVariants};
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,19 @@ pub const MAX_PRESET_LAYERS: usize = 8;
 pub struct EffectPreset {
     pub name: String,
     pub layers: Vec<EffectLayer>,
+}
+
+impl EffectPreset {
+    /// The post variants its layers draw through, each at full weight, alone or together: what
+    /// the renderer prewarms so a push shows on the frame it fires
+    /// ([`Renderer::prewarm_post`](sapphire_render::Renderer::prewarm_post)).
+    pub fn post_variants(&self) -> PostVariants {
+        self.layers.iter().fold(PostVariants::NONE, |variants, layer| {
+            let mut effects = PostEffects::NONE;
+            layer.effect.blend_over(&mut effects, 1.0, 0);
+            variants | PostVariants::of_effects(&effects)
+        })
+    }
 }
 
 /// A preset of an [`EffectLibrary`], by its place in the library.
@@ -142,5 +156,13 @@ impl EffectLibrary {
     /// The presets' names, in order.
     pub fn names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.presets.iter().map(|preset| preset.name.as_str())
+    }
+
+    /// The post variants every preset draws through, alone or with others playing: what a game
+    /// that may push any of them prewarms at load
+    /// ([`Renderer::prewarm_post`](sapphire_render::Renderer::prewarm_post)), so the first push
+    /// of each shows on the frame it fires rather than after a compile stall.
+    pub fn post_variants(&self) -> PostVariants {
+        self.presets.iter().fold(PostVariants::NONE, |variants, preset| variants | preset.post_variants())
     }
 }

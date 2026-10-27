@@ -162,7 +162,7 @@ impl Link {
                         refuse(&mut self.errors, reply, error);
                         continue;
                     };
-                    match document.apply(&text, scene) {
+                    match document.apply(&text, scene, renderer) {
                         Ok(()) => {
                             tracing::info!(target: LOG_TARGET, origin, "live link replaced the {}", document.name());
                             reply.reply(ReplyBody::DocumentApplied { owner: document.name().to_owned() });

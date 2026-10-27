@@ -13,7 +13,8 @@
 //! - edited presets replace the scene's (the `LightRigLibrary` resource); characters keep their
 //!   preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
-//!   effects playing keep the layers they were pushed with.
+//!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
+//!   variants the new presets draw through.
 //!
 //! On by default in `dev` builds; `--no-hot-reload` turns it off. Phones build no file watching
 //! (live link, A9, is their trigger), so it reports itself off there. Errors are logged and
@@ -77,8 +78,9 @@ impl Document {
         }
     }
 
-    /// Parses `text` and swaps it into `scene`, or says why it keeps what it has.
-    pub fn apply(self, text: &str, scene: &mut Scene) -> Result<(), String> {
+    /// Parses `text` and swaps it into `scene`, or says why it keeps what it has. New screen
+    /// effect presets have `renderer` prewarm their post variants, which the overlay may fire.
+    pub fn apply(self, text: &str, scene: &mut Scene, renderer: &mut Renderer) -> Result<(), String> {
         match self {
             Self::DefaultDay => {
                 TodTimeline::from_ron(text).map_err(|error| error_chain(&error)).and_then(|timeline| {
@@ -93,6 +95,7 @@ impl Document {
             Self::ScreenEffects => {
                 let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_effect_library(effects);
+                renderer.prewarm_post(scene.effect_variants());
                 Ok(())
             }
         }
@@ -237,7 +240,7 @@ impl Reload {
             let Some(&(_, document)) = self.documents.iter().find(|(watched, _)| *watched == id) else {
                 continue;
             };
-            match document.apply(&text, scene) {
+            match document.apply(&text, scene, renderer) {
                 Ok(()) => {
                     self.reloaded_documents += 1;
                     tracing::info!(target: LOG_TARGET, "{} reloaded", document.name());

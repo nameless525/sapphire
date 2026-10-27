@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
-use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
+use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
 
 use crate::faces::FaceLayout;
 use crate::foliage::{DEFAULT_WIND, FoliageView};
@@ -328,7 +328,8 @@ impl Options {
     }
 
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
-    /// over `--aa`'s sample count.
+    /// over `--aa`'s sample count. Under `--plain-post` no frame draws a compositing layer, so
+    /// post builds none of their variants.
     pub fn render_settings(&self, tier: RenderSettings) -> RenderSettings {
         let (msaa, temporal) = match self.aa {
             None => (tier.msaa, tier.temporal),
@@ -341,6 +342,7 @@ impl Options {
             msaa: self.msaa.unwrap_or(msaa),
             temporal,
             light_path: self.light_path.unwrap_or(tier.light_path),
+            post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
             ..tier
         }
     }
@@ -884,6 +886,10 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().0.sharpening, None);
         assert!(parse(&["--sharpening", "1.5"]).is_err());
         assert!(parse(&["--sharpening", "NaN"]).is_err());
+        // No frame draws a layer, so post builds none of their variants.
+        let tier = RenderSettings::default();
+        assert_eq!(options.render_settings(tier).post_variants, PostVariants::NONE);
+        assert_eq!(Options::default().render_settings(tier).post_variants, PostVariants::COMPOSITING);
     }
 
     #[test]

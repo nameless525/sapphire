@@ -8,7 +8,7 @@ use super::{Harness, composited, flat, linear_to_srgb, max_step, mean_step, pass
 use crate::quality::{TierId, TierTable};
 use crate::{
     ChromaticAberration, Duotone, EffectCoverage, Inversion, Msaa, PostEffectSettings, PostEffects,
-    PostParams, RadialBlur, RenderSettings, SkyGradient, SpeedLines,
+    PostParams, PostVariants, RadialBlur, RenderSettings, SkyGradient, SpeedLines,
 };
 
 fn grey_sky(value: f32) -> SkyGradient {
@@ -420,4 +420,65 @@ fn mobile_lows_effects_draw_as_desktop_lows_do() {
     );
     assert!(effect > 20.0, "{effect}");
     assert!(effects_difference < plain_difference + 2.0, "{effects_difference} vs {plain_difference}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn effect_variants_are_built_when_prewarmed_or_on_first_use_and_draw_alike() {
+    // A renderer builds its settings' variants and none of the screen effects': a frame that
+    // draws an effect nothing prewarmed builds its variant itself (counted), and draws what a
+    // prewarmed renderer draws. wgpu's own count agrees with post's.
+    let size = (96, 54);
+    let scene = |post_variants: PostVariants| {
+        let mut harness = Harness::new(RenderSettings { post_variants, ..RenderSettings::default() }, size);
+        harness.sky = grey_sky(0.4);
+        harness.sphere(Vec3::ZERO, 0.6, flat([1.5, 0.8, 0.4]), true);
+        harness
+    };
+    let render_pipelines = |harness: &Harness| {
+        let report = harness.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
+        report.hub.render_pipelines.num_kept_from_user
+    };
+    let impact = PostEffects {
+        radial_blur: RadialBlur { center: Vec2::splat(0.5), strength: 0.1 },
+        inversion: Inversion { amount: 1.0, coverage: EffectCoverage::WORLD },
+        ..PostEffects::NONE
+    };
+
+    // The plain variants alone: the bloom chain's three and R3's fused pass.
+    let mut plain = scene(PostVariants::NONE);
+    plain.render(passthrough());
+    let stats = plain.renderer.stats().post;
+    assert_eq!((stats.pipelines, stats.first_use_builds), (4, 0));
+    // The compositing variants by default: a frame drawing them builds nothing more.
+    assert_eq!(RenderSettings::default().post_variants, PostVariants::COMPOSITING);
+    let mut first_use = scene(PostVariants::COMPOSITING);
+    first_use.render(composited());
+    let stats = first_use.renderer.stats().post;
+    assert_eq!((stats.pipelines, stats.first_use_builds), (8, 0));
+    let before = render_pipelines(&first_use);
+    // A blur and an inversion over the layers: one variant, built by the frame.
+    let drawn = first_use.render(PostParams { effects: impact, ..composited() });
+    let stats = first_use.renderer.stats().post;
+    assert_eq!((stats.pipelines, stats.first_use_builds), (9, 1));
+    assert_eq!(render_pipelines(&first_use) - before, 1, "the stats count what was built");
+    assert_eq!(first_use.render(PostParams { effects: impact, ..composited() }), drawn);
+    assert_eq!(first_use.renderer.stats().post.first_use_builds, 1, "once");
+
+    // Prewarmed: every combination of the effects' switches with the compositing ones, all
+    // twelve of the fused pass's variants, and a frame builds none.
+    let mut prewarmed = scene(PostVariants::COMPOSITING);
+    let before = render_pipelines(&prewarmed);
+    assert_eq!(prewarmed.renderer.prewarm_post(PostVariants::SCREEN_EFFECTS), 8);
+    assert_eq!(render_pipelines(&prewarmed) - before, 8);
+    assert_eq!(prewarmed.renderer.prewarm_post(PostVariants::SCREEN_EFFECTS), 0, "built once");
+    assert_eq!(prewarmed.render(PostParams { effects: impact, ..composited() }), drawn);
+    let stats = prewarmed.renderer.stats().post;
+    assert_eq!((stats.pipelines, stats.first_use_builds), (16, 0));
+    // The lens effects alone over plain post add their variant and nothing else.
+    let lens = PostVariants { lens_effects: true, ..PostVariants::NONE };
+    assert_eq!(plain.renderer.prewarm_post(lens), 1);
+    let blur = PostEffects { inversion: Inversion::NONE, ..impact };
+    plain.render(PostParams { effects: blur, ..passthrough() });
+    assert_eq!(plain.renderer.stats().post.first_use_builds, 0);
 }

@@ -41,7 +41,7 @@ use crate::pipelines::{
     NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading, SurfaceVariant,
     VELOCITY_FORMAT,
 };
-use crate::post::{self, PostEffectSettings, PostProcess, PostStats, SunOnScreen};
+use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, RebuiltPipelines, SunOnScreen};
 use crate::scene::GpuScene;
 use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
@@ -121,6 +121,13 @@ pub struct RenderSettings {
     /// What the screen effects spend (M1 P3, the [`post`](crate::post) module): the radial
     /// blur's taps per pixel.
     pub post_effects: PostEffectSettings,
+    /// Post's variants built with the renderer, ahead of the frames that draw them (the
+    /// [`post`](crate::post) module's "Building the variants"): by default
+    /// [`PostVariants::COMPOSITING`], the compositing layers, sharpening and characters' bloom,
+    /// which time of day and the player turn on at any time. The screen effects' variants wait
+    /// for [`Renderer::prewarm_post`]. [`PostVariants::NONE`] builds the plain variants alone, for
+    /// an app whose frames never draw a layer (the sandbox's `--plain-post`).
+    pub post_variants: PostVariants,
     /// Foliage's wind levels, alpha-to-coverage under MSAA and translucency (M1 W6, the
     /// [`foliage`](crate::foliage) module).
     pub foliage: FoliageSettings,
@@ -149,6 +156,7 @@ impl Default for RenderSettings {
             environment: EnvironmentSettings::default(),
             shadows: None,
             post_effects: PostEffectSettings::default(),
+            post_variants: PostVariants::COMPOSITING,
             foliage: FoliageSettings::default(),
             ambient_occlusion: AmbientOcclusion::OFF,
             reflections: ReflectionSettings::default(),
@@ -524,8 +532,14 @@ impl Renderer {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
         let shaders = ShaderSources::compiled_in();
-        let post =
-            PostProcess::new(gpu, color_format, settings.bloom_levels, settings.post_effects, &shaders)?;
+        let post = PostProcess::new(
+            gpu,
+            color_format,
+            settings.bloom_levels,
+            settings.post_effects,
+            settings.post_variants,
+            &shaders,
+        )?;
 
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);
@@ -637,6 +651,7 @@ impl Renderer {
             shadows = ?settings.shadows,
             foliage = ?settings.foliage,
             ambient_occlusion = ?settings.ambient_occlusion,
+            post_variants = ?settings.post_variants,
             "renderer created"
         );
         Ok(Self {
@@ -969,6 +984,18 @@ impl Renderer {
         }
     }
 
+    /// Builds post's variants of `variants`, with those of every earlier call and of
+    /// [`RenderSettings::post_variants`], ahead of the frames that draw them: every combination
+    /// of their switches ([`PostVariants`]), so the first frame drawing one doesn't stall to
+    /// compile it. Apps call it at load with what their frames may draw beyond the settings':
+    /// the variants of every screen effect preset gameplay may push (`sapphire_world`'s
+    /// `EffectLibrary::post_variants`), so an effect shows on the frame it fires. Says how many
+    /// pipelines it built; synchronous, on this thread.
+    pub fn prewarm_post(&mut self, variants: PostVariants) -> u32 {
+        profiling::scope!("Renderer::prewarm_post");
+        self.checked_build(|renderer| renderer.post.prewarm(variants))
+    }
+
     /// Builds the renderer's shaders from `sources` from now on (hot reload, live link; see
     /// `shaders` in the crate docs): every program with a changed file is checked with naga,
     /// then its module and every pipeline built from its old version are built again, and
@@ -1005,8 +1032,9 @@ impl Renderer {
         });
         let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(device, sources));
         pipelines += if sky.is_some() { SkyPipelines::COUNT } else { 0 };
+        // Only those built so far: the variants built ahead and those frames drew.
         let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
-        pipelines += if post.is_some() { post::Pipelines::COUNT } else { 0 };
+        pipelines += post.as_ref().map_or(0, RebuiltPipelines::count);
         let temporal = changed
             .contains(&Program::Temporal)
             .then(|| self.temporal.as_ref().map(|temporal| temporal.rebuilt_pipelines(sources)))
@@ -1209,10 +1237,11 @@ impl Renderer {
             self.fog_cards.sort(view.camera.position, list, slots, meshes);
         }
         self.sky.prepare(packet, &self.materials);
-        // The lens flare follows the sun's disc as the main view sees it.
+        // The lens flare follows the sun's disc as the main view sees it. A variant nothing
+        // built ahead builds now, from the current shader sources.
         let camera = packet.main_view().map(|view| view.camera);
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
-        self.post.prepare(queue, &packet.post, camera.as_ref(), sun);
+        self.checked_build(|renderer| renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun));
         let counts = self.scene.draw_counts();
         let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {
             SurfaceVariant::ALL

@@ -103,8 +103,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AmbientOcclusion, EnvironmentSettings, FoliageSettings, GtaoSettings, LOG_TARGET, LightPath,
-    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, ReflectionSettings,
-    RenderSettings, ShadowSettings, SkySettings, scaled_size,
+    MAX_BLOOM_LEVELS, MAX_LIGHTS, MIN_RENDER_SCALE, Msaa, PostEffectSettings, PostVariants,
+    ReflectionSettings, RenderSettings, ShadowSettings, SkySettings, scaled_size,
 };
 pub use dynamic::{
     DynamicResolution, DynamicResolutionStats, FrameTiming, ResolutionBudget, ResolutionSignal,
@@ -385,6 +385,7 @@ impl QualityTier {
             environment: self.environment,
             shadows: Some(self.shadows),
             post_effects: self.post_effects,
+            post_variants: PostVariants::COMPOSITING,
             foliage: self.foliage,
             ambient_occlusion: self.ambient_occlusion,
             reflections: self.reflections,

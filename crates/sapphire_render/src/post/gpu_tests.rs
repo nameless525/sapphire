@@ -25,9 +25,9 @@ use crate::quality::{TierId, TierTable};
 use crate::{
     AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, Diffusion, DirectionalLight, FramePacket, FramePacketRing, GradientBlend,
-    GradientLayer, GradientShape, InstanceId, LensFlare, MAX_GRADIENT_LAYERS, MeshHandle, MeshInstance, Msaa,
-    PostParams, RenderSettings, Renderer, ShaderFile, ShaderSources, SkyDisc, SkyGradient, ToneCurve,
-    ViewData, Vignette,
+    GradientLayer, GradientShape, InstanceId, Inversion, LensFlare, MAX_GRADIENT_LAYERS, MeshHandle,
+    MeshInstance, Msaa, PostEffects, PostParams, RenderSettings, Renderer, ShaderFile, ShaderSources,
+    SkyDisc, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -761,16 +761,48 @@ fn mobile_lows_fused_pass_composites_as_desktop_does() {
 
 #[test]
 #[ignore = "needs a GPU"]
-fn editing_post_wgsl_rebuilds_every_post_pipeline_and_draws_the_same_pixels() {
-    let size = (160, 90);
-    let mut harness = Harness::new(RenderSettings::default(), size);
-    harness.sky =
-        SkyGradient { zenith: Vec3::splat(0.3), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.2) };
-    harness.sphere(Vec3::ZERO, 1.0, flat([2.0, 1.0, 0.5]), true);
+fn editing_post_wgsl_rebuilds_the_pipelines_built_and_builds_later_ones_from_the_edit() {
+    let scene = || {
+        let mut harness = Harness::new(RenderSettings::default(), (160, 90));
+        harness.sky =
+            SkyGradient { zenith: Vec3::splat(0.3), horizon: Vec3::splat(0.5), ground: Vec3::splat(0.2) };
+        harness.sphere(Vec3::ZERO, 1.0, flat([2.0, 1.0, 0.5]), true);
+        harness
+    };
+    let mut harness = scene();
     let before = harness.render(composited());
-    let mut sources = ShaderSources::compiled_in();
-    sources.set(ShaderFile::Post, format!("{}\n// An edit.\n", ShaderFile::Post.compiled_in()));
-    let update = harness.renderer.set_shader_sources(&sources).expect("a valid edit");
-    assert_eq!((update.programs, update.pipelines), (1, super::Pipelines::COUNT));
-    assert_eq!(harness.render(composited()), before, "a comment changes no pixel");
+    // The compositing variants, built with the renderer: the bloom chain's four and the fused
+    // pass's four.
+    assert_eq!(harness.renderer.stats().post.pipelines, 8);
+
+    // An inversion that paints the frame red instead: code of the color effects' variants, which
+    // no pipeline built so far has.
+    let compiled_in = ShaderSources::compiled_in();
+    let inverts = "color = mix(color, 1.0 - color, inversion.x";
+    let text = compiled_in.get(ShaderFile::Post);
+    assert_eq!(text.matches(inverts).count(), 1);
+    let mut red_inversion = compiled_in.clone();
+    let paints_red = "color = mix(color, vec3<f32>(1.0, 0.0, 0.0), inversion.x";
+    red_inversion.set(ShaderFile::Post, text.replace(inverts, paints_red));
+    let update = harness.renderer.set_shader_sources(&red_inversion).expect("a valid edit");
+    assert_eq!((update.programs, update.pipelines), (1, 8), "the pipelines built, and no others");
+    assert_eq!(harness.render(composited()), before, "the edit changes none of their pixels");
+
+    // The inversion's variant, built on the frame that first draws it, comes from the edit.
+    let effects =
+        PostEffects { inversion: Inversion { amount: 1.0, ..Inversion::NONE }, ..PostEffects::NONE };
+    let flash = PostParams { effects, ..composited() };
+    let red = harness.render(flash);
+    assert!(red.iter().all(|&texel| texel == [255, 0, 0, 255]), "{:?}", red[0]);
+    let stats = harness.renderer.stats().post;
+    assert_eq!((stats.pipelines, stats.first_use_builds), (9, 1));
+
+    // Back to the compiled-in shaders: every pipeline built is rebuilt, the inversion's too, which
+    // inverts the frame again as a renderer that never saw the edit does.
+    let update = harness.renderer.set_shader_sources(&compiled_in).expect("compiled in");
+    assert_eq!((update.programs, update.pipelines), (1, 9));
+    let inverted = scene().render(flash);
+    assert_ne!(inverted, red);
+    assert_eq!(harness.render(flash), inverted);
+    assert_eq!(harness.render(composited()), before);
 }

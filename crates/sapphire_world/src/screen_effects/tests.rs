@@ -1,5 +1,5 @@
 use sapphire_math::{Vec2, Vec3};
-use sapphire_render::{EffectCoverage, PostEffects};
+use sapphire_render::{EffectCoverage, PostEffects, PostVariants};
 use sapphire_serialize::DocumentError;
 use sapphire_time::{ScaleSource, ScaledClock, TICK_HZ};
 
@@ -71,6 +71,28 @@ fn the_sample_presets_load_and_round_trip() {
     // What a layer leaves out is left out when written, and defaults when read.
     assert!(!text.contains("delay"), "{text}");
     assert!(text.contains("clock: Real"));
+}
+
+#[test]
+fn presets_say_which_post_variants_they_draw_through() {
+    // What the renderer prewarms for them: the lens effects' and the color effects' variants.
+    let library = EffectLibrary::default_effects();
+    let variants =
+        |name: &str| library.preset(library.find(name).expect("shipped")).expect("there").post_variants();
+    let lens = PostVariants { lens_effects: true, ..PostVariants::NONE };
+    let color = PostVariants { color_effects: true, ..PostVariants::NONE };
+    assert_eq!(variants("radial_blur"), lens);
+    assert_eq!(variants("chromatic_aberration"), lens);
+    for name in ["inversion", "duotone", "speed_lines"] {
+        assert_eq!(variants(name), color, "{name}");
+    }
+    assert_eq!(variants("impact_frame"), PostVariants::SCREEN_EFFECTS);
+    assert_eq!(library.post_variants(), PostVariants::SCREEN_EFFECTS);
+    // Each layer counts alone: a later layer of the same kind drawing nothing hides nothing, and a
+    // preset whose layers draw nothing needs no variant.
+    let still = blur(0.0, [0.5, 0.5], pulse(0.0, 0.1, 0.1));
+    assert_eq!(preset(&[blur(0.1, [0.5, 0.5], pulse(0.0, 0.1, 0.1)), still]).post_variants(), lens);
+    assert_eq!(preset(&[still]).post_variants(), PostVariants::NONE);
 }
 
 /// A library document with `layers` as the one preset's layers.

@@ -147,13 +147,16 @@
 //!   the golden scenes from before it pin.
 //! - `--plain-post`: draw post as it was before its compositing layers (`PostParams::plain`: no
 //!   diffusion glow, character bloom, gradient layers, lens flare, vignette tint or sharpening),
-//!   which the golden scenes from before them pin (M1 P2).
+//!   which the golden scenes from before them pin (M1 P2). Post then builds none of the layers'
+//!   pipeline variants (`RenderSettings::post_variants`).
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--post-effect <preset>[@<seconds>]`, repeatable: push a screen effect preset (M1 P3:
 //!   `radial_blur`, `chromatic_aberration`, `inversion`, `duotone`, `speed_lines`,
 //!   `impact_frame`) at the start, playing, or held that many seconds into it for captures and
-//!   benches. An unknown name fails with the presets' names.
+//!   benches. An unknown name fails with the presets' names. The renderer prewarms the post
+//!   variants of the presets pushed (`Renderer::prewarm_post`), or in `dev` builds of every
+//!   preset, which the overlay fires, so a scene without effects builds none of theirs.
 //! - `--view <yaw>,<pitch>`: start the orbit camera at these angles in degrees (yaw orbits right
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't

@@ -147,6 +147,8 @@ impl Stage {
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
+        // The screen effects it may push, `--post-effect`'s among them, show on their first frame.
+        renderer.prewarm_post(scene.effect_variants());
         // The stage after the hour, which places its pillars.
         if let Some(layout) = options.stage {
             let character =

@@ -65,7 +65,10 @@
 //!   into blended 32³ LUTs, and the fused composite into the target, driven by plain-data
 //!   [`PostParams`]; and in the same fused pass (M1 P2) anime compositing's layers: the
 //!   diffusion glow, characters' own bloom (a mask in scene color's alpha), gradient ("para")
-//!   layers, lens flares from the sun, a tinted vignette and the player's sharpening.
+//!   layers, lens flares from the sun, a tinted vignette and the player's sharpening; then
+//!   combat's screen effects (M1 P3). Post builds the pipeline variants its frames can draw: those
+//!   of [`RenderSettings::post_variants`] with the renderer, the screen effects' when the app
+//!   prewarms them ([`Renderer::prewarm_post`], [`PostVariants`]).
 //! - Compute skinning and morph targets (`skinning`, M1 R2): every instance of a skinned or
 //!   morphed mesh draws from output streams of its own, which one dispatch a frame writes from
 //!   the packet's poses ([`SkinnedInstance`]); see "Skinned and morphed meshes" below.
@@ -848,7 +851,7 @@ pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, DrawnEffects, Duotone,
     EffectCoverage, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_BLOOM_LEVELS,
     MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams, PostStats,
-    RadialBlur, SpeedLines, ToneCurve, Vignette,
+    PostVariants, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use renderer::{
     CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,

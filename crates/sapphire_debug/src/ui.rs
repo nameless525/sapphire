@@ -791,7 +791,8 @@ fn fog_text(fog: &sapphire_render::FogStats) -> String {
     )
 }
 
-/// The compositing layers post drew this frame (M1 P2).
+/// The compositing layers post drew this frame (M1 P2), and its pipelines: those built so far,
+/// and those frames built on first use, each a stall a prewarm would have saved.
 fn post_text(post: &sapphire_render::PostStats) -> String {
     let gradients = match post.gradient_layers {
         0 => None,
@@ -811,10 +812,14 @@ fn post_text(post: &sapphire_render::PostStats) -> String {
     .chain(gradients)
     .collect();
     let bloom = if post.bloom_chain { "bloom chain" } else { "no bloom chain" };
+    let pipelines = match post.first_use_builds {
+        0 => format!("{} pipelines", post.pipelines),
+        late => format!("{} pipelines, {late} built on first use", post.pipelines),
+    };
     if layers.is_empty() {
-        format!("none (plain); {bloom}")
+        format!("none (plain); {bloom}; {pipelines}")
     } else {
-        format!("{}; {bloom}", layers.join(", "))
+        format!("{}; {bloom}; {pipelines}", layers.join(", "))
     }
 }
 

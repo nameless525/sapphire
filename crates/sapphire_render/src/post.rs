@@ -91,12 +91,13 @@
 //! **Variants.** `post.wgsl`'s pipeline-overridable constants pick the fused pass's variant
 //! (`POST_LAYERS`, `POST_SHARPEN`) and the prefilter's (`POST_CHARACTERS`) each frame, from
 //! what its parameters draw (`layers::Variant`), so a frame pays for no layer it doesn't draw.
-//! Every variant is built with the renderer, so a layer turning on never compiles a pipeline
-//! mid-game. Parameters without layers ([`PostParams::plain`], as every timeline from before
-//! them resolves to) draw through the plain variants, which are R3's shader code, so they draw
-//! exactly the frames they did. The gradient layers and the flare's elements are unrolled
-//! calls: wgpu bounds every WGSL loop with a counter, which keeps Metal from unrolling it, and
-//! the loops cost about three times as much (temporal AA found the same).
+//! Renderers build these variants with themselves by default ("Building the variants", below),
+//! so a layer turning on never compiles a pipeline mid-game. Parameters without layers
+//! ([`PostParams::plain`], as every timeline from before them resolves to) draw through the
+//! plain variants, which are R3's shader code, so they draw exactly the frames they did. The
+//! gradient layers and the flare's elements are unrolled calls: wgpu bounds every WGSL loop
+//! with a counter, which keeps Metal from unrolling it, and the loops cost about three times as
+//! much (temporal AA found the same).
 //!
 //! # Screen effects (M1 P3; look pillar 8)
 //!
@@ -140,19 +141,54 @@
 //!
 //! **Variants, chosen by their cost on Mobile-Low's settings.** Two more constants pick the fused
 //! pass's variant: `POST_LENS_EFFECTS` and `POST_COLOR_EFFECTS`. That makes 12 composite
-//! variants (the lens effects replace sharpening), 16 post pipelines in all, every one built
-//! with the renderer. Within a variant each effect is a branch every pixel takes alike. With no
-//! effect the frame draws P2's variants, so an empty stack draws exactly what it did before.
-//! Measured at 1080p on an M5: with one variant for all five effects, a lone chromatic
-//! aberration paid 13–15% more for the fused pass than it does with the lens effects in their
-//! own variant, and a lone color effect about 4% more. Compiling each effect's code in only when
-//! it draws would save a lone color effect a further 5–13%, but a variant per effect is 2⁵ of
-//! them per combination of the other switches. Effects mostly play together in a hit anyway,
-//! and those frames need all the code. The radial blur costs most by far, about 70 µs per four
-//! taps at 1080p on an M5; spec §5.12's P3 note has every effect's cost against the budget.
+//! variants (the lens effects replace sharpening), 16 post pipelines in all; the effects' are
+//! built when the app prewarms them ("Building the variants", below). Within a variant each
+//! effect is a branch every pixel takes alike. With no effect the frame draws P2's variants, so
+//! an empty stack draws exactly what it did before. Measured at 1080p on an M5: with one
+//! variant for all five effects, a lone chromatic aberration paid 13–15% more for the fused
+//! pass than it does with the lens effects in their own variant, and a lone color effect about
+//! 4% more. Compiling each effect's code in only when it draws would save a lone color effect a
+//! further 5–13%, but a variant per effect is 2⁵ of them per combination of the other switches.
+//! Effects mostly play together in a hit anyway, and those frames need all the code. The radial
+//! blur costs most by far, about 70 µs per four taps at 1080p on an M5; spec §5.12's P3 note
+//! has every effect's cost against the budget.
 //!
 //! [`PostStats::effects`] ([`DrawnEffects`], rule R9) says which effects drew and whether they
 //! read the character mask; the stack's own depth is the world's to report.
+//!
+//! # Building the variants
+//!
+//! Every golden scene is a process of its own, and WARP and lavapipe compile each pipeline on
+//! the CPU in every one: building all 16 with every renderer cost about 1.3 s a desktop process
+//! on WARP, screen effects or not. So a renderer builds only the variants its frames can draw,
+//! named as sets of switches ([`PostVariants`]: the variants of a set are every combination of
+//! its switches):
+//!
+//! - **With the renderer:** [`RenderSettings::post_variants`](crate::RenderSettings::post_variants),
+//!   by default [`PostVariants::COMPOSITING`] (the layers, sharpening and characters' bloom),
+//!   which time of day's keys and the player's settings turn on at any hour: 8 pipelines, the
+//!   bloom chain's four and four fused passes. [`PostVariants::NONE`] builds the plain variants
+//!   alone, 4 pipelines, for an app whose frames never draw a layer (the sandbox's
+//!   `--plain-post`, most golden scenes). The chain's pipelines come with a chain: none without
+//!   bloom levels, the down and up passes from two levels.
+//! - **Prewarmed:** the screen effects' variants wait for
+//!   [`Renderer::prewarm_post`](crate::Renderer::prewarm_post), which builds every combination
+//!   of the switches it is given with those set before. **Decision: an explicit prewarm at
+//!   load,** with the variants of the effect presets the game may push (`sapphire_world`'s
+//!   `EffectLibrary::post_variants`), so a perfect dodge's first desaturation shows on the frame
+//!   it fires. Building on first use alone stalls that frame to compile the variant (170–210 ms
+//!   for a layered or effect variant on an M5 with Metal's cache cold, 0.5 ms warm). Building on
+//!   a job thread (wgpu's device builds pipelines from any thread) can't put the effect on that
+//!   frame either: the frame waits for the build or draws without the effect. A worker can take
+//!   the prewarm itself off the loading thread, which belongs with the warm-up service of spec
+//!   §5.12 ("Warm-up"; the crate's later milestones).
+//! - **On first use, the fallback:** a frame drawing a variant nothing built ahead builds it as
+//!   it is prepared. It is the same pipeline, so the frame draws exactly what a prewarmed
+//!   renderer draws, but it stalls: [`PostStats::first_use_builds`] counts these builds and the
+//!   log warns of each, so a missing prewarm shows. [`PostStats::pipelines`] counts every
+//!   pipeline built so far.
+//! - **Hot reload (A8) and live link** rebuild only the pipelines built so far, and keep the
+//!   edited module, so the variants built later (a prewarm, a first use) come from the edit too.
 //!
 //! # Allocation
 //!
@@ -209,6 +245,7 @@ mod effects;
 pub(crate) mod layers;
 mod lut;
 mod params;
+mod variants;
 
 #[cfg(test)]
 mod gpu_tests;
@@ -232,6 +269,8 @@ pub use params::{
     GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects,
     PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
+pub use variants::PostVariants;
+use variants::{Builder, Pipelines, Slot};
 
 /// The longest bloom chain: ½ down to 1/64 of the target.
 pub const MAX_BLOOM_LEVELS: u32 = 6;
@@ -363,8 +402,8 @@ pub(crate) const LAYERS_CONSTANT: &str = "POST_LAYERS";
 pub(crate) const SHARPEN_CONSTANT: &str = "POST_SHARPEN";
 pub(crate) const CHARACTERS_CONSTANT: &str = "POST_CHARACTERS";
 
-/// What post drew in the last prepared frame (rule R9): which compositing layers, and so which
-/// variants of its passes.
+/// What post drew in the last prepared frame (rule R9): which compositing layers and screen
+/// effects, and so which variants of its passes; and the pipelines built so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PostStats {
     /// The bloom chain ran: for bloom, or for the diffusion glow.
@@ -384,19 +423,30 @@ pub struct PostStats {
     pub sharpening: bool,
     /// The screen effects that drew (M1 P3).
     pub effects: DrawnEffects,
+    /// Post's pipelines built so far, of 16: the variants built ahead of the frames
+    /// ([`RenderSettings::post_variants`](crate::RenderSettings::post_variants),
+    /// [`Renderer::prewarm_post`](crate::Renderer::prewarm_post)) and those frames built.
+    pub pipelines: u32,
+    /// Pipelines frames built for themselves since the renderer was created, drawing a variant
+    /// nothing built ahead: each stalled its frame to compile ([`PostVariants`] says how to
+    /// avoid them).
+    pub first_use_builds: u32,
 }
 
 /// Post's pipelines, layouts and persistent resources, and the per-pass bind group caches.
 #[derive(Debug)]
 pub(crate) struct PostProcess {
-    device: wgpu::Device,
+    /// What the pipelines are built with, the passes' layouts among it.
+    builder: Builder,
+    /// `post.wgsl`'s module, from the shader sources the renderer builds with: pipelines built
+    /// later (a prewarm, a frame's first use) come from it too.
+    module: wgpu::ShaderModule,
     pipelines: Pipelines,
-    /// What the pipelines are built with, kept to build them again from new shader sources.
-    shared_layout: wgpu::BindGroupLayout,
-    output_format: wgpu::TextureFormat,
-    cache: Option<wgpu::PipelineCache>,
-    effect_settings: PostEffectSettings,
-    layouts: Layouts,
+    /// The switches whose variants are built ahead of the frames: the renderer's settings' and
+    /// every prewarm's since.
+    ready: PostVariants,
+    /// Pipelines frames built on first use, since creation.
+    first_use_builds: u32,
     uniform_buffer: wgpu::Buffer,
     /// Group 0: the uniforms and the sampler.
     shared: wgpu::BindGroup,
@@ -407,7 +457,6 @@ pub(crate) struct PostProcess {
     slots: LutSlots<LutKey>,
     /// Bake output, kept so a bake doesn't allocate it.
     texels: Vec<u32>,
-    bloom_format: wgpu::TextureFormat,
     bloom_levels: u32,
     bind_groups: BindGroups,
     /// What the last `prepare` decided.
@@ -420,108 +469,19 @@ pub(crate) struct PostProcess {
     stats: PostStats,
 }
 
+/// Post's pipelines rebuilt from edited shader sources, with the module later ones come from
+/// ([`PostProcess::rebuilt_pipelines`]).
 #[derive(Debug)]
-pub(crate) struct Pipelines {
-    /// Plain, and with the character mask.
-    prefilter: [wgpu::RenderPipeline; 2],
-    down: wgpu::RenderPipeline,
-    up: wgpu::RenderPipeline,
-    /// The fused pass, by [`Variant::composite_index`].
-    composite: [wgpu::RenderPipeline; Variant::COMPOSITES],
+pub(crate) struct RebuiltPipelines {
+    module: wgpu::ShaderModule,
+    pipelines: Pipelines,
 }
 
-impl Pipelines {
-    /// How many there are, for [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources)'s count.
-    pub(crate) const COUNT: u32 = 4 + Variant::COMPOSITES as u32;
-
-    /// The post pipelines, from `module` (`post.wgsl`): bloom passes write `bloom_format`, the
-    /// fused composite `output_format`, its effect variants with the tier's `effects`. Every
-    /// variant is built now, behind the load.
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        device: &wgpu::Device,
-        module: &wgpu::ShaderModule,
-        shared_layout: &wgpu::BindGroupLayout,
-        layouts: &Layouts,
-        bloom_format: wgpu::TextureFormat,
-        output_format: wgpu::TextureFormat,
-        effects: PostEffectSettings,
-        cache: Option<&wgpu::PipelineCache>,
-    ) -> Self {
-        let pipeline = |name: &str,
-                        vertex: &str,
-                        fragment: &str,
-                        layout: &wgpu::BindGroupLayout,
-                        format,
-                        constants: &[(&str, f64)]| {
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(name),
-                bind_group_layouts: &[Some(shared_layout), Some(layout)],
-                immediate_size: 0,
-            });
-            let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(name),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some(vertex),
-                    compilation_options: compilation_options.clone(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some(fragment),
-                    compilation_options,
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache,
-            })
-        };
-        let switch = |on: bool| if on { 1.0 } else { 0.0 };
-        let fullscreen = "vs_fullscreen";
-        let prefilter = [false, true].map(|characters| {
-            let constants = [(CHARACTERS_CONSTANT, switch(characters))];
-            pipeline(
-                "bloom prefilter",
-                fullscreen,
-                "fs_bloom_prefilter",
-                &layouts.two,
-                bloom_format,
-                &constants,
-            )
-        });
-        // The plain variant is R3's fused pass; the others composite (and measure the flare's
-        // visibility once a frame, in their vertex shader).
-        let composite = std::array::from_fn(|index| {
-            let (layers, sharpen, lens, color) = Variant::composite(index);
-            let constants = [
-                (LAYERS_CONSTANT, switch(layers)),
-                (SHARPEN_CONSTANT, switch(sharpen)),
-                (LENS_EFFECTS_CONSTANT, switch(lens)),
-                (COLOR_EFFECTS_CONSTANT, switch(color)),
-                (RADIAL_TAPS_CONSTANT, f64::from(effects.radial_blur_taps)),
-            ];
-            let (vertex, fragment, constants) = match index {
-                0 => (fullscreen, "fs_post", &[][..]),
-                _ => ("vs_composite", "fs_composite", &constants[..]),
-            };
-            pipeline(COMPOSITE_PASS, vertex, fragment, &layouts.composite, output_format, constants)
-        });
-        Self {
-            prefilter,
-            down: pipeline("bloom down", fullscreen, "fs_bloom_down", &layouts.one, bloom_format, &[]),
-            up: pipeline("bloom up", fullscreen, "fs_bloom_up", &layouts.two, bloom_format, &[]),
-            composite,
-        }
+impl RebuiltPipelines {
+    /// How many pipelines were rebuilt, for
+    /// [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources)'s count.
+    pub(crate) fn count(&self) -> u32 {
+        self.pipelines.count()
     }
 }
 
@@ -568,14 +528,16 @@ struct Fullscreen<'f> {
 }
 
 impl PostProcess {
-    /// Creates the post pipelines, writing `output_format` (the target's), with `bloom_levels`
-    /// and the tier's `effects`. Fails if the device can't filter the grading LUTs' format. The
+    /// Creates post-processing, writing `output_format` (the target's), with `bloom_levels` and
+    /// the tier's `effects`, and builds the pipelines of `variants` (the module docs' "Building
+    /// the variants"). Fails if the device can't filter the grading LUTs' format. The
     /// scene-color format is the renderer's to check: it is the main pass's attachment.
     pub(crate) fn new(
         gpu: &GpuContext,
         output_format: wgpu::TextureFormat,
         bloom_levels: u32,
         effects: PostEffectSettings,
+        variants: PostVariants,
         sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         if !gpu.format_support(LUT_FORMAT).filterable {
@@ -646,16 +608,19 @@ impl PostProcess {
             ),
         };
 
-        let pipelines = Pipelines::new(
-            device,
-            &shaders::module(device, Program::Post, sources),
-            &shared_layout,
-            &layouts,
+        let builder = Builder {
+            device: device.clone(),
+            shared_layout,
+            layouts,
             bloom_format,
             output_format,
             effects,
-            cache,
-        );
+            cache: cache.cloned(),
+        };
+        let module = shaders::module(device, Program::Post, sources);
+        let bloom_levels = bloom_levels.min(MAX_BLOOM_LEVELS);
+        let mut pipelines = Pipelines::default();
+        let built = pipelines.build(&builder, &module, Slot::within(variants, bloom_levels));
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post uniforms"),
@@ -671,7 +636,7 @@ impl PostProcess {
         });
         let shared = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post"),
-            layout: &shared_layout,
+            layout: &builder.shared_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
@@ -703,15 +668,20 @@ impl PostProcess {
             })
         });
         let lut_views = [0, 1].map(|slot: usize| luts[slot].create_view(&Default::default()));
-        tracing::debug!(target: crate::LOG_TARGET, ?bloom_format, bloom_levels, "post-processing created");
+        tracing::debug!(
+            target: crate::LOG_TARGET,
+            ?bloom_format,
+            bloom_levels,
+            ?variants,
+            pipelines = built,
+            "post-processing created"
+        );
         Ok(Self {
-            device: device.clone(),
+            builder,
+            module,
             pipelines,
-            shared_layout,
-            output_format,
-            cache: cache.cloned(),
-            effect_settings: effects,
-            layouts,
+            ready: variants,
+            first_use_builds: 0,
             uniform_buffer,
             shared,
             no_bloom,
@@ -719,8 +689,7 @@ impl PostProcess {
             lut_views,
             slots: LutSlots::default(),
             texels: vec![0; LUT_TEXELS],
-            bloom_format,
-            bloom_levels: bloom_levels.min(MAX_BLOOM_LEVELS),
+            bloom_levels,
             bind_groups: BindGroups::default(),
             uniforms: PostUniforms::default(),
             variant: Variant::default(),
@@ -731,31 +700,37 @@ impl PostProcess {
         })
     }
 
-    /// The post pipelines built from `sources` instead, for [`Self::set_pipelines`] (shader hot
-    /// reload).
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> Pipelines {
-        let module = shaders::module(&self.device, Program::Post, sources);
-        let (layouts, cache) = (&self.layouts, self.cache.as_ref());
-        Pipelines::new(
-            &self.device,
-            &module,
-            &self.shared_layout,
-            layouts,
-            self.bloom_format,
-            self.output_format,
-            self.effect_settings,
-            cache,
-        )
+    /// Builds the variants of `variants` that aren't built yet, with those of every earlier call
+    /// and of the renderer's settings: every combination of the switches they turn on, so
+    /// whatever a frame draws within them is ready. Says how many pipelines it built.
+    pub(crate) fn prewarm(&mut self, variants: PostVariants) -> u32 {
+        self.ready |= variants;
+        let slots = Slot::within(self.ready, self.bloom_levels);
+        let built = self.pipelines.build(&self.builder, &self.module, slots);
+        if built > 0 {
+            tracing::debug!(target: crate::LOG_TARGET, built, ready = ?self.ready, "post variants prewarmed");
+        }
+        built
     }
 
-    pub(crate) fn set_pipelines(&mut self, pipelines: Pipelines) {
-        self.pipelines = pipelines;
+    /// The pipelines built so far, built again from `sources`, for [`Self::set_pipelines`]
+    /// (shader hot reload): only those, and later ones from the new module.
+    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> RebuiltPipelines {
+        let module = shaders::module(&self.builder.device, Program::Post, sources);
+        let pipelines = self.pipelines.rebuilt(&self.builder, &module);
+        RebuiltPipelines { module, pipelines }
     }
 
-    /// Takes the frame's parameters: bakes the LUTs they need that aren't baked yet and
-    /// computes the constants `record` uploads. `camera` is the main view's (the frame's aspect,
-    /// which round gradients and flare elements need), and `sun` where it sees the sun's disc,
-    /// for the lens flare.
+    pub(crate) fn set_pipelines(&mut self, rebuilt: RebuiltPipelines) {
+        self.module = rebuilt.module;
+        self.pipelines = rebuilt.pipelines;
+    }
+
+    /// Takes the frame's parameters: bakes the LUTs they need that aren't baked yet, computes
+    /// the constants `record` uploads and builds the pipelines the frame draws with that aren't
+    /// built yet (a variant nothing built ahead: the frame stalls to compile it, counted and
+    /// logged). `camera` is the main view's (the frame's aspect, which round gradients and flare
+    /// elements need), and `sun` where it sees the sun's disc, for the lens flare.
     pub(crate) fn prepare(
         &mut self,
         queue: &wgpu::Queue,
@@ -812,8 +787,21 @@ impl PostProcess {
             vignette_tint: layers.vignette_color[..3] != [0.0; 3],
             sharpening: layers.variant.sharpen,
             effects: drawn,
+            ..PostStats::default()
         };
         self.uniforms = uniforms;
+        let drawn = Slot::drawn(self.variant, self.bloom, self.bloom_levels);
+        let built = self.pipelines.build(&self.builder, &self.module, drawn);
+        if built > 0 {
+            self.first_use_builds += built;
+            tracing::warn!(
+                target: crate::LOG_TARGET,
+                built,
+                variant = ?self.variant,
+                "post built pipelines on first use, stalling the frame: prewarm their variants \
+                 (Renderer::prewarm_post)"
+            );
+        }
     }
 
     /// The constants for this frame, and the buffer `record`'s caller uploads them to (with the
@@ -842,9 +830,9 @@ impl PostProcess {
         self.bakes
     }
 
-    /// What the last prepared frame drew.
+    /// What the last prepared frame drew, and the pipelines built so far.
     pub(crate) fn stats(&self) -> PostStats {
-        self.stats
+        PostStats { pipelines: self.pipelines.count(), first_use_builds: self.first_use_builds, ..self.stats }
     }
 
     /// Adds the bloom chain and the fused composite to `graph`, reading `input` (the main
@@ -860,14 +848,12 @@ impl PostProcess {
         labels: bool,
     ) {
         let Self {
-            ref device,
+            ref builder,
             ref pipelines,
-            ref layouts,
             ref shared,
             ref no_bloom,
             ref lut_views,
             ref mut bind_groups,
-            bloom_format,
             bloom_levels,
             bound,
             bloom,
@@ -875,8 +861,10 @@ impl PostProcess {
             stats,
             ..
         } = *self;
+        let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
         let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = *bind_groups;
         let pass = |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache };
+        let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
 
         let chain = bloom.then(|| {
             let (width, height) = graph.size(input);
@@ -899,7 +887,7 @@ impl PostProcess {
                 PASSES[0],
                 [Input::Graph(input), Input::Graph(mask)],
                 downs[0],
-                pass(&pipelines.prefilter[usize::from(variant.characters)], &layouts.two, prefilter),
+                pass(pipeline(Slot::Prefilter { characters: variant.characters }), &layouts.two, prefilter),
             );
             // Level i's caches are `down[i - 1]` and `up[i]`, whatever the chain's length.
             for (index, cache) in (1..levels).zip(down) {
@@ -909,7 +897,7 @@ impl PostProcess {
                     DOWN_NAMES[index],
                     [Input::Graph(downs[index - 1])],
                     downs[index],
-                    pass(&pipelines.down, &layouts.one, cache),
+                    pass(pipeline(Slot::Down), &layouts.one, cache),
                 );
             }
             // The diffusion glow reads the widest level that is still smooth: the first up level
@@ -923,7 +911,7 @@ impl PostProcess {
                     UP_NAMES[index],
                     [Input::Graph(lower), Input::Graph(downs[index])],
                     upsampled,
-                    pass(&pipelines.up, &layouts.two, cache),
+                    pass(pipeline(Slot::Up), &layouts.two, cache),
                 );
                 if index == levels - 2 {
                     widest = upsampled;
@@ -948,7 +936,7 @@ impl PostProcess {
             COMPOSITE_PASS,
             [Input::Graph(input), bloom_input, lut_a, lut_b, diffusion_input, Input::Graph(mask)],
             target,
-            pass(&pipelines.composite[variant.composite_index()], &layouts.composite, composite),
+            pass(pipeline(Slot::Composite(variant.composite_index())), &layouts.composite, composite),
         );
     }
 }

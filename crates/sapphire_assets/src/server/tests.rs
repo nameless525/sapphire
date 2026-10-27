@@ -8,6 +8,7 @@ use crate::mesh::{
 use crate::pack::{Codec, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 
+mod lifetime;
 mod reload;
 
 fn id(n: u8) -> AssetId {

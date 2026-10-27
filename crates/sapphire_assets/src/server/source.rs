@@ -40,8 +40,10 @@ pub trait PackSource: Send + Sync {
     fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone);
 
     /// Closes `file`, which the server reads no more: a remounted pack's earlier file (hot
-    /// reload). Reads of it still queued may fail; their results are no longer wanted. Sources
-    /// that hold nothing open per file keep the default, which does nothing.
+    /// reload), or every pack it has mounted when the server is dropped, so a source that
+    /// outlives its server holds nothing open for it. Reads of it still queued may fail; their
+    /// results are no longer wanted. Sources that hold nothing open per file keep the default,
+    /// which does nothing.
     fn close(&self, file: PackFile) {
         let _ = file;
     }

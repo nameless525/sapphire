@@ -1167,6 +1167,18 @@ impl AssetServer {
     }
 }
 
+impl Drop for AssetServer {
+    /// Closes every pack file still mounted: the source may outlive the server (an `Arc` the
+    /// app keeps, as live link's is), and would otherwise hold them open. Each mount owns one
+    /// open file (remounts close the one they replace), so none is closed twice. Reads still in
+    /// flight aren't waited for: they may fail on the closed file, and their results go nowhere.
+    fn drop(&mut self) {
+        for mount in self.mounts.drain(..) {
+            self.source.close(mount.file);
+        }
+    }
+}
+
 /// A decode job: blocks to asset, checked (see [the load pipeline](AssetServer#the-load-pipeline)).
 fn decode(toc: &Toc, entry: &Entry, stored: &[u8]) -> Result<Arc<AlignedVec>, LoadError> {
     profiling::scope!("asset decode");

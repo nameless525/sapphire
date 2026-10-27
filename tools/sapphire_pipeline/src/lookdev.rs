@@ -839,7 +839,7 @@ fn mask(size: u32, texel: impl Fn(Vec2) -> [f32; 3]) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{assert_glb_matches, assert_png_matches};
+    use crate::test_util::{assert_glb_matches, assert_png_matches, floats_agree};
 
     /// The look-dev directory in the repository.
     fn lookdev_dir() -> std::path::PathBuf {
@@ -1124,7 +1124,7 @@ mod tests {
         for (name, generated) in content_files().unwrap() {
             let committed = std::fs::read(lookdev_dir().join(&name)).unwrap();
             if name.ends_with(".glb") {
-                assert_glb_matches(&name, &committed, &generated);
+                assert_glb_matches(&name, &committed, &generated, floats_agree);
             } else {
                 assert_png_matches(&name, &committed, &generated);
             }

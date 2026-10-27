@@ -508,24 +508,53 @@ mod tests {
         assert_eq!(fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
     }
 
+    /// Whether two floats of the samples, generated on different platforms, agree: within 1e-4,
+    /// relative to their size but at least 1, so within 1e-4 absolute for normals, texture
+    /// coordinates, colors and sub-meter positions (0.1 mm), and relative beyond.
+    ///
+    /// Look-dev's millionth (`test_util::floats_agree`) is too tight here. The face's normals come
+    /// from finite differences of its surface 1 mrad either side, so a position an ulp off on
+    /// another libm moves its normal by about 1e-5, and that error is absolute in the unit
+    /// vector: a component near 0 is as far off as one near 1, so a relative tolerance with a
+    /// small floor fails there. CI's first run of this test (PR #87, at 4f6fae9) failed on two
+    /// such normals:
+    /// `face/face_head.glb` byte 21204 (the face's normal 150, x) on Linux, committed
+    /// 0.11108426749706268 against 0.11108289659023285 (1.4e-6 off), and byte 143804 (the eyes'
+    /// normal 592, x) on Windows, 0.44974109530448914 against 0.4497344493865967 (6.6e-6 off).
+    /// 1e-4 is about 0.006° of a normal's direction: a generator change moves far more than that,
+    /// or changes counts and text, which must match exactly.
+    fn sample_floats_agree(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-4 * a.abs().max(b.abs()).max(1.0)
+    }
+
     /// The committed samples (`content/samples/`) are what the generator makes, but for float
-    /// rounding between platforms' libm (`test_util::floats_agree`), so a generator change that
+    /// rounding between platforms' libm ([`sample_floats_agree`]), so a generator change that
     /// isn't regenerated, or a committed file edited by hand, fails here rather than drifting
-    /// until a regeneration rewrites it.
+    /// until a regeneration rewrites it. Every file is compared before the test fails, so one run
+    /// names all that differ.
     #[test]
     fn the_committed_samples_are_generated() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
         let files = files().unwrap();
-        for (name, generated) in &files {
-            let committed = fs::read(dir.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
-            if name.ends_with(".glb") {
-                assert_glb_matches(name, &committed, generated);
-            } else if name.ends_with(".png") {
-                assert_png_matches(name, &committed, generated);
-            } else {
-                assert_text_matches(name, &committed, generated);
-            }
-        }
+        let failed: Vec<&str> = files
+            .iter()
+            .filter(|(name, generated)| {
+                let committed = fs::read(dir.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+                let compare = || {
+                    if name.ends_with(".glb") {
+                        assert_glb_matches(name, &committed, generated, sample_floats_agree);
+                    } else if name.ends_with(".png") {
+                        assert_png_matches(name, &committed, generated);
+                    } else {
+                        assert_text_matches(name, &committed, generated, sample_floats_agree);
+                    }
+                };
+                // Each failure's message is printed as it panics.
+                std::panic::catch_unwind(compare).is_err()
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert!(failed.is_empty(), "these samples differ from what gen-samples makes: {failed:?}");
         assert_eq!(files.len(), 91, "every sample is compared");
     }
 

@@ -7,8 +7,9 @@
 //!
 //! A zone's grid ([`sapphire_assets::probes`], baked by the cooker's `probes` module) holds, per
 //! probe of a sparse brick grid, the sky's visibility as SH and the bounce light of every
-//! time-of-day key the bake lit, as L1 per channel. [`Renderer::set_probe_grid`]
-//! (crate::Renderer::set_probe_grid) uploads it whole (a hot reload replaces it the same way):
+//! time-of-day key the bake lit, as L1 per channel.
+//! [`Renderer::set_probe_grid`](crate::Renderer::set_probe_grid) uploads it whole (a hot reload
+//! replaces it the same way):
 //!
 //! - **Its data** in one storage buffer of words: the kept bricks' probe indices, then per probe
 //!   its data bits, its visibility and its bounce, the coefficients left as the half floats they
@@ -77,7 +78,7 @@
 //! `PROBE_EDGE_BIT`), so it fades into the hemisphere over the last cell before an empty brick
 //! or the grid's edge, and outside them the hemisphere stays.
 //!
-//! Where it reads the grid is a tier setting ([`ProbeLookup`](crate::ProbeLookup), `tiers.ron`):
+//! Where it reads the grid is a tier setting ([`ProbeLookup`], `tiers.ron`):
 //! per pixel on desktop and Mobile-High; per vertex on Mobile-Low, whose per-pixel lookup cost
 //! 38% of its main pass (spec §5.12 "Lighting"): the vertex shader reads the grid along the
 //! vertex's normal and the triangle interpolates its irradiance and weight. The mobile cook's
@@ -88,9 +89,9 @@
 //!
 //! C2's stylized GI stays stylized: characters keep shading from a hemisphere (sky above, ground
 //! below), flattened toward the camera and clamped in HSV, and the grid only decides what that
-//! hemisphere is. Each character's entry ([`GpuCharacterAmbient`](crate::characters), WGSL
-//! `CharacterAmbient`) holds its sky and ground colors and the axis between them; the CPU fills
-//! them with the frame's own (exactly what `ambient_light` reads), and where a grid exists the
+//! hemisphere is. Each character's entry (`GpuCharacterAmbient`, WGSL `CharacterAmbient`) holds
+//! its sky and ground colors and the axis between them; the CPU fills them with the frame's own
+//! (exactly what `ambient_light` reads), and where a grid exists the
 //! `character ambient` pass replaces them with the grid's L1 at the body's center and its head,
 //! as a hemisphere along the luminance gradient. The fragment stage has no storage buffer to
 //! spare, and per-pixel grid lookups would bring the grid's cell structure onto faces, so the
@@ -131,7 +132,7 @@
 //!   per pixel and no pass.
 //! - **GTAO** ([`GtaoSettings`]), desktop and Mobile-High (`occlusion.wgsl`): half resolution from
 //!   the scene prepass's depth and normals, which it makes run. The depth is first reduced to
-//!   view distance and [`GTAO_DEPTH_MIPS`] − 1 coarser mips (XeGTAO's prefilter), which samples
+//!   view distance and `GTAO_DEPTH_MIPS` − 1 coarser mips (XeGTAO's prefilter), which samples
 //!   read by how far they reach, so a wide search stays in the texture cache (it cost the M5 about
 //!   three times as much at 1080p without them); then the search, a 5 × 5 depth-aware blur, and
 //!   an upsample by depth in the environment shader. Its radius (1 m on desktop) stays under the
@@ -165,7 +166,7 @@
 //! records no ambient pass, builds none of its pipelines (nor their module), makes no reflection
 //! cube, and stages its uniforms only when they change, which is once: content and tiers without
 //! them pay nothing they can measure. Pipelines are built when their work can first run
-//! ([`AmbientPipelines`]): GTAO's three with a renderer whose tier has it, the grid's light (the
+//! (`AmbientPipelines`): GTAO's three with a renderer whose tier has it, the grid's light (the
 //! projection's three, the relight and the characters', and the prefilter with the reflection
 //! cube) with the first grid, a load-time cost, and the projection's three and the prefilter with
 //! the first reflective character material drawn (M1 C7), at the draw-list rebuild that adds it,
@@ -179,7 +180,7 @@
 //! WARP, the Windows CI's CPU rasterizer, took 26–48 s to create that pipeline and 170–432 s more
 //! to run it the first time: 3–8 minutes of every golden scene with a grid, which took 4–17
 //! minutes each (timed per pipeline and dispatch on a throwaway CI branch). The threads' sums now
-//! go through a buffer of the pass's own between three dispatches ([`PROJECTION_PARTIALS_BYTES`]),
+//! go through a buffer of the pass's own between three dispatches (`PROJECTION_PARTIALS_BYTES`),
 //! added up in the order the workgroup added them, so the sky light is the same to the bit. On
 //! the M5 the projection takes about 54 µs a frame instead of 197 (one face, 1080p, timed as a
 //! pass of its own). GTAO's depth prefilter (a reduction behind barriers in a loop of three) and
@@ -224,8 +225,9 @@ use crate::pipelines::Layouts;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{AmbientLight, CharacterBody, FramePacket, LOG_TARGET, RenderError, SkyGradient};
 
-/// Ambient occlusion on a quality tier (`tiers.ron`, [`RenderSettings::ambient_occlusion`]
-/// (crate::RenderSettings::ambient_occlusion)): capsule AO from characters' bodies, and GTAO.
+/// Ambient occlusion on a quality tier (`tiers.ron`,
+/// [`RenderSettings::ambient_occlusion`](crate::RenderSettings::ambient_occlusion)): capsule AO
+/// from characters' bodies, and GTAO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(deny_unknown_fields)]
@@ -293,9 +295,10 @@ impl GtaoSettings {
     }
 }
 
-/// The reflection source on a tier (`tiers.ron`, [`RenderSettings::reflections`]
-/// (crate::RenderSettings::reflections)): the sky cube prefiltered into roughness mips, which
-/// the environment's ambient specular reads where a probe grid lights it.
+/// The reflection source on a tier (`tiers.ron`,
+/// [`RenderSettings::reflections`](crate::RenderSettings::reflections)): the sky cube
+/// prefiltered into roughness mips, which the environment's ambient specular reads where a probe
+/// grid lights it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 #[serde(deny_unknown_fields)]

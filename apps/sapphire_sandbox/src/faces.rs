@@ -212,7 +212,7 @@ impl FaceLayout {
         Self::Blink,
     ];
 
-    /// The names `--face-layout` takes, in [`Self::ALL`]'s order.
+    /// The names `--face-layout` takes, one per layout, in the order they are declared.
     pub const NAMES: [&str; 10] =
         ["lights", "hair", "highlights", "turn", "gi", "gi-clamped", "eyes", "eyes-turned", "gaze", "blink"];
 

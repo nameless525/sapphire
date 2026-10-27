@@ -8,8 +8,8 @@
 //!   `u = 0.5` as face maps need. Over it (M1 C5): slot `Hair`, a cap over the top and back,
 //!   bound to `hair.material.ron`; slot `Bangs`, a fringe of pointed strands hanging from the
 //!   cap's front edge over the brows and the tops of the eyes, a little off the forehead
-//!   ([`bangs`]), bound to `bangs.material.ron`; and slot `Brows`, two arcs just off the face
-//!   ([`brows`]), bound to `brow.material.ron`. Each slot also embeds a flat material, which an
+//!   (`bangs`), bound to `bangs.material.ron`; and slot `Brows`, two arcs just off the face
+//!   (`brows`), bound to `brow.material.ron`. Each slot also embeds a flat material, which an
 //!   unbound import draws.
 //! - **Layered eyes** (M1 C6, in the head's mesh, [`EYE_SLOTS`]): over each eye's outline, a
 //!   little off the face and stacked in their drawing order, the eye white (`EyeWhite`,
@@ -593,7 +593,7 @@ pub fn eye_shadow_material_document() -> String {
 }
 
 /// The irises (M1 C6): `iris.png`, filling its texture's ellipse, behind the cornea by
-/// [`IRIS_PARALLAX`].
+/// `IRIS_PARALLAX`, a tenth of the iris's width.
 pub fn iris_material_document() -> String {
     let iris = EyeShading {
         layer: EyeLayer::Iris,

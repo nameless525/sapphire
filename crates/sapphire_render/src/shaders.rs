@@ -1,17 +1,17 @@
 //! WGSL sources: the renderer's shader files, embedded at build time ([`ShaderFile`]), and the
 //! programs it builds from them (`Program`). Each scene pass's program is `frame.wgsl` and
 //! `materials.wgsl` (the material families' blocks, which the passes' material bindings name)
-//! followed by the files it uses, its own last, joined by newlines; M1 replaces the
-//! concatenation with WESL imports (spec §5.12). The post passes share `post.wgsl`, and compute
-//! skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three stand alone. The shadow
-//! passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like a scene pass. The
-//! ambient passes (M1 W5) join `ambient.wgsl`, which the environment shader shares, with their
-//! own `probes.wgsl` and `occlusion.wgsl` in one program.
+//! followed by the files it uses, its own last, joined by newlines; WESL imports are to replace
+//! the concatenation (spec §5.12, and the crate docs' later milestones). The post passes share
+//! `post.wgsl`, and compute skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three
+//! stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
+//! a scene pass. The ambient passes (M1 W5) join `ambient.wgsl`, which the environment and
+//! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
 //! [`ShaderSources`] holds every file's text: compiled in, or edited. Development builds read
-//! edited files from disk (the desktop hot reload) and live link will push them (A9); the
+//! edited files from disk (the desktop hot reload) and take them from live link (M1 A9); the
 //! renderer only ever gets text, never a path (rule R5), and shipping builds use the compiled-in
 //! files alone. [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources) rebuilds
 //! the programs whose files changed and every pipeline built from them, after checking each
@@ -22,8 +22,8 @@
 //! A new shader file joins [`ShaderFile`] (its name and its compiled-in text) and the programs
 //! that use it (`Program::files`); a new program also needs its pipelines' owner to build them
 //! from [`ShaderSources`] and rebuild them in `Renderer::set_shader_sources`, as the mesh
-//! pipelines, the sky, post, temporal AA, the light clusters, skinning, the shadows and the
-//! ambient passes do.
+//! pipelines, the sky, post, temporal AA, the light clusters, skinning, the shadows, the ambient
+//! passes and the debug views do.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -258,8 +258,10 @@ impl Program {
 }
 
 /// The text of every [`ShaderFile`], which the renderer builds its programs from: the
-/// compiled-in files ([`Self::compiled_in`], the default), or edited ones ([`Self::set`]; see
-/// the [module docs](self)).
+/// compiled-in files ([`Self::compiled_in`], the default), or edited ones ([`Self::set`]), which
+/// development builds read from disk or take from live link and hand to
+/// [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources). Text, never a path
+/// (rule R5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderSources {
     files: [Cow<'static, str>; ShaderFile::ALL.len()],

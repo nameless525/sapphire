@@ -94,7 +94,7 @@ impl Msaa {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSettings {
     pub msaa: Msaa,
-    /// Temporal AA and upsampling (M1 R7, the [`temporal`](crate::temporal) module): the
+    /// Temporal AA and upsampling (M1 R7, the [`temporal`] module): the
     /// projection jitters, and a resolve accumulates the frames at the target's size, which
     /// also upsamples a scene drawn below render scale 1. The desktop tiers turn it on with MSAA
     /// off; it composes with MSAA, which then resolves first.
@@ -118,7 +118,7 @@ pub struct RenderSettings {
     /// and each character's own shadow. `None` draws none: no maps, no passes, and shaders
     /// compiled as they were without shadows.
     pub shadows: Option<ShadowSettings>,
-    /// What the screen effects spend (M1 P3, the [`post`](crate::post) module): the radial
+    /// What the screen effects spend (M1 P3, the [`post`] module): the radial
     /// blur's taps per pixel.
     pub post_effects: PostEffectSettings,
     /// Post's variants built with the renderer, ahead of the frames that draw them (the
@@ -129,7 +129,7 @@ pub struct RenderSettings {
     /// an app whose frames never draw a layer (the sandbox's `--plain-post`).
     pub post_variants: PostVariants,
     /// Foliage's wind levels, alpha-to-coverage under MSAA and translucency (M1 W6, the
-    /// [`foliage`](crate::foliage) module).
+    /// [`foliage`] module).
     pub foliage: FoliageSettings,
     /// Ambient occlusion (M1 W5, the [`ambient`](crate::ambient) module): capsule AO from the
     /// characters' bodies, and GTAO. Off draws none: no passes, and shaders compiled as they were
@@ -828,8 +828,8 @@ impl Renderer {
     /// morph targets, and each of its instances is drawn from its own skinning outputs, in its
     /// bind pose until a packet poses it ([`SkinnedInstance`](crate::SkinnedInstance)). Foliage
     /// materials need a static mesh cooked with its foliage stream
-    /// ([`RenderError::NoFoliageStream`], [`RenderError::DeformedFoliage`]; see the
-    /// [`foliage`](crate::foliage) module).
+    /// ([`RenderError::NoFoliageStream`], [`RenderError::DeformedFoliage`]; see the [`foliage`]
+    /// module).
     ///
     /// The first mesh with f32 positions, or skinned or morphed, also builds the f32 pipelines;
     /// the first skinned or morphed one the skinning and character prepass pipelines.
@@ -1334,8 +1334,8 @@ impl Renderer {
     /// The surface, outline and sky draws share one render pass that writes linear HDR scene
     /// color, so on mobile GPUs the MSAA color and depth are cleared, resolved and discarded
     /// without ever leaving tile memory. Post then reads the resolved scene color and, below
-    /// scale 1, upsamples it to the target in its final pass (see the `post` module). Under
-    /// temporal AA the projection is jittered, and the [`temporal`](crate::temporal) resolve
+    /// scale 1, upsamples it to the target in its final pass (see the [`post`] module). Under
+    /// temporal AA the projection is jittered, and the [`temporal`] resolve
     /// accumulates the scene at the target's size before post reads it. On the clustered light
     /// path, frames with local lights first bin them in a compute pass (see the `lights`
     /// module); frames that pose skinned or morphed instances skin them first (see the
@@ -2173,7 +2173,7 @@ fn draw_main<'p>(
 }
 
 /// Checks that a mesh drawing with materials of `families` can draw foliage: only a static mesh
-/// with a foliage stream can (see the [`foliage`](crate::foliage) module).
+/// with a foliage stream can (see the [`foliage`] module).
 fn check_foliage(
     mesh: &ArchivedMesh,
     families: impl IntoIterator<Item = MaterialFamily>,

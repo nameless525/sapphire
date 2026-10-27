@@ -578,7 +578,8 @@
 //! - **Ambient light** is the frame's hemisphere (`ambient_light`, shared with the characters'
 //!   GI), occluded by vertex AO and the mask map's AO and cavity.
 //! - **Specular** is GGX under a clamp, with the roughness remapped into the material's range,
-//!   plus the hemisphere's reflection; a zero specular mask leaves a surface matte at every angle.
+//!   plus the hemisphere's reflection, or with a probe grid the prefiltered sky cube's (M1 W5,
+//!   the [`ambient`] module); a zero specular mask leaves a surface matte at every angle.
 //!   The tier picks the model ([`EnvironmentSpecular`]): full on desktop, approximate on
 //!   Mobile-High, none on Mobile-Low.
 //! - **Distance desaturation** greys the albedo with view distance, keeping the light's hue;
@@ -755,16 +756,17 @@
 //!   A spatial upscaler (an FSR1-style EASU and RCAS port, or MetalFX spatial) takes over on
 //!   phones, and DLSS or MetalFX temporal can replace the resolve ([`temporal`] module docs);
 //!   the quality tiers' render scale and dynamic resolution drive their input size.
-//! - **The environment shader** (see above): reflection probes and the sky cube's prefiltered
-//!   mips (W5) replace the hemisphere's reflection; the wet surface model reads the frame's weather; screen-space
-//!   edges for the environment (desktop).
+//! - **The environment shader** (see above): reflection probes (early M2) over the sky cube's
+//!   prefiltered mips, which replace the hemisphere's reflection where a probe grid is (W5); the
+//!   wet surface model reads the frame's weather; screen-space edges for the environment
+//!   (desktop).
 //! - **The sky** (see the `sky` module's later milestones): weather, moon phases, cloud shadows,
-//!   and the sky cube's readers (W4, W5) with its prefiltered mips.
-//! - **The anime character shader** (see above) grows layered eyes (C6) on the eye permutation.
-//!   Its reflection add takes W5's prefiltered reflection cube, at the region's roughness, on
-//!   every tier, and screen-space reflections on the desktop tiers later; VRM's MToon emission
-//!   maps onto the layers' emission; the proximity fade could give fading pixels their own
-//!   responsive weight, so temporal AA settles the dither faster. Outlines take their width's region per vertex (the vertex stage reads no
+//!   a cheaper sky filling the view, and its cubes as frame graph resources.
+//! - **The anime character shader** (see above): screen-space reflections on the desktop tiers
+//!   for the reflection add, which reads W5's prefiltered reflection cube at the region's
+//!   roughness on every tier today; VRM's MToon emission mapped onto the layers' emission; the
+//!   proximity fade could give fading pixels their own responsive weight, so temporal AA settles
+//!   the dither faster. Outlines take their width's region per vertex (the vertex stage reads no
 //!   textures): a width texture would make group 3 visible to it. Cooked MikkTSpace tangents
 //!   replace the normal map's screen-derivative frame (outline normals need none: their frame is
 //!   derived from the normal), and give Kajiya-Kay a strand direction of the mesh's own.

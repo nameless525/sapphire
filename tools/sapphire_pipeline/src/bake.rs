@@ -23,7 +23,8 @@ pub const DEFAULT_WELD_TOLERANCE: f32 = 1e-4;
 /// `|cross| < SLIVER_ASPECT × longest²`, is a sliver and contributes nothing. Its obtuse
 /// corner would carry an angle weight near π, while its normal is set by rounding (or by
 /// a sub-millimeter modeling wobble). Ear-clipped n-gons with collinear points make these.
-const SLIVER_ASPECT: f32 = 1e-3;
+/// [`outline_normals`] leaves slivers out of its average.
+pub const SLIVER_ASPECT: f32 = 1e-3;
 
 /// When a welded position's weighted normal sum is shorter than this fraction of the sum
 /// of its weights, its faces cancel out (the two sides of a double-sided sheet) and the

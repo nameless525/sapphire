@@ -517,7 +517,8 @@ pub(crate) struct DrawCommand {
     pub slot: u32,
     pub draw_id: u32,
     pub material: MaterialHandle,
-    /// It draws an outline hull too ([`Permutation::outlined`]).
+    /// It draws an outline hull too
+    /// ([`Permutation::outlined`](crate::pipelines::Permutation::outlined)).
     pub outline: bool,
     /// Its mesh's first element in the pool's foliage buffer (M1 W6), which foliage passes bind
     /// as slot 5; 0 for meshes without a foliage stream, which no foliage pass draws.
@@ -544,8 +545,9 @@ pub(crate) struct DeformedDraw {
 #[derive(Debug, Default)]
 pub(crate) struct DrawList {
     pub draws: Vec<DrawData>,
-    /// Static meshes, per [`PositionFormat::ALL`] entry, since each format has its own
-    /// pipelines and slab, then per [`SurfaceVariant::ALL`] entry.
+    /// Static meshes, per [`PositionFormat::ALL`](sapphire_assets::mesh::PositionFormat::ALL)
+    /// entry, since each format has its own pipelines and slab, then per [`SurfaceVariant::ALL`]
+    /// entry.
     pub commands: [[Vec<DrawCommand>; SurfaceVariant::ALL.len()]; 2],
     /// Skinned and morphed meshes, drawn with the f32 pipelines, per [`SurfaceVariant::ALL`]
     /// entry.

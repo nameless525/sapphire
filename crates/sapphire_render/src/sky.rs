@@ -35,8 +35,9 @@
 //! # Data
 //!
 //! - **Time of day** (`sapphire_world::tod`) resolves the gradient, where the bodies and the
-//!   celestial sphere are, and [`SkyLayers`]: the discs' colors and glows, star brightness, and
-//!   the clouds' colors and coverage, all blended in OkLab with the rest of the look.
+//!   celestial sphere are, and [`SkyLayers`](crate::SkyLayers): the discs' colors and glows, star
+//!   brightness, and the clouds' colors and coverage, all blended in OkLab with the rest of the
+//!   look.
 //! - **The sky material** ([`FramePacket::sky_material`], [`SkyMaterial`]): the zone's disc sizes
 //!   and softness, the moon's face, star twinkle, the star and Milky Way maps, and the two cloud
 //!   maps with their scale, drift and dissolve softness. Without one the renderer draws with

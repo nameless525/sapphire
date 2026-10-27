@@ -1,19 +1,5 @@
-//! The IO thread (spec §4.3, §5.1): one thread serving positioned reads of content files, in
-//! priority order, with cancellation and completion callbacks.
-//!
-//! Callers open content files with [`IoThread::open`] and queue reads with [`IoThread::read`].
-//! The thread takes the most urgent queued read ([`IoPriority`], oldest first within a priority),
-//! reads it, and calls its callback with the bytes, on the IO thread. Callbacks should be quick:
-//! the asset server's starts a decode job on the job system and returns, so decompression runs on
-//! workers, never here. A queued read can be cancelled; its callback still runs, with
-//! [`ReadError::Cancelled`], so whoever queued it always hears back.
-//!
-//! Files are read with positioned reads where content is a plain file (desktop and iOS, whose
-//! content is in the app bundle): `read_at` on Unix, `seek_read` on Windows, so reads never
-//! share a file position. Android's packaged content is inside the APK, which only SDL's asset
-//! streams read, so there a file is an SDL stream that seeks then reads; one IO thread serializes
-//! those reads anyway. Packs stored uncompressed in the APK (Gradle's `noCompress`) seek in
-//! constant time.
+//! The IO thread (spec §4.3, §5.1): [`IoThread`], whose docs say how it serves reads, and the
+//! files, priorities, tickets and errors of its reads.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -214,8 +200,25 @@ impl Shared {
     }
 }
 
-/// The IO thread: see the [module docs](self). Dropping it cancels queued reads (their callbacks
-/// run with [`ReadError::Cancelled`]) and joins the thread after the read in progress.
+/// The IO thread (spec §4.3, §5.1): one thread serving positioned reads of content files, in
+/// priority order, with cancellation and completion callbacks.
+///
+/// Callers open content files with [`IoThread::open`] and queue reads with [`IoThread::read`].
+/// The thread takes the most urgent queued read ([`IoPriority`], oldest first within a priority),
+/// reads it, and calls its callback with the bytes, on the IO thread. Callbacks should be quick:
+/// the asset server's starts a decode job on the job system and returns, so decompression runs on
+/// workers, never here. A queued read can be cancelled; its callback still runs, with
+/// [`ReadError::Cancelled`], so whoever queued it always hears back.
+///
+/// Files are read with positioned reads where content is a plain file (desktop and iOS, whose
+/// content is in the app bundle): `read_at` on Unix, `seek_read` on Windows, so reads never
+/// share a file position. Android's packaged content is inside the APK, which only SDL's asset
+/// streams read, so there a file is an SDL stream that seeks then reads; one IO thread serializes
+/// those reads anyway. Packs stored uncompressed in the APK (Gradle's `noCompress`) seek in
+/// constant time.
+///
+/// Dropping it cancels queued reads (their callbacks run with [`ReadError::Cancelled`]) and joins
+/// the thread after the read in progress.
 pub struct IoThread {
     content: ContentFs,
     shared: Arc<Shared>,

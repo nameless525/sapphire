@@ -1,5 +1,6 @@
 //! Hot reload (M1 A8): remounting a changed pack and swapping new versions in behind the same
-//! handles. The [module docs](super) describe what an app sees; this file holds the server's half.
+//! handles. [`AssetServer`]'s docs ("Hot reload") describe what an app sees; this file holds the
+//! server's half.
 
 use std::sync::Arc;
 
@@ -62,9 +63,10 @@ pub(super) enum NextStage {
 }
 
 impl AssetServer {
-    /// Reads mounted pack `name` again, after its file changed (hot reload; see the
-    /// [module docs](super)): checks it as [`Self::mount`] does, makes its table of contents the
-    /// index of its assets, and reloads every loaded asset whose bytes changed behind its handles.
+    /// Reads mounted pack `name` again, after its file changed (see
+    /// [hot reload](AssetServer#hot-reload)): checks it as [`Self::mount`] does, makes its table of
+    /// contents the index of its assets, and reloads every loaded asset whose bytes changed behind
+    /// its handles.
     /// Assets still loading start again from the new pack; unused cached assets that changed are
     /// unloaded instead; assets it no longer holds keep the version they have. The pack's earlier
     /// file is closed. A pack that fails to mount keeps the version that was mounted, and an

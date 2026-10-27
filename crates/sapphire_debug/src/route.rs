@@ -13,10 +13,11 @@
 //! - **Keys** go to the overlay alone while one of its text fields has focus, and to the game
 //!   otherwise. Releases always reach the game, so nothing it holds sticks.
 //! - **Losing focus or the foreground** reaches both, and forgets every press.
-//! - **The toggle** belongs to neither: the toggle key (` by default) and, on touch screens,
-//!   holding two fingers still for a second. The fingers of a hold that toggles are taken from
-//!   whoever had them: the game gets a cancel for each of its own (`TouchPhase::Canceled`, which
-//!   fires nothing a release would), and their remaining events go nowhere.
+//! - **The toggle** belongs to neither: the toggle key (`` ` `` by default) and, on touch
+//!   screens, holding two fingers still for a second. The fingers of a hold that toggles are
+//!   taken from whoever had them: the game gets a cancel for each of its own
+//!   (`TouchPhase::Canceled`, which fires nothing a release would), and their remaining events go
+//!   nowhere.
 //! - Everything else (window, lifecycle, gamepad events) reaches the game, and window events the
 //!   overlay too.
 //!

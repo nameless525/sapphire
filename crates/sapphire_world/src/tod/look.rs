@@ -202,8 +202,9 @@ impl TodLook {
 const SKY_POLE: Vec3 = Vec3::new(0.0, 0.573_576_4, -0.819_152_1);
 
 /// The celestial sphere's turn at `hours`: [`sapphire_render::Celestial::sphere`]. Its frame's
-/// pole (+Y) is [`SKY_POLE`], and it turns about the pole once a day, so a star rises and sets
-/// with the hour as the sun does.
+/// pole (+Y) is the sky's pole, 35° up over the far horizon (−Z; see
+/// [the celestial sphere](crate::tod#the-celestial-sphere)), and it turns about the pole once a
+/// day, so a star rises and sets with the hour as the sun does.
 pub fn celestial_sphere(hours: f32) -> Quat {
     let tilt = Quat::from_rotation_arc(Vec3::Y, SKY_POLE);
     let turn = std::f32::consts::TAU * (hours / DAY_HOURS);

@@ -4,7 +4,7 @@
 //! expressions, look-at, meta), `VRMC_materials_mtoon` per material, `VRMC_springBone` and
 //! `VRMC_node_constraint` per node; VRM 0.x keeps the same ideas in one `VRM` extension. They
 //! are read through pixiv's `vrm-spec` crate, except node constraints, which it has no types for
-//! ([`data`]). A VRM source cooks to two assets:
+//! (the `data` module). A VRM source cooks to two assets:
 //!
 //! - **The mesh** (`.smesh`, the source's own ID): the scene through the glTF importer (A5),
 //!   so skins, morph targets, LODs and outline normals work as for any glTF, with these
@@ -25,8 +25,9 @@
 //!   (`sapphire_assets::rig`). Nothing simulates it until M2.
 //!
 //! **VRM 0.x** files (the `VRM` extension, without `VRMC_vrm`) migrate on import: their data
-//! as [`v0`] describes, their materials as [`mtoon::Mtoon::from_v0`], and the model turns half
-//! a turn about Y to face +Z as VRM 1.0 models do. A file with both extensions is read as 1.0.
+//! as the `v0` module describes, their materials as `Mtoon::from_v0` does ([`mtoon`]), and the
+//! model turns half a turn about Y to face +Z as VRM 1.0 models do. A file with both extensions
+//! is read as 1.0.
 //!
 //! **Dropped:** `meta` (licensing lives in `content/third_party/<name>/SOURCE.md`, M1 plan §3),
 //! `firstPerson`'s mesh annotations (first-person views are out of scope), animations

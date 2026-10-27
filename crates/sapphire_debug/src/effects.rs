@@ -1,7 +1,6 @@
 //! The screen effects panel (M1 P3): fire any preset of the world's effect library, release
 //! sustained effects or clear the stack, and watch the layers playing with their weights.
-//! [`EffectControls`] carries its requests to the world's
-//! [`EffectStack`](sapphire_world::screen_effects::EffectStack), as
+//! [`EffectControls`] carries its requests to the world's [`EffectStack`], as
 //! [`TodControls`](crate::TodControls) does to time of day.
 
 use egui::{RichText, Ui};

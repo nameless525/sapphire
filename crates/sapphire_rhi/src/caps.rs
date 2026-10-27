@@ -82,7 +82,12 @@ pub struct GpuCaps {
     pub pipeline_cache: bool,
     /// `Depth32FloatStencil8` is supported: the renderer's debug views' replays use it.
     pub depth32float_stencil8: bool,
-    /// Limits the device was created with; see [`required_limits`] for how they are chosen.
+    /// Limits the device was created with: a fixed floor rather than everything the adapter
+    /// offers, so code that quietly depends on a desktop-only limit fails on the developer's
+    /// machine instead of on a phone. The floor is wgpu's `downlevel_defaults` (the Vulkan 1.1
+    /// core minimums) with compute workgroups lowered to Vulkan's minimum; texture sizes and
+    /// buffer offset alignments come from the adapter, and binding-array sizes too where the
+    /// bindless features are on.
     pub limits: Limits,
     /// Everything the adapter could offer. Higher tiers may request more in later milestones.
     pub adapter_limits: Limits,

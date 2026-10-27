@@ -32,8 +32,8 @@
 //!   only index from ID to data (rule R5); typed handles, strong ([`Handle`]) and weak
 //!   ([`WeakHandle`]); the load pipeline (IO reads by priority, decode jobs on the job system's
 //!   workers, dependencies first, a GPU upload queue under a per-frame budget); and residency
-//!   (per-kind budgets, LRU eviction of unused assets, pinning). The server's module docs
-//!   describe each stage.
+//!   (per-kind budgets, LRU eviction of unused assets, pinning). [`AssetServer`]'s docs describe
+//!   each stage.
 //! - Hot reload's runtime half (M1 A8): [`AssetServer::remount`] reads a changed pack again and
 //!   reloads what its hashes say changed, through the same pipeline, swapping each new version in
 //!   behind the asset's handles once it is uploaded. Every version an app is sent carries a

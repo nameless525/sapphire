@@ -32,7 +32,8 @@ const STAGE_SMOOTHING: f32 = 0.1;
 /// How the overlay starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverlayConfig {
-    /// The key that shows and hides it (by position): ` (grave) by default, the key below Esc.
+    /// The key that shows and hides it (by position): `` ` `` (grave) by default, the key below
+    /// Esc.
     pub toggle_key: Scancode,
     /// Shown from the first frame.
     pub visible: bool,

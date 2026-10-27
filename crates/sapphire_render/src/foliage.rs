@@ -6,7 +6,7 @@
 //! The shader is `shaders/foliage.wgsl`, whose header has the model. Its materials are cooked
 //! [`FoliageMaterial`](sapphire_assets::material::FoliageMaterial)s, drawn on meshes beside the
 //! other families (see the crate docs, "Material families on meshes"); the frame's
-//! [`Wind`](crate::Wind) moves them.
+//! [`Wind`] moves them.
 //!
 //! # Meshes
 //!
@@ -85,7 +85,7 @@
 //! (`pipelines`): in the main pass after the environment in each coverage, in the scene prepass
 //! after the shared prepass pipeline's draws, and in the shadow cascades after the shared
 //! casters. Its scene group (group 2) holds the instances, the family's material blocks and the
-//! wind ([`WindUniforms`], binding 2); its prepass and casters also bind its group 3, for the
+//! wind (`WindUniforms`, binding 2); its prepass and casters also bind its group 3, for the
 //! alpha test. Its GPU time is the main pass's, the scene prepass's and the shadow passes' (the
 //! stats overlay's forward, prepass and shadow rows); [`RenderStats`](crate::RenderStats) counts
 //! its draws, instances and pipelines.

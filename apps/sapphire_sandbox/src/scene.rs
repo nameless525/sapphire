@@ -13,8 +13,8 @@
 //! - **Demo lights** (`--lights`): three colored local lights around the character, entities
 //!   with a [`RenderLight`] each ([`Scene::spawn_demo_lights`]).
 //! - **The skinned stalk** (`--skinned`): a procedural skinned and morphed mesh beside the
-//!   character, with its own `EntityClock`, a [`Sway`](skinned::Sway) and a
-//!   [`RenderPose`](extract::RenderPose) (see [`crate::skinned`]).
+//!   character, with its own `EntityClock`, a [`Sway`] and a [`RenderPose`] (see
+//!   [`crate::skinned`]).
 //! - **The shader swatches** (`--swatches`): three spheres in a column on the character's other
 //!   side, static, each with a [`RenderMesh`] and its placement ([`Scene::spawn_swatches`],
 //!   [`crate::swatches`]).

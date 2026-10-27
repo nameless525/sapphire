@@ -53,7 +53,7 @@
 //!   cascade by their bounding spheres; skinned and morphed environment instances, whose posed
 //!   bounds aren't known yet, go into every cascade. Outline hulls cast nothing. Casters are
 //!   drawn two-sided, so single-sided walls cast, with a slope-scaled depth bias
-//!   ([`CASTER_BIAS`]).
+//!   (`CASTER_BIAS`).
 //! - **Foliage** (M1 W6) casts through casters of its own (the [`foliage`](crate::foliage)
 //!   module's, built with its surfaces): displaced by the wind as the main pass draws it, so
 //!   shadows sway with the leaves, and its alpha-tested cards cut out by their base color's

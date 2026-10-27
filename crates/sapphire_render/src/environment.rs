@@ -25,9 +25,10 @@
 //!
 //! # Later milestones
 //!
-//! - **Reflections:** the ambient hemisphere stands in for the sky's reflection until W5's
-//!   probes and the sky cube's prefiltered mips (W2's cube has one level today), with SSR on
-//!   desktop and Mobile-High after them.
+//! - **Reflections:** the sky cube's prefiltered mips, read through an ambient probe grid's sky
+//!   visibility (M1 W5, the [`ambient`](crate::ambient) module), are the only reflection, and
+//!   without a grid the ambient hemisphere stands in for it. Local reflection probes (early M2),
+//!   then SSR on desktop and Mobile-High, come after them.
 //! - **Wetness:** the frame carries the weather's wetness and puddle coverage
 //!   ([`Weather`](crate::Weather)) to the GPU; the wet surface model (Lagarde's: darker porous
 //!   albedo, lower roughness, puddles, ripples) reads them when weather arrives (M2), with a
@@ -40,7 +41,9 @@
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
 
-/// How the environment shader reflects light, per tier (see the [module docs](self)).
+/// How the environment shader reflects light, per tier (`tiers.ron`): the specular is what
+/// phones can't afford, and everything else the shader does runs on every tier (see the
+/// `environment` module).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::render"]
 pub enum EnvironmentSpecular {

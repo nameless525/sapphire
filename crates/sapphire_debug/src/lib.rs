@@ -50,7 +50,7 @@
 //!
 //! ```ignore
 //! let mut overlay = DebugOverlay::new(&gpu, surface_format, OverlayConfig::default());
-//! cvars.register_all(sapphire_debug::CVARS)?;
+//! cvars.register_all(&sapphire_debug::CVARS)?;
 //!
 //! // Every platform event: the overlay first, the game gets the rest.
 //! overlay.handle_event(event, &mut |event| input.handle_event(event));
@@ -79,8 +79,8 @@
 //!
 //! # Toggling
 //!
-//! The ` key (the one below Esc, by position), a two-finger hold of one second on touch screens,
-//! or the bar's Hide button. Both gestures belong to neither the overlay nor the game.
+//! The `` ` `` key (the one below Esc, by position), a two-finger hold of one second on touch
+//! screens, or the bar's Hide button. Both gestures belong to neither the overlay nor the game.
 //!
 //! # Later milestones
 //!

@@ -1,87 +1,5 @@
 //! The asset server (spec §5.10): pack mounting, handles, the load pipeline, the GPU upload
-//! queue and residency.
-//!
-//! # The load pipeline
-//!
-//! ```text
-//! load(id) ─► dependencies first ─► IO read (PackSource, by priority) ─► decode job (worker)
-//!          ─► waits for its dependencies ─► upload queue (per-frame budget) ─► ready
-//! ```
-//!
-//! - **Request.** [`AssetServer::load`] looks the ID up in the mounted packs' tables of contents
-//!   and returns a [`Handle`] at once. The asset's dependencies, which its pack lists, are
-//!   requested first, so their reads queue ahead of its own.
-//! - **Read.** One read per asset, of its blocks' range, through the app's [`PackSource`]: the
-//!   platform's IO thread, which serves reads by [`LoadPriority`].
-//! - **Decode job.** The read's completion starts a job on the async compute pool
-//!   (`sapphire_jobs::spawn_async`): each block's hash is checked, the block decompressed, the
-//!   asset's hash checked ([`Toc::decode_asset`]), then the asset is validated as its kind
-//!   ([`AssetKind::references`]) and its references compared with what its pack lists. Cooked
-//!   formats use relative pointers, so that validation is the whole fix-up: the decoded bytes are
-//!   read in place from then on. The result comes back over a channel that
-//!   [`AssetServer::update`] drains.
-//! - **Dependencies.** A decoded asset waits until every dependency is ready, then joins the upload
-//!   queue. A failed dependency fails it. Children are therefore always on the GPU before the
-//!   assets that use them. A dependency must be of a lower kind ([`AssetKind::may_depend_on`]), so
-//!   no pack, however malformed, can make chains deep or circular. A failed asset stays failed
-//!   until it is loaded again, which tries it and its failed dependencies again.
-//! - **Upload.** [`AssetServer::upload`] hands queued assets to the app's uploader, in order,
-//!   until the frame's budget is spent ([`AssetBudgets::upload_per_frame`]; one asset always goes,
-//!   however large). The uploader gets plain cooked data ([`Upload`]) and calls the renderer, which
-//!   never sees handles or the server (rule R4). An uploaded asset is ready; its decoded bytes go
-//!   unless its kind keeps them ([`AssetKind::keeps_bytes`]). Kinds that never go to the GPU
-//!   (rigs, [`AssetKind::uploads`]) are ready as soon as their dependencies are, without the
-//!   queue.
-//!
-//! # Handles
-//!
-//! A [`Handle`] is strong: one pointer, cloned by bumping an atomic count. A [`WeakHandle`] is an
-//! index and a generation, `Copy`, that resolves to nothing once its asset is unloaded. Dropping
-//! handles allocates nothing and sends nothing, so it is allowed in the fixed step (rule R6); the
-//! server sees an asset's last user go on its next [`AssetServer::update`].
-//!
-//! # Residency
-//!
-//! Each [`AssetKind`] has a budget ([`AssetBudgets`]). Assets nothing uses stay resident, as a
-//! cache, until their kind is over budget; then the least recently used of them are unloaded,
-//! skipping pinned ones ([`AssetServer::pin`]: the current party, the active encounter). Assets in
-//! use are never unloaded, so a kind can stay over budget, which [`AssetStats`] shows. An
-//! unloaded asset is reported through [`AssetServer::take_unloaded`] so the app can free what it
-//! uploaded. [`AssetServer::unload_unused`] drops the whole cache (`LowMemory`, spec §6.3).
-//!
-//! # Hot reload
-//!
-//! [`AssetServer::remount`] reads a mounted pack again after it changed: desktop dev builds
-//! remount a pack when its file is rewritten (M1 A8, the desktop trigger of spec §5.10), and
-//! live link (A9) when it pushes one. Assets the new pack holds with other bytes than the loaded
-//! ones (by their blake3 hashes) load again through the same pipeline, while the version they
-//! have stays ready and in use:
-//!
-//! - The new version is read, decoded and checked on the same IO thread and workers, and its
-//!   dependencies, which its new table of contents lists, load first. It joins the upload queue
-//!   once they are ready, and waits for a dependency that is itself reloading, so a material
-//!   binds its texture's new version. It goes to the uploader within the same per-frame budget
-//!   as any load, as the asset's next [generation](Upload::generation) for the same
-//!   [`AssetSlot`]: the app replaces its copy in place.
-//! - Once uploaded (or decoded, for kinds that never go to the GPU) it replaces the old version
-//!   behind every handle: [`AssetServer::get`] reads it, the asset's generation goes up
-//!   ([`AssetServer::generation`]), dependencies it no longer has are released, and an
-//!   [`AssetChange::Reloaded`] is reported ([`AssetServer::take_changes`]), so CPU systems that
-//!   derive data from it (animation from a rig) can tell.
-//! - Assets that bind their dependencies' GPU objects ([`AssetKind::binds_dependencies`]: a
-//!   material its textures) are sent again from their kept bytes, as a generation of their own,
-//!   when a dependency is replaced.
-//! - A new version that fails (a corrupt or invalid asset, a missing dependency, a refused
-//!   upload) is dropped and reported ([`AssetChange::ReloadFailed`]); the asset keeps the version
-//!   it had. An asset its pack no longer holds keeps its version too
-//!   ([`AssetChange::Removed`]), until nothing uses it. Unused cached assets that changed are
-//!   unloaded rather than reloaded, and assets still loading start again from the new pack.
-//!
-//! # Threading
-//!
-//! The server lives on one thread (the main thread in apps) and takes `&mut self`. Handles are
-//! `Send + Sync`. Reads complete on the IO thread and decodes on workers; neither touches the
-//! server.
+//! queue and residency, all of which [`AssetServer`]'s docs describe.
 
 mod handle;
 mod reload;
@@ -417,7 +335,89 @@ struct Completion {
     result: Result<Arc<AlignedVec>, LoadError>,
 }
 
-/// Mounts packs and loads the assets in them. See the [module docs](self).
+/// Mounts packs and loads the assets in them (spec §5.10).
+///
+/// # The load pipeline
+///
+/// ```text
+/// load(id) ─► dependencies first ─► IO read (PackSource, by priority) ─► decode job (worker)
+///          ─► waits for its dependencies ─► upload queue (per-frame budget) ─► ready
+/// ```
+///
+/// - **Request.** [`AssetServer::load`] looks the ID up in the mounted packs' tables of contents
+///   and returns a [`Handle`] at once. The asset's dependencies, which its pack lists, are
+///   requested first, so their reads queue ahead of its own.
+/// - **Read.** One read per asset, of its blocks' range, through the app's [`PackSource`]: the
+///   platform's IO thread, which serves reads by [`LoadPriority`].
+/// - **Decode job.** The read's completion starts a job on the async compute pool
+///   (`sapphire_jobs::spawn_async`): each block's hash is checked, the block decompressed, the
+///   asset's hash checked ([`Toc::decode_asset`]), then the asset is validated as its kind
+///   ([`AssetKind::references`]) and its references compared with what its pack lists. Cooked
+///   formats use relative pointers, so that validation is the whole fix-up: the decoded bytes are
+///   read in place from then on. The result comes back over a channel that
+///   [`AssetServer::update`] drains.
+/// - **Dependencies.** A decoded asset waits until every dependency is ready, then joins the upload
+///   queue. A failed dependency fails it. Children are therefore always on the GPU before the
+///   assets that use them. A dependency must be of a lower kind ([`AssetKind::may_depend_on`]), so
+///   no pack, however malformed, can make chains deep or circular. A failed asset stays failed
+///   until it is loaded again, which tries it and its failed dependencies again.
+/// - **Upload.** [`AssetServer::upload`] hands queued assets to the app's uploader, in order,
+///   until the frame's budget is spent ([`AssetBudgets::upload_per_frame`]; one asset always goes,
+///   however large). The uploader gets plain cooked data ([`Upload`]) and calls the renderer, which
+///   never sees handles or the server (rule R4). An uploaded asset is ready; its decoded bytes go
+///   unless its kind keeps them ([`AssetKind::keeps_bytes`]). Kinds that never go to the GPU
+///   (rigs, [`AssetKind::uploads`]) are ready as soon as their dependencies are, without the
+///   queue.
+///
+/// # Handles
+///
+/// A [`Handle`] is strong: one pointer, cloned by bumping an atomic count. A [`WeakHandle`] is an
+/// index and a generation, `Copy`, that resolves to nothing once its asset is unloaded. Dropping
+/// handles allocates nothing and sends nothing, so it is allowed in the fixed step (rule R6); the
+/// server sees an asset's last user go on its next [`AssetServer::update`].
+///
+/// # Residency
+///
+/// Each [`AssetKind`] has a budget ([`AssetBudgets`]). Assets nothing uses stay resident, as a
+/// cache, until their kind is over budget; then the least recently used of them are unloaded,
+/// skipping pinned ones ([`AssetServer::pin`]: the current party, the active encounter). Assets in
+/// use are never unloaded, so a kind can stay over budget, which [`AssetStats`] shows. An
+/// unloaded asset is reported through [`AssetServer::take_unloaded`] so the app can free what it
+/// uploaded. [`AssetServer::unload_unused`] drops the whole cache (`LowMemory`, spec §6.3).
+///
+/// # Hot reload
+///
+/// [`AssetServer::remount`] reads a mounted pack again after it changed: desktop dev builds
+/// remount a pack when its file is rewritten (M1 A8, the desktop trigger of spec §5.10), and
+/// live link (A9) when it pushes one. Assets the new pack holds with other bytes than the loaded
+/// ones (by their blake3 hashes) load again through the same pipeline, while the version they
+/// have stays ready and in use:
+///
+/// - The new version is read, decoded and checked on the same IO thread and workers, and its
+///   dependencies, which its new table of contents lists, load first. It joins the upload queue
+///   once they are ready, and waits for a dependency that is itself reloading, so a material
+///   binds its texture's new version. It goes to the uploader within the same per-frame budget
+///   as any load, as the asset's next [generation](Upload::generation) for the same
+///   [`AssetSlot`]: the app replaces its copy in place.
+/// - Once uploaded (or decoded, for kinds that never go to the GPU) it replaces the old version
+///   behind every handle: [`AssetServer::get`] reads it, the asset's generation goes up
+///   ([`AssetServer::generation`]), dependencies it no longer has are released, and an
+///   [`AssetChange::Reloaded`] is reported ([`AssetServer::take_changes`]), so CPU systems that
+///   derive data from it (animation from a rig) can tell.
+/// - Assets that bind their dependencies' GPU objects ([`AssetKind::binds_dependencies`]: a
+///   material its textures) are sent again from their kept bytes, as a generation of their own,
+///   when a dependency is replaced.
+/// - A new version that fails (a corrupt or invalid asset, a missing dependency, a refused
+///   upload) is dropped and reported ([`AssetChange::ReloadFailed`]); the asset keeps the version
+///   it had. An asset its pack no longer holds keeps its version too
+///   ([`AssetChange::Removed`]), until nothing uses it. Unused cached assets that changed are
+///   unloaded rather than reloaded, and assets still loading start again from the new pack.
+///
+/// # Threading
+///
+/// The server lives on one thread (the main thread in apps) and takes `&mut self`. Handles are
+/// `Send + Sync`. Reads complete on the IO thread and decodes on workers; neither touches the
+/// server.
 pub struct AssetServer {
     source: Box<dyn PackSource>,
     budgets: AssetBudgets,
@@ -810,9 +810,9 @@ impl AssetServer {
     }
 
     /// Hands queued assets to `upload`, oldest first, until the frame's upload budget is spent
-    /// (see the [module docs](self)). An asset `upload` accepts is ready, and may let assets that
-    /// depend on it join the queue, in this call too; one it rejects fails, with every asset
-    /// waiting on it.
+    /// (see [the load pipeline](AssetServer#the-load-pipeline)). An asset `upload` accepts is
+    /// ready, and may let assets that depend on it join the queue, in this call too; one it
+    /// rejects fails, with every asset waiting on it.
     pub fn upload(&mut self, mut upload: impl FnMut(Upload<'_>) -> Result<(), UploadError>) -> UploadReport {
         profiling::scope!("AssetServer::upload");
         let mut report = UploadReport::default();
@@ -1167,7 +1167,7 @@ impl AssetServer {
     }
 }
 
-/// A decode job: blocks to asset, checked (see the [module docs](self)).
+/// A decode job: blocks to asset, checked (see [the load pipeline](AssetServer#the-load-pipeline)).
 fn decode(toc: &Toc, entry: &Entry, stored: &[u8]) -> Result<Arc<AlignedVec>, LoadError> {
     profiling::scope!("asset decode");
     // A decoder per job rather than per worker: its zstd context lives only while it decodes, so

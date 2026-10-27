@@ -3,9 +3,11 @@
 //! Apps install [`EngineAllocator`] (mimalloc, counted; feature `mimalloc`) as their global
 //! allocator:
 //!
-//! ```ignore
+//! ```
+//! # #[cfg(feature = "mimalloc")]
 //! #[global_allocator]
 //! static GLOBAL: sapphire_core::alloc::EngineAllocator = sapphire_core::alloc::engine_allocator();
+//! # fn main() {}
 //! ```
 //!
 //! or wrap any other allocator in a [`CountingAllocator`]:

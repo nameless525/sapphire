@@ -22,9 +22,9 @@
 //!
 //! | Path | Sidecar | What |
 //! |---|---|---|
-//! | `textures/<image>.png` | `Texture((class: …))` | An image a material uses, classed by its use ([`TextureUse::class`]): color for base, shade, matcap and emission; normal for normal maps; a mask for rim, outline-width and UV-animation masks. An image used in two classes is written once per class, `<image>-<class>.png` |
+//! | `textures/<image>.png` | `Texture((class: …))` | An image a material uses, classed by its use ([`TextureUse::class`](crate::import::vrm::mtoon::TextureUse::class)): color for base, shade, matcap and emission; normal for normal maps; a mask for rim, outline-width and UV-animation masks. An image used in two classes is written once per class, `<image>-<class>.png` |
 //! | `maps/<image>.png` | none | A shading shift texture, as the input of the ILM documents beside it: part of their assets (A7) |
-//! | `maps/<image>.ilm.ron` | `CharacterMap(Ilm(…))` | A control map: the input's channel as the shadow bias over the range its material's scale gives ([`ShadingShift::shadow_bias_range`]), the other channels neutral; one per image and range |
+//! | `maps/<image>.ilm.ron` | `CharacterMap(Ilm(…))` | A control map: the input's channel as the shadow bias over the range its material's scale gives ([`ShadingShift::shadow_bias_range`](crate::import::vrm::mtoon::ShadingShift::shadow_bias_range)), the other channels neutral; one per image and range |
 //! | `materials/<slot>.material.ron` | `Material(())` | The slot's anime character material ([`Mtoon::to_material`]) binding those textures, or for a slot that isn't MToon the material its importer generated |
 //!
 //! and the source's sidecar binds each slot to its document (`materials: {"Skin": "<id>"}`).

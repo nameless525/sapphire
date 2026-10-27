@@ -1,8 +1,8 @@
 //! Post-processing (spec §5.12): from the HDR scene color to the output target.
 //!
 //! The main pass renders linear HDR light into an `Rgba16Float` scene-color transient
-//! ([`SCENE_COLOR_FORMAT`](crate::pipelines::SCENE_COLOR_FORMAT)). Post then adds these frame
-//! graph passes, each one fullscreen triangle into a pooled transient:
+//! (`SCENE_COLOR_FORMAT`). Post then adds these frame graph passes, each one fullscreen triangle
+//! into a pooled transient:
 //!
 //! 1. **Bloom prefilter** (½ size): exposure, a soft-knee threshold (the characters' own, M1 P2)
 //!    and a Karis average.
@@ -33,7 +33,7 @@
 //!
 //! # Grading
 //!
-//! The tone curve and grade are baked on the CPU into 32³ LUTs ([`lut`]), only when the
+//! The tone curve and grade are baked on the CPU into 32³ LUTs (the `lut` module), only when the
 //! frame's [`PostParams`] change them: about 2.6 ms of CPU, half a millisecond of wall time
 //! across the job pool (Apple M5, release). Two LUTs blend per pixel (time-of-day keys, zone
 //! overrides), and the player's filter strength is baked in as a blend toward the neutral
@@ -42,7 +42,7 @@
 //! # The compositing layers (M1 P2; look pillars 3 and 5)
 //!
 //! Anime frames are composited like anime cels, and post adds the compositing stage's layers
-//! ([`layers`]), all of them in the fused pass on every tier, as phones need:
+//! (the `layers` module), all of them in the fused pass on every tier, as phones need:
 //!
 //! - **The diffusion glow** ([`Diffusion`]): the bloom chain's widest smooth level (the up level
 //!   just above its smallest: 1/16 of the chain's input with five levels, 1/8 with Mobile-Low's
@@ -57,13 +57,13 @@
 //!   the instances [`FramePacket::characters`](crate::FramePacket::characters) lists, and so do
 //!   their outline hulls (M1 C4: the line is the character's), and every other pass writes 1
 //!   (the clear value, the sky, every surface and outline that isn't a character's; transparent
-//!   surfaces keep what is under them), so a world pass needs nothing new. MSAA's resolve averages it, so edges are partial. The same texture serves every tier:
-//!   under temporal AA the resolve's history keeps its weight in alpha, so the prefilter reads
-//!   the mask from the frame's own scene color, before the resolve, at the same coordinates (it
-//!   is jittered, which the half-size bloom doesn't show). Temporal AA's responsive mask is not
-//!   used: it exists only with TAA, marks skinned and morphed instances rather than the frame's
-//!   characters (the sandbox's character is neither), and can't carry the fractional values C7's
-//!   breathing emission will write into alpha.
+//!   surfaces keep what is under them), so a world pass needs nothing new. MSAA's resolve
+//!   averages it, so edges are partial. The same texture serves every tier: under temporal AA the
+//!   resolve's history keeps its weight in alpha, so the prefilter reads the mask from the
+//!   frame's own scene color, before the resolve, at the same coordinates (it is jittered, which
+//!   the half-size bloom doesn't show). Temporal AA's responsive mask is not used, though it has
+//!   held the frame's characters too since M1 C5: it exists only with TAA, and can't carry the
+//!   fractional values C7's breathing emission will write into alpha.
 //! - **Gradient layers** ([`GradientLayer`], anime compositing's "para"): up to four linear or
 //!   radial ramps, each in a blend mode (normal, multiply, screen, overlay, soft light, add),
 //!   composited in order over the graded frame's sRGB-encoded values, as compositing tools blend.

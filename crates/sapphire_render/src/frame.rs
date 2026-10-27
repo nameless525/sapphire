@@ -79,10 +79,10 @@ pub struct FramePacket {
     /// even stars and no clouds.
     pub sky_material: Option<MaterialHandle>,
     pub ambient: AmbientLight,
-    /// Which keys of the ambient probe grid's bake ([`Renderer::set_probe_grid`]
-    /// (crate::Renderer::set_probe_grid)) this frame's bounce light blends, resolved by time of
-    /// day from the frame's hour (M1 W5). The default blends none: a grid then lends sky light
-    /// alone.
+    /// Which keys of the ambient probe grid's bake
+    /// ([`Renderer::set_probe_grid`](crate::Renderer::set_probe_grid)) this frame's bounce light
+    /// blends, resolved by time of day from the frame's hour (M1 W5). The default blends none: a
+    /// grid then lends sky light alone.
     pub probe_keys: ProbeKeys,
     /// Distance and height fog over the world and the sky (M1 W3), which fog cards take their
     /// light from. The default has none.

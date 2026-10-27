@@ -50,7 +50,7 @@
 //! reading meshes and textures from the pack again.
 //!
 //! Hot reload (M1 A8; `dev` builds remount the pack when a cook rewrites it,
-//! [`Content::remount`]) sends a new version of a loaded asset through the same queue, for the
+//! `Content::remount`) sends a new version of a loaded asset through the same queue, for the
 //! same slot at a higher generation: [`GpuAssets`] replaces what the renderer holds in place, so
 //! the handles the scene draws with stay valid. A texture is uploaded anew and the materials
 //! that bind it come again to be rebound; a material rewrites its slot; a mesh replaces its
@@ -58,7 +58,7 @@
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
-//! platform's; a pushed pack is remounted the same way ([`Content::apply_pack`]).
+//! platform's; a pushed pack is remounted the same way (`Content::apply_pack`).
 
 use std::collections::HashMap;
 use std::io;

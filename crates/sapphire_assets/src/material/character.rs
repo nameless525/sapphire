@@ -111,7 +111,9 @@ pub struct AnimeCharacterMaterial {
 }
 
 impl Versioned for AnimeCharacterMaterial {
-    /// 2: the depth-offset rim (M1 C5; see the [module docs](self)).
+    /// 2: the depth-offset rim (M1 C5). [`Rim::width`] became the depth offset in pixels, and
+    /// what it was, the Fresnel extent, is [`Rim::fresnel`]; version 1 documents load with their
+    /// width moved there and the new settings at their defaults.
     const VERSION: u32 = 2;
 
     fn upgrade<D: Decoder>(version: u32, data: D) -> Result<Self, VersionError<D::Error>> {

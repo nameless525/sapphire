@@ -1,7 +1,7 @@
 //! MToon → anime character materials.
 //!
 //! MToon (`VRMC_materials_mtoon` 1.0; VRM 0.x's `VRM/MToon` shader migrates to it, see
-//! [`Mtoon::from_v0`]) shades in two tones:
+//! `Mtoon::from_v0`) shades in two tones:
 //!
 //! ```text
 //! shading = linearstep(−1 + toony, 1 − toony, N·L + shadingShift + shiftTexture.r × scale)
@@ -74,7 +74,7 @@
 //! and hair's.
 //!
 //! A material with `KHR_materials_unlit` (or a VRM 0.x unlit shader) maps as an MToon whose
-//! shade side is its lit side, without rim or outline ([`Mtoon::unlit`]).
+//! shade side is its lit side, without rim or outline (`Mtoon::unlit`).
 
 use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::ilm;

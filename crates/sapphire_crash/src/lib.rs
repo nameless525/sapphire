@@ -255,9 +255,10 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// another monitor, and so on. [`install`] detects the variable and exits instead.
 pub(crate) const MONITOR_ENV: &str = "SAPPHIRE_CRASH_MONITOR";
 
-/// Exit code used when [`install`] aborts a misbehaving monitor child (see [`MONITOR_ENV`]).
-/// Distinct from a Rust panic (101) and from the demo's own codes, so it is recognisable in logs.
-const MONITOR_GUARD_EXIT_CODE: i32 = 70;
+/// The exit code [`install`] ends a misbehaving monitor child with (its
+/// [panic-monitor guard](install#panic-monitor-guard)). Distinct from a Rust panic (101) and from
+/// the demo's own codes, so it is recognisable in logs and by whatever launched the process.
+pub const MONITOR_GUARD_EXIT_CODE: i32 = 70;
 
 /// Whether this process was launched as a crash monitor, from the value of [`MONITOR_ENV`].
 fn launched_as_monitor(env_value: Option<&std::ffi::OsStr>) -> bool {
@@ -297,11 +298,11 @@ fn request_native_panic_dump() -> bool {
 ///
 /// # Panic-monitor guard
 ///
-/// If this process was launched as a crash monitor (it has [`MONITOR_ENV`] set) but reached
-/// `install`, the app did not call [`run_monitor_if_requested`] first. Returning would make the
-/// monitor child run the whole app and spawn its own monitor, a fork bomb. Instead `install`
-/// logs, prints to stderr and exits the process with [`MONITOR_GUARD_EXIT_CODE`]; it does not
-/// return and does not spawn.
+/// If this process was launched as a crash monitor (its environment carries the monitor's
+/// marker, `SAPPHIRE_CRASH_MONITOR`) but reached `install`, the app did not call
+/// [`run_monitor_if_requested`] first. Returning would make the monitor child run the whole app
+/// and spawn its own monitor, a fork bomb. Instead `install` logs, prints to stderr and exits
+/// the process with [`MONITOR_GUARD_EXIT_CODE`]; it does not return and does not spawn.
 ///
 /// # Errors
 ///

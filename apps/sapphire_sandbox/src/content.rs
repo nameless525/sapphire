@@ -17,9 +17,10 @@
 //! they name ([`Content::layer_materials`]). With `--faces` it loads the face test head
 //! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
 //! SDF face map, a face mask and an expression map: all of it cooked content
-//! ([`Content::face_head`]); with `--hair-shadow-softness`, face materials upload with their
-//! bangs' shadow softened (M1 C8, [`Content::soften_hair_shadows`]), a copy of the cooked
-//! material edited. With `--hard-edges` it loads the hard-edged outline sample
+//! ([`Content::face_head`]); with `--hair-shadow-softness` or `--hair-transmission`, face and
+//! hair materials upload with their bangs' shadow softened or their hair transmitting (M1 C8,
+//! [`Content::override_materials`]), a copy of the cooked material edited. With `--hard-edges`
+//! it loads the hard-edged outline sample
 //! ([`outlines::HARD_EDGES`], [`Content::hard_edges`]).
 //!
 //! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), or the one the scene
@@ -92,7 +93,7 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::environment;
-use crate::faces;
+use crate::faces::{self, MaterialOverrides};
 use crate::foliage::{self, FoliageMeshes};
 use crate::layers;
 use crate::lookdev::{self, Plant, TownMeshes};
@@ -173,8 +174,8 @@ struct GpuAssets {
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
-    /// The width faces' bangs' shadows soften to as they upload (`--hair-shadow-softness`).
-    hair_shadow_softness: Option<f32>,
+    /// What the materials it uploads change (`--hair-shadow-softness`, `--hair-transmission`).
+    overrides: MaterialOverrides,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
 }
@@ -189,7 +190,7 @@ impl GpuAssets {
             character,
             character_mesh: None,
             keep_character,
-            hair_shadow_softness: None,
+            overrides: MaterialOverrides::default(),
             probe_grid: None,
         }
     }
@@ -213,15 +214,15 @@ impl GpuAssets {
             let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
             self.textures.insert(id, Held { slot, generation, object });
         } else if let Some(material) = upload.get::<Material>() {
-            // A face softened for `--hair-shadow-softness` (M1 C8): a copy, edited and read back.
-            let softened = match self.hair_shadow_softness {
-                Some(softness) => {
-                    let mut copy = material.to_material()?;
-                    faces::soften_hair_shadow(&mut copy, softness).then(|| copy.to_cooked()).transpose()?
-                }
-                None => None,
+            // A face or hair changed by `--hair-shadow-softness` or `--hair-transmission` (M1
+            // C8): a copy, edited and read back.
+            let overridden = if self.overrides.is_empty() {
+                None
+            } else {
+                let mut copy = material.to_material()?;
+                self.overrides.apply(&mut copy).then(|| copy.to_cooked()).transpose()?
             };
-            let material = match &softened {
+            let material = match &overridden {
                 Some(bytes) => Material::read(bytes)?,
                 None => material,
             };
@@ -430,11 +431,11 @@ impl Content {
         self.gpu.keep_character = true;
     }
 
-    /// Softens every face material's bangs' shadow to an edge `softness` meters wide as it
-    /// uploads (`--hair-shadow-softness`, M1 C8): the face test head's and the look-dev
-    /// character's. Call before loading them.
-    pub fn soften_hair_shadows(&mut self, softness: f32) {
-        self.gpu.hair_shadow_softness = Some(softness);
+    /// Changes the anime character materials it uploads from now on by `overrides`
+    /// (`--hair-shadow-softness`, `--hair-transmission`, M1 C8): the face test head's and the
+    /// look-dev character's. Call before loading them.
+    pub fn override_materials(&mut self, overrides: MaterialOverrides) {
+        self.gpu.overrides = overrides;
     }
 
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.

@@ -127,9 +127,7 @@ impl App for SandboxApp {
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
-        if let Some(softness) = options.hair_shadow_softness {
-            content.soften_hair_shadows(softness);
-        }
+        content.override_materials(options.material_overrides());
         let mut renderer = create_renderer(
             &mut content,
             &device.gpu,

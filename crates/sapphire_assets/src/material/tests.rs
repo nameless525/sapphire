@@ -25,6 +25,7 @@ fn documents() -> Vec<AnyMaterialDocument> {
                 strength: 0.6,
                 ..HairHighlight::default()
             },
+            transmission: HairTransmission { strength: 0.5, sharpness: 6.0 },
         }),
         base_color_map: Some(id(TEXTURE)),
         alpha: AlphaMode::Mask { cutoff: 0.4 },
@@ -626,6 +627,28 @@ fn eye_layers_pack_their_settings_and_blend_over_the_eye() {
     };
     let params = hair.gpu_params(&identity);
     assert_eq!((params.modes[3] >> 8, AnimeCharacterParams::eye_layer(params.modes)), (2, 0));
+
+    // Hair's transmission (M1 C8) packs into the surface's and its color's w, and off packs
+    // nothing, whatever its sharpness, so hair from before it packs as it did.
+    assert_eq!((params.surface[3], params.surface_color[3]), (0.0, 0.0), "off by default");
+    let transmitting = |transmission| AnimeCharacterMaterial {
+        surface: CharacterSurface::Hair(HairShading { transmission, ..HairShading::default() }),
+        ..Default::default()
+    };
+    let on = transmitting(HairTransmission { strength: 0.75, sharpness: 3.0 }).gpu_params(&identity);
+    assert_eq!((on.surface[3], on.surface_color[3]), (0.75, 3.0));
+    let off = transmitting(HairTransmission { strength: 0.0, sharpness: 3.0 }).gpu_params(&identity);
+    assert_eq!((off.surface[3], off.surface_color[3]), (0.0, 0.0));
+    let written = to_ron(&transmitting(HairTransmission::default())).unwrap();
+    assert!(!written.contains("transmission"), "{written}");
+    for (transmission, field) in [
+        (HairTransmission { strength: -1.0, sharpness: 4.0 }, "surface.transmission.strength"),
+        (HairTransmission { strength: 1.0, sharpness: 0.0 }, "surface.transmission.sharpness"),
+        (HairTransmission { strength: 1.0, sharpness: f32::INFINITY }, "surface.transmission.sharpness"),
+    ] {
+        let error = transmitting(transmission).validate().unwrap_err().to_string();
+        assert!(error.starts_with(field), "{error}");
+    }
 
     // An eye material from before C6 (the eye layer, no iris) packs as it did: nothing in the
     // eye's new fields, so its cooked block is unchanged.

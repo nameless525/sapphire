@@ -138,6 +138,12 @@
 // - Kajiya-Kay: sin(T, H) above 1 − width, for strands along the direction in which UV v grows
 //   (root to tip; from screen derivatives, since meshes carry no tangents), tilted along the
 //   normal by the shift.
+// Light through thin hair (M1 C8; `HairTransmission`, the surface's and its color's w): where
+// the key light comes from behind the hair as the camera sees it, the hair adds its albedo × the
+// key light's radiance × the strength × the mask's thinness (its A, 1 without alpha) ×
+// max(−L·V, 0)^sharpness, blocked by an environment shadow as the key light is. It adds to the
+// split's light, so it shows most on the shadow side the camera sees against a back light. A
+// branch on the strength: hair without it computes exactly what it did.
 //
 // Eyes (M1 C5, the eye permutation): always lit, going into an environment shadow with the head
 // (`face_shadow`), with no rim and no cast shadow of their own. Anime eyes are layered meshes
@@ -1142,11 +1148,11 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
 
     // Hair (M1 C5): the mask, then the highlight band's coordinate for every style, one picked,
     // so the band's edge is taken once in uniform control flow (see the top of this file).
-    var hair_mask = vec3<f32>(1.0, HAIR_MASK_NO_SHIFT, 1.0);
+    var hair_mask = vec4<f32>(1.0, HAIR_MASK_NO_SHIFT, 1.0, 1.0);
     var band_input = 0.0;
     if PERMUTATION_HAIR {
         if material_has_texture(modes, CHARACTER_SURFACE_MASK) {
-            hair_mask = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, uv).rgb;
+            hair_mask = sample_material(surface_mask_map, swizzles, CHARACTER_SURFACE_MASK, uv);
         }
         surface.occlusion *= hair_mask.b;
         let shift = materials[material].surface.z + hair_mask.g - HAIR_MASK_NO_SHIFT;
@@ -1172,6 +1178,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // The environment's shadow over a face or an eye, whole (1 for the body, which takes
     // `cast_shadow`).
     var head_visibility = 1.0;
+    // The body's (and hair's) cast shadow, kept for the light through hair (M1 C8).
+    var key_visibility = 1.0;
     // The bangs' soft shadow (M1 C8): the share of hair found, and the light split's input
     // under the full shadow, which the split blends toward by that share.
     var soft_hair = 0.0;
@@ -1202,7 +1210,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         x = split_input(1.0, surface.occlusion * head_visibility, surface.shadow_bias);
     } else {
         let n_dot_l = dot(surface.normal, key_direction);
-        x = split_input(n_dot_l, surface.occlusion * cast_shadow(in), surface.shadow_bias);
+        key_visibility = cast_shadow(in);
+        x = split_input(n_dot_l, surface.occlusion * key_visibility, surface.shadow_bias);
     }
     let width = max(softness, 0.5 * fwidth(x));
     var lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
@@ -1350,6 +1359,13 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         let held = rim_light(rim, camera_rim.xyz, surface.view_dir, camera_rim_lit(surface, camera_rim.xyz));
         let keyed = rim_light(rim, key_direction, surface.view_dir, lit);
         color += (held - keyed) * key_radiance * camera_rim.w;
+    }
+    // Light through thin hair (M1 C8), where the material gives it a strength: see the top of
+    // this file. Added last, as above.
+    if PERMUTATION_HAIR && materials[material].surface.w > 0.0 {
+        let behind = saturate(dot(-key_direction, surface.view_dir));
+        let through = pow(behind, materials[material].surface_color.w) * hair_mask.a * key_visibility;
+        color += surface.albedo * key_radiance * (materials[material].surface.w * through);
     }
     if PERMUTATION_FACE {
         // The face highlight brightens the lit tone, fading in from the shadow's edge over the

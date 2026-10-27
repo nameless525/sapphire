@@ -121,6 +121,7 @@ fn plain_hair() -> CharacterSurface {
     CharacterSurface::Hair(HairShading {
         mask_map: None,
         highlight: HairHighlight { strength: 0.0, ..HairHighlight::default() },
+        ..HairShading::default()
     })
 }
 

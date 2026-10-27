@@ -120,9 +120,7 @@ impl Stage {
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
-        if let Some(softness) = options.hair_shadow_softness {
-            content.soften_hair_shadows(softness);
-        }
+        content.override_materials(options.material_overrides());
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
         scene.set_sky_material(content.sky_material(&mut renderer, &gpu)?);

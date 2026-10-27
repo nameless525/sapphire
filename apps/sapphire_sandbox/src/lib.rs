@@ -87,7 +87,7 @@
 //! - `--faces`: show the face look-dev rig instead of the character: rows of the face test head,
 //!   each a character lit by a key light of its own from an angle in its head space (a yaw sweep
 //!   across both sides, top light), and two with blush and gloom (M1 C3).
-//! - `--face-layout lights|hair|highlights|turn|gi|gi-clamped|eyes|eyes-turned|gaze|blink` (with
+//! - `--face-layout lights|hair|highlights|turn|gi|gi-clamped|eyes|eyes-turned|gaze|blink|backlit` (with
 //!   `--faces`): the face rig's heads (M1 C5): the lights above (the default); keys around the
 //!   front and above, for the bangs' shadow on the face; heads nodding under one key, for the
 //!   hair's highlights; heads turning and nodding from the camera, for the eyes and brows through
@@ -96,9 +96,13 @@
 //!   four-fold (`gi`), or the same with its HSV clamp's ceilings pulled down into the GI's range
 //!   (`gi-clamped`). Then the eyes' layouts (M1 C6), framed close on the eyes: one head facing the
 //!   camera, one turned to three-quarter, heads looking around, and lids half closed and closed.
+//!   Then keys from behind the heads (`backlit`, M1 C8), for light through thin hair.
 //! - `--hair-shadow-softness <meters>`: soften every face material's bangs' shadow to an edge
 //!   this wide (M1 C8), as it loads: the face rig's heads (`--face-layout hair` shows it) and the
 //!   look-dev character.
+//! - `--hair-transmission <strength>`: light every hair material through by this strength
+//!   against a back light (M1 C8), as it loads: the face rig's heads (`--face-layout backlit`
+//!   shows it) and the look-dev character.
 //! - `--rim-rig angles|backlit|folded`: show the rim look-dev rig instead of the character: a row
 //!   of it before dark and bright panels, each figure lit from its own angle around it, from the
 //!   front round to behind (`angles`) or from behind at several heights (`backlit`; M1 C5), or

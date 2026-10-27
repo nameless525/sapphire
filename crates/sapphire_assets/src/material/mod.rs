@@ -99,8 +99,8 @@ use serde::de::DeserializeOwned;
 pub use self::character::{
     AnimeCharacterMaterial, AnimeCharacterParams, AnimeCharacterRegion, BandDiffuse, CharacterLayerRegion,
     CharacterRegion, CharacterSurface, DiffuseMode, Emission, EyeLayer, EyeShading, FabricDirection,
-    FaceShading, HairHighlight, HairShading, HairShadow, HighlightMotion, HighlightStyle, IrisShape,
-    LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline, OutlineCurve, RampDiffuse, RegionGi,
+    FaceShading, HairHighlight, HairShading, HairShadow, HairTransmission, HighlightMotion, HighlightStyle,
+    IrisShape, LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline, OutlineCurve, RampDiffuse, RegionGi,
     RegionMatcap, Rim, Specular, SpecularModel, Stockings, ThroughHair,
 };
 pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};

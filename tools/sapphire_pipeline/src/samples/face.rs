@@ -494,7 +494,7 @@ fn hair_material(
     let [or, og, ob] = HAIR_OUTLINE;
     let [outline_r, outline_g, outline_b, _] = srgb8(or, og, ob);
     AnimeCharacterMaterial {
-        surface: CharacterSurface::Hair(HairShading { mask_map, highlight }),
+        surface: CharacterSurface::Hair(HairShading { mask_map, highlight, ..HairShading::default() }),
         base_color: srgb8(r, g, b),
         light_split: LightSplit { threshold: 0.0, softness: 0.02 },
         regions: vec![CharacterRegion {

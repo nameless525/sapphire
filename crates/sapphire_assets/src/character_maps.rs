@@ -103,8 +103,9 @@
 //!
 //! A hair material (M1 C5) binds a linear mask in its surface mask slot, [`hair_mask`] (WuWa's
 //! `_HM`): R where the highlight may show and how strongly, G a shift of the highlight's band
-//! (0.5 none), B occlusion that darkens the hair's light between strands (1 none). An unbound
-//! mask reads as a full highlight, no shift and no occlusion.
+//! (0.5 none), B occlusion that darkens the hair's light between strands (1 none), A thinness
+//! for the light through the hair (M1 C8; 1 thin, which a mask without alpha reads). An unbound
+//! mask reads as a full highlight, no shift, no occlusion and thin hair.
 //!
 //! # Eye masks
 //!
@@ -344,6 +345,10 @@ pub mod hair_mask {
     /// B, occlusion: multiplies the hair's ambient occlusion, darkening it between strands and
     /// under layers. 1 is none.
     pub const OCCLUSION: usize = 2;
+    /// A, thinness (M1 C8): how much of a back light passes through
+    /// (`HairShading::transmission`), 1 where the hair is thin (tips, loose strands), 0 where
+    /// it's thick. A mask without alpha reads 1.
+    pub const THINNESS: usize = 3;
 
     /// The value of G that leaves the band where it is.
     pub const NO_SHIFT: f32 = 0.5;

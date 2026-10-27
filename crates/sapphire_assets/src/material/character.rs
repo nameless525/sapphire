@@ -345,10 +345,51 @@ impl ThroughHair {
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct HairShading {
-    /// Linear RGB: R highlight intensity, G highlight shift (0.5 none, in the highlight's own
-    /// units), B occlusion (WuWa's `_HM`; `character_maps::hair_mask`).
+    /// Linear RGBA: R highlight intensity, G highlight shift (0.5 none, in the highlight's own
+    /// units), B occlusion (WuWa's `_HM`), A thinness for the transmission (M1 C8; 1 without
+    /// alpha); `character_maps::hair_mask`.
     pub mask_map: Option<AssetId>,
     pub highlight: HairHighlight,
+    /// Light through thin hair against a back light (M1 C8): off by default. Written only when
+    /// it differs from the default, so documents from before it read and write as they did.
+    #[serde(skip_serializing_if = "HairTransmission::is_default")]
+    pub transmission: HairTransmission,
+}
+
+/// Light through thin hair (M1 C8; spec §5.12 "Anime character shading"): where the key light
+/// comes from behind the hair as the camera sees it, thin hair glows in its own color, as
+/// back-lit hair does in the reference games' key art. The glow is the hair's albedo × the key
+/// light's radiance × the strength × the mask's thinness (A) × `max(−L·V, 0)^sharpness`, and an
+/// environment shadow over the character blocks it with the key light. It adds to whatever the
+/// hair's light split gives, so it shows most on the shadow side the camera sees against a back
+/// light.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::render"]
+#[serde(default)]
+pub struct HairTransmission {
+    /// How much of the key light passes through thin hair: 0 (the default) turns it off.
+    pub strength: f32,
+    /// How tightly it gathers around a light straight behind the hair: the power `−L·V` is
+    /// raised to, above 0. 4 glows within about 40° of straight behind.
+    pub sharpness: f32,
+}
+
+impl HairTransmission {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The hair's surface vector's w and color's w: the strength and the sharpness, zero both
+    /// when off, so hair without it packs as it did before.
+    fn gpu(&self) -> (f32, f32) {
+        if self.strength > 0.0 { (self.strength, self.sharpness) } else { (0.0, 0.0) }
+    }
+}
+
+impl Default for HairTransmission {
+    fn default() -> Self {
+        Self { strength: 0.0, sharpness: 4.0 }
+    }
 }
 
 /// The hair highlight: a band of the key light's color over the hair, revealed by the mask's R
@@ -1246,10 +1287,11 @@ pub struct AnimeCharacterParams {
     /// x: ramp mix; y: specular softness; z: matcap strength lit; w: matcap strength in shadow.
     pub terms: [f32; 4],
     /// By surface. Face: x shadow softness, y nose line threshold, z highlight strength, w
-    /// highlight reveal. Hair: x highlight strength, y width, z shift. Eye: x the parallax's
-    /// depth in meters (M1 C6).
+    /// highlight reveal. Hair: x highlight strength, y width, z shift, w transmission strength
+    /// (M1 C8). Eye: x the parallax's depth in meters (M1 C6).
     pub surface: [f32; 4],
-    /// Face: rgb blush color. Hair: rgb highlight color. Eye (M1 C6), by layer: the eye and iris
+    /// Face: rgb blush color. Hair: rgb highlight color, w transmission sharpness (M1 C8, 0 with
+    /// no transmission). Eye (M1 C6), by layer: the eye and iris
     /// layers' iris, xy its center and zw its radii in texture coordinates (zero for none); a
     /// highlight's motion, x drift in meters, y its rate, z sparkle, w its rate.
     pub surface_color: [f32; 4],
@@ -1492,10 +1534,11 @@ impl AnimeCharacterMaterial {
                     HighlightStyle::AngelRing => AnimeCharacterParams::HIGHLIGHT_ANGEL_RING,
                     HighlightStyle::KajiyaKay => AnimeCharacterParams::HIGHLIGHT_KAJIYA_KAY,
                 };
+                let (transmission, sharpness) = hair.transmission.gpu();
                 (
                     AnimeCharacterParams::SURFACE_HAIR,
-                    [h.strength, h.width, h.shift, 0.0],
-                    rgb_w(h.color, 0.0),
+                    [h.strength, h.width, h.shift, transmission],
+                    rgb_w(h.color, sharpness),
                     style << AnimeCharacterParams::HIGHLIGHT_STYLE_SHIFT,
                 )
             }
@@ -1708,7 +1751,14 @@ impl MaterialDocument for AnimeCharacterMaterial {
                 color("surface.highlight.color", &h.color)?;
                 non_negative("surface.highlight.strength", h.strength)?;
                 non_negative("surface.highlight.width", h.width)?;
-                finite("surface.highlight.shift", h.shift)
+                finite("surface.highlight.shift", h.shift)?;
+                let transmission = &hair.transmission;
+                non_negative("surface.transmission.strength", transmission.strength)?;
+                if transmission.sharpness.is_finite() && transmission.sharpness > 0.0 {
+                    Ok(())
+                } else {
+                    Err(invalid("surface.transmission.sharpness", "must be finite and above 0"))
+                }
             }
             CharacterSurface::Eye(eye) => eye.validate(self.alpha),
         }

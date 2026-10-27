@@ -138,6 +138,7 @@ fn hair_material() -> AnimeCharacterMaterial {
     let hair = HairShading {
         mask_map: None,
         highlight: HairHighlight { strength: 0.0, ..HairHighlight::default() },
+        ..HairShading::default()
     };
     flat_material(CharacterSurface::Hair(hair), HAIR, AlphaMode::Opaque, 1.0)
 }

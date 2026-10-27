@@ -1,6 +1,7 @@
 //! Tests of the character shading follow-ups that need a GPU (M1 C8), each against what the
 //! feature should draw: two-sided surfaces shade their back faces as the side the camera sees,
-//! and the character prepass holds them; the shadow side takes its hue by its share. Run with
+//! and the character prepass holds them; the shadow side takes its hue by its share; thin hair
+//! lets a back light through. Run with
 //! `cargo test -p sapphire_render --test character_shading -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky and no outline unless a test says otherwise.
@@ -8,15 +9,17 @@
 //! to a quarter of it.
 
 use glam::{Mat4, Vec3};
+use half::f16;
 use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::MaterialId;
 use sapphire_assets::material::{
-    AlphaMode, AnimeCharacterMaterial, CharacterRegion, CharacterSurface, LightSplit, Material,
-    MaterialDocument, Outline, OutlineCurve, Rim,
+    AlphaMode, AnimeCharacterMaterial, CharacterRegion, CharacterSurface, HairHighlight, HairShading,
+    HairTransmission, LightSplit, Material, MaterialDocument, Outline, OutlineCurve, Rim,
 };
 use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex, VertexFlags};
-use sapphire_assets::texture::Swizzle;
+use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
+use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, CharacterShade, ColorGrade, DirectionalLight, FramePacketRing, HeadBasis, InstanceId,
@@ -31,7 +34,6 @@ const SIDE: u32 = 128;
 /// How far a pixel's linear color may be from the prediction: 8-bit output.
 const TOLERANCE: f32 = 0.025;
 
-#[expect(dead_code, reason = "the later features' tests bind maps by ID")]
 fn id(text: &str) -> AssetId {
     text.parse().expect("a valid asset ID")
 }
@@ -227,8 +229,32 @@ impl Harness {
 
     /// Uploads `document`, which names no textures.
     fn material(&mut self, document: &AnimeCharacterMaterial) -> MaterialHandle {
+        self.material_with(document, &[])
+    }
+
+    /// Uploads `document`, the maps it names bound from `maps` by ID.
+    fn material_with(
+        &mut self,
+        document: &AnimeCharacterMaterial,
+        maps: &[(AssetId, &GpuTexture)],
+    ) -> MaterialHandle {
         let bytes = Self::cook(document);
-        self.renderer.upload_material(Material::read(&bytes).expect("read"), |_| None).expect("upload")
+        let lookup = |asked: AssetId| maps.iter().find(|(id, _)| *id == asked).map(|(_, map)| *map);
+        self.renderer.upload_material(Material::read(&bytes).expect("read"), lookup).expect("upload")
+    }
+
+    /// A 1×1 map of one linear RGBA value.
+    fn map(&self, value: [f32; 4]) -> GpuTexture {
+        let texel = value.map(|c| f16::from_f32(c).to_bits());
+        let desc = TextureDesc {
+            format: TextureFormat::Rgba16Float,
+            width: 1,
+            height: 1,
+            mip_level_count: 1,
+            swizzle: Swizzle::IDENTITY,
+        };
+        let texture = Texture { desc, levels: vec![bytemuck::cast_slice(&texel)] };
+        GpuTexture::upload(&self.gpu, &texture, "map").expect("texture")
     }
 
     /// Replaces `handle` with `document`, which names no textures.
@@ -517,6 +543,68 @@ fn the_shadow_side_takes_its_hue_by_its_share() {
     harness.light(character, lit(over, Vec3::NEG_Z));
     let full = Vec3::from(shaded) * shade_light(key, CharacterShade { share: 1.0, ..over });
     assert_near(harness.render().at(Vec3::ZERO), full.to_array(), "held to 1");
+}
+
+/// The transmitting hair's albedo, and its hair mask's ID.
+const HAIR: [f32; 3] = [0.6, 0.35, 0.2];
+const HAIR_MASK: &str = "3d1f5a8e-6c2b-4f7d-9e1a-5b8c0d2e4f61";
+
+/// Flat hair in [`HAIR`] with no highlight, transmitting by `transmission`, its mask `mask`.
+fn transmitting_hair(transmission: HairTransmission, mask: Option<AssetId>) -> AnimeCharacterMaterial {
+    let hair = HairShading {
+        mask_map: mask,
+        highlight: HairHighlight { strength: 0.0, ..HairHighlight::default() },
+        transmission,
+    };
+    AnimeCharacterMaterial { surface: CharacterSurface::Hair(hair), ..flat_material(HAIR) }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn thin_hair_lets_a_back_light_through_by_its_strength_and_thinness() {
+    let mut harness = Harness::new();
+    // A hair panel facing the camera, which looks at its middle straight on (V = +Z there).
+    let off = transmitting_hair(HairTransmission::default(), None);
+    let material = harness.material(&off);
+    let panel = harness.mesh(&[rect((-1.0, -1.0), (1.0, 1.0), 0.0, false)], &[material]);
+    let character = harness.character(panel, Mat4::IDENTITY, Vec3::Z);
+    let albedo = Vec3::from(HAIR);
+    // Keys from behind, above and to the side, then the camera's side (−L·V below 0: none).
+    let keys = [Vec3::new(0.0, 0.3, -1.0), Vec3::new(0.8, 0.0, -0.6), Vec3::new(0.5, 0.2, 0.8)];
+    let plain: Vec<_> = keys
+        .iter()
+        .map(|&key| {
+            harness.light(character, CharacterLighting::unstyled(white_key(key)));
+            harness.render().pixels
+        })
+        .collect();
+    let mut shown = character;
+    for (strength, sharpness, thinness) in [(1.0, 4.0, None), (0.5, 1.5, None), (1.0, 4.0, Some(0.5))] {
+        // Its own material and panel, the mask's A its thinness where it has one.
+        let mask = thinness.map(|thinness| harness.map([0.0, 0.5, 1.0, thinness]));
+        let maps: Vec<_> = mask.iter().map(|mask| (id(HAIR_MASK), mask)).collect();
+        let transmission = HairTransmission { strength, sharpness };
+        let document = transmitting_hair(transmission, thinness.map(|_| id(HAIR_MASK)));
+        let handle = harness.material_with(&document, &maps);
+        let panel = harness.mesh(&[rect((-1.0, -1.0), (1.0, 1.0), 0.0, false)], &[handle]);
+        harness.remove(shown);
+        shown = harness.character(panel, Mat4::IDENTITY, Vec3::Z);
+        for (index, &key) in keys.iter().enumerate() {
+            harness.light(shown, CharacterLighting::unstyled(white_key(key)));
+            let toward = key.normalize();
+            // The split's light (lit, or the quarter shade tone), plus the transmission.
+            let split = if toward.z > 0.0 { albedo } else { albedo * 0.25 };
+            let behind = (-toward.z).max(0.0);
+            let through = strength * thinness.unwrap_or(1.0) * behind.powf(sharpness);
+            let expected = split + albedo * through;
+            let what = format!("{transmission:?}, thinness {thinness:?}, from {key}");
+            let frame = harness.render();
+            assert_near(frame.at(Vec3::ZERO), expected.to_array(), &what);
+            if behind == 0.0 {
+                assert!(frame.pixels == plain[index], "{what}: none from the front");
+            }
+        }
+    }
 }
 
 #[test]

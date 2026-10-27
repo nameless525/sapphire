@@ -7,7 +7,7 @@ use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
 use sapphire_world::tod::CharacterShadeKey;
 
-use crate::faces::FaceLayout;
+use crate::faces::{FaceLayout, MaterialOverrides};
 use crate::foliage::{DEFAULT_WIND, FoliageView};
 use crate::lookdev::{self, Shot};
 use crate::rims::RimLayout;
@@ -84,6 +84,9 @@ pub(crate) struct Options {
     /// `--hair-shadow-softness <meters>`: soften every face material's bangs' shadow to an edge
     /// this wide (M1 C8).
     pub hair_shadow_softness: Option<f32>,
+    /// `--hair-transmission <strength>`: light every hair material through by this strength
+    /// against a back light (M1 C8).
+    pub hair_transmission: Option<f32>,
     /// `--fade <0..1>`: draw the characters at this opacity, through the proximity fade's
     /// dither (M1 C7).
     pub fade: Option<f32>,
@@ -353,6 +356,15 @@ impl Options {
         self.stage.is_some() || self.rim_rig.is_some() || self.look_dev.is_some()
     }
 
+    /// What `--hair-shadow-softness` and `--hair-transmission` change in the materials the
+    /// sandbox loads (M1 C8).
+    pub fn material_overrides(&self) -> MaterialOverrides {
+        MaterialOverrides {
+            hair_shadow_softness: self.hair_shadow_softness,
+            hair_transmission: self.hair_transmission,
+        }
+    }
+
     /// The renderer settings: the quality tier's, with the options' overrides. `--msaa` wins
     /// over `--aa`'s sample count. Under `--plain-post` no frame draws a compositing layer, so
     /// post builds none of their variants.
@@ -497,6 +509,15 @@ impl Options {
                         ));
                     }
                     options.hair_shadow_softness = Some(softness);
+                }
+                "--hair-transmission" => {
+                    let strength: f32 = number(&value("--hair-transmission")?, "--hair-transmission")?;
+                    if !(strength.is_finite() && strength >= 0.0) {
+                        return Err(format!(
+                            "--hair-transmission expects a strength, at least 0, got {strength}"
+                        ));
+                    }
+                    options.hair_transmission = Some(strength);
                 }
                 "--fade" => {
                     let opacity: f32 = number(&value("--fade")?, "--fade")?;
@@ -960,11 +981,16 @@ mod tests {
     }
 
     #[test]
-    fn hair_shadow_softness_parses_meters() {
-        assert_eq!(parse(&["--hair-shadow-softness", "0.02"]).unwrap().0.hair_shadow_softness, Some(0.02));
-        assert_eq!(Options::default().hair_shadow_softness, None);
-        for wrong in ["-0.01", "NaN", "inf", "soft"] {
-            assert!(parse(&["--hair-shadow-softness", wrong]).is_err(), "{wrong}");
+    fn hair_overrides_parse_and_reach_the_materials() {
+        let options = parse(&["--hair-shadow-softness", "0.02", "--hair-transmission", "0.8"]).unwrap().0;
+        assert_eq!((options.hair_shadow_softness, options.hair_transmission), (Some(0.02), Some(0.8)));
+        let overrides = MaterialOverrides { hair_shadow_softness: Some(0.02), hair_transmission: Some(0.8) };
+        assert_eq!(options.material_overrides(), overrides);
+        assert!(Options::default().material_overrides().is_empty());
+        for flag in ["--hair-shadow-softness", "--hair-transmission"] {
+            for wrong in ["-0.01", "NaN", "inf", "soft"] {
+                assert!(parse(&[flag, wrong]).is_err(), "{flag} {wrong}");
+            }
         }
     }
 

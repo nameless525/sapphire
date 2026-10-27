@@ -40,6 +40,9 @@
 //!   - `gi-clamped` (M1 C2): the same heads, their GI clamped hard ([`CLAMPED_GI`]): saturation
 //!     held to 0.2 and value to 0.3, which greys their color and flattens their sky sides before
 //!     the skin tint warms the face again.
+//!   - `backlit` (M1 C8): heads facing the camera under keys from behind them, round from their
+//!     right to their left and at several heights: the light through thin hair
+//!     (`--hair-transmission`) and the rim against a back light.
 //!   - The eyes' layouts (M1 C6), framed close on the eyes' line under a key from the front, a
 //!     little above and to the side, with the heads closer together: `eyes`, one head facing
 //!     the camera; `eyes-turned`, one turned to three-quarter; `gaze`, a row looking toward the
@@ -56,7 +59,7 @@
 //! [`Scene::frame_packet`]: crate::scene::Scene::frame_packet
 
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{AnimeCharacterParams, Material};
+use sapphire_assets::material::{AnimeCharacterParams, HairTransmission, Material};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat3, Mat4, Quat, Vec3};
 use sapphire_render::{CharacterFace, CharacterLighting, FaceExpression, HeadBasis};
@@ -196,11 +199,12 @@ pub(crate) enum FaceLayout {
     EyesTurned,
     Gaze,
     Blink,
+    Backlit,
 }
 
 impl FaceLayout {
     #[cfg(test)]
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Lights,
         Self::Hair,
         Self::Highlights,
@@ -211,11 +215,23 @@ impl FaceLayout {
         Self::EyesTurned,
         Self::Gaze,
         Self::Blink,
+        Self::Backlit,
     ];
 
     /// The names `--face-layout` takes, one per layout, in the order they are declared.
-    pub const NAMES: [&str; 10] =
-        ["lights", "hair", "highlights", "turn", "gi", "gi-clamped", "eyes", "eyes-turned", "gaze", "blink"];
+    pub const NAMES: [&str; 11] = [
+        "lights",
+        "hair",
+        "highlights",
+        "turn",
+        "gi",
+        "gi-clamped",
+        "eyes",
+        "eyes-turned",
+        "gaze",
+        "blink",
+        "backlit",
+    ];
 
     /// The layout `--face-layout` names.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -230,6 +246,7 @@ impl FaceLayout {
             "eyes-turned" => Some(Self::EyesTurned),
             "gaze" => Some(Self::Gaze),
             "blink" => Some(Self::Blink),
+            "backlit" => Some(Self::Backlit),
             _ => None,
         }
     }
@@ -246,13 +263,14 @@ impl FaceLayout {
             Self::EyesTurned => &EYES_TURNED,
             Self::Gaze => &GAZE,
             Self::Blink => &BLINK,
+            Self::Backlit => &BACKLIT,
         }
     }
 
     /// How the layout lights its heads: the GI layouts by their GI alone (M1 C2).
     pub fn light(self) -> HeadLight {
         match self {
-            Self::Lights | Self::Hair | Self::Highlights | Self::Turn => HeadLight::Key,
+            Self::Lights | Self::Hair | Self::Highlights | Self::Turn | Self::Backlit => HeadLight::Key,
             Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink => HeadLight::Key,
             Self::Gi => HeadLight::Gi { ceilings: None },
             Self::GiClamped => HeadLight::Gi { ceilings: Some(CLAMPED_GI) },
@@ -342,6 +360,15 @@ const GAZE: [&[FaceRig]; 2] = [
     &[eyes(0.0, 0.0, (0.0, 1.0)), eyes(0.0, 0.0, (0.0, -1.0))],
 ];
 const BLINK: [&[FaceRig]; 1] = [&[eyes(0.0, 0.5, (0.0, 0.0)), eyes(0.0, 1.0, (0.0, 0.0))]];
+// Back light (M1 C8): keys from behind the heads, round from their right to their left and at
+// several heights, for the light through thin hair.
+const BACKLIT: [&[FaceRig]; 1] = [&[
+    rig(140.0, 20.0, 0.0, 0.0),
+    rig(160.0, 40.0, 0.0, 0.0),
+    rig(175.0, 10.0, 0.0, 0.0),
+    rig(-160.0, 40.0, 0.0, 0.0),
+    rig(-140.0, 20.0, 0.0, 0.0),
+]];
 
 /// Meters between neighbors in a row, and between rows.
 const SPACING: f32 = 0.34;
@@ -447,49 +474,101 @@ pub(crate) fn character(
     (lighting, CharacterFace { head, expression: rig.expression })
 }
 
-/// Softens `material`'s bangs' shadow to an edge `softness` meters wide (`--hair-shadow-softness`,
-/// M1 C8), if it is a face that casts one. Returns whether it changed.
-pub(crate) fn soften_hair_shadow(material: &mut Material, softness: f32) -> bool {
-    let mut softened = false;
-    material.edit_anime_character(|params| {
-        if params.modes[2] == AnimeCharacterParams::SURFACE_FACE && params.hair_shadow[0] > 0.0 {
-            params.hair_shadow[2] = softness;
-            softened = true;
-        }
-    });
-    softened
+/// What `--hair-shadow-softness` and `--hair-transmission` change in the anime character
+/// materials the sandbox uploads (M1 C8): a face's bangs' shadow's soft edge and hair's light
+/// through it, each edited into a copy of the cooked material as it loads.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct MaterialOverrides {
+    /// Faces' bangs' shadow's soft edge, in meters, for faces that cast one.
+    pub hair_shadow_softness: Option<f32>,
+    /// Hair's transmission strength, at its sharpness (the default's, where it had none).
+    pub hair_transmission: Option<f32>,
+}
+
+impl MaterialOverrides {
+    /// Whether they change nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Applies them to `material`, where it is a face or hair they change. Returns whether it
+    /// changed.
+    pub fn apply(&self, material: &mut Material) -> bool {
+        let mut changed = false;
+        material.edit_anime_character(|params| match params.modes[2] {
+            AnimeCharacterParams::SURFACE_FACE => {
+                if let Some(softness) = self.hair_shadow_softness
+                    && params.hair_shadow[0] > 0.0
+                {
+                    params.hair_shadow[2] = softness;
+                    changed = true;
+                }
+            }
+            AnimeCharacterParams::SURFACE_HAIR => {
+                if let Some(strength) = self.hair_transmission {
+                    let sharpness = params.surface_color[3];
+                    params.surface[3] = strength;
+                    params.surface_color[3] =
+                        if sharpness > 0.0 { sharpness } else { HairTransmission::default().sharpness };
+                    changed = true;
+                }
+            }
+            _ => {}
+        });
+        changed
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::material::{AnimeCharacterMaterial, CharacterSurface, FaceShading};
+    use sapphire_assets::material::{AnimeCharacterMaterial, CharacterSurface, FaceShading, HairShading};
     use sapphire_assets::texture::Swizzle;
     use sapphire_render::{CharacterGi, DirectionalLight};
 
     use super::*;
 
     #[test]
-    fn faces_soften_their_bangs_shadow_and_nothing_else_does() {
+    fn overrides_soften_faces_and_light_hair_through_and_leave_the_rest() {
         let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
         let cook = |surface| {
             let document = AnimeCharacterMaterial { surface, ..AnimeCharacterMaterial::default() };
             Material::from_document(&document, &swizzles).expect("valid")
         };
+        let read = |material: &mut Material| {
+            let mut params = None;
+            material.edit_anime_character(|block| params = Some(*block));
+            params.expect("an anime character material")
+        };
+        let overrides = MaterialOverrides { hair_shadow_softness: Some(0.02), hair_transmission: Some(0.8) };
+        assert!(MaterialOverrides::default().is_empty() && !overrides.is_empty());
         let face = FaceShading::new(AssetId::from_text("79309b71-b35f-4ce6-9d53-b629493934e7"));
         let mut material = cook(CharacterSurface::Face(face.clone()));
-        assert!(soften_hair_shadow(&mut material, 0.02));
-        let mut hair_shadow = [0.0; 4];
-        material.edit_anime_character(|params| hair_shadow = params.hair_shadow);
-        assert_eq!(hair_shadow, [0.03, 1.0, 0.02, 0.0], "the default distance and strength, softened");
-        // A face that casts none, and a body, stay as they are.
+        assert!(overrides.apply(&mut material));
+        assert_eq!(read(&mut material).hair_shadow, [0.03, 1.0, 0.02, 0.0], "the default face, softened");
+        // Hair transmits at the default sharpness, or its own.
+        let mut hair = cook(CharacterSurface::Hair(HairShading::default()));
+        assert!(overrides.apply(&mut hair));
+        let params = read(&mut hair);
+        assert_eq!((params.surface[3], params.surface_color[3]), (0.8, 4.0));
+        let own = HairShading {
+            transmission: HairTransmission { strength: 0.3, sharpness: 2.0 },
+            ..HairShading::default()
+        };
+        let mut own = cook(CharacterSurface::Hair(own));
+        assert!(overrides.apply(&mut own));
+        let params = read(&mut own);
+        assert_eq!((params.surface[3], params.surface_color[3]), (0.8, 2.0));
+        // A face that casts no bangs' shadow, a body, and hair with no transmission asked stay as
+        // they are.
         let mut shadowless = face;
         shadowless.hair_shadow.distance = 0.0;
         let mut shadowless = cook(CharacterSurface::Face(shadowless));
         let before = shadowless.clone();
-        assert!(!soften_hair_shadow(&mut shadowless, 0.02));
+        assert!(!overrides.apply(&mut shadowless));
         assert_eq!(shadowless, before);
-        let mut body = cook(CharacterSurface::Body);
-        assert!(!soften_hair_shadow(&mut body, 0.02));
+        assert!(!overrides.apply(&mut cook(CharacterSurface::Body)));
+        let softening = MaterialOverrides { hair_transmission: None, ..overrides };
+        assert!(!softening.apply(&mut cook(CharacterSurface::Hair(HairShading::default()))));
     }
 
     const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];

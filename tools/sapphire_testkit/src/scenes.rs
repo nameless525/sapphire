@@ -87,8 +87,10 @@ pub struct Scene {
 /// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin.
 /// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin; the soft
 /// bangs' shadow scene softens the face rig's faces (`--hair-shadow-softness`) under the hair
-/// scene's keys and pins what it pins.
-pub fn scenes() -> [Scene; 93] {
+/// scene's keys and pins what it pins; the back-lit hair scenes light the face rig from behind
+/// (`--face-layout backlit`), without and with light through the hair (`--hair-transmission`),
+/// and pin what the hair scenes pin.
+pub fn scenes() -> [Scene; 95] {
     [
         Scene {
             name: "turntable-start",
@@ -2261,6 +2263,55 @@ pub fn scenes() -> [Scene; 93] {
                 "hair",
                 "--hair-shadow-softness",
                 "0.03",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The face rig lit from behind (M1 C8), round from the heads' right to their left and at
+        // several heights: the hair in its shadow tone, the faces in their SDF shadow; the
+        // reference for the next scene.
+        Scene {
+            name: "hair-backlit",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "backlit",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same with light through the hair at strength 1 (M1 C8): the hair glows in its own
+        // color, most where the key lies straight behind it.
+        Scene {
+            name: "hair-transmission",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "backlit",
+                "--hair-transmission",
+                "1",
                 "--plain-post",
                 "--plain-sky",
                 "--aa",

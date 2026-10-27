@@ -309,7 +309,17 @@ pub mod __private {
         if take_panic().is_some() {
             abort_after_panic();
         }
+        // SDL's own "Finished main function" carries no status, so `cargo xtask run --platform
+        // android` reads this line (tag `sapphire`, info) to fail a run whose main function
+        // failed. Written to logcat directly, so no app's log filter can drop it.
+        crate::sdl_log(tracing::Level::INFO, &main_returned(status));
         status
+    }
+
+    /// The line [`android_main`] logs as the app's main function returns: exactly
+    /// `main returned status=<n>`, which xtask matches.
+    pub(super) fn main_returned(status: c_int) -> String {
+        format!("main returned status={status}")
     }
 }
 
@@ -585,6 +595,14 @@ mod tests {
         let payload = take_panic().expect("a panic was stashed");
         assert_eq!(payload.downcast_ref::<&str>(), Some(&"first"));
         assert!(!has_panicked());
+    }
+
+    /// `cargo xtask run --platform android` matches this line literally (review BC-005).
+    #[test]
+    fn android_main_logs_the_status_xtask_reads() {
+        assert_eq!(__private::main_returned(0), "main returned status=0");
+        assert_eq!(__private::main_returned(1), "main returned status=1");
+        assert_eq!(__private::main_returned(-1), "main returned status=-1");
     }
 
     #[test]

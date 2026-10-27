@@ -73,11 +73,16 @@ pub(crate) fn influence(light: &GpuLight, sphere: &Sphere) -> f32 {
     if fade <= 0.0 {
         return 0.0;
     }
-    let cone = if distance <= sphere.radius {
+    // A point light's cone is 1 wherever the sphere is: it packs a cone scale of 0, which no
+    // spot does (`GpuLight::new`), so the angular path below would compute `t` = 0 × cos + 1, whose
+    // smoothstep is exactly 1. Skipping its acos, asin and cos gives the same bits (review
+    // RA-O04). A NaN distance keeps the angular path, so a degenerate sphere's influence is what it
+    // was too.
+    let cone = if distance <= sphere.radius || (light.cone[0] == 0.0 && !distance.is_nan()) {
         1.0
     } else {
         // The smallest angle off the spot's axis that reaches the sphere: the angle to its
-        // center less its angular radius. Point lights have no axis, and a cone factor of 1.
+        // center less its angular radius.
         let axis = Vec3::from_slice(&light.spot[..3]);
         let angle = (offset / distance).dot(axis).clamp(-1.0, 1.0).acos();
         let nearest = (angle - (sphere.radius / distance).asin()).max(0.0);
@@ -312,6 +317,140 @@ mod tests {
             let mut expected: Vec<u32> = ranked.iter().take(4).map(|&(_, index)| index).collect();
             expected.sort_unstable();
             assert_eq!(choose(&lights, &UNIT).lights(), expected);
+        }
+    }
+
+    /// `influence` as it was before point lights skipped the cone (review RA-O04), operation for
+    /// operation: what the fast path must match bit for bit.
+    fn influence_before(light: &GpuLight, sphere: &Sphere) -> f32 {
+        let offset = sphere.center - Vec3::from_slice(&light.position[..3]);
+        let distance = offset.length();
+        let gap = (distance - sphere.radius).max(0.0);
+        let fade = (1.0 - gap * gap * light.radiance[3]).clamp(0.0, 1.0);
+        if fade <= 0.0 {
+            return 0.0;
+        }
+        let cone = if distance <= sphere.radius {
+            1.0
+        } else {
+            let axis = Vec3::from_slice(&light.spot[..3]);
+            let angle = (offset / distance).dot(axis).clamp(-1.0, 1.0).acos();
+            let nearest = (angle - (sphere.radius / distance).asin()).max(0.0);
+            let t = (nearest.cos() * light.cone[0] + light.cone[1]).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        luminance(Vec3::from_slice(&light.radiance[..3])) * fade * fade * cone
+    }
+
+    /// Seeded lights: points, spots of every width (full-angle ones among them, whose outer
+    /// cosine is −1 as a point's is) and spots with a hard edge.
+    fn seeded_lights(rng: &mut Rng, count: usize) -> Vec<GpuLight> {
+        (0..count)
+            .map(|index| {
+                let position = Vec3::new(rng.range(-6.0, 6.0), rng.range(-6.0, 6.0), rng.range(-6.0, 6.0));
+                let direction = Vec3::new(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0), rng.range(-1.0, 1.0));
+                let outer = match index % 4 {
+                    0 | 1 => None,
+                    2 => Some(rng.range(0.0, std::f32::consts::PI)),
+                    _ => Some(std::f32::consts::PI),
+                };
+                let kind = match outer {
+                    None => LightKind::Point,
+                    Some(outer_angle) => {
+                        // Every few a hard edge: the inner angle at the outer one.
+                        let inner_angle =
+                            if index % 3 == 0 { outer_angle } else { rng.range(0.0, outer_angle) };
+                        LightKind::Spot { direction, inner_angle, outer_angle }
+                    }
+                };
+                let light = LocalLight {
+                    position,
+                    color: Vec3::new(rng.range(0.1, 1.0), rng.range(0.1, 1.0), rng.range(0.1, 1.0)),
+                    intensity: rng.range(0.1, 4.0),
+                    range: rng.range(0.5, 8.0),
+                    kind,
+                };
+                GpuLight::new(&light).expect("valid")
+            })
+            .collect()
+    }
+
+    /// Seeded spheres: around and away from the lights, from points to wider than a light's reach.
+    fn seeded_spheres(rng: &mut Rng, count: usize) -> Vec<Sphere> {
+        (0..count)
+            .map(|index| {
+                let center = Vec3::new(rng.range(-8.0, 8.0), rng.range(-8.0, 8.0), rng.range(-8.0, 8.0));
+                let radius = match index % 5 {
+                    0 => 0.0,
+                    1 => rng.range(0.0, 0.1),
+                    _ => rng.range(0.0, 4.0),
+                };
+                Sphere { center, radius }
+            })
+            .collect()
+    }
+
+    /// Spheres a degenerate transform makes: not finite.
+    const DEGENERATE: [Sphere; 6] = [
+        Sphere { center: Vec3::NAN, radius: 1.0 },
+        Sphere { center: Vec3::new(1.0, f32::NAN, 0.0), radius: 1.0 },
+        Sphere { center: Vec3::ZERO, radius: f32::NAN },
+        Sphere { center: Vec3::NAN, radius: f32::NAN },
+        Sphere { center: Vec3::new(f32::INFINITY, 0.0, 0.0), radius: 1.0 },
+        Sphere { center: Vec3::ZERO, radius: f32::INFINITY },
+    ];
+
+    #[test]
+    fn point_lights_skip_the_cone_bit_for_bit() {
+        let mut rng = Rng(0x5eed_0004);
+        let lights = seeded_lights(&mut rng, 64);
+        let mut spheres = seeded_spheres(&mut rng, 512);
+        spheres.extend(DEGENERATE);
+        let mut points_outside = 0;
+        for light in &lights {
+            for sphere in &spheres {
+                let (now, before) = (influence(light, sphere), influence_before(light, sphere));
+                assert_eq!(
+                    now.to_bits(),
+                    before.to_bits(),
+                    "{light:?} on {sphere:?}: {now} against {before}"
+                );
+                let distance = sphere.center.distance(Vec3::from_slice(&light.position[..3]));
+                points_outside += u32::from(light.cone[0] == 0.0 && distance > sphere.radius && now > 0.0);
+            }
+        }
+        assert!(points_outside > 1000, "the fast path ran: {points_outside} point-light pairs");
+        // And so the same lists, for every finite sphere.
+        for sphere in &spheres[..512] {
+            let mut ranked: Vec<(f32, u32)> = lights
+                .iter()
+                .enumerate()
+                .map(|(index, light)| (influence_before(light, sphere), index as u32))
+                .filter(|&(influence, _)| influence > 0.0)
+                .collect();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let mut expected: Vec<u32> = ranked.iter().take(4).map(|&(_, index)| index).collect();
+            expected.sort_unstable();
+            assert_eq!(choose(&lights, sphere).lights(), expected, "{sphere:?}");
+        }
+    }
+
+    #[test]
+    fn only_point_lights_pack_a_zero_cone_scale() {
+        let mut rng = Rng(0x5eed_0006);
+        for light in seeded_lights(&mut rng, 4096) {
+            let point = light.spot[..3] == [0.0; 3];
+            assert_eq!(light.cone[0] == 0.0, point, "{light:?}");
+        }
+        // The widest spots: a full angle with a hard edge, and the hardest edge at no angle.
+        for (inner_angle, outer_angle) in
+            [(std::f32::consts::PI, std::f32::consts::PI), (0.0, 0.0), (0.0, 7.0)]
+        {
+            let kind = LightKind::Spot { direction: Vec3::Z, inner_angle, outer_angle };
+            let spot =
+                LocalLight { position: Vec3::ZERO, color: Vec3::ONE, intensity: 1.0, range: 1.0, kind };
+            let light = GpuLight::new(&spot).expect("valid");
+            assert!(light.cone[0] > 0.0, "{light:?}");
         }
     }
 

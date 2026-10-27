@@ -120,7 +120,9 @@ pub(crate) struct GpuLight {
     /// xyz: unit vector the spot points along, zero for point lights; w: cos(outer angle), −1
     /// for point lights.
     pub spot: [f32; 4],
-    /// xy: the cone as `saturate(cos θ × x + y)` before its smoothstep; zw: 0.
+    /// xy: the cone as `saturate(cos θ × x + y)` before its smoothstep; zw: 0. x is 0 for point
+    /// lights alone (a spot's is at least ½), which the per-object lists' influence tells them
+    /// apart by.
     pub cone: [f32; 4],
 }
 

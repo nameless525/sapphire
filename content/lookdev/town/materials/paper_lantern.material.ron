@@ -26,5 +26,6 @@
         ),
         emission: (0.66, 0.28, 0.07),
         emission_map: Some("01096a4e-cd4f-41ce-be22-bf7d469a7a82"),
+        emission_steady: 0.2,
     ),
 )

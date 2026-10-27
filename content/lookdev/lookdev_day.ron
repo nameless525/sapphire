@@ -47,6 +47,13 @@
 //   golden hour and night; the diffusion glow clean by day, gold at golden hour, cool at night;
 //   the three gradient layers keep their shapes and modes all day, so they blend smoothly. The
 //   lens flare is off from golden hour on: its ghosts cut across the hero shot.
+// - Emission (M1 W1's keyed emission, X1 part 2c): the world's authored emission at 0.08 from
+//   morning to afternoon, so the windows show their dark interiors at noon and lantern paper
+//   rests pale (the lanterns keep a steady fifth of theirs, `paper_lantern`'s
+//   `emission_steady`, a pale cream glow as the reference street's lanterns wear by day); 0.25
+//   at golden hour and 0.6 at sunset as they come on; whole from the blue hour (19:45) through
+//   the night to the blue hour before dawn, so dusk and night draw as before; 0.3 at sunrise.
+//   Characters' emission never follows it.
 // - Every number is a starting point for art direction, not a measurement.
 (
     type: "sapphire::world::TodTimeline",
@@ -92,6 +99,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.68, 0.76, 1.0), opacity: 0.1, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+                emission: 1.0,
             ),
             (
                 // The blue hour before dawn: the moon setting low on the left, the sky paling.
@@ -131,6 +139,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.8, 0.78, 1.0), opacity: 0.12, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+                emission: 1.0,
             ),
             (
                 // Sunrise: a low peach sun on the right behind the cameras, morning mist.
@@ -170,6 +179,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.86, 0.76), opacity: 0.14, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.8, color: (1.0, 0.75, 0.5)),
+                emission: 0.3,
             ),
             (
                 // Morning: the sun climbing behind the cameras' right shoulder, the air clearing.
@@ -209,6 +219,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.96, 0.88), opacity: 0.1, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
+                emission: 0.08,
             ),
             (
                 // Midday: a strong warm sun on the right at about 37 degrees, clearly cool shadows,
@@ -249,6 +260,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.96, 0.88), opacity: 0.1, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
+                emission: 0.08,
             ),
             (
                 // Afternoon: the sun round behind the cameras on the left, lower and a touch warmer.
@@ -288,6 +300,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.9, 0.76), opacity: 0.12, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.7, color: (1.0, 0.88, 0.7)),
+                emission: 0.08,
             ),
             (
                 // Golden hour: a low golden sun in front of the cameras on the left; a huge warm glow,
@@ -329,6 +342,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.82, 0.6), opacity: 0.16, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 0.8, 0.5)),
+                emission: 0.25,
             ),
             (
                 // Sunset: the sun on the horizon front left, orange-red; a pink-orange horizon under
@@ -369,6 +383,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.75, 0.62), opacity: 0.15, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 0.6, 0.4)),
+                emission: 0.6,
             ),
             (
                 // The blue hour: the sun gone, the moon rising low on the right behind the cameras,
@@ -409,6 +424,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.78, 0.84, 1.0), opacity: 0.12, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+                emission: 1.0,
             ),
             (
                 // Nightfall: the moon climbing behind the cameras on the right, the stars out.
@@ -448,6 +464,7 @@
                     (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.68, 0.76, 1.0), opacity: 0.1, end: 0.9),
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+                emission: 1.0,
             ),
         ],
     ),

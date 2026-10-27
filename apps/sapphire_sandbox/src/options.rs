@@ -128,6 +128,9 @@ pub(crate) struct Options {
     /// `--plain-post`: post as it was before its compositing layers (M1 P2), with no diffusion
     /// glow, character bloom, gradient layers, lens flare, vignette tint or sharpening.
     pub plain_post: bool,
+    /// `--view-culling off`: draw every static world instance in the main view, culling none
+    /// (review RA-O01), for comparisons. `--view-culling on` is the default.
+    pub view_culling_off: bool,
     /// `--sharpening <0..1>`: the player's sharpening instead of the `post.sharpening` cvar's.
     pub sharpening: Option<f32>,
     /// `--post-effect <preset>[@<seconds>]`, repeatable: screen effect presets pushed at the start
@@ -381,6 +384,7 @@ impl Options {
             temporal,
             light_path: self.light_path.unwrap_or(tier.light_path),
             post_variants: if self.plain_post { PostVariants::NONE } else { tier.post_variants },
+            view_culling: tier.view_culling && !self.view_culling_off,
             ..tier
         }
     }
@@ -613,6 +617,13 @@ impl Options {
                     };
                 }
                 "--plain-post" => options.plain_post = true,
+                "--view-culling" => {
+                    options.view_culling_off = match value("--view-culling")?.as_str() {
+                        "on" => false,
+                        "off" => true,
+                        other => return Err(format!("--view-culling expects on or off, got {other:?}")),
+                    };
+                }
                 "--sharpening" => {
                     let amount: f32 = number(&value("--sharpening")?, "--sharpening")?;
                     if !(0.0..=1.0).contains(&amount) {
@@ -1027,6 +1038,16 @@ mod tests {
         let tier = RenderSettings::default();
         assert_eq!(options.render_settings(tier).post_variants, PostVariants::NONE);
         assert_eq!(Options::default().render_settings(tier).post_variants, PostVariants::COMPOSITING);
+    }
+
+    #[test]
+    fn view_culling_turns_off_for_comparisons() {
+        let tier = RenderSettings::default();
+        assert!(Options::default().render_settings(tier).view_culling, "on by default");
+        let culling = |args: &[&str]| parse(args).unwrap().0.render_settings(tier).view_culling;
+        assert!(!culling(&["--view-culling", "off"]));
+        assert!(culling(&["--view-culling=on"]));
+        assert!(parse(&["--view-culling", "some"]).is_err());
     }
 
     #[test]

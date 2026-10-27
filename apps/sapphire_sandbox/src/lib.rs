@@ -172,6 +172,9 @@
 //!   diffusion glow, character bloom, gradient layers, lens flare, vignette tint or sharpening),
 //!   which the golden scenes from before them pin (M1 P2). Post then builds none of the layers'
 //!   pipeline variants (`RenderSettings::post_variants`).
+//! - `--view-culling on|off`: cull static world instances outside the main view (review RA-O01,
+//!   `RenderSettings::view_culling`), on by default. Off draws them all, the same pixels, for
+//!   benches that compare the two.
 //! - `--sharpening <0..1>`: the player's sharpening (RCAS in post's fused pass) instead of the
 //!   `post.sharpening` cvar's, 0 by default (M1 P2).
 //! - `--post-effect <preset>[@<seconds>]`, repeatable: push a screen effect preset (M1 P3:

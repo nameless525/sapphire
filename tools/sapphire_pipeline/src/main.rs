@@ -28,12 +28,13 @@ Usage:
       painted maps, and the character's hair mask from the model's highlight that DIR's
       ../third_party holds.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
-      Cook one .gltf/.glb/.vrm file into a .smesh file (default cook: desktop), with the
+      Cook one .gltf/.glb/.fbx/.vrm file into a .smesh file (default cook: desktop), with the
       settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
   sapphire_pipeline extract-materials <SOURCE> [--all]
-      Write the materials of a .vrm/.gltf/.glb source out as material documents, with a VRM's
-      images as textures and its shading shift textures as ILM maps, into a folder named after
-      the source, and bind them in the source's sidecar. By default only the materials that
+      Write the materials of a .vrm/.gltf/.glb/.fbx source out as material documents, with a
+      VRM's images as textures and its shading shift textures as ILM maps, and an FBX's base
+      color and normal textures bound, into a folder named after the source, and bind them in
+      the source's sidecar. By default only the materials that
       bind textures; --all extracts every material. Never overwrites a file, and keeps the
       materials the sidecar already binds.
   sapphire_pipeline bake-map <DOCUMENT> <OUTPUT>
@@ -42,8 +43,9 @@ Usage:
       compression: 16-bit linear values for face SDF and ILM maps, 8-bit sRGB for ramps.
   sapphire_pipeline cook --source <DIR> --out <DIR> --cook <COOK> [--packs <DIR>]
                          [--cache <DIR>] [--locked]
-      Cook every source asset under --source (skipping hidden entries) into mirrored paths
-      under --out, creating missing .meta sidecars next to the sources, then pack the cooked
+      Cook every source asset under --source (skipping hidden entries, and sources whose
+      sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
+      sidecars next to the sources, then pack the cooked
       assets into --packs (shared.spack). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
 
@@ -159,6 +161,13 @@ fn run(command: Command) -> anyhow::Result<()> {
             for (slot, id) in &extraction.bound {
                 eprintln!("bound {slot:?} to {id}");
             }
+            for (image, class) in &extraction.mismatched {
+                eprintln!(
+                    "warning: {} is used as a {class} texture, but its sidecar gives it another class, \
+                     which it keeps",
+                    image.display()
+                );
+            }
             eprintln!(
                 "{}: {} material(s) bound, {} file(s) written; commit them with the source",
                 source.display(),
@@ -221,6 +230,9 @@ fn print_report(report: &CookReport, cook: Cook, source: &Path, out: &Path) {
     }
     for path in &report.removed {
         eprintln!("removed stale {}", path.display());
+    }
+    for path in &report.uncooked {
+        eprintln!("not cooked: {} (its sidecar says `cook: false`)", relative(path, source));
     }
     for asset in &report.assets {
         let how = match asset.status {

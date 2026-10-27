@@ -41,6 +41,8 @@ meshopt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# FBX meshes, skins, blend shapes and materials (M1 A10).
+ufbx.workspace = true
 vrm-spec.workspace = true
 
 [lints]

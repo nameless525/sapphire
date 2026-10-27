@@ -325,7 +325,7 @@ fn write_tree(dir: &Path, floor_color: [f32; 4], wall: Wall) {
         ImportSettings::Texture(TextureSettings { class: TextureClass::Color(ColorSettings::default()) }),
     ];
     for ((file, text), importer) in ids.iter().zip(importers) {
-        let meta = AssetMeta { id: id(text), importer };
+        let meta = AssetMeta::new(id(text), importer);
         fs::write(sidecar_path(&dir.join(file)), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
     }
     let material = |color: [f32; 4]| {

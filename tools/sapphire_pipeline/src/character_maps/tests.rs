@@ -331,8 +331,7 @@ fn claimed_inputs_must_name_their_files_exactly_and_not_be_assets() {
     // An image that is an asset of its own (it has a sidecar) can't also be an input.
     tree.write_document(&face, &face_document(false));
     let mask = tree.source().join("face/masks/h_030.png");
-    let other =
-        AssetMeta { id: meta::new_id().unwrap(), importer: ImportSettings::for_source(&mask).unwrap() };
+    let other = AssetMeta::new(meta::new_id().unwrap(), ImportSettings::for_source(&mask).unwrap());
     fs::write(sidecar_path(&mask), to_ron(&other).unwrap()).unwrap();
     let error = map_error(tree.try_cook(Cook::Desktop).unwrap_err());
     assert!(matches!(&error, MapError::InputsWithSidecars(paths) if *paths == [mask.clone()]), "{error:?}");

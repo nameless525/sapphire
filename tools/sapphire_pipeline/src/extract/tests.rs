@@ -428,15 +428,115 @@ fn extraction_needs_a_mesh_with_a_sidecar() {
 
     let texture = scratch.path().join("albedo.png");
     fs::write(&texture, samples::png(4, |_, _| [255; 4])).unwrap();
-    let meta = AssetMeta {
-        id: meta::new_id().unwrap(),
-        importer: ImportSettings::Texture(TextureSettings::default()),
-    };
+    let meta = AssetMeta::new(meta::new_id().unwrap(), ImportSettings::Texture(TextureSettings::default()));
     meta::create(&meta::sidecar_path(&texture), &meta).unwrap();
     assert!(matches!(
         extract_materials(&texture, &ExtractOptions::default()),
         Err(ExtractError::NotAMesh(_))
     ));
+}
+
+/// A fixture `tools/blender/fbx_fixtures.py` made.
+fn fbx_fixture(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fbx").join(relative)
+}
+
+/// A content tree holding the textured FBX fixture `name` as `props/crate.fbx`, with the
+/// fixtures' images beside it in `props/textures/` when `images`, cooked once.
+fn fbx_tree(scratch: &TempDir, name: &str, images: bool) -> PathBuf {
+    let source = scratch.path().join("content/props/crate.fbx");
+    fs::create_dir_all(source.parent().unwrap().join("textures")).unwrap();
+    fs::copy(fbx_fixture(name), &source).unwrap();
+    if images {
+        for image in ["checker.png", "bumps.png"] {
+            fs::copy(
+                fbx_fixture(&format!("textures/{image}")),
+                source.parent().unwrap().join("textures").join(image),
+            )
+            .unwrap();
+        }
+    }
+    cook(scratch);
+    source
+}
+
+fn texture_class(path: &Path) -> TextureClass {
+    match importer(path) {
+        ImportSettings::Texture(settings) => settings.class,
+        other => panic!("{}: {other:?}", path.display()),
+    }
+}
+
+#[test]
+fn fbx_images_beside_the_file_are_bound_where_they_lie() {
+    let scratch = TempDir::new("extract_fbx_external");
+    let source = fbx_tree(&scratch, "textured_external.fbx", true);
+    let textures = source.parent().unwrap().join("textures");
+    let (checker, bumps) = (textures.join("checker.png"), textures.join("bumps.png"));
+    // The cook made both color textures.
+    assert_eq!(texture_class(&bumps), TextureClass::Color(ColorSettings::default()));
+    let bumps_id = id(&bumps);
+
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(extraction.bound.iter().map(|(slot, _)| slot.as_str()).collect::<Vec<_>>(), ["Stone"]);
+    assert!(extraction.mismatched.is_empty());
+    let stone = document(&scratch.path().join("content/props/crate/materials/Stone.material.ron"));
+    assert_eq!(stone.base_color_map, Some(id(&checker)));
+    assert_eq!(stone.normal_map, Some(bumps_id));
+    // The normal map's sidecar held the cook's defaults, so it is a normal map now, with its ID.
+    assert_eq!(texture_class(&bumps), TextureClass::Normal(NormalSettings::default()));
+    assert_eq!(id(&bumps), bumps_id);
+    assert!(!scratch.path().join("content/props/crate/textures").exists(), "nothing copied");
+    let generated = fbx::import(&source).unwrap().materials.remove(0).generated;
+    assert_eq!(AnimeCharacterMaterial { base_color_map: None, normal_map: None, ..stone }, generated);
+
+    // The tree cooks with the document bound.
+    let report = cook(&scratch);
+    let mesh_output = &report.assets.iter().find(|asset| asset.source == source).unwrap().output;
+    let mesh = Mesh::from_cooked(&read_aligned(mesh_output)).unwrap();
+    assert_eq!(mesh.materials[0].material, SlotMaterial::Asset(bindings(&source)["Stone"]));
+
+    // A sidecar that says something else is kept, and reported.
+    let scratch = TempDir::new("extract_fbx_external_mask");
+    let source = fbx_tree(&scratch, "textured_external.fbx", true);
+    let bumps = source.parent().unwrap().join("textures/bumps.png");
+    let mask = AssetMeta::new(
+        id(&bumps),
+        ImportSettings::Texture(TextureSettings { class: TextureClass::Mask(MaskSettings::default()) }),
+    );
+    meta::rewrite(&meta::sidecar_path(&bumps), &mask).unwrap();
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(extraction.mismatched, [(bumps.clone(), "normal")]);
+    assert_eq!(texture_class(&bumps), TextureClass::Mask(MaskSettings::default()));
+}
+
+#[test]
+fn embedded_fbx_images_are_written_out() {
+    let scratch = TempDir::new("extract_fbx_embedded");
+    let source = fbx_tree(&scratch, "textured_embedded.fbx", false);
+    extract_materials(&source, &ExtractOptions::default()).unwrap();
+    let written = scratch.path().join("content/props/crate/textures");
+    let (checker, bumps) = (written.join("checker.png"), written.join("bumps.png"));
+    // Byte for byte the PNGs Blender embedded.
+    assert_eq!(fs::read(&checker).unwrap(), fs::read(fbx_fixture("textures/checker.png")).unwrap());
+    assert_eq!(fs::read(&bumps).unwrap(), fs::read(fbx_fixture("textures/bumps.png")).unwrap());
+    assert_eq!(texture_class(&checker), TextureClass::Color(ColorSettings::default()));
+    assert_eq!(texture_class(&bumps), TextureClass::Normal(NormalSettings::default()));
+    let stone = document(&scratch.path().join("content/props/crate/materials/Stone.material.ron"));
+    assert_eq!((stone.base_color_map, stone.normal_map), (Some(id(&checker)), Some(id(&bumps))));
+    cook(&scratch);
+}
+
+#[test]
+fn an_fbx_image_found_nowhere_fails_extraction() {
+    let scratch = TempDir::new("extract_fbx_missing");
+    let source = fbx_tree(&scratch, "textured_external.fbx", false);
+    let error = extract_materials(&source, &ExtractOptions::default()).unwrap_err();
+    assert!(
+        matches!(&error, ExtractError::MissingTexture { slot, texture } if slot == "Stone" && texture == "textures/checker.png"),
+        "{error:?}"
+    );
+    assert!(bindings(&source).is_empty(), "nothing bound");
 }
 
 #[test]

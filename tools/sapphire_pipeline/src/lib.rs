@@ -6,17 +6,20 @@
 //!
 //! # Owns
 //!
-//! - [`meta`]: `.meta` sidecars, which give every source asset its [`AssetId`] and import
+//! - [`meta`]: `.meta` sidecars, which give every source asset its [`AssetId`], import
 //!   settings, and the only place new IDs are made.
 //! - [`import`]: source file → engine-neutral intermediate: an
 //!   [`ImportedMesh`](mesh::ImportedMesh) with skins, morph targets, authored outline normals
 //!   and anime character materials generated from the source's, or a
-//!   [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR. VRM 1.0 and 0.x files
-//!   ([`import::vrm`], M1 A6) import as a mesh whose MToon materials map onto anime character
-//!   materials, and a [`CharacterRig`](sapphire_assets::rig::CharacterRig): humanoid,
-//!   expressions, look-at, spring bones and constraints.
+//!   [`SourceImage`](import::image::SourceImage) from PNG, TGA or EXR. glTF and FBX
+//!   ([`import::fbx`], M1 A10, through `ufbx`) import to the same intermediate, so everything
+//!   downstream is shared. VRM 1.0 and 0.x files ([`import::vrm`], M1 A6) import as a mesh
+//!   whose MToon materials map onto anime character materials, and a
+//!   [`CharacterRig`](sapphire_assets::rig::CharacterRig): humanoid, expressions, look-at,
+//!   spring bones and constraints.
 //! - [`extract`]: the `extract-materials` command, which writes a mesh's materials out as
-//!   material documents bound in its sidecar, and a VRM's images as texture sources.
+//!   material documents bound in its sidecar, a VRM's images as texture sources, and an FBX's
+//!   textures bound where they lie or, embedded, written out.
 //! - [`assembly`]: assembly documents (`.assembly.ron`), kit pieces placed into one static mesh
 //!   and re-materialed in slots of the project's own, cooked as meshes (M1 X1's town).
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
@@ -75,7 +78,8 @@
 //!
 //! # Later milestones
 //!
-//! - FBX through `ufbx`.
+//! - FBX: animation clips with M2's animation; authored outline normals; in-between blend
+//!   shapes; second UV and color sets once a material reads them.
 //! - VRM: as the anime character family gains what MToon still has and it lacks (a rim mask, a
 //!   shade map, UV animation, a cull mode, a GI flattening per material), the MToon mapping
 //!   fills it, and extraction binds the textures it already writes.

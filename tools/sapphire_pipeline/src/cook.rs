@@ -5,6 +5,7 @@
 //!
 //! 1. Finds the source assets, leaving out the images that map documents read (they are
 //!    part of those assets), and resolves their sidecars ([`meta`]), creating missing ones.
+//!    Sources whose sidecars say `cook: false` go no further: the report lists them.
 //! 2. Plans each asset's output: its path under the content root, mirrored under the output
 //!    directory with the cooked format's extension (`samples/mannequin.glb` →
 //!    `samples/mannequin.smesh`). Tools read cooked files by these paths; the runtime reads
@@ -21,7 +22,7 @@
 //! Each kind of source cooks through a [`Recipe`]: the importer, the cooker and the cooked
 //! format, whose versions are part of the cache key:
 //!
-//! - **Meshes** cook glTF → `.smesh` (A1, A5): import, outline bake,
+//! - **Meshes** cook glTF and FBX → `.smesh` (A1, A5, A10): import, outline bake,
 //!   [optimization and LODs](crate::optimize), packing, then a read-back of the cooked bytes
 //!   through the runtime's own checks. The two cooks differ in the LOD chain: the mobile cook
 //!   drops its first levels, for a lower-detail LOD0 and fewer LODs (spec §5.27).
@@ -71,6 +72,7 @@ use crate::assembly::{self, AssemblyError};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
+use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
 use crate::import::vrm::{self, VrmImportError, VrmSettings};
@@ -163,6 +165,12 @@ impl Recipe {
                 format: Mesh::VERSION,
                 extension: MESH_EXTENSION,
             },
+            ImportSettings::Fbx(_) => Self {
+                importer: fbx::IMPORTER,
+                cooker: MESH_COOKER,
+                format: Mesh::VERSION,
+                extension: MESH_EXTENSION,
+            },
             ImportSettings::Texture(_) => Self {
                 importer: image::IMPORTER,
                 cooker: texture::COOKER,
@@ -208,6 +216,7 @@ impl Recipe {
         match settings {
             ImportSettings::Vrm(_) => &[vrm::RIG],
             ImportSettings::Gltf(_)
+            | ImportSettings::Fbx(_)
             | ImportSettings::Assembly(_)
             | ImportSettings::Texture(_)
             | ImportSettings::CharacterMap(_)
@@ -236,7 +245,7 @@ impl Recipe {
 /// Errors from cooking. Each names the file it concerns.
 #[derive(Debug, thiserror::Error)]
 pub enum CookError {
-    #[error("{} is not a supported mesh source (expected .gltf, .glb or .vrm)", path.display())]
+    #[error("{} is not a supported mesh source (expected .gltf, .glb, .fbx or .vrm)", path.display())]
     UnsupportedSource { path: PathBuf },
     #[error(transparent)]
     Meta(#[from] MetaError),
@@ -245,6 +254,13 @@ pub enum CookError {
         path: PathBuf,
         #[source]
         source: GltfImportError,
+    },
+    #[error("failed to import FBX {}", path.display())]
+    Fbx {
+        path: PathBuf,
+        /// Boxed, as VRM errors are.
+        #[source]
+        source: Box<FbxImportError>,
     },
     #[error("failed to assemble {}", path.display())]
     Assembly {
@@ -377,6 +393,8 @@ pub struct CookReport {
     pub created_sidecars: Vec<PathBuf>,
     /// Sidecars whose source doesn't exist.
     pub orphaned_sidecars: Vec<PathBuf>,
+    /// Sources whose sidecars keep them out of the cook (`cook: false`, see [`meta`]).
+    pub uncooked: Vec<PathBuf>,
     /// Stale files removed from the output directory.
     pub removed: Vec<PathBuf>,
 }
@@ -399,10 +417,12 @@ pub fn cook_dir(
     let inputs = map_inputs(source_root, &tree)?;
     tree.sources.retain(|source| !inputs.contains(source));
     let resolved = meta::resolve(&tree, options.locked)?;
+    let (cooked_assets, uncooked): (Vec<SourceAsset>, Vec<SourceAsset>) =
+        resolved.assets.into_iter().partition(|asset| asset.meta.cook);
 
     let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
-    let mut plan = Vec::with_capacity(resolved.assets.len());
-    for asset in resolved.assets {
+    let mut plan = Vec::with_capacity(cooked_assets.len());
+    for asset in cooked_assets {
         let own = (asset.meta.id, None, Recipe::for_settings(&asset.meta.importer));
         let sub_assets = Recipe::sub_assets(&asset.meta.importer)
             .iter()
@@ -450,6 +470,7 @@ pub fn cook_dir(
         assets,
         created_sidecars: resolved.created,
         orphaned_sidecars: resolved.orphaned,
+        uncooked: uncooked.into_iter().map(|asset| asset.path).collect(),
         removed,
     })
 }
@@ -575,7 +596,10 @@ fn cook_source(
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, CookError> {
     match settings {
-        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) | ImportSettings::Assembly(_)
+        ImportSettings::Gltf(_)
+        | ImportSettings::Fbx(_)
+        | ImportSettings::Vrm(_)
+        | ImportSettings::Assembly(_)
             if sub_asset.is_none() =>
         {
             let mesh = import_mesh(path, bytes, settings, cook)?;
@@ -590,8 +614,8 @@ fn cook_source(
             CharacterRig::read(&cooked).map_err(invalid)?;
             Ok(cooked.into_vec())
         }
-        ImportSettings::Gltf(_) | ImportSettings::Assembly(_) => {
-            unreachable!("glTF sources and assemblies have no sub-assets")
+        ImportSettings::Gltf(_) | ImportSettings::Fbx(_) | ImportSettings::Assembly(_) => {
+            unreachable!("glTF and FBX sources and assemblies have no sub-assets")
         }
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
@@ -677,7 +701,10 @@ fn dependencies(
     assets: &Assets<'_>,
 ) -> Result<Vec<Dependency>, CookError> {
     match settings {
-        ImportSettings::Gltf(_) | ImportSettings::Vrm(_) | ImportSettings::Assembly(_) => {
+        ImportSettings::Gltf(_)
+        | ImportSettings::Fbx(_)
+        | ImportSettings::Vrm(_)
+        | ImportSettings::Assembly(_) => {
             let mesh = settings.mesh().expect("mesh importers have mesh settings");
             // The mesh holds only the bound materials' IDs, so their contents aren't inputs.
             for (slot, &id) in &mesh.materials {
@@ -685,8 +712,9 @@ fn dependencies(
                     return Err(CookError::NotAMaterial { path: path.to_owned(), slot: slot.clone(), id });
                 }
             }
-            if matches!(settings, ImportSettings::Vrm(_)) {
-                // VRM files are GLB: they read nothing besides themselves.
+            if matches!(settings, ImportSettings::Vrm(_) | ImportSettings::Fbx(_)) {
+                // VRM files are GLB, and the FBX importer never opens the files an FBX names:
+                // they read nothing besides themselves.
                 return Ok(Vec::new());
             }
             if matches!(settings, ImportSettings::Assembly(_)) {
@@ -752,12 +780,17 @@ fn assembly_dependencies(path: &Path, bytes: &[u8]) -> Result<Vec<Dependency>, C
 }
 
 /// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF,
-/// VRM or an assembly), for `cook`.
+/// FBX, VRM or an assembly), for `cook`.
 fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook) -> Result<Mesh, CookError> {
     let (mut mesh, settings) = match importer {
         ImportSettings::Gltf(settings) => (
             gltf::import_slice(bytes, path.parent())
                 .map_err(|source| CookError::Import { path: path.to_owned(), source })?,
+            settings,
+        ),
+        ImportSettings::Fbx(settings) => (
+            fbx::import_slice(bytes)
+                .map_err(|source| CookError::Fbx { path: path.to_owned(), source: Box::new(source) })?,
             settings,
         ),
         ImportSettings::Vrm(settings) => {
@@ -820,6 +853,7 @@ fn cook_mesh_with_bytes(
     // The importer by extension, with `settings` for the mesh; a VRM's version isn't checked.
     let importer = match ImportSettings::for_source(source) {
         Some(ImportSettings::Gltf(_)) => ImportSettings::Gltf(settings.clone()),
+        Some(ImportSettings::Fbx(_)) => ImportSettings::Fbx(settings.clone()),
         Some(ImportSettings::Vrm(_)) => {
             ImportSettings::Vrm(VrmSettings { mesh: settings.clone(), version: None })
         }
@@ -1395,7 +1429,7 @@ mod tests {
 
     /// Writes a sidecar with a known ID, so documents can reference the asset.
     fn write_sidecar(source: &Path, id: &str, importer: ImportSettings) {
-        let meta = AssetMeta { id: id.parse().unwrap(), importer };
+        let meta = AssetMeta::new(id.parse().unwrap(), importer);
         fs::write(sidecar_path(source), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
     }
 
@@ -1542,7 +1576,7 @@ mod tests {
         let bind = |settings: &MeshSettings| {
             let sidecar = sidecar_path(&mannequin);
             let id = meta::read(&sidecar).map_or_else(|_| meta::new_id().unwrap(), |meta| meta.id);
-            let meta = AssetMeta { id, importer: ImportSettings::Gltf(settings.clone()) };
+            let meta = AssetMeta::new(id, ImportSettings::Gltf(settings.clone()));
             fs::write(sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
         };
         settings.materials.insert("Hair".into(), id(HAIR));
@@ -1589,7 +1623,102 @@ mod tests {
             "{error:?}"
         );
 
-        let error = cook_mesh(Path::new("model.fbx"), &MeshSettings::default(), Cook::Desktop).unwrap_err();
+        let error = cook_mesh(Path::new("model.obj"), &MeshSettings::default(), Cook::Desktop).unwrap_err();
         assert!(matches!(error, CookError::UnsupportedSource { .. }));
+    }
+
+    /// The FBX importer's fixtures (`tools/blender/fbx_fixtures.py`), by file name.
+    fn fbx_fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fbx").join(name)
+    }
+
+    #[test]
+    fn fbx_sources_cook_as_their_gltf_twins_do() {
+        let scratch = Scratch::new("cook_fbx");
+        let add = |name: &str| {
+            let path = scratch.source().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::copy(fbx_fixture(Path::new(name).file_name().unwrap().to_str().unwrap()), &path).unwrap();
+            path
+        };
+        let pairs = ["static_multi", "skinned_morph"]
+            .map(|name| (add(&format!("fbx/{name}.fbx")), add(&format!("gltf/{name}.glb"))));
+        for cook in Cook::ALL {
+            let report = scratch.cook_with(cook, false);
+            for (fbx, gltf) in &pairs {
+                assert!(matches!(meta::read(&sidecar_path(fbx)).unwrap().importer, ImportSettings::Fbx(_)));
+                let (fbx_mesh, gltf_mesh) =
+                    (read_mesh(&asset(&report, fbx).output), read_mesh(&asset(&report, gltf).output));
+                // The same vertices and triangles, through the same bake, LODs and packing.
+                assert_eq!(fbx_mesh.streams.len(), gltf_mesh.streams.len(), "{cook}: {}", fbx.display());
+                let triangles = |mesh: &Mesh| -> Vec<u32> {
+                    mesh.lods
+                        .iter()
+                        .map(|lod| lod.submeshes.iter().map(|s| s.index_count / 3).sum())
+                        .collect()
+                };
+                assert_eq!(triangles(&fbx_mesh), triangles(&gltf_mesh), "{cook}: {}", fbx.display());
+                let slots = |mesh: &Mesh| -> Vec<String> {
+                    let mut names: Vec<String> =
+                        mesh.materials.iter().map(|slot| slot.name.clone()).collect();
+                    names.sort();
+                    names
+                };
+                assert_eq!(slots(&fbx_mesh), slots(&gltf_mesh));
+                let joints = |mesh: &Mesh| -> Vec<String> {
+                    mesh.skin
+                        .iter()
+                        .flat_map(|skin| skin.joints.iter().map(|joint| joint.name.clone()))
+                        .collect()
+                };
+                assert_eq!(joints(&fbx_mesh), joints(&gltf_mesh));
+                let targets = |mesh: &Mesh| -> Vec<String> {
+                    let mut names: Vec<String> = mesh.morph_targets.iter().map(|t| t.name.clone()).collect();
+                    names.sort();
+                    names
+                };
+                assert_eq!(targets(&fbx_mesh), targets(&gltf_mesh));
+            }
+        }
+    }
+
+    #[test]
+    fn sources_whose_sidecars_say_so_are_not_cooked() {
+        let scratch = Scratch::new("cook_uncooked");
+        let source = scratch.add_mannequin("props/mannequin.glb");
+        let output = scratch.out().join("props/mannequin.smesh");
+        scratch.cook();
+        assert!(output.exists());
+        let sidecar = sidecar_path(&source);
+        let text = fs::read_to_string(&sidecar).unwrap();
+        assert!(!text.contains("cook:"), "written only when false: {text}");
+
+        let mut meta = meta::read(&sidecar).unwrap();
+        meta.cook = false;
+        fs::write(&sidecar, sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        assert!(fs::read_to_string(&sidecar).unwrap().contains("cook: false"));
+        let report = scratch.cook();
+        assert!(report.assets.is_empty());
+        assert_eq!((report.uncooked, report.removed), (vec![source.clone()], vec![output.clone()]));
+        assert!(!output.exists());
+        // It keeps its ID, and a locked cook still needs its sidecar.
+        assert_eq!(meta::read(&sidecar).unwrap().id, meta.id);
+        fs::remove_file(&sidecar).unwrap();
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let error = cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err();
+        assert!(matches!(error, CookError::Meta(MetaError::Missing { .. })), "{error:?}");
+
+        // Nothing may reference it: a slot bound to an uncooked material fails as a missing one.
+        scratch.add_hair();
+        let hair = scratch.source().join("hair/hair.material.ron");
+        let mut hair_meta = meta::read(&sidecar_path(&hair)).unwrap();
+        hair_meta.cook = false;
+        fs::write(sidecar_path(&hair), sapphire_serialize::to_ron(&hair_meta).unwrap()).unwrap();
+        let mut settings = MeshSettings::default();
+        settings.materials.insert("Hair".into(), id(HAIR));
+        let bound = AssetMeta::new(meta.id, ImportSettings::Gltf(settings));
+        fs::write(&sidecar, sapphire_serialize::to_ron(&bound).unwrap()).unwrap();
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::NotAMaterial { slot, .. } if slot == "Hair"), "{error:?}");
     }
 }

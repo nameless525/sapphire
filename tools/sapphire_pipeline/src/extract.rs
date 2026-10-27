@@ -1,5 +1,6 @@
 //! `extract-materials` (M1 A6): a mesh source's materials written out as material documents
-//! bound in its sidecar, with a VRM's images as texture sources.
+//! bound in its sidecar, with a VRM's images as texture sources, and the images an FBX's
+//! materials use bound (M1 A10).
 //!
 //! # An explicit command
 //!
@@ -13,7 +14,8 @@
 //!   what is missing and overwrites nothing, so edits survive.
 //! - A VRM draws without it: its import generates untextured materials from MToon's factors.
 //!   Extraction brings its textures in, and starts the authoring (ramps, ILM maps, SDF face
-//!   maps) that the look-dev character needs on top.
+//!   maps) that the look-dev character needs on top. An FBX likewise draws in its generated
+//!   materials' colors until extraction binds the images they use.
 //!
 //! # What it writes
 //!
@@ -34,6 +36,17 @@
 //! control map or a layer mask): the ones a generated material can't draw as authored. `--all`
 //! extracts every slot, as starting points for authoring. A slot the sidecar already binds is
 //! left alone.
+//!
+//! **FBX textures** (M1 A10): a slot's document is the material its import generated, with the
+//! base color and normal map images its FBX material uses bound as `base_color_map` and
+//! `normal_map`. An image the FBX names relative to itself that is a texture source (PNG, TGA or
+//! EXR) is bound where it lies, through its own sidecar, created as the use's class (color or
+//! normal) when it has none. One whose sidecar a cook created with the default settings (color)
+//! is switched to its use's class, keeping its ID; one whose sidecar says anything else keeps it,
+//! and is reported ([`Extraction::mismatched`]). An image the FBX embeds, or names in another
+//! format (JPEG), is written as `textures/<image>.png` as a VRM's are (PNG bytes copied, others
+//! converted). An image that is neither embedded nor found beside the FBX fails the extraction,
+//! naming the slot and the file.
 //!
 //! **Images:** every image an extracted MToon material uses is written, including those the
 //! anime character family can't bind (a shade texture other than the base color's, a rim
@@ -70,12 +83,16 @@ use sapphire_assets::material::AnimeCharacterMaterial;
 use crate::character_maps::ilm::{ChannelInput, Encoding, IlmMap, ImageChannel, MaterialIdInput};
 use crate::character_maps::layer_mask::{self, LayerMaskMap};
 use crate::character_maps::{MapKind, MapSettings};
+use crate::import::fbx::{self, FbxImportError, FbxTexture, SlotTextures};
 use crate::import::gltf::{self, GltfImportError};
+use crate::import::image::SourceFormat;
 use crate::import::vrm::mtoon::{Binding, Channel, LayerTexture, Mtoon};
 use crate::import::vrm::{self, ImageFormat, VrmImport, VrmImportError};
 use crate::material::MaterialSettings;
 use crate::meta::{self, AssetMeta, ImportSettings, MetaError};
-use crate::texture::{IlmSettings, MaskSettings, TextureClass, TextureSettings};
+use crate::texture::{
+    ColorSettings, IlmSettings, MaskSettings, NormalSettings, TextureClass, TextureSettings,
+};
 
 /// Options for [`extract_materials`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,6 +110,9 @@ pub struct Extraction {
     pub bound: Vec<(String, AssetId)>,
     /// Slots left alone because the sidecar already binds them.
     pub kept: Vec<String>,
+    /// FBX images bound where they lie whose sidecars give them another class than their use
+    /// (`color` or `normal`), which they keep.
+    pub mismatched: Vec<(PathBuf, &'static str)>,
 }
 
 /// Errors from [`extract_materials`].
@@ -100,7 +120,7 @@ pub struct Extraction {
 pub enum ExtractError {
     #[error("{} has no sidecar: cook the content tree once to give it its ID, then extract", .0.display())]
     NoSidecar(PathBuf),
-    #[error("{} isn't a mesh source (.gltf, .glb or .vrm)", .0.display())]
+    #[error("{} isn't a mesh source (.gltf, .glb, .fbx or .vrm)", .0.display())]
     NotAMesh(PathBuf),
     #[error(transparent)]
     Meta(#[from] MetaError),
@@ -121,6 +141,21 @@ pub enum ExtractError {
         path: PathBuf,
         #[source]
         source: GltfImportError,
+    },
+    #[error("failed to import {}", path.display())]
+    Fbx {
+        path: PathBuf,
+        /// Boxed, as in cook errors.
+        #[source]
+        source: Box<FbxImportError>,
+    },
+    #[error("slot {slot:?} uses the image {texture}, which isn't embedded or beside the FBX")]
+    MissingTexture { slot: String, texture: String },
+    #[error("failed to convert the image {texture} to a PNG")]
+    TextureImage {
+        texture: String,
+        #[source]
+        source: image::ImageError,
     },
     #[error("failed to import {}", path.display())]
     Vrm {
@@ -152,6 +187,8 @@ struct Slot {
     /// What the importer generated: the document of a slot that isn't MToon.
     generated: AnimeCharacterMaterial,
     mtoon: Option<Mtoon>,
+    /// The images an FBX slot's material uses; none for other sources.
+    textures: SlotTextures,
 }
 
 /// Extracts the materials of the mesh source at `source` (see the [module docs](self)). The
@@ -171,7 +208,24 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
             let slots = mesh
                 .materials
                 .into_iter()
-                .map(|m| Slot { name: m.name, generated: m.generated, mtoon: None })
+                .map(|m| Slot {
+                    name: m.name,
+                    generated: m.generated,
+                    mtoon: None,
+                    textures: SlotTextures::default(),
+                })
+                .collect();
+            (slots, None)
+        }
+        ImportSettings::Fbx(_) => {
+            let import = fbx::import_with_textures(&bytes)
+                .map_err(|error| ExtractError::Fbx { path: source.to_owned(), source: Box::new(error) })?;
+            let slots = import
+                .mesh
+                .materials
+                .into_iter()
+                .zip(import.slots)
+                .map(|(m, textures)| Slot { name: m.name, generated: m.generated, mtoon: None, textures })
                 .collect();
             (slots, None)
         }
@@ -187,6 +241,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                     name: m.name.clone(),
                     generated: m.generated.clone(),
                     mtoon: mtoon.clone(),
+                    textures: SlotTextures::default(),
                 })
                 .collect();
             (slots, Some(import))
@@ -206,7 +261,10 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     for (index, slot) in slots.iter().enumerate() {
         if bindings.contains_key(&slot.name) {
             extraction.kept.push(slot.name.clone());
-        } else if options.all || slot.mtoon.as_ref().is_some_and(Mtoon::is_textured) {
+        } else if options.all
+            || slot.mtoon.as_ref().is_some_and(Mtoon::is_textured)
+            || fbx_uses(&slot.textures).next().is_some()
+        {
             chosen.push(index);
         }
     }
@@ -218,6 +276,12 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     let names = Names::new(&slots, import.as_ref());
     let mut writer = Writer { written: Vec::new() };
     let mut resolved = Resolved::default();
+    let mut images = FbxImages {
+        dir: source.parent().unwrap_or(Path::new("")),
+        names: fbx_image_names(&slots),
+        bound: BTreeMap::new(),
+        mismatched: Vec::new(),
+    };
     let mut bound = Vec::new();
     for index in chosen {
         let slot = &slots[index];
@@ -239,7 +303,17 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
                     Binding::LayerMask => resolved.layers.get(&layer_key(import, mtoon)?).copied(),
                 })
             }
-            _ => slot.generated.clone(),
+            _ => {
+                let mut document = slot.generated.clone();
+                for (class, texture) in fbx_uses(&slot.textures) {
+                    let id = images.bind(&slot.name, texture, class, &root, &mut writer)?;
+                    match class {
+                        TextureClass::Normal(_) => document.normal_map = Some(id),
+                        _ => document.base_color_map = Some(id),
+                    }
+                }
+                document
+            }
         };
         let path = root.join("materials").join(format!(
             "{}{}",
@@ -260,7 +334,146 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     writer.written.push(sidecar);
     extraction.written = writer.written;
     extraction.bound = bound;
+    extraction.mismatched = images.mismatched;
     Ok(extraction)
+}
+
+/// The images an FBX slot uses, with the class each cooks as: the base color as a color, the
+/// normal map as a normal map.
+fn fbx_uses(textures: &SlotTextures) -> impl Iterator<Item = (TextureClass, &FbxTexture)> {
+    let color = TextureClass::Color(ColorSettings::default());
+    let normal = TextureClass::Normal(NormalSettings::default());
+    [(color, &textures.base_color), (normal, &textures.normal)]
+        .into_iter()
+        .filter_map(|(class, texture)| Some((class, texture.as_ref()?)))
+}
+
+/// What identifies an FBX image: the file it names, or its name when it names none.
+fn fbx_image_key(texture: &FbxTexture, class: TextureClass) -> (String, &'static str) {
+    let identity = if texture.file.is_empty() { format!("#{}", texture.name) } else { texture.file.clone() };
+    (identity, class.name())
+}
+
+/// The file name each FBX image would be written under (by [`fbx_image_key`]), decided over
+/// every slot, whatever one run writes, as [`Names`] decides a VRM's: `<image>.png`, or
+/// `<image>-<class>.png` for an image used as two classes.
+fn fbx_image_names(slots: &[Slot]) -> BTreeMap<(String, &'static str), String> {
+    let mut uses: BTreeMap<String, (String, Vec<&'static str>)> = BTreeMap::new();
+    for slot in slots {
+        for (class, texture) in fbx_uses(&slot.textures) {
+            let (identity, class) = fbx_image_key(texture, class);
+            let (_, classes) = uses.entry(identity).or_insert_with(|| (file_name(&texture.name), Vec::new()));
+            if !classes.contains(&class) {
+                classes.push(class);
+            }
+        }
+    }
+    let mut files = UniqueNames::default();
+    let mut names = BTreeMap::new();
+    for (identity, (stem, mut classes)) in uses {
+        // Color first: the class an image's plain name goes to when it has several.
+        classes.sort_by_key(|&class| (class != "color", class));
+        for &class in &classes {
+            let stem = if classes.len() == 1 { stem.clone() } else { format!("{stem}-{class}") };
+            names.insert((identity.clone(), class), format!("{}.png", files.claim(&stem, "image")));
+        }
+    }
+    names
+}
+
+/// An FBX's images as extraction binds them (see the [module docs](self)).
+struct FbxImages<'a> {
+    /// The FBX's directory, which the files it names are relative to.
+    dir: &'a Path,
+    /// By [`fbx_image_key`].
+    names: BTreeMap<(String, &'static str), String>,
+    /// The texture assets bound so far, by [`fbx_image_key`].
+    bound: BTreeMap<(String, &'static str), AssetId>,
+    mismatched: Vec<(PathBuf, &'static str)>,
+}
+
+impl FbxImages<'_> {
+    /// The texture asset that `texture`, used as `class` by `slot`, binds: the file where it
+    /// lies, or one written under `root`.
+    fn bind(
+        &mut self,
+        slot: &str,
+        texture: &FbxTexture,
+        class: TextureClass,
+        root: &Path,
+        writer: &mut Writer,
+    ) -> Result<AssetId, ExtractError> {
+        let key = fbx_image_key(texture, class);
+        if let Some(&id) = self.bound.get(&key) {
+            return Ok(id);
+        }
+        let settings = ImportSettings::Texture(TextureSettings { class });
+        let external = Some(&texture.file).filter(|file| !file.is_empty()).map(|file| self.dir.join(file));
+        let external = external.filter(|path| path.is_file());
+        let id = match external {
+            Some(path) if SourceFormat::from_path(&path).is_some() => {
+                self.bind_in_place(&path, class, writer)?
+            }
+            external => {
+                let bytes = match (&texture.embedded, external) {
+                    (Some(bytes), _) => bytes.clone(),
+                    (None, Some(path)) => {
+                        fs::read(&path).map_err(|error| ExtractError::Read { path, source: error })?
+                    }
+                    (None, None) => {
+                        return Err(ExtractError::MissingTexture {
+                            slot: slot.to_owned(),
+                            texture: texture.to_string(),
+                        });
+                    }
+                };
+                let path = root.join("textures").join(&self.names[&key]);
+                writer.file(&path, || {
+                    as_png(&bytes)
+                        .map_err(|source| ExtractError::TextureImage { texture: texture.to_string(), source })
+                })?;
+                writer.sidecar(&path, settings)?
+            }
+        };
+        self.bound.insert(key, id);
+        Ok(id)
+    }
+
+    /// The ID of the texture source at `path`, its sidecar created as `class`, or switched to it
+    /// from the defaults a cook gave it.
+    fn bind_in_place(
+        &mut self,
+        path: &Path,
+        class: TextureClass,
+        writer: &mut Writer,
+    ) -> Result<AssetId, ExtractError> {
+        let settings = ImportSettings::Texture(TextureSettings { class });
+        let sidecar = meta::sidecar_path(path);
+        if !sidecar.exists() {
+            return writer.sidecar(path, settings);
+        }
+        let mut meta = meta::read(&sidecar)?;
+        if meta.importer != settings {
+            if meta.importer == ImportSettings::Texture(TextureSettings::default()) {
+                meta.importer = settings;
+                meta::rewrite(&sidecar, &meta)?;
+                writer.written.push(sidecar);
+            } else {
+                self.mismatched.push((path.to_owned(), class.name()));
+            }
+        }
+        Ok(meta.id)
+    }
+}
+
+/// `bytes` as a PNG: a PNG as it is, other formats the `image` crate reads decoded and encoded.
+fn as_png(bytes: &[u8]) -> Result<Vec<u8>, image::ImageError> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok(bytes.to_vec());
+    }
+    let mut png = Vec::new();
+    image::load_from_memory(bytes)?.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)?;
+    Ok(png)
 }
 
 /// The folder a source extracts into: beside it, named after its file stem. Another mesh source
@@ -571,7 +784,7 @@ impl Writer {
         if path.exists() {
             return Ok(meta::read(&path)?.id);
         }
-        let meta = AssetMeta { id: meta::new_id().map_err(MetaError::Entropy)?, importer };
+        let meta = AssetMeta::new(meta::new_id().map_err(MetaError::Entropy)?, importer);
         if meta::create(&path, &meta)? {
             self.written.push(path);
             Ok(meta.id)

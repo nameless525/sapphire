@@ -99,6 +99,7 @@ impl TextureKind {
                 MapKind::LayerMask => Self::Mask,
             },
             ImportSettings::Gltf(_)
+            | ImportSettings::Fbx(_)
             | ImportSettings::Vrm(_)
             | ImportSettings::Assembly(_)
             | ImportSettings::Material(_)

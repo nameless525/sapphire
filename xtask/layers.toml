@@ -69,7 +69,7 @@ edges = [
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx"]
 
 # Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
 # other than through a dev-only crate would link it into builds without `dev`.

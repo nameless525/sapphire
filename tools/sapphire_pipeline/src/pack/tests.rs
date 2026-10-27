@@ -91,7 +91,7 @@ impl Scratch {
 }
 
 fn write_sidecar(source: &Path, id: &str, importer: ImportSettings) {
-    let meta = AssetMeta { id: id.parse().unwrap(), importer };
+    let meta = AssetMeta::new(id.parse().unwrap(), importer);
     fs::write(sidecar_path(source), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
 }
 

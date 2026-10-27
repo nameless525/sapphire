@@ -99,12 +99,10 @@ use serde::{Deserialize, Deserializer};
 
 use crate::cache::Stage;
 use crate::color::unorm8;
+use crate::import::{self, DEFAULT_SLOT};
 use crate::mesh::{
     ImportedDelta, ImportedMaterial, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights,
 };
-
-/// The material slot name of glTF's default material, which primitives without a material use.
-const DEFAULT_SLOT: &str = "#default";
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file. 7: generated materials carry the depth-offset rim's settings and per-region
@@ -1116,36 +1114,10 @@ fn vertex_color([r, g, b, _]: [f32; 4]) -> [u8; 3] {
     [unorm8(r), unorm8(g), unorm8(b)]
 }
 
-/// Every material's slot name, by glTF material index: its own name unless another material
-/// shares it.
+/// Every material's slot name, by glTF material index ([`import::slot_names`]).
 fn slot_names(document: &Document) -> Vec<String> {
-    let mut names: Vec<String> = document
-        .materials()
-        .enumerate()
-        .map(|(index, material)| match material.name() {
-            Some(name) if document.materials().filter(|other| other.name() == Some(name)).count() == 1 => {
-                name.to_owned()
-            }
-            Some(name) => format!("{name}#{index}"),
-            None => format!("#{index}"),
-        })
-        .collect();
-    // A literal name can still match a made-up one (`Plain#1`, `#default`): suffix the clashing
-    // names with their index until every name, and the default material's, is unique. Each pass
-    // makes the clashing names longer and distinct from one another, so this ends.
-    loop {
-        let clashing: Vec<usize> = (0..names.len())
-            .filter(|&index| {
-                names[index] == DEFAULT_SLOT || names.iter().filter(|name| **name == names[index]).count() > 1
-            })
-            .collect();
-        if clashing.is_empty() {
-            return names;
-        }
-        for index in clashing {
-            names[index] = format!("{}#{index}", names[index]);
-        }
-    }
+    let names: Vec<Option<&str>> = document.materials().map(|material| material.name()).collect();
+    import::slot_names(&names)
 }
 
 /// A glTF material's `alphaMode` and `alphaCutoff`.

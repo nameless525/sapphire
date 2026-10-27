@@ -189,6 +189,9 @@ gltf = { version = "1.4.1", default-features = false }
 # It depends on gltf with gltf's default features, so gltf's `import` (base64, urlencoding and
 # image's PNG and JPEG decoders) is built too, though the pipeline loads buffers itself.
 vrm-spec = { version = "0.1.1", default-features = false, features = ["gltf_index"] }
+# FBX import (M1 A10, spec §5.27): bindings to ufbx, a single C file built with cc (already in the
+# tree through blake3 and zstd). MIT or Unlicense. No default features to turn off; `mint` stays off.
+ufbx = "0.11.5"
 # Texture compression (M1 A2, spec §5.27). Only the encoders the cooks use: bc7enc-rdo for BC7,
 # Intel's ISPC kernels (prebuilt, so no ISPC toolchain is needed) for BC4, BC5 and BC6H, and
 # astcenc for ASTC. No `rayon`: every surface encodes serially, so output never depends on the

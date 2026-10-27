@@ -43,6 +43,8 @@
 //! Foliage meshes (M1 W6) add `foliage: (normals: …, slots: […], blend: …)`
 //! ([`FoliageSettings`]), written out only when set.
 //!
+//! FBX files (`.fbx`, M1 A10) have `importer: Fbx((…))`, the same mesh settings.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -67,6 +69,29 @@
 //! A sidecar may leave settings out, and they take their defaults (`#[serde(default)]`), so a
 //! new setting needs no schema version. The importer and its settings are part of the
 //! asset's [cache key](crate::cache); the ID is not, because no cooked format holds it yet.
+//!
+//! # Sources that don't cook
+//!
+//! Everything an importer reads under the content root is a source, and every source cooks into
+//! the packs, unless its sidecar says `cook: false` (beside `id` and `importer`):
+//!
+//! ```ron
+//! data: (
+//!     id: "…",
+//!     importer: Fbx((…)),
+//!     cook: false,
+//! ),
+//! ```
+//!
+//! Such a source keeps its sidecar, its ID and its settings, under every rule above (a locked cook
+//! still needs the sidecar), but no cook imports it, writes an output for it or packs it; a cooked
+//! file left from before is removed as stale. It is for sources the game never loads: a
+//! third-party original kept byte for byte beside the copy a tool derives from it (M1 X1's
+//! pavilion FBX, which a Blender script converts into the town's piece), or reference material.
+//! Nothing may reference it: binding or naming it fails a cook as a missing asset does. Setting it
+//! back to `true` (or deleting the line) cooks it with the settings it kept. Leaving an asset out
+//! of the packs while still cooking it is a different matter, for pack roots (spec §5.10, M2):
+//! an asset no zone, character or encounter reaches will stay out of every group then.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -101,6 +126,26 @@ pub struct AssetMeta {
     pub id: AssetId,
     /// The importer that reads the source, with its settings.
     pub importer: ImportSettings,
+    /// Whether cooks cook the source (the default). `cook: false` keeps a source in the tree, with
+    /// its identity and import settings, but out of every cook and so out of every pack (see the
+    /// [module docs](self)). Written out only when false.
+    #[serde(default = "cooked", skip_serializing_if = "is_cooked")]
+    pub cook: bool,
+}
+
+impl AssetMeta {
+    /// A sidecar for a source that cooks.
+    pub fn new(id: AssetId, importer: ImportSettings) -> Self {
+        Self { id, importer, cook: true }
+    }
+}
+
+fn cooked() -> bool {
+    true
+}
+
+fn is_cooked(cook: &bool) -> bool {
+    *cook
 }
 
 impl Versioned for AssetMeta {
@@ -113,6 +158,8 @@ impl Versioned for AssetMeta {
 pub enum ImportSettings {
     /// glTF 2.0 (`.gltf`, `.glb`), flattened into one mesh, skinned if the scene is.
     Gltf(MeshSettings),
+    /// FBX (`.fbx`), binary or ASCII: a mesh as glTF's, with the same settings (M1 A10).
+    Fbx(MeshSettings),
     /// PNG, TGA or EXR, cooked as its texture class says (M1 A2).
     Texture(TextureSettings),
     /// An anime character map document (`.facesdf.ron`, `.ramp.ron`, `.ilm.ron`): the map it
@@ -150,6 +197,7 @@ impl ImportSettings {
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
+            "fbx" => Some(Self::Fbx(MeshSettings::default())),
             "vrm" => Some(Self::Vrm(VrmSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
@@ -174,7 +222,7 @@ impl ImportSettings {
     /// The settings of a mesh importer, or `None` for other kinds of source.
     pub fn mesh(&self) -> Option<&MeshSettings> {
         match self {
-            Self::Gltf(settings) | Self::Assembly(settings) => Some(settings),
+            Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&settings.mesh),
             Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }
@@ -183,7 +231,7 @@ impl ImportSettings {
     /// [`Self::mesh`], to change.
     pub fn mesh_mut(&mut self) -> Option<&mut MeshSettings> {
         match self {
-            Self::Gltf(settings) | Self::Assembly(settings) => Some(settings),
+            Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&mut settings.mesh),
             Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
         }
@@ -446,7 +494,7 @@ pub fn resolve(tree: &SourceTree, locked: bool) -> Result<Resolved, MetaError> {
                 let sidecar = sidecar_path(source);
                 let importer =
                     ImportSettings::for_new_sidecar(source).expect("scanned sources have an importer");
-                let fresh = AssetMeta { id: new_id().map_err(MetaError::Entropy)?, importer };
+                let fresh = AssetMeta::new(new_id().map_err(MetaError::Entropy)?, importer);
                 let meta = if create(&sidecar, &fresh)? {
                     created.push(sidecar.clone());
                     fresh
@@ -484,7 +532,7 @@ mod tests {
     fn meta(weld_tolerance: f32) -> AssetMeta {
         let outline = OutlineSettings::with_weld_tolerance(weld_tolerance).unwrap();
         let settings = MeshSettings { outline, ..MeshSettings::default() };
-        AssetMeta { id: ID.parse().unwrap(), importer: ImportSettings::Gltf(settings) }
+        AssetMeta::new(ID.parse().unwrap(), ImportSettings::Gltf(settings))
     }
 
     /// Two mesh sources, `a.glb` and `nested/b.gltf`; neither has a sidecar.

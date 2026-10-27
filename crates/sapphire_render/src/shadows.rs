@@ -172,6 +172,7 @@ use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MeshPass, Part, Pipelines, Shading, SurfaceVariant, format_index,
 };
 use crate::scene::{DrawList, InstanceSlots};
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 use plan::{ShadowPlan, WindMargin};
 
@@ -440,11 +441,9 @@ pub(crate) struct Shadows {
     uniforms: wgpu::Buffer,
     /// Built while shadows are on.
     pipelines: Option<ShadowPipelines>,
-    caster_layout: wgpu::PipelineLayout,
-    /// The face pass's layout: group 0 the maps and uniforms, group 1 the character buffer,
-    /// read-write.
+    builder: ShadowBuilder,
+    /// The face pass's groups: 0 the maps and uniforms, 1 the character buffer, read-write.
     face_layouts: [wgpu::BindGroupLayout; 2],
-    face_layout: wgpu::PipelineLayout,
     face_maps: wgpu::BindGroup,
     face_entries: Option<wgpu::BindGroup>,
     /// Character entries the face pass writes this frame; 0 skips it.
@@ -452,7 +451,81 @@ pub(crate) struct Shadows {
     /// A face draws this frame: only faces read what the face pass writes.
     faces: bool,
     plan: ShadowPlan,
-    pipeline_cache: Option<wgpu::PipelineCache>,
+}
+
+/// What the shadow pipelines are built with besides their module: the casters' layout, the face
+/// pass's, and the pipeline cache.
+#[derive(Clone, Debug)]
+struct ShadowBuilder {
+    caster_layout: wgpu::PipelineLayout,
+    face_layout: wgpu::PipelineLayout,
+    cache: Option<wgpu::PipelineCache>,
+}
+
+impl ShadowBuilder {
+    /// The face pass's pipeline and the caster pipelines for `formats`, from `sources`.
+    fn build_pipelines(
+        &self,
+        device: &wgpu::Device,
+        sources: &ShaderSources,
+        formats: &[PositionFormat],
+    ) -> ShadowPipelines {
+        let module = shaders::module(device, Program::Shadows, sources);
+        let mut casters = [None, None];
+        for &format in formats {
+            casters[format_index(format)] = Some(self.build_caster(device, &module, format));
+        }
+        let constants = [(override_constant::SHADOWS, 1.0)];
+        let face = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(FACE_PASS),
+            layout: Some(&self.face_layout),
+            module: &module,
+            entry_point: Some("cs_face_shadow"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            cache: self.cache.as_ref(),
+        });
+        ShadowPipelines { casters, face }
+    }
+
+    /// The caster pipeline for meshes in `format`, from `module`.
+    fn build_caster(
+        &self,
+        device: &wgpu::Device,
+        module: &wgpu::ShaderModule,
+        format: PositionFormat,
+    ) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow caster"),
+            layout: Some(&self.caster_layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_shadow_caster"),
+                compilation_options: Default::default(),
+                buffers: &MeshPass::Shadow.buffers(format),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                // Two-sided: single-sided walls and cards cast too.
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: CASTER_BIAS,
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: None,
+            multiview_mask: None,
+            cache: self.cache.as_ref(),
+        })
+    }
 }
 
 impl Shadows {
@@ -513,18 +586,17 @@ impl Shadows {
             sampler,
             uniforms,
             pipelines: None,
-            caster_layout,
+            builder: ShadowBuilder { caster_layout, face_layout, cache: cache.cloned() },
             face_layouts,
-            face_layout,
             face_maps,
             face_entries: None,
             entries: 0,
             faces: false,
             plan: ShadowPlan::default(),
-            pipeline_cache: cache.cloned(),
         };
         if settings.is_some() {
-            shadows.pipelines = Some(shadows.build_pipelines(device, sources, &[PositionFormat::Unorm16]));
+            let pipelines = shadows.builder.build_pipelines(device, sources, &[PositionFormat::Unorm16]);
+            shadows.pipelines = Some(pipelines);
         }
         shadows
     }
@@ -550,92 +622,29 @@ impl Shadows {
             return;
         }
         let module = shaders::module(device, Program::Shadows, sources);
-        let caster = self.build_caster(device, &module, format);
+        let caster = self.builder.build_caster(device, &module, format);
         if let Some(pipelines) = &mut self.pipelines {
             pipelines.casters[format_index(format)] = Some(caster);
         }
     }
 
-    /// The face pass's pipeline and the caster pipelines for `formats`, from `sources`.
-    fn build_pipelines(
-        &self,
-        device: &wgpu::Device,
-        sources: &ShaderSources,
-        formats: &[PositionFormat],
-    ) -> ShadowPipelines {
-        let module = shaders::module(device, Program::Shadows, sources);
-        let mut casters = [None, None];
-        for &format in formats {
-            casters[format_index(format)] = Some(self.build_caster(device, &module, format));
-        }
-        let constants = [(override_constant::SHADOWS, 1.0)];
-        let face = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(FACE_PASS),
-            layout: Some(&self.face_layout),
-            module: &module,
-            entry_point: Some("cs_face_shadow"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
-            },
-            cache: self.pipeline_cache.as_ref(),
-        });
-        ShadowPipelines { casters, face }
-    }
-
-    fn build_caster(
-        &self,
-        device: &wgpu::Device,
-        module: &wgpu::ShaderModule,
-        format: PositionFormat,
-    ) -> wgpu::RenderPipeline {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shadow caster"),
-            layout: Some(&self.caster_layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_shadow_caster"),
-                compilation_options: Default::default(),
-                buffers: &MeshPass::Shadow.buffers(format),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                // Two-sided: single-sided walls and cards cast too.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: CASTER_BIAS,
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: None,
-            multiview_mask: None,
-            cache: self.pipeline_cache.as_ref(),
-        })
-    }
-
-    /// Its pipelines built again from `sources` (hot reload), on the layouts they had: the face
-    /// pass's and every caster built so far. `None` while shadows are off.
-    pub(crate) fn rebuilt_pipelines(
-        &self,
-        device: &wgpu::Device,
-        sources: &ShaderSources,
-    ) -> Option<ShadowPipelines> {
+    /// Its pipelines, to build again from new sources (hot reload, off the frame thread:
+    /// `shader_builds`) on the layouts they had: the face pass's and every caster built so far.
+    /// `None` while shadows are off.
+    pub(crate) fn rebuild(&self, device: &wgpu::Device) -> Option<Step<ShadowPipelines>> {
         let pipelines = self.pipelines.as_ref()?;
-        let mut formats = [PositionFormat::Unorm16; 2];
-        let mut count = 0;
-        for format in PositionFormat::ALL {
-            if pipelines.casters[format_index(format)].is_some() {
-                formats[count] = format;
-                count += 1;
-            }
-        }
-        Some(self.build_pipelines(device, sources, &formats[..count]))
+        let formats: Vec<PositionFormat> = PositionFormat::ALL
+            .into_iter()
+            .filter(|&format| pipelines.casters[format_index(format)].is_some())
+            .collect();
+        let (builder, device) = (self.builder.clone(), device.clone());
+        Some(Box::new(move |sources, _| builder.build_pipelines(&device, sources, &formats)))
+    }
+
+    /// The pipelines built so far, which a build off the frame thread checks it rebuilt all of
+    /// (`shader_builds`).
+    pub(crate) fn pipelines_built(&self) -> u32 {
+        self.pipelines.as_ref().map_or(0, ShadowPipelines::count)
     }
 
     pub(crate) fn set_pipelines(&mut self, pipelines: ShadowPipelines) {

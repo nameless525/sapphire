@@ -8,7 +8,10 @@
 //! - a document goes to the owner of the type its envelope names ([`Document`]): the day's
 //!   timeline (from the day's own file only, so pushing the default day can't replace the
 //!   look-dev stage's), the character light rig presets or the screen effect presets;
-//! - shader sources replace those files in what the renderer builds with;
+//! - shader sources replace those files in the newest sources the renderer was asked for, and
+//!   build off the frame thread; the push is answered once the new pipelines are swapped in, the
+//!   frame after the first one drawn with them, so the tool's time to the reply is the time until
+//!   the edit shows (`shader_edits.rs`);
 //! - a cvar is set through the overlay's registry, as the console does;
 //! - a capture is answered with the next frame the app draws ([`FrameCapture`]): the windowed
 //!   app draws that frame into a texture it reads back instead of its surface, and the offscreen
@@ -42,8 +45,9 @@ use crate::app::SandboxApp;
 use crate::capture::{Readback, compress};
 use crate::content::Content;
 use crate::options::LiveLinkOption;
-use crate::reload::{Document, Reload, error_chain, shader_report};
+use crate::reload::{Document, error_chain};
 use crate::scene::Scene;
+use crate::shader_edits::{Origin, ShaderEdits};
 
 /// How many refusals the overlay lists.
 const SHOWN_ERRORS: usize = 4;
@@ -76,7 +80,7 @@ pub(crate) struct LinkFrame<'a> {
     pub renderer: &'a mut Renderer,
     pub scene: &'a mut Scene,
     pub cvars: &'a CvarRegistry,
-    pub reload: &'a mut Reload,
+    pub shaders: &'a mut ShaderEdits,
     /// Frames since the app started, and the last one's length.
     pub frame: u64,
     pub frame_time: Duration,
@@ -142,7 +146,7 @@ impl Link {
     pub fn update(&mut self, changes: &[AssetChange], frame: LinkFrame<'_>) {
         self.tracker.record(changes);
         let Some(link) = &self.link else { return };
-        let LinkFrame { content, renderer, scene, cvars, reload, frame, frame_time } = frame;
+        let LinkFrame { content, renderer, scene, cvars, shaders: edits, frame, frame_time } = frame;
         for push in std::iter::from_fn(|| link.poll()).take(PUSHES_PER_FRAME) {
             profiling::scope!("live link");
             match push {
@@ -185,7 +189,7 @@ impl Link {
                     }
                 }
                 Push::Shaders { files, reply } => {
-                    if let Err(error) = shaders(&files, renderer, reload, reply) {
+                    if let Err(error) = shaders(&files, renderer, edits, reply) {
                         self.errors.push(error);
                     }
                 }
@@ -227,6 +231,13 @@ impl Link {
         self.errors.drain(..excess);
     }
 
+    /// Takes in the errors of shader pushes that failed to build, which their replies refused.
+    pub fn shaders_refused(&mut self, errors: &mut Vec<String>) {
+        self.errors.append(errors);
+        let excess = self.errors.len().saturating_sub(SHOWN_ERRORS);
+        self.errors.drain(..excess);
+    }
+
     /// The captures waiting for a frame, if any. Allocates nothing while none wait.
     pub fn take_capture(&mut self) -> Option<CaptureRequest> {
         (!self.captures.is_empty()).then(|| CaptureRequest { replies: std::mem::take(&mut self.captures) })
@@ -246,15 +257,16 @@ impl Link {
     }
 }
 
-/// Builds `renderer`'s programs with pushed `files` in place of theirs, all or none, and
-/// answers. Returns the refusal, if any.
+/// Asks `renderer` to build its programs with pushed `files` in place of theirs, all or none, on
+/// top of the newest sources asked for; `edits` answers once they are swapped in, or with why
+/// they weren't. Returns the refusal of a file the renderer doesn't have, answered at once.
 fn shaders(
     files: &[SourceFile],
     renderer: &mut Renderer,
-    reload: &mut Reload,
+    edits: &mut ShaderEdits,
     reply: Responder,
 ) -> Result<(), String> {
-    let mut sources = renderer.shader_sources().clone();
+    let mut sources = edits.base(renderer);
     for file in files {
         let Some(shader) = ShaderFile::from_file_name(&file.name) else {
             let error = format!("the renderer has no shader file {:?}", file.name);
@@ -263,22 +275,9 @@ fn shaders(
         };
         sources.set(shader, file.text.clone());
     }
-    // On this frame's thread, as hot reload's rebuilds are.
-    let stopwatch = Stopwatch::start();
-    match renderer.set_shader_sources(&sources) {
-        Ok(update) => {
-            reload.remember_shaders(renderer);
-            tracing::info!(target: LOG_TARGET, ?update, elapsed = ?stopwatch.elapsed(), "live link rebuilt shaders");
-            reply.reply(ReplyBody::ShadersApplied { programs: update.programs, pipelines: update.pipelines });
-            Ok(())
-        }
-        Err(error) => {
-            let report = shader_report(&error);
-            tracing::error!(target: LOG_TARGET, %error, "pushed shaders refused; keeping the last ones\n{report}");
-            reply.refuse(if report.is_empty() { error.to_string() } else { format!("{error}\n{report}") });
-            Err(format!("shaders: {error}"))
-        }
-    }
+    let files = files.iter().map(|file| file.name.as_str()).collect::<Vec<_>>().join(", ");
+    edits.request(renderer, sources, Origin::LiveLink { files, reply });
+    Ok(())
 }
 
 /// Refuses a push with `error`, which the overlay lists.

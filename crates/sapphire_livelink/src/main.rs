@@ -212,9 +212,10 @@ impl Item {
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let names: Vec<String> = files.iter().map(|file| file.name.clone()).collect();
                 let stopwatch = Stopwatch::start();
-                let (programs, pipelines) = client.push_shaders(files)?;
+                // Answered once the new pipelines show: the time taken is the time to visible.
+                let (programs, pipelines, frames) = client.push_shaders(files)?;
                 eprintln!(
-                    "{}: {programs} programs and {pipelines} pipelines rebuilt{}",
+                    "{}: {programs} programs and {pipelines} pipelines rebuilt while {frames} frames drew{}",
                     names.join(", "),
                     took(&stopwatch)
                 );

@@ -5,9 +5,7 @@
 //! character's light rig (or, for the world, the sun) under the frame's shadows, ambient light,
 //! local lights and fog, then post-processing into the target.
 
-use std::future::Future;
 use std::num::NonZeroU64;
-use std::task::{Context, Poll, Waker};
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
@@ -18,20 +16,17 @@ use sapphire_assets::probes::ArchivedProbeGrid;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
-use crate::ambient::{
-    Ambient, AmbientOcclusion, AmbientPipelines, AmbientStats, GtaoInputs, ReflectionSettings,
-};
+use crate::ambient::{Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, ReflectionSettings};
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
-use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews, RebuiltViews};
+use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
 use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
-use crate::lights::clusters::ClusterPipelines;
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
@@ -41,13 +36,17 @@ use crate::pipelines::{
     MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
     SurfaceVariant, VELOCITY_FORMAT,
 };
-use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, RebuiltPipelines, SunOnScreen};
+use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
 use crate::scene::GpuScene;
-use crate::shaders::{self, Program, ShaderError, ShaderSources};
+use crate::shader_builds::{
+    Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest,
+    scope_error,
+};
+use crate::shaders::{Program, ShaderError, ShaderSources};
 use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
-use crate::sky::{self, Sky, SkyPipelines, SkySettings, SkyStats, cube_face_camera};
-use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalPipelines, TemporalStats};
+use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
+use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::GpuTexture;
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle};
 
@@ -333,8 +332,11 @@ pub struct RenderStats {
     /// The sky's layers and its cube.
     pub sky: SkyStats,
     /// Times new shader sources rebuilt pipelines since the renderer was created
-    /// ([`Renderer::set_shader_sources`]).
+    /// ([`Renderer::request_shader_sources`], [`Renderer::set_shader_sources`]).
     pub shader_rebuilds: u32,
+    /// Shader builds off the frame thread (M1 A8 follow-up 2): whether one is in flight, and how
+    /// many were started, started again, superseded and failed.
+    pub shader_builds: ShaderBuildStats,
     /// Temporal AA's jitter, sizes and history resets; all zero when it is off.
     pub temporal: TemporalStats,
     /// The compositing layers post drew (M1 P2).
@@ -350,7 +352,8 @@ pub struct RenderStats {
     pub debug_view: DebugViewStats,
 }
 
-/// What [`Renderer::set_shader_sources`] rebuilt.
+/// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
+/// [`Renderer::set_shader_sources`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShaderUpdate {
     /// Shader modules built from changed files.
@@ -420,6 +423,9 @@ pub struct PrepassTargets {
 /// which dominated the frame's CPU time on Apple GPUs. Instances upload only when they change.
 #[derive(Debug)]
 pub struct Renderer {
+    /// Shader builds off the frame thread (`shader_builds`). First, so dropping the renderer stops
+    /// a build in flight before anything else goes.
+    builds: ShaderBuilds,
     device: wgpu::Device,
     queue: wgpu::Queue,
     settings: RenderSettings,
@@ -484,7 +490,7 @@ pub struct Renderer {
     previous_clip_from_world: Option<Mat4>,
     /// Kept for the pipelines built when meshes arrive.
     pipeline_cache: Option<wgpu::PipelineCache>,
-    /// The shader sources every pipeline is built from, including those built later.
+    /// The shader sources every pipeline in use is built from, and those built later.
     shaders: ShaderSources,
     /// `shaders` aren't the compiled-in ones, so pipelines built later are checked
     /// (`Renderer::checked_build`).
@@ -655,6 +661,7 @@ impl Renderer {
             "renderer created"
         );
         Ok(Self {
+            builds: ShaderBuilds::default(),
             device,
             queue: gpu.queue().clone(),
             settings,
@@ -996,80 +1003,167 @@ impl Renderer {
         self.checked_build(|renderer| renderer.post.prewarm(variants))
     }
 
-    /// Builds the renderer's shaders from `sources` from now on (hot reload, live link; see
-    /// `shaders` in the crate docs): every program with a changed file is checked with naga,
-    /// then its module and every pipeline built from its old version are built again, and
-    /// replace the old ones from the next recorded frame, each on the layout it had, so every
-    /// bind group stays valid (a rebuilt sky also draws its whole cube again that frame).
-    /// Pipelines built later (new permutations, formats, skinning) use them too. Unchanged
-    /// programs keep what they have.
+    /// Starts building the renderer's shaders from `sources` off the frame thread (hot reload,
+    /// live link; see the `shader_builds` module): every program with a changed file is checked
+    /// with naga, then its module and every pipeline built from its old version are built again
+    /// on a worker, each on the layout it had, so every bind group stays valid, while frames go on
+    /// drawing with the pipelines in use. The [`prepare`](Self::prepare) after the build is
+    /// complete swaps the whole new set in (a rebuilt sky also draws its whole cube again that
+    /// frame), and the sources become those pipelines built later use (new permutations,
+    /// formats, skinning). Unchanged programs keep what they have.
     ///
-    /// If any program fails, nothing changes and the error says which file and line, or which
-    /// pipelines wgpu refused: the renderer goes on drawing with the shaders it has. The work is
-    /// synchronous, on this thread, so the frame that applies an edit takes longer.
+    /// Nothing waits on the build: [`Self::shader_outcomes`] answers the request once it is
+    /// swapped in, or with the error that kept it out (the file and line, or which pipelines wgpu
+    /// refused), the renderer drawing on with the shaders it has. A request made while a build
+    /// runs supersedes it; base a request on [`Self::requested_shader_sources`] to keep what the
+    /// requests before it changed. Sources equal to those in use are answered at once, building
+    /// nothing.
+    pub fn request_shader_sources(&mut self, sources: ShaderSources) -> ShaderRequest {
+        profiling::scope!("Renderer::request_shader_sources");
+        let request = self.builds.request(sources);
+        let id = request.id;
+        if let Some(request) = self.builds.supersede(request) {
+            self.start_shader_build(request);
+        }
+        id
+    }
+
+    /// Holds every build's worker before it builds until `gate` opens (tests).
+    #[cfg(test)]
+    pub(crate) fn hold_shader_builds(&mut self, gate: std::sync::Arc<crate::shader_builds::Gate>) {
+        self.builds.hold = Some(gate);
+    }
+
+    /// The answers to [`Self::request_shader_sources`] given since they were last taken, oldest
+    /// first: each answers its request and every earlier one still waiting.
+    pub fn shader_outcomes(&mut self) -> impl Iterator<Item = ShaderOutcome> + '_ {
+        self.builds.outcomes()
+    }
+
+    /// The newest shader sources asked for: those of a request building or waiting to build, or
+    /// else those in use ([`Self::shader_sources`]). What a new request builds on to keep the
+    /// changes of those before it.
+    pub fn requested_shader_sources(&self) -> &ShaderSources {
+        self.builds.requested().unwrap_or(&self.shaders)
+    }
+
+    /// Builds the renderer's shaders from `sources` now, on this thread, and swaps them in from
+    /// the next recorded frame: what [`Self::request_shader_sources`] does on a worker, for tests
+    /// and tools that want the new pipelines before going on. If any program fails, nothing
+    /// changes and the error says which file and line, or which pipelines wgpu refused. A request
+    /// still building starts again on top of these sources once it finishes.
     pub fn set_shader_sources(&mut self, sources: &ShaderSources) -> Result<ShaderUpdate, ShaderError> {
         profiling::scope!("Renderer::set_shader_sources");
-        let changed: Vec<Program> =
-            Program::ALL.into_iter().filter(|&program| self.shaders.differs(sources, program)).collect();
+        let changed = self.changed_programs(sources);
         if changed.is_empty() {
             return Ok(ShaderUpdate::default());
         }
-        for &program in &changed {
-            shaders::validate(program, sources)?;
-        }
-        // naga accepted every program; wgpu still checks them against the layouts and vertex
-        // buffers the renderer builds pipelines with. Error scopes catch what it refuses, which
-        // would otherwise be an uncaptured (and in debug builds fatal) GPU error.
-        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let job = self.shader_job(sources, changed);
+        let rebuilt = job.run(&Cancel::default()).expect("nothing cancels a build on its own thread")?;
+        Ok(self.swap_pipelines(rebuilt, sources.clone()))
+    }
+
+    /// The programs whose files differ between the sources in use and `sources`.
+    fn changed_programs(&self, sources: &ShaderSources) -> Vec<Program> {
+        Program::ALL.into_iter().filter(|&program| self.shaders.differs(sources, program)).collect()
+    }
+
+    /// A build of `changed`'s programs from `sources`: each owner's step, from what it has built
+    /// so far.
+    fn shader_job(&self, sources: &ShaderSources, changed: Vec<Program>) -> Job {
         let device = &self.device;
+        let has = |program| changed.contains(&program);
         let cache = self.pipeline_cache.as_ref();
-        let mut pipelines = 0;
-        let mesh = changed.iter().any(|program| program.is_mesh()).then(|| {
-            let (mesh, built) = self.pipelines.rebuilt(device, sources, &changed);
-            pipelines += built;
-            mesh
-        });
-        // Only those built so far: the plainest sky's, and the variants of materials drawn since.
-        let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(sources));
-        pipelines += sky.as_ref().map_or(0, SkyPipelines::count);
-        // Only those built so far: the variants built ahead and those frames drew.
-        let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
-        pipelines += post.as_ref().map_or(0, RebuiltPipelines::count);
-        let temporal = changed
-            .contains(&Program::Temporal)
-            .then(|| self.temporal.as_ref().map(|temporal| temporal.rebuilt_pipelines(sources)))
-            .flatten();
-        pipelines += if temporal.is_some() { TemporalPipelines::COUNT } else { 0 };
-        let clusters = changed
-            .contains(&Program::Clusters)
-            .then(|| self.lights.rebuilt_cluster_pipelines(device, sources))
-            .flatten();
-        let skinning = changed
-            .contains(&Program::Skinning)
-            .then(|| self.skinning.rebuilt_pipeline(device, cache, sources))
-            .flatten();
-        pipelines += if clusters.is_some() { ClusterPipelines::COUNT } else { 0 };
-        pipelines += u32::from(skinning.is_some());
-        let shadows = changed
-            .contains(&Program::Shadows)
-            .then(|| self.shadows.rebuilt_pipelines(device, sources))
-            .flatten();
-        pipelines += shadows.as_ref().map_or(0, |shadows| shadows.count());
-        // Only those built so far: none without a grid or GTAO.
-        let ambient = changed.contains(&Program::Ambient).then(|| self.ambient.rebuilt_pipelines(sources));
-        pipelines += ambient.as_ref().map_or(0, AmbientPipelines::count);
-        // The debug views' own (their copies of the mesh pipelines follow those at the next frame).
-        let debug = changed
-            .contains(&Program::DebugView)
-            .then(|| self.debug_views.as_ref().map(|views| views.rebuilt_pipelines(sources)))
-            .flatten();
-        pipelines += debug.as_ref().map_or(0, RebuiltViews::count);
-        let error = scope_error(internal.pop()).or(scope_error(validation.pop()));
-        if let Some(error) = error {
-            let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
-            return Err(ShaderError::Pipeline { programs, message: error.to_string() });
+        let mesh = changed.iter().any(|program| program.is_mesh());
+        Job {
+            sources: sources.clone(),
+            device: device.clone(),
+            mesh: mesh.then(|| self.pipelines.rebuild(device, &changed)),
+            // Only those built so far: the plainest sky's, and the variants of materials drawn
+            // since.
+            sky: has(Program::Sky).then(|| self.sky.rebuild()),
+            // Only those built so far: the variants built ahead and those frames drew.
+            post: has(Program::Post).then(|| self.post.rebuild()),
+            temporal: has(Program::Temporal).then(|| self.temporal.as_ref().map(Temporal::rebuild)).flatten(),
+            clusters: has(Program::Clusters).then(|| self.lights.rebuild_clusters(device)).flatten(),
+            skinning: has(Program::Skinning).then(|| self.skinning.rebuild(device, cache)).flatten(),
+            shadows: has(Program::Shadows).then(|| self.shadows.rebuild(device)).flatten(),
+            // Only those built so far: none without a grid or GTAO.
+            ambient: has(Program::Ambient).then(|| self.ambient.rebuild()),
+            // The debug views' own (their copies of the mesh pipelines follow those at the next
+            // frame).
+            debug_views: has(Program::DebugView)
+                .then(|| self.debug_views.as_ref().map(|views| views.rebuild()))
+                .flatten(),
+            changed,
         }
+    }
+
+    /// What the renderer has built: a build off the frame thread swaps in only if this is what it
+    /// was when its snapshot was taken.
+    fn built(&self) -> Built {
+        Built {
+            sources: self.stats.shader_rebuilds,
+            mesh: (self.pipelines.generation(), self.pipelines.count()),
+            sky: self.sky.pipelines_built(),
+            post: self.post.pipelines_built(),
+            skinning: self.skinning.built(),
+            shadows: self.shadows.pipelines_built(),
+            ambient: self.ambient.pipelines_built(),
+            debug_views: self.debug_views.as_ref().map(|views| views.pipelines_built()),
+        }
+    }
+
+    /// Starts building `request` on a worker, or answers it if its sources change nothing.
+    fn start_shader_build(&mut self, request: Request) {
+        let changed = self.changed_programs(&request.sources);
+        if changed.is_empty() {
+            self.builds.answer(request, Ok(ShaderUpdate::default()));
+            return;
+        }
+        let job = self.shader_job(&request.sources, changed);
+        let built = self.built();
+        self.builds.spawn(request, job, built);
+    }
+
+    /// At a frame boundary, before anything reads a pipeline: swaps a finished build in, answers
+    /// one that failed, starts one again whose snapshot the renderer has built past, and starts
+    /// a request that superseded the build that just stopped. Never waits on a build.
+    fn poll_shader_builds(&mut self) {
+        let Some((request, built, finished)) = self.builds.poll() else { return };
+        match finished {
+            // Never swapped in: a newer request superseded it.
+            _ if self.builds.superseded() => {}
+            // Only a supersession cancels a running build, but should one end so anyway, it
+            // builds again rather than go unanswered.
+            None => self.start_shader_build(request),
+            Some(Err(error)) => self.builds.answer(request, Err(error)),
+            // Pipelines were built (or sources set) since its snapshot, which it lacks.
+            Some(Ok(_)) if built != self.built() => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    ?built,
+                    now = ?self.built(),
+                    "shaders built again: pipelines were built meanwhile"
+                );
+                self.builds.restarted();
+                self.start_shader_build(request);
+            }
+            Some(Ok(rebuilt)) => {
+                let update = self.swap_pipelines(rebuilt, request.sources.clone());
+                self.builds.answer(request, Ok(update));
+            }
+        }
+        if let Some(waiting) = self.builds.take_waiting() {
+            self.start_shader_build(waiting);
+        }
+    }
+
+    /// Replaces every rebuilt owner's pipelines, all at once, and builds from `sources` from now
+    /// on.
+    fn swap_pipelines(&mut self, rebuilt: Rebuilt, sources: ShaderSources) -> ShaderUpdate {
+        let Rebuilt { mesh, sky, post, temporal, clusters, skinning, shadows, ambient, debug_views, update } =
+            rebuilt;
         if let Some(mesh) = mesh {
             self.pipelines = mesh;
         }
@@ -1094,15 +1188,14 @@ impl Renderer {
         if let Some(ambient) = ambient {
             self.ambient.set_pipelines(ambient);
         }
-        if let (Some(debug), Some(views)) = (debug, self.debug_views.as_mut()) {
+        if let (Some(debug), Some(views)) = (debug_views, self.debug_views.as_mut()) {
             views.set_pipelines(debug);
         }
-        self.shaders = sources.clone();
         self.edited_shaders = !sources.is_compiled_in();
+        self.shaders = sources;
         self.stats.shader_rebuilds += 1;
-        let update = ShaderUpdate { programs: changed.len() as u32, pipelines };
         tracing::info!(target: LOG_TARGET, programs = update.programs, pipelines = update.pipelines, "shaders rebuilt");
-        Ok(update)
+        update
     }
 
     /// Runs `build`, which may build pipelines from the current shader sources. Edited sources
@@ -1130,8 +1223,9 @@ impl Renderer {
         result
     }
 
-    /// The shader sources the renderer builds with: compiled in, until
-    /// [`Self::set_shader_sources`] replaced them.
+    /// The shader sources the pipelines in use were built from, which pipelines built later
+    /// are built from too: compiled in, until a build of new ones was swapped in
+    /// ([`Self::request_shader_sources`], [`Self::set_shader_sources`]).
     pub fn shader_sources(&self) -> &ShaderSources {
         &self.shaders
     }
@@ -1154,6 +1248,10 @@ impl Renderer {
             "prepare() needs the GpuContext the renderer was created with"
         );
         let (device, queue) = (gpu.device(), gpu.queue());
+        // A finished shader build swaps in here, before anything reads a pipeline: the whole
+        // frame draws with the old set or with the new.
+        self.poll_shader_builds();
+        self.stats.shader_builds = self.builds.stats();
 
         if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
             self.scene_bind_groups = create_scene_bind_groups(
@@ -2227,16 +2325,6 @@ fn begin_prepass<'p>(
         timestamp_writes,
         ..Default::default()
     })
-}
-
-/// The error an error scope caught: `pop`'s future, which native backends resolve at once. Only
-/// WebGPU resolves it later, and the engine has no web build (spec §1.3).
-fn scope_error(pop: impl Future<Output = Option<wgpu::Error>>) -> Option<wgpu::Error> {
-    let mut pop = std::pin::pin!(pop);
-    match pop.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(error) => error,
-        Poll::Pending => None,
-    }
 }
 
 /// Copies `bytes` to the start of `target` through the staging belt. Empty uploads are skipped.

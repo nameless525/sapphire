@@ -73,11 +73,12 @@ impl Client {
         }
     }
 
-    /// Pushes shader sources, and returns the programs and pipelines the device built from them.
-    pub fn push_shaders(&mut self, files: Vec<SourceFile>) -> Result<(u32, u32), LinkError> {
-        // Building pipelines takes the device a frame or more.
+    /// Pushes shader sources, and returns the programs and pipelines the device built from them
+    /// and the frames it drew meanwhile, once they show.
+    pub fn push_shaders(&mut self, files: Vec<SourceFile>) -> Result<(u32, u32, u32), LinkError> {
+        // Building pipelines takes the device frames, seconds when its driver compiles them cold.
         match self.request(RequestBody::Shaders { files }, Self::PACK_TIMEOUT)? {
-            ReplyBody::ShadersApplied { programs, pipelines } => Ok((programs, pipelines)),
+            ReplyBody::ShadersApplied { programs, pipelines, frames } => Ok((programs, pipelines, frames)),
             other => Err(unexpected("shaders applied", &other)),
         }
     }

@@ -143,6 +143,7 @@ use crate::pipelines::{
 };
 use crate::renderer::{DrawThrough, PrepassTargets, draw_main_pass};
 use crate::scene::DrawList;
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
 /// A way to draw the frame other than as it looks (see the [module docs](self)).
@@ -649,7 +650,7 @@ const LINES_OUTPUT_BINDING: u32 = 21;
 const LINES_WORKGROUP: u32 = 128;
 
 /// The layouts of the views' own passes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ViewLayouts {
     /// Group 2 of the passes over the frame: the replay's stencil (binding 0) and depth (1).
     input: wgpu::BindGroupLayout,
@@ -726,7 +727,7 @@ impl ViewLayouts {
 }
 
 /// The views' own pipelines, from the debug view program (`shaders/debug_view.wgsl`).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ViewPipelines {
     /// Also the stand-in fragment stage's, which [`Replay::Invocations`] copies draw with.
     module: wgpu::ShaderModule,
@@ -976,16 +977,6 @@ impl DebugViews {
         }
     }
 
-    fn builder(&self) -> ViewBuilder<'_> {
-        ViewBuilder {
-            device: &self.device,
-            layouts: &self.layouts,
-            color_format: self.color_format,
-            depth_format: self.depth_format,
-            cache: self.cache.as_ref(),
-        }
-    }
-
     /// Readies `view` for the frame just prepared: builds the pipelines it needs that aren't
     /// built (copies of `pipelines`' for what `list` draws), sizes the wireframe's line indices
     /// for the pool's first `index_end` indices, and takes the frame's per-object light lists
@@ -1082,10 +1073,28 @@ impl DebugViews {
         &self.view_uniforms
     }
 
-    /// The views' own pipelines built from `sources`, for [`Self::set_pipelines`] once every
-    /// changed program built (shader hot reload).
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> RebuiltViews {
-        RebuiltViews(self.pipelines.rebuilt(&self.builder(), sources))
+    /// The views' own pipelines, to build from new sources (shader hot reload, off the frame
+    /// thread: `shader_builds`), for [`Self::set_pipelines`] once every changed program built.
+    pub(crate) fn rebuild(&self) -> Step<RebuiltViews> {
+        let (device, layouts, cache) = (self.device.clone(), self.layouts.clone(), self.cache.clone());
+        let (color_format, depth_format) = (self.color_format, self.depth_format);
+        let built = self.pipelines.clone();
+        Box::new(move |sources, _| {
+            let builder = ViewBuilder {
+                device: &device,
+                layouts: &layouts,
+                color_format,
+                depth_format,
+                cache: cache.as_ref(),
+            };
+            RebuiltViews(built.rebuilt(&builder, sources))
+        })
+    }
+
+    /// The views' own pipelines built so far (not the copies), which a build off the frame thread
+    /// checks it rebuilt all of (`shader_builds`).
+    pub(crate) fn pipelines_built(&self) -> u32 {
+        self.pipelines.count()
     }
 
     /// Takes the views' own pipelines built from new sources; the copies that draw with their

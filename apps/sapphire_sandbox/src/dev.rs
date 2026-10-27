@@ -30,6 +30,7 @@ use crate::link::{CaptureRequest, Link, LinkFrame};
 use crate::options::Options;
 use crate::reload::Reload;
 use crate::scene::Scene;
+use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
 
 pub(crate) struct DevTools {
@@ -37,6 +38,9 @@ pub(crate) struct DevTools {
     cvars: CvarRegistry,
     reload: Reload,
     link: Link,
+    /// Shader sources asked of the renderer by hot reload and live link, answered as they are
+    /// swapped in.
+    shaders: ShaderEdits,
     /// Frames begun, and the last one's length, for live link's status.
     frames: u64,
     frame_time: Duration,
@@ -103,6 +107,7 @@ impl DevTools {
                 &crate::reload::light_rigs_source(options),
             ),
             link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
+            shaders: ShaderEdits::default(),
             frames: 0,
             frame_time: Duration::ZERO,
             pacing: None,
@@ -119,17 +124,21 @@ impl DevTools {
     }
 
     /// Applies what hot reload found changed and what live link received, before the frame's
-    /// loading: once a frame.
+    /// loading: once a frame. First answers the shader edits the renderer swapped in (or
+    /// refused) since the last frame.
     pub fn reload(&mut self, content: &mut Content, renderer: &mut Renderer, scene: &mut Scene) {
+        let mut answered = self.shaders.answer(renderer);
+        self.reload.shaders_answered(&mut answered);
+        self.link.shaders_refused(&mut answered.link_errors);
         // Taken once for both: hot reload lists failed reloads, live link answers pushes with them.
         let changes = content.take_changes();
-        self.reload.update(&changes, content, renderer, scene);
+        self.reload.update(&changes, content, renderer, scene, &mut self.shaders);
         let frame = LinkFrame {
             content,
             renderer,
             scene,
             cvars: &self.cvars,
-            reload: &mut self.reload,
+            shaders: &mut self.shaders,
             frame: self.frames,
             frame_time: self.frame_time,
         };
@@ -147,9 +156,10 @@ impl DevTools {
         self.frames
     }
 
-    /// A new renderer (a tier change, device loss) builds the shaders hot reload gave the last.
+    /// A new renderer (a tier change, device loss) builds the shaders hot reload and live link
+    /// gave the last, answering the edits it left building.
     pub fn renderer_created(&mut self, renderer: &mut Renderer) {
-        self.reload.renderer_created(renderer);
+        self.shaders.renderer_created(renderer);
     }
 
     /// The overlay sees each event first; the game's input gets what it doesn't use.

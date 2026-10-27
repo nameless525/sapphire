@@ -66,6 +66,7 @@ use serde::{Deserialize, Serialize};
 use crate::buffer::{self, GrowableBuffer};
 use crate::mesh_pool::MeshRecord;
 use crate::scene::InstanceSlots;
+use crate::shader_builds::Step;
 use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
 use clusters::{ClusterPass, ClusterPipelines};
@@ -297,14 +298,10 @@ impl Lights {
         }
     }
 
-    /// The cluster pass's pipelines built from `sources` instead, if the clustered path runs,
-    /// for [`Self::set_cluster_pipelines`] (shader hot reload).
-    pub(crate) fn rebuilt_cluster_pipelines(
-        &self,
-        device: &wgpu::Device,
-        sources: &ShaderSources,
-    ) -> Option<ClusterPipelines> {
-        self.cluster_pass.as_ref().map(|pass| pass.rebuilt(device, sources))
+    /// The cluster pass's pipelines, to build from new sources instead, if the clustered path
+    /// runs, for [`Self::set_cluster_pipelines`] (shader hot reload).
+    pub(crate) fn rebuild_clusters(&self, device: &wgpu::Device) -> Option<Step<ClusterPipelines>> {
+        self.cluster_pass.as_ref().map(|pass| pass.rebuild(device))
     }
 
     pub(crate) fn set_cluster_pipelines(&mut self, pipelines: ClusterPipelines) {

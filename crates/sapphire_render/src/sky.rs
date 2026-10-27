@@ -146,6 +146,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::materials::{MaterialHandle, Materials};
 use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{CameraData, DirectionalLight, FramePacket, LOG_TARGET, RenderError};
 
@@ -277,7 +278,7 @@ pub(crate) struct Sky {
     /// Group 2 of the sky's pipelines.
     bind_group: wgpu::BindGroup,
     /// What the pipelines are built with besides their module and constants, kept to build more
-    /// and to build them again from new shader sources (hot reload, [`Self::rebuilt_pipelines`]).
+    /// and to build them again from new shader sources (hot reload, [`Self::rebuild`]).
     builder: Builder,
     /// The variants built so far.
     pipelines: SkyPipelines,
@@ -387,7 +388,7 @@ impl Layers {
 }
 
 /// What every sky pipeline is built with besides its module and its layers.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Builder {
     device: wgpu::Device,
     layout: wgpu::PipelineLayout,
@@ -572,7 +573,7 @@ impl CubePass<'_> {
 }
 
 /// The sky's pipelines built so far, by variant, and the module later ones are built from: what
-/// [`Sky::rebuilt_pipelines`] returns.
+/// [`Sky::rebuild`] builds.
 #[derive(Debug)]
 pub(crate) struct SkyPipelines {
     module: wgpu::ShaderModule,
@@ -708,18 +709,28 @@ impl Sky {
         })
     }
 
-    /// The pipelines built so far, built anew from `sources` (hot reload), on the layout, sample
-    /// count and cube format they were built with, and the module later ones come from:
-    /// [`Self::set_pipelines`] takes them once the renderer knows every pipeline it rebuilt is
-    /// valid.
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> SkyPipelines {
-        let mut pipelines = SkyPipelines::new(shaders::module(&self.builder.device, Program::Sky, sources));
-        let ready = [false, true]
-            .into_iter()
-            .flat_map(|nebula| [false, true].map(|lit_clouds| Features { nebula, lit_clouds }))
-            .filter(|features| self.ready & features.bit() != 0);
-        pipelines.build(&self.builder, ready.flat_map(Layers::drawable));
-        pipelines
+    /// The pipelines built so far, to build anew from new sources (hot reload, off the frame
+    /// thread: `shader_builds`), on the layout, sample count and cube format they were built
+    /// with, and the module later ones come from: [`Self::set_pipelines`] takes them once the
+    /// renderer knows every pipeline it rebuilt is valid.
+    pub(crate) fn rebuild(&self) -> Step<SkyPipelines> {
+        let (builder, built) = (self.builder.clone(), self.ready);
+        Box::new(move |sources, cancel| {
+            let mut pipelines = SkyPipelines::new(shaders::module(&builder.device, Program::Sky, sources));
+            let ready = [false, true]
+                .into_iter()
+                .flat_map(|nebula| [false, true].map(|lit_clouds| Features { nebula, lit_clouds }))
+                .filter(|features| built & features.bit() != 0);
+            let layers = ready.flat_map(Layers::drawable).take_while(|_| !cancel.is_set());
+            pipelines.build(&builder, layers);
+            pipelines
+        })
+    }
+
+    /// The pipelines built so far, which a build off the frame thread checks it rebuilt all of
+    /// (`shader_builds`).
+    pub(crate) fn pipelines_built(&self) -> u32 {
+        self.pipelines.count()
     }
 
     /// Draws with `pipelines` from the next frame, which draws every face of the cube again, as

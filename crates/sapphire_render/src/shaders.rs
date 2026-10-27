@@ -13,17 +13,22 @@
 //! [`ShaderSources`] holds every file's text: compiled in, or edited. Development builds read
 //! edited files from disk (the desktop hot reload) and take them from live link (M1 A9); the
 //! renderer only ever gets text, never a path (rule R5), and shipping builds use the compiled-in
-//! files alone. [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources) rebuilds
-//! the programs whose files changed and every pipeline built from them, after checking each
-//! program with naga ([`validate`]) the way wgpu compiles it, with no optional capabilities,
-//! so an error names the file and line it is in. Anything that fails keeps the pipelines the
-//! renderer has.
+//! files alone.
+//! [`Renderer::request_shader_sources`](crate::Renderer::request_shader_sources) rebuilds the
+//! programs whose files changed and every pipeline built from them on a worker, while frames go
+//! on drawing with the old ones, and swaps the new set in once it is complete (the
+//! `shader_builds` module, M1 A8 follow-up 2);
+//! [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources) does the same on the
+//! calling thread. Both check each program with naga ([`validate`]) the way wgpu compiles it,
+//! with no optional capabilities, so an error names the file and line it is in. Anything that
+//! fails keeps the pipelines the renderer has.
 //!
 //! A new shader file joins [`ShaderFile`] (its name and its compiled-in text) and the programs
 //! that use it (`Program::files`); a new program also needs its pipelines' owner to build them
-//! from [`ShaderSources`] and rebuild them in `Renderer::set_shader_sources`, as the mesh
-//! pipelines, the sky, post, temporal AA, the light clusters, skinning, the shadows, the ambient
-//! passes and the debug views do.
+//! from [`ShaderSources`], to hand a rebuild of what it has built to `Renderer::shader_job` as
+//! an owned step a worker runs (`shader_builds::Step`), and to count what it has built in
+//! `Renderer::built`, as the mesh pipelines, the sky, post, temporal AA, the light clusters,
+//! skinning, the shadows, the ambient passes and the debug views do.
 
 use std::borrow::Cow;
 use std::fmt;

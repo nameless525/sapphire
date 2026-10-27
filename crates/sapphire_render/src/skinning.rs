@@ -78,6 +78,7 @@ use sapphire_rhi::wgpu;
 use crate::buffer::{self, GrowableBuffer, RangeAllocator};
 use crate::mesh_pool::{DeformSource, MeshPool, MeshRecord};
 use crate::scene::InstanceSlots;
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{FramePacket, MeshHandle};
 
@@ -282,17 +283,24 @@ impl Skinning {
         }
     }
 
-    /// The pass's pipeline built from `sources` instead, if it was built, for
-    /// [`Self::set_pipeline`] (shader hot reload). Its bind group layout is the old one's, so
-    /// the bind group stays.
-    pub(crate) fn rebuilt_pipeline(
+    /// The pass's pipeline, to build from new sources instead (off the frame thread:
+    /// `shader_builds`), if it was built, for [`Self::set_pipeline`] (shader hot reload). Its bind
+    /// group layout is the old one's, so the bind group stays.
+    pub(crate) fn rebuild(
         &self,
         device: &wgpu::Device,
         cache: Option<&wgpu::PipelineCache>,
-        sources: &ShaderSources,
-    ) -> Option<wgpu::ComputePipeline> {
-        let pass = self.pass.as_ref()?;
-        Some(SkinningPipeline::pipeline(device, &pass.pipeline_layout, cache, sources))
+    ) -> Option<Step<wgpu::ComputePipeline>> {
+        let layout = self.pass.as_ref()?.pipeline_layout.clone();
+        let (device, cache) = (device.clone(), cache.cloned());
+        Some(Box::new(move |sources, _| {
+            SkinningPipeline::pipeline(&device, &layout, cache.as_ref(), sources)
+        }))
+    }
+
+    /// Whether the pass's pipeline is built: with the first skinned or morphed mesh.
+    pub(crate) fn built(&self) -> bool {
+        self.pass.is_some()
     }
 
     pub(crate) fn set_pipeline(&mut self, pipeline: wgpu::ComputePipeline) {

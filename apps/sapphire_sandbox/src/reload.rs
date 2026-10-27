@@ -7,8 +7,9 @@
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
 //!   versions within the frame's upload budget, in place;
-//! - new shader sources rebuild the renderer's pipelines from the next frame, or keep the ones it
-//!   has if they don't compile;
+//! - new shader sources build the renderer's pipelines again off the frame thread, which swaps
+//!   them in once they are all built, or keeps the ones it has if they don't compile
+//!   (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
 //!   scene runs on ([`Scene::replace_day`]);
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
@@ -24,7 +25,7 @@
 //! shown in the debug overlay's stats panel; whatever failed keeps what it had.
 //!
 //! Live link (`link.rs`) applies pushed documents and shader sources through the same
-//! [`Document`]s and [`Reload::remember_shaders`].
+//! [`Document`]s and [`ShaderEdits`].
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +33,7 @@ use sapphire_assets::AssetChange;
 use sapphire_debug::HotReloadStatus;
 use sapphire_hot_reload::{Changes, DEBOUNCE, DocumentId, HotReload, sources};
 use sapphire_reflect::stable_name;
-use sapphire_render::{Renderer, ShaderError, ShaderSources};
+use sapphire_render::Renderer;
 use sapphire_time::Stopwatch;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::screen_effects::EffectLibrary;
@@ -41,6 +42,7 @@ use sapphire_world::tod::TodTimeline;
 use crate::LOG_TARGET;
 use crate::content::Content;
 use crate::scene::{Day, Scene};
+use crate::shader_edits::{Answered, Origin, ShaderEdits};
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,9 +149,7 @@ pub(crate) struct Reload {
     watching: String,
     /// The watched documents, with their files' names.
     documents: Vec<(DocumentId, Document, String)>,
-    /// The shader sources the renderer builds with since an edit replaced the compiled-in ones:
-    /// a new renderer (a tier change, device loss) gets them too.
-    shaders: Option<ShaderSources>,
+    /// Edits of the shaders swapped in.
     shader_rebuilds: u32,
     reloaded_documents: u32,
     /// The errors of the last round that changed something.
@@ -166,7 +166,6 @@ impl Reload {
             hot: None,
             watching: String::new(),
             documents: Vec::new(),
-            shaders: None,
             shader_rebuilds: 0,
             reloaded_documents: 0,
             errors: Vec::new(),
@@ -217,14 +216,25 @@ impl Reload {
         reload
     }
 
+    /// Takes in what became of the shader edits it asked for: those swapped in, and the errors
+    /// of those that failed, which replace the last change's.
+    pub fn shaders_answered(&mut self, answered: &mut Answered) {
+        self.shader_rebuilds += answered.reloaded;
+        if !answered.reload_errors.is_empty() {
+            self.errors = std::mem::take(&mut answered.reload_errors);
+        }
+    }
+
     /// Applies what changed since the last frame; `changes` are the asset server's since then.
-    /// Allocates nothing while nothing did.
+    /// New shader sources go to the renderer through `shaders`, which answers them once they are
+    /// swapped in. Allocates nothing while nothing changed.
     pub fn update(
         &mut self,
         changes: &[AssetChange],
         content: &mut Content,
         renderer: &mut Renderer,
         scene: &mut Scene,
+        shaders: &mut ShaderEdits,
     ) {
         let Some(hot) = &mut self.hot else { return };
         // Reloads land frames after their pack changed, so they are told of as they come: the
@@ -242,8 +252,8 @@ impl Reload {
                 AssetChange::Removed { .. } => {}
             }
         }
-        let Changes { packs, shaders, documents, mut errors } = hot.poll();
-        if packs.is_empty() && shaders.is_none() && documents.is_empty() && errors.is_empty() {
+        let Changes { packs, shaders: new_shaders, documents, mut errors } = hot.poll();
+        if packs.is_empty() && new_shaders.is_none() && documents.is_empty() && errors.is_empty() {
             return;
         }
         profiling::scope!("hot reload");
@@ -260,20 +270,9 @@ impl Reload {
                 Err(error) => errors.push(format!("pack {pack:?}: {}", error_chain(&error))),
             }
         }
-        if let Some(sources) = shaders {
-            // On this frame's thread: the frame that applies an edit is longer by this much.
-            let stopwatch = Stopwatch::start();
-            match renderer.set_shader_sources(&sources) {
-                Ok(update) => {
-                    self.shader_rebuilds += 1;
-                    tracing::info!(target: LOG_TARGET, ?update, elapsed = ?stopwatch.elapsed(), "shaders reloaded");
-                }
-                Err(error) => {
-                    tracing::error!(target: LOG_TARGET, %error, "shaders not reloaded; keeping the last ones\n{}", shader_report(&error));
-                    errors.push(format!("shaders: {error}"));
-                }
-            }
-            self.remember_shaders(renderer);
+        // Built off the frame thread: `shaders` answers once they show, or with their errors.
+        if let Some(sources) = new_shaders {
+            shaders.request(renderer, sources, Origin::HotReload);
         }
         for (id, text) in documents {
             let Some((_, document, origin)) = self.documents.iter().find(|(watched, ..)| *watched == id)
@@ -294,23 +293,6 @@ impl Reload {
         self.errors = errors;
     }
 
-    /// Keeps the shader sources `renderer` builds with now, after hot reload or live link gave it
-    /// new ones, for a renderer made later.
-    pub fn remember_shaders(&mut self, renderer: &Renderer) {
-        let current = renderer.shader_sources();
-        self.shaders = (!current.is_compiled_in()).then(|| current.clone());
-    }
-
-    /// Builds `renderer`'s shaders from the sources an edit gave the last one: for a renderer
-    /// made after a tier change or device loss.
-    pub fn renderer_created(&mut self, renderer: &mut Renderer) {
-        if let Some(sources) = &self.shaders
-            && let Err(error) = renderer.set_shader_sources(sources)
-        {
-            tracing::error!(target: LOG_TARGET, %error, "the new renderer keeps the compiled-in shaders");
-        }
-    }
-
     /// What the overlay shows.
     pub fn status(&self) -> HotReloadStatus<'_> {
         HotReloadStatus {
@@ -319,15 +301,6 @@ impl Reload {
             documents: self.reloaded_documents,
             errors: &self.errors,
         }
-    }
-}
-
-/// naga's report of a shader error, with the source lines it points at: empty for the
-/// pipelines wgpu refused.
-pub(crate) fn shader_report(error: &ShaderError) -> &str {
-    match error {
-        ShaderError::Invalid { report, .. } => report,
-        ShaderError::Pipeline { .. } => "",
     }
 }
 

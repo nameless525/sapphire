@@ -43,8 +43,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol this build speaks. Raise it with any change to the preamble, the framing or a
-/// message's layout. Version 2 (M1 X2's rehearsal) added [`RequestBody::Capture`].
-pub const PROTOCOL_VERSION: u32 = 2;
+/// message's layout. Version 2 (M1 X2's rehearsal) added [`RequestBody::Capture`]; version 3 (M1
+/// A8 follow-up 2) the frames drawn while pushed shaders built
+/// ([`ReplyBody::ShadersApplied`]).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -178,8 +180,9 @@ pub enum RequestBody {
     /// `origin` names it in messages (its file name). [`ReplyBody::DocumentApplied`].
     Document { origin: String, text: String },
     /// Shader sources, by file name: they replace those files' text in what the renderer builds
-    /// with, and every program using them is built again, or none is.
-    /// [`ReplyBody::ShadersApplied`].
+    /// with, and every program using them is built again, or none is. The device builds them off
+    /// its frame thread and answers once the new pipelines are swapped in, so the reply comes
+    /// when the edit shows. [`ReplyBody::ShadersApplied`].
     Shaders { files: Vec<SourceFile> },
     /// Starts pushing pack `name`, `len` bytes long: `head` is its header and table of contents
     /// (the bytes before its data). [`ReplyBody::PackNeed`].
@@ -268,10 +271,12 @@ pub enum ReplyBody {
     DocumentApplied {
         owner: String,
     },
-    /// The programs and pipelines the new sources built; none if they changed nothing.
+    /// The programs and pipelines the new sources built, none if they changed nothing, and the
+    /// frames the device drew with the shaders it had while it built them.
     ShadersApplied {
         programs: u32,
         pipelines: u32,
+        frames: u32,
     },
     /// The ranges of the pack to send, in order.
     PackNeed {

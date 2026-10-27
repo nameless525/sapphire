@@ -541,8 +541,10 @@ fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_
         let (reloads, failures) =
             frame.assets.map_or((0, 0), |assets| (assets.reloads, assets.reload_failures));
         ui.label("Reloaded");
+        // Shaders build off the frame thread (M1 A8 follow-up 2): one may be in flight.
+        let building = if frame.render.shader_builds.building { " (one building)" } else { "" };
         ui.monospace(format!(
-            "{reloads} assets ({failures} failed), {} shader rebuilds, {} documents",
+            "{reloads} assets ({failures} failed), {} shader rebuilds{building}, {} documents",
             frame.render.shader_rebuilds, status.documents
         ));
         ui.end_row();

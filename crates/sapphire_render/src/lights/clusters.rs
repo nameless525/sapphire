@@ -59,6 +59,7 @@ use sapphire_rhi::wgpu;
 
 use super::GpuLight;
 use crate::gpu_types::FrameUniforms;
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
 pub(crate) const TILES_X: u32 = 16;
@@ -185,10 +186,11 @@ impl ClusterPass {
         Self { pipelines, bind_group, layout, cache: cache.cloned() }
     }
 
-    /// The pass's pipelines built from `sources` instead, for [`Self::set_pipelines`] (shader
-    /// hot reload).
-    pub(crate) fn rebuilt(&self, device: &wgpu::Device, sources: &ShaderSources) -> ClusterPipelines {
-        build(device, &self.layout, self.cache.as_ref(), sources)
+    /// The pass's pipelines, to build from new sources instead (off the frame thread:
+    /// `shader_builds`), for [`Self::set_pipelines`] (shader hot reload).
+    pub(crate) fn rebuild(&self, device: &wgpu::Device) -> Step<ClusterPipelines> {
+        let (device, layout, cache) = (device.clone(), self.layout.clone(), self.cache.clone());
+        Box::new(move |sources, _| build(&device, &layout, cache.as_ref(), sources))
     }
 
     pub(crate) fn set_pipelines(&mut self, pipelines: ClusterPipelines) {

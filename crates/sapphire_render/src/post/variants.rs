@@ -11,6 +11,7 @@ use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
 };
+use crate::shader_builds::Cancel;
 
 /// A set of post's switches, the pipeline-overridable constants of `post.wgsl` that pick each
 /// frame's variants (the module docs' "Variants"): the variants of a set are every combination of
@@ -172,7 +173,7 @@ impl Slot {
 
 /// What post's pipelines are built with, but `post.wgsl`'s module: their layouts (which the
 /// passes' bind groups use too), the formats they write and the tier's effect settings.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Builder {
     pub device: wgpu::Device,
     pub shared_layout: wgpu::BindGroupLayout,
@@ -279,7 +280,7 @@ impl Builder {
 }
 
 /// Post's pipelines built so far, by [`Slot`].
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Pipelines {
     slots: [Option<wgpu::RenderPipeline>; Slot::COUNT],
 }
@@ -313,10 +314,12 @@ impl Pipelines {
         built
     }
 
-    /// Every pipeline built here, built again from `module`.
-    pub(super) fn rebuilt(&self, builder: &Builder, module: &wgpu::ShaderModule) -> Self {
+    /// Every pipeline built here, built again from `module`, unless `cancel` is set first: then
+    /// what it returns is to be thrown away.
+    pub(super) fn rebuilt(&self, builder: &Builder, module: &wgpu::ShaderModule, cancel: &Cancel) -> Self {
         let mut rebuilt = Self::default();
-        rebuilt.build(builder, module, Slot::all().filter(|&slot| self.get(slot).is_some()));
+        let built = Slot::all().filter(|&slot| self.get(slot).is_some());
+        rebuilt.build(builder, module, built.take_while(|_| !cancel.is_set()));
         rebuilt
     }
 }

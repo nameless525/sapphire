@@ -112,6 +112,7 @@ use sapphire_rhi::{TransientDesc, wgpu};
 use crate::bind_cache::CachedBindGroup;
 use crate::graph::{FrameGraph, PassContext, TextureId};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
 /// The frame graph passes temporal AA adds, the responsive mask's and the resolve's: what the
@@ -521,9 +522,9 @@ impl Temporal {
         }
     }
 
-    /// Its pipelines built again from `sources` (see [`TemporalPasses::rebuilt_pipelines`]).
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> TemporalPipelines {
-        self.passes.rebuilt_pipelines(sources)
+    /// Its pipelines, to build again from new sources (see [`TemporalPasses::rebuild`]).
+    pub(crate) fn rebuild(&self) -> Step<TemporalPipelines> {
+        self.passes.rebuild()
     }
 
     pub(crate) fn set_pipelines(&mut self, pipelines: TemporalPipelines) {
@@ -745,12 +746,15 @@ impl TemporalPasses {
         }
     }
 
-    /// The pipelines built again from `sources`, on the layouts they had, for
-    /// [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources) to keep if every
-    /// rebuilt pipeline is valid.
-    fn rebuilt_pipelines(&self, sources: &ShaderSources) -> TemporalPipelines {
-        let module = shaders::module(&self.device, Program::Temporal, sources);
-        TemporalPipelines::new(&self.device, &module, &self.pipeline_layouts, self.cache.as_ref())
+    /// The pipelines, to build again from new sources on the layouts they had (off the frame
+    /// thread: `shader_builds`), for the renderer to keep if every rebuilt pipeline is valid.
+    fn rebuild(&self) -> Step<TemporalPipelines> {
+        let (device, layouts, cache) =
+            (self.device.clone(), self.pipeline_layouts.clone(), self.cache.clone());
+        Box::new(move |sources, _| {
+            let module = shaders::module(&device, Program::Temporal, sources);
+            TemporalPipelines::new(&device, &module, &layouts, cache.as_ref())
+        })
     }
 
     /// The constants for this frame, and the buffer the frame's uploads write them to.

@@ -244,6 +244,8 @@ mod rims;
 mod scene;
 #[cfg(feature = "dev")]
 mod serve;
+#[cfg(feature = "dev")]
+mod shader_edits;
 mod skinned;
 mod stage;
 mod stats;

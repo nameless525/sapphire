@@ -21,6 +21,7 @@ use crate::fog;
 use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
+use crate::shader_builds::{Cancel, Step};
 use crate::shaders::{self, Program, ShaderSources};
 use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
 
@@ -1135,7 +1136,7 @@ const TRANSPARENT_BLEND: wgpu::BlendState = wgpu::BlendState {
 
 /// The mesh pipelines for one [`PositionFormat`]: the same shaders, with that format's
 /// position attribute.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MeshPipelines {
     /// The surfaces of every family, per [`SurfaceVariant::ALL`] entry; each is built with the
     /// first draw that needs it ([`Pipelines::prepare_variant`]).
@@ -1180,7 +1181,7 @@ pub(crate) type PrepassDraws<'a> = (Option<&'a wgpu::RenderPipeline>, MeshPass, 
 
 /// The prepasses' pipelines for alpha-tested anime character surfaces (M1 C7; `prepass.wgsl`'s
 /// and `outline.wgsl`'s `*_masked` entry points), which bind the family's group 3.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MaskedPrepasses {
     pub character: wgpu::RenderPipeline,
     /// Hair's, which writes the nearest surface's ID alone (M1 C6).
@@ -1233,7 +1234,7 @@ type Rebuild<'a> =
 /// which cull nothing, the scene prepass writing back faces' flipped normals. Masked, as
 /// [`MaskedPrepasses`], for the alpha-tested coverage. Each is built with the first variant that
 /// draws through it; their hulls are the one-sided variants' (the outline prepass's).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TwoSidedPrepasses {
     pub character: Option<wgpu::RenderPipeline>,
     pub character_hair: Option<wgpu::RenderPipeline>,
@@ -1592,9 +1593,10 @@ impl MeshPipelines {
 /// through ([`Self::prepare_through_hair`]). Apps never pay for compiling what they don't draw.
 ///
 /// They are built from the renderer's current shader sources, whose modules they keep; new
-/// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]). A debug view
-/// copies them with its own fixed-function state ([`Self::build_replay`]).
-#[derive(Debug)]
+/// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]), off the frame
+/// thread from a clone ([`Self::rebuild`]; cloning shares every pipeline). A debug view copies
+/// them with its own fixed-function state ([`Self::build_replay`]).
+#[derive(Clone, Debug)]
 pub(crate) struct Pipelines {
     /// Per [`PositionFormat::ALL`] entry.
     mesh: [Option<MeshPipelines>; 2],
@@ -1794,14 +1796,22 @@ impl Pipelines {
         pipelines
     }
 
+    /// [`Self::rebuilt`] as a step a worker runs (`shader_builds`), from a clone of these.
+    pub(crate) fn rebuild(&self, device: &wgpu::Device, changed: &[Program]) -> Step<(Self, u32)> {
+        let (pipelines, device, changed) = (self.clone(), device.clone(), changed.to_vec());
+        Box::new(move |sources, cancel| pipelines.rebuilt(&device, sources, &changed, cancel))
+    }
+
     /// The same pipelines as these, with the programs in `changed` (mesh programs among them)
     /// built anew from `sources`: new modules, and every pipeline built from them so far rebuilt
-    /// from those. The others are shared. Returns them with the number of pipelines built.
+    /// from those. The others are shared. Returns them with the number of pipelines built. Once
+    /// `cancel` is set it builds no more, and what it returns is to be thrown away.
     pub(crate) fn rebuilt(
         &self,
         device: &wgpu::Device,
         sources: &ShaderSources,
         changed: &[Program],
+        cancel: &Cancel,
     ) -> (Self, u32) {
         let mut modules = self.modules.clone();
         for &program in changed.iter().filter(|program| program.is_mesh()) {
@@ -1810,7 +1820,7 @@ impl Pipelines {
         let (target, mut built) = (&self.target, 0);
         let mut rebuild =
             |program: Program, old: &wgpu::RenderPipeline, build: &dyn Fn() -> wgpu::RenderPipeline| {
-                if changed.contains(&program) {
+                if changed.contains(&program) && !cancel.is_set() {
                     built += 1;
                     build()
                 } else {
@@ -2050,6 +2060,16 @@ impl Pipelines {
     /// casters.
     pub(crate) fn built(&self, family: MaterialFamily) -> u32 {
         self.mesh.iter().flatten().map(|mesh| mesh.built(family)).sum()
+    }
+
+    /// Every pipeline built so far, across formats: each family's and the prepasses' shared by
+    /// all of them. Sets only grow until rebuilt, so a build off the frame thread can tell from it
+    /// whether one was built since its snapshot (`shader_builds`).
+    pub(crate) fn count(&self) -> u32 {
+        let shared = |mesh: &MeshPipelines| 3 + u32::from(mesh.outline_prepass.is_some());
+        let families =
+            |mesh: &MeshPipelines| MESH_FAMILIES.iter().map(|&family| mesh.built(family)).sum::<u32>();
+        self.mesh.iter().flatten().map(|mesh| shared(mesh) + families(mesh)).sum()
     }
 
     /// The mesh pipelines for `format`, once [`Self::prepare_format`] built them.

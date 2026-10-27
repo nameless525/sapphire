@@ -223,6 +223,7 @@ use crate::environment::ProbeLookup;
 use crate::gpu_types::FrameUniforms;
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::Layouts;
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{CharacterBody, FramePacket, LOG_TARGET, RenderError};
 
@@ -848,7 +849,7 @@ impl<const N: usize> ViewGroups<N> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct AmbientLayouts {
     compute_frame: wgpu::BindGroupLayout,
     projection: wgpu::BindGroupLayout,
@@ -867,7 +868,7 @@ struct AmbientLayouts {
 /// the module docs, "Cost"): the sky's projection's three with the first grid or reflective
 /// character, the reflection cube's prefilter with the cube, the grid's relight and characters'
 /// pass when a grid first arrives, and GTAO's with the renderer on tiers that have it. Without
-/// any of them there are none, and no module is made. [`Ambient::rebuilt_pipelines`]' result.
+/// any of them there are none, and no module is made. What [`Ambient::rebuild`] builds.
 #[derive(Debug, Default)]
 pub(crate) struct AmbientPipelines {
     projection: Option<ProjectionPipelines>,
@@ -1539,10 +1540,18 @@ impl Ambient {
         }));
     }
 
-    /// The passes' pipelines built so far, built again from `sources` (hot reload), on the
-    /// layouts they had: none if none were built.
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> AmbientPipelines {
-        AmbientPipelines::new(&self.device, &self.layouts, self.cache.as_ref(), sources, self.pipelines.set())
+    /// The passes' pipelines built so far, to build again from new sources (hot reload, off the
+    /// frame thread: `shader_builds`), on the layouts they had: none if none were built.
+    pub(crate) fn rebuild(&self) -> Step<AmbientPipelines> {
+        let (device, layouts, cache) = (self.device.clone(), self.layouts.clone(), self.cache.clone());
+        let set = self.pipelines.set();
+        Box::new(move |sources, _| AmbientPipelines::new(&device, &layouts, cache.as_ref(), sources, set))
+    }
+
+    /// The pipelines built so far, which a build off the frame thread checks it rebuilt all of
+    /// (`shader_builds`).
+    pub(crate) fn pipelines_built(&self) -> u32 {
+        self.pipelines.count()
     }
 
     pub(crate) fn set_pipelines(&mut self, pipelines: AmbientPipelines) {

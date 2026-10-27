@@ -82,10 +82,12 @@
 //!   upsampling a smaller scene, before bloom and grading. The desktop tiers resolve with it;
 //!   phones keep 4× MSAA in tile memory ([`RenderSettings::temporal`]).
 //! - Shader sources (`shaders`, M1 A8): the WGSL files compiled in ([`ShaderFile`]), the
-//!   programs built from them, and rebuilding pipelines from edited text
-//!   ([`Renderer::set_shader_sources`]: hot reload and live link), checked with naga first so an
-//!   error names its file and line, and kept out if anything fails. The renderer never reads a
-//!   file (rule R5).
+//!   programs built from them, and rebuilding pipelines from edited text, checked with naga first
+//!   so an error names its file and line, and kept out if anything fails. The renderer never reads
+//!   a file (rule R5). Hot reload and live link build edits off the frame thread
+//!   ([`Renderer::request_shader_sources`], the `shader_builds` module, M1 A8 follow-up 2): frames
+//!   draw with the pipelines in use until the whole new set swaps in at a frame boundary;
+//!   [`Renderer::set_shader_sources`] builds them on the calling thread.
 //! - Replacing uploaded objects in place, under the same handles (M1 A8): materials
 //!   ([`Renderer::update_material`], which also rebinds replaced textures) and meshes
 //!   ([`Renderer::update_mesh`], whose old room in the mesh pool is given back).
@@ -817,9 +819,10 @@
 //!   transparent surfaces sort back to front with draw sorting; alpha-to-coverage for the other
 //!   families' alpha-tested surfaces under MSAA (foliage writes its own sample mask).
 //! - **Anisotropic filtering** joins the quality tiers.
-//! - **Shader hot reload** compiles on workers and swaps the pipelines in when they are ready,
-//!   with the warm-up (spec §5.12), instead of on the frame that applies an edit; WESL imports
-//!   replace the concatenation.
+//! - **Shader builds** (see the `shader_builds` module): M4's PSO warm-up builds a pack's listed
+//!   pipelines on workers in parallel (an edit's build runs on one worker today), and a cache of
+//!   pipelines by descriptor lets a build in flight take the pipelines built lazily meanwhile
+//!   instead of starting again; WESL imports replace the concatenation.
 
 pub mod ambient;
 mod bind_cache;
@@ -844,6 +847,7 @@ pub mod post;
 pub mod quality;
 mod renderer;
 mod scene;
+mod shader_builds;
 mod shaders;
 pub mod shadows;
 mod skinning;
@@ -883,6 +887,7 @@ pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
     CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
 };
+pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;

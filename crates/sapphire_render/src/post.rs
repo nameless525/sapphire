@@ -256,6 +256,7 @@ use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::SCENE_COLOR_FORMAT;
+use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 use crate::{CameraData, RenderError, bind_cache};
 pub(crate) use effects::{COLOR_EFFECTS_CONSTANT, GpuEffects, LENS_EFFECTS_CONSTANT, RADIAL_TAPS_CONSTANT};
@@ -469,7 +470,7 @@ pub(crate) struct PostProcess {
 }
 
 /// Post's pipelines rebuilt from edited shader sources, with the module later ones come from
-/// ([`PostProcess::rebuilt_pipelines`]).
+/// ([`PostProcess::rebuild`]).
 #[derive(Debug)]
 pub(crate) struct RebuiltPipelines {
     module: wgpu::ShaderModule,
@@ -485,7 +486,7 @@ impl RebuiltPipelines {
 }
 
 /// Group 1 layouts, by the textures a pass reads.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Layouts {
     /// Down: `texture0`.
     one: wgpu::BindGroupLayout,
@@ -712,12 +713,22 @@ impl PostProcess {
         built
     }
 
-    /// The pipelines built so far, built again from `sources`, for [`Self::set_pipelines`]
-    /// (shader hot reload): only those, and later ones from the new module.
-    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> RebuiltPipelines {
-        let module = shaders::module(&self.builder.device, Program::Post, sources);
-        let pipelines = self.pipelines.rebuilt(&self.builder, &module);
-        RebuiltPipelines { module, pipelines }
+    /// The pipelines built so far, to build again from new sources (shader hot reload, off the
+    /// frame thread: `shader_builds`) for [`Self::set_pipelines`]: only those, and later ones
+    /// from the new module.
+    pub(crate) fn rebuild(&self) -> Step<RebuiltPipelines> {
+        let (builder, built) = (self.builder.clone(), self.pipelines.clone());
+        Box::new(move |sources, cancel| {
+            let module = shaders::module(&builder.device, Program::Post, sources);
+            let pipelines = built.rebuilt(&builder, &module, cancel);
+            RebuiltPipelines { module, pipelines }
+        })
+    }
+
+    /// The pipelines built so far, which a build off the frame thread checks it rebuilt all of
+    /// (`shader_builds`).
+    pub(crate) fn pipelines_built(&self) -> u32 {
+        self.pipelines.count()
     }
 
     pub(crate) fn set_pipelines(&mut self, rebuilt: RebuiltPipelines) {

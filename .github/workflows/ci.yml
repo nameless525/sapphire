@@ -128,10 +128,11 @@ jobs:
   # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
   #
   # The CPU rasterizers split their scenes across runners (`--shard <index>/<count>`, every
-  # count-th scene), each shard building the sandbox on its own: WARP takes from a few seconds
-  # to minutes a scene (W5's ambient scenes about 3.5 minutes each, scenes with local lights
-  # over a minute), about 55 minutes in all at W5, and the slowest job sets how soon a change
-  # can land. Add shards as scenes are added, keeping each job well inside its time limit.
+  # count-th scene), each shard building the sandbox on its own. Since the light clusters and the
+  # sky's projection stopped looping over workgroup barriers (#56, #58), WARP no longer spends
+  # minutes on a scene: at 86 scenes, each of WARP's four shards takes 10–15 minutes with its
+  # build, and each of lavapipe's two 8–14. The slowest job sets how soon a change can land, so
+  # add shards as scenes are added, keeping each job well inside its time limit.
   golden:
     name: Golden images (${{ matrix.family }} ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:

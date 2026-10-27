@@ -583,9 +583,11 @@ fn mapped_normal(
 
 // Whether `passes` holds for any pixel of this pixel's 2 × 2 quad: the same answer in all four,
 // from the pass/fail value's fine derivatives, which give its neighbors' in the quad. Taken in
-// uniform control flow. A fragment stage that cuts pixels out discards the quads it cuts whole
-// early on it and every other pixel it cuts at its one exit (docs/conventions.md): Apple's Metal
-// compiler has miscompiled a per-pixel `discard` taken earlier.
+// uniform control flow; a branch on it is uniform per quad, so derivatives inside it stay well
+// defined (the sky skips its cloud layers that way). A fragment stage that cuts pixels out discards
+// the quads it cuts whole early on it and every other pixel it cuts at its one exit
+// (docs/conventions.md): Apple's Metal compiler has miscompiled a per-pixel `discard` taken
+// earlier.
 fn quad_any(passes: bool) -> bool {
     let value = select(0.0, 1.0, passes);
     let across = dpdxFine(value);

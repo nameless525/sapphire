@@ -137,8 +137,9 @@ fn vs_sky(@builtin(vertex_index) index: u32) -> SkyVaryings {
     return out;
 }
 
-// The cloud layers branch per 2 × 2 quad (`quad_any`), which WGSL's uniformity analysis can't
-// prove uniform: the filter lets their texels' derivatives through, as they stay well defined.
+// The cloud layers branch per 2 × 2 quad (`quad_any`, frame.wgsl), which WGSL's uniformity
+// analysis can't prove uniform: the filter lets their texels' derivatives through, as they stay
+// well defined.
 @diagnostic(off, derivative_uniformity)
 @fragment
 fn fs_sky(in: SkyVaryings) -> @location(0) vec4<f32> {
@@ -204,17 +205,6 @@ fn sky_atan2(y: f32, x: f32) -> f32 {
     angle = select(angle, 1.57079633 - angle, ay > ax);
     angle = select(angle, SKY_PI - angle, x < 0.0);
     return select(angle, -angle, y < 0.0);
-}
-
-// Whether `passes` holds for any pixel of this pixel's 2 × 2 quad: the same answer in all four,
-// from the pass/fail value's fine derivatives, which give its neighbors' in the quad (the eyes
-// through hair do the same, anime_character.wgsl). Taken in uniform control flow; a branch on it
-// is uniform per quad, so derivatives inside it stay well defined.
-fn quad_any(passes: bool) -> bool {
-    let value = select(0.0, 1.0, passes);
-    let across = dpdxFine(value);
-    let down = dpdyFine(value);
-    return value + abs(across) + abs(down) + abs(dpdyFine(across)) > 0.0;
 }
 
 // A texel sampled from texture slot `slot` in its logical channels: as sampled when the slot's

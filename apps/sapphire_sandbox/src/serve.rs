@@ -7,6 +7,11 @@
 //! phone, `cargo xtask link capture <png>` writes what it draws, and A8's watcher reloads what
 //! changes on disk. The M1 exit run's desktop leg runs on it (`docs/m1-exit-run.md`).
 //!
+//! Its stage is the capture and bench modes' ([`Stage`]), which prewarms the post variants the
+//! scene may draw at startup (`Scene::effect_variants`, `Renderer::prewarm_post`), as the
+//! windowed app does; replaced screen effect presets prewarm theirs as hot reload or live link
+//! applies them. It has no tier changes or device loss to rebuild after.
+//!
 //! It draws one frame per iteration of the platform's loop, so SDL still delivers its events:
 //! Ctrl-C and `kill` (SIGINT, SIGTERM) come as a quit, which ends the run. Each frame is one fixed
 //! step, so the scene moves at its own speed while frames keep up with 60 a second, and slower

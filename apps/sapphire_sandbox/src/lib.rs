@@ -72,6 +72,8 @@
 //!   of lacquer (a crisp highlight), gold (a tinted matcap and the reflection add), leather (a
 //!   multiplied matcap, a GGX highlight) and a suit with breathing light lines, and a leg in a
 //!   thigh-high stocking.
+//! - `--shade-hue <r>,<g>,<b>,<share>`: key characters' shadow sides to keep this linear RGB hue
+//!   by this share of their light, all day (M1 C8), into the day the scene runs on.
 //! - `--two-sided`: place the two-sided garment samples on the character's left (M1 C8): a
 //!   collar, a skirt and a twisted ribbon, each one-sided (the insides culled) beside two-sided
 //!   (the insides shaded as the side the camera sees). Exclusive with `--swatches`.

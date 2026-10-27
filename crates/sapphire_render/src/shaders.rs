@@ -400,7 +400,8 @@ mod tests {
         AmbientUniforms, GpuAmbientCapsule, GtaoUniforms, PrefilterUniforms, RelightUniforms,
     };
     use crate::characters::{
-        GpuCharacter, GpuCharacterAmbient, GpuCharacterFade, GpuCharacterShadow, GpuFace, GpuRig,
+        GpuCharacter, GpuCharacterAmbient, GpuCharacterFade, GpuCharacterShadow, GpuCharacterStyle, GpuFace,
+        GpuRig,
     };
     use crate::fog::GpuFog;
     use crate::foliage::{WindState, WindUniforms};
@@ -750,6 +751,7 @@ mod tests {
             (Program::AnimeCharacter, "CharacterFace", size_of::<GpuFace>()),
             (Program::AnimeCharacter, "CharacterShadow", size_of::<GpuCharacterShadow>()),
             (Program::AnimeCharacter, "CharacterFade", size_of::<GpuCharacterFade>()),
+            (Program::AnimeCharacter, "CharacterStyle", size_of::<GpuCharacterStyle>()),
             (Program::AnimeCharacter, "CharacterLayerRegion", size_of::<CharacterLayerRegion>()),
             (Program::AnimeCharacter, "ShadowUniforms", size_of::<ShadowUniforms>()),
             (Program::AnimeCharacter, "ShadowCascade", size_of::<GpuCascade>()),
@@ -935,7 +937,8 @@ mod tests {
                     fade,
                 }),
             ),
-            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade })),
+            ("CharacterData", offsets!(GpuCharacter { rig, face, shadow, ambient, fade, style })),
+            ("CharacterStyle", offsets!(GpuCharacterStyle { shade })),
             ("CharacterAmbient", offsets!(GpuCharacterAmbient { sky, ground, axis, probe })),
             ("CharacterFade", offsets!(GpuCharacterFade { amount })),
             ("CharacterRig", offsets!(GpuRig { key_direction, key_radiance, head, gi, skin_tint })),

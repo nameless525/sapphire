@@ -3,17 +3,18 @@
 
 use sapphire_look::{
     AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
-    CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, GradientLayer, GradientShape,
-    HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient, SkyLayers, Vignette,
+    CharacterShade, CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, GradientLayer,
+    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient,
+    SkyLayers, Vignette,
 };
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
 use sapphire_math::{Quat, Vec3};
 
 use super::key::{
-    AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
-    FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey, SkyKey, TodKey,
-    VignetteKey,
+    AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CharacterShadeKey, CloudsKey,
+    DiffusionKey, DiscKey, FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey,
+    SkyKey, TodKey, VignetteKey,
 };
 use super::timeline::DAY_HOURS;
 
@@ -55,6 +56,10 @@ pub struct TodLook {
     /// How much of the world's authored emission shows, 1 as authored (M1 W1's keyed emission;
     /// the frame packet's `emission_scale`).
     pub emission: f32,
+    /// The hue characters' shadow sides keep (M1 C8): no share, the key light's own, unless the
+    /// timeline keys it. Characters take it through the world's frame
+    /// (`sapphire_world::tod::TodFrame::character_lighting`).
+    pub character_shade: CharacterShade,
 }
 
 impl Default for TodLook {
@@ -87,6 +92,7 @@ impl Default for TodLook {
             lens_flare: post.lens_flare,
             // As authored, as the packet's default draws it.
             emission: 1.0,
+            character_shade: CharacterShade::default(),
         }
     }
 }
@@ -222,6 +228,8 @@ impl TodLook {
         group(&mut self.gradients, from.gradients.as_ref(), to.gradients.as_ref(), segment, weight);
         group(&mut self.lens_flare, from.lens_flare.as_ref(), to.lens_flare.as_ref(), segment, weight);
         group(&mut self.emission, from.emission.as_ref(), to.emission.as_ref(), segment, weight);
+        let (from_shade, to_shade) = (from.character_shade.as_ref(), to.character_shade.as_ref());
+        group(&mut self.character_shade, from_shade, to_shade, segment, weight);
     }
 }
 
@@ -476,7 +484,16 @@ impl Mix for CharacterLighting {
                 max_value: lerp(reciprocal(a.max_value), reciprocal(b.max_value), t).recip(),
                 skin_tint: mix_oklab(a.skin_tint, b.skin_tint, t),
             },
+            shade: self.shade.mix(&other.shade, t),
         }
+    }
+}
+
+/// The characters' shadow hue (M1 C8): the hue in OkLab (exactly itself where both keys hold
+/// one), its share linearly.
+impl Mix for CharacterShade {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self { hue: mix_color(self.hue, other.hue, t), share: lerp(self.share, other.share, t) }
     }
 }
 
@@ -650,6 +667,7 @@ impl Mix for TodLook {
             gradients: self.gradients.mix(&other.gradients, t),
             lens_flare: self.lens_flare.mix(&other.lens_flare, t),
             emission: self.emission.mix(&other.emission, t),
+            character_shade: self.character_shade.mix(&other.character_shade, t),
         }
     }
 }
@@ -748,6 +766,14 @@ impl Resolve for CharacterKey {
 
     fn resolve(&self) -> CharacterLight {
         CharacterLight { color: self.color.into(), intensity: self.intensity }
+    }
+}
+
+impl Resolve for CharacterShadeKey {
+    type Value = CharacterShade;
+
+    fn resolve(&self) -> CharacterShade {
+        CharacterShade { hue: self.hue.into(), share: self.share }
     }
 }
 

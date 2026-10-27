@@ -1179,6 +1179,15 @@ impl Scene {
         Ok(day)
     }
 
+    /// Keys characters' shadow sides to keep `shade`'s hue by its share (`--shade-hue`, M1 C8):
+    /// sets it in every key of the day the scene runs on.
+    pub fn set_shade_hue(&mut self, shade: tod::CharacterShadeKey) -> Result<(), String> {
+        let keys = self.time_of_day().timeline().keys().iter();
+        let keys = keys.map(|key| tod::TodKey { character_shade: Some(shade), ..key.clone() }).collect();
+        let timeline = tod::TodTimeline::new(keys).map_err(|error| error.to_string())?;
+        self.time_of_day_mut().set_timeline(timeline).map_err(|error| error.to_string())
+    }
+
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.
     pub fn set_character_mesh(&mut self, mesh: MeshHandle) {
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));

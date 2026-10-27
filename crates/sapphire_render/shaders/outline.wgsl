@@ -278,9 +278,15 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     surface.shadow_bias = SHADOW_BIAS_NEUTRAL;
     surface.split = split;
     let lit = light_step(split.x, width, x);
-    let tone = mix(shade_tint(surface, material, x, width), vec3<f32>(1.0), lit);
+    let shade_tone = shade_tint(surface, material, x, width);
+    let tone = mix(shade_tone, vec3<f32>(1.0), lit);
     let gi = character_gi(surface, rig, characters[in.character].ambient, in.world_position);
-    let lit_line = line * (tone * rig.key_radiance.rgb + gi);
+    var lit_line = line * (tone * rig.key_radiance.rgb + gi);
+    // The shadow side's hue, as the surface takes it (M1 C8).
+    if characters[in.character].style.shade.w > 0.0 {
+        let key = rig.key_radiance.rgb;
+        lit_line = line * (mix(shade_tone * shade_light(in.character, key), key, lit) + gi);
+    }
     // Unlit lines are their color exactly, and every line takes the fog its surface does (M1 W3),
     // at the hull.
     let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);

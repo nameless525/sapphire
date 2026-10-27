@@ -93,6 +93,14 @@ pub struct TodKey {
     /// steady at every hour (its `emission_steady`), and characters' emission never follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emission: Option<f32>,
+    /// The hue characters' shadow sides keep, and its share of their light (M1 C8;
+    /// [`sapphire_look::CharacterShade`]). The anime character shader lights the shadow side's
+    /// authored tone by the key light, so a golden-hour key warms it and a cool tone turns mauve;
+    /// a share of this hue holds it whatever color the key takes, as Wuthering Waves' shadows
+    /// do. A timeline that leaves it out lights the shadow side by the key light alone, as
+    /// every timeline written before it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_shade: Option<CharacterShadeKey>,
 }
 
 fn is_linear(ease: &TodEase) -> bool {
@@ -299,6 +307,19 @@ pub struct HeightFogKey {
 pub struct CharacterKey {
     pub color: Rgb,
     pub intensity: f32,
+}
+
+/// The hue characters' shadow sides keep at a key (M1 C8; [`sapphire_look::CharacterShade`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(deny_unknown_fields)]
+pub struct CharacterShadeKey {
+    /// Linear RGB: the hue. Only its hue and saturation count: the shadow side keeps the key
+    /// light's luminance. Not black.
+    pub hue: Rgb,
+    /// 0 to 1: how much of the shadow side's light takes the hue rather than the key light's
+    /// color.
+    pub share: f32,
 }
 
 /// A color grade ([`ColorGrade`]); every field left out is neutral, so a key writes only what
@@ -585,10 +606,11 @@ pub enum TodGroup {
     LensFlare,
     Emission,
     Nebula,
+    CharacterShade,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -610,6 +632,7 @@ impl TodGroup {
         Self::LensFlare,
         Self::Emission,
         Self::Nebula,
+        Self::CharacterShade,
     ];
 
     /// The sky's layers over its gradient (M1 W2, the nebula M1 X1 part 2e): optional even in
@@ -625,10 +648,11 @@ impl TodGroup {
         [Self::Diffusion, Self::CharacterBloom, Self::Gradients, Self::LensFlare];
 
     /// Every group the base timeline may leave out: the sky's layers ([`Self::SKY_LAYERS`]),
-    /// post's ([`Self::POST_LAYERS`]) and the emission scale (M1 W1's keyed emission), which a
-    /// timeline that leaves it out keeps at 1, as authored. Each draws where unset as every
-    /// timeline written before it drew.
-    pub const OPTIONAL: [Self; 9] = [
+    /// post's ([`Self::POST_LAYERS`]), the emission scale (M1 W1's keyed emission), which a
+    /// timeline that leaves it out keeps at 1, as authored, and the characters' shadow hue (M1
+    /// C8), which a timeline that leaves it out leaves to the key light. Each draws where unset as
+    /// every timeline written before it drew.
+    pub const OPTIONAL: [Self; 10] = [
         Self::Discs,
         Self::Stars,
         Self::Clouds,
@@ -638,6 +662,7 @@ impl TodGroup {
         Self::Gradients,
         Self::LensFlare,
         Self::Emission,
+        Self::CharacterShade,
     ];
 
     /// The group's field name in a key.
@@ -664,6 +689,7 @@ impl TodGroup {
             Self::LensFlare => "lens_flare",
             Self::Emission => "emission",
             Self::Nebula => "nebula",
+            Self::CharacterShade => "character_shade",
         }
     }
 
@@ -686,7 +712,8 @@ impl TodGroups {
     pub const NONE: Self = Self(0);
     pub const ALL: Self = Self((1 << TodGroup::ALL.len()) - 1);
     /// What the base timeline must set: every group but the optional ones
-    /// ([`TodGroup::OPTIONAL`]: the sky's layers, post's and the emission scale).
+    /// ([`TodGroup::OPTIONAL`]: the sky's layers, post's, the emission scale and the characters'
+    /// shadow hue).
     pub const REQUIRED: Self = {
         let mut bits = Self::ALL.0;
         let mut index = 0;
@@ -761,6 +788,7 @@ impl TodKey {
             (TodGroup::LensFlare, self.lens_flare.is_some()),
             (TodGroup::Emission, self.emission.is_some()),
             (TodGroup::Nebula, self.nebula.is_some()),
+            (TodGroup::CharacterShade, self.character_shade.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -890,6 +918,13 @@ impl TodKey {
         }
         if let Some(emission) = self.emission {
             non_negative(emission, "emission")?;
+        }
+        if let Some(shade) = &self.character_shade {
+            color(shade.hue, "character_shade.hue")?;
+            if is_black(&shade.hue) {
+                return Err(("character_shade.hue", "must not be black"));
+            }
+            within(shade.share, 0.0, 1.0, "character_shade.share", "must be within 0..=1")?;
         }
         Ok(())
     }

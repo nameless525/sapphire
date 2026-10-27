@@ -184,15 +184,23 @@ struct CharacterFade {
     amount: vec4<f32>,
 }
 
+// The character shading follow-ups (M1 C8; `characters::GpuCharacterStyle`).
+struct CharacterStyle {
+    // rgb: the shadow side's hue at a luminance of 1; w: its share of the shadow side's light,
+    // 0 for the key light's own (`CharacterShade`).
+    shade: vec4<f32>,
+}
+
 // One character's data for the frame. Each package's per-character data is a struct of its
-// own here: the light rig (C2), the face (C3), the shadow (R4), the ambient light (W5) and the
-// fade (C7).
+// own here: the light rig (C2), the face (C3), the shadow (R4), the ambient light (W5), the
+// fade (C7) and the shading follow-ups' style (C8).
 struct CharacterData {
     rig: CharacterRig,
     face: CharacterFace,
     shadow: CharacterShadow,
     ambient: CharacterAmbient,
     fade: CharacterFade,
+    style: CharacterStyle,
 }
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;

@@ -262,7 +262,7 @@
 //! | 0 frame | 0: uniform | vertex, fragment | sun, sky, time, light counts, cluster depth slices, day/night, ambient, shadow tint, weather, the outline cutoffs' scale | `prepare` |
 //! | 0 frame | 1: storage | fragment | local lights (`LocalLight`, 64 bytes each) | `prepare`, when they changed |
 //! | 0 frame | 2: storage | fragment | light lists: one per cluster, or one per instance slot | the cluster pass, or `prepare` for changed instance lists |
-//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient and fades (M1 C7), 240 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
+//! | 0 frame | 3: storage | fragment | per-character data (`CharacterData`): the world's key light, then the frame's characters' light rigs, faces, shadows, ambient, fades (M1 C7) and styles (M1 C8), 256 bytes each | the uploads pass, when they changed; the face pass writes each entry's shadow, and with a probe grid the ambient pass its ambient |
 //! | 0 frame | 4: uniform | fragment | shadows (`ShadowUniforms`): light space, every cascade's and character map's area and depth transform, the capsules | the uploads pass, while shadows are on |
 //! | 0 frame | 5, 6: depth textures | fragment | the shadow cascades (one array) and the character atlas | the shadow passes |
 //! | 0 frame | 7: comparison sampler | fragment | shadow lookups, and the rim's depth step | — |
@@ -880,8 +880,8 @@ pub use renderer::{
     RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
 };
 pub use sapphire_look::{
-    AmbientLight, Celestial, CharacterGi, CharacterLight, CharacterLighting, CloudLight, DirectionalLight,
-    Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
+    AmbientLight, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade, CloudLight,
+    DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
 };
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};

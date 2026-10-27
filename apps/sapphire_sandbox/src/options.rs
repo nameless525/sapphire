@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
+use sapphire_world::tod::CharacterShadeKey;
 
 use crate::faces::FaceLayout;
 use crate::foliage::{DEFAULT_WIND, FoliageView};
@@ -68,6 +69,9 @@ pub(crate) struct Options {
     /// `--character-rig <preset>`: the character light rig preset the character is lit by,
     /// instead of the default (`gameplay`). The scene checks the name against its presets.
     pub character_rig: Option<String>,
+    /// `--shade-hue <r>,<g>,<b>,<share>`: key characters' shadow sides to keep this linear RGB
+    /// hue by this share of their light, all day (M1 C8), into the day the scene runs on.
+    pub shade_hue: Option<CharacterShadeKey>,
     /// `--swatches`: place the anime character shader swatches beside the character.
     pub swatches: bool,
     /// `--materials`: place the material layer samples on the character's right (M1 C7).
@@ -257,6 +261,9 @@ impl Options {
     /// effect preset is unknown.
     pub fn apply_to(&self, scene: &mut Scene) -> Result<(), String> {
         scene.set_day(self.time_of_day.unwrap_or(scene::DEFAULT_TIME_OF_DAY), self.day_length);
+        if let Some(shade) = self.shade_hue {
+            scene.set_shade_hue(shade)?;
+        }
         scene.frame_foliage();
         if let Some(wind) = self.wind() {
             scene.set_wind(wind);
@@ -461,6 +468,7 @@ impl Options {
                     options.day_length = Some(seconds);
                 }
                 "--character-rig" => options.character_rig = Some(value("--character-rig")?),
+                "--shade-hue" => options.shade_hue = Some(parse_shade_hue(&value("--shade-hue")?)?),
                 "--swatches" => options.swatches = true,
                 "--materials" => options.materials = true,
                 "--two-sided" => options.two_sided = true,
@@ -686,6 +694,24 @@ fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
     raw.parse().map_err(|_| format!("{name} expects a number, got {raw:?}"))
 }
 
+/// `<r>,<g>,<b>,<share>`: a hue that isn't black and a share within 0 to 1.
+fn parse_shade_hue(raw: &str) -> Result<CharacterShadeKey, String> {
+    let invalid = || {
+        format!(
+            "--shade-hue expects R,G,B,SHARE, a hue that isn't black and a share within 0..=1, got {raw:?}"
+        )
+    };
+    let values: Vec<f32> =
+        raw.split(',').map(|value| value.trim().parse().map_err(|_| invalid())).collect::<Result<_, _>>()?;
+    let [r, g, b, share] = values[..] else { return Err(invalid()) };
+    let hue = [r, g, b];
+    let color = hue.iter().all(|c| c.is_finite() && *c >= 0.0) && hue.iter().any(|c| *c > 0.0);
+    if !color || !(0.0..=1.0).contains(&share) {
+        return Err(invalid());
+    }
+    Ok(CharacterShadeKey { hue, share })
+}
+
 fn parse_view(raw: &str) -> Result<(f32, f32), String> {
     let invalid = || format!("--view expects YAW,PITCH in degrees, pitch within -85..=85, got {raw:?}");
     let (yaw, pitch) = raw.split_once(',').ok_or_else(invalid)?;
@@ -906,6 +932,17 @@ mod tests {
         assert!(unknown.is_empty());
         assert!(options.two_sided && !Options::default().two_sided);
         assert!(parse(&["--two-sided", "--swatches"]).is_err(), "both stand on the character's left");
+    }
+
+    #[test]
+    fn shade_hue_parses_a_hue_and_its_share() {
+        let (options, unknown) = parse(&["--shade-hue", "0.5, 0.6,1,0.7"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.shade_hue, Some(CharacterShadeKey { hue: [0.5, 0.6, 1.0], share: 0.7 }));
+        assert_eq!(Options::default().shade_hue, None);
+        for wrong in ["0.5,0.6,1", "0,0,0,0.5", "1,1,1,1.5", "1,-1,1,0.5", "1,1,NaN,0.5", "1,1,1,0.5,1"] {
+            assert!(parse(&["--shade-hue", wrong]).is_err(), "{wrong}");
+        }
     }
 
     #[test]

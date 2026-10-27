@@ -123,6 +123,8 @@ pub struct CharacterLighting {
     /// `_FilterLight`).
     pub local_light_ceiling: f32,
     pub gi: CharacterGi,
+    /// The light on the shadow side (M1 C8): the key light's own by default.
+    pub shade: CharacterShade,
 }
 
 impl CharacterLighting {
@@ -130,23 +132,64 @@ impl CharacterLighting {
     /// it, unclamped and untinted. The renderer lights instances that aren't listed as characters
     /// with the world's key light this way.
     pub fn unstyled(key: DirectionalLight) -> Self {
-        Self { key, rim: 1.0, local_light_ceiling: 2.0, gi: CharacterGi::default() }
+        Self {
+            key,
+            rim: 1.0,
+            local_light_ceiling: 2.0,
+            gi: CharacterGi::default(),
+            shade: CharacterShade::default(),
+        }
     }
 
     /// Whether every value is one the shader can light with: finite numbers, a key direction
     /// that isn't zero, and no negative intensity, color, scale or ceiling. The value ceiling may
     /// be infinite (no clamp).
     pub fn is_valid(&self) -> bool {
-        let Self { key, rim, local_light_ceiling, gi } = *self;
-        let colors = [key.color, gi.skin_tint];
-        let scalars =
-            [key.intensity, rim, local_light_ceiling, gi.intensity, gi.camera_bias, gi.max_saturation];
+        let Self { key, rim, local_light_ceiling, gi, shade } = *self;
+        let colors = [key.color, gi.skin_tint, shade.hue];
+        let scalars = [
+            key.intensity,
+            rim,
+            local_light_ceiling,
+            gi.intensity,
+            gi.camera_bias,
+            gi.max_saturation,
+            shade.share,
+        ];
         key.direction.is_finite()
             && key.direction != Vec3::ZERO
             && colors.iter().all(|color| color.is_finite() && color.min_element() >= 0.0)
             && scalars.iter().all(|value| value.is_finite() && *value >= 0.0)
             && gi.head.is_none_or(Vec3::is_finite)
             && gi.max_value >= 0.0
+    }
+}
+
+/// The light on a character's shadow side (M1 C8). The anime character shader lights the
+/// shadow side's authored tone by the key light, so a warm key (golden hour's) warms the
+/// shadows with it, and a tone authored cool turns mauve. Wuthering Waves keeps its shadows'
+/// hue through the day instead. Here the shadow side's light is the key light's color and
+/// intensity blended, by [`Self::share`], toward the key light's luminance in [`Self::hue`]:
+///
+/// `shade light = mix(key, luminance(key) × hue / luminance(hue), share)`
+///
+/// The lit side, the rim and the layers keep the key light. Time of day keys it
+/// (`sapphire_tod`'s `character_shade` group); the default, a share of 0, lights the shadow side
+/// exactly as before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterShade {
+    /// Linear RGB: the shadow side's hue. Only its hue and saturation count: the renderer scales
+    /// it to a luminance of 1, so the shadow side stays as bright as the key light makes it. A
+    /// black hue is no hue (the key light's own).
+    pub hue: Vec3,
+    /// 0 to 1: how much of the shadow side's light takes [`Self::hue`] rather than the key
+    /// light's color. Values above 1 count as 1.
+    pub share: f32,
+}
+
+impl Default for CharacterShade {
+    fn default() -> Self {
+        Self { hue: Vec3::ONE, share: 0.0 }
     }
 }
 

@@ -38,6 +38,11 @@
 // entry 0, the world's key light with unstyled GI. The fragment shader reads the key light once,
 // as `key_direction` and `key_radiance`, and every key-light term takes it from there.
 //
+// The shadow side's hue (M1 C8; `CharacterShade`, the entry's `CharacterStyle`): the shadow
+// side's tone is lit by `mix(key, luminance(key) × hue, share)` (`shade_light`; the hue at a
+// luminance of 1), so time of day can keep the shadows' hue whatever the key's color. Without a
+// share it is lit by the key light, exactly as before; the lit side keeps the key light.
+//
 // Stylized GI (`character_gi`, WuWa's character GI) stands in for plain ambient light: the
 // character's ambient hemisphere (its entry's `CharacterAmbient`: time of day's, or since M1 W5
 // the probe grid's light around its body, low frequency) at a normal turned toward a sphere
@@ -589,6 +594,14 @@ fn ramp_row(swizzles: vec4<u32>, u: f32, row: f32) -> vec3<f32> {
 
 // The tint the shadow side's albedo is multiplied by, from the material's diffuse mode, for a
 // point whose split input is `x` with a transition `width` wide.
+// The light on the shadow side of `character` lit by a key light of `key` (M1 C8; the
+// `CharacterShade` docs): the key light's, blended by the character's shade share toward its
+// luminance in the character's shade hue (scaled to a luminance of 1 when uploaded).
+fn shade_light(character: u32, key: vec3<f32>) -> vec3<f32> {
+    let shade = characters[character].style.shade;
+    return mix(key, dot(key, LUMINANCE) * shade.rgb, shade.w);
+}
+
 fn shade_tint(surface: CharacterSurface, material: u32, x: f32, width: f32) -> vec3<f32> {
     let modes = materials[material].modes;
     if (modes.x & CHARACTER_FLAG_RAMP) != 0u {
@@ -1250,6 +1263,12 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         let band = light_step(1.0 - params.y, band_width, band_input) * hair_mask.r;
         let strength = params.x * band * mix(HAIR_HIGHLIGHT_SHADOW, 1.0, lit);
         color += materials[material].surface_color.rgb * key_radiance * strength;
+    }
+    // The shadow side in its own hue (M1 C8), where the character's style gives it a share: its
+    // tone lit by `shade_light` rather than the key light. Added as the difference, so without a
+    // share the sum is exactly what it was.
+    if characters[in.character].style.shade.w > 0.0 {
+        color += (1.0 - lit) * surface.shade * (shade_light(in.character, key_radiance) - key_radiance);
     }
     if PERMUTATION_FACE {
         // The face highlight brightens the lit tone, fading in from the shadow's edge over the

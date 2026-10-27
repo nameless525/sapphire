@@ -75,7 +75,9 @@ use bevy_ecs::prelude::Component;
 use bevy_reflect::Reflect;
 use sapphire_math::det::{atan2, sin_cos, slerp_direction};
 use sapphire_math::{Vec3, Vec4};
-use sapphire_render::{CameraData, CharacterGi, CharacterLight, CharacterLighting, DirectionalLight};
+use sapphire_render::{
+    CameraData, CharacterGi, CharacterLight, CharacterLighting, CharacterShade, DirectionalLight,
+};
 use serde::{Deserialize, Serialize};
 
 pub use library::{LightRigError, LightRigId, LightRigLibrary, NamedLightRig};
@@ -230,7 +232,9 @@ impl LightRig {
     }
 
     /// This preset's lighting for a character whose head is at `head` (world space), seen by
-    /// `camera`, under the world's `key_light` and time of day's `character_light`.
+    /// `camera`, under the world's `key_light` and time of day's `character_light`. Its shadow
+    /// side takes the key light's own color: time of day's shadow hue (M1 C8) comes with
+    /// [`TodFrame::character_lighting`](crate::tod::TodFrame::character_lighting).
     pub fn resolve(
         &self,
         key_light: &DirectionalLight,
@@ -256,6 +260,7 @@ impl LightRig {
                 max_value: gi.max_value.unwrap_or(f32::INFINITY),
                 skin_tint: gi.skin_tint.into(),
             },
+            shade: CharacterShade::default(),
         }
     }
 }

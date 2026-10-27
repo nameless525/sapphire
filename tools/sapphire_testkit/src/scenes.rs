@@ -81,8 +81,9 @@ pub struct Scene {
 /// AO off, through temporal AA and through MSAA.
 /// The character shading follow-up scenes (M1 C8) turn one of its features on each, all off by
 /// default, so no earlier scene draws any: the two-sided garments (`--two-sided`) pin what the
-/// material layer scenes pin.
-pub fn scenes() -> [Scene; 88] {
+/// material layer scenes pin; the shadow hue scenes (`--shade-hue`) light the face rig at golden
+/// hour, with and without the hue, and pin what the face scenes pin.
+pub fn scenes() -> [Scene; 90] {
     [
         Scene {
             name: "turntable-start",
@@ -2130,6 +2131,59 @@ pub fn scenes() -> [Scene; 88] {
                 "90",
                 "--two-sided",
                 "--plain-post",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The face rig's keys at 18:00 (M1 C8): the warm key lights the shadow sides' authored
+        // tone, so they turn orange; the reference for the next scene.
+        Scene {
+            name: "shade-golden-hour",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "lights",
+                "--time-of-day",
+                "18",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same with the shadow hue keyed (M1 C8): a cool near-white hue taking 80% of the
+        // shadow sides' light, which keep the skin's rosy shade tone at the key's luminance while
+        // the lit sides stay warm.
+        Scene {
+            name: "shade-hue-golden-hour",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "lights",
+                "--time-of-day",
+                "18",
+                "--shade-hue",
+                "0.8,0.88,1,0.8",
+                "--plain-post",
+                "--plain-sky",
                 "--aa",
                 "msaa",
                 "--shadows",

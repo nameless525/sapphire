@@ -511,6 +511,16 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
         ui.label("Emission");
         ui.monospace(format!("×{:.2}", look.emission));
         ui.end_row();
+        // Characters' shadow hue and its share (M1 C8): none, the key light's own.
+        let shade = look.character_shade;
+        ui.label("Shadow hue");
+        if shade.share > 0.0 {
+            let [r, g, b] = shade.hue.to_array();
+            ui.monospace(format!("{:.0}% of ({r:.2}, {g:.2}, {b:.2})", 100.0 * shade.share));
+        } else {
+            ui.monospace("the key's");
+        }
+        ui.end_row();
         let post = look.post();
         ui.label("Post");
         ui.monospace(format!(

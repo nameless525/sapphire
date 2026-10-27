@@ -5,8 +5,8 @@ use std::sync::Arc;
 use sapphire_math::Vec3;
 use sapphire_math::color::{linear_srgb_to_oklab, luminance};
 use sapphire_render::{
-    CharacterBloom, ColorGrade, DirectionalLight, FramePacket, GradientBlend, GradientLayer, GradientShape,
-    PostParams, SkyGradient, SkyLayers,
+    CharacterBloom, CharacterShade, ColorGrade, DirectionalLight, FramePacket, GradientBlend, GradientLayer,
+    GradientShape, PostParams, SkyGradient, SkyLayers,
 };
 use sapphire_serialize::DocumentError;
 use sapphire_time::{ScaleSource, ScaledClock};
@@ -1103,4 +1103,147 @@ fn zones_and_cutscenes_override_the_emission_scale() {
     assert!(easing > 0.1 && easing < 1.0, "easing in: {easing}");
     tod.stop_cutscene();
     assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.emission, 0.1);
+}
+
+/// A cool blue-violet hue for characters' shadow sides (M1 C8).
+const SHADE_HUE: [f32; 3] = [0.55, 0.6, 1.0];
+
+/// The default day with characters' shadow hue keyed (M1 C8): a share of it through the night,
+/// little by day, most at golden hour, when the key is warmest.
+fn shaded_day() -> TodTimeline {
+    let shares = [0.6, 0.6, 0.3, 0.0, 0.0, 0.5, 0.8, 0.6];
+    let day = default_day();
+    let keys = day.keys().iter().zip(shares).map(|(key, share)| TodKey {
+        character_shade: Some(CharacterShadeKey { hue: SHADE_HUE, share }),
+        ..key.clone()
+    });
+    TodTimeline::new(keys.collect()).expect("valid")
+}
+
+/// A character's lighting by the shipped default rig, seen from the front, at `frame`.
+fn character_lighting(frame: &TodFrame) -> sapphire_render::CharacterLighting {
+    let camera =
+        sapphire_render::CameraData::look_at(Vec3::new(0.0, 1.5, 3.0), Vec3::Y, Vec3::Y, 0.8, 1.0, 0.1);
+    frame.character_lighting(&crate::light_rig::LightRig::default(), &camera, Vec3::new(0.0, 1.5, 0.0))
+}
+
+#[test]
+fn timelines_without_a_shadow_hue_light_shadow_sides_by_the_key() {
+    let old = TodTimeline::from_ron(TIMELINE_BEFORE_SKY_LAYERS).expect("an older document loads");
+    let day = default_day();
+    for timeline in [&old, &day] {
+        assert!(timeline.is_complete(), "it can still be the base timeline");
+        assert!(!timeline.groups().contains(TodGroup::CharacterShade));
+        for quarter in 0..96 {
+            let hours = quarter as f32 / 4.0;
+            assert_eq!(timeline.evaluate(hours).character_shade, CharacterShade::default(), "{hours}");
+        }
+    }
+    // A character's lighting is the rig's, its shadow side the key light's.
+    let (_, mut tod) = time_of_day(18.0);
+    let frame = *tod.resolve(Vec3::ZERO, 0.0);
+    let lighting = character_lighting(&frame);
+    assert_eq!(lighting.shade, CharacterShade::default());
+    assert_eq!(lighting.shade.share, 0.0);
+}
+
+#[test]
+fn the_shadow_hue_is_keyed_like_any_value() {
+    // Exactly each key's value on it, and between keys the first key's eased weight of the way
+    // to the next: the share linearly, the hue exactly itself where both keys hold it.
+    let keyed = shaded_day();
+    assert!(keyed.is_complete() && keyed.groups().contains(TodGroup::CharacterShade));
+    for key in keyed.keys() {
+        let expected = key.character_shade.expect("every key sets it");
+        let shade = keyed.evaluate(key.time).character_shade;
+        assert_eq!(shade.share.to_bits(), expected.share.to_bits(), "{}", key.time);
+        assert_eq!(shade.hue, Vec3::from(expected.hue), "{}", key.time);
+    }
+    for hours in [3.0, 6.0, 8.25, 12.0, 16.0, 18.0, 19.5, 22.0] {
+        let Segment { from, to, weight } = keyed.segment(hours);
+        let share = |index: usize| keyed.keys()[index].character_shade.unwrap().share;
+        let (a, b) = (share(from), share(to));
+        let evaluated = keyed.evaluate(hours).character_shade;
+        assert!((evaluated.share - (a + (b - a) * weight)).abs() < 1e-6, "{hours}: {evaluated:?}");
+        assert_eq!(evaluated.hue, Vec3::from(SHADE_HUE), "{hours}");
+    }
+    // Hues blend in OkLab, and linear keys wrap at midnight like the rest: from 20:00's to
+    // 6:00's over ten hours.
+    let (warm, cool) = ([1.0, 0.6, 0.3], [0.3, 0.4, 1.0]);
+    let wrapping = TodTimeline::new(vec![
+        TodKey { character_shade: Some(CharacterShadeKey { hue: warm, share: 0.2 }), ..key(6.0) },
+        TodKey { character_shade: Some(CharacterShadeKey { hue: cool, share: 1.0 }), ..key(20.0) },
+    ])
+    .expect("valid");
+    let night = wrapping.evaluate(1.0).character_shade;
+    assert!((night.share - 0.6).abs() < 1e-6, "halfway through the night: {night:?}");
+    let halfway = sapphire_math::color::mix_oklab(Vec3::from(cool), Vec3::from(warm), 0.5);
+    assert!(night.hue.abs_diff_eq(halfway, 1e-6), "{night:?}");
+    assert!((wrapping.evaluate(13.0).character_shade.share - 0.6).abs() < 1e-6, "halfway through the day");
+
+    // Characters take it through their lighting, whatever their rig.
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(keyed, clock, 18.0).expect("a complete base");
+    let frame = *tod.resolve(Vec3::ZERO, 0.0);
+    assert!(frame.look.character_shade.share > 0.5, "golden hour: {:?}", frame.look.character_shade);
+    assert_eq!(character_lighting(&frame).shade, frame.look.character_shade);
+    // Nothing else changes: the frame packet and the lighting are the default day's.
+    let (_, mut plain) = time_of_day(18.0);
+    let plain = *plain.resolve(Vec3::ZERO, 0.0);
+    let (mut packet, mut expected) = (FramePacket::default(), FramePacket::default());
+    frame.write(&mut packet);
+    plain.write(&mut expected);
+    assert_eq!(packet, expected);
+    let lighting = character_lighting(&frame);
+    assert_eq!(
+        sapphire_render::CharacterLighting { shade: CharacterShade::default(), ..lighting },
+        character_lighting(&plain)
+    );
+}
+
+#[test]
+fn shadow_hue_keys_round_trip_and_are_checked() {
+    let day = shaded_day();
+    let text = day.to_ron().expect("write");
+    assert!(text.contains("character_shade: Some("), "written beside the other groups");
+    assert_eq!(TodTimeline::from_ron(&text).expect("read"), day);
+    // Every key of a timeline sets it, or none does.
+    let mut keys = day.keys().to_vec();
+    keys[4].character_shade = None;
+    let error = TodTimeline::new(keys).unwrap_err();
+    assert!(matches!(error, TodError::MixedGroups { key: 4, .. }), "{error}");
+    let shaded = |hue, share| TodKey { character_shade: Some(CharacterShadeKey { hue, share }), ..key(12.0) };
+    let over = TodTimeline::new(vec![shaded(SHADE_HUE, 1.5)]).unwrap_err();
+    let problem = "must be within 0..=1";
+    assert_eq!(over, TodError::Invalid { key: 0, field: "character_shade.share", problem });
+    let black = TodTimeline::new(vec![shaded([0.0; 3], 0.5)]).unwrap_err();
+    let problem = "must not be black";
+    assert_eq!(black, TodError::Invalid { key: 0, field: "character_shade.hue", problem });
+}
+
+#[test]
+fn zones_and_cutscenes_override_the_shadow_hue() {
+    let clock = ScaledClock::new().new_local_clock();
+    let mut tod = TimeOfDay::new(default_day(), clock, DAY).expect("a complete base");
+    // A grotto whose shadows go teal: a zone that sets the shadow hue alone.
+    let grotto =
+        TodKey { character_shade: Some(CharacterShadeKey { hue: [0.2, 0.8, 0.7], share: 0.7 }), ..key(0.0) };
+    let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 10.0 };
+    let zone_id =
+        tod.add_volume(TodVolume { blend_distance: 4.0, ..TodVolume::new(shape, zone(grotto.clone())) });
+    let inside = *tod.resolve(Vec3::ZERO, 0.0);
+    assert_eq!(inside.look.character_shade.share, 0.7, "inside the zone");
+    assert_eq!(character_lighting(&inside).shade, inside.look.character_shade);
+    let edge = tod.resolve(Vec3::new(12.0, 0.0, 0.0), 0.0).look.character_shade.share;
+    assert!(edge > 0.0 && edge < 0.7, "blending out over its edge: {edge}");
+    assert_eq!(tod.resolve(Vec3::new(100.0, 0.0, 0.0), 0.0).look.character_shade, CharacterShade::default());
+    tod.remove_volume(zone_id);
+    // A shot that sets it, eased in like its other values.
+    let shot = TodCutscene::new(4.0, 1.0, 1.0, None, vec![grotto], None).expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(2.0);
+    assert_eq!(tod.resolve(Vec3::ZERO, 0.0).look.character_shade.share, 0.7, "fully in");
+    tod.seek_cutscene(0.5);
+    let easing = tod.resolve(Vec3::ZERO, 0.0).look.character_shade.share;
+    assert!(easing > 0.0 && easing < 0.7, "easing in: {easing}");
 }

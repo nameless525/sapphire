@@ -1,6 +1,6 @@
 //! Tests of the character shading follow-ups that need a GPU (M1 C8), each against what the
 //! feature should draw: two-sided surfaces shade their back faces as the side the camera sees,
-//! and the character prepass holds them. Run with
+//! and the character prepass holds them; the shadow side takes its hue by its share. Run with
 //! `cargo test -p sapphire_render --test character_shading -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky and no outline unless a test says otherwise.
@@ -19,9 +19,9 @@ use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     AmbientLight, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterInstance,
-    CharacterLighting, ColorGrade, DirectionalLight, FramePacketRing, HeadBasis, InstanceId, MaterialHandle,
-    MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, SkyGradient,
-    ToneCurve, ViewData, Vignette,
+    CharacterLighting, CharacterShade, ColorGrade, DirectionalLight, FramePacketRing, HeadBasis, InstanceId,
+    MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer,
+    SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -455,6 +455,68 @@ fn the_character_prepass_holds_two_sided_back_faces() {
     let frame = harness.render();
     assert_near(frame.at(Vec3::new(0.0, 0.0, -0.5)), [0.0; 3], "the bowl's bottom");
     assert_eq!(lit(&frame), 0, "no rim inside the bowl");
+}
+
+/// Rec. 709 luminance, as the shader takes it.
+fn luminance(color: Vec3) -> f32 {
+    color.dot(Vec3::new(0.2126, 0.7152, 0.0722))
+}
+
+/// The shadow side's light under a key of `key` radiance with `shade` (the
+/// `sapphire_render::CharacterShade` docs).
+fn shade_light(key: Vec3, shade: CharacterShade) -> Vec3 {
+    let hue = shade.hue / luminance(shade.hue);
+    key.lerp(luminance(key) * hue, shade.share.clamp(0.0, 1.0))
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_shadow_side_takes_its_hue_by_its_share() {
+    let mut harness = Harness::new();
+    // A panel facing the camera in a material whose shade tone is a light grey, so the shadow
+    // side's light shows plainly, with an outline lit as the surface is.
+    let albedo = Vec3::new(0.85, 0.8, 0.75);
+    let tone = 0.7;
+    let document = AnimeCharacterMaterial {
+        regions: vec![CharacterRegion { shade_color: [tone; 3], ..CharacterRegion::default() }],
+        ..flat_material(albedo.to_array())
+    };
+    let material = harness.material(&document);
+    let panel = harness.mesh(&[rect((-1.0, -1.0), (1.0, 1.0), 0.0, false)], &[material]);
+    let character = harness.character(panel, Mat4::IDENTITY, Vec3::Z);
+    // A golden-hour key: warm, the lit side kept below where the tone curve bends.
+    let warm = DirectionalLight { color: Vec3::new(1.0, 0.62, 0.32), intensity: 1.0, ..white_key(Vec3::Z) };
+    let key = warm.color * warm.intensity;
+    let lit = |shade: CharacterShade, toward: Vec3| CharacterLighting {
+        shade,
+        ..CharacterLighting::unstyled(DirectionalLight { direction: -toward, ..warm })
+    };
+    // Without a share, the shadow side is the key light's, exactly: the same pixels whatever
+    // the hue.
+    harness.light(character, lit(CharacterShade::default(), Vec3::NEG_Z));
+    let plain = harness.render();
+    let shaded = scale(albedo.to_array(), tone);
+    assert_near(plain.at(Vec3::ZERO), (Vec3::from(shaded) * key).to_array(), "the key's own");
+    let blue = Vec3::new(0.35, 0.45, 1.0);
+    harness.light(character, lit(CharacterShade { hue: blue, share: 0.0 }, Vec3::NEG_Z));
+    assert!(harness.render().pixels == plain.pixels, "no share, no change");
+    for (hue, share) in [(blue, 0.5), (blue, 1.0), (Vec3::new(0.9, 0.3, 0.6), 0.75), (blue * 3.0, 0.5)] {
+        let shade = CharacterShade { hue, share };
+        // The shadow side (the key behind the panel) in the hue by its share, at the key's
+        // luminance.
+        harness.light(character, lit(shade, Vec3::NEG_Z));
+        let expected = Vec3::from(shaded) * shade_light(key, shade);
+        assert_near(harness.render().at(Vec3::ZERO), expected.to_array(), &format!("{shade:?} in shadow"));
+        // The lit side keeps the key light.
+        harness.light(character, lit(shade, Vec3::Z));
+        let expected = albedo * key;
+        assert_near(harness.render().at(Vec3::ZERO), expected.to_array(), &format!("{shade:?} lit"));
+    }
+    // A share past 1 counts as 1.
+    let over = CharacterShade { hue: blue, share: 3.0 };
+    harness.light(character, lit(over, Vec3::NEG_Z));
+    let full = Vec3::from(shaded) * shade_light(key, CharacterShade { share: 1.0, ..over });
+    assert_near(harness.render().at(Vec3::ZERO), full.to_array(), "held to 1");
 }
 
 #[test]

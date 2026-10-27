@@ -2136,7 +2136,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 | Trigger | Job | Runners |
 |---|---|---|
-| Every PR | fmt, clippy (with R2 lints), `check-layers`, `cargo-deny`, `cargo-nextest` | Linux |
+| Every PR | fmt, clippy (with R2 lints), rustdoc (warnings denied, private items included), `check-layers`, `cargo-deny`, `cargo-nextest` | Linux |
 | Every PR | Build desktop binaries | macOS, Windows, Linux |
 | Every PR | Compile-only builds for iOS (device and simulator) and Android | macOS (iOS), Linux (Android) |
 | Every PR | Combat replay suite | macOS, Windows, Linux |

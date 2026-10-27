@@ -75,6 +75,16 @@ jobs:
       # Optional features (`tracy`, `mimalloc`) only compile when enabled.
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Rustdoc with warnings denied: every intra-doc link resolves, private items' docs included
+      # (the renderer documents its passes on internal modules), and public docs link to public
+      # items only. The second build adds the sandbox's `dev` half, and documents only the sandbox
+      # again; the first keeps links to dev-only items out of the docs every build has.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --workspace --no-deps --locked --document-private-items
+          cargo doc --workspace --no-deps --locked --document-private-items --features sapphire_sandbox/dev
       - name: Crate layering (R1, R8)
         run: cargo --locked xtask --locked check-layers
       - name: Licenses, bans, advisories, sources

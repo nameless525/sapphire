@@ -17,6 +17,9 @@ These apply to every crate. The engine spec ([engine-spec.md](engine-spec.md)) s
 ## Code
 
 - **Docs:** every crate starts with a `//!` doc comment saying what it owns and what it deliberately does not. Public items get a `///` comment when the name alone doesn't say what it does or what invariant it keeps.
+  - The docs are read with private items too (`cargo doc --document-private-items`): internal modules carry much of the design, such as the renderer's passes.
+  - Every intra-doc link resolves, in those docs and in the public ones. A public item's docs link only to public items and name private ones in code spans instead (the `sky` module, `Program`); a link split across lines (`[name]` then `(path)` on the next) is no link. Put what a public type's users need on the type itself rather than on a private module.
+  - CI's Lint job builds the docs with warnings denied, without and with the sandbox's `dev` feature. Doctests run with `cargo test`; mark one `ignore` only when it is an outline that can't compile, and `no_run` when it needs a GPU or a window.
 - **Comments** explain *why*: constraints, platform quirks, links to the spec section. Don't narrate what the code obviously does.
 - **Errors:**
   - Libraries use `thiserror` enums; `anyhow` is for tools, xtask and app `main`s.

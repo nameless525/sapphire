@@ -423,8 +423,10 @@ mod tests {
             finished.recv_timeout(Duration::from_secs(15)).expect("the push fails rather than blocking");
         assert!(matches!(result, Err(LinkError::Stalled(_))), "{result:?} after {took:?}");
         // The OS counts a send's timeout from the last bytes it took within a write, or from the
-        // write's start: one to two deadlines without progress.
-        assert!(took < SHORT * 4, "{took:?}");
+        // write's start: one to two deadlines without progress (0.6-0.7 s on macOS), after the
+        // client filled loopback's buffers, which a loaded runner takes its time over. Well short
+        // of the default `TIMEOUT` it would take without the progress deadline.
+        assert!(took < SHORT * 10, "{took:?}");
         assert!(matches!(after, Err(LinkError::Closed)), "{after:?}");
     }
 

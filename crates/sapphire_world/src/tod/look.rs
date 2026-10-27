@@ -7,13 +7,14 @@ use sapphire_math::{Quat, Vec3};
 use sapphire_render::{
     AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
     CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, FramePacket, GradientLayer,
-    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, PostParams, SkyDisc, SkyGradient, SkyLayers,
-    Vignette,
+    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient,
+    SkyLayers, Vignette,
 };
 
 use super::key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
-    FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, SkyKey, TodKey, VignetteKey,
+    FogKey, FogLayerKey, GradeKey, GradientKey, HeightFogKey, LensFlareKey, NebulaKey, SkyKey, TodKey,
+    VignetteKey,
 };
 use super::timeline::DAY_HOURS;
 
@@ -30,10 +31,12 @@ pub struct TodLook {
     /// blended like the rest, so a cutscene that sets its own hour turns the stars there.
     pub sphere: Quat,
     pub sky: SkyGradient,
-    /// The sun's and moon's discs and glows, star brightness and the clouds (the sky's layers).
+    /// The sun's and moon's discs and glows, star brightness, the nebula's colors and the clouds
+    /// (the sky's layers).
     pub sun_disc: SkyDisc,
     pub moon_disc: SkyDisc,
     pub stars: f32,
+    pub nebula: Nebula,
     pub clouds: CloudLight,
     pub ambient: AmbientLight,
     pub fog: Fog,
@@ -67,6 +70,7 @@ impl Default for TodLook {
             sun_disc: layers.sun,
             moon_disc: layers.moon,
             stars: layers.stars,
+            nebula: layers.nebula,
             clouds: layers.clouds,
             ambient: AmbientLight::default(),
             fog: Fog::default(),
@@ -148,8 +152,13 @@ impl TodLook {
         packet.sun = self.key_light();
         packet.celestial = Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere };
         packet.sky = self.sky;
-        packet.sky_layers =
-            SkyLayers { sun: self.sun_disc, moon: self.moon_disc, stars: self.stars, clouds: self.clouds };
+        packet.sky_layers = SkyLayers {
+            sun: self.sun_disc,
+            moon: self.moon_disc,
+            stars: self.stars,
+            nebula: self.nebula,
+            clouds: self.clouds,
+        };
         packet.ambient = self.ambient;
         packet.fog = self.fog;
         packet.shadow_tint = self.shadow_tint;
@@ -193,6 +202,7 @@ impl TodLook {
         group(&mut self.sun_disc, from_discs.map(|d| &d.sun), to_discs.map(|d| &d.sun), segment, weight);
         group(&mut self.moon_disc, from_discs.map(|d| &d.moon), to_discs.map(|d| &d.moon), segment, weight);
         group(&mut self.stars, from.stars.as_ref(), to.stars.as_ref(), segment, weight);
+        group(&mut self.nebula, from.nebula.as_ref(), to.nebula.as_ref(), segment, weight);
         group(&mut self.clouds, from.clouds.as_ref(), to.clouds.as_ref(), segment, weight);
         group(&mut self.diffusion, from.diffusion.as_ref(), to.diffusion.as_ref(), segment, weight);
         let (from_bloom, to_bloom) = (from.character_bloom.as_ref(), to.character_bloom.as_ref());
@@ -397,6 +407,16 @@ impl Mix for SkyDisc {
     }
 }
 
+impl Mix for Nebula {
+    fn mix(&self, other: &Self, t: f32) -> Self {
+        Self {
+            clouds: mix_oklab(self.clouds, other.clouds, t),
+            wisps: mix_oklab(self.wisps, other.wisps, t),
+            accents: mix_oklab(self.accents, other.accents, t),
+        }
+    }
+}
+
 impl Mix for CloudLight {
     fn mix(&self, other: &Self, t: f32) -> Self {
         Self {
@@ -596,6 +616,7 @@ impl Mix for TodLook {
             sun_disc: self.sun_disc.mix(&other.sun_disc, t),
             moon_disc: self.moon_disc.mix(&other.moon_disc, t),
             stars: self.stars.mix(&other.stars, t),
+            nebula: self.nebula.mix(&other.nebula, t),
             clouds: self.clouds.mix(&other.clouds, t),
             ambient: self.ambient.mix(&other.ambient, t),
             fog: self.fog.mix(&other.fog, t),
@@ -645,6 +666,14 @@ impl Resolve for DiscKey {
             glow: self.glow.into(),
             glow_radius: self.glow_size.to_radians(),
         }
+    }
+}
+
+impl Resolve for NebulaKey {
+    type Value = Nebula;
+
+    fn resolve(&self) -> Nebula {
+        Nebula { clouds: self.clouds.into(), wisps: self.wisps.into(), accents: self.accents.into() }
     }
 }
 

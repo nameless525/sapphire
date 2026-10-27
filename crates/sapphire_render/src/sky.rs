@@ -16,32 +16,49 @@
 //!    pixel's own footprint, so its summed light stays the same under sub-pixel camera motion
 //!    and stars never shimmer; a grid whose cells shrink below a few pixels fades out. Optional
 //!    maps tint the stars and set where they are dense, and add the Milky Way's glow.
+//!    **The nebula** (M1 X1 part 2e) lies under them on the same sphere: an optional map whose
+//!    three channels are the densities of three kinds of cloud (broad clouds, the bright wisps
+//!    along them, sparse accents), each in a color time of day gives it, so a night's nebula can
+//!    turn from violet at dusk to teal at midnight, and black by day draws nothing.
 //! 3. **Glows** around the sun and moon: compact, so a body far out of view adds exactly
 //!    nothing, and stretched along the horizon while the body is low, as anime skies spread a
 //!    setting sun's warmth along it.
 //! 4. **The sun and moon discs**, in HDR so they bloom, cut by the horizon, the moon with an
 //!    optional face map (whose alpha can paint a crescent). The moon hides the stars behind it.
 //! 5. **Cirrus**, a high layer on a plane over the camera, scrolled by the wind.
-//! 6. **Card clouds**, a band of painted cumulus cards around the horizon that drifts around it.
+//! 6. **Card clouds**, a band of cumulus cards around the horizon that drifts around it, as tall
+//!    as its map: the sandbox's clouds stand on the horizon, the look-dev stage's band reaches 58°.
 //!
-//! Both cloud layers sample RGBA maps in the Genshin scheme: R the lit amount (the painted
-//! terminator is its 0.5 line), G a painted rim, B a signed distance to the cloud's edge (0.5 on
-//! the painted silhouette, rising inward) and A opacity. Coverage from time of day moves the
-//! dissolve threshold along B, so clouds shrink to their cores and vanish instead of fading,
-//! and both the silhouette and the terminator stay one pixel sharp at any magnification. Their
-//! colors are authored per key: a lit and a shade tone, never a darkened albedo, and on the card
-//! clouds a rim toward the key light (the cirrus's wisps are too thin for one: G goes unread).
+//! Both cloud layers sample RGBA maps whose B is a signed distance to the cloud's edge (0.5 on
+//! the silhouette, rising inward). Coverage from time of day moves the dissolve threshold along
+//! B, so clouds shrink to their cores and vanish instead of fading, and the silhouette stays one
+//! pixel sharp at any magnification. Their colors are authored per key: a lit and a shade tone,
+//! never a darkened albedo, and on the card clouds a rim toward the key light (the cirrus's wisps
+//! are too thin for one). The sky material says who lights the card clouds
+//! (`CloudShading`, `sapphire_assets::material`):
+//!
+//! - **Painted**, in the Genshin scheme (the cirrus always): R the lit amount, whose 0.5 line is
+//!   the painted terminator, kept a pixel sharp too; G a painted rim; A opacity. The light stays
+//!   where it was painted at every hour.
+//! - **Lit by the key light** (M1 X1 part 2e): R and G the normal of each cloud's front lobe, a
+//!   sphere facing the viewer, and A how open the lobe is to the sky (closed in the crevices
+//!   between lobes and under the base). The key light, taken into the cloud's frame where the
+//!   pixel looks, splits the lobes softly into the two tones along N·L, less the closed parts:
+//!   a noon sun lights the tops over blue undersides, a golden-hour sun the sides toward it, and
+//!   the moon the clouds at night. A backlit cloud's front darkens only partly, so its sun side
+//!   stays lit under the rim, the anime way.
 //!
 //! # Data
 //!
 //! - **Time of day** (`sapphire_world::tod`) resolves the gradient, where the bodies and the
 //!   celestial sphere are, and [`SkyLayers`](crate::SkyLayers): the discs' colors and glows, star
-//!   brightness, and the clouds' colors and coverage, all blended in OkLab with the rest of the
-//!   look.
+//!   brightness, the nebula's colors, and the clouds' colors and coverage, all blended in OkLab
+//!   with the rest of the look.
 //! - **The sky material** ([`FramePacket::sky_material`], [`SkyMaterial`]): the zone's disc sizes
-//!   and softness, the moon's face, star twinkle, the star and Milky Way maps, and the two cloud
-//!   maps with their scale, drift and dissolve softness. Without one the renderer draws with
-//!   [`SkyMaterial::default`], uploaded at creation: default discs, even stars, no clouds.
+//!   and softness, the moon's face, star twinkle, the star, Milky Way and nebula maps, and the
+//!   two cloud maps with their scale, drift and dissolve softness and the card clouds' shading.
+//!   Without one the renderer draws with [`SkyMaterial::default`], uploaded at creation: default
+//!   discs, even stars, no nebula or clouds.
 //! - **Each frame** the CPU folds both into one uniform block ([`SkyUniforms`], group 2 of the
 //!   sky's pipelines), reading the material's block from the material buffer's CPU mirror. Cloud
 //!   drift is reduced there in `f64` from the packet's unwrapped time, so it never jumps; the
@@ -77,9 +94,10 @@
 //! The sky's budget is 0.1–0.3 ms of GPU time on every tier (M1 plan, W2). It shades most of the
 //! screen, so its cost is arithmetic per pixel: the CPU works out every per-draw constant, edges
 //! are linear ramps, the arctangent is a polynomial, and a star cell is hashed once before its
-//! star's reach is known. Stars and clouds are pipeline variants (`Layers`), so a frame pays
-//! nothing for a layer time of day isn't drawing; within one, every layer is a branch every pixel
-//! takes alike, skipped at zero. Pixels also skip what can't reach them, leaving their color
+//! star's reach is known. Stars, the nebula, clouds and lit clouds are pipeline variants
+//! (`Layers`), so a frame pays nothing for a layer time of day isn't drawing, nor a sky for a
+//! layer its material doesn't have; within one, every layer is a branch every pixel takes alike,
+//! skipped at zero. Pixels also skip what can't reach them, leaving their color
 //! exactly as drawing it would: under the horizon the discs, stars and glows (below the glows'
 //! fringe) and both cloud layers (per 2 × 2 quad, which their texels' derivatives need), and a
 //! cloud layer's shading where its texel covers nothing. Mobile-Low drops the cirrus layer. The
@@ -88,6 +106,15 @@
 //! 0.2 ms at night at 1080p on Desktop-High, 0.09–0.12 ms with Mobile-High's settings and
 //! 0.05–0.08 ms with Mobile-Low's. A sky filling the view above the horizon costs about 0.32 ms
 //! at 1080p, the arithmetic of its layers (see "Later milestones").
+//!
+//! # Pipelines
+//!
+//! The renderer builds the variants a sky without a nebula or lit clouds draws when it is
+//! created (four into the main pass, two into the cube), so night falling never compiles a
+//! pipeline mid-game. A sky material that has either builds every variant it can draw the first
+//! time a frame draws with it (at most five more for both, compiled while that frame is
+//! prepared: a zone's sky arrives with the zone's load). A sky with neither builds none of
+//! them. [`SkyStats::pipelines`] counts every sky pipeline built so far.
 //!
 //! # Later milestones
 //!
@@ -168,18 +195,24 @@ pub struct SkyStats {
     pub cube_faces: u64,
     /// The face the last recorded frame drew, if it drew one (0–5: +X, −X, +Y, −Y, +Z, −Z).
     pub last_face: Option<u8>,
-    /// What the last prepared frame drew: stars, card clouds and cirrus (each only while time of
-    /// day gives it a brightness or coverage, and its map is bound).
+    /// What the last prepared frame drew: stars, the nebula, card clouds and cirrus (each only
+    /// while time of day gives it a brightness, color or coverage, and its map is bound), and
+    /// whether the key light lit the card clouds.
     pub stars: bool,
+    pub nebula: bool,
     pub clouds: bool,
+    pub lit_clouds: bool,
     pub cirrus: bool,
     /// Packets whose `sky_material` wasn't an uploaded sky material since the renderer was
     /// created; they draw with the default sky material.
     pub ignored_materials: u32,
+    /// The sky's pipelines built so far, into the main pass and the cube: 6 for a sky without a
+    /// nebula or lit clouds (see the `sky` module's docs).
+    pub pipelines: u32,
 }
 
 /// The sky's group 2 (WGSL `SkyUniforms`): the frame's sky layers, the sky material's shapes and
-/// the clouds' drift, folded together on the CPU. 320 bytes.
+/// the clouds' drift, folded together on the CPU. 368 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(crate) struct SkyUniforms {
@@ -220,6 +253,10 @@ pub(crate) struct SkyUniforms {
     /// how much a vertical offset counts, squared, less one, which spreads a low body's glow
     /// along the horizon.
     pub glow_shape: [f32; 4],
+    /// rgb: the nebula's colors (M1 X1 part 2e) for its map's R, G and B, black without a map.
+    pub nebula_clouds: [f32; 4],
+    pub nebula_wisps: [f32; 4],
+    pub nebula_accents: [f32; 4],
 }
 
 /// The sky pass's binding of [`SkyUniforms`] in group 2. Bindings 0 and 1 are the scene
@@ -239,16 +276,13 @@ pub(crate) struct Sky {
     uniforms: wgpu::Buffer,
     /// Group 2 of the sky's pipelines.
     bind_group: wgpu::BindGroup,
-    /// Into the main pass's scene color, at its sample count, against its depth: one per
-    /// [`Layers`] variant.
-    pipelines: [wgpu::RenderPipeline; Layers::VARIANTS],
-    /// Into a cube face: one sample, no depth, no discs or stars; without and with clouds.
-    cube_pipelines: [wgpu::RenderPipeline; 2],
-    /// What the pipelines are built with besides their module, kept to build them again from new
-    /// shader sources (hot reload, [`Self::rebuilt_pipelines`]).
-    layout: wgpu::PipelineLayout,
-    samples: u32,
-    cache: Option<wgpu::PipelineCache>,
+    /// What the pipelines are built with besides their module and constants, kept to build more
+    /// and to build them again from new shader sources (hot reload, [`Self::rebuilt_pipelines`]).
+    builder: Builder,
+    /// The variants built so far.
+    pipelines: SkyPipelines,
+    /// The material features whose variants are built: a bit per [`Features::bit`].
+    ready: u8,
     /// [`SkyMaterial::default`], for packets without a sky material of their own.
     default_material: MaterialHandle,
     cube: SkyCube,
@@ -264,101 +298,157 @@ struct PreparedSky {
     layers: Layers,
 }
 
-/// Which of the sky's optional layers a frame draws, and so which pipeline variant draws it
-/// (`SKY_STARS` and `SKY_CLOUDS` in sky.wgsl): a frame compiles nothing it doesn't draw, and the
-/// plainest sky keeps the plainest shader's registers. The discs and glows are in every variant.
+/// What a sky material can draw beyond the plainest sky, which decides the variants its frames
+/// can draw (see the module docs' "Pipelines").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Layers {
-    /// Stars and the Milky Way: time of day gives them a brightness.
-    stars: bool,
-    /// Either cloud layer: one has a coverage and a map.
-    clouds: bool,
+struct Features {
+    /// It binds a nebula map.
+    nebula: bool,
+    /// The key light shades its card clouds, whose map it binds.
+    lit_clouds: bool,
 }
 
-impl Layers {
-    const VARIANTS: usize = 4;
-    const ALL: [Self; Self::VARIANTS] = [
-        Self { stars: false, clouds: false },
-        Self { stars: true, clouds: false },
-        Self { stars: false, clouds: true },
-        Self { stars: true, clouds: true },
-    ];
-
-    /// The layers `uniforms` draw.
-    fn of(uniforms: &SkyUniforms) -> Self {
+impl Features {
+    /// What a material with the block `params` can draw.
+    fn of(params: &SkyParams) -> Self {
+        let bound = |slot: usize| params.modes[0] & (1 << slot) != 0;
         Self {
-            stars: uniforms.stars[0] > 0.0,
-            clouds: uniforms.cloud_lit[3] > 0.0 || uniforms.cloud_shade[3] > 0.0,
+            nebula: bound(SkyMaterial::NEBULA),
+            lit_clouds: bound(SkyMaterial::CLOUDS) && params.modes[1] & SkyParams::LIT_CLOUDS != 0,
         }
     }
 
-    /// The variant's index in [`Self::ALL`].
-    fn index(self) -> usize {
-        usize::from(self.stars) | usize::from(self.clouds) << 1
+    /// Its bit in [`Sky::ready`].
+    fn bit(self) -> u8 {
+        1 << (u8::from(self.nebula) | u8::from(self.lit_clouds) << 1)
     }
 }
 
-/// The sky's pipelines from `module`: every [`Layers`] variant into the main pass's scene color
-/// at `samples` against its depth, and the cube's two into `cube_format`.
-fn build_pipelines(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
+/// Which of the sky's optional layers a frame draws, and so which pipeline variant draws it
+/// (`SKY_STARS`, `SKY_CLOUDS`, `SKY_NEBULA` and `SKY_LIT_CLOUDS` in sky.wgsl): a frame compiles
+/// nothing it doesn't draw, and the plainest sky keeps the plainest shader's registers. The discs
+/// and glows are in every variant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Layers {
+    /// The night sky: the stars and the Milky Way while time of day gives them a brightness, and
+    /// the nebula while it gives that a color.
+    stars: bool,
+    /// Either cloud layer: one has a coverage and a map.
+    clouds: bool,
+    /// The nebula, with the night sky: time of day gives it a color, and its map is bound.
+    nebula: bool,
+    /// Lit card clouds, with the clouds: the material's card clouds are lit by the key light.
+    lit_clouds: bool,
+}
+
+impl Layers {
+    /// Variants into the main pass, by [`Self::index`]; not every one can be drawn.
+    const VARIANTS: usize = 16;
+    /// Variants into the cube, by [`Self::cube_index`].
+    const CUBE_VARIANTS: usize = 4;
+
+    /// The layers `uniforms` draw with a material that has `features`.
+    fn of(uniforms: &SkyUniforms, features: Features) -> Self {
+        // The nebula's colors are black without its map (`SkyUniforms::new`).
+        let nebula = [uniforms.nebula_clouds, uniforms.nebula_wisps, uniforms.nebula_accents]
+            .iter()
+            .any(|color| color[..3].iter().any(|&c| c > 0.0));
+        let clouds = uniforms.cloud_lit[3] > 0.0 || uniforms.cloud_shade[3] > 0.0;
+        Self {
+            stars: uniforms.stars[0] > 0.0 || nebula,
+            clouds,
+            nebula,
+            lit_clouds: clouds && features.lit_clouds,
+        }
+    }
+
+    /// Every set of layers a material with `features` can draw: those its frames can pick, so
+    /// building them all ahead never compiles a pipeline as the hours pass.
+    fn drawable(features: Features) -> impl Iterator<Item = Self> {
+        (0..8u32).filter_map(move |bits| {
+            let (stars, clouds, nebula) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+            let layers = Self { stars, clouds, nebula, lit_clouds: clouds && features.lit_clouds };
+            (!nebula || stars && features.nebula).then_some(layers)
+        })
+    }
+
+    /// The main pass's variant.
+    fn index(self) -> usize {
+        usize::from(self.stars)
+            | usize::from(self.clouds) << 1
+            | usize::from(self.nebula) << 2
+            | usize::from(self.lit_clouds) << 3
+    }
+
+    /// The cube's variant, which draws no night sky: the clouds as the main pass does.
+    fn cube_index(self) -> usize {
+        usize::from(self.clouds) | usize::from(self.lit_clouds) << 1
+    }
+}
+
+/// What every sky pipeline is built with besides its module and its layers.
+#[derive(Debug)]
+struct Builder {
+    device: wgpu::Device,
+    layout: wgpu::PipelineLayout,
+    /// The main pass's sample count.
     samples: u32,
     cube_format: wgpu::TextureFormat,
-    cache: Option<&wgpu::PipelineCache>,
-) -> SkyPipelines {
-    let pipeline =
-        |label, format, samples, depth: Option<wgpu::DepthStencilState>, discs: bool, layers: Layers| {
-            let switch = |on: bool| if on { 1.0 } else { 0.0 };
-            let constants = [
-                (DISCS_CONSTANT, switch(discs)),
-                (STARS_CONSTANT, switch(layers.stars)),
-                (CLOUDS_CONSTANT, switch(layers.clouds)),
-            ];
-            let compilation_options =
-                wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_sky"),
-                    compilation_options: compilation_options.clone(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: depth,
-                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some("fs_sky"),
-                    compilation_options,
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache,
-            })
-        };
-    // A fullscreen triangle at the far plane, drawn after the opaque surfaces: `Equal`
-    // against the cleared depth (0) shades only pixels no geometry covered. Every variant is
-    // built now, behind the load, so night falling never compiles a pipeline mid-game.
-    let depth = wgpu::DepthStencilState {
-        format: DEPTH_FORMAT,
-        depth_write_enabled: Some(false),
-        depth_compare: Some(wgpu::CompareFunction::Equal),
-        stencil: Default::default(),
-        bias: Default::default(),
-    };
-    let main = Layers::ALL
-        .map(|layers| pipeline("sky", SCENE_COLOR_FORMAT, samples, Some(depth.clone()), true, layers));
-    let cube = [false, true]
-        .map(|clouds| pipeline("sky cube", cube_format, 1, None, false, Layers { stars: false, clouds }));
-    SkyPipelines { main, cube }
+    cache: Option<wgpu::PipelineCache>,
+}
+
+impl Builder {
+    /// `layers`' pipeline from `module`: into the main pass's scene color at its sample count
+    /// against its depth, or with `cube` into a cube face (one sample, no depth, no discs and no
+    /// night sky).
+    fn pipeline(&self, module: &wgpu::ShaderModule, layers: Layers, cube: bool) -> wgpu::RenderPipeline {
+        let switch = |on: bool| if on { 1.0 } else { 0.0 };
+        let constants = [
+            (DISCS_CONSTANT, switch(!cube)),
+            (STARS_CONSTANT, switch(layers.stars && !cube)),
+            (CLOUDS_CONSTANT, switch(layers.clouds)),
+            (NEBULA_CONSTANT, switch(layers.nebula && !cube)),
+            (LIT_CLOUDS_CONSTANT, switch(layers.lit_clouds)),
+        ];
+        let compilation_options =
+            wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
+        // A fullscreen triangle at the far plane, drawn after the opaque surfaces: `Equal`
+        // against the cleared depth (0) shades only pixels no geometry covered.
+        let depth = (!cube).then(|| wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Equal),
+            stencil: Default::default(),
+            bias: Default::default(),
+        });
+        let (label, format, samples) =
+            if cube { ("sky cube", self.cube_format, 1) } else { ("sky", SCENE_COLOR_FORMAT, self.samples) };
+        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&self.layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_sky"),
+                compilation_options: compilation_options.clone(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: depth,
+            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_sky"),
+                compilation_options,
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: self.cache.as_ref(),
+        })
+    }
 }
 
 /// The sky-only cubemap and when each face is drawn.
@@ -481,16 +571,45 @@ impl CubePass<'_> {
     }
 }
 
-/// The sky's pipelines from one module: [`Sky::rebuilt_pipelines`]' result.
+/// The sky's pipelines built so far, by variant, and the module later ones are built from: what
+/// [`Sky::rebuilt_pipelines`] returns.
 #[derive(Debug)]
 pub(crate) struct SkyPipelines {
-    main: [wgpu::RenderPipeline; Layers::VARIANTS],
-    cube: [wgpu::RenderPipeline; 2],
+    module: wgpu::ShaderModule,
+    /// Into the main pass, by [`Layers::index`].
+    main: [Option<wgpu::RenderPipeline>; Layers::VARIANTS],
+    /// Into a cube face, by [`Layers::cube_index`].
+    cube: [Option<wgpu::RenderPipeline>; Layers::CUBE_VARIANTS],
 }
 
 impl SkyPipelines {
-    /// How many there are: every one is built up front.
-    pub(crate) const COUNT: u32 = (Layers::VARIANTS + 2) as u32;
+    /// None built yet, from `module`.
+    fn new(module: wgpu::ShaderModule) -> Self {
+        Self { module, main: Default::default(), cube: Default::default() }
+    }
+
+    /// How many are built, for
+    /// [`Renderer::set_shader_sources`](crate::Renderer::set_shader_sources)'s count.
+    pub(crate) fn count(&self) -> u32 {
+        self.main.iter().chain(&self.cube).filter(|pipeline| pipeline.is_some()).count() as u32
+    }
+
+    /// Builds the main pass's and the cube's variants of each of `layers` that aren't built yet.
+    /// Returns how many it built.
+    fn build(&mut self, builder: &Builder, layers: impl Iterator<Item = Layers>) -> u32 {
+        let mut built = 0;
+        for layers in layers {
+            if self.main[layers.index()].is_none() {
+                self.main[layers.index()] = Some(builder.pipeline(&self.module, layers, false));
+                built += 1;
+            }
+            if self.cube[layers.cube_index()].is_none() {
+                self.cube[layers.cube_index()] = Some(builder.pipeline(&self.module, layers, true));
+                built += 1;
+            }
+        }
+        built
+    }
 }
 
 impl Sky {
@@ -552,11 +671,19 @@ impl Sky {
             ],
             immediate_size: 0,
         });
-        let module = shaders::module(device, Program::Sky, sources);
-        let cache = gpu.pipeline_cache().cloned();
         let cube = SkyCube::new(gpu, settings);
-        let SkyPipelines { main: pipelines, cube: cube_pipelines } =
-            build_pipelines(device, &layout, &module, samples, cube.format(), cache.as_ref());
+        let builder = Builder {
+            device: device.clone(),
+            layout,
+            samples,
+            cube_format: cube.format(),
+            cache: gpu.pipeline_cache().cloned(),
+        };
+        // The plainest material's variants now, behind the load, so night falling never
+        // compiles a pipeline mid-game; a material with more builds its own when it arrives.
+        let mut pipelines = SkyPipelines::new(shaders::module(device, Program::Sky, sources));
+        let plain = Features::default();
+        pipelines.build(&builder, Layers::drawable(plain));
         tracing::debug!(
             target: LOG_TARGET,
             cube_size = settings.cube_size,
@@ -565,40 +692,46 @@ impl Sky {
             cirrus = settings.cirrus,
             "sky created"
         );
+        let stats =
+            SkyStats { cube_size: settings.cube_size, pipelines: pipelines.count(), ..SkyStats::default() };
         Ok(Self {
             settings,
             uniforms,
             bind_group,
+            builder,
             pipelines,
-            cube_pipelines,
-            layout,
-            samples,
-            cache,
+            ready: plain.bit(),
             default_material,
             cube,
             prepared: None,
-            stats: SkyStats { cube_size: settings.cube_size, ..SkyStats::default() },
+            stats,
         })
     }
 
-    /// The sky's pipelines built anew from `sources` (hot reload), on the layout, sample count
-    /// and cube format they were built with: [`Self::set_pipelines`] takes them once the
-    /// renderer knows every pipeline it rebuilt is valid.
-    pub(crate) fn rebuilt_pipelines(&self, device: &wgpu::Device, sources: &ShaderSources) -> SkyPipelines {
-        let module = shaders::module(device, Program::Sky, sources);
-        build_pipelines(device, &self.layout, &module, self.samples, self.cube.format(), self.cache.as_ref())
+    /// The pipelines built so far, built anew from `sources` (hot reload), on the layout, sample
+    /// count and cube format they were built with, and the module later ones come from:
+    /// [`Self::set_pipelines`] takes them once the renderer knows every pipeline it rebuilt is
+    /// valid.
+    pub(crate) fn rebuilt_pipelines(&self, sources: &ShaderSources) -> SkyPipelines {
+        let mut pipelines = SkyPipelines::new(shaders::module(&self.builder.device, Program::Sky, sources));
+        let ready = [false, true]
+            .into_iter()
+            .flat_map(|nebula| [false, true].map(|lit_clouds| Features { nebula, lit_clouds }))
+            .filter(|features| self.ready & features.bit() != 0);
+        pipelines.build(&self.builder, ready.flat_map(Layers::drawable));
+        pipelines
     }
 
     /// Draws with `pipelines` from the next frame, which draws every face of the cube again, as
     /// the first frame does, so the cube shows the new shaders at once.
     pub(crate) fn set_pipelines(&mut self, pipelines: SkyPipelines) {
-        self.pipelines = pipelines.main;
-        self.cube_pipelines = pipelines.cube;
+        self.pipelines = pipelines;
         self.cube.schedule = FaceSchedule::new(self.settings.cube_interval);
     }
 
     /// The CPU half of a frame: folds the packet's sky layers and its sky material (or the
-    /// default) into the frame's uniforms.
+    /// default) into the frame's uniforms. The first frame drawn with a material that has a
+    /// nebula or lit clouds builds every variant it can draw (see the module docs).
     pub(crate) fn prepare(&mut self, packet: &FramePacket, materials: &Materials) {
         let requested = packet.sky_material;
         let material = requested
@@ -610,11 +743,21 @@ impl Sky {
         let params: SkyParams = bytemuck::pod_read_unaligned(
             materials.params(material).expect("a sky material's block is in its family's mirror"),
         );
+        let features = Features::of(&params);
+        if self.ready & features.bit() == 0 {
+            self.ready |= features.bit();
+            let built = self.pipelines.build(&self.builder, Layers::drawable(features));
+            self.stats.pipelines = self.pipelines.count();
+            tracing::debug!(target: LOG_TARGET, built, ?features, "sky variants built for a sky material");
+        }
         let uniforms = SkyUniforms::new(packet, &params, self.settings);
+        let layers = Layers::of(&uniforms, features);
         self.stats.stars = uniforms.stars[0] > 0.0;
+        self.stats.nebula = layers.nebula;
         self.stats.clouds = uniforms.cloud_lit[3] > 0.0;
+        self.stats.lit_clouds = self.stats.clouds && features.lit_clouds;
         self.stats.cirrus = uniforms.cloud_shade[3] > 0.0;
-        self.prepared = Some(PreparedSky { uniforms, material, layers: Layers::of(&uniforms) });
+        self.prepared = Some(PreparedSky { uniforms, material, layers });
     }
 
     /// The prepared frame's uniforms, the main pass's draw, and the cube faces this frame
@@ -637,12 +780,13 @@ impl Sky {
             self.stats.cube_faces += u64::from(faces.len() as u32);
             self.stats.last_face = Some((faces.end - 1) as u8);
         }
-        let draw =
-            SkyDraw { pipeline: &self.pipelines[layers.index()], bind_group: &self.bind_group, material };
-        let cube = (!faces.is_empty()).then_some(CubePass {
+        let built = "`prepare` builds every variant its sky material can draw, the plainest at creation";
+        let pipeline = self.pipelines.main[layers.index()].as_ref().expect(built);
+        let draw = SkyDraw { pipeline, bind_group: &self.bind_group, material };
+        let cube = (!faces.is_empty()).then(|| CubePass {
             faces,
             views: &self.cube.faces,
-            pipeline: &self.cube_pipelines[usize::from(layers.clouds)],
+            pipeline: self.pipelines.cube[layers.cube_index()].as_ref().expect(built),
             bind_group: &self.bind_group,
             material,
         });
@@ -676,11 +820,13 @@ impl Sky {
     }
 }
 
-/// The names of `sky.wgsl`'s pipeline-overridable constants that turn the discs, the stars and
-/// the clouds on.
+/// The names of `sky.wgsl`'s pipeline-overridable constants that turn the discs, the night sky,
+/// the clouds, the nebula and lit card clouds on.
 pub(crate) const DISCS_CONSTANT: &str = "SKY_DISCS";
 pub(crate) const STARS_CONSTANT: &str = "SKY_STARS";
 pub(crate) const CLOUDS_CONSTANT: &str = "SKY_CLOUDS";
+pub(crate) const NEBULA_CONSTANT: &str = "SKY_NEBULA";
+pub(crate) const LIT_CLOUDS_CONSTANT: &str = "SKY_LIT_CLOUDS";
 
 /// Faces of the sky cube, each with a view of its own after the main view's in the view buffer.
 pub(crate) const CUBE_FACES: u32 = 6;
@@ -826,6 +972,7 @@ impl SkyUniforms {
             (if rgb.is_finite() { rgb } else { Vec3::ZERO }).extend(w).to_array()
         };
         let stars = if layers.stars.is_finite() { layers.stars.max(0.0) } else { 0.0 };
+        let nebula = if bound(SkyMaterial::NEBULA) { layers.nebula } else { crate::Nebula::default() };
         let (sun_glow, moon_glow) = (glow(&layers.sun), glow(&layers.moon));
         let ([sun_inverse, sun_stretch], [moon_inverse, moon_stretch]) =
             (shape(sun, &sun_glow), shape(moon, &moon_glow));
@@ -857,6 +1004,9 @@ impl SkyUniforms {
             modes: [params.modes[0], identity_swizzles(&params.swizzles), 0, 0],
             swizzles: params.swizzles,
             glow_shape: [sun_inverse, sun_stretch, moon_inverse, moon_stretch],
+            nebula_clouds: color(nebula.clouds, 0.0),
+            nebula_wisps: color(nebula.wisps, 0.0),
+            nebula_accents: color(nebula.accents, 0.0),
         }
     }
 }
@@ -866,6 +1016,8 @@ mod gpu_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use glam::Quat;
 
     use super::*;
@@ -921,23 +1073,75 @@ mod tests {
         material.cirrus.map =
             Some(sapphire_assets::AssetId::from_text("00000000-0000-0000-0000-000000000002"));
         let block = material.gpu_params(&swizzles);
-        assert_eq!(identity_swizzles(&block.swizzles), 0b01111, "every slot but the cirrus' two-channel map");
+        assert_eq!(
+            identity_swizzles(&block.swizzles),
+            0b101111,
+            "every slot but the cirrus' two-channel map"
+        );
     }
 
     #[test]
     fn each_layer_set_has_its_variant() {
-        let indices: Vec<usize> = Layers::ALL.iter().map(|layers| layers.index()).collect();
-        assert_eq!(indices, [0, 1, 2, 3]);
+        let plain = Features::default();
+        let indices: Vec<usize> = Layers::drawable(plain).map(Layers::index).collect();
+        assert_eq!(indices, [0, 1, 2, 3], "the plainest sky's four variants, as before the nebula");
+        let cube: Vec<usize> = Layers::drawable(plain).map(Layers::cube_index).collect();
+        assert_eq!(cube, [0, 0, 1, 1], "and the cube's two");
         let mut uniforms = SkyUniforms::new(
             &FramePacket::default(),
             &params(&SkyMaterial::default()),
             SkySettings::default(),
         );
-        assert_eq!(Layers::of(&uniforms), Layers::default(), "the gradient alone");
+        let layers = |stars, clouds| Layers { stars, clouds, ..Layers::default() };
+        assert_eq!(Layers::of(&uniforms, plain), Layers::default(), "the gradient alone");
         uniforms.cloud_shade[3] = 0.4;
-        assert_eq!(Layers::of(&uniforms), Layers { stars: false, clouds: true }, "cirrus alone draws clouds");
+        assert_eq!(Layers::of(&uniforms, plain), layers(false, true), "cirrus alone draws clouds");
         uniforms.stars[0] = 0.1;
-        assert_eq!(Layers::of(&uniforms), Layers { stars: true, clouds: true });
+        assert_eq!(Layers::of(&uniforms, plain), layers(true, true));
+        // A material with a nebula and lit clouds: lit clouds whenever clouds draw, and the
+        // nebula, which brings the night sky's variant, while it has a color.
+        let both = Features { nebula: true, lit_clouds: true };
+        let lit = Layers::of(&uniforms, both);
+        assert_eq!(lit, Layers { stars: true, clouds: true, nebula: false, lit_clouds: true });
+        uniforms.stars[0] = 0.0;
+        uniforms.nebula_wisps = [0.0, 0.2, 0.3, 0.0];
+        let nebula = Layers::of(&uniforms, both);
+        assert_eq!(nebula, Layers { stars: true, clouds: true, nebula: true, lit_clouds: true });
+        // Its frames draw only variants built for it: five more than the plainest sky's six.
+        let drawable: Vec<Layers> = Layers::drawable(both).collect();
+        assert!(drawable.contains(&lit) && drawable.contains(&nebula));
+        let main = |features| Layers::drawable(features).map(Layers::index).collect::<BTreeSet<_>>();
+        let cube = |features| Layers::drawable(features).map(Layers::cube_index).collect::<BTreeSet<_>>();
+        assert_eq!(main(both).union(&main(plain)).count() + cube(both).union(&cube(plain)).count(), 6 + 5);
+        assert!(main(both).iter().all(|&index| index < Layers::VARIANTS));
+    }
+
+    #[test]
+    fn a_nebula_and_lit_clouds_need_their_material() {
+        let mut packet = FramePacket::default();
+        packet.sky_layers.nebula.clouds = Vec3::new(0.1, 0.3, 0.4);
+        packet.sky_layers.nebula.accents = Vec3::new(f32::NAN, 1.0, -2.0);
+        let mut material = SkyMaterial::default();
+        let bare = SkyUniforms::new(&packet, &params(&material), SkySettings::default());
+        assert_eq!(bare.nebula_clouds, [0.0; 4], "no map, no nebula");
+        assert_eq!(Features::of(&params(&material)), Features::default());
+        let map = Some(sapphire_assets::AssetId::from_text("00000000-0000-0000-0000-000000000003"));
+        material.stars.nebula = map;
+        material.clouds.shading = sapphire_assets::material::CloudShading::Lit;
+        assert_eq!(
+            Features::of(&params(&material)),
+            Features { nebula: true, lit_clouds: false },
+            "lit clouds need their map"
+        );
+        material.clouds.map = map;
+        assert_eq!(Features::of(&params(&material)), Features { nebula: true, lit_clouds: true });
+        let drawn = SkyUniforms::new(&packet, &params(&material), SkySettings::default());
+        assert_eq!(drawn.nebula_clouds, [0.1, 0.3, 0.4, 0.0]);
+        assert_eq!(
+            drawn.nebula_accents,
+            [0.0, 1.0, 0.0, 0.0],
+            "colors that aren't finite or positive are black"
+        );
     }
 
     #[test]

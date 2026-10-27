@@ -8,7 +8,7 @@
 //! | Anime character | [`AnimeCharacterMaterial`] | [`AnimeCharacterParams`], 1584 B | base color, control, normal, ramp, face shadow, surface mask, matcap, expression | the anime character shader, its outlines and its eyes through hair (C1 grows it) |
 //! | Environment (stylized GGX) | [`EnvironmentMaterial`] | [`EnvironmentParams`], 144 B | base color, normal, mask, terminator band, emission | the environment shader (M1 W4), on meshes beside the anime character family |
 //! | Foliage | [`FoliageMaterial`] | [`FoliageParams`], 160 B | base color, mask | the foliage shader (M1 W6), on static meshes with a foliage stream |
-//! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus | the sky (W2), which reads the block on the CPU |
+//! | Sky | [`SkyMaterial`] | [`SkyParams`], 96 B | moon, stars, Milky Way, clouds, cirrus, nebula | the sky (W2), which reads the block on the CPU |
 //! | Fog card | [`FogCardMaterial`] | [`FogCardParams`], 80 B | map | the fog card shader (M1 W3), on meshes |
 //!
 //! Each document is a `Versioned` type with a stable name under `sapphire::render`
@@ -108,7 +108,7 @@ use self::common::{GpuBlock, bound_bits, pack_swizzles};
 pub use self::environment::{EnvironmentMaterial, EnvironmentParams, Terminator, TerminatorBand};
 pub use self::fog_card::{CardFacing, FogCardMaterial, FogCardParams};
 pub use self::foliage::{FoliageGradient, FoliageMaterial, FoliageParams, Translucency, Wind};
-pub use self::sky::{CloudLayer, Disc, Moon, SkyMaterial, SkyParams, Stars};
+pub use self::sky::{CloudLayer, CloudShading, Disc, Moon, SkyMaterial, SkyParams, Stars};
 use crate::AssetId;
 use crate::texture::Swizzle;
 
@@ -336,7 +336,9 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 8: the anime character family's layers (M1 C7): five vectors of stockings, emission and
+    /// 9: the sky family's sixth texture slot, the nebula, and how its card clouds are shaded in
+    /// `modes[1]` (M1 X1 part 2e). 8: the anime character family's layers (M1 C7): five vectors
+    /// of stockings, emission and
     /// specular settings and three vectors per region after the regions' rim settings, the
     /// layers' flags in `modes.x`, and a body's layer mask in the surface mask slot. 7: the
     /// foliage family's block packs its terminator's growth per meter (M1 W6), its canopy
@@ -353,7 +355,7 @@ impl Versioned for Material {
     /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
     /// generated materials embed blocks, must bump
     /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 8;
+    const VERSION: u32 = 9;
 }
 
 /// What one texture slot binds.

@@ -410,6 +410,14 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
         ui.label("Stars");
         ui.monospace(format!("{:.2}", look.stars));
         ui.end_row();
+        ui.label("Nebula");
+        ui.horizontal(|ui| {
+            let nebula = &look.nebula;
+            for color in [nebula.clouds, nebula.wisps, nebula.accents] {
+                swatch(ui, color, exposure);
+            }
+        });
+        ui.end_row();
         ui.label("Clouds");
         ui.horizontal(|ui| {
             let clouds = &look.clouds;

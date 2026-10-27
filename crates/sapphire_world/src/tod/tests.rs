@@ -487,6 +487,11 @@ fn sky_layer_groups_round_trip_and_are_checked() {
             moon: DiscKey { color: [1.0, 1.0, 0.9], intensity: 2.0, ..DiscKey::default() },
         }),
         stars: Some(0.8),
+        nebula: Some(NebulaKey {
+            clouds: [0.05, 0.05, 0.2],
+            wisps: [0.1, 0.4, 0.4],
+            accents: [0.3, 0.0, 0.2],
+        }),
         clouds: Some(CloudsKey {
             lit: [1.0, 0.9, 0.8],
             shade: [0.5, 0.5, 0.7],
@@ -499,9 +504,14 @@ fn sky_layer_groups_round_trip_and_are_checked() {
     let timeline = TodTimeline::new(vec![layers]).expect("valid");
     let text = timeline.to_ron().expect("write");
     assert!(
-        text.contains("discs:") && text.contains("stars: Some(0.8)") && text.contains("clouds:"),
+        text.contains("discs:")
+            && text.contains("stars: Some(0.8)")
+            && text.contains("nebula:")
+            && text.contains("clouds:"),
         "{text}"
     );
+    let look = timeline.evaluate(3.0);
+    assert_eq!(look.nebula.wisps, Vec3::new(0.1, 0.4, 0.4), "the nebula's colors reach the look");
     assert_eq!(TodTimeline::from_ron(&text).expect("read"), timeline);
     // Left-out glow and cloud fields default; left-out groups stay unset.
     let partial = TodTimeline::from_ron(
@@ -522,6 +532,13 @@ fn sky_layer_groups_round_trip_and_are_checked() {
         TodTimeline::from_ron(&text).expect_err(groups).to_string()
     };
     assert!(invalid("stars: -1.0").contains("`stars`"));
+    assert!(invalid("nebula: (accents: (0.1, -0.2, 0.1))").contains("nebula.accents"));
+    assert!(invalid("nebula: (glow: (0.1, 0.2, 0.1))").contains("glow"), "typos are errors");
+    let black = TodTimeline::from_ron(
+        r#"(type: "sapphire::world::TodTimeline", version: 1, data: (keys: [(time: 1.0, nebula: ())]))"#,
+    )
+    .expect("a nebula left black");
+    assert_eq!(black.evaluate(1.0).nebula, sapphire_render::Nebula::default(), "black, as by day");
     let cover = "clouds: (lit: (1.0, 1.0, 1.0), shade: (0.0, 0.0, 0.0), coverage: 1.5)";
     assert!(invalid(cover).contains("clouds.coverage"));
     assert!(invalid("clouds: (lit: (1.0, 1.0, 1.0), shade: (0.0, -1.0, 0.0))").contains("clouds.shade"));
@@ -546,6 +563,13 @@ fn sky_layers_blend_in_oklab_like_the_rest() {
     let look = timeline.evaluate(9.0);
     let expected = lab(Vec3::new(1.0, 0.45, 0.2)).lerp(lab(Vec3::new(0.1, 0.15, 0.6)), 0.5);
     assert!(lab(look.clouds.lit).abs_diff_eq(expected, 1e-4), "colors in OkLab");
+    // The nebula's colors too, fading out from night to day through their own hues.
+    let teal = [0.1, 0.4, 0.4];
+    let night = TodKey { nebula: Some(NebulaKey { wisps: teal, ..NebulaKey::default() }), ..key(0.0) };
+    let day = TodKey { nebula: Some(NebulaKey::default()), ..key(12.0) };
+    let fading = TodTimeline::new(vec![night, day]).expect("valid").evaluate(6.0).nebula.wisps;
+    let expected = lab(Vec3::from(teal)).lerp(lab(Vec3::ZERO), 0.5);
+    assert!(lab(fading).abs_diff_eq(expected, 1e-4), "in OkLab: {fading}");
     assert!((look.clouds.coverage - 0.6).abs() < 1e-6, "scalars linearly");
     assert!((look.stars - 0.5).abs() < 1e-6);
     assert_eq!(timeline.evaluate(6.0).clouds.lit, Vec3::new(1.0, 0.45, 0.2), "exact on a key");

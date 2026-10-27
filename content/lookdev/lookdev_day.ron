@@ -87,8 +87,9 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 2.0, glow: (0.06, 0.08, 0.16), glow_size: 16.0),
                 ),
                 stars: 1.0,
+                nebula: (clouds: (0.035, 0.05, 0.13), wisps: (0.03, 0.2, 0.24), accents: (0.1, 0.04, 0.17)),
                 clouds: (
-                    lit: (0.15, 0.14, 0.27), shade: (0.04, 0.045, 0.11), rim: (0.3, 0.27, 0.44),
+                    lit: (0.1, 0.11, 0.22), shade: (0.03, 0.04, 0.1), rim: (0.2, 0.22, 0.36),
                     coverage: 0.6, cirrus: 0.3,
                 ),
                 diffusion: (intensity: 0.9, threshold: 0.05, color: (0.75, 0.8, 1.0)),
@@ -127,6 +128,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 1.5, glow: (0.05, 0.06, 0.12), glow_size: 12.0),
                 ),
                 stars: 0.55,
+                nebula: (clouds: (0.01, 0.015, 0.04), wisps: (0.01, 0.06, 0.07), accents: (0.03, 0.012, 0.05)),
                 clouds: (
                     lit: (0.36, 0.33, 0.58), shade: (0.13, 0.13, 0.3), rim: (0.5, 0.42, 0.62),
                     coverage: 0.7, cirrus: 0.5,
@@ -167,6 +169,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.5),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.15, 0.75, 0.62), shade: (0.4, 0.34, 0.56), rim: (1.5, 0.9, 0.55),
                     coverage: 0.75, cirrus: 0.7,
@@ -207,6 +210,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.1, 1.07, 1.02), shade: (0.44, 0.53, 0.76), rim: (1.0, 0.97, 0.9),
                     coverage: 0.8, cirrus: 0.45,
@@ -248,6 +252,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.1, 1.08, 1.03), shade: (0.42, 0.52, 0.74), rim: (1.0, 0.98, 0.9),
                     coverage: 0.85, cirrus: 0.4,
@@ -288,6 +293,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.12, 1.02, 0.88), shade: (0.44, 0.48, 0.7), rim: (1.2, 1.0, 0.75),
                     coverage: 0.85, cirrus: 0.55,
@@ -330,6 +336,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.3),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.6, 0.85, 0.4), shade: (0.3, 0.22, 0.48), rim: (2.2, 1.2, 0.5),
                     coverage: 0.85, cirrus: 0.75,
@@ -371,6 +378,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 0.6),
                 ),
                 stars: 0.0,
+                nebula: (),
                 clouds: (
                     lit: (1.5, 0.6, 0.42), shade: (0.26, 0.18, 0.42), rim: (2.1, 0.9, 0.45),
                     coverage: 0.8, cirrus: 0.85,
@@ -412,6 +420,7 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 1.4, glow: (0.05, 0.06, 0.12), glow_size: 12.0),
                 ),
                 stars: 0.35,
+                nebula: (clouds: (0.01, 0.015, 0.04), wisps: (0.01, 0.06, 0.07), accents: (0.03, 0.012, 0.05)),
                 clouds: (
                     lit: (0.3, 0.36, 0.6), shade: (0.1, 0.14, 0.3), rim: (0.45, 0.42, 0.62),
                     coverage: 0.7, cirrus: 0.5,
@@ -452,8 +461,9 @@
                     moon: (color: (1.0, 0.96, 0.86), intensity: 1.8, glow: (0.06, 0.08, 0.15), glow_size: 15.0),
                 ),
                 stars: 0.9,
+                nebula: (clouds: (0.035, 0.05, 0.13), wisps: (0.03, 0.2, 0.24), accents: (0.1, 0.04, 0.17)),
                 clouds: (
-                    lit: (0.15, 0.14, 0.27), shade: (0.04, 0.045, 0.11), rim: (0.3, 0.27, 0.44),
+                    lit: (0.1, 0.11, 0.22), shade: (0.03, 0.04, 0.1), rim: (0.2, 0.22, 0.36),
                     coverage: 0.6, cirrus: 0.3,
                 ),
                 diffusion: (intensity: 0.9, threshold: 0.05, color: (0.75, 0.8, 1.0)),

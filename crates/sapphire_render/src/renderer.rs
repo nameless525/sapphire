@@ -1030,8 +1030,9 @@ impl Renderer {
             pipelines += built;
             mesh
         });
-        let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(device, sources));
-        pipelines += if sky.is_some() { SkyPipelines::COUNT } else { 0 };
+        // Only those built so far: the plainest sky's, and the variants of materials drawn since.
+        let sky = changed.contains(&Program::Sky).then(|| self.sky.rebuilt_pipelines(sources));
+        pipelines += sky.as_ref().map_or(0, SkyPipelines::count);
         // Only those built so far: the variants built ahead and those frames drew.
         let post = changed.contains(&Program::Post).then(|| self.post.rebuilt_pipelines(sources));
         pipelines += post.as_ref().map_or(0, RebuiltPipelines::count);
@@ -1236,7 +1237,8 @@ impl Renderer {
             self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
             self.fog_cards.sort(view.camera.position, list, slots, meshes);
         }
-        self.sky.prepare(packet, &self.materials);
+        // A sky material with a nebula or lit clouds builds its variants the first time it draws.
+        self.checked_build(|renderer| renderer.sky.prepare(packet, &renderer.materials));
         // The lens flare follows the sun's disc as the main view sees it. A variant nothing
         // built ahead builds now, from the current shader sources.
         let camera = packet.main_view().map(|view| view.camera);

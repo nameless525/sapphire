@@ -216,6 +216,7 @@ struct SkyParams {
     // x: scale; y: dissolve softness; zw: scroll.
     clouds: vec4<f32>,
     cirrus: vec4<f32>,
+    // x: bound slots; y: 1 when the key light shades the card clouds (`CloudShading::Lit`).
     modes: vec4<u32>,
     swizzles: vec4<u32>,
 }

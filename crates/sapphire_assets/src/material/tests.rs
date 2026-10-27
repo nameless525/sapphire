@@ -74,7 +74,13 @@ fn documents() -> Vec<AnyMaterialDocument> {
     let foliage =
         FoliageMaterial { mask_map: Some(id(TEXTURE)), canopy_occlusion: 0.7, ..FoliageMaterial::default() };
     let sky = SkyMaterial {
-        clouds: CloudLayer { map: Some(id(TEXTURE)), scale: 3.0, ..CloudLayer::default() },
+        stars: Stars { nebula: Some(id(TEXTURE)), ..Stars::default() },
+        clouds: CloudLayer {
+            map: Some(id(TEXTURE)),
+            scale: 3.0,
+            shading: CloudShading::Lit,
+            ..CloudLayer::default()
+        },
         ..SkyMaterial::default()
     };
     let fog = FogCardMaterial { map: Some(id(TEXTURE)), scroll: [0.01, 0.0], ..FogCardMaterial::default() };
@@ -149,6 +155,26 @@ fn documents_may_leave_fields_out() {
     );
 }
 
+/// The nebula's slot and the card clouds' shading (M1 X1 part 2e) reach the sky's block, and a
+/// sky that uses neither writes its document as before them.
+#[test]
+fn the_sky_block_packs_its_nebula_and_lit_clouds() {
+    let swizzles = [Swizzle::IDENTITY; SkyMaterial::TEXTURE_SLOTS.len()];
+    let painted = SkyMaterial::default();
+    let text = to_ron(&painted).unwrap();
+    assert!(!text.contains("nebula") && !text.contains("shading"), "{text}");
+    assert_eq!(painted.gpu_params(&swizzles).modes[..2], [0, 0]);
+    let lit = SkyMaterial {
+        stars: Stars { nebula: Some(id(TEXTURE)), ..Stars::default() },
+        clouds: CloudLayer { shading: CloudShading::Lit, ..CloudLayer::default() },
+        ..SkyMaterial::default()
+    };
+    assert_eq!(SkyMaterial::TEXTURE_SLOTS[SkyMaterial::NEBULA].name, "nebula");
+    let modes = lit.gpu_params(&swizzles).modes;
+    assert_eq!(modes[..2], [1 << SkyMaterial::NEBULA, SkyParams::LIT_CLOUDS]);
+    assert!(to_ron(&lit).unwrap().contains("shading: Lit"));
+}
+
 #[test]
 fn documents_of_other_types_and_bad_ids_are_errors() {
     let other = r#"(type: "sapphire::input::InputBindings", version: 1, data: ())"#;
@@ -204,6 +230,9 @@ fn validation_names_the_field() {
     assert!(error(AnyMaterialDocument::Foliage(foliage)).starts_with("wrap"));
     let sky = SkyMaterial { sun: Disc { size: f32::INFINITY, softness: 0.1 }, ..SkyMaterial::default() };
     assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("sun.size"));
+    let lit = CloudLayer { shading: CloudShading::Lit, ..CloudLayer::default() };
+    let sky = SkyMaterial { cirrus: lit, ..SkyMaterial::default() };
+    assert!(error(AnyMaterialDocument::Sky(sky)).starts_with("cirrus.shading"), "the cirrus is painted");
     let fog = FogCardMaterial { camera_fade: [3.0, 1.0], ..FogCardMaterial::default() };
     assert!(error(AnyMaterialDocument::FogCard(fog)).starts_with("camera_fade"));
     // Cooking validates too.

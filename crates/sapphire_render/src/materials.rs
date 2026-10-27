@@ -536,7 +536,11 @@ mod gpu_tests {
         assert_eq!((slots[0], slots[2]), (scribbled, scribbled), "the other slots weren't uploaded again");
 
         // A handle keeps its family, and belongs to the renderer that made it.
-        let sky = Material::from_document(&SkyMaterial::default(), &[Swizzle::IDENTITY; 5]).unwrap();
+        let sky = Material::from_document(
+            &SkyMaterial::default(),
+            &[Swizzle::IDENTITY; SkyMaterial::TEXTURE_SLOTS.len()],
+        )
+        .unwrap();
         let sky = sky.to_cooked().unwrap();
         let error =
             renderer.update_material(handles[0], Material::read(&sky).unwrap(), |_| None).unwrap_err();

@@ -43,8 +43,9 @@
 //!   that draws them, with the wind in their velocity; cut out by an alpha test in the main pass,
 //!   the scene prepass and the shadow casters, or by alpha-to-coverage under MSAA where the tier
 //!   asks ([`FoliageSettings`]).
-//! - The sky (`sky`, M1 W2): the gradient, stars and the Milky Way, the sun's and moon's discs and
-//!   glows, cirrus and the card clouds' band, drawn at the far plane in the main pass from the
+//! - The sky (`sky`, M1 W2): the gradient, stars, the Milky Way and a nebula (M1 X1 part 2e), the
+//!   sun's and moon's discs and glows, cirrus and the card clouds' band, painted or shaded by the
+//!   key light (X1 part 2e), drawn at the far plane in the main pass from the
 //!   packet's [`SkyLayers`] and its sky material, and a sky-only cubemap updated a face a frame
 //!   for the probes and reflections that will read it (see "The sky" below).
 //! - Local lights (`lights`, M1 R5): the packet's plain-data [`LocalLight`]s, culled to the
@@ -283,8 +284,9 @@
 //! (written once), then the shadows' views, every cascade and then every character map (written
 //! in the frames that draw them). The sky's pipelines bind groups 0 and 1 as the scene's, their own group 2 (the
 //! frame's `SkyUniforms`, one uniform at binding 2, past the scene group's bindings
-//! `frame.wgsl` declares) and the sky family's group 3 (five texture slots and the trilinear
-//! sampler), so the sky reads no storage buffer beyond group 0's.
+//! `frame.wgsl` declares) and the sky family's group 3 (six texture slots, the nebula's the sixth
+//! since M1 X1 part 2e, and the trilinear sampler), so the sky reads no storage buffer beyond
+//! group 0's.
 //!
 //! A debug view ([`debug_view`], M1 F5) binds groups 0–3 as the main pass does in its replay,
 //! with group 1 its own buffer holding the main view without TAA's jitter. Its pass over the
@@ -691,12 +693,17 @@
 //! The `sky` module has the details:
 //!
 //! - **Layers**, back to front: the gradient (`sky_color()` in `frame.wgsl`, unchanged, which the
-//!   anime character shader reads for ambient), stars and the Milky Way on the turning celestial
-//!   sphere, the glows, the discs, cirrus and the card clouds. A layer at zero is skipped on a
+//!   anime character shader reads for ambient), stars, the Milky Way and the material's nebula
+//!   on the turning celestial sphere, the glows, the discs, cirrus and the card clouds, whose
+//!   map holds painted light or, for a material that says so, the clouds' shape for the key
+//!   light to shade (M1 X1 part 2e). A layer at zero is skipped on a
 //!   branch every pixel takes alike, and leaves the gradient exactly as it was; under the
 //!   horizon, and where a cloud texel covers nothing, pixels skip the layers that add nothing.
-//! - **Data:** time of day's [`SkyLayers`] (disc colors and glows, star brightness, cloud tones
-//!   and coverage) and [`Celestial`] (where the bodies are, and the sphere's turn), and the
+//!   The nebula's and the lit clouds' pipeline variants are built only for a material that has
+//!   them, on its first draw.
+//! - **Data:** time of day's [`SkyLayers`] (disc colors and glows, star brightness, the nebula's
+//!   colors, cloud tones and coverage) and [`Celestial`] (where the bodies are, and the sphere's
+//!   turn), and the
 //!   packet's sky material ([`FramePacket::sky_material`]), or [`SkyMaterial::default`]
 //!   (`sapphire_assets::material`), which the renderer uploads at creation. The CPU folds them,
 //!   with the clouds' drift reduced in `f64` from the packet's unwrapped time, into one uniform
@@ -706,8 +713,8 @@
 //!   ([`SkySettings`] per tier), all six faces on the first frame and then a face every frame
 //!   (every other one on Mobile-Low), in a side-effect pass before the main pass. Its readers are the ambient probes
 //!   and reflections (W4, W5, C7).
-//! - **Stats:** [`SkyStats`] in [`RenderStats::sky`]: the layers drawn, the cube's faces and
-//!   sky materials that weren't.
+//! - **Stats:** [`SkyStats`] in [`RenderStats::sky`]: the layers drawn, the pipelines built, the
+//!   cube's faces and sky materials that weren't.
 //!
 //! [`SkyMaterial::default`]: sapphire_assets::material::SkyMaterial
 //!
@@ -850,7 +857,8 @@ pub use frame::{
     AmbientLight, CameraData, Celestial, CharacterBody, CharacterFace, CharacterGi, CharacterInstance,
     CharacterLight, CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer,
     FramePacket, FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight,
-    MeshInstance, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather, Wind,
+    MeshInstance, Nebula, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
+    Wind,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;

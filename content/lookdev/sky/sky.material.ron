@@ -1,7 +1,10 @@
-// The look-dev town's sky (M1 X1 part 2): the sandbox sky's maps (`content/samples/sky_*.png`)
-// but for the Milky Way, which `gen-lookdev` paints teal and brighter (`milky_way.png`), and a
-// larger sun disc, so the night reads closer to Wuthering Waves' nebula skies and golden hour's
-// sun is a presence. The look-dev stage draws it in place of the sandbox's sky.
+// The look-dev town's sky (M1 X1 part 2): the sandbox sky's moon, star and cirrus maps
+// (`content/samples/sky_*.png`), and its own, which `gen-lookdev` paints: the Milky Way in teal and
+// brighter (`milky_way.png`), towering cumulus for the card band (`cumulus.png`), which the key
+// light shades, and the night's nebula (`nebula.png`, X1 part 2e), toward Wuthering Waves' skies;
+// and a larger sun disc, so golden hour's sun is a presence. The towers drift slowly, once
+// around the horizon in about 2.8 hours, so they keep framing the town for minutes. The look-dev
+// stage draws it in place of the sandbox's sky.
 (
     type: "sapphire::render::SkyMaterial",
     version: 1,
@@ -20,13 +23,15 @@
         stars: (
             map: Some("3e53d7a8-5f8d-4889-a649-bc2e818cc17b"),
             milky_way: Some("bc6b01d2-c6dc-448d-91be-740ac379f49a"),
+            nebula: Some("150cb486-6e2c-4a45-8197-c23036076d1c"),
             twinkle: 0.35,
         ),
         clouds: (
-            map: Some("096e0ddb-5a8a-4fe2-9328-55c315e45ccd"),
+            map: Some("7c5d970f-262a-4b9a-bd5c-99bc9e59692d"),
             scale: 1.0,
-            scroll: (0.00025, 0.0),
+            scroll: (0.0001, 0.0),
             dissolve_softness: 0.006,
+            shading: Lit,
         ),
         cirrus: (
             map: Some("81b5e21b-ec48-4b86-a352-9d24e5fe3491"),

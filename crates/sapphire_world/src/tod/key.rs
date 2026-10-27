@@ -66,6 +66,9 @@ pub struct TodKey {
     /// Star brightness: 0 by day, 1 for a full night sky (M1 W2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stars: Option<f32>,
+    /// The nebula's colors, under the stars (M1 X1 part 2e): black by day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nebula: Option<NebulaKey>,
     /// The clouds' light and cover (M1 W2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clouds: Option<CloudsKey>,
@@ -178,6 +181,22 @@ pub struct DiscKey {
     /// The glow's radius in degrees, 0 to 180.
     #[serde(default)]
     pub glow_size: f32,
+}
+
+/// The night sky's nebula at a key ([`sapphire_render::Nebula`]): the color of each kind of cloud
+/// the sky material's nebula map paints, linear RGB, HDR. A channel's light is its color times
+/// its density, so black hides it; between keys each color blends in OkLab, so the nebula fades
+/// out through its own hues and can turn them through the night.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::world"]
+#[serde(default, deny_unknown_fields)]
+pub struct NebulaKey {
+    /// The map's R: its broad clouds.
+    pub clouds: Rgb,
+    /// G: the bright wisps along them.
+    pub wisps: Rgb,
+    /// B: sparse accents.
+    pub accents: Rgb,
 }
 
 /// The clouds at a key ([`sapphire_render::CloudLight`]): painted in a lit and a shade tone with
@@ -564,10 +583,11 @@ pub enum TodGroup {
     Gradients,
     LensFlare,
     Emission,
+    Nebula,
 }
 
 impl TodGroup {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Sun,
         Self::Moon,
         Self::Sky,
@@ -588,12 +608,14 @@ impl TodGroup {
         Self::Gradients,
         Self::LensFlare,
         Self::Emission,
+        Self::Nebula,
     ];
 
-    /// The sky's layers over its gradient (M1 W2): optional even in the base timeline, where a
-    /// group left out draws nothing ([`sapphire_render::SkyLayers::default`]), so timelines
-    /// written before them draw the sky as they did.
-    pub const SKY_LAYERS: [Self; 3] = [Self::Discs, Self::Stars, Self::Clouds];
+    /// The sky's layers over its gradient (M1 W2, the nebula M1 X1 part 2e): optional even in
+    /// the base timeline, where a group left out draws nothing
+    /// ([`sapphire_render::SkyLayers::default`]), so timelines written before them draw the sky
+    /// as they did.
+    pub const SKY_LAYERS: [Self; 4] = [Self::Discs, Self::Stars, Self::Clouds, Self::Nebula];
 
     /// Post's compositing layers (M1 P2): optional even in the base timeline, where a group left
     /// out draws nothing (characters bloom as the world does), so timelines written before them
@@ -605,10 +627,11 @@ impl TodGroup {
     /// post's ([`Self::POST_LAYERS`]) and the emission scale (M1 W1's keyed emission), which a
     /// timeline that leaves it out keeps at 1, as authored. Each draws where unset as every
     /// timeline written before it drew.
-    pub const OPTIONAL: [Self; 8] = [
+    pub const OPTIONAL: [Self; 9] = [
         Self::Discs,
         Self::Stars,
         Self::Clouds,
+        Self::Nebula,
         Self::Diffusion,
         Self::CharacterBloom,
         Self::Gradients,
@@ -639,6 +662,7 @@ impl TodGroup {
             Self::Gradients => "gradients",
             Self::LensFlare => "lens_flare",
             Self::Emission => "emission",
+            Self::Nebula => "nebula",
         }
     }
 
@@ -735,6 +759,7 @@ impl TodKey {
             (TodGroup::Gradients, self.gradients.is_some()),
             (TodGroup::LensFlare, self.lens_flare.is_some()),
             (TodGroup::Emission, self.emission.is_some()),
+            (TodGroup::Nebula, self.nebula.is_some()),
         ];
         for (group, present) in set {
             if present {
@@ -828,6 +853,11 @@ impl TodKey {
         }
         if let Some(stars) = self.stars {
             non_negative(stars, "stars")?;
+        }
+        if let Some(nebula) = &self.nebula {
+            color(nebula.clouds, "nebula.clouds")?;
+            color(nebula.wisps, "nebula.wisps")?;
+            color(nebula.accents, "nebula.accents")?;
         }
         if let Some(clouds) = &self.clouds {
             color(clouds.lit, "clouds.lit")?;

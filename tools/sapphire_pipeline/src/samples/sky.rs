@@ -39,7 +39,7 @@ use std::io;
 
 use glam::{Vec2, Vec3};
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{CloudLayer, Disc, Moon, SkyMaterial, Stars};
+use sapphire_assets::material::{CloudLayer, CloudShading, Disc, Moon, SkyMaterial, Stars};
 use sapphire_serialize::to_ron;
 
 use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
@@ -69,7 +69,7 @@ const BAND_SIZE: (u32, u32) = (4096, 384);
 const BAND_ROWS_BELOW_HORIZON: f32 = 2.0 * BAND_SIZE.0 as f32 / 360.0;
 /// How deep inside a cloud, in texels, B runs from the edge (0.5) to 1; outside it falls to 0
 /// in half that.
-const CLOUD_DISTANCE_RANGE: f32 = 64.0;
+pub(crate) const CLOUD_DISTANCE_RANGE: f32 = 64.0;
 /// The painted rim's width inside the edge, in texels.
 const CLOUD_RIM_TEXELS: f32 = 4.0;
 /// Where the cards' lobes are lit from: above and a little in front.
@@ -85,26 +85,28 @@ const MILKY_WAY_SIZE: (u32, u32) = (1024, 512);
 /// The Milky Way's plane in the celestial sphere's frame (its pole is +Y): nearly through the
 /// celestial poles, so with the default day's turn of the sphere it arcs high across the sky
 /// through the evening and is overhead near midnight.
-const GALACTIC_POLE: Vec3 = Vec3::new(0.974, 0.099, 0.204);
+pub(crate) const GALACTIC_POLE: Vec3 = Vec3::new(0.974, 0.099, 0.204);
 
 /// The sky material: the sandbox's zone sky, drawing every map above.
 pub fn material() -> SkyMaterial {
     SkyMaterial {
         sun: Disc { size: 2.2, softness: 0.08 },
         moon: Moon { disc: Disc { size: 3.4, softness: 0.04 }, map: Some(MOON_ID) },
-        stars: Stars { map: Some(STARS_ID), milky_way: Some(MILKY_WAY_ID), twinkle: 0.35 },
+        stars: Stars { map: Some(STARS_ID), milky_way: Some(MILKY_WAY_ID), nebula: None, twinkle: 0.35 },
         // Once around the horizon, drifting a turn in about an hour.
         clouds: CloudLayer {
             map: Some(CLOUDS_ID),
             scale: 1.0,
             scroll: [0.00025, 0.0],
             dissolve_softness: 0.006,
+            shading: CloudShading::Painted,
         },
         cirrus: CloudLayer {
             map: Some(CIRRUS_ID),
             scale: 1.2,
             scroll: [0.004, 0.0015],
             dissolve_softness: 0.06,
+            shading: CloudShading::Painted,
         },
     }
 }
@@ -289,7 +291,7 @@ pub fn clouds_png() -> io::Result<Vec<u8>> {
 /// it leaves the edge with, so the silhouette's antialiasing is even on both sides. The slope at
 /// the edge, two 8-bit steps a texel, keeps the 8-bit (and block-compressed) contour within about
 /// a quarter of a texel.
-fn dissolve_field(distance: f32) -> f32 {
+pub(crate) fn dissolve_field(distance: f32) -> f32 {
     let depth = -distance / CLOUD_DISTANCE_RANGE;
     if depth > 0.0 {
         let rest = 1.0 - depth.min(1.0);
@@ -561,7 +563,7 @@ mod tests {
         let document = AnyMaterialDocument::from_ron(&material_document()).expect("a material document");
         assert_eq!(
             document.textures(),
-            [Some(MOON_ID), Some(STARS_ID), Some(MILKY_WAY_ID), Some(CLOUDS_ID), Some(CIRRUS_ID)]
+            [Some(MOON_ID), Some(STARS_ID), Some(MILKY_WAY_ID), Some(CLOUDS_ID), Some(CIRRUS_ID), None]
         );
     }
 

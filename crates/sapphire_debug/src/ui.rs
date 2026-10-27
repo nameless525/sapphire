@@ -769,13 +769,18 @@ fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
 }
 
 fn sky_text(sky: &sapphire_render::SkyStats) -> String {
-    let layers: Vec<&str> = [(sky.stars, "stars"), (sky.clouds, "clouds"), (sky.cirrus, "cirrus")]
-        .into_iter()
-        .filter_map(|(drawn, name)| drawn.then_some(name))
-        .collect();
+    let clouds = if sky.lit_clouds { "lit clouds" } else { "clouds" };
+    let layers: Vec<&str> =
+        [(sky.stars, "stars"), (sky.nebula, "nebula"), (sky.clouds, clouds), (sky.cirrus, "cirrus")]
+            .into_iter()
+            .filter_map(|(drawn, name)| drawn.then_some(name))
+            .collect();
     let layers = if layers.is_empty() { "gradient and discs".to_owned() } else { layers.join(", ") };
     let face = sky.last_face.map_or_else(|| "none".to_owned(), |face| face.to_string());
-    format!("{layers}; cube {}², face {face} ({} drawn)", sky.cube_size, sky.cube_faces)
+    format!(
+        "{layers}; cube {}², face {face} ({} drawn); {} pipelines",
+        sky.cube_size, sky.cube_faces, sky.pipelines
+    )
 }
 
 /// The fog's layers and its cards this frame (M1 W3).

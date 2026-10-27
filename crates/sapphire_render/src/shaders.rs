@@ -1292,7 +1292,10 @@ mod tests {
         use sapphire_assets::material::SkyMaterial;
 
         use crate::pipelines::material_binding;
-        use crate::sky::{CLOUDS_CONSTANT, DISCS_CONSTANT, STARS_CONSTANT, SkyUniforms};
+        use crate::sky::{
+            CLOUDS_CONSTANT, DISCS_CONSTANT, LIT_CLOUDS_CONSTANT, NEBULA_CONSTANT, STARS_CONSTANT,
+            SkyUniforms,
+        };
         let sky = validate(Program::Sky);
         let rust = offsets!(SkyUniforms {
             sun,
@@ -1313,6 +1316,9 @@ mod tests {
             modes,
             swizzles,
             glow_shape,
+            nebula_clouds,
+            nebula_wisps,
+            nebula_accents,
         });
         let (_, ty) = sky
             .types
@@ -1331,6 +1337,7 @@ mod tests {
             ("SKY_SLOT_MILKY_WAY", SkyMaterial::MILKY_WAY),
             ("SKY_SLOT_CLOUDS", SkyMaterial::CLOUDS),
             ("SKY_SLOT_CIRRUS", SkyMaterial::CIRRUS),
+            ("SKY_SLOT_NEBULA", SkyMaterial::NEBULA),
         ];
         assert_eq!(slots.len(), SkyMaterial::TEXTURE_SLOTS.len());
         for (name, slot) in slots {
@@ -1351,7 +1358,7 @@ mod tests {
             .collect();
         expected.insert(material_binding::SAMPLER, "sky_sampler".into());
         assert_eq!(bindings, expected);
-        let names = [DISCS_CONSTANT, STARS_CONSTANT, CLOUDS_CONSTANT];
+        let names = [DISCS_CONSTANT, STARS_CONSTANT, CLOUDS_CONSTANT, NEBULA_CONSTANT, LIT_CLOUDS_CONSTANT];
         for name in names {
             assert!(sky.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(name)), "{name}");
         }
@@ -1362,7 +1369,7 @@ mod tests {
         )
         .validate(&sky)
         .expect("validated above");
-        for bits in 0..8u32 {
+        for bits in 0..1u32 << names.len() {
             let constants: naga::back::PipelineConstants = names
                 .iter()
                 .zip(0..)
@@ -1371,7 +1378,7 @@ mod tests {
             for entry_point in &sky.entry_points {
                 let stage = Some((entry_point.stage, entry_point.name.as_str()));
                 naga::back::pipeline_constants::process_overrides(&sky, &info, stage, &constants)
-                    .unwrap_or_else(|error| panic!("sky.wgsl {bits:03b} {}: {error}", entry_point.name));
+                    .unwrap_or_else(|error| panic!("sky.wgsl {bits:05b} {}: {error}", entry_point.name));
             }
         }
     }

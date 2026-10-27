@@ -32,6 +32,7 @@
 //! |---|---|
 //! | `foliage/{tree_green,tree_blossom,tree_autumn,bush_green,bush_lavender,grass}.glb` | W6's foliage samples' geometry ([`PLANTS`]), one file per plant so each sidecar binds the plant's own look-dev foliage material (`foliage/materials/`) |
 //! | `sky/milky_way.png` | The night's Milky Way in teal, blue-violet and cyan-white ([`MILKY_WAY`]), which the look-dev sky (`sky/sky.material.ron`) reads in place of the sandbox's |
+//! | `sky/cumulus.png`, `sky/nebula.png` | Towering cumulus for the card band, which the key light shades, and the night's nebula ([`sky_maps`], X1 part 2e): the look-dev sky's in place of the sandbox's band, and its own |
 //! | `mountains/{near,middle,far}_<sector>.glb`, `mountains/mountains.png` | The far mountains (X1 part 2d, [`mountains`]): three ranges round the town, each cut into sectors, and the palette their material (`mountains/mountains.material.ron`) reads |
 //!
 //! The kit's own trees become foliage through single-piece assemblies
@@ -49,6 +50,9 @@
 //! | `face/face_expression.png` | C3's expression map ([`face_expression_png`]): a blush over each cheek and the nose's bridge (X1 part 2c) |
 //! | `neck_shadow.png` | The shadow under the chin ([`neck_shadow_png`]), the shadow bias of the body's ILM map (`body.ilm.ron`), measured from the model's face and body meshes (X1 part 2c) |
 
+pub mod mountains;
+pub mod sky_maps;
+
 use std::io;
 
 use glam::{Vec2, Vec3};
@@ -57,8 +61,6 @@ use sapphire_assets::character_maps::{face_expression, face_mask, hair_mask};
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
 use crate::samples::{foliage, sky};
-
-pub mod mountains;
 
 /// The town's directory, under the look-dev directory.
 pub const TOWN_DIR: &str = "town";
@@ -161,13 +163,15 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     ])
 }
 
-/// The generated plants, the sky's Milky Way, the character's face masks and the far
-/// mountains, relative to the look-dev directory, with their bytes: the sources [`files`]'s
-/// maps don't cover.
+/// The generated plants, the sky's maps, the character's face masks and the far mountains,
+/// relative to the look-dev directory, with their bytes: the sources [`files`]'s maps don't
+/// cover.
 pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut generated: Vec<(String, Vec<u8>)> =
         PLANTS.iter().map(|&(name, plant)| (format!("{FOLIAGE_DIR}/{name}"), plant.glb())).collect();
     generated.push((format!("{SKY_DIR}/milky_way.png"), sky::milky_way_png_in(&MILKY_WAY)?));
+    generated.push((format!("{SKY_DIR}/cumulus.png"), sky_maps::cumulus_png()?));
+    generated.push((format!("{SKY_DIR}/nebula.png"), sky_maps::nebula_png()?));
     generated.push((FACE_MASK.to_owned(), face_mask_png()?));
     generated.push((FACE_EXPRESSION.to_owned(), face_expression_png()?));
     generated.extend(mountains::files()?);

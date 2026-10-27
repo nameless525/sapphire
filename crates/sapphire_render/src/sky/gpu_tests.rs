@@ -9,7 +9,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{Quat, Vec3, Vec4};
 use half::f16;
 use sapphire_assets::AssetId;
-use sapphire_assets::material::{CloudLayer, Material, MaterialDocument, SkyMaterial};
+use sapphire_assets::material::{CloudLayer, CloudShading, Material, MaterialDocument, SkyMaterial};
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -189,25 +189,28 @@ impl Harness {
         GpuTexture::upload(&self.gpu, &Texture { desc, levels: vec![&bytes] }, "sky test").expect("texture")
     }
 
-    /// Cooks and uploads `material`, its cloud and cirrus slots bound to `clouds` and `cirrus`.
+    /// Cooks and uploads `material`, each map it names bound to the texture `maps` pairs with that
+    /// map's ID.
     fn sky_material(
         &mut self,
         material: &SkyMaterial,
-        clouds: Option<&GpuTexture>,
-        cirrus: Option<&GpuTexture>,
+        maps: &[(Option<AssetId>, &GpuTexture)],
     ) -> MaterialHandle {
         let swizzles = [Swizzle::IDENTITY; SkyMaterial::TEXTURE_SLOTS.len()];
         let bytes = Material::from_document(material, &swizzles).expect("valid").to_cooked().expect("cook");
-        let lookup = |asked: AssetId| {
-            if Some(asked) == material.clouds.map {
-                clouds
-            } else if Some(asked) == material.cirrus.map {
-                cirrus
-            } else {
-                None
-            }
-        };
+        let lookup =
+            |asked: AssetId| maps.iter().find(|(id, _)| *id == Some(asked)).map(|&(_, texture)| texture);
         self.renderer.upload_material(Material::read(&bytes).expect("read"), lookup).expect("upload")
+    }
+
+    /// [`Self::sky_material`] for `material`'s two cloud maps.
+    fn upload_clouds(
+        &mut self,
+        material: &SkyMaterial,
+        clouds: &GpuTexture,
+        cirrus: &GpuTexture,
+    ) -> MaterialHandle {
+        self.sky_material(material, &[(material.clouds.map, clouds), (material.cirrus.map, cirrus)])
     }
 }
 
@@ -415,15 +418,127 @@ fn cloud_material(cirrus_scroll: [f32; 2]) -> SkyMaterial {
             scale: 1.0,
             scroll: [0.0; 2],
             dissolve_softness: 0.0,
+            shading: CloudShading::Painted,
         },
         cirrus: CloudLayer {
             map: id("00000000-0000-4000-8000-0000000000c2"),
             scale: 1.0,
             scroll: cirrus_scroll,
             dissolve_softness: 0.0,
+            shading: CloudShading::Painted,
         },
         ..SkyMaterial::default()
     }
+}
+
+/// The key light toward `light` (where it shines from), its color white.
+fn key_light(light: Vec3) -> DirectionalLight {
+    DirectionalLight { direction: -light.normalize(), color: Vec3::ONE, intensity: 1.0 }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn lit_card_clouds_are_shaded_by_the_key_light() {
+    let mut harness = Harness::new(RenderSettings::default(), (240, 160));
+    // One lobe on the band, ahead (−Z) at about 23° up, 20° across: a sphere facing the viewer,
+    // its normal across and up in R and G, its distance field in B, open to the sky everywhere
+    // (A).
+    let (width, height) = (720, 96);
+    let lobe = (0.5, 0.5);
+    let radius = 40.0;
+    let clouds = harness.texture((width, height), |u, v| {
+        // u from −Z; the map's u is the azimuth over a turn, centered on −Z at its edge, so
+        // measure across the seam.
+        let x = ((u + 0.5).fract() - lobe.0) * width as f32;
+        let y = (lobe.1 - v) * height as f32;
+        let (nx, ny) = (x / radius, y / radius);
+        let distance = (nx * nx + ny * ny).sqrt() * radius - radius;
+        let b = (0.5 - distance / 64.0).clamp(0.0, 1.0);
+        [(0.5 + 0.5 * nx).clamp(0.0, 1.0), (0.5 + 0.5 * ny).clamp(0.0, 1.0), b, 1.0]
+    });
+    let cirrus = harness.texture((4, 4), |_, _| [0.0; 4]);
+    let material = SkyMaterial {
+        clouds: CloudLayer { shading: CloudShading::Lit, ..cloud_material([0.0; 2]).clouds },
+        ..cloud_material([0.0; 2])
+    };
+    let handle = harness.upload_clouds(&material, &clouds, &cirrus);
+    let elevation = (-0.035 + (1.0 - lobe.1) * TAU * height as f32 / width as f32).asin();
+    let center = Vec3::new(0.0, elevation.sin(), -elevation.cos());
+    harness.look(center, 60.0);
+    let lit = Vec3::new(1.0, 0.0, 0.0);
+    let shade = Vec3::new(0.0, 0.0, 1.0);
+    let shot = |harness: &mut Harness, light: Vec3| {
+        harness.render(|packet| {
+            packet.sky_material = Some(handle);
+            packet.sun = key_light(light);
+            packet.sky_layers.clouds = CloudLight { lit, shade, coverage: 1.0, ..CloudLight::default() };
+        })
+    };
+    // Samples a quarter of the lobe's radius in from its left, right, top and bottom.
+    let sample = |harness: &Harness, image: &[Vec3], offset: (f32, f32)| {
+        let pixels = harness.size.1 as f32 / (2.0 * (30f32.to_radians()).tan());
+        let angle = radius * TAU / width as f32 * 0.75;
+        let (x, y) = harness.project(center);
+        let at = (x + offset.0 * angle * pixels, y - offset.1 * angle * pixels);
+        image[at.1 as usize * harness.size.0 as usize + at.0 as usize]
+    };
+    // A sun low on the left lights the left side and leaves the right in shade.
+    let side = shot(&mut harness, Vec3::new(-1.0, 0.1, 0.0));
+    let (left, right) = (sample(&harness, &side, (-1.0, 0.0)), sample(&harness, &side, (1.0, 0.0)));
+    assert!(left.x > 0.9 && left.z < 0.1, "the side toward the sun is lit: {left}");
+    assert!(right.z > 0.9 && right.x < 0.1, "the far side is in shade: {right}");
+    // On the right it is the other way round, and a high sun lights the top over a shaded base.
+    let side = shot(&mut harness, Vec3::new(1.0, 0.1, 0.0));
+    assert!(sample(&harness, &side, (1.0, 0.0)).x > 0.9 && sample(&harness, &side, (-1.0, 0.0)).z > 0.9);
+    let noon = shot(&mut harness, Vec3::new(0.0, 1.0, 0.2));
+    assert!(sample(&harness, &noon, (0.0, 1.0)).x > 0.9, "a lit top");
+    assert!(sample(&harness, &noon, (0.0, -1.0)).z > 0.9, "a shaded base");
+    assert!(harness.renderer.stats().sky.lit_clouds);
+    // The lit clouds' variants were built with the material, five more than the plainest sky's.
+    assert_eq!(harness.renderer.stats().sky.pipelines, 6 + 3);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn the_nebula_glows_in_its_keyed_colors_and_not_by_day() {
+    let mut harness = Harness::new(RenderSettings::default(), (128, 128));
+    // A nebula map whose channels are even densities over the whole sphere: 0.5 broad cloud,
+    // 0.25 wisps and no accents.
+    let nebula = harness.texture((64, 32), |_, _| [0.5, 0.25, 0.0, 1.0]);
+    let id = Some(AssetId::from_text("00000000-0000-4000-8000-0000000000c3"));
+    let material = SkyMaterial {
+        stars: sapphire_assets::material::Stars { nebula: id, ..Default::default() },
+        ..SkyMaterial::default()
+    };
+    let handle = harness.sky_material(&material, &[(id, &nebula)]);
+    harness.look(Vec3::Y, 60.0);
+    let night = |colors: crate::Nebula| {
+        move |packet: &mut FramePacket| {
+            packet.sky_material = Some(handle);
+            packet.sky_layers.nebula = colors;
+        }
+    };
+    let day = harness.render(night(crate::Nebula::default()));
+    assert!(day.iter().all(|color| *color == Vec3::ZERO), "black by day: nothing");
+    assert!(!harness.renderer.stats().sky.nebula && !harness.renderer.stats().sky.stars);
+    let colors = crate::Nebula {
+        clouds: Vec3::new(0.0, 0.2, 0.4),
+        wisps: Vec3::new(0.4, 0.0, 0.0),
+        accents: Vec3::new(5.0, 5.0, 5.0),
+    };
+    let image = harness.render(night(colors));
+    assert!(harness.renderer.stats().sky.nebula, "drawn with the night sky's variant, stars or not");
+    // Overhead, past the horizon's haze: each channel's density times its color.
+    let expected = colors.clouds * 0.5 + colors.wisps * 0.25;
+    let zenith = image[64 * 128 + 64];
+    assert!(zenith.abs_diff_eq(expected, 0.01), "{zenith} vs {expected}");
+    // Without its map the material draws no nebula, whatever time of day says.
+    let bare = harness.sky_material(&SkyMaterial::default(), &[]);
+    let image = harness.render(|packet| {
+        packet.sky_material = Some(bare);
+        packet.sky_layers.nebula = colors;
+    });
+    assert!(image.iter().all(|color| *color == Vec3::ZERO));
 }
 
 #[test]
@@ -436,7 +551,7 @@ fn card_clouds_dissolve_from_their_edges_with_coverage() {
     let clouds = harness.texture((256, 32), |_, v| [1.0, 0.0, v, 1.0]);
     let cirrus = harness.texture((4, 4), |_, _| [0.0; 4]);
     let material = cloud_material([0.0; 2]);
-    let handle = harness.sky_material(&material, Some(&clouds), Some(&cirrus));
+    let handle = harness.upload_clouds(&material, &clouds, &cirrus);
     harness.look(Vec3::new(0.0, 0.35, -1.0), 50.0);
     let band = TAU * 32.0 / 256.0;
     let mut top = |coverage: f32| {
@@ -471,7 +586,7 @@ fn cirrus_drifts_with_time_without_jumping_late_in_a_session() {
     });
     let clouds = harness.texture((4, 4), |_, _| [0.0; 4]);
     let speed = 0.004;
-    let handle = harness.sky_material(&cloud_material([speed, 0.0]), Some(&clouds), Some(&cirrus));
+    let handle = harness.upload_clouds(&cloud_material([speed, 0.0]), &clouds, &cirrus);
     harness.look(Vec3::Y, 60.0);
     // Where the block shows, in the cirrus plane's coordinates before drift: its centroid in u,
     // each pixel weighted by its coverage and by the plane area it spans (pixels away from the
@@ -517,7 +632,7 @@ fn cirrus_drifts_with_time_without_jumping_late_in_a_session() {
     );
     let cirrus = low.texture((64, 64), |_, _| [1.0, 0.0, 1.0, 1.0]);
     let clouds = low.texture((4, 4), |_, _| [0.0; 4]);
-    let handle = low.sky_material(&cloud_material([0.0; 2]), Some(&clouds), Some(&cirrus));
+    let handle = low.upload_clouds(&cloud_material([0.0; 2]), &clouds, &cirrus);
     low.look(Vec3::Y, 60.0);
     let image = low.render(|packet| {
         packet.sky_material = Some(handle);
@@ -534,7 +649,7 @@ fn sources_skipping_nothing() -> ShaderSources {
     for (skip, draw, count) in [
         ("SKY_CLOUDS && quad_any(dir.y > -1.001 * footprint)", "SKY_CLOUDS", 1),
         ("if dir.y > -SKY_GLOW_FRINGE {", "if true {", 1),
-        ("if alpha > 0.0 {", "if true {", 2),
+        ("if alpha > 0.0 {", "if true {", 3),
     ] {
         assert_eq!(text.matches(skip).count(), count, "{skip:?} in sky.wgsl");
         text = text.replace(skip, draw);
@@ -547,47 +662,71 @@ fn sources_skipping_nothing() -> ShaderSources {
 #[ignore = "needs a GPU"]
 fn skipping_what_cannot_reach_a_pixel_changes_nothing() {
     // A view rolled across the horizon, so it cuts the 2 × 2 quads every way, with every layer
-    // on: the sun low with its glow, the moon, stars, card clouds and cirrus.
+    // on: the sun low with its glow, the moon, stars, card clouds and cirrus; then the same with
+    // the card clouds lit by the key light and a nebula (M1 X1 part 2e).
     let size = (161, 121);
     let mut harness = Harness::new(RenderSettings::default(), size);
     harness.sky = tricolor();
-    // B rises toward the band's foot, so the card clouds cover the horizon.
+    // B rises toward the band's foot, so the card clouds cover the horizon; R and G lean the
+    // lit clouds' lobes every way.
     let clouds = harness.texture((64, 16), |u, v| [u, 0.5 * v, v, 1.0]);
     let cirrus = harness.texture((32, 32), |u, v| [v, 0.0, 0.2 + 0.7 * u, 0.8]);
-    let handle = harness.sky_material(&cloud_material([0.01, 0.02]), Some(&clouds), Some(&cirrus));
+    let nebula = harness.texture((64, 32), |u, v| [u, v, 0.5 * u, 1.0]);
+    let painted = harness.upload_clouds(&cloud_material([0.01, 0.02]), &clouds, &cirrus);
+    let mut material = cloud_material([0.01, 0.02]);
+    material.clouds.shading = CloudShading::Lit;
+    material.stars.nebula = Some(AssetId::from_text("00000000-0000-4000-8000-0000000000c3"));
+    let maps =
+        [(material.clouds.map, &clouds), (material.cirrus.map, &cirrus), (material.stars.nebula, &nebula)];
+    let lit = harness.sky_material(&material, &maps);
     let up = Vec3::new(0.3, 1.0, 0.0).normalize();
     harness.camera = Harness::looking(Vec3::new(0.1, 0.05, -1.0), up, 70.0, size);
-    let layers = |packet: &mut FramePacket| {
-        packet.sky_material = Some(handle);
-        packet.celestial.sun.direction = toward(3.0, 12.0);
-        packet.celestial.moon.direction = toward(14.0, -15.0);
-        packet.sky_layers.sun = disc(Vec3::new(1.0, 0.7, 0.4), 4.0, Vec3::new(0.5, 0.3, 0.1), 30.0);
-        packet.sky_layers.moon = disc(Vec3::ONE, 1.5, Vec3::splat(0.1), 10.0);
-        packet.sky_layers.stars = 1.0;
-        packet.sky_layers.clouds = CloudLight {
-            lit: Vec3::new(1.0, 0.9, 0.8),
-            shade: Vec3::new(0.3, 0.3, 0.5),
-            rim: Vec3::splat(0.4),
-            coverage: 0.8,
-            cirrus: 0.7,
-        };
+    let layers = |handle: MaterialHandle| {
+        move |packet: &mut FramePacket| {
+            packet.sky_material = Some(handle);
+            packet.celestial.sun.direction = toward(3.0, 12.0);
+            packet.celestial.moon.direction = toward(14.0, -15.0);
+            packet.sky_layers.sun = disc(Vec3::new(1.0, 0.7, 0.4), 4.0, Vec3::new(0.5, 0.3, 0.1), 30.0);
+            packet.sky_layers.moon = disc(Vec3::ONE, 1.5, Vec3::splat(0.1), 10.0);
+            packet.sky_layers.stars = 1.0;
+            packet.sky_layers.nebula = crate::Nebula {
+                clouds: Vec3::new(0.05, 0.1, 0.3),
+                wisps: Vec3::new(0.1, 0.4, 0.4),
+                accents: Vec3::new(0.3, 0.1, 0.3),
+            };
+            packet.sky_layers.clouds = CloudLight {
+                lit: Vec3::new(1.0, 0.9, 0.8),
+                shade: Vec3::new(0.3, 0.3, 0.5),
+                rim: Vec3::splat(0.4),
+                coverage: 0.8,
+                cirrus: 0.7,
+            };
+        }
     };
     let read_faces = |harness: &Harness| {
         let cube = harness.renderer.sky().cube_texture();
         let bytes = cube.format().block_copy_size(None).expect("an uncompressed format");
         (0..CUBE_FACES).map(|face| read_texture(&harness.gpu, cube, face, bytes)).collect::<Vec<_>>()
     };
-    // The first frame draws all six cube faces, as does the first after new shaders.
-    let skipping = harness.render(layers);
-    let skipping_faces = read_faces(&harness);
-    harness.renderer.set_shader_sources(&sources_skipping_nothing()).expect("a valid edit");
-    let drawing = harness.render(layers);
-    assert_eq!(harness.renderer.stats().sky.cube_faces, 12, "every face drawn by each");
-    assert!(skipping == drawing, "the frame changed");
-    assert!(skipping_faces == read_faces(&harness), "the cube changed");
+    let mut frames = Vec::new();
+    for (handle, name) in [(painted, "painted clouds"), (lit, "lit clouds and a nebula")] {
+        // The first frame draws all six cube faces, as does the first after new shaders.
+        let faces = harness.renderer.stats().sky.cube_faces;
+        harness.renderer.set_shader_sources(&ShaderSources::compiled_in()).expect("the shaders as built");
+        let skipping = harness.render(layers(handle));
+        let skipping_faces = read_faces(&harness);
+        harness.renderer.set_shader_sources(&sources_skipping_nothing()).expect("a valid edit");
+        let drawing = harness.render(layers(handle));
+        assert_eq!(harness.renderer.stats().sky.cube_faces - faces, 12, "{name}: every face drawn by each");
+        assert!(harness.renderer.stats().sky.lit_clouds == (handle == lit), "{name}");
+        assert!(skipping == drawing, "{name}: the frame changed");
+        assert!(skipping_faces == read_faces(&harness), "{name}: the cube changed");
+        frames.push(skipping);
+    }
+    assert!(frames[0] != frames[1], "the lit clouds and the nebula drew");
     // The view shows the layers above the horizon, and the gradient alone well under it.
     let plain = harness.render(|_| {});
-    let changed = plain.iter().zip(&skipping).filter(|(a, b)| a != b).count();
+    let changed = plain.iter().zip(&frames[0]).filter(|(a, b)| a != b).count();
     let total = plain.len();
     assert!(changed > total / 4 && changed < total * 3 / 4, "{changed} of {total} pixels drawn over");
 }
@@ -827,7 +966,7 @@ fn the_sky_cube_keeps_glows_but_not_discs() {
         ..SkyMaterial::default()
     };
     material.validate().expect("valid");
-    let handle = harness.sky_material(&material, None, None);
+    let handle = harness.sky_material(&material, &[]);
     harness.render(|packet| {
         packet.sky_material = Some(handle);
         packet.celestial.sun = DirectionalLight { direction: Vec3::NEG_X, ..DirectionalLight::default() };

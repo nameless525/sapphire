@@ -1,5 +1,6 @@
 //! Time of day (M1 W1; look pillar 1, M1 plan §2): one set of art-directed keys drives the sky
-//! gradient and its layers (the sun's and moon's discs and glows, the stars, the clouds; M1 W2),
+//! gradient and its layers (the sun's and moon's discs and glows, the stars, the clouds, M1 W2;
+//! the nebula, M1 X1 part 2e),
 //! the sun and moon, the key light, ambient light, fog, the shadow tint, the character rig's key
 //! light, the day/night ramp blend and post-processing's exposure, bloom, grade and vignette, and
 //! its compositing layers (the diffusion glow, characters' bloom, gradient layers and the lens
@@ -10,9 +11,10 @@
 //!
 //! - **[`TodTimeline`]** (a `TodTimeline` RON document): [`TodKey`]s at hours of the day, each
 //!   setting groups of values ([`TodGroup`]: sun, moon, sky, ambient, fog, shadow tint,
-//!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars and
-//!   clouds, post's layers: diffusion, character bloom, gradients and lens flare, and the world's
-//!   emission scale). The base timeline sets them all but the sky's and post's layers and the
+//!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars,
+//!   clouds and the nebula, post's layers: diffusion, character bloom, gradients and lens
+//!   flare, and the world's emission scale). The base timeline sets them all but the sky's and
+//!   post's layers and the
 //!   emission scale, which are optional ([`TodGroup::OPTIONAL`]): a timeline without them, as
 //!   every timeline before them was, draws the sky's gradient alone, post as it was
 //!   ([`sapphire_render::PostParams::plain`]) and emission as authored.
@@ -119,7 +121,7 @@ pub use cutscene::{ShotTime, TodCutscene};
 pub use key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
     DiscsKey, FogKey, FogLayerKey, GradeKey, GradientBlendKey, GradientKey, GradientShapeKey, HeightFogKey,
-    LensFlareKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
+    LensFlareKey, NebulaKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
 };
 pub use look::{GradeMix, TodLook, celestial_sphere};
 pub use time_of_day::{ShotRig, TimeOfDay, TodFrame, TodStats, tick_time_of_day};

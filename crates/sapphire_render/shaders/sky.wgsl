@@ -5,12 +5,13 @@
 // layers and their data; the comments here say how each is drawn.
 //
 // Back to front, over the gradient (`sky_color()` in frame.wgsl, unchanged, which the anime
-// character shader also reads for ambient light): stars and the Milky Way on the celestial
-// sphere, the sun's and moon's glows, their discs, the cirrus plane, and the band of card clouds
-// around the horizon. Stars and clouds are pipeline variants (below); within one, every layer is
-// a branch every pixel takes alike, so a layer at zero is skipped and leaves the gradient exactly
-// as it was. The sky shades most of the screen, so every instruction counts: per-draw constants
-// are worked out on the CPU (`SkyUniforms`), and edges are linear ramps. Pixels also skip what
+// character shader also reads for ambient light): stars, the Milky Way and the nebula on the
+// celestial sphere, the sun's and moon's glows, their discs, the cirrus plane, and the band of
+// card clouds around the horizon, painted or lit by the key light. Stars, the nebula, clouds and
+// lit clouds are pipeline variants (below); within one, every layer is a branch every pixel takes
+// alike, so a layer at zero is skipped and leaves the gradient exactly as it was. The sky shades
+// most of the screen, so every instruction counts: per-draw constants are worked out on the CPU
+// (`SkyUniforms`), and edges are linear ramps. Pixels also skip what
 // can't reach them, leaving their color exactly as drawing it would: under the horizon nothing
 // but the glows' fringe adds anything, so there the layers are skipped (the clouds per 2 × 2
 // quad, whose derivatives need it), and a cloud layer paints only where its texel covers the
@@ -51,6 +52,11 @@ struct SkyUniforms {
     // The glows' shapes, sun then moon: x, z the inverse of the radius; y, w how much a vertical
     // offset counts, squared, less one (spreading a low body's glow along the horizon).
     glow_shape: vec4<f32>,
+    // rgb: the nebula's colors (M1 X1 part 2e), for its map's R (broad clouds), G (wisps) and B
+    // (accents).
+    nebula_clouds: vec4<f32>,
+    nebula_wisps: vec4<f32>,
+    nebula_accents: vec4<f32>,
 }
 
 // Binding 2: frame.wgsl declares the scene group's bindings 0 and 1, which the sky doesn't read.
@@ -63,6 +69,7 @@ struct SkyUniforms {
 @group(3) @binding(2) var milky_way_map: texture_2d<f32>;
 @group(3) @binding(3) var clouds_map: texture_2d<f32>;
 @group(3) @binding(4) var cirrus_map: texture_2d<f32>;
+@group(3) @binding(5) var nebula_map: texture_2d<f32>;
 @group(3) @binding(8) var sky_sampler: sampler;
 
 // Texture slots (`SkyMaterial::TEXTURE_SLOTS`).
@@ -71,14 +78,20 @@ const SKY_SLOT_STARS: u32 = 1u;
 const SKY_SLOT_MILKY_WAY: u32 = 2u;
 const SKY_SLOT_CLOUDS: u32 = 3u;
 const SKY_SLOT_CIRRUS: u32 = 4u;
+const SKY_SLOT_NEBULA: u32 = 5u;
 
 // Pipeline variants, so a frame compiles only the layers it draws (and the plainest sky keeps
 // the registers of the plainest shader). The discs are off for the sky cube: they are the key
 // light, which shading adds itself. Stars and clouds are on while time of day gives them a
 // brightness or a coverage; within the clouds' variant, each layer still skips itself at zero.
+// The nebula is on while time of day gives it a color (with the night sky's variant, which
+// draws it), and lit clouds while the sky material's card clouds are lit by the key light (with
+// the clouds' variant): neither is in a pipeline a sky without them uses.
 override SKY_DISCS: bool = true;
 override SKY_STARS: bool = true;
 override SKY_CLOUDS: bool = true;
+override SKY_NEBULA: bool = true;
+override SKY_LIT_CLOUDS: bool = true;
 
 const SKY_PI: f32 = 3.14159265;
 const SKY_TAU: f32 = 6.28318531;
@@ -115,6 +128,13 @@ const CLOUD_RIM_WIDTH: f32 = 0.012;
 const CLOUD_RIM_AMBIENT: f32 = 0.12;
 // Low clouds melt this far into the horizon color.
 const CLOUD_HAZE: f32 = 0.35;
+// Lit clouds (`CloudShading::Lit`): where the terminator falls in their lobes' N·L and how soft
+// it is; how much a lobe's closed parts (A under 1) take off N·L; and the share of a key light
+// behind the clouds that darkens their fronts.
+const CLOUD_TERMINATOR: f32 = -0.1;
+const CLOUD_LIT_SOFTNESS: f32 = 0.2;
+const CLOUD_OCCLUSION: f32 = 0.8;
+const CLOUD_BACKLIGHT: f32 = 0.25;
 // The cirrus plane's directions are lifted this much, so it recedes smoothly to the horizon.
 const CIRRUS_LIFT: f32 = 0.15;
 const CIRRUS_OPACITY: f32 = 0.6;
@@ -186,7 +206,11 @@ fn fs_sky(in: SkyVaryings) -> @location(0) vec4<f32> {
         color = cirrus_layer(color, dir, ddx, ddy);
     }
     if clouds && sky.cloud_lit.w > 0.0 {
-        color = cloud_band(color, dir, ddx, ddy, above);
+        if SKY_LIT_CLOUDS {
+            color = lit_cloud_band(color, dir, ddx, ddy, above);
+        } else {
+            color = cloud_band(color, dir, ddx, ddy, above);
+        }
     }
     // The frame's fog over all of it (M1 W3), as at infinite distance, so the sky agrees with
     // the fog over distant geometry wherever the two meet.
@@ -271,9 +295,9 @@ fn moon_face(dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, footprint: f32, abo
 
 // --- Stars and the Milky Way
 
-// The night sky's light toward `dir`, at full star brightness: the stars of both grids, tinted
-// by the star map where there is one, and the Milky Way's glow. Both dim into the haze near the
-// horizon and stop at it.
+// The night sky's light toward `dir`: the stars of both grids, tinted by the star map where there
+// is one, and the Milky Way's glow, at the stars' brightness; and the nebula in its own colors.
+// All dim into the haze near the horizon and stop at it.
 fn night_sky(dir: vec3<f32>, footprint: f32) -> vec3<f32> {
     var light = vec3<f32>(0.0);
     if dir.y > 0.0 {
@@ -286,9 +310,21 @@ fn night_sky(dir: vec3<f32>, footprint: f32) -> vec3<f32> {
         if material_has_texture(sky.modes, SKY_SLOT_MILKY_WAY) {
             light += dome_texel(milky_way_map, SKY_SLOT_MILKY_WAY, celestial, footprint).rgb;
         }
-        light *= sky.stars.x * smoothstep(0.0, 0.25, dir.y);
+        let haze = smoothstep(0.0, 0.25, dir.y);
+        light *= sky.stars.x * haze;
+        if SKY_NEBULA {
+            light += nebula_light(celestial, footprint) * haze;
+        }
     }
     return light;
+}
+
+// The nebula's light toward celestial direction `c` (M1 X1 part 2e): its map's channels, each a
+// density of its own kind of cloud, in time of day's colors for them.
+fn nebula_light(c: vec3<f32>, footprint: f32) -> vec3<f32> {
+    let density = dome_texel(nebula_map, SKY_SLOT_NEBULA, c, footprint).rgb;
+    return sky.nebula_clouds.rgb * density.r + sky.nebula_wisps.rgb * density.g
+        + sky.nebula_accents.rgb * density.b;
 }
 
 // The cube face a direction `c` points through (+X, −X, +Y, −Y, +Z, −Z): its other two
@@ -442,15 +478,20 @@ fn paint_cloud(texel: vec4<f32>, widths: vec2<f32>, threshold: f32) -> PaintedCl
     return PaintedCloud(mix(sky.cloud_shade.rgb, sky.cloud_lit.rgb, lit), max(texel.g, rim_band));
 }
 
-// The card clouds: a band of painted cumulus around the horizon, the map repeated `clouds.x`
-// times a turn and drifting around it, its bottom just under the horizon, rimmed most brightly
-// toward the key light. Up the band, v follows
-// the direction's height (the sine of its elevation), not the elevation itself: its texels are
-// square at the horizon and a few percent taller toward the band's top, for one arctangent less.
+// The card band's texel toward `dir`: the map repeated `clouds.x` times a turn and drifting
+// around the horizon, its bottom just under it. Up the band, v follows the direction's height
+// (the sine of its elevation), not the elevation itself: its texels are square at the horizon
+// and taller toward the band's top, by the elevation's secant, for one arctangent less.
 // Called in control flow uniform per quad (the layer's branch), so the texel's own screen
-// derivatives size its edges; texture coordinates and their derivatives come from the
+// derivatives can size its edges; texture coordinates and their derivatives come from the
 // direction's, which stay continuous where the azimuth wraps.
-fn cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, above: f32) -> vec3<f32> {
+struct BandTexel {
+    texel: vec4<f32>,
+    // 1 within the band's rows, 0 above and below them.
+    inside: f32,
+}
+
+fn band_texel(dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>) -> BandTexel {
     let size = vec2<f32>(textureDimensions(clouds_map));
     let repeats = sky.clouds.x;
     let height = SKY_TAU / repeats * size.y / size.x;
@@ -463,10 +504,17 @@ fn cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, 
     let gx = vec2<f32>((dir.x * ddx.z - dir.z * ddx.x) * u_scale, ddx.y * v_scale);
     let gy = vec2<f32>((dir.x * ddy.z - dir.z * ddy.x) * u_scale, ddy.y * v_scale);
     let texel = sky_texel(textureSampleGrad(clouds_map, sky_sampler, uv, gx, gy), SKY_SLOT_CLOUDS);
+    return BandTexel(texel, select(0.0, 1.0, uv.y >= 0.0 && uv.y <= 1.0));
+}
+
+// The card clouds in the Genshin scheme (`CloudShading::Painted`): a band of painted cumulus
+// around the horizon, rimmed most brightly toward the key light.
+fn cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, above: f32) -> vec3<f32> {
+    let band = band_texel(dir, ddx, ddy);
+    let texel = band.texel;
     let widths = fwidth(texel.rb);
     let cover = cloud_cover(texel, widths, sky.cloud_lit.w, sky.clouds.y);
-    let in_band = select(0.0, 1.0, uv.y >= 0.0 && uv.y <= 1.0);
-    let alpha = cover.x * in_band * above;
+    let alpha = cover.x * band.inside * above;
     // Clear sky between and above the clouds keeps its color as it is: only covered pixels paint.
     var result = color;
     if alpha > 0.0 {
@@ -479,6 +527,56 @@ fn cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, 
         result = mix(color, painted, alpha);
     }
     return result;
+}
+
+// The card clouds lit by the key light (`CloudShading::Lit`, M1 X1 part 2e): the map's R and G
+// the normal of the cloud's front lobe, each lobe a sphere facing the viewer, A how open it is to
+// the sky. Shaded the anime way, in two authored tones split softly along N·L, with the rim of
+// painted clouds.
+fn lit_cloud_band(color: vec3<f32>, dir: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>, above: f32) -> vec3<f32> {
+    let band = band_texel(dir, ddx, ddy);
+    let texel = band.texel;
+    let edge = fwidth(texel.b);
+    // Opaque: the dissolved body is all the cover.
+    let cover = cloud_cover(vec4<f32>(texel.rgb, 1.0), vec2<f32>(0.0, edge), sky.cloud_lit.w, sky.clouds.y);
+    let alpha = cover.x * band.inside * above;
+    var result = color;
+    if alpha > 0.0 {
+        result = mix(color, lit_cloud(texel, dir, edge, cover.y), alpha);
+    }
+    return result;
+}
+
+// A lit cloud texel's color toward `dir`, `edge` its B's change across the pixel and `threshold`
+// its dissolve threshold (`cloud_cover`).
+//
+// The lobes face the viewer, so the key light is taken into the cloud's own frame there: across
+// it (toward growing azimuth), up it and toward the viewer. A low sun beside a cloud lights the
+// lobes' sides toward it; the sun high behind the viewer lights them whole, but for the closed
+// crevices and bases. Behind a cloud the key light darkens its front only partly
+// (`CLOUD_BACKLIGHT`): anime skies keep a backlit cloud's sun side lit, and add the rim.
+fn lit_cloud(texel: vec4<f32>, dir: vec3<f32>, edge: f32, threshold: f32) -> vec3<f32> {
+    let toward_viewer = -dir;
+    // Horizontal, and never zero: the band stops short of the zenith.
+    let across = normalize(vec3<f32>(-dir.z, 0.0, dir.x));
+    let up = cross(toward_viewer, across);
+    let key = frame.sun_direction.xyz;
+    var light = vec3<f32>(dot(key, across), dot(key, up), dot(key, toward_viewer));
+    light.z *= select(1.0, CLOUD_BACKLIGHT, light.z < 0.0);
+    let lobe = texel.rg * 2.0 - 1.0;
+    let normal = vec3<f32>(lobe, sqrt(saturate(1.0 - dot(lobe, lobe))));
+    let n_dot_l = dot(normal, light) - CLOUD_OCCLUSION * (1.0 - texel.a);
+    let lit = saturate((n_dot_l - CLOUD_TERMINATOR) / CLOUD_LIT_SOFTNESS + 0.5);
+    var color = mix(sky.cloud_shade.rgb, sky.cloud_lit.rgb, lit);
+    // The rim band inside the dissolving edge, as painted clouds have it, strongest toward the
+    // key light and on the edges that face it across the sky.
+    let rim_band = saturate(1.0 - (texel.b - threshold) / max(CLOUD_RIM_WIDTH, 2.0 * edge));
+    let toward_key = saturate(dot(dir, key) * 0.5 + 0.5);
+    let facing = CLOUD_RIM_AMBIENT + (1.0 - CLOUD_RIM_AMBIENT) * toward_key * toward_key * toward_key;
+    let side = saturate(0.5 + dot(lobe, light.xy));
+    color += sky.cloud_rim.rgb * (rim_band * facing * side);
+    // Low clouds melt into the horizon, as painted ones do.
+    return mix(color, frame.sky_horizon.rgb, CLOUD_HAZE * saturate(1.0 - dir.y / 0.15));
 }
 
 // The cirrus: a high layer on a plane over the camera, scrolled by the wind, its directions

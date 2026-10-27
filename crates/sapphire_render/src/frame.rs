@@ -542,19 +542,34 @@ impl Default for Celestial {
 
 /// What the sky draws over its gradient (W2; look pillars 1 and 3), resolved by time of day like
 /// the rest of the frame's look: the sun's and the moon's discs and glows, how bright the stars
-/// are, and the clouds' light and cover. Where the discs and stars are comes from
-/// [`Celestial`]; their sizes, the cloud maps and their motion from the sky material
-/// ([`FramePacket::sky_material`]).
+/// are, the nebula's colors and the clouds' light and cover. Where the discs and stars are comes
+/// from [`Celestial`]; their sizes, the star, nebula and cloud maps and the clouds' motion from
+/// the sky material ([`FramePacket::sky_material`]).
 ///
-/// The default draws nothing over the gradient (no discs, glows, stars or clouds): the sky as it
-/// was drawn before them (M1 W1).
+/// The default draws nothing over the gradient (no discs, glows, stars, nebula or clouds): the
+/// sky as it was drawn before them (M1 W1).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SkyLayers {
     pub sun: SkyDisc,
     pub moon: SkyDisc,
     /// Star brightness: 0 by day, 1 for a full night sky. It also lights the Milky Way.
     pub stars: f32,
+    /// The nebula's colors (M1 X1 part 2e): black by day.
+    pub nebula: Nebula,
     pub clouds: CloudLight,
+}
+
+/// The night sky's nebula (M1 X1 part 2e): the light of each of the sky material's nebula map's
+/// three channels, linear RGB (HDR), added under the stars. A channel's light is its color
+/// times its density; all black draws nothing, as by day.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Nebula {
+    /// The map's R: its broad clouds.
+    pub clouds: Vec3,
+    /// G: the bright wisps along them.
+    pub wisps: Vec3,
+    /// B: sparse accents.
+    pub accents: Vec3,
 }
 
 /// How the sky draws the sun or the moon: a disc and the glow around it, both in HDR so they

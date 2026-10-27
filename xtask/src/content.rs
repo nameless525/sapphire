@@ -113,6 +113,8 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/foliage/bush_lavender.glb",
     "lookdev/foliage/grass.glb",
     "lookdev/sky/milky_way.png",
+    "lookdev/sky/cumulus.png",
+    "lookdev/sky/nebula.png",
     "lookdev/town/textures/stone.png",
     "lookdev/town/textures/timber.png",
     "lookdev/town/textures/grass.png",

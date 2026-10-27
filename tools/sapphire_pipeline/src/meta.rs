@@ -64,6 +64,9 @@
 //!   without a source stops, rather than give a moved source a new ID.
 //! - **IDs are unique.** Two sidecars holding one ID (a source copied with its sidecar) are
 //!   an error; deleting the copy's sidecar gives it a new ID.
+//! - **Sources are real files inside the content root.** A symbolic link under the root is an
+//!   error, never followed ([`SourceTree::scan`]), so no cook creates a sidecar outside the root
+//!   it was given.
 //! - **Sub-assets derive theirs.** A source that cooks to more than one asset (a VRM's rig,
 //!   M1 A6) gives each further asset an ID derived from its own and the sub-asset's name
 //!   ([`sub_asset_id`]), so those IDs are as stable as the sidecar's and need no storage.
@@ -347,6 +350,12 @@ pub enum MetaError {
         has(orphaned)
     )]
     Moved { sources: Vec<PathBuf>, orphaned: Vec<PathBuf> },
+    #[error(
+        "{} is a symbolic link: content must be real files and directories inside the content \
+         root, so copy in what it points to",
+        path.display()
+    )]
+    Symlink { path: PathBuf },
     #[error("failed to get randomness for a new asset ID")]
     Entropy(#[source] getrandom::Error),
 }
@@ -446,6 +455,12 @@ pub struct SourceTree {
 impl SourceTree {
     /// Walks `root`, skipping hidden files and directories. Files that are neither sources
     /// nor sidecars are ignored.
+    ///
+    /// A symbolic link under `root`, to a file or a directory, is an error
+    /// ([`MetaError::Symlink`]), never followed (review AP-004): a cook reads and creates
+    /// sidecars only inside the content root it was given, and a link out of it, or round to
+    /// itself, would let it create sidecars elsewhere, cook a tree twice or walk a cycle. Content
+    /// from elsewhere is copied in (as `content/third_party/` is). `root` itself may be a link.
     pub fn scan(root: &Path) -> Result<Self, MetaError> {
         let mut tree = Self::default();
         tree.walk(root)?;
@@ -454,18 +469,21 @@ impl SourceTree {
 
     fn walk(&mut self, dir: &Path) -> Result<(), MetaError> {
         let read_error = |source| MetaError::Read { path: dir.to_owned(), source };
-        let mut entries = fs::read_dir(dir)
-            .map_err(read_error)?
-            .map(|entry| entry.map(|e| e.path()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(read_error)?;
-        entries.sort();
-        for path in entries {
+        let mut entries =
+            fs::read_dir(dir).map_err(read_error)?.collect::<Result<Vec<_>, _>>().map_err(read_error)?;
+        entries.sort_by_key(fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
             let hidden = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
             if hidden {
                 continue;
             }
-            if path.is_dir() {
+            // The entry itself, not what a link points to.
+            let kind = entry.file_type().map_err(|source| MetaError::Read { path: path.clone(), source })?;
+            if kind.is_symlink() {
+                return Err(MetaError::Symlink { path });
+            }
+            if kind.is_dir() {
                 self.walk(&path)?;
             } else if is_sidecar(&path) {
                 self.sidecars.push(path);
@@ -842,6 +860,48 @@ mod tests {
         assert_eq!(resolved.created, [sidecar.clone(), sidecar_path(&b)]);
         assert_eq!(read(&sidecar).unwrap(), resolved.assets[0].meta);
         assert_eq!(resolve_dir(dir.path(), true).unwrap().assets, resolved.assets);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_links_are_refused_not_followed() {
+        // Review AP-004: a link under the root, out of it or round to it, is an error, so nothing
+        // outside the root is scanned or gets a sidecar, and no cycle is walked.
+        let dir = TempDir::new("meta_symlinks");
+        let root = dir.path().join("content");
+        let outside = dir.path().join("outside");
+        let source = root.join("nested/a.glb");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "{}").unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("external.tga"), "never read").unwrap();
+        let links = [
+            ("linked", "../outside"),
+            ("external.tga", "../outside/external.tga"),
+            ("loop", "."),
+            ("parent", ".."),
+            ("nested/up", ".."),
+        ];
+        for (name, target) in links {
+            let link = root.join(name);
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            let result = SourceTree::scan(&root);
+            assert!(
+                matches!(&result, Err(MetaError::Symlink { path }) if *path == link),
+                "{name}: {result:?}"
+            );
+            assert!(result.unwrap_err().to_string().contains("is a symbolic link"));
+            fs::remove_file(&link).unwrap();
+        }
+        assert_eq!(listing(&outside), ["external.tga"], "nothing is created outside the root");
+
+        // Real directories scan as before, a hidden link is skipped as any hidden entry is, and
+        // the root itself may be a link.
+        std::os::unix::fs::symlink("../outside", root.join(".hidden")).unwrap();
+        assert_eq!(SourceTree::scan(&root).unwrap().sources, [source]);
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink("content", &alias).unwrap();
+        assert_eq!(SourceTree::scan(&alias).unwrap().sources, [alias.join("nested/a.glb")]);
     }
 
     #[test]

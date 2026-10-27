@@ -1732,4 +1732,55 @@ mod tests {
         let error = scratch_error(&scratch);
         assert!(matches!(&error, CookError::NotAMaterial { slot, .. } if slot == "Hair"), "{error:?}");
     }
+
+    /// The names in `dir`, sorted.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// An ILM map document whose shadow bias is `image` (relative to the document), its other
+    /// channels constant.
+    fn ilm_document(image: &str) -> String {
+        format!(
+            r#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (shadow_bias: Image(path: "{image}")))"#
+        )
+    }
+
+    /// A 4 × 4 gray PNG at `path`.
+    fn add_mask(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        ::image::GrayImage::from_pixel(4, 4, ::image::Luma([128])).save(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooks_stay_inside_their_content_root() {
+        // Review AP-004: a link under the root is refused before anything is created or cooked.
+        let scratch = Scratch::new("cook_root");
+        let mannequin = scratch.add_mannequin("a.glb");
+        let outside = scratch.dir.path().join("outside");
+        add_mask(&outside.join("bias.png"));
+        let link = scratch.source().join("linked");
+        std::os::unix::fs::symlink("../outside", &link).unwrap();
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::Meta(MetaError::Symlink { path }) if *path == link), "{error:?}");
+        assert_eq!(listing(&outside), ["bias.png"], "no sidecar outside the root");
+        assert!(!sidecar_path(&mannequin).exists() && !scratch.out().exists());
+
+        // A map may name an image outside the root by a `..` path: the cook reads it, as an input
+        // of the map's asset, and creates nothing there.
+        fs::remove_file(&link).unwrap();
+        let map = scratch.source().join("maps/body.ilm.ron");
+        fs::create_dir_all(map.parent().unwrap()).unwrap();
+        fs::write(&map, ilm_document("../../outside/bias.png")).unwrap();
+        let report = scratch.cook();
+        assert_eq!(report.created_sidecars, [sidecar_path(&mannequin), sidecar_path(&map)]);
+        assert_eq!(asset(&report, &map).output, scratch.out().join("maps/body.ilm.ktx2"));
+        assert_eq!(listing(&outside), ["bias.png"]);
+    }
 }

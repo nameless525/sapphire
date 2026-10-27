@@ -376,13 +376,13 @@ mod tests {
         assert!(matches!(client.request(RequestBody::Status, SHORT), Err(LinkError::Closed)));
     }
 
-    /// A pack far larger than loopback's socket buffers hold (32 MiB and more): a valid head,
-    /// then zeros, which the client doesn't look into.
-    fn large_pack() -> Vec<u8> {
+    /// A pack of `data` bytes and a little more: a valid head, then zeros, which the client
+    /// doesn't look into.
+    fn large_pack(data: usize) -> Vec<u8> {
         let id = AssetId::from_bytes([1; 16]);
         let asset = PackAsset::encode(id, AssetKind::Rig, Codec::Lz4, &[7; 64], Vec::new(), 3).unwrap();
         let mut pack = write_pack(vec![asset]).unwrap();
-        pack.resize(pack.len() + (32 << 20), 0);
+        pack.resize(pack.len() + data, 0);
         pack
     }
 
@@ -400,7 +400,9 @@ mod tests {
 
     #[test]
     fn a_device_that_stops_reading_fails_a_push_once_no_bytes_move() {
-        let pack = large_pack();
+        // Far more than loopback's socket buffers hold on any desktop OS (8 MiB on macOS), or the
+        // push would be left waiting for its reply instead.
+        let pack = large_pack(64 << 20);
         let address = device(|mut stream| {
             ask_for_everything(&mut stream);
             // Holding the connection open, reading nothing, long after the client should give up.
@@ -427,7 +429,7 @@ mod tests {
     fn a_device_reading_slowly_takes_a_push_as_long_as_it_keeps_reading() {
         // The device reads a chunk at a time, slowly: the push takes several progress deadlines
         // in all, and never one without progress.
-        let pack = large_pack();
+        let pack = large_pack(32 << 20);
         let sent = pack.len() as u64 - PackHeader::read(&pack).unwrap().data_offset;
         let address = device(|mut stream| {
             let len = ask_for_everything(&mut stream);

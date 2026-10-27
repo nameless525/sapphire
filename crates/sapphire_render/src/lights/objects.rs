@@ -96,12 +96,18 @@ pub(crate) fn influence(light: &GpuLight, sphere: &Sphere) -> f32 {
 /// in index order.
 pub(crate) fn choose(lights: &[GpuLight], sphere: &Sphere) -> ObjectLightList {
     const SLOTS: usize = LIGHTS_PER_OBJECT as usize;
+    // A degenerate transform's sphere isn't finite, and its instance draws nothing. `influence`
+    // can't tell: `max` ignores NaN, so a NaN sphere's gap comes out 0 and every light in range
+    // of nothing would reach it at full strength.
+    if !(sphere.center.is_finite() && sphere.radius.is_finite()) {
+        return ObjectLightList::default();
+    }
     // The best so far, most influential first.
     let mut best = [(0.0f32, 0u32); SLOTS];
     let mut len = 0;
     for (index, light) in lights.iter().enumerate() {
         let influence = influence(light, sphere);
-        // Also skips NaN, from a degenerate transform.
+        // And NaN, though a finite sphere and a valid light give none.
         if influence.is_nan() || influence <= 0.0 {
             continue;
         }
@@ -433,6 +439,23 @@ mod tests {
             expected.sort_unstable();
             assert_eq!(choose(&lights, sphere).lights(), expected, "{sphere:?}");
         }
+    }
+
+    #[test]
+    fn spheres_that_are_not_finite_get_no_lights() {
+        let mut rng = Rng(0x5eed_0005);
+        let lights = seeded_lights(&mut rng, 16);
+        for sphere in DEGENERATE {
+            assert_eq!(choose(&lights, &sphere).lights(), Vec::<u32>::new(), "{sphere:?}");
+        }
+        // Their instances keep empty lists through updates too.
+        let mut lists = ObjectLists::default();
+        let mut slots = InstanceSlots::default();
+        let nan = MeshInstance { transform: Mat4::from_scale(Vec3::NAN), ..instance(1, 0.0) };
+        apply(&mut slots, &[nan, instance(2, 0.0)]);
+        let lights = [point(Vec3::new(0.0, 1.0, 0.0), 1.0, 2.0)];
+        lists.update(&lights, true, &slots, &[], |_| Some(UNIT));
+        assert_eq!((lists.lists[0].lights(), lists.lists[1].lights()), (vec![], vec![0]));
     }
 
     #[test]

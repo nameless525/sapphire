@@ -177,6 +177,10 @@
 //!     the scene holds still at tick N; 1: it plays at 60 fps up to tick N).
 //!   - `--bench <frames>`: run the per-frame CPU path that many times and log CPU time and
 //!     allocations per frame, then GPU pass times.
+//!   - `--offscreen` (`dev` builds): keep drawing at up to 60 frames a second, one fixed step
+//!     each, until the process is told to quit (Ctrl-C, `kill`) or `--frames N` have been drawn,
+//!     with hot reload and live link on (`serve.rs`): what a device runs, without a window.
+//!     `cargo xtask link capture <png>` writes what it draws.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.
@@ -215,6 +219,8 @@ mod pose;
 mod reload;
 mod rims;
 mod scene;
+#[cfg(feature = "dev")]
+mod serve;
 mod skinned;
 mod stage;
 mod stats;
@@ -269,8 +275,8 @@ pub fn startup() {
     });
 }
 
-/// Whether the arguments ask for an offscreen mode (`--capture` or `--bench`), which `main`
-/// runs as [`OffscreenApp`] in the background instead of opening the windowed app.
+/// Whether the arguments ask for an offscreen mode (`--capture`, `--bench` or `--offscreen`),
+/// which `main` runs as [`OffscreenApp`] in the background instead of opening the windowed app.
 pub fn offscreen_requested() -> bool {
     std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
 }

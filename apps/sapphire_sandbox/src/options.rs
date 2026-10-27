@@ -16,15 +16,17 @@ use crate::stage::StageLayout;
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
 pub(crate) const BENCH_FLAG: &str = "--bench";
+pub(crate) const OFFSCREEN_FLAG: &str = "--offscreen";
 /// Shows the debug overlay from the start (`dev` builds), with its default panels or those
 /// listed: `--debug-overlay=stats,graph`.
 const DEBUG_OVERLAY_FLAG: &str = "--debug-overlay";
 
-/// Whether `arg` selects an offscreen mode, as `--capture`, `--bench` or their `--flag=value`
-/// forms. `main` checks this before SDL starts, so the windowed app never opens for one.
+/// Whether `arg` selects an offscreen mode, as `--capture`, `--bench`, `--offscreen` or their
+/// `--flag=value` forms. `main` checks this before SDL starts, so the windowed app never opens
+/// for one.
 pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
     let name = arg.split_once('=').map_or(arg, |(name, _)| name);
-    name == CAPTURE_FLAG || name == BENCH_FLAG
+    name == CAPTURE_FLAG || name == BENCH_FLAG || name == OFFSCREEN_FLAG
 }
 
 /// Options parsed from the process arguments. The default is no options: everything from the
@@ -203,6 +205,11 @@ pub(crate) enum OffscreenMode {
     Capture { path: PathBuf, ticks: u32, frames: CaptureFrames },
     /// `--bench <frames>`: run the per-frame CPU path `frames` times and log its cost.
     Bench { frames: u32 },
+    /// `--offscreen` (`dev` builds): draw the scene at up to 60 frames a second, one fixed step
+    /// each, until the process is stopped or `--frames` have been drawn, applying hot reload's
+    /// changes and live link's pushes, and answering live link's captures. The desktop's way to
+    /// run what a device runs, without a window.
+    Serve,
 }
 
 /// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
@@ -364,6 +371,7 @@ impl Options {
         let mut options = Self::default();
         let mut unknown = Vec::new();
         let (mut capture, mut bench, mut capture_ticks, mut size) = (None, None, None, None);
+        let mut serve = false;
         let (mut capture_frames, mut capture_step) = (None, None);
         let (mut faces, mut face_layout) = (false, None);
         let mut args = args.iter().skip(1);
@@ -581,6 +589,7 @@ impl Options {
                 DEBUG_OVERLAY_FLAG => options.debug_overlay = Some(inline.take().unwrap_or_default()),
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
+                OFFSCREEN_FLAG => serve = true,
                 "--capture-ticks" => {
                     capture_ticks = Some(number(&value("--capture-ticks")?, "--capture-ticks")?)
                 }
@@ -623,9 +632,12 @@ impl Options {
             );
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
+        if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
+            return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
+        }
         let mode = match (capture, bench) {
-            (Some(_), Some(_)) => return Err(format!("{CAPTURE_FLAG} and {BENCH_FLAG} are exclusive")),
-            (Some(path), None) => {
+            _ if serve => Some(OffscreenMode::Serve),
+            (Some(path), _) => {
                 let ticks = capture_ticks.unwrap_or(90);
                 if frames.first_tick(ticks).is_none() {
                     return Err(format!(
@@ -653,7 +665,9 @@ impl Options {
                 let (width, height) = size.unwrap_or((1920, 1080));
                 Some(Offscreen { mode, width, height })
             }
-            None if size.is_some() => return Err(format!("--size needs {CAPTURE_FLAG} or {BENCH_FLAG}")),
+            None if size.is_some() => {
+                return Err(format!("--size needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}"));
+            }
             None => None,
         };
         Ok((options, unknown))
@@ -1012,6 +1026,21 @@ mod tests {
             Some(Offscreen { mode: OffscreenMode::Bench { frames: 300 }, width: 1920, height: 1080 })
         );
         assert_eq!(options.msaa, Some(Msaa::X2));
+        let (options, _) = parse(&["--look-dev", "hero", "--offscreen", "--size", "1280x720"]).unwrap();
+        assert_eq!(
+            options.offscreen,
+            Some(Offscreen { mode: OffscreenMode::Serve, width: 1280, height: 720 })
+        );
+        let (options, _) = parse(&["--offscreen", "--frames", "600"]).unwrap();
+        assert_eq!(
+            (options.offscreen, options.frame_limit),
+            (Some(Offscreen { mode: OffscreenMode::Serve, width: 1920, height: 1080 }), Some(600)),
+            "--frames ends it"
+        );
+        assert!(is_offscreen_flag("--offscreen"), "never opens the window");
+        assert!(parse(&["--offscreen", "--bench", "10"]).is_err(), "exclusive");
+        assert!(parse(&["--offscreen", "--capture", "a.png"]).is_err(), "exclusive");
+        assert!(parse(&["--offscreen", "--capture-ticks", "4"]).is_err(), "needs --capture");
     }
 
     #[test]

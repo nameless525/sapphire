@@ -11,8 +11,8 @@ fn main() -> ExitCode {
     sapphire_crash::run_monitor_if_requested();
     sapphire_sandbox::startup();
     let exit = if sapphire_sandbox::offscreen_requested() {
-        // Capture or bench: no window or display at all, and the process never comes to the
-        // foreground.
+        // Capture, bench or `--offscreen`: no window or display at all, and the process never
+        // comes to the foreground.
         sapphire_platform::run_with::<OffscreenApp>(RunOptions { background: true, headless: true })
     } else {
         sapphire_platform::run::<SandboxApp>()

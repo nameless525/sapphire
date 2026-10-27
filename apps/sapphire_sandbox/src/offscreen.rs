@@ -1,10 +1,11 @@
-//! Offscreen modes: `--capture` and `--bench`.
+//! Offscreen modes: `--capture`, `--bench` and, in `dev` builds, `--offscreen`.
 //!
-//! Both render the sandbox scene into an offscreen target instead of a window, then exit.
-//! `main` runs them through `sapphire_platform::run_with` with `RunOptions { background:
-//! true }`, so the process never takes focus either. That makes the real app checkable on a
-//! desktop someone is using: [`capture`](crate::capture) writes a PNG (the hook for
-//! golden-image tests, spec §9) and [`bench`](crate::bench) measures the per-frame CPU path.
+//! They render the sandbox scene into an offscreen target instead of a window. `main` runs them
+//! through `sapphire_platform::run_with` with `RunOptions { background: true }`, so the process
+//! never takes focus either. That makes the real app checkable on a desktop someone is using:
+//! [`capture`](crate::capture) writes a PNG (the hook for golden-image tests, spec §9) and
+//! [`bench`](crate::bench) measures the per-frame CPU path, then each exits; `--offscreen`
+//! (`serve.rs`) keeps drawing for hot reload and live link until stopped.
 
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 use sapphire_render::Renderer;
@@ -23,8 +24,12 @@ use crate::stats::Stages;
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// The offscreen "app": all work happens in `init`; the first frame exits.
-pub struct OffscreenApp;
+/// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
+/// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
+pub struct OffscreenApp {
+    #[cfg(feature = "dev")]
+    serving: Option<crate::serve::Serving>,
+}
 
 impl App for OffscreenApp {
     const METADATA: AppMetadata = SandboxApp::METADATA;
@@ -34,10 +39,9 @@ impl App for OffscreenApp {
         if !unknown.is_empty() {
             tracing::warn!(target: LOG_TARGET, ?unknown, "ignoring unknown arguments");
         }
-        let offscreen = options
-            .offscreen
-            .as_ref()
-            .ok_or_else(|| AppInitError::msg("OffscreenApp needs --capture <png> or --bench <frames>"))?;
+        let offscreen = options.offscreen.as_ref().ok_or_else(|| {
+            AppInitError::msg("OffscreenApp needs --capture <png>, --bench <frames> or --offscreen")
+        })?;
         let (width, height) = (offscreen.width, offscreen.height);
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
@@ -45,15 +49,38 @@ impl App for OffscreenApp {
                 crate::capture::run(&mut stage, path, *ticks, *frames, width, height)?;
             }
             OffscreenMode::Bench { frames } => crate::bench::run(platform, &options, *frames, width, height)?,
+            #[cfg(feature = "dev")]
+            OffscreenMode::Serve => {
+                let stage = Stage::new(platform, &options)?;
+                let serving = crate::serve::Serving::new(stage, width, height, options.frame_limit);
+                return Ok(Self { serving: Some(serving) });
+            }
+            #[cfg(not(feature = "dev"))]
+            OffscreenMode::Serve => {
+                return Err(AppInitError::msg(
+                    "--offscreen serves hot reload and live link, which only `dev` builds have (`--features dev`)",
+                ));
+            }
         }
-        Ok(Self)
+        Ok(Self {
+            #[cfg(feature = "dev")]
+            serving: None,
+        })
     }
 
-    fn event(&mut self, _platform: &mut Platform, _event: &Event) -> AppControl {
-        AppControl::Continue
+    fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
+        match event {
+            // Ctrl-C or `kill`, which SDL reports as a quit.
+            Event::Quit { .. } => AppControl::Exit,
+            _ => AppControl::Continue,
+        }
     }
 
     fn iterate(&mut self, _platform: &mut Platform) -> AppControl {
+        #[cfg(feature = "dev")]
+        if let Some(serving) = &mut self.serving {
+            return serving.frame();
+        }
         AppControl::Exit
     }
 }

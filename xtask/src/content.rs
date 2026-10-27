@@ -102,9 +102,9 @@ const SAMPLE_SOURCES: &[&str] = &[
 ];
 
 /// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps, its
-/// plants (W6's foliage samples, one file per look-dev material), the night sky's Milky Way and
-/// the character's hair mask, irises, face mask, expression map and neck shadow. `gen-lookdev`
-/// writes all of them.
+/// plants (W6's foliage samples, one file per look-dev material), the night sky's Milky Way,
+/// the character's hair mask, irises, face mask, expression map and neck shadow, and the far
+/// mountains' sectors and palette (X1 part 2d). `gen-lookdev` writes all of them.
 const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/foliage/tree_green.glb",
     "lookdev/foliage/tree_blossom.glb",
@@ -117,7 +117,6 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/town/textures/timber.png",
     "lookdev/town/textures/grass.png",
     "lookdev/town/textures/foliage.png",
-    "lookdev/town/textures/rock.png",
     "lookdev/town/textures/band.png",
     "lookdev/town/textures/whitewash.png",
     "lookdev/town/textures/granite.png",
@@ -131,6 +130,55 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/character/face/face_mask.png",
     "lookdev/character/face/face_expression.png",
     "lookdev/character/neck_shadow.png",
+    "lookdev/mountains/near_0.glb",
+    "lookdev/mountains/near_1.glb",
+    "lookdev/mountains/near_2.glb",
+    "lookdev/mountains/near_3.glb",
+    "lookdev/mountains/near_4.glb",
+    "lookdev/mountains/near_5.glb",
+    "lookdev/mountains/near_6.glb",
+    "lookdev/mountains/near_7.glb",
+    "lookdev/mountains/near_8.glb",
+    "lookdev/mountains/near_9.glb",
+    "lookdev/mountains/near_10.glb",
+    "lookdev/mountains/near_11.glb",
+    "lookdev/mountains/near_12.glb",
+    "lookdev/mountains/near_13.glb",
+    "lookdev/mountains/near_14.glb",
+    "lookdev/mountains/near_15.glb",
+    "lookdev/mountains/near_16.glb",
+    "lookdev/mountains/near_17.glb",
+    "lookdev/mountains/near_18.glb",
+    "lookdev/mountains/near_19.glb",
+    "lookdev/mountains/middle_0.glb",
+    "lookdev/mountains/middle_1.glb",
+    "lookdev/mountains/middle_2.glb",
+    "lookdev/mountains/middle_3.glb",
+    "lookdev/mountains/middle_4.glb",
+    "lookdev/mountains/middle_5.glb",
+    "lookdev/mountains/middle_6.glb",
+    "lookdev/mountains/middle_7.glb",
+    "lookdev/mountains/middle_8.glb",
+    "lookdev/mountains/middle_9.glb",
+    "lookdev/mountains/middle_10.glb",
+    "lookdev/mountains/middle_11.glb",
+    "lookdev/mountains/middle_12.glb",
+    "lookdev/mountains/middle_13.glb",
+    "lookdev/mountains/middle_14.glb",
+    "lookdev/mountains/middle_15.glb",
+    "lookdev/mountains/middle_16.glb",
+    "lookdev/mountains/middle_17.glb",
+    "lookdev/mountains/middle_18.glb",
+    "lookdev/mountains/middle_19.glb",
+    "lookdev/mountains/far_0.glb",
+    "lookdev/mountains/far_1.glb",
+    "lookdev/mountains/far_2.glb",
+    "lookdev/mountains/far_3.glb",
+    "lookdev/mountains/far_4.glb",
+    "lookdev/mountains/far_5.glb",
+    "lookdev/mountains/far_6.glb",
+    "lookdev/mountains/far_7.glb",
+    "lookdev/mountains/mountains.png",
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

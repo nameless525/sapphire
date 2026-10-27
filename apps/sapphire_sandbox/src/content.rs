@@ -37,9 +37,11 @@
 //! [`Content::probe_hours`]).
 //!
 //! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
-//! binds to the town's environment materials, and the town's plants ([`lookdev::Plant`]), whose
-//! sidecars bind theirs to the look-dev foliage materials ([`Content::town`]), the courtyard's fog
-//! cards, and the character's rig ([`lookdev::RIG`], [`Content::rig`]), which stays on the CPU.
+//! binds to the town's environment materials, the town's plants ([`lookdev::Plant`]), whose
+//! sidecars bind theirs to the look-dev foliage materials, and its far mountains
+//! ([`lookdev::MOUNTAINS`], whose sidecars bind them to the mountains' environment material;
+//! [`Content::town`]), the courtyard's fog cards, and the character's rig ([`lookdev::RIG`],
+//! [`Content::rig`]), which stays on the CPU.
 //!
 //! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
 //! derives the character without its pedestal and the look-dev stage its held pose
@@ -298,7 +300,7 @@ pub(crate) struct Content {
     hard_edges: Option<Handle<Mesh>>,
     /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
-    /// The look-dev town and its plants, once asked for (`--look-dev`).
+    /// The look-dev town, its plants and its mountains, once asked for (`--look-dev`).
     town: Vec<Handle<Mesh>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
@@ -626,12 +628,12 @@ impl Content {
         Ok(self.gpu.meshes.get(&outlines::HARD_EDGES).expect("a ready mesh was uploaded here").object.handle)
     }
 
-    /// Loads until the look-dev town is on `renderer`, with its environment materials and the
-    /// maps they name, and returns its mesh: the load screen of `--look-dev`. It stays loaded from
-    /// then on.
+    /// Loads until the look-dev town, its plants and its mountains are on `renderer`, with their
+    /// materials and the maps they name, and returns their meshes: the load screen of
+    /// `--look-dev`. They stay loaded from then on.
     pub fn town(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<TownMeshes, AppInitError> {
         // Asking again tries a town that failed before, as the character does.
-        let ids = std::iter::once(lookdev::TOWN).chain(Plant::ALL.map(Plant::id));
+        let ids = std::iter::once(lookdev::TOWN).chain(Plant::ALL.map(Plant::id)).chain(lookdev::MOUNTAINS);
         let handles = ids
             .map(|id| self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg))
             .collect::<Result<Vec<_>, _>>()?;
@@ -645,7 +647,11 @@ impl Content {
         }
         loaded.map_err(|error| AppInitError::msg(format!("the look-dev town didn't load: {error}")))?;
         let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
-        Ok(TownMeshes { town: mesh(lookdev::TOWN), plants: Plant::ALL.map(|plant| mesh(plant.id())) })
+        Ok(TownMeshes {
+            town: mesh(lookdev::TOWN),
+            plants: Plant::ALL.map(|plant| mesh(plant.id())),
+            mountains: lookdev::MOUNTAINS.map(mesh),
+        })
     }
 
     /// Loads the character rig `id` until it is resident: CPU data, which nothing uploads

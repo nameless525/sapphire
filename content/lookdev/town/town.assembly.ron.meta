@@ -14,7 +14,6 @@
             position_format: Float32,
             materials: {
                 "canvas": "60875f21-b926-4f39-9e77-9c272583cd67",
-                "cliff": "9495cffe-3a3b-496a-9494-ec2579f5b431",
                 "cloth_blue": "21a3ef31-3fb2-41b0-8469-381e5af0915f",
                 "cloth_red": "623a6d5c-5b35-41e5-9a14-23940301d252",
                 "eaves": "a8c6b2dc-3382-471e-8691-e82bab764871",

@@ -285,9 +285,10 @@ pub(crate) struct Scene {
     hard_edges: Option<Entity>,
     /// The stage's pieces, with `--stage`.
     stage: Vec<(Entity, Piece)>,
-    /// The look-dev town, with `--look-dev`, and its plants.
+    /// The look-dev town, with `--look-dev`, its plants and its mountains.
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
+    town_mountains: Vec<Entity>,
     /// Where the character's light rig finds its head and body.
     figure: Figure,
     /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
@@ -386,6 +387,7 @@ impl Scene {
             stage: Vec::new(),
             town: None,
             town_plants: Vec::new(),
+            town_mountains: Vec::new(),
             figure,
             poses: skinned,
             bounds,
@@ -851,12 +853,12 @@ impl Scene {
         }
     }
 
-    /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town and its plants
-    /// around the character, its fog cards and lamps, the character held in `look.pose` (its
-    /// turntable stopped, its light rig finding its head and body by `look.figure`) and the
-    /// `shot`'s camera. Time of day runs on the stage's own day ([`lookdev::day`]) and the wind
-    /// blows the stage's breeze. The town, its plants and its cards never move, so they are
-    /// extracted once.
+    /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town, its plants and its
+    /// far mountains around the character, its fog cards and lamps, the character held in
+    /// `look.pose` (its turntable stopped, its light rig finding its head and body by
+    /// `look.figure`) and the `shot`'s camera. Time of day runs on the stage's own day
+    /// ([`lookdev::day`]) and the wind blows the stage's breeze. The town, its plants, mountains
+    /// and cards never move, so they are extracted once.
     pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
         self.figure = look.figure;
         self.extract_poses();
@@ -881,6 +883,12 @@ impl Scene {
                 (world.spawn((RenderMesh(look.town.plant(plant)), RenderTransform(town * place))).id(), plant)
             })
             .collect();
+        self.town_mountains = look
+            .town
+            .mountains
+            .iter()
+            .map(|&mesh| world.spawn((RenderMesh(mesh), RenderTransform(town))).id())
+            .collect();
         for mut light in lookdev::lamps() {
             light.position -= stand;
             world.spawn((Lamp { intensity: light.intensity }, RenderLight(light)));
@@ -894,13 +902,17 @@ impl Scene {
         }
     }
 
-    /// Sets the meshes the look-dev town and its plants draw again: after GPU device loss.
+    /// Sets the meshes the look-dev town, its plants and its mountains draw again: after GPU
+    /// device loss.
     pub fn set_town_mesh(&mut self, meshes: TownMeshes) {
         if let Some(town) = self.town {
             self.ecs.world_mut().entity_mut(town).insert(RenderMesh(meshes.town));
         }
         for &(entity, plant) in &self.town_plants {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.plant(plant)));
+        }
+        for (&entity, &mesh) in self.town_mountains.iter().zip(&meshes.mountains) {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(mesh));
         }
     }
 
@@ -1321,11 +1333,16 @@ mod tests {
             face: Quat::IDENTITY,
             expression: FaceExpression::default(),
         };
-        let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
+        let town = TownMeshes {
+            town: MeshHandle::from_raw(1),
+            plants: [MeshHandle::from_raw(2); 8],
+            mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+        };
         let look = LookDev { town, fog_cards: None, pose: pose.clone(), figure };
         scene.spawn_look_dev(Shot::Hero, look);
         assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the stage runs on its own day");
         assert_eq!(scene.town_plants.len(), lookdev::PLANTINGS.len());
+        assert_eq!(scene.town_mountains.len(), lookdev::MOUNTAINS.len());
         let character = InstanceId(scene.character.to_bits());
         let frame = |scene: &mut Scene, hours: f32| {
             scene.set_day(hours, None);
@@ -1350,7 +1367,11 @@ mod tests {
     #[test]
     fn a_timeline_replaces_the_day_only_from_the_days_own_file() {
         let look = || {
-            let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
+            let town = TownMeshes {
+                town: MeshHandle::from_raw(1),
+                plants: [MeshHandle::from_raw(2); 8],
+                mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+            };
             let pose = RenderPose { palette: Vec::new(), morph_weights: Vec::new() };
             let figure = Figure {
                 head: Vec3::Y,

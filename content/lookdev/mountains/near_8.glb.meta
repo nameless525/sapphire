@@ -1,0 +1,23 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "14c7d24f-51a2-4184-a113-a0d141c0801a",
+        importer: Gltf((
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.45,
+                        max_error: 0.0028,
+                    ),
+                ],
+                mobile_skip: 1,
+                lock_border: true,
+            ),
+            position_format: Float32,
+            materials: {
+                "Mountain": "99cddc88-ce93-4995-b45b-9e5ab20739b6",
+            },
+        )),
+    ),
+)

@@ -3,8 +3,9 @@
 // up at their corners, warm timber, paper lanterns. The buildings are the assembly's parametric
 // builtins (`#hall`, `#roof`, `#wall`, `#column`, `#lantern`) in the groups below; the
 // Chinese pavilion is a piece of the town's own (`pieces/`); Kenney's Fantasy Town Kit gives the
-// market stalls, the cart and the far rocks, re-materialed. See `sapphire_pipeline::assembly`
-// for the format and `apps/sapphire_sandbox/src/lookdev.rs` for the stage that draws it.
+// market stalls, the cart and the hills beyond the town, re-materialed. The far mountains are
+// meshes of their own (`../mountains/`, X1 part 2d). See `sapphire_pipeline::assembly` for the
+// format and `apps/sapphire_sandbox/src/lookdev.rs` for the stage that draws it.
 //
 // World space: meters, +Y up. The character stands at the origin facing +Z, where the cameras
 // are; the square opens behind her toward -Z, and the street leaves it through the gate wall's
@@ -36,7 +37,6 @@
             (name: "cloth_blue", tile: (1.0, 1.0)),
             (name: "canvas", tile: (1.0, 1.0)),
             (name: "iron", tile: (1.0, 1.0), projection: Box),
-            (name: "cliff", tile: (16.0, 16.0), projection: Box),
             // Jinzhou (X1 part 2b): the parametric builtins' parts, sent here by the rules below.
             (name: "whitewash", tile: (3.2, 3.2)),
             (name: "plinth_stone", tile: (2.0, 2.0)),
@@ -66,8 +66,6 @@
             (cell: Some((5, 3)), slot: "canvas"),
             // The cart's iron.
             (pieces: ["cart*"], cell: Some((3, 2)), slot: "iron"),
-            // Rocks: far cliffs.
-            (pieces: ["rock*"], cell: Some((3, 2)), slot: "cliff"),
             // Jinzhou: the parametric builtins' parts (`#roof`, `#hall`, `#wall`, `#column`,
             // `#lantern`), by part name. White plaster and gables on cool grey stone, charcoal tiles
             // and ridges, warm timber, amber paper.
@@ -459,22 +457,11 @@
             (piece: "@pot", at: (0.1, 0.0, -44.2)),
             (piece: "@pot", at: (6.3, 0.0, -52.6)),
 
-            // Far away: hills, a house on one, and mountains in the haze.
+            // Beyond the town: hills, and a house on one. The mountains past them are meshes of
+            // their own (`../mountains/`).
             (piece: "kenney/rock-wide", at: (30.0, -3.0, -120.0), scale: (60.0, 10.0, 40.0), slot: Some("grass")),
             (piece: "kenney/rock-wide", at: (-50.0, -3.0, -140.0), turn: 40.0, scale: (70.0, 12.0, 50.0), slot: Some("grass")),
-            (piece: "kenney/rock-large", at: (-260.0, -12.0, -900.0), scale: (360.0, 300.0, 300.0)),
-            (piece: "kenney/rock-large", at: (200.0, -12.0, -1000.0), turn: 120.0, scale: (420.0, 380.0, 340.0)),
-            (piece: "kenney/rock-wide", at: (620.0, -12.0, -850.0), turn: 70.0, scale: (400.0, 260.0, 300.0)),
-            (piece: "kenney/rock-large", at: (-680.0, -12.0, -700.0), turn: 200.0, scale: (360.0, 240.0, 300.0)),
-            (piece: "kenney/rock-wide", at: (-20.0, -12.0, -1150.0), turn: 30.0, scale: (600.0, 420.0, 400.0)),
             (piece: "@jz_house", at: (30.0, 5.0, -118.0), turn: 25.0),
-        ],
-        allow_coplanar: [
-            (
-                pieces: Some(("kenney/rock-*", "kenney/rock-*")),
-                facing: Some((0.0, -1.0, 0.0)),
-                why: "The far mountains' feet, 12 m under the fields, face down: seen only from under the ground.",
-            ),
         ],
     ),
 )

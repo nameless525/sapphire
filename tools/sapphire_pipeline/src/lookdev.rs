@@ -4,7 +4,7 @@
 //! The town itself is authored, not generated: `town/town.assembly.ron` ([`crate::assembly`])
 //! builds Jinzhou's halls, shops, walls, roofs and lanterns from the assembly's parametric
 //! builtins, and places the Chinese pavilion (`town/pieces/pavilion.glb`) and a few of Kenney's
-//! Fantasy Town Kit's pieces (market stalls, a cart, the far rocks); `town/materials/` holds its
+//! Fantasy Town Kit's pieces (market stalls, a cart, the hills); `town/materials/` holds its
 //! materials. Its maps are painted here instead, in code, so they regenerate byte for byte and owe
 //! nothing to a kit's palette:
 //!
@@ -14,7 +14,6 @@
 //! | `timber.png` | 1 m | Planks and beams: soft streaks along V, a seam every quarter meter; near white, tinted |
 //! | `grass.png` | 6 m | A vivid lawn: yellow-green patches and darker clumps |
 //! | `foliage.png` | 2 m | Leaf clusters, light on their upper sides, for tree crowns and hedges |
-//! | `rock.png` | 16 m | Banded rock for the far cliffs, which fog and distance mostly paint over |
 //! | `band.png` | — | The terminator band: white ends, a warm apricot across the transition |
 //! | `whitewash.png` | 3.2 m across, once down a wall | Jinzhou's weathered plaster: grey-white with cool and warm mottling, a stain and streaks under the eaves, grime rising from the plinth |
 //! | `granite.png` | 2 m | Cool grey blocks in four courses, bevelled, in dark joints: plinths and stone trim |
@@ -27,12 +26,13 @@
 //! Colors are picked in 8-bit sRGB, as an artist would, and maps tile seamlessly: every pattern
 //! repeats on the map's own period (whitewash across only: it runs once down a wall).
 //!
-//! X1 part 2 adds two more sets of generated sources:
+//! X1 part 2 adds more sets of generated sources:
 //!
 //! | File | What |
 //! |---|---|
 //! | `foliage/{tree_green,tree_blossom,tree_autumn,bush_green,bush_lavender,grass}.glb` | W6's foliage samples' geometry ([`PLANTS`]), one file per plant so each sidecar binds the plant's own look-dev foliage material (`foliage/materials/`) |
 //! | `sky/milky_way.png` | The night's Milky Way in teal, blue-violet and cyan-white ([`MILKY_WAY`]), which the look-dev sky (`sky/sky.material.ron`) reads in place of the sandbox's |
+//! | `mountains/{near,middle,far}_<sector>.glb`, `mountains/mountains.png` | The far mountains (X1 part 2d, [`mountains`]): three ranges round the town, each cut into sectors, and the palette their material (`mountains/mountains.material.ron`) reads |
 //!
 //! The kit's own trees become foliage through single-piece assemblies
 //! (`foliage/kit_tree*.assembly.ron`), authored, not generated.
@@ -57,6 +57,8 @@ use sapphire_assets::character_maps::{face_expression, face_mask, hair_mask};
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
 use crate::samples::{foliage, sky};
+
+pub mod mountains;
 
 /// The town's directory, under the look-dev directory.
 pub const TOWN_DIR: &str = "town";
@@ -148,7 +150,6 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path("timber.png"), timber_png()?),
         (path("grass.png"), grass_png()?),
         (path("foliage.png"), foliage_png()?),
-        (path("rock.png"), rock_png()?),
         (path("band.png"), band_png()?),
         (path("whitewash.png"), whitewash_png()?),
         (path("granite.png"), granite_png()?),
@@ -160,14 +161,16 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     ])
 }
 
-/// The generated plants, the sky's Milky Way and the character's face masks, relative to the
-/// look-dev directory, with their bytes: the sources [`files`]'s maps don't cover.
+/// The generated plants, the sky's Milky Way, the character's face masks and the far
+/// mountains, relative to the look-dev directory, with their bytes: the sources [`files`]'s
+/// maps don't cover.
 pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut generated: Vec<(String, Vec<u8>)> =
         PLANTS.iter().map(|&(name, plant)| (format!("{FOLIAGE_DIR}/{name}"), plant.glb())).collect();
     generated.push((format!("{SKY_DIR}/milky_way.png"), sky::milky_way_png_in(&MILKY_WAY)?));
     generated.push((FACE_MASK.to_owned(), face_mask_png()?));
     generated.push((FACE_EXPRESSION.to_owned(), face_expression_png()?));
+    generated.extend(mountains::files()?);
     Ok(generated)
 }
 
@@ -346,20 +349,6 @@ pub fn foliage_png() -> io::Result<Vec<u8>> {
         let mut color = mid.lerp(light, 0.65 * up + 0.2 * shade);
         color = color.lerp(dark, 0.7 * rim);
         color * (0.94 + 0.1 * tiling(p, 48, 2, 0xf013))
-    })
-}
-
-/// Banded rock: layers of blue-grey and warm grey, broken by noise.
-pub fn rock_png() -> io::Result<Vec<u8>> {
-    let cool = rgb(150, 156, 170);
-    let warm = rgb(176, 168, 158);
-    let dark = rgb(116, 118, 132);
-    paint(256, |p| {
-        let warp = tiling(p, 4, 3, 0x40c1) - 0.5;
-        let layers = ((p.y + 0.12 * warp) * 7.0 * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-        let mut color = cool.lerp(warm, smoothstep(0.3, 0.7, layers));
-        color = color.lerp(dark, 0.5 * smoothstep(0.6, 0.85, tiling(p, 12, 3, 0x40c2)));
-        color * (0.95 + 0.08 * tiling(p, 48, 2, 0x40c3))
     })
 }
 

@@ -44,6 +44,8 @@ cargo xtask link help                # builds the tool
 
 Push only what the device's cook holds: a phone reads `target/content/mobile/shared.spack`, the desktop `target/content/desktop/shared.spack`. `cargo xtask link status` names the device's cook, and `cargo xtask link push` with no files pushes every pack of that cook.
 
+**When a request times out** (a phone suspended or locked, a USB tunnel stalled), the tool closes the connection and says the request may still have applied: check with `cargo xtask link status` or a capture before pushing it again, which is harmless. `push` connects again for the files after it, and `watch` for its next push. A large pack push isn't cut short by its size: it fails only if the device takes none of it for 10 to 20 s. A device keeps at most 16 pushed pack names and 1 GiB of pushed bytes until it restarts; a push past either is refused as it begins, saying which.
+
 ## Desktop, headless
 
 The windowed sandbox takes focus, so the desktop leg runs offscreen: `--offscreen` (`dev` builds) draws the scene at 60 frames a second without a window until it is stopped (Ctrl-C or `kill`), with hot reload and live link on.
@@ -61,7 +63,7 @@ cargo xtask content
 cargo xtask link capture after.png
 ```
 
-`cargo xtask run` holds the cooked content locked while the app runs, so that nothing recooks it underneath, except for a `dev` build, which hot reloads: there `cargo xtask content` in another terminal goes ahead (before the rehearsal fixed it, it waited for the app to exit). Hot reload (A8) finds every edit itself: documents and WGSL sources when they are saved, content when `cargo xtask content` rewrites the pack. To exercise the phones' path on the desktop instead, add `--no-hot-reload` and push each edit (`cargo xtask link push …`, `cargo xtask link cvar …`) as below.
+`cargo xtask run` holds the cooked content locked while the app runs, so that nothing recooks it underneath, except for a `dev` build, which hot reloads: there `cargo xtask content` in another terminal goes ahead (before the rehearsal fixed it, it waited for the app to exit). Hot reload (A8) finds every edit itself: documents and WGSL sources when they are saved, content when `cargo xtask content` rewrites the pack. To exercise the phones' path on the desktop instead, add `--no-hot-reload` and push each edit (`cargo xtask link push …`, `cargo xtask link cvar …`) as below. Both can run together: a WGSL file pushed over live link keeps its pushed text when another WGSL file is saved (before the live link review, hot reload's next shader change put back the disk's text of every file).
 
 ## iOS Simulator
 

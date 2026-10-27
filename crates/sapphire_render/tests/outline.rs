@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 
-use glam::{Affine3A, Mat4, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, OutlineCurve, Rim,
 };
@@ -502,6 +502,60 @@ fn the_lod_cutoff_drops_far_hulls_after_fading_them() {
     assert!((width - 10.0 * (9.0 - 8.5) / 2.25).abs() < 0.5 && drawn == 1, "{width}");
     let (width, drawn, culled) = measure(&mut frames, distance_for(1.0, 45.0, radius), 45.0, 0.0);
     assert!(width < 0.05 && (drawn, culled) == (0, 1), "none: {width}, {drawn}, {culled}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn hulls_off_the_view_axis_are_culled_by_their_depth() {
+    // The shader fades a line by its view depth; at the side of the frame a mesh's distance runs
+    // up to about 1.2× its depth (review RA-002), so culling by distance dropped hulls whose lines
+    // were still drawn. A cutoff of 10 m, and meshes near the frame's edges with their nearest
+    // depth inside it and their distance past it, under 4× MSAA and under temporal AA.
+    let gpu = gpu();
+    let radius = 0.2;
+    let mut material = flat(GREY, 20.0);
+    material.outline.curve = flat_curve(10.0);
+    let ball = sphere(radius, &material, |n| n);
+    // Dark pixels against the grey sky and surface: the line.
+    let lines = |pixels: &[[u8; 4]]| pixels.iter().filter(|&&pixel| linear(pixel).x < 0.3).count();
+    // The camera's vertical field of view and aspect, and the ball's place and scale in view
+    // space (the camera sits at the origin, looking down −Z).
+    let cases: [(&str, f32, f32, Vec3, Vec3); 5] = [
+        // The review's: its surface 8.4–8.8 m deep, 10.1 m past its bounds' radius away.
+        ("the review's sphere", 45.0, 16.0 / 9.0, Vec3::new(5.9, 0.0, -8.6), Vec3::ONE),
+        ("near the top at 70°", 70.0, 16.0 / 9.0, Vec3::new(0.0, 3.5, -5.6), Vec3::ONE),
+        ("at the side of a 21:9 view at 30°", 30.0, 21.0 / 9.0, Vec3::new(-8.4, 0.0, -14.1), Vec3::ONE),
+        // A rod two meters long pointing away, at the frame's side.
+        ("a rod at the side", 45.0, 16.0 / 9.0, Vec3::new(6.0, 0.0, -10.3), Vec3::new(0.75, 0.75, 5.0)),
+        // Wholly past the cutoff in depth: culled, as before.
+        ("past the cutoff", 45.0, 16.0 / 9.0, Vec3::new(5.9, 0.0, -10.6), Vec3::ONE),
+    ];
+    let temporal = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    for settings in [RenderSettings::default(), temporal] {
+        for (name, fov, aspect, place, scale) in cases {
+            let mut frames = Frames::new(&gpu, settings);
+            let mesh = upload(&mut frames.renderer, &ball);
+            let camera =
+                CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, fov.to_radians(), aspect, 0.05);
+            let transform = Mat4::from_scale_rotation_translation(scale, Quat::IDENTITY, place);
+            let pixels = frames.render(&gpu, camera, &[instance(1, mesh, transform)], &[]);
+            let stats = frames.stats();
+            let (drawn, culled, dark) = (stats.outline_draws, stats.outlines_culled, lines(&pixels));
+            let effective = (fov.to_radians() * 0.5).tan() / REFERENCE_TAN;
+            let nearest = (-place.z - radius * scale.z) * effective;
+            eprintln!(
+                "{name} (temporal {}): nearest {nearest:.2} effective m, {:.2} m away; \
+                 drawn {drawn}, culled {culled}, {dark} line pixels",
+                settings.temporal,
+                (place.length() - radius * 3f32.sqrt() * scale.max_element()) * effective,
+            );
+            if nearest < 10.0 {
+                assert!((drawn, culled) == (1, 0) && dark > 0, "{name}: {drawn}, {culled}, {dark}");
+            } else {
+                assert!((drawn, culled) == (0, 1) && dark == 0, "{name}: {drawn}, {culled}, {dark}");
+            }
+        }
+    }
 }
 
 #[test]

@@ -107,6 +107,12 @@
 //!
 //! # Does not own
 //!
+//! - The look's plain types: the scene constants time of day resolves ([`SkyGradient`],
+//!   [`Fog`], [`CharacterLighting`] and the rest) and post's input ([`PostParams`]) are
+//!   `sapphire_look`'s, with the CPU models tools share (the sky's light as the probe grid takes
+//!   it, [`Fog::ray`]). The packet carries them, and this crate re-exports them all, but they
+//!   sit beneath it so the pipeline's probe bake and time of day's model use them without linking
+//!   the renderer, and a shader edit rebuilds neither (M1 A8's follow-up).
 //! - Extraction: the app's systems in the ECS `Extract` schedule fill the packet, using
 //!   change detection so that only changed instances and poses reach it. Lights are sent whole
 //!   every frame.
@@ -854,11 +860,9 @@ pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;
 pub use foliage::FoliageSettings;
 pub use frame::{
-    AmbientLight, CameraData, Celestial, CharacterBody, CharacterFace, CharacterGi, CharacterInstance,
-    CharacterLight, CharacterLighting, CloudLight, DirectionalLight, FaceExpression, Fog, FogLayer,
-    FramePacket, FramePacketRing, HeadBasis, HeightFog, InstanceDeltas, InstanceId, LightKind, LocalLight,
-    MeshInstance, Nebula, PacketRange, SkinnedInstance, SkyDisc, SkyGradient, SkyLayers, ViewData, Weather,
-    Wind,
+    CameraData, CharacterBody, CharacterFace, CharacterInstance, FaceExpression, FramePacket,
+    FramePacketRing, HeadBasis, InstanceDeltas, InstanceId, LightKind, LocalLight, MeshInstance, PacketRange,
+    SkinnedInstance, ViewData, Weather, Wind,
 };
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
@@ -869,9 +873,15 @@ pub use post::{
     MAX_GRADIENT_LAYERS, MAX_RADIAL_BLUR_TAPS, PostEffectSettings, PostEffects, PostParams, PostStats,
     PostVariants, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
+// The frame's look, which the packet carries and time of day resolves: plain data of a crate of
+// its own, beneath the renderer and time of day, so tools that light by it link neither.
 pub use renderer::{
     CHARACTER_PREPASS, MAIN_PASS, MIN_RENDER_SCALE, Msaa, PREPASSES, PrepassTargets, RenderError,
     RenderSettings, RenderStats, Renderer, SCENE_PREPASS, ShaderUpdate, scaled_size,
+};
+pub use sapphire_look::{
+    AmbientLight, Celestial, CharacterGi, CharacterLight, CharacterLighting, CloudLight, DirectionalLight,
+    Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
 };
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
 pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};

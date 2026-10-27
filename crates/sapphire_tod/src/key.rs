@@ -1,11 +1,11 @@
 //! Authored keys: the look at one time, group by group, as documents spell it.
 
 use bevy_reflect::Reflect;
-use sapphire_math::Ease;
-use sapphire_render::{
+use sapphire_look::{
     BloomParams, CharacterBloom, ColorGrade, Diffusion, GradientBlend, GradientLayer, GradientShape,
     LensFlare, MAX_GRADIENT_LAYERS, Vignette,
 };
+use sapphire_math::Ease;
 use serde::{Deserialize, Serialize};
 
 /// A linear RGB color (or, for a direction, a vector), authored as `(r, g, b)`.
@@ -23,7 +23,7 @@ pub type Rgb = [f32; 3];
 #[serde(deny_unknown_fields)]
 pub struct TodKey {
     /// In a [`TodTimeline`](super::TodTimeline): hours since midnight, `0 ≤ time < 24`. In a
-    /// [`TodCutscene`](super::TodCutscene): seconds since the shot began.
+    /// cutscene's track (`sapphire_world::tod::TodCutscene`): seconds since the shot began.
     pub time: f32,
     /// How the blend from this key to the next progresses.
     #[serde(default, skip_serializing_if = "is_linear")]
@@ -86,12 +86,11 @@ pub struct TodKey {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lens_flare: Option<LensFlareKey>,
     /// How much of the world's authored emission shows: environment materials' emission × this,
-    /// 1 as authored (M1 W1's keyed emission; the renderer reads it as
-    /// [`sapphire_render::FramePacket::emission_scale`]). Exposure can't tell a lantern from the
-    /// light around it, so a lantern bright enough to bloom at night would glow at noon too;
-    /// keyed down by day, paper lanterns and lit windows rest pale and come on at dusk. A
-    /// material can keep a share of its emission steady at every hour (its `emission_steady`),
-    /// and characters' emission never follows it.
+    /// 1 as authored (M1 W1's keyed emission; the renderer reads it as the frame packet's
+    /// `emission_scale`). Exposure can't tell a lantern from the light around it, so a lantern
+    /// bright enough to bloom at night would glow at noon too; keyed down by day, paper lanterns
+    /// and lit windows rest pale and come on at dusk. A material can keep a share of its emission
+    /// steady at every hour (its `emission_steady`), and characters' emission never follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emission: Option<f32>,
 }
@@ -155,7 +154,7 @@ pub struct SkyKey {
 }
 
 /// The sun's and the moon's discs and glows at a key, as the sky draws them
-/// ([`sapphire_render::SkyLayers`]). Where they are is the `sun` and `moon` groups'; their sizes
+/// ([`sapphire_look::SkyLayers`]). Where they are is the `sun` and `moon` groups'; their sizes
 /// are the sky material's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
@@ -183,7 +182,7 @@ pub struct DiscKey {
     pub glow_size: f32,
 }
 
-/// The night sky's nebula at a key ([`sapphire_render::Nebula`]): the color of each kind of cloud
+/// The night sky's nebula at a key ([`sapphire_look::Nebula`]): the color of each kind of cloud
 /// the sky material's nebula map paints, linear RGB, HDR. A channel's light is its color times
 /// its density, so black hides it; between keys each color blends in OkLab, so the nebula fades
 /// out through its own hues and can turn them through the night.
@@ -199,7 +198,7 @@ pub struct NebulaKey {
     pub accents: Rgb,
 }
 
-/// The clouds at a key ([`sapphire_render::CloudLight`]): painted in a lit and a shade tone with
+/// The clouds at a key ([`sapphire_look::CloudLight`]): painted in a lit and a shade tone with
 /// a rim toward the key light, and how much of each cloud layer shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
@@ -230,7 +229,7 @@ pub struct AmbientKey {
     pub intensity: f32,
 }
 
-/// Fog at a key ([`sapphire_render::Fog`] says how the renderer draws each part; M1 W3). A layer
+/// Fog at a key ([`sapphire_look::Fog`] says how the renderer draws each part; M1 W3). A layer
 /// left out has no fog, and characters take none of it unless `characters` says so.
 ///
 /// Between keys each layer's color blends in OkLab weighted by the layers' densities, so a layer
@@ -615,13 +614,13 @@ impl TodGroup {
 
     /// The sky's layers over its gradient (M1 W2, the nebula M1 X1 part 2e): optional even in
     /// the base timeline, where a group left out draws nothing
-    /// ([`sapphire_render::SkyLayers::default`]), so timelines written before them draw the sky
+    /// ([`sapphire_look::SkyLayers::default`]), so timelines written before them draw the sky
     /// as they did.
     pub const SKY_LAYERS: [Self; 4] = [Self::Discs, Self::Stars, Self::Clouds, Self::Nebula];
 
     /// Post's compositing layers (M1 P2): optional even in the base timeline, where a group left
     /// out draws nothing (characters bloom as the world does), so timelines written before them
-    /// draw post as they did ([`sapphire_render::PostParams::plain`]).
+    /// draw post as they did ([`sapphire_look::PostParams::plain`]).
     pub const POST_LAYERS: [Self; 4] =
         [Self::Diffusion, Self::CharacterBloom, Self::Gradients, Self::LensFlare];
 

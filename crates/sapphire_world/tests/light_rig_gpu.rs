@@ -27,7 +27,7 @@ use sapphire_render::{
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_time::ScaledClock;
 use sapphire_world::light_rig::{LightRig, LightRigId, LightRigLibrary};
-use sapphire_world::tod::{TimeOfDay, TodCutscene, TodFrame, TodLook, TodTimeline};
+use sapphire_world::tod::{TimeOfDay, TodCutscene, TodFrame, TodLook, default_day};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const SIZE: u32 = 192;
@@ -344,7 +344,7 @@ fn each_character_is_lit_by_its_own_preset() {
 fn a_shot_rig_turns_the_key_as_its_cutscene_blends_in() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let mut tod = TimeOfDay::new(TodTimeline::default_day(), clock, 14.0).expect("complete");
+    let mut tod = TimeOfDay::new(default_day(), clock, 14.0).expect("complete");
     let mut stage = Stage::new(&[Vec3::ZERO]);
     let library = rigs();
     let gameplay = *library.rig(LightRigId::DEFAULT);
@@ -378,7 +378,7 @@ fn a_shot_rig_turns_the_key_as_its_cutscene_blends_in() {
 fn the_key_takes_time_of_days_character_light_not_the_worlds() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let mut tod = TimeOfDay::new(TodTimeline::default_day(), clock, 0.0).expect("complete");
+    let mut tod = TimeOfDay::new(default_day(), clock, 0.0).expect("complete");
     let mut stage = Stage::new(&[Vec3::ZERO]);
     let gameplay = *rigs().rig(LightRigId::DEFAULT);
     for hours in [0.0, 6.5, 10.0, 17.5] {

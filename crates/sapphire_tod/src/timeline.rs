@@ -12,9 +12,6 @@ use super::look::{TodLook, celestial_sphere};
 /// Hours in a day: timeline keys sit in `0 ≤ time < DAY_HOURS`.
 pub const DAY_HOURS: f32 = 24.0;
 
-/// The shipped default day (see [`TodTimeline::default_day`]).
-const DEFAULT_DAY: &str = include_str!("../../default_day.ron");
-
 /// A day of looks: [`TodKey`]s at times of day, blended between neighbors and wrapping from the
 /// last key of the day to the first of the next (a `TodTimeline` document, schema 1).
 ///
@@ -59,17 +56,6 @@ impl TodTimeline {
         Ok(Self { keys, groups })
     }
 
-    /// Sapphire's default day (`default_day.ron` beside this crate's manifest), compiled in:
-    /// eight keys from midnight through a blue hour, sunrise, the day, golden hour, sunset and
-    /// dusk. At 10:00 it is exactly the renderer's default look (the sun the sandbox has always
-    /// drawn with, [`sapphire_render::SkyGradient::default`] and
-    /// [`sapphire_render::PostParams::default`]), so a scene that doesn't choose a time looks as
-    /// it did before time of day, but for its fog (M1 W3): a light haze the renderer's default
-    /// leaves out.
-    pub fn default_day() -> Self {
-        Self::from_ron(DEFAULT_DAY).expect("the shipped default day is checked by this module's tests")
-    }
-
     /// Reads a timeline document, upgrading older schema versions and checking the timeline.
     pub fn from_ron(text: &str) -> Result<Self, DocumentError> {
         sapphire_serialize::from_ron(text)
@@ -111,14 +97,15 @@ impl TodTimeline {
     }
 
     /// Blends this timeline's groups at `hours` over `look` with `weight` (1 replaces them).
-    pub(crate) fn apply(&self, look: &mut TodLook, hours: f32, weight: f32) {
+    pub fn apply(&self, look: &mut TodLook, hours: f32, weight: f32) {
         let Segment { from, to, weight: segment } = self.segment(hours);
         look.blend_keys(&self.keys[from], &self.keys[to], segment, weight);
     }
 }
 
-/// Where a time falls among keys: blend `weight` of the way from key `from` to key `to`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Where a time falls among keys: blend `weight` of the way from key `from` to key `to`. The
+/// default is the first key alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Segment {
     pub from: usize,
     pub to: usize,
@@ -128,7 +115,7 @@ pub struct Segment {
 
 /// Finds `time` among `keys` (sorted, at least one): wrapping around `period` if given, else
 /// holding the first and last keys' looks before and after them.
-pub(crate) fn segment(keys: &[TodKey], time: f32, period: Option<f32>) -> Segment {
+pub fn segment(keys: &[TodKey], time: f32, period: Option<f32>) -> Segment {
     let last = keys.len() - 1;
     let hold = |index: usize| Segment { from: index, to: index, weight: 0.0 };
     if last == 0 {
@@ -160,7 +147,7 @@ pub(crate) fn segment(keys: &[TodKey], time: f32, period: Option<f32>) -> Segmen
 
 /// The times a run of keys may take.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum KeyTimes {
+pub enum KeyTimes {
     /// A timeline's: hours, `0 ≤ time < 24`.
     Day,
     /// A cutscene's: seconds into a shot of this many, `0 ≤ time ≤ duration`.
@@ -185,7 +172,7 @@ impl KeyTimes {
 
 /// Checks `keys`: at least one, times within `times` and strictly increasing, the same groups
 /// in every key, and every value in range. Returns the groups.
-pub(crate) fn check_keys(keys: &[TodKey], times: KeyTimes) -> Result<TodGroups, TodError> {
+pub fn check_keys(keys: &[TodKey], times: KeyTimes) -> Result<TodGroups, TodError> {
     let first = keys.first().ok_or(TodError::NoKeys)?;
     let groups = first.groups();
     let mut previous = None;

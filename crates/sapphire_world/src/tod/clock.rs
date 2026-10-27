@@ -4,7 +4,7 @@ use sapphire_time::{
     LocalClock, SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, ScaledClock, SimDuration, SimTime, TICK_HZ,
 };
 
-use super::timeline::DAY_HOURS;
+use sapphire_tod::DAY_HOURS;
 
 const SUBTICKS_PER_SECOND: f64 = (SUBTICKS_PER_TICK as u64 * TICK_HZ as u64) as f64;
 

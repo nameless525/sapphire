@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use sapphire_math::{Ease, Vec3};
-
-use super::timeline::TodTimeline;
+use sapphire_tod::TodTimeline;
 
 /// A zone's time-of-day override (WuWa gives every scene its own atmosphere and grade): inside
 /// its shape the zone's timeline blends over the base at full `strength`, and the blend fades
@@ -91,7 +90,7 @@ mod tests {
     use super::*;
 
     fn volume(shape: VolumeShape, blend_distance: f32) -> TodVolume {
-        TodVolume { blend_distance, ..TodVolume::new(shape, Arc::new(TodTimeline::default_day())) }
+        TodVolume { blend_distance, ..TodVolume::new(shape, Arc::new(crate::tod::default_day())) }
     }
 
     #[test]

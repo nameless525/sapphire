@@ -30,12 +30,19 @@ sapphire_crash = { kind = "runtime", layer = 1 }
 # L2 services.
 sapphire_assets = { kind = "runtime", layer = 2 }
 sapphire_ecs = { kind = "runtime", layer = 2 }
+# The frame's look as plain data (scene constants, post's input) and the CPU models of how the
+# renderer draws it: beneath the renderer and time of day alike, so tools that light by them link
+# neither (M1 A8's follow-up). Depends on L0 alone.
+sapphire_look = { kind = "runtime", layer = 2 }
 sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 sapphire_serialize = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 sapphire_input = { kind = "runtime", layer = 3 }
 sapphire_render = { kind = "runtime", layer = 3 }
+# Time of day's model (keys, timelines, looks), beside the renderer rather than above it: the
+# world runs it, and tools such as the probe bake resolve its keys without the world or renderer.
+sapphire_tod = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).

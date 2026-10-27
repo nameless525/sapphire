@@ -6,10 +6,8 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
-use super::TodError;
-use super::key::{TodGroups, TodKey};
-use super::look::TodLook;
-use super::timeline::{DAY_HOURS, KeyTimes, check_keys, segment};
+use sapphire_tod::{DAY_HOURS, KeyTimes, TodError, TodGroups, TodKey, TodLook, check_keys, segment};
+
 use crate::light_rig::LightRig;
 
 /// A cutscene's time-of-day track (spec §5.23): for one shot, it sets the time of day, overrides

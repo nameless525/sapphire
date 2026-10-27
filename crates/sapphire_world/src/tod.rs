@@ -7,18 +7,17 @@
 //! flare; M1 P2), so characters and world change together and read as one picture. As in
 //! Wuthering Waves, it is a stylized day, not a physical atmosphere.
 //!
+//! The model, the keys, timelines and looks and how they resolve and blend, is
+//! [`sapphire_tod`]'s, all of it re-exported here; this module adds time of day's runtime in the
+//! world. The model is a crate of its own, depending on neither the renderer nor this crate, so
+//! tools that need a day's light (the pipeline's probe bake) link it alone, and an edit to a
+//! shader or to the default day this crate compiles in rebuilds none of them (M1 A8's follow-up).
+//!
 //! # Data
 //!
 //! - **[`TodTimeline`]** (a `TodTimeline` RON document): [`TodKey`]s at hours of the day, each
-//!   setting groups of values ([`TodGroup`]: sun, moon, sky, ambient, fog, shadow tint,
-//!   character, day/night, exposure, grade, bloom, vignette, the sky's layers: discs, stars,
-//!   clouds and the nebula, post's layers: diffusion, character bloom, gradients and lens
-//!   flare, and the world's emission scale). The base timeline sets them all but the sky's and
-//!   post's layers and the
-//!   emission scale, which are optional ([`TodGroup::OPTIONAL`]): a timeline without them, as
-//!   every timeline before them was, draws the sky's gradient alone, post as it was
-//!   ([`sapphire_render::PostParams::plain`]) and emission as authored.
-//!   [`TodTimeline::default_day`] is the shipped one, compiled in until packs (A4) carry
+//!   setting groups of values ([`TodGroup`]), the optional ones ([`TodGroup::OPTIONAL`]) aside
+//!   in the base timeline. [`default_day`] is the shipped one, compiled in until packs (A4) carry
 //!   timelines as content.
 //! - **[`TodVolume`]**: a zone's override, a timeline that sets every group or only some, blended
 //!   over the base by its weight at a probe point (smoothly out over a blend distance around its
@@ -29,24 +28,12 @@
 //!
 //! # Evaluation
 //!
-//! Between two keys, each group blends by the first key's [`TodEase`]: colors in OkLab
-//! ([`sapphire_math::color`]), directions along the great circle at constant angular speed,
-//! scalars linearly. Timelines wrap at midnight: the last key of the day blends into the first.
-//! A time on a key, or a volume at full weight, reproduces the key's values bit for bit. Grades
-//! are the exception: a grade is baked into a LUT, so neighboring keys' grades blend as post's
-//! two LUTs ([`GradeMix`]) instead of field by field, and each key's grade is baked once.
-//! Gradient layers (M1 P2) blend slot by slot: a layer with the same kind of shape and blend mode
-//! as the one in its place blends field by field; one that differs fades out by halfway and the
-//! other in after it, and a layer only one side has fades from or to no opacity
-//! ([`GradientKey`]), so the picture never jumps.
-//!
-//! The key light the scene is shaded by is resolved from the sun and moon
-//! ([`TodLook::key_light`]): whichever shines, and through twilight both, its direction turning
-//! from one to the other with the moon's share of the light. A body gives light only from above
-//! the horizon, its intensity fading out over its last degree, so the scene is never lit from
-//! below whatever the keys say. The character key fades with it ([`TodLook::character_key`]):
-//! characters keep the ratio to the world's light their keys set while a body sets or rises,
-//! where keys, blending in straight lines, can't follow the fade.
+//! As the model's ([`sapphire_tod`]'s "Evaluation"): each group blends between keys by the first
+//! key's [`TodEase`], colors in OkLab, grades as post's two LUTs ([`GradeMix`]), and the key
+//! light resolves from the sun and moon ([`TodLook::key_light`]), the character key fading with
+//! it at the horizon ([`TodLook::character_key`]). Volumes and a cutscene's track
+//! blend over the base timeline the same way, by their weights, and one at full weight
+//! reproduces its keys' values bit for bit.
 //!
 //! # Clock and frame
 //!
@@ -57,7 +44,7 @@
 //! own. [`tick_time_of_day`] advances it in
 //! the fixed step; once per frame [`TimeOfDay::resolve`] produces a [`TodFrame`], which the app
 //! writes into the frame packet's scene constants ([`TodFrame::write`]). The renderer sees only
-//! those plain values (rule R4).
+//! those plain values (rule R4), which are `sapphire_look`'s, beneath both.
 //!
 //! Resolving allocates nothing and costs under a microsecond of CPU on an Apple M5: about 0.1 µs
 //! while the hour stands still and 0.55 µs while it runs (the budget is 0.05 ms);
@@ -81,13 +68,6 @@
 //! design and shows the same at every hour, so it never follows the scale; foliage and fog cards
 //! have no emission.
 //!
-//! # The celestial sphere
-//!
-//! The stars and the Milky Way are fixed to a sphere that turns once a day about the sky's pole,
-//! 35° up over the far horizon (−Z, the default day's north), so they rise on the left and set
-//! on the right as the default day's sun does: [`celestial_sphere`] of the look's hour, which
-//! cutscenes that set their own hour blend toward like any other value.
-//!
 //! # Later milestones
 //!
 //! - **Weather** as partial overrides between zones and cutscenes (the research notes' weather
@@ -109,10 +89,7 @@
 
 mod clock;
 mod cutscene;
-mod key;
-mod look;
 mod time_of_day;
-mod timeline;
 mod volume;
 
 #[cfg(test)]
@@ -120,36 +97,23 @@ mod tests;
 
 pub use clock::TodClock;
 pub use cutscene::{ShotTime, TodCutscene};
-pub use key::{
-    AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
-    DiscsKey, FogKey, FogLayerKey, GradeKey, GradientBlendKey, GradientKey, GradientShapeKey, HeightFogKey,
-    LensFlareKey, NebulaKey, Rgb, SkyKey, TodEase, TodGroup, TodGroups, TodKey, VignetteKey,
-};
-pub use look::{GradeMix, TodLook, celestial_sphere};
+// The model, whole: the world's time of day is the model plus its runtime.
+pub use sapphire_tod::*;
 pub use time_of_day::{ShotRig, TimeOfDay, TodFrame, TodStats, tick_time_of_day};
-pub use timeline::{DAY_HOURS, Segment, TodTimeline};
 pub use volume::{TodVolume, TodVolumeId, VolumeShape};
 
-/// A timeline or cutscene that isn't valid, or a timeline that can't be the base.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub enum TodError {
-    #[error("there are no keys")]
-    NoKeys,
-    #[error("key {key}: time {time} is outside {expected}")]
-    TimeOutOfRange { key: usize, time: f32, expected: &'static str },
-    #[error("key {key}: times must increase from one key to the next")]
-    Unordered { key: usize },
-    #[error("key {key} sets {found} but the first key sets {expected}: every key must set the same groups")]
-    MixedGroups { key: usize, found: TodGroups, expected: TodGroups },
-    #[error("key {key}: `{field}` {problem}")]
-    Invalid { key: usize, field: &'static str, problem: &'static str },
-    #[error(
-        "the base timeline must set every group but the optional ones (the sky's and post's layers and \
-         the emission scale), and its keys have no `{0}`"
-    )]
-    Incomplete(TodGroup),
-    #[error("cutscene: `{field}` {problem}")]
-    Cutscene { field: &'static str, problem: &'static str },
-    #[error("cutscene: `light_rig.{field}` {problem}")]
-    CutsceneRig { field: &'static str, problem: &'static str },
+/// The shipped default day's document (see [`default_day`]).
+const DEFAULT_DAY: &str = include_str!("../default_day.ron");
+
+/// Sapphire's default day (`default_day.ron` beside this crate's manifest), compiled in: eight
+/// keys from midnight through a blue hour, sunrise, the day, golden hour, sunset and dusk. At
+/// 10:00 it is exactly the renderer's default look (the sun the sandbox has always drawn with,
+/// [`sapphire_render::SkyGradient::default`] and [`sapphire_render::PostParams::default`]), so a
+/// scene that doesn't choose a time looks as it did before time of day, but for its fog (M1 W3):
+/// a light haze the renderer's default leaves out.
+///
+/// Only the runtime compiles it in: the pipeline's probe bake reads the same file from the
+/// repository it was built in, so editing the day bakes again without rebuilding the tool.
+pub fn default_day() -> TodTimeline {
+    TodTimeline::from_ron(DEFAULT_DAY).expect("the shipped default day is checked by this module's tests")
 }

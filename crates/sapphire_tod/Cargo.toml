@@ -1,0 +1,22 @@
+[package]
+name = "sapphire_tod"
+description = "Time of day's model: the authored keys and timelines of an art-directed day, and how they resolve and blend into the frame's look."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The `Reflect` derives on keys find the crate by this name (see sapphire_reflect).
+bevy_reflect.workspace = true
+# What keys resolve into.
+sapphire_look.workspace = true
+sapphire_math.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

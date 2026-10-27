@@ -8,13 +8,10 @@ use sapphire_ecs::WorldClock;
 use sapphire_math::Vec3;
 use sapphire_render::{CameraData, CharacterLighting, FramePacket, MAX_PROBE_KEYS, ProbeKeys};
 use sapphire_time::{LocalClock, ScaledClock, Stopwatch};
+use sapphire_tod::{DAY_HOURS, Segment, TodError, TodGroups, TodLook, TodTimeline, celestial_sphere, mix};
 
-use super::TodError;
 use super::clock::TodClock;
 use super::cutscene::TodCutscene;
-use super::key::TodGroups;
-use super::look::{TodLook, celestial_sphere, mix};
-use super::timeline::{DAY_HOURS, Segment, TodTimeline};
 use super::volume::{TodVolume, TodVolumeId};
 use crate::light_rig::LightRig;
 
@@ -67,9 +64,23 @@ pub struct ShotRig {
 }
 
 impl TodFrame {
-    /// Writes the look into `packet`'s scene constants (see [`TodLook::write`]).
+    /// Writes the look into `packet`'s scene constants: the key light, the sun, moon and
+    /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character key (as it
+    /// reaches characters, [`TodLook::character_key`]), day/night factor, emission scale and
+    /// post-processing.
     pub fn write(&self, packet: &mut FramePacket) {
-        self.look.write(packet);
+        let look = &self.look;
+        packet.sun = look.key_light();
+        packet.celestial = look.celestial();
+        packet.sky = look.sky;
+        packet.sky_layers = look.sky_layers();
+        packet.ambient = look.ambient;
+        packet.fog = look.fog;
+        packet.shadow_tint = look.shadow_tint;
+        packet.character_light = look.character_key();
+        packet.day_night = look.day_night;
+        packet.emission_scale = look.emission;
+        packet.post = look.post();
     }
 
     /// The lighting of a character lit by `rig`, seen by `camera`, with its head at `head`
@@ -107,12 +118,6 @@ pub struct TodStats {
     /// [`GradeMix`](super::GradeMix)).
     pub dropped_grade_weight: f32,
     pub resolves: u64,
-}
-
-impl Default for Segment {
-    fn default() -> Self {
-        Self { from: 0, to: 0, weight: 0.0 }
-    }
 }
 
 impl TimeOfDay {

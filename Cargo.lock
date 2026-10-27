@@ -2540,6 +2540,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_look"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "sapphire_math",
+]
+
+[[package]]
 name = "sapphire_math"
 version = "0.1.0"
 dependencies = [
@@ -2563,11 +2571,11 @@ dependencies = [
  "image",
  "meshopt",
  "sapphire_assets",
+ "sapphire_look",
  "sapphire_math",
  "sapphire_reflect",
- "sapphire_render",
  "sapphire_serialize",
- "sapphire_world",
+ "sapphire_tod",
  "serde",
  "serde_json",
  "thiserror",
@@ -2615,6 +2623,7 @@ dependencies = [
  "sapphire_assets",
  "sapphire_core",
  "sapphire_jobs",
+ "sapphire_look",
  "sapphire_math",
  "sapphire_pipeline",
  "sapphire_reflect",
@@ -2696,6 +2705,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_tod"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "sapphire_look",
+ "sapphire_math",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "sapphire_world"
 version = "0.1.0"
 dependencies = [
@@ -2712,6 +2734,7 @@ dependencies = [
  "sapphire_rhi",
  "sapphire_serialize",
  "sapphire_time",
+ "sapphire_tod",
  "serde",
  "thiserror",
 ]

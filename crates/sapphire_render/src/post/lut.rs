@@ -30,7 +30,7 @@
 
 use glam::Vec3;
 
-use super::params::{ColorGrade, ToneCurve};
+use sapphire_look::post::{ColorGrade, ToneCurve};
 
 /// Texels per side of the LUT.
 pub(crate) const LUT_SIZE: u32 = 32;

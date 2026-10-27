@@ -21,6 +21,8 @@ sapphire_reflect.workspace = true
 sapphire_render.workspace = true
 sapphire_serialize.workspace = true
 sapphire_time.workspace = true
+# Time of day's model, which `tod` re-exports and runs.
+sapphire_tod.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

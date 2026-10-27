@@ -1,15 +1,14 @@
 //! The resolved look ([`TodLook`]), as the frame packet's plain data, and how looks blend: colors
 //! in OkLab, directions along great circles, scalars linearly, and grades as a pair of LUTs.
 
+use sapphire_look::{
+    AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
+    CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, GradientLayer, GradientShape,
+    HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient, SkyLayers, Vignette,
+};
 use sapphire_math::color::{luminance, mix_oklab};
 use sapphire_math::det::slerp_direction;
 use sapphire_math::{Quat, Vec3};
-use sapphire_render::{
-    AmbientLight, BloomParams, Celestial, CharacterBloom, CharacterGi, CharacterLight, CharacterLighting,
-    CloudLight, ColorGrade, Diffusion, DirectionalLight, Fog, FogLayer, FramePacket, GradientLayer,
-    GradientShape, HeightFog, LensFlare, MAX_GRADIENT_LAYERS, Nebula, PostParams, SkyDisc, SkyGradient,
-    SkyLayers, Vignette,
-};
 
 use super::key::{
     AmbientKey, BloomKey, CelestialKey, CharacterBloomKey, CharacterKey, CloudsKey, DiffusionKey, DiscKey,
@@ -54,7 +53,7 @@ pub struct TodLook {
     pub gradients: [GradientLayer; MAX_GRADIENT_LAYERS],
     pub lens_flare: LensFlare,
     /// How much of the world's authored emission shows, 1 as authored (M1 W1's keyed emission;
-    /// [`FramePacket::emission_scale`]).
+    /// the frame packet's `emission_scale`).
     pub emission: f32,
 }
 
@@ -165,34 +164,27 @@ impl TodLook {
         }
     }
 
-    /// Writes the look into `packet`'s scene constants: the key light, the sun, moon and
-    /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character key (as it
-    /// reaches characters), day/night factor, emission scale and post-processing.
-    pub fn write(&self, packet: &mut FramePacket) {
-        packet.sun = self.key_light();
-        packet.celestial = Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere };
-        packet.sky = self.sky;
-        packet.sky_layers = SkyLayers {
+    /// The sun and moon with the celestial sphere's turn, as the sky draws them.
+    pub fn celestial(&self) -> Celestial {
+        Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere }
+    }
+
+    /// What the sky draws over its gradient: the discs, the stars, the nebula and the clouds.
+    pub fn sky_layers(&self) -> SkyLayers {
+        SkyLayers {
             sun: self.sun_disc,
             moon: self.moon_disc,
             stars: self.stars,
             nebula: self.nebula,
             clouds: self.clouds,
-        };
-        packet.ambient = self.ambient;
-        packet.fog = self.fog;
-        packet.shadow_tint = self.shadow_tint;
-        packet.character_light = self.character_key();
-        packet.day_night = self.day_night;
-        packet.emission_scale = self.emission;
-        packet.post = self.post();
+        }
     }
 
     /// Blends the groups `from` and `to` both set into the look with `weight`: each group's
     /// value is `segment` of the way from `from`'s to `to`'s, then that value is blended
     /// `weight` of the way over what the look had. A weight of 1 replaces the groups outright,
     /// and a segment of 0 takes `from`'s values exactly.
-    pub(crate) fn blend_keys(&mut self, from: &TodKey, to: &TodKey, segment: f32, weight: f32) {
+    pub fn blend_keys(&mut self, from: &TodKey, to: &TodKey, segment: f32, weight: f32) {
         fn group<K: Resolve>(
             slot: &mut K::Value,
             from: Option<&K>,
@@ -238,9 +230,9 @@ impl TodLook {
 /// and set on the right, as the default day's sun does.
 const SKY_POLE: Vec3 = Vec3::new(0.0, 0.573_576_4, -0.819_152_1);
 
-/// The celestial sphere's turn at `hours`: [`sapphire_render::Celestial::sphere`]. Its frame's
+/// The celestial sphere's turn at `hours`: [`sapphire_look::Celestial::sphere`]. Its frame's
 /// pole (+Y) is the sky's pole, 35° up over the far horizon (−Z; see
-/// [the celestial sphere](crate::tod#the-celestial-sphere)), and it turns about the pole once a
+/// [the celestial sphere](crate#the-celestial-sphere)), and it turns about the pole once a
 /// day, so a star rises and sets with the hour as the sun does.
 pub fn celestial_sphere(hours: f32) -> Quat {
     let tilt = Quat::from_rotation_arc(Vec3::Y, SKY_POLE);
@@ -308,7 +300,7 @@ impl GradeMix {
 
 /// Blends `a` toward `b` by `t`, exactly `a` at `t ≤ 0` (or NaN) and exactly `b` at `t ≥ 1`, so
 /// time on a key, and a volume at full weight, reproduce their values bit for bit.
-pub(crate) fn mix<T: Mix>(a: &T, b: &T, t: f32) -> T {
+pub fn mix<T: Mix>(a: &T, b: &T, t: f32) -> T {
     if t >= 1.0 {
         *b
     } else if t > 0.0 {
@@ -319,7 +311,7 @@ pub(crate) fn mix<T: Mix>(a: &T, b: &T, t: f32) -> T {
 }
 
 /// A value that blends: [`mix`] calls it only with `0 < t < 1`.
-pub(crate) trait Mix: Copy {
+pub trait Mix: Copy {
     fn mix(&self, other: &Self, t: f32) -> Self;
 }
 

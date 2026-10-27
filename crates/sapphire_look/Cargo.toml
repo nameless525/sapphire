@@ -1,0 +1,16 @@
+[package]
+name = "sapphire_look"
+description = "The frame's look as plain data: the light, sky, ambient, fog and post-processing values time of day resolves and the renderer draws, and the CPU models of how the renderer draws them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+# Spherical harmonics for the sky's light as the probe grid takes it (`sky::sky_radiance`).
+sapphire_math.workspace = true
+
+[lints]
+workspace = true

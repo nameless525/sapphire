@@ -326,7 +326,7 @@ mod tests {
     use glam::Vec2;
 
     use super::*;
-    use crate::post::params::{
+    use sapphire_look::post::{
         ChromaticAberration, Duotone, EffectCoverage, Inversion, RadialBlur, SpeedLines,
     };
 

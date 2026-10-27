@@ -5,11 +5,11 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2, Vec3};
 
-use super::params::{
+use crate::CameraData;
+use sapphire_look::post::{
     CharacterBloom, Diffusion, GradientBlend, GradientLayer, GradientShape, LensFlare, MAX_GRADIENT_LAYERS,
     PostParams,
 };
-use crate::CameraData;
 
 /// The shortest ramp a gradient layer draws, in its positions: shorter ones are hard edges this
 /// wide, so the ramp's slope stays finite.
@@ -431,7 +431,7 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
-    use crate::post::params::{BloomParams, Vignette};
+    use sapphire_look::post::{BloomParams, Vignette};
 
     #[test]
     fn plain_parameters_need_only_the_plain_variants() {

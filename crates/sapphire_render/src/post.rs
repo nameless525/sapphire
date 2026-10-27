@@ -244,7 +244,6 @@
 mod effects;
 pub(crate) mod layers;
 mod lut;
-mod params;
 mod variants;
 
 #[cfg(test)]
@@ -264,7 +263,7 @@ pub use effects::{DrawnEffects, MAX_RADIAL_BLUR_TAPS, PostEffectSettings};
 use layers::{FLARE_ELEMENTS, FLARE_VISIBLE_SHARE, GpuFlareElement, GpuGradient, Layers, Variant};
 pub(crate) use layers::{SunDisc, SunOnScreen};
 use lut::{LUT_SIZE, LUT_TEXELS, Lut, LutKey, LutSlots};
-pub use params::{
+pub use sapphire_look::post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, Duotone, EffectCoverage,
     GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_GRADIENT_LAYERS, PostEffects,
     PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,

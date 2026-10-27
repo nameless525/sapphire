@@ -21,7 +21,7 @@ use sapphire_livelink::{
     Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
 };
 use sapphire_time::Stopwatch;
-use sapphire_world::tod::TodTimeline;
+use sapphire_world::tod::{TodTimeline, default_day};
 
 const TEXTURE: AssetId = AssetId::from_bytes([1; 16]);
 const MATERIAL: AssetId = AssetId::from_bytes([2; 16]);
@@ -104,7 +104,7 @@ impl App {
             link,
             tracker: ReloadTracker::default(),
             uploads: BTreeMap::new(),
-            timeline: TodTimeline::default_day(),
+            timeline: default_day(),
             cvars,
             frame: 0,
         }
@@ -315,7 +315,7 @@ fn a_broken_document_is_refused_and_the_old_one_kept() {
         base
     });
     let day = include_str!("../../sapphire_world/default_day.ron");
-    assert_eq!(app.timeline, TodTimeline::default_day());
+    assert_eq!(app.timeline, default_day());
 
     // Data that doesn't fit the type: the envelope reads, the timeline doesn't.
     let wrong = day.replacen("time: 0.0", "time: \"midnight\"", 1);
@@ -327,7 +327,7 @@ fn a_broken_document_is_refused_and_the_old_one_kept() {
         matches!(&error, LinkError::Refused(message) if message.starts_with("default_day.ron:")),
         "{error}"
     );
-    assert_eq!(app.timeline, TodTimeline::default_day(), "the old timeline is kept");
+    assert_eq!(app.timeline, default_day(), "the old timeline is kept");
 
     // RON that doesn't parse at all is refused by the link itself.
     let unbalanced = day[..day.len() / 2].to_owned();
@@ -335,12 +335,12 @@ fn a_broken_document_is_refused_and_the_old_one_kept() {
         client.push_document("default_day.ron", unbalanced).unwrap_err()
     }));
     assert!(matches!(error, LinkError::Refused(_)), "{error}");
-    assert_eq!(app.timeline, TodTimeline::default_day());
+    assert_eq!(app.timeline, default_day());
 
     // A valid edit replaces it.
     let edited = day.replacen("exposure: 0.7", "exposure: 0.9", 1);
     let expected = TodTimeline::from_ron(&edited).unwrap();
-    assert_ne!(expected, TodTimeline::default_day());
+    assert_ne!(expected, default_day());
     let owner = app.serve(on_client(app.address(), move |client| {
         client.push_document("default_day.ron", edited).unwrap()
     }));

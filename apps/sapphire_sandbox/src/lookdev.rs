@@ -544,7 +544,7 @@ mod tests {
         for hours in [13.0, 18.0] {
             assert!(day.keys().iter().any(|key| key.time == hours), "a key at {hours}");
         }
-        assert_ne!(day, TodTimeline::default_day(), "the stage's own");
+        assert_ne!(day, sapphire_world::tod::default_day(), "the stage's own");
     }
 
     #[test]

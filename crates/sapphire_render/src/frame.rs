@@ -37,8 +37,12 @@ use std::ops::Range;
 
 use glam::camera::rh::{proj::directx, view};
 use glam::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_look::{
+    AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
+    SkyGradient, SkyLayers,
+};
 
-use crate::{MaterialHandle, MeshHandle, PostParams, ProbeKeys};
+use crate::{MaterialHandle, MeshHandle, ProbeKeys};
 
 /// Packets in a [`FramePacketRing`]: one extracting, one rendering, one spare.
 const RING_SIZE: usize = 3;
@@ -490,210 +494,6 @@ impl CameraData {
     }
 }
 
-/// A light from infinitely far away: the key light ([`FramePacket::sun`]), or the sun or moon
-/// themselves ([`Celestial`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DirectionalLight {
-    /// Direction the light travels, from the sun into the scene. Need not be normalized.
-    pub direction: Vec3,
-    /// Linear RGB.
-    pub color: Vec3,
-    pub intensity: f32,
-}
-
-impl Default for DirectionalLight {
-    /// White light of intensity 1, straight down.
-    fn default() -> Self {
-        Self { direction: Vec3::NEG_Y, color: Vec3::ONE, intensity: 1.0 }
-    }
-}
-
-/// The sun and the moon, each with the light it gives: where it is (opposite the direction its
-/// light travels), its color and intensity; and the orientation of the celestial sphere the
-/// stars are fixed to. The sky draws the discs and glows where the bodies are, and the stars
-/// and the Milky Way turned by [`Self::sphere`] (W2); how they look is
-/// [`FramePacket::sky_layers`]'.
-///
-/// The key light ([`FramePacket::sun`]) is resolved from the bodies by time of day: the sun's
-/// while only the sun shines, the moon's while only the moon does, and a blend of the two
-/// through twilight. A body's intensity can be 0 while its disc is still drawn (the moon by
-/// day, a low sun at dusk): the disc's look is its own.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Celestial {
-    pub sun: DirectionalLight,
-    pub moon: DirectionalLight,
-    /// Turns a direction in the celestial sphere's own frame, where the stars and the Milky Way
-    /// stay put, into the world: time of day turns it about the sky's pole as the hours pass, so
-    /// the stars rise and set with the hour.
-    pub sphere: Quat,
-}
-
-impl Default for Celestial {
-    /// The default sun straight overhead, a dark moon below the horizon, and the celestial
-    /// sphere's pole straight up.
-    fn default() -> Self {
-        Self {
-            sun: DirectionalLight::default(),
-            moon: DirectionalLight { direction: Vec3::Y, color: Vec3::new(0.6, 0.7, 1.0), intensity: 0.0 },
-            sphere: Quat::IDENTITY,
-        }
-    }
-}
-
-/// What the sky draws over its gradient (W2; look pillars 1 and 3), resolved by time of day like
-/// the rest of the frame's look: the sun's and the moon's discs and glows, how bright the stars
-/// are, the nebula's colors and the clouds' light and cover. Where the discs and stars are comes
-/// from [`Celestial`]; their sizes, the star, nebula and cloud maps and the clouds' motion from
-/// the sky material ([`FramePacket::sky_material`]).
-///
-/// The default draws nothing over the gradient (no discs, glows, stars, nebula or clouds): the
-/// sky as it was drawn before them (M1 W1).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SkyLayers {
-    pub sun: SkyDisc,
-    pub moon: SkyDisc,
-    /// Star brightness: 0 by day, 1 for a full night sky. It also lights the Milky Way.
-    pub stars: f32,
-    /// The nebula's colors (M1 X1 part 2e): black by day.
-    pub nebula: Nebula,
-    pub clouds: CloudLight,
-}
-
-/// The night sky's nebula (M1 X1 part 2e): the light of each of the sky material's nebula map's
-/// three channels, linear RGB (HDR), added under the stars. A channel's light is its color
-/// times its density; all black draws nothing, as by day.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Nebula {
-    /// The map's R: its broad clouds.
-    pub clouds: Vec3,
-    /// G: the bright wisps along them.
-    pub wisps: Vec3,
-    /// B: sparse accents.
-    pub accents: Vec3,
-}
-
-/// How the sky draws the sun or the moon: a disc and the glow around it, both in HDR so they
-/// bloom. The disc's angular size comes from the sky material.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SkyDisc {
-    /// The disc's color, linear RGB; its radiance is `color × intensity`.
-    pub color: Vec3,
-    /// 0 hides the disc. The sun's is far above 1, so it blooms into a white-hot core.
-    pub intensity: f32,
-    /// The glow around the disc: linear RGB added at its center, fading smoothly to nothing at
-    /// `glow_radius`. Black for none.
-    pub glow: Vec3,
-    /// The glow's angular radius, in radians.
-    pub glow_radius: f32,
-}
-
-/// The clouds' light and cover (W2), for both cloud layers: the card clouds around the horizon
-/// and the high cirrus. Clouds are painted in the anime way: a lit and a shaded tone split along
-/// the painted terminator, with a rim along their edges toward the key light, never a darkened
-/// albedo.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct CloudLight {
-    /// Linear RGB of the clouds' lit sides, facing the key light (the sun by day, the moon at
-    /// night).
-    pub lit: Vec3,
-    /// Linear RGB of their shaded sides: an authored color, usually a sky-ward hue.
-    pub shade: Vec3,
-    /// Linear RGB added along cloud edges, strongest toward the key light: the silver lining.
-    pub rim: Vec3,
-    /// How much of the card clouds shows, 0 (a clear sky) to 1 (the clouds as painted): their
-    /// SDF dissolve threshold, so clouds shrink to their cores and vanish rather than fade.
-    pub coverage: f32,
-    /// The same for the cirrus layer.
-    pub cirrus: f32,
-}
-
-/// Low-frequency ambient light (look pillar 4): a hemisphere of sky light from above and bounce
-/// light from below, `color × intensity` in linear RGB.
-///
-/// A surface facing `n` receives `mix(ground, sky, 0.5 + 0.5 n.y) × intensity`, the irradiance
-/// of a sky-and-ground hemisphere (`ambient_light` in `frame.wgsl`). The anime character shader
-/// takes it through the character rig's stylized GI ([`CharacterGi`], C2); the environment
-/// shader (W4) and the probe grid, as the tint of its per-key bake (W5), will read it too.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AmbientLight {
-    /// From above.
-    pub sky: Vec3,
-    /// From below.
-    pub ground: Vec3,
-    pub intensity: f32,
-}
-
-impl Default for AmbientLight {
-    /// The default sky's horizon from above and its ground from below, at 12%: the default
-    /// day's 10:00 ambient (`sapphire_world::tod`).
-    fn default() -> Self {
-        let sky = SkyGradient::default();
-        Self { sky: sky.horizon, ground: sky.ground, intensity: 0.12 }
-    }
-}
-
-/// Distance and height fog (look pillar 3: layered atmosphere; M1 W3, the [`fog`](crate::fog)
-/// module): two distance layers and a height layer, each fading what lies behind it toward its
-/// color, plus light scattered toward the camera around the key light. Every world pass applies
-/// it at its final color, the sky included, so distant geometry melts into the sky without a
-/// seam; fog cards take its light.
-///
-/// Densities are extinction per meter: a layer's optical depth is its density integrated over
-/// the meters of view ray inside it, and what lies behind keeps `exp(−depth)` of its light. The
-/// layers mix in proportion to their depths along the ray. The default has none, and a frame
-/// without any density draws exactly as it would without fog.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Fog {
-    /// Haze near the camera.
-    pub near: FogLayer,
-    /// Aerial perspective: what melts distant geometry into the sky. Its color is a tint on the
-    /// sky's horizon ([`SkyGradient::horizon`]): white is the horizon itself, so geometry far
-    /// enough away takes the sky's own color.
-    pub far: FogLayer,
-    pub height: HeightFog,
-    /// Linear RGB light the fog scatters toward the camera around the key light's direction
-    /// (the sun by day, the moon at night), color × strength, in a forward lobe; black for none.
-    /// It adds where the fog is, so the sun side of a hazy view glows.
-    pub sun_inscatter: Vec3,
-    /// How much of the fog characters take (the instances the frame lists in
-    /// [`FramePacket::characters`], and their outlines): their optical depth is scaled by it,
-    /// from 0 (characters keep their colors at any distance) to 1 (as the world). Anime games
-    /// keep characters readable in fog, so time of day sets it below 1.
-    pub characters: f32,
-}
-
-impl Fog {
-    /// Whether any layer has a density: a frame whose fog doesn't draws exactly as without it.
-    pub fn is_visible(&self) -> bool {
-        [self.near.density, self.far.density, self.height.density].iter().any(|density| *density > 0.0)
-    }
-}
-
-/// One distance layer of [`Fog`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct FogLayer {
-    /// Linear RGB (the far layer's: a tint on the sky's horizon).
-    pub color: Vec3,
-    /// Extinction per meter: 0 is clear.
-    pub density: f32,
-    /// Meters from the camera where the layer begins.
-    pub start: f32,
-}
-
-/// Fog that thickens toward the ground: its density is `density × exp(−falloff × (y − base))`
-/// at height `y` (meters, world space), so it lies in valleys and thins over hilltops.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct HeightFog {
-    /// Linear RGB.
-    pub color: Vec3,
-    /// Extinction per meter at `base`.
-    pub density: f32,
-    /// How fast it thins with height, per meter: 0 keeps `density` at every height.
-    pub falloff: f32,
-    /// The height, in meters, where `density` holds.
-    pub base: f32,
-}
-
 /// The weather's wetness inputs (world_lighting_post.md §7), which every uber-shader will read
 /// as frame uniforms: what the wet surface model (Lagarde's: porous albedo darkened, roughness
 /// lowered, puddles filled to a flat, smooth normal, rain ripples) needs from the weather.
@@ -729,27 +529,6 @@ impl Default for Wind {
     /// Calm: foliage stands still.
     fn default() -> Self {
         Self { direction: Vec3::X, strength: 0.0, gustiness: 0.0 }
-    }
-}
-
-/// Time of day's curve for the character rig's key light (spec §5.12 "Character light rig").
-/// Characters are lit by a virtual key light of their own, whose color and brightness time of
-/// day curves separately from the world's (as WuWa fits its character brightness across the
-/// day), so they read well at every hour.
-///
-/// The world resolves each character's key from it and the key light's direction, through the
-/// character's rig preset (`sapphire_world::light_rig`, M1 C2), into [`CharacterLighting::key`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CharacterLight {
-    /// Linear RGB.
-    pub color: Vec3,
-    pub intensity: f32,
-}
-
-impl Default for CharacterLight {
-    /// White light of intensity 1, as the default key light.
-    fn default() -> Self {
-        Self { color: Vec3::ONE, intensity: 1.0 }
     }
 }
 
@@ -846,100 +625,6 @@ impl CharacterBody {
     }
 }
 
-/// A character's light rig resolved for one frame (spec §5.12 "Character light rig" and
-/// "Stylized character GI", M1 C2): what the anime character shader lights the character by,
-/// in place of the world's key light and plain ambient. The world resolves it from the
-/// character's preset, time of day and the camera (`sapphire_world::light_rig`); the renderer
-/// only uploads it.
-///
-/// Local lights are not part of it: they keep their own directions, and the rig only caps
-/// their sum ([`Self::local_light_ceiling`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CharacterLighting {
-    /// The character's key light: the direction its light travels (art-directed from the sun or
-    /// moon, or fixed to the camera) and its color and intensity (time of day's
-    /// [`CharacterLight`], scaled by the preset). It replaces [`FramePacket::sun`] for the
-    /// character's light split and rim.
-    pub key: DirectionalLight,
-    /// Scales the materials' rim light, which takes the key light's color.
-    pub rim: f32,
-    /// The most luminance the local lights add together, in units of a unit key light, so
-    /// stacked lights tint a character rather than blow it out (the reference games'
-    /// `_FilterLight`).
-    pub local_light_ceiling: f32,
-    pub gi: CharacterGi,
-}
-
-impl CharacterLighting {
-    /// Lighting by `key` with unstyled GI: the frame's ambient as the surface's normal receives
-    /// it, unclamped and untinted. The renderer lights instances that aren't listed as characters
-    /// with the world's key light this way.
-    pub fn unstyled(key: DirectionalLight) -> Self {
-        Self { key, rim: 1.0, local_light_ceiling: 2.0, gi: CharacterGi::default() }
-    }
-
-    /// Whether every value is one the shader can light with: finite numbers, a key direction
-    /// that isn't zero, and no negative intensity, color, scale or ceiling. The value ceiling may
-    /// be infinite (no clamp).
-    pub fn is_valid(&self) -> bool {
-        let Self { key, rim, local_light_ceiling, gi } = *self;
-        let colors = [key.color, gi.skin_tint];
-        let scalars =
-            [key.intensity, rim, local_light_ceiling, gi.intensity, gi.camera_bias, gi.max_saturation];
-        key.direction.is_finite()
-            && key.direction != Vec3::ZERO
-            && colors.iter().all(|color| color.is_finite() && color.min_element() >= 0.0)
-            && scalars.iter().all(|value| value.is_finite() && *value >= 0.0)
-            && gi.head.is_none_or(Vec3::is_finite)
-            && gi.max_value >= 0.0
-    }
-}
-
-/// A character's stylized GI (spec §5.12 "Stylized character GI", M1 C2): the frame's ambient
-/// light ([`FramePacket::ambient`]) seen through normals flattened toward low frequency, then
-/// clamped and tinted, so characters take the scene's light without its noise and never go
-/// muddy (WuWa's character GI). Per pixel:
-///
-/// 1. The normal turns toward a sphere's around [`Self::head`], if there is one, by the
-///    material region's sphere weight (faces and hair, `RegionGi::sphere` in
-///    `sapphire_assets::material`), then bends toward the camera by [`Self::camera_bias`].
-/// 2. The ambient hemisphere at that normal, times [`Self::intensity`].
-/// 3. An HSV clamp: saturation held to [`Self::max_saturation`] and value (the brightest
-///    channel) to [`Self::max_value`], hue kept.
-/// 4. The skin tint, by the region's skin weight (`RegionGi::skin`), and ambient occlusion
-///    (the vertex color's).
-///
-/// The default changes nothing: the ambient as the normal receives it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CharacterGi {
-    /// The center of the character's head, world space; without one, no region spherizes.
-    pub head: Option<Vec3>,
-    /// Scales the frame's ambient light.
-    pub intensity: f32,
-    /// How far the normal bends toward the camera: the unit view vector times this is added to
-    /// it before renormalizing, so 0 keeps the normal and 1 turns a silhouette's halfway.
-    pub camera_bias: f32,
-    /// Saturation's ceiling, 0 to 1 (1: no clamp).
-    pub max_saturation: f32,
-    /// Value's ceiling, linear light (infinite: no clamp).
-    pub max_value: f32,
-    /// Linear RGB the GI of skin is multiplied by.
-    pub skin_tint: Vec3,
-}
-
-impl Default for CharacterGi {
-    fn default() -> Self {
-        Self {
-            head: None,
-            intensity: 1.0,
-            camera_bias: 0.0,
-            max_saturation: 1.0,
-            max_value: f32::INFINITY,
-            skin_tint: Vec3::ONE,
-        }
-    }
-}
-
 /// A point or spot light (spec §5.12 "Lighting"). The anime character shader adds it to the
 /// sun's light within the same two-tone model: the same light/shadow split and authored shadow
 /// color, in the light's color (see `anime_character.wgsl`).
@@ -982,25 +667,6 @@ pub struct MeshInstance {
     /// Object to world. Mirroring (negative determinant) is not supported yet: it flips
     /// winding, so the anime character and outline passes would cull the wrong faces.
     pub transform: Mat4,
-}
-
-/// A three-stop sky gradient in linear RGB: the sky pass's colors.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SkyGradient {
-    pub zenith: Vec3,
-    pub horizon: Vec3,
-    pub ground: Vec3,
-}
-
-impl Default for SkyGradient {
-    /// A clear midday sky.
-    fn default() -> Self {
-        Self {
-            zenith: Vec3::new(0.10, 0.30, 0.80),
-            horizon: Vec3::new(0.62, 0.78, 0.95),
-            ground: Vec3::new(0.36, 0.34, 0.42),
-        }
-    }
 }
 
 #[cfg(test)]

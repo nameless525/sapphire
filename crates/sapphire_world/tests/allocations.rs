@@ -11,7 +11,9 @@ use sapphire_render::{CameraData, CharacterBody, CharacterFace, CharacterInstanc
 use sapphire_time::ScaledClock;
 use sapphire_world::light_rig::{LightRigId, LightRigLibrary};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
-use sapphire_world::tod::{ShotTime, TimeOfDay, TodCutscene, TodKey, TodTimeline, TodVolume, VolumeShape};
+use sapphire_world::tod::{
+    ShotTime, TimeOfDay, TodCutscene, TodKey, TodTimeline, TodVolume, VolumeShape, default_day,
+};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -20,7 +22,7 @@ static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 fn ticking_and_resolving_allocate_nothing() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let mut tod = TimeOfDay::new(TodTimeline::default_day(), clock, 17.0).expect("complete");
+    let mut tod = TimeOfDay::new(default_day(), clock, 17.0).expect("complete");
     tod.clock_mut().set_day_length(Some(60.0));
     let zone = TodTimeline::new(vec![TodKey { exposure: Some(1.0), ..TodKey::default() }]).expect("valid");
     let shape = VolumeShape::Sphere { center: Vec3::ZERO, radius: 2.0 };

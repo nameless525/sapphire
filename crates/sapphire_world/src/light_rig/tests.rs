@@ -10,7 +10,7 @@ use sapphire_serialize::DocumentError;
 use sapphire_time::ScaledClock;
 
 use super::*;
-use crate::tod::{TimeOfDay, TodCutscene, TodTimeline};
+use crate::tod::{TimeOfDay, TodCutscene, default_day};
 
 /// The character's head, which the cameras look at.
 const HEAD: Vec3 = Vec3::Y;
@@ -217,7 +217,7 @@ fn a_camera_fixed_key_ignores_the_sun() {
 fn the_key_takes_time_of_days_character_curve() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let mut tod = TimeOfDay::new(TodTimeline::default_day(), clock, 0.0).expect("complete");
+    let mut tod = TimeOfDay::new(default_day(), clock, 0.0).expect("complete");
     let rig = LightRig {
         key: LightRigKey { tint: [1.0, 0.5, 0.25], intensity: 2.0, ..LightRigKey::default() },
         ..gameplay()
@@ -247,7 +247,7 @@ fn the_key_takes_time_of_days_character_curve() {
 fn a_shot_rig_blends_in_and_out_with_its_cutscene() {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let mut tod = TimeOfDay::new(TodTimeline::default_day(), clock, 10.0).expect("complete");
+    let mut tod = TimeOfDay::new(default_day(), clock, 10.0).expect("complete");
     let camera = camera_at(Vec3::new(-3.0, 1.5, 1.0));
     let head = Vec3::new(0.0, 1.6, 0.0);
     let own = *tod.resolve(Vec3::ZERO, 0.0);

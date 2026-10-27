@@ -663,14 +663,14 @@ fn duration_text(seconds: f32) -> String {
 #[cfg(test)]
 mod tests {
     use sapphire_time::ScaledClock;
-    use sapphire_world::tod::TodTimeline;
+    use sapphire_world::tod::default_day;
 
     use super::*;
 
     fn time_of_day() -> (ScaledClock, TimeOfDay) {
         let mut world = ScaledClock::new();
         let clock = world.new_local_clock();
-        (world, TimeOfDay::new(TodTimeline::default_day(), clock, 10.0).expect("complete"))
+        (world, TimeOfDay::new(default_day(), clock, 10.0).expect("complete"))
     }
 
     #[test]

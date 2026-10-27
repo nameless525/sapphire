@@ -381,7 +381,7 @@ fn grids_cook_through_the_cache_and_follow_their_materials() {
     assert_eq!(grid_asset.status, CookStatus::Cooked);
     let bytes = crate::test_util::read_aligned(&out.join("court.sprobe"));
     let grid = ProbeGrid::read(&bytes).expect("a valid grid");
-    let default_day = TodTimeline::default_day();
+    let default_day = timeline(BakeTimeline::DefaultDay).expect("the default day");
     assert_eq!(grid.key_hours().count(), default_day.keys().len(), "a bake per key of the day");
     assert_eq!(grid.visibility_coefficients.to_native(), 9, "L2 on desktop");
     // The red channel's mean bounce over every probe and key.
@@ -438,8 +438,8 @@ fn fog_cards_are_left_out_of_the_bake() {
 fn the_cache_key_follows_the_resolved_keys() {
     // The keys as resolved, by their bits: the same day gives the same hash, and any change to
     // a key's light (here one sky coefficient by a hair) another.
-    let day = keys(BakeTimeline::DefaultDay);
-    assert_eq!(keys_hash(&day), keys_hash(&keys(BakeTimeline::DefaultDay)));
+    let day = keys(BakeTimeline::DefaultDay).expect("the default day");
+    assert_eq!(keys_hash(&day), keys_hash(&keys(BakeTimeline::DefaultDay).unwrap()));
     let mut moved = day.clone();
     moved[2].sky[1][4] = f32::from_bits(moved[2].sky[1][4].to_bits() + 1);
     assert_ne!(keys_hash(&day), keys_hash(&moved));
@@ -448,6 +448,16 @@ fn the_cache_key_follows_the_resolved_keys() {
     let mut dimmed = day.clone();
     dimmed[3].emission = 0.1;
     assert_ne!(keys_hash(&day), keys_hash(&dimmed));
+}
+
+#[test]
+fn the_default_day_is_the_runtime_s_document() {
+    // The file the runtime compiles in, read where it lies (`sapphire_hot_reload`'s tests hold
+    // the file to what `sapphire_world` compiles in): the base timeline, a bake key per key.
+    assert!(default_day_path().ends_with("crates/sapphire_world/default_day.ron"));
+    let day = timeline(BakeTimeline::DefaultDay).expect("the default day");
+    assert!(day.is_complete(), "a base timeline");
+    assert_eq!(keys(BakeTimeline::DefaultDay).unwrap().len(), day.keys().len());
 }
 
 /// [`floor_and_wall`]'s floor without the wall, and a 2 m square card 0.5 m over the probe at

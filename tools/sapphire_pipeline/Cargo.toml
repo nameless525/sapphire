@@ -13,14 +13,15 @@ path = "src/main.rs"
 
 [dependencies]
 sapphire_assets.workspace = true
+# The probe bake lights the sky as the renderer relights it (`sky::sky_radiance`), under time of
+# day's keys (M1 W5). Neither crate embeds a shader or the default day, so editing those rebuilds
+# nothing here: the bake reads the default day's file itself (`probes::default_day_path`).
+sapphire_look.workspace = true
 # Color math shared with the runtime (sRGB, OkLab).
 sapphire_math.workspace = true
 sapphire_reflect.workspace = true
-# The probe bake lights the sky as the renderer relights it (`ambient::sky_radiance`), under time
-# of day's keys (M1 W5).
-sapphire_render.workspace = true
 sapphire_serialize.workspace = true
-sapphire_world.workspace = true
+sapphire_tod.workspace = true
 anyhow.workspace = true
 # `.meta` sidecars derive `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true

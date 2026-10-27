@@ -1,6 +1,7 @@
-//! Plain-data post-processing input (rule R4): [`FramePacket::post`](crate::FramePacket::post).
-//! Everything here is `Copy` data extraction fills once per frame; from M1 W1 on, the
-//! time-of-day system resolves it from its keys.
+//! Plain-data post-processing input (rule R4): the frame packet's `post`. Everything here is
+//! `Copy` data extraction fills once per frame; from M1 W1 on, the time-of-day system resolves it
+//! from its keys, and the world's effect stack resolves the screen effects. The renderer's `post`
+//! module draws it.
 
 use glam::{Vec2, Vec3};
 
@@ -264,8 +265,8 @@ impl Diffusion {
 /// world glow (Honkai: Star Rail controls characters' bloom apart, too).
 ///
 /// Character pixels are the ones scene color's alpha marks: the anime character shader writes
-/// alpha 0 for characters (instances [`FramePacket::characters`](crate::FramePacket::characters)
-/// lists) and every other pass leaves 1 (the post module's docs, "The character mask").
+/// alpha 0 for characters (the instances the frame packet's `characters` lists) and every other
+/// pass leaves 1 (the renderer's post module's docs, "The character mask").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterBloom {
     /// The world's bloom threshold times this: above 1, characters need brighter light to bloom.
@@ -418,7 +419,7 @@ impl EffectCoverage {
 /// A zoom blur toward a point on screen (an impact's center, the camera's heading): each pixel
 /// averages the frame along the line from it toward `center`, so the frame streaks outward from
 /// it, more so farther out. The fused pass's taps per pixel are the tier's
-/// ([`PostEffectSettings::radial_blur_taps`](crate::PostEffectSettings::radial_blur_taps)).
+/// (the renderer's `PostEffectSettings::radial_blur_taps`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RadialBlur {
     pub center: Vec2,

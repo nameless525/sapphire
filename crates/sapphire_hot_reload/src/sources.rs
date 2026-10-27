@@ -18,8 +18,7 @@ pub fn shader_dir() -> PathBuf {
     crates_dir().join("sapphire_render").join("shaders")
 }
 
-/// The default day's timeline document, which `sapphire_world::tod::TodTimeline::default_day`
-/// compiles in.
+/// The default day's timeline document, which `sapphire_world::tod::default_day` compiles in.
 pub fn default_day() -> PathBuf {
     crates_dir().join("sapphire_world").join("default_day.ron")
 }
@@ -59,7 +58,8 @@ mod tests {
     #[test]
     fn the_default_day_is_the_document_time_of_day_compiles_in() {
         let text = std::fs::read_to_string(default_day()).expect("the default day's document");
-        assert_eq!(TodTimeline::from_ron(&text).expect("a valid timeline"), TodTimeline::default_day());
+        let compiled_in = sapphire_world::tod::default_day();
+        assert_eq!(TodTimeline::from_ron(&text).expect("a valid timeline"), compiled_in);
     }
 
     #[test]

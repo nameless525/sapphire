@@ -7,7 +7,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use super::layers::{encoded, finite, finite_color};
-use super::params::{EffectCoverage, PostEffects};
+use sapphire_look::post::{EffectCoverage, PostEffects};
 
 /// The names of `post.wgsl`'s pipeline-overridable constants for the effects: the fused pass's
 /// variants with the lens effects (radial blur, chromatic aberration) and with the color effects
@@ -215,7 +215,7 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
-    use crate::post::params::{ChromaticAberration, Duotone, Inversion, RadialBlur, SpeedLines};
+    use sapphire_look::post::{ChromaticAberration, Duotone, Inversion, RadialBlur, SpeedLines};
 
     #[test]
     fn no_effects_draw_nothing_and_read_no_mask() {

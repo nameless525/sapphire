@@ -2,9 +2,11 @@
 //!
 //! # Owns
 //!
-//! - **Time of day** ([`tod`], M1 W1): the `TodTimeline` and `TodCutscene` documents, their
-//!   evaluation in OkLab, zone override volumes, a cutscene track, its own clock domain, and
-//!   the resolved look the app writes into the frame packet each frame.
+//! - **Time of day** ([`tod`], M1 W1): the `TodCutscene` document, zone override volumes, a
+//!   cutscene track, its own clock domain, the compiled-in default day, and the resolved look the
+//!   app writes into the frame packet each frame. The model it runs, the `TodTimeline` document
+//!   and its evaluation in OkLab, is [`sapphire_tod`]'s, re-exported in [`tod`]: a crate of its
+//!   own, so tools resolve a day's keys without linking this crate or the renderer.
 //! - **The character light rig** ([`light_rig`], M1 C2): presets for the key light and stylized
 //!   GI characters are lit by (the `LightRigLibrary` document), each character's choice of
 //!   preset, and their resolution under time of day and the camera into the lighting the app

@@ -12,6 +12,13 @@
 //! or `sky_radiance`, bakes again): a changed mesh, material, map or key bakes the grid again,
 //! and an unchanged tree takes it from the cache.
 //!
+//! The default day is read from its document in the repository the tool was built in
+//! ([`default_day_path`]), the file `sapphire_world` compiles in, and resolved by time of day's
+//! model (`sapphire_tod`) under the renderer's sky model (`sapphire_look`). The tool links
+//! neither the renderer, which compiles its shaders in, nor the world, which compiles the day in:
+//! a shader edit costs the next cook nothing, and an edit to the day only the bakes it changes
+//! (M1 A8's follow-up).
+//!
 //! # The bake ([`bake::bake`])
 //!
 //! On the CPU, on every core, deterministic: scalar `f32` arithmetic in a fixed order, a ray
@@ -31,8 +38,8 @@
 //!    albedo, plus emission (the lanterns light their surroundings), as much of it as the key's
 //!    emission scale shows (M1 W1's keyed emission) but for the material's steady share, as the
 //!    renderer draws it: a lantern dark by day lights nothing in the day's keys. The sky is
-//!    `sapphire_render::ambient::sky_radiance`: the key's gradient at its authored ambient
-//!    strength, as the renderer relights it.
+//!    [`sky_radiance`]: the key's gradient at its authored ambient strength, as the renderer
+//!    relights it.
 //! 4. **Bounces:** [`ProbeGridDocument::bounces`] − 1 passes in which every surfel adds the light
 //!    the surfels it sees sent in the last pass, times its albedo. One bounce is surfaces lit
 //!    directly; two adds light that went from one surface to another first.
@@ -75,9 +82,10 @@ use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnyMaterialDocument, FoliageMaterial, MaterialFamily};
 use sapphire_assets::mesh::{Mesh, SlotMaterial};
 use sapphire_assets::probes::{ProbeGrid, ProbeGridError};
+use sapphire_look::sky::sky_radiance;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
-use sapphire_world::tod::TodTimeline;
+use sapphire_tod::TodTimeline;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheKey, Dependency, Stage};
@@ -97,9 +105,17 @@ pub const COOKER: Stage = Stage { name: "sprobe bake", version: 2 };
 /// What a probe grid source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".probes.ron";
 
-/// The default day's timeline as a dependency of every grid baked under it.
 /// The resolved keys' place among the cache key's dependencies: hashed, not read from a file.
 const KEYS_DEPENDENCY: &str = "resolved time-of-day keys";
+
+/// The default day's document, `crates/sapphire_world/default_day.ron`: the file the runtime
+/// compiles in (`sapphire_world::tod::default_day`), found from this crate's place in the
+/// repository at compile time, as development builds find the engine's own sources. The tool
+/// runs in the repository it was built in; the bake reads the file on every cook, so editing it
+/// rebuilds nothing.
+pub fn default_day_path() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/sapphire_world/default_day.ron"))
+}
 
 /// Import settings for probe grids: none yet. A struct, so settings can join without changing
 /// existing sidecars.
@@ -185,7 +201,7 @@ impl ShOrder {
 /// The time of day a grid's bounce is baked under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BakeTimeline {
-    /// `sapphire_world`'s default day, every key of it.
+    /// `sapphire_world`'s default day, every key of it ([`default_day_path`]).
     DefaultDay,
 }
 
@@ -231,6 +247,12 @@ pub enum ProbeCookError {
         path: PathBuf,
         #[source]
         source: sapphire_assets::mesh::MeshError,
+    },
+    #[error("{} is not a time-of-day timeline", path.display())]
+    Timeline {
+        path: PathBuf,
+        #[source]
+        source: Box<DocumentError>,
     },
     #[error("{} is not a material document", path.display())]
     Material {
@@ -290,7 +312,7 @@ pub fn dependencies<'a>(
     }
     dependencies.push(Dependency::File {
         path: KEYS_DEPENDENCY.to_owned(),
-        hash: keys_hash(&keys(document.timeline)),
+        hash: keys_hash(&keys(document.timeline)?),
     });
     dependencies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
     dependencies.dedup();
@@ -304,7 +326,7 @@ pub fn cook<'a>(
     input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<Vec<u8>, ProbeCookError> {
     let scene = scene(document, &input)?;
-    let keys = keys(document.timeline);
+    let keys = keys(document.timeline)?;
     let grid = bake::bake(&scene, &keys, &settings(document, cook))?;
     let bytes = grid.to_cooked().map_err(ProbeGridError::Cooked)?;
     ProbeGrid::read(&bytes)?;
@@ -344,12 +366,21 @@ fn keys_hash(keys: &[BakeKey]) -> blake3::Hash {
     hasher.finalize()
 }
 
-/// Every key of the timeline, lit as time of day lights it.
-pub fn keys(timeline: BakeTimeline) -> Vec<BakeKey> {
-    let timeline = match timeline {
-        BakeTimeline::DefaultDay => TodTimeline::default_day(),
+/// The timeline a grid is baked under, read from its document.
+pub fn timeline(timeline: BakeTimeline) -> Result<TodTimeline, ProbeCookError> {
+    let path = match timeline {
+        BakeTimeline::DefaultDay => default_day_path(),
     };
-    timeline
+    let text = std::fs::read_to_string(path)
+        .map_err(|source| ProbeCookError::Read { path: path.to_owned(), source })?;
+    TodTimeline::from_ron(&text)
+        .map_err(|source| ProbeCookError::Timeline { path: path.to_owned(), source: Box::new(source) })
+}
+
+/// Every key of the timeline, lit as time of day lights it.
+pub fn keys(timeline: BakeTimeline) -> Result<Vec<BakeKey>, ProbeCookError> {
+    let timeline = self::timeline(timeline)?;
+    Ok(timeline
         .keys()
         .iter()
         .map(|key| {
@@ -360,11 +391,11 @@ pub fn keys(timeline: BakeTimeline) -> Vec<BakeKey> {
                 to_light: -light.direction.normalize_or(Vec3::NEG_Y),
                 radiance: light.color * light.intensity.max(0.0),
                 shadow_tint: look.shadow_tint,
-                sky: sapphire_render::ambient::sky_radiance(&look.sky, &look.ambient),
+                sky: sky_radiance(&look.sky, &look.ambient),
                 emission: look.emission,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn cooked_mesh<'a>(

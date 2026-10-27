@@ -17,12 +17,14 @@ members = [
     # L2 services
     "crates/sapphire_assets",
     "crates/sapphire_ecs",
+    "crates/sapphire_look",
     "crates/sapphire_reflect",
     "crates/sapphire_rhi",
     "crates/sapphire_serialize",
     # L3 subsystems
     "crates/sapphire_input",
     "crates/sapphire_render",
+    "crates/sapphire_tod",
     # L4 framework
     "crates/sapphire_world",
     # Dev-only: development builds, through an app's `dev` feature
@@ -54,11 +56,13 @@ sapphire_time = { path = "crates/sapphire_time" }
 sapphire_crash = { path = "crates/sapphire_crash" }
 sapphire_assets = { path = "crates/sapphire_assets" }
 sapphire_ecs = { path = "crates/sapphire_ecs" }
+sapphire_look = { path = "crates/sapphire_look" }
 sapphire_reflect = { path = "crates/sapphire_reflect" }
 sapphire_rhi = { path = "crates/sapphire_rhi" }
 sapphire_serialize = { path = "crates/sapphire_serialize" }
 sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
+sapphire_tod = { path = "crates/sapphire_tod" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_debug = { path = "crates/sapphire_debug" }
 # Its default `notify` feature is for its own tests: apps turn it on per target.

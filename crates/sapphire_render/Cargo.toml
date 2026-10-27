@@ -18,6 +18,9 @@ sapphire_assets.workspace = true
 # The device class (`target::FormFactor`) quality tiers are selected by, and the `r.*` cvars.
 sapphire_core.workspace = true
 sapphire_jobs.workspace = true
+# The frame's look: the scene constants and post's input the packet carries, and the CPU models
+# of the sky's light and the fog (re-exported).
+sapphire_look.workspace = true
 # Spherical harmonics, shared with the cooker's probe bake (M1 W5).
 sapphire_math.workspace = true
 # The quality-tier table is a versioned RON document (`tiers.ron`).

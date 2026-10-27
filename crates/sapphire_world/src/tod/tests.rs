@@ -24,7 +24,7 @@ const DAY: f32 = 10.0;
 fn time_of_day(hours: f32) -> (ScaledClock, TimeOfDay) {
     let mut world = ScaledClock::new();
     let clock = world.new_local_clock();
-    let tod = TimeOfDay::new(TodTimeline::default_day(), clock, hours).expect("complete");
+    let tod = TimeOfDay::new(default_day(), clock, hours).expect("complete");
     (world, tod)
 }
 
@@ -39,7 +39,7 @@ fn sky(color: [f32; 3]) -> Option<SkyKey> {
 
 #[test]
 fn the_default_day_reproduces_the_default_look_exactly() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     assert!(day.is_complete());
     let look = day.evaluate(DAY);
     assert_eq!(look.key_light(), DAY_SUN, "the moon is dark at 10:00");
@@ -64,7 +64,7 @@ fn the_default_day_reproduces_the_default_look_exactly() {
 
 #[test]
 fn the_default_day_round_trips_as_a_document() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let text = day.to_ron().expect("write");
     assert!(text.starts_with("(\n    type: \"sapphire::world::TodTimeline\",\n    version: 1,\n"), "{text}");
     assert_eq!(TodTimeline::from_ron(&text).expect("read"), day);
@@ -112,7 +112,7 @@ fn only_complete_timelines_can_be_the_base() {
     let (_, mut tod) = time_of_day(DAY);
     assert!(tod.set_timeline(partial).is_err());
     assert_eq!(tod.revision(), 0);
-    assert!(tod.set_timeline(TodTimeline::default_day()).is_ok());
+    assert!(tod.set_timeline(default_day()).is_ok());
     assert_eq!(tod.revision(), 1);
 }
 
@@ -182,7 +182,7 @@ fn easing_shapes_each_segment() {
 
 #[test]
 fn the_default_day_never_lights_from_below() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     for minute in 0..24 * 60 {
         let key = day.evaluate(minute as f32 / 60.0).key_light();
         assert!(key.intensity == 0.0 || key.direction.y < 0.0, "{minute} min: {key:?} travels upward");
@@ -202,7 +202,7 @@ fn the_default_day_never_lights_from_below() {
 /// in between.
 #[test]
 fn the_default_days_characters_stay_a_little_brighter_than_the_world_at_night() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let shown =
         |look: &TodLook, color: Vec3, intensity: f32| luminance(color) * intensity * look.exposure.exp2();
     let noon = day.evaluate(13.0);
@@ -237,7 +237,7 @@ fn the_default_days_characters_stay_a_little_brighter_than_the_world_at_night() 
 #[test]
 fn the_sun_moves_along_a_great_circle() {
     let to_sun = |direction: Vec3| -direction.normalize();
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let (morning, afternoon) =
         (to_sun(day.evaluate(10.0).sun.direction), to_sun(day.evaluate(14.0).sun.direction));
     let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos();
@@ -252,7 +252,7 @@ fn the_sun_moves_along_a_great_circle() {
 
 #[test]
 fn neighboring_grades_blend_as_two_luts_and_a_single_grade_uses_one() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let grade =
         |hours: f32| ColorGrade::from(day.keys().iter().find(|k| k.time == hours).unwrap().grade.unwrap());
     // Golden hour to sunset, 40% of the way.
@@ -338,7 +338,7 @@ fn cutscenes_blend_in_and_out() {
         None,
     )
     .expect("valid");
-    let sunset = TodTimeline::default_day().evaluate(18.75);
+    let sunset = default_day().evaluate(18.75);
     tod.play_cutscene(Arc::new(shot.clone()));
     let mut weights = Vec::new();
     for _ in 0..300 {
@@ -644,7 +644,7 @@ fn the_stars_turn_with_the_hour_about_the_sky_pole() {
     tod.resolve(Vec3::ZERO, 0.0).write(&mut packet);
     assert_eq!(packet.celestial.sphere, celestial_sphere(22.0));
     assert!(packet.sky_layers.stars > 0.5 && packet.sky_layers.moon.intensity > 0.0);
-    let day = TodTimeline::default_day().evaluate(DAY);
+    let day = default_day().evaluate(DAY);
     assert_eq!(day.stars, 0.0, "none by day");
     assert!(day.sun_disc.intensity > 1.0 && day.clouds.coverage > 0.0, "a bright sun and clouds by day");
 }
@@ -663,7 +663,7 @@ fn timelines_without_post_layers_load_and_draw_post_as_before() {
     assert_eq!(packet.post, packet.post.plain(), "no compositing layers: post as before");
     assert_eq!(packet.post.vignette.intensity, 0.2, "its own keys still draw");
     // The default day sets every layer at every key.
-    let day = TodTimeline::default_day();
+    let day = default_day();
     for group in TodGroup::POST_LAYERS {
         assert!(day.groups().contains(group), "{group}");
     }
@@ -846,7 +846,7 @@ fn zones_and_cutscenes_override_the_post_layers() {
 
 #[test]
 fn the_default_day_fogs_every_hour_and_keeps_characters_readable() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     for step in 0..48 {
         let hours = step as f32 * 0.5;
         let fog = day.evaluate(hours).fog;
@@ -931,7 +931,7 @@ fn zones_and_cutscenes_override_the_fog() {
 
 #[test]
 fn probe_keys_follow_the_hour_and_cutscenes() {
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let baked: Vec<f32> = day.keys().iter().map(|key| key.time).collect();
     let weights = |keys: sapphire_render::ProbeKeys| -> Vec<(u32, f32)> {
         keys.keys
@@ -990,7 +990,7 @@ fn probe_keys_follow_the_hour_and_cutscenes() {
 /// coming back from golden hour.
 fn lantern_day() -> TodTimeline {
     let scales = [1.0, 1.0, 0.4, 0.1, 0.1, 0.25, 0.6, 1.0];
-    let day = TodTimeline::default_day();
+    let day = default_day();
     let keys =
         day.keys().iter().zip(scales).map(|(key, scale)| TodKey { emission: Some(scale), ..key.clone() });
     TodTimeline::new(keys.collect()).expect("valid")
@@ -999,7 +999,7 @@ fn lantern_day() -> TodTimeline {
 #[test]
 fn timelines_without_an_emission_scale_show_emission_as_authored() {
     let old = TodTimeline::from_ron(TIMELINE_BEFORE_SKY_LAYERS).expect("an older document loads");
-    let day = TodTimeline::default_day();
+    let day = default_day();
     for timeline in [&old, &day] {
         assert!(timeline.is_complete(), "it can still be the base timeline");
         assert!(!timeline.groups().contains(TodGroup::Emission));

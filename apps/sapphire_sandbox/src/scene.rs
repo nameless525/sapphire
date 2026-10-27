@@ -96,7 +96,7 @@ use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId, LightRigLibrary};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_effects};
-use sapphire_world::tod::{TimeOfDay, TodTimeline, tick_time_of_day};
+use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::environment;
@@ -332,7 +332,7 @@ impl Scene {
         world.insert_resource(SlowMotion::default());
         world.insert_resource(RenderExtract::default());
         let day_clock = world.resource_mut::<WorldClock>().0.new_local_clock();
-        let time_of_day = TimeOfDay::new(TodTimeline::default_day(), day_clock, DEFAULT_TIME_OF_DAY)
+        let time_of_day = TimeOfDay::new(tod::default_day(), day_clock, DEFAULT_TIME_OF_DAY)
             .expect("the default day sets every group");
         world.insert_resource(time_of_day);
         world.insert_resource(LightRigLibrary::default_rigs());
@@ -1137,7 +1137,7 @@ impl Scene {
     /// and says which day it replaced; otherwise keeps the day. Hot reload and live link both
     /// come through here.
     #[cfg(any(test, feature = "dev"))]
-    pub fn replace_day(&mut self, origin: &str, timeline: TodTimeline) -> Result<Day, String> {
+    pub fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
         let day = self.day();
         let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
         if name != Some(day.file_name()) {
@@ -1383,7 +1383,7 @@ mod tests {
             LookDev { town, fog_cards: None, pose, figure }
         };
         // Two complete timelines that differ, standing for an edit of either file.
-        let (default_day, stage_day) = (TodTimeline::default_day(), lookdev::day());
+        let (default_day, stage_day) = (tod::default_day(), lookdev::day());
         assert_ne!(default_day, stage_day);
 
         // A scene on the default day: its own file replaces it (by name, from any directory); the
@@ -1447,12 +1447,12 @@ mod tests {
         // An edited day replaces it as hot reload and live link apply one
         // (`reload::Document::DefaultDay`): lanterns a tenth as bright from sunrise to sunset
         // (M1 W1's keyed emission).
-        let day = TodTimeline::default_day();
+        let day = tod::default_day();
         let keys = day.keys().iter().map(|key| {
             let scale = if (6.5..=18.75).contains(&key.time) { 0.1 } else { 1.0 };
-            sapphire_world::tod::TodKey { emission: Some(scale), ..key.clone() }
+            tod::TodKey { emission: Some(scale), ..key.clone() }
         });
-        let keyed = TodTimeline::new(keys.collect()).expect("valid");
+        let keyed = tod::TodTimeline::new(keys.collect()).expect("valid");
         scene.time_of_day_mut().set_timeline(keyed).expect("complete");
         assert_eq!(emission(&mut scene, 13.0), 0.1, "dim by day");
         assert_eq!(emission(&mut scene, 23.0), 1.0, "full at night");

@@ -115,7 +115,7 @@ pub struct BakeKey {
     /// How much of materials' authored emission shows (time of day's emission key, M1 W1's
     /// keyed emission; [`BakeMaterial::emission_under`]).
     pub emission: f32,
-    /// The sky's radiance, L2 per channel (`sapphire_render::ambient::sky_radiance`).
+    /// The sky's radiance, L2 per channel ([`sapphire_look::sky::sky_radiance`]).
     pub sky: [[f32; sh::L2]; 3],
 }
 

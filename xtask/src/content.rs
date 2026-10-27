@@ -21,7 +21,9 @@
 //! (`target/content/generate.lock`), taken and released before the cook's: concurrent runs (a
 //! desktop and a mobile cook in one checkout) never generate at once, and none cooks while
 //! another is generating. The generators write only missing files, so generation never
-//! overwrites a hand edit.
+//! overwrites a hand edit. With `--locked`, nothing is generated: a missing generated source
+//! fails the run, naming it, since generated sources are committed and `--locked` never writes
+//! sources.
 
 use std::fmt;
 use std::fs::{self, File, TryLockError};
@@ -29,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-use anyhow::{Context as _, anyhow};
+use anyhow::{Context as _, anyhow, bail};
 
 use crate::workspace::{self, CargoBuild};
 
@@ -276,7 +278,7 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
 
     let source = workspace::root().join(SOURCE_DIR);
     fs::create_dir_all(workspace::output_dir().join("content"))?;
-    generate_missing(&generate_lock(), &source, &GENERATORS, &mut |generator| {
+    generate_missing(&generate_lock(), &source, &GENERATORS, workspace::locked(), &mut |generator| {
         workspace::run(
             Command::new(&pipeline).arg(generator.command).arg("--out").arg(source.join(generator.dir)),
         )
@@ -319,6 +321,9 @@ fn generate_lock() -> PathBuf {
 /// BC-007). A run that waited for the lock checks once it has it, so it finds what the other
 /// run generated. Returns the generators that ran.
 ///
+/// A `locked` run (`--locked`, so CI) never generates: a missing file is an error naming it and
+/// how to generate it. Generated sources are committed, and `--locked` never writes sources.
+///
 /// The lock is released before the cook takes its own, so the two are never nested: a run
 /// holding a cook's lock (an app running against its content) never blocks another run's
 /// generation, and generation never waits on a cook.
@@ -326,10 +331,30 @@ fn generate_missing(
     lock: &Path,
     source: &Path,
     generators: &[Generator],
+    locked: bool,
     generate: &mut dyn FnMut(&Generator) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<&'static str>> {
     let file = File::create(lock).with_context(|| format!("failed to create {}", lock.display()))?;
     wait_for(&file, File::try_lock, File::lock, "to finish generating sources")?;
+    if locked {
+        let missing: Vec<(&Generator, PathBuf)> = generators
+            .iter()
+            .flat_map(|generator| generator.sources.iter().map(move |file| (generator, source.join(file))))
+            .filter(|(_, path)| !path.exists())
+            .collect();
+        if let Some((generator, _)) = missing.first() {
+            let files: Vec<String> = missing.iter().map(|(_, path)| path.display().to_string()).collect();
+            bail!(
+                "missing generated source{}: {}. --locked never writes sources: run `cargo xtask content` \
+                 once without --locked (or `sapphire_pipeline {} --out {}`) and commit what it generates",
+                if files.len() == 1 { "" } else { "s" },
+                files.join(", "),
+                generator.command,
+                source.join(generator.dir).display()
+            );
+        }
+        return Ok(Vec::new());
+    }
     let mut ran = Vec::new();
     for generator in generators {
         if generator.sources.iter().any(|file| !source.join(file).exists()) {
@@ -397,7 +422,7 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         start.wait();
-                        let ran = generate_missing(&lock, &dir, &generators, &mut |generator| {
+                        let ran = generate_missing(&lock, &dir, &generators, false, &mut |generator| {
                             runs.fetch_add(1, Ordering::SeqCst);
                             // A slow generator, which writes only what's missing.
                             thread::sleep(Duration::from_millis(200));
@@ -424,8 +449,32 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join(SOURCES[0])).unwrap(), "kept");
 
         // Nothing missing: nothing runs.
-        let ran = generate_missing(&lock, &dir, &generators, &mut |_| panic!("nothing is missing")).unwrap();
+        let ran =
+            generate_missing(&lock, &dir, &generators, false, &mut |_| panic!("nothing is missing")).unwrap();
         assert!(ran.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_runs_never_generate() {
+        // A missing generated source fails a locked run, naming it, and nothing is written.
+        const SOURCES: &[&str] = &["gen/a.txt", "gen/b.txt"];
+        let generators = [Generator { command: "gen-test", dir: "gen", sources: SOURCES }];
+        let dir = std::env::temp_dir().join(format!("xtask-generate-locked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("gen")).unwrap();
+        fs::write(dir.join(SOURCES[0]), "committed").unwrap();
+        let lock = dir.join("generate.lock");
+        let never = &mut |_: &Generator| -> anyhow::Result<()> { panic!("--locked never writes sources") };
+        let error = generate_missing(&lock, &dir, &generators, true, never).unwrap_err().to_string();
+        assert!(error.contains(&dir.join(SOURCES[1]).display().to_string()), "{error}");
+        assert!(!error.contains(SOURCES[0]), "only what's missing is named: {error}");
+        assert!(error.contains("--locked never writes sources") && error.contains("gen-test"), "{error}");
+        assert!(!dir.join(SOURCES[1]).exists());
+
+        // With everything there, a locked run goes on.
+        fs::write(dir.join(SOURCES[1]), "committed").unwrap();
+        assert!(generate_missing(&lock, &dir, &generators, true, never).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

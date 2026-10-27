@@ -243,8 +243,8 @@ impl TextureUsage {
 }
 
 /// Material properties the renderer chooses pipelines by: the anime character shader's static
-/// permutation bits that come from the material (spec §5.12; skinning and morphs come from the
-/// mesh).
+/// permutation bits, which all come from the material (spec §5.12; a skinned or morphed mesh
+/// picks its position format instead, M1 C7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct MaterialFlags(u32);
 
@@ -265,8 +265,12 @@ impl MaterialFlags {
     /// permutation bit: it adds the draw to the eyes-through-hair pass, as `OUTLINE` adds one
     /// to the outline pass.
     pub const THROUGH_HAIR: Self = Self(1 << 6);
+    /// An anime character material with a layer (M1 C7: stockings, matcap, highlight, reflection
+    /// add or emission, `AnimeCharacterParams::FLAG_LAYERS`), whose shader compiles the layers'
+    /// code in: materials without one pay nothing for it.
+    pub const LAYERS: Self = Self(1 << 7);
 
-    const ALL: u32 = (1 << 7) - 1;
+    const ALL: u32 = (1 << 8) - 1;
 
     pub const fn empty() -> Self {
         Self(0)

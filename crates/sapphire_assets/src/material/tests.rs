@@ -352,7 +352,9 @@ fn the_anime_character_block_carries_every_field() {
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, rim_regions), 128 + 8 * 96 + 6 * 16);
     assert_eq!(params.swizzles[0] & 0xfff, swizzle_code(RA01), "slot 0 is bound");
     assert_eq!(params.swizzles[0] >> SWIZZLE_BITS, 0x688, "slot 1 is not");
-    let expected = MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE | MaterialFlags::HAIR;
+    // Its regions' highlight colors turn the layers on (M1 C7).
+    let expected =
+        MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE | MaterialFlags::HAIR | MaterialFlags::LAYERS;
     assert_eq!(material.material_flags(), expected);
     assert!(expected.contains(MaterialFlags::HAIR) && !expected.contains(MaterialFlags::FACE));
 }
@@ -693,7 +695,7 @@ fn layers_pack_after_the_rim_settings_and_set_their_flags() {
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layers), rim_regions + 8 * 16);
     assert_eq!(std::mem::offset_of!(AnimeCharacterParams, layer_regions), rim_regions + 8 * 16 + 5 * 16);
     assert_eq!(size_of::<CharacterLayerRegion>(), 48);
-    assert_eq!(material.material_flags(), MaterialFlags::OUTLINE, "no permutation bit");
+    assert_eq!(material.material_flags(), MaterialFlags::OUTLINE | MaterialFlags::LAYERS, "the layers' bit");
 }
 
 #[test]
@@ -719,8 +721,11 @@ fn each_layer_turns_on_alone_and_none_by_default() {
         (CharacterRegion { emission: [0.0, 0.0, 0.5], ..region }, AnimeCharacterParams::FLAG_EMISSION),
     ];
     for (region, flag) in turned_on {
-        assert_eq!(flags(&with_region(region)), flag, "{region:?}");
+        let document = with_region(region);
+        assert_eq!(flags(&document), flag, "{region:?}");
+        assert!(document.flags().contains(MaterialFlags::LAYERS), "the permutation bit: {region:?}");
     }
+    assert!(!AnimeCharacterMaterial::default().flags().contains(MaterialFlags::LAYERS));
     // Metallic at the threshold doesn't reflect: only texels above it do.
     let at = with_region(CharacterRegion { metallic: layer_mask::REFLECTS, ..region });
     assert_eq!(flags(&at), 0);

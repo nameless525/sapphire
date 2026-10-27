@@ -74,7 +74,8 @@
 // Static permutations (`pipelines::Permutation`) are pipeline-overridable constants, so each
 // variant compiles only its own code: alpha-tested materials discard below their cutoff,
 // transparent ones write their coverage for blending, faces shade by their SDF map, hair takes its
-// mask and highlight and eyes are always lit.
+// mask and highlight, eyes are always lit, and only materials with a layer (and eyes) carry the
+// layers' code (M1 C7).
 //
 // Faces (M1 C3, the face permutation). The light split comes from the face's SDF map and the
 // character's key light in head space instead of N·L, as `sapphire_assets::character_maps`
@@ -160,7 +161,10 @@
 //
 // The layers (M1 C7) go on top of the base, each a branch on the block's flags
 // (`CHARACTER_FLAG_SPECULAR` and the four after it) that every pixel of a draw takes alike, set
-// only where a region turns the layer on, so materials without them shade exactly as before. A
+// only where a region turns the layer on, so materials without them shade exactly as before.
+// Their code is compiled in only for materials with one (`PERMUTATION_LAYERS`) and for eyes, so
+// the rest don't pay for its registers either: the branches alone, never taken, cost the main
+// pass about 4% on an Apple GPU. A
 // body's layer mask (`character_maps::layer_mask`, in the surface mask slot; 1 where unbound)
 // paints them: R the matcap, G metallic, B emission, A the stockings' density. Faces, hair and
 // eyes, whose masks that slot holds, take their regions' values alone.
@@ -242,6 +246,8 @@ override PERMUTATION_TRANSPARENT: bool = false;
 override PERMUTATION_FACE: bool = false;
 override PERMUTATION_HAIR: bool = false;
 override PERMUTATION_EYE: bool = false;
+// The layers' code (M1 C7): compiled in for materials with a layer, and for every eye.
+override PERMUTATION_LAYERS: bool = false;
 // The main pass's samples a pixel, for the proximity fade's dither (M1 C7; `faded_out` in
 // frame.wgsl): set under MSAA on the alpha-tested variants' covered entry points, which cover a
 // share of them, and on the outline hulls' masked prepass (outline.wgsl), which keeps the pixels
@@ -1156,10 +1162,10 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // The layers (M1 C7), where the block's flags say a region turns them on: the stockings and a
     // matcap that multiplies change the albedo, before anything reads it; the highlight, an added
     // matcap, the stockings' sheen, the reflection add and the glow add light. All of it is taken
-    // here, in one branch on the flags that materials without layers skip, and the light is added
-    // below with the rest, so only the sum and the glow's luminance stay live through the
-    // lighting.
-    let layer_flags = modes.x & CHARACTER_FLAG_LAYERS;
+    // here, in one branch on the flags, compiled out of the variants without the layers, and the
+    // light is added below with the rest, so only the sum and the glow's luminance stay live
+    // through the lighting.
+    let layer_flags = select(0u, modes.x & CHARACTER_FLAG_LAYERS, PERMUTATION_LAYERS);
     var layer_light = vec3<f32>(0.0);
     var glow = 0.0;
     if layer_flags != 0u {

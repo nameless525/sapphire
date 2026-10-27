@@ -1717,6 +1717,9 @@ impl MaterialDocument for AnimeCharacterMaterial {
         if self.draws_through_hair() {
             flags |= MaterialFlags::THROUGH_HAIR;
         }
+        if self.layer_flags() != 0 {
+            flags |= MaterialFlags::LAYERS;
+        }
         flags
             | match self.surface {
                 CharacterSurface::Body => MaterialFlags::empty(),

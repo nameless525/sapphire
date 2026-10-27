@@ -265,13 +265,17 @@ pub(crate) mod material_binding {
 }
 
 /// The anime character shader's static permutation bits (spec §5.12, M1 plan C1): at most
-/// eight, in the plan's order. Everything else a material varies (band or ramp diffuse, a
-/// deep band, which maps are bound, matcap channels, stockings) is a branch on its block that
+/// eight; seven are taken. Everything else a material varies (band or ramp diffuse, a deep band,
+/// which maps are bound, which layers it has, matcap channels) is a branch on its block that
 /// every pixel of a draw takes alike.
+///
+/// The plan's skinned and morph bits are gone (M1 C7): since M1 R2 skinning and morphs run in a
+/// compute pass, and a deformed mesh draws its outputs through the f32-position pipelines
+/// ([`PositionFormat`]), a dimension of their own, so neither selected a shader variant.
 ///
 /// | Bit | From | What it selects today |
 /// |---|---|---|
-/// | skinned, morph | the mesh | the f32-position pipelines, which read the compute skinning pass's outputs (M1 R2); no shader variant, since skinning and morphs no longer run in the vertex stage |
+/// | layers | the material ([`MaterialFlags::LAYERS`]) | [`SurfaceVariant::layers`] (M1 C7): the layers' code (stockings, matcap, highlight, reflection add, emission) is compiled in, branches on the block choosing among them; without it the shader has none of their cost. Eyes always have it |
 /// | alpha test | the material ([`MaterialFlags::ALPHA_TEST`]) | [`Coverage::AlphaTest`]: the surface and outline shaders discard below the cutoff |
 /// | outline | the material ([`MaterialFlags::OUTLINE`]) | whether the draw is in the outline pass |
 /// | face | the material ([`MaterialFlags::FACE`]) | [`Part::Face`] (M1 C3): the face's light split from its SDF map and the key light in head space, its masks and expression, from the character's entry; the bangs' shadow on it (C5); outlines are the body's |
@@ -293,23 +297,24 @@ pub(crate) mod material_binding {
 pub(crate) struct Permutation(u8);
 
 impl Permutation {
-    pub const SKINNED: Self = Self(1 << 0);
+    pub const LAYERS: Self = Self(1 << 0);
     pub const ALPHA_TEST: Self = Self(1 << 1);
     pub const OUTLINE: Self = Self(1 << 2);
-    pub const MORPH: Self = Self(1 << 3);
     pub const FACE: Self = Self(1 << 4);
     pub const HAIR: Self = Self(1 << 5);
     pub const EYE: Self = Self(1 << 6);
     pub const TRANSPARENT: Self = Self(1 << 7);
+    /// Every bit: the layers took the plan's skinned bit (0), and its morph bit (3) is free.
+    #[cfg(test)]
+    pub const ALL: [Self; 7] =
+        [Self::LAYERS, Self::ALPHA_TEST, Self::OUTLINE, Self::FACE, Self::HAIR, Self::EYE, Self::TRANSPARENT];
 
-    /// The permutation of a material with `flags` on a mesh that is `skinned` and `morphed` or
-    /// not.
-    pub(crate) fn new(flags: MaterialFlags, skinned: bool, morphed: bool) -> Self {
+    /// The permutation of a material with `flags`.
+    pub(crate) fn new(flags: MaterialFlags) -> Self {
         let bits = [
-            (Self::SKINNED, skinned),
+            (Self::LAYERS, flags.contains(MaterialFlags::LAYERS)),
             (Self::ALPHA_TEST, flags.contains(MaterialFlags::ALPHA_TEST)),
             (Self::OUTLINE, flags.contains(MaterialFlags::OUTLINE)),
-            (Self::MORPH, morphed),
             (Self::FACE, flags.contains(MaterialFlags::FACE)),
             (Self::HAIR, flags.contains(MaterialFlags::HAIR)),
             (Self::EYE, flags.contains(MaterialFlags::EYE)),
@@ -325,6 +330,7 @@ impl Permutation {
     /// The surface pipelines it draws with. A material is one part, so at most one of the face,
     /// hair and eye bits is set.
     pub(crate) fn surface(self) -> SurfaceVariant {
+        let layers = self.contains(Self::LAYERS);
         let coverage = Coverage::of(self.contains(Self::ALPHA_TEST), self.contains(Self::TRANSPARENT));
         let part = if self.contains(Self::FACE) {
             Part::Face
@@ -335,7 +341,11 @@ impl Permutation {
         } else {
             Part::Body
         };
-        SurfaceVariant::character(coverage, part)
+        if layers {
+            SurfaceVariant::layered(coverage, part)
+        } else {
+            SurfaceVariant::character(coverage, part)
+        }
     }
 
     /// Whether it draws an outline hull: transparent surfaces never do.
@@ -450,29 +460,6 @@ pub(crate) enum Shading {
 }
 
 impl Shading {
-    /// The shadings drawn at every coverage, in drawing order within one: characters, then the
-    /// world (the environment, then foliage), whose pixels behind them depth then rejects.
-    /// Foliage is never transparent: its variant of that coverage has no draws and no pipeline.
-    /// Fog cards are transparent alone.
-    pub(crate) const SURFACES: [Self; 6] = [
-        Self::Character(Part::Body),
-        Self::Character(Part::Face),
-        Self::Character(Part::Hair),
-        Self::Character(Part::Eye),
-        Self::Environment,
-        Self::Foliage,
-    ];
-
-    /// Its position in [`Self::SURFACES`], or past it for fog cards.
-    pub(crate) fn index(self) -> usize {
-        match self {
-            Self::Character(part) => part.index(),
-            Self::Environment => Part::ALL.len(),
-            Self::Foliage => Part::ALL.len() + 1,
-            Self::FogCard => Self::SURFACES.len(),
-        }
-    }
-
     /// The material family it draws.
     pub(crate) fn family(self) -> MaterialFamily {
         match self {
@@ -499,8 +486,9 @@ impl Shading {
 }
 
 /// The surface pipelines one [`PositionFormat`] can draw with: a coverage, and a shading (the
-/// family's shader and, for anime characters, the part). For anime characters these are the
-/// permutation bits that change the shader or its render state today (see [`Permutation`]);
+/// family's shader and, for anime characters, the part and the layers). For anime characters
+/// these are the permutation bits that change the shader or its render state today (see
+/// [`Permutation`]);
 /// environment and foliage materials vary by their coverage alone, foliage is never transparent
 /// (its variant of that coverage has no draws and no pipeline), and fog cards are always
 /// transparent. Outline hulls depend on the coverage alone, and only anime characters draw them.
@@ -508,24 +496,47 @@ impl Shading {
 pub(crate) struct SurfaceVariant {
     pub coverage: Coverage,
     pub shading: Shading,
+    /// An anime character variant with the layers' code compiled in (M1 C7,
+    /// [`Permutation::LAYERS`]): bodies, faces and hair whose material has a layer, and every
+    /// eye, whose layers (M1 C6) blend in one variant in their order, so its shader keeps the
+    /// layers' code rather than split them. False for the other families.
+    pub layers: bool,
 }
 
 impl SurfaceVariant {
+    /// The surfaces of one coverage, in drawing order: the anime characters' parts, then those
+    /// with the layers (but eyes, which always have them), then the world (the environment, then
+    /// foliage), whose pixels behind them depth then rejects. Foliage is never transparent: its
+    /// variant of that coverage has no draws and no pipeline. Fog cards are transparent alone.
+    const PER_COVERAGE: [(Shading, bool); 9] = [
+        (Shading::Character(Part::Body), false),
+        (Shading::Character(Part::Face), false),
+        (Shading::Character(Part::Hair), false),
+        (Shading::Character(Part::Eye), true),
+        (Shading::Character(Part::Body), true),
+        (Shading::Character(Part::Face), true),
+        (Shading::Character(Part::Hair), true),
+        (Shading::Environment, false),
+        (Shading::Foliage, false),
+    ];
+    /// The anime character variants of a coverage, [`Self::PER_COVERAGE`]'s first.
+    const CHARACTER_KINDS: usize = 7;
     /// Every variant, in drawing order: by coverage, then shading, and fog cards last.
-    pub(crate) const ALL: [Self; 19] = {
-        let mut all = [Self::FOG_CARD; 19];
+    pub(crate) const ALL: [Self; 28] = {
+        let mut all = [Self::FOG_CARD; 28];
         let coverages = [Coverage::Opaque, Coverage::AlphaTest, Coverage::Transparent];
+        let per = Self::PER_COVERAGE.len();
         let mut index = 0;
-        while index < coverages.len() * Shading::SURFACES.len() {
-            let coverage = coverages[index / Shading::SURFACES.len()];
-            all[index] = Self { coverage, shading: Shading::SURFACES[index % Shading::SURFACES.len()] };
+        while index < coverages.len() * per {
+            let (shading, layers) = Self::PER_COVERAGE[index % per];
+            all[index] = Self { coverage: coverages[index / per], shading, layers };
             index += 1;
         }
         all
     };
     /// The variants that write depth: drawn first, and into the prepasses and shadow maps.
-    pub(crate) const DEPTH_WRITING: [Self; 12] = {
-        let mut variants = [Self::OPAQUE; 12];
+    pub(crate) const DEPTH_WRITING: [Self; 18] = {
+        let mut variants = [Self::OPAQUE; 18];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[index];
@@ -536,8 +547,8 @@ impl SurfaceVariant {
     /// The depth-writing variants the shared scene prepass and shadow caster pipelines draw:
     /// every family's but foliage's, whose own pipelines displace by the wind and cut alpha-tested
     /// cards out ([`Self::FOLIAGE`]).
-    pub(crate) const SHARED_DEPTH: [Self; 10] = {
-        let mut variants = [Self::OPAQUE; 10];
+    pub(crate) const SHARED_DEPTH: [Self; 16] = {
+        let mut variants = [Self::OPAQUE; 16];
         let (mut from, mut to) = (0, 0);
         while from < Self::DEPTH_WRITING.len() {
             if !matches!(Self::DEPTH_WRITING[from].shading, Shading::Foliage) {
@@ -554,38 +565,42 @@ impl SurfaceVariant {
         [Self::foliage(Coverage::Opaque), Self::foliage(Coverage::AlphaTest)];
     /// The anime character variants that write depth: what the character prepass draws, and
     /// the variants that can draw an outline hull.
-    pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 8] = {
-        let mut variants = [Self::OPAQUE; 8];
+    pub(crate) const CHARACTER_DEPTH_WRITING: [Self; 14] = {
+        let mut variants = [Self::OPAQUE; 14];
+        let [opaque, alpha_test] =
+            [Self::character_parts(Coverage::Opaque), Self::character_parts(Coverage::AlphaTest)];
         let mut index = 0;
-        while index < variants.len() {
-            let coverage = if index < Part::ALL.len() { Coverage::Opaque } else { Coverage::AlphaTest };
-            variants[index] = Self::character(coverage, Part::ALL[index % Part::ALL.len()]);
+        while index < Self::CHARACTER_KINDS {
+            variants[index] = opaque[index];
+            variants[Self::CHARACTER_KINDS + index] = alpha_test[index];
             index += 1;
         }
         variants
     };
     /// The variants that can draw an outline hull: the anime character's that write depth.
-    pub(crate) const OUTLINED: [Self; 8] = Self::CHARACTER_DEPTH_WRITING;
+    pub(crate) const OUTLINED: [Self; 14] = Self::CHARACTER_DEPTH_WRITING;
     /// The opaque anime character variants, which the prepasses draw through their plain
     /// pipelines.
-    pub(crate) const CHARACTER_OPAQUE: [Self; Part::ALL.len()] = Self::character_parts(Coverage::Opaque);
+    pub(crate) const CHARACTER_OPAQUE: [Self; Self::CHARACTER_KINDS] =
+        Self::character_parts(Coverage::Opaque);
     /// The alpha-tested anime character variants, which the prepasses draw through their masked
     /// pipelines (M1 C7), cut out as the main pass cuts them; fading characters' opaque draws
     /// join them.
-    pub(crate) const CHARACTER_ALPHA_TEST: [Self; Part::ALL.len()] =
+    pub(crate) const CHARACTER_ALPHA_TEST: [Self; Self::CHARACTER_KINDS] =
         Self::character_parts(Coverage::AlphaTest);
     /// The character prepass's draws but hair's, which follow them (M1 C6): the opaque
     /// variants', then the alpha-tested ones' (M1 C7).
-    pub(crate) const CHARACTER_OPAQUE_BUT_HAIR: [Self; 3] = Self::character_parts_but_hair(Coverage::Opaque);
-    pub(crate) const CHARACTER_ALPHA_TEST_BUT_HAIR: [Self; 3] =
-        Self::character_parts_but_hair(Coverage::AlphaTest);
-    /// Hair's, opaque and alpha-tested.
-    pub(crate) const HAIR_OPAQUE: [Self; 1] = [Self::character(Coverage::Opaque, Part::Hair)];
-    pub(crate) const HAIR_ALPHA_TEST: [Self; 1] = [Self::character(Coverage::AlphaTest, Part::Hair)];
+    pub(crate) const CHARACTER_OPAQUE_BUT_HAIR: [Self; 5] =
+        Self::character_parts_but_hair(Coverage::Opaque, false);
+    pub(crate) const CHARACTER_ALPHA_TEST_BUT_HAIR: [Self; 5] =
+        Self::character_parts_but_hair(Coverage::AlphaTest, false);
+    /// Hair's, opaque and alpha-tested, with the layers or without.
+    pub(crate) const HAIR_OPAQUE: [Self; 2] = Self::character_parts_but_hair(Coverage::Opaque, true);
+    pub(crate) const HAIR_ALPHA_TEST: [Self; 2] = Self::character_parts_but_hair(Coverage::AlphaTest, true);
     /// The variants the scene prepass draws through its plain pipeline: [`Self::SHARED_DEPTH`]
     /// but the alpha-tested anime character variants, which it draws masked (M1 C7).
-    pub(crate) const UNMASKED_SHARED_DEPTH: [Self; 6] = {
-        let mut variants = [Self::OPAQUE; 6];
+    pub(crate) const UNMASKED_SHARED_DEPTH: [Self; 9] = {
+        let mut variants = [Self::OPAQUE; 9];
         let (mut from, mut to) = (0, 0);
         while from < Self::SHARED_DEPTH.len() {
             let variant = Self::SHARED_DEPTH[from];
@@ -601,34 +616,39 @@ impl SurfaceVariant {
         variants
     };
 
-    /// The anime character variants of `coverage`, one per part but hair.
-    const fn character_parts_but_hair(coverage: Coverage) -> [Self; 3] {
-        let mut variants = [Self::OPAQUE; 3];
+    /// The anime character variants of `coverage` but hair's (`hair` false), or hair's alone,
+    /// with the layers or without.
+    const fn character_parts_but_hair<const N: usize>(coverage: Coverage, hair: bool) -> [Self; N] {
+        let parts = Self::character_parts(coverage);
+        let mut variants = [Self::OPAQUE; N];
         let (mut from, mut to) = (0, 0);
-        while from < Part::ALL.len() {
-            if !matches!(Part::ALL[from], Part::Hair) {
-                variants[to] = Self::character(coverage, Part::ALL[from]);
+        while from < parts.len() {
+            if matches!(parts[from].shading, Shading::Character(Part::Hair)) == hair {
+                variants[to] = parts[from];
                 to += 1;
             }
             from += 1;
         }
+        assert!(to == N, "every part but hair, or hair alone");
         variants
     }
 
-    /// The anime character variants of `coverage`, one per part.
-    const fn character_parts(coverage: Coverage) -> [Self; Part::ALL.len()] {
-        let mut variants = [Self::OPAQUE; Part::ALL.len()];
+    /// The anime character variants of `coverage`: one per part, then one per part with the
+    /// layers but eyes, which always have them.
+    const fn character_parts(coverage: Coverage) -> [Self; Self::CHARACTER_KINDS] {
+        let mut variants = [Self::OPAQUE; Self::CHARACTER_KINDS];
         let mut index = 0;
         while index < variants.len() {
-            variants[index] = Self::character(coverage, Part::ALL[index]);
+            let (shading, layers) = Self::PER_COVERAGE[index];
+            variants[index] = Self { coverage, shading, layers };
             index += 1;
         }
         variants
     }
     /// The surfaces' variants blended over the frame after the sky (foliage's never has draws);
     /// fog cards ([`Self::FOG_CARD`]) blend after them, sorted back to front.
-    pub(crate) const TRANSPARENT: [Self; 6] = {
-        let mut variants = [Self::OPAQUE; 6];
+    pub(crate) const TRANSPARENT: [Self; 9] = {
+        let mut variants = [Self::OPAQUE; 9];
         let mut index = 0;
         while index < variants.len() {
             variants[index] = Self::ALL[Self::DEPTH_WRITING.len() + index];
@@ -637,15 +657,18 @@ impl SurfaceVariant {
         variants
     };
     /// Fog cards (M1 W3).
-    pub(crate) const FOG_CARD: Self = Self { coverage: Coverage::Transparent, shading: Shading::FogCard };
+    pub(crate) const FOG_CARD: Self =
+        Self { coverage: Coverage::Transparent, shading: Shading::FogCard, layers: false };
     /// The variants whose draws can draw eyes through the character's hair
-    /// ([`MaterialFlags::THROUGH_HAIR`]): faces and eyes that write depth, then the eyes' layers
-    /// over them (M1 C6).
-    pub(crate) const THROUGH_HAIR: [Self; 5] = [
+    /// ([`MaterialFlags::THROUGH_HAIR`]): faces (with the layers or without) and eyes that write
+    /// depth, then the eyes' layers over them (M1 C6).
+    pub(crate) const THROUGH_HAIR: [Self; 7] = [
         Self::character(Coverage::Opaque, Part::Face),
         Self::character(Coverage::Opaque, Part::Eye),
         Self::character(Coverage::AlphaTest, Part::Face),
         Self::character(Coverage::AlphaTest, Part::Eye),
+        Self::layered(Coverage::Opaque, Part::Face),
+        Self::layered(Coverage::AlphaTest, Part::Face),
         Self::EYE_LAYERS,
     ];
     /// Transparent eyes: an eye's shadow, iris and highlight layers (M1 C6), which blend over
@@ -654,24 +677,41 @@ impl SurfaceVariant {
     /// Opaque anime character bodies: what a material with no permutation bits draws with.
     pub(crate) const OPAQUE: Self = Self::character(Coverage::Opaque, Part::Body);
 
+    /// The anime character variant of `coverage` and `part` without the layers, but an eye's,
+    /// which always has them.
     pub(crate) const fn character(coverage: Coverage, part: Part) -> Self {
-        Self { coverage, shading: Shading::Character(part) }
+        Self { coverage, shading: Shading::Character(part), layers: matches!(part, Part::Eye) }
+    }
+
+    /// The anime character variant of `coverage` and `part` with the layers (M1 C7).
+    pub(crate) const fn layered(coverage: Coverage, part: Part) -> Self {
+        Self { coverage, shading: Shading::Character(part), layers: true }
     }
 
     pub(crate) const fn environment(coverage: Coverage) -> Self {
-        Self { coverage, shading: Shading::Environment }
+        Self { coverage, shading: Shading::Environment, layers: false }
     }
 
     pub(crate) const fn foliage(coverage: Coverage) -> Self {
-        Self { coverage, shading: Shading::Foliage }
+        Self { coverage, shading: Shading::Foliage, layers: false }
+    }
+
+    /// The same variant at `coverage`.
+    pub(crate) const fn with_coverage(self, coverage: Coverage) -> Self {
+        Self { coverage, ..self }
     }
 
     /// Its position in [`Self::ALL`].
     pub(crate) fn index(self) -> usize {
-        match self.shading {
-            Shading::FogCard => Self::ALL.len() - 1,
-            shading => self.coverage.index() * Shading::SURFACES.len() + shading.index(),
-        }
+        let within = match self.shading {
+            Shading::FogCard => return Self::ALL.len() - 1,
+            Shading::Character(Part::Eye) => Part::Eye.index(),
+            Shading::Character(part) if self.layers => Part::ALL.len() + part.index(),
+            Shading::Character(part) => part.index(),
+            Shading::Environment => Self::CHARACTER_KINDS,
+            Shading::Foliage => Self::CHARACTER_KINDS + 1,
+        };
+        self.coverage.index() * Self::PER_COVERAGE.len() + within
     }
 
     /// The variant a material of `family` with `flags` draws with, on any mesh; `None` for a
@@ -696,6 +736,9 @@ impl SurfaceVariant {
         };
         if let Shading::Character(part) = self.shading {
             constants.extend(part.constant().map(|name| (name, 1.0)));
+            if self.layers {
+                constants.push((override_constant::LAYERS, 1.0));
+            }
         }
         constants
     }
@@ -722,7 +765,7 @@ pub(crate) fn mesh_draw(
 ) -> Option<(SurfaceVariant, bool)> {
     match family {
         MaterialFamily::AnimeCharacter => {
-            let permutation = Permutation::new(flags, skinned, morphed);
+            let permutation = Permutation::new(flags);
             Some((permutation.surface(), permutation.outlined()))
         }
         MaterialFamily::Environment => Some((SurfaceVariant::environment(Coverage::of_flags(flags)), false)),
@@ -742,6 +785,7 @@ pub(crate) mod override_constant {
     pub const FACE: &str = "PERMUTATION_FACE";
     pub const HAIR: &str = "PERMUTATION_HAIR";
     pub const EYE: &str = "PERMUTATION_EYE";
+    pub const LAYERS: &str = "PERMUTATION_LAYERS";
     /// The main pass's samples a pixel, for the proximity fade's dither (M1 C7; declared by
     /// `anime_character.wgsl` and `prepass.wgsl`): set under MSAA on the alpha-tested variants'
     /// covered pipelines, which cover a share of them, and on the masked prepasses, which keep
@@ -2201,22 +2245,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn static_permutations_are_eight_bits_and_pick_one_part() {
-        let bits = [
-            Permutation::SKINNED,
-            Permutation::ALPHA_TEST,
-            Permutation::OUTLINE,
-            Permutation::MORPH,
-            Permutation::FACE,
-            Permutation::HAIR,
-            Permutation::EYE,
-            Permutation::TRANSPARENT,
-        ];
-        let all = bits.iter().fold(0u8, |all, bit| {
+    fn static_permutations_are_at_most_eight_bits_and_pick_one_part() {
+        let all = Permutation::ALL.iter().fold(0u8, |all, bit| {
             assert_eq!((bit.0.count_ones(), all & bit.0), (1, 0), "one bit each, distinct");
             all | bit.0
         });
-        assert_eq!(all, u8::MAX, "the plan's eight bits, no more");
+        assert_eq!(all.count_ones(), 7, "the plan's eight bits but skinned and morph, and the layers");
         // Eyes through hair adds a pass, not a permutation: the variant stays the part's.
         for (flags, part) in [
             (MaterialFlags::empty(), Part::Body),
@@ -2226,20 +2260,60 @@ mod tests {
             (MaterialFlags::FACE | MaterialFlags::THROUGH_HAIR, Part::Face),
             (MaterialFlags::EYE | MaterialFlags::THROUGH_HAIR, Part::Eye),
         ] {
-            let variant = Permutation::new(flags, false, false).surface();
+            let variant = Permutation::new(flags).surface();
             assert_eq!(variant, SurfaceVariant::character(Coverage::Opaque, part), "{flags:?}");
         }
-        let eye = Permutation::new(MaterialFlags::EYE | MaterialFlags::ALPHA_TEST, true, false).surface();
+        let eye = Permutation::new(MaterialFlags::EYE | MaterialFlags::ALPHA_TEST).surface();
         assert_eq!(eye, SurfaceVariant::character(Coverage::AlphaTest, Part::Eye));
         // An eye's blended layers (M1 C6) are the eye × transparent variant, through hair too.
         for flags in [MaterialFlags::empty(), MaterialFlags::THROUGH_HAIR] {
-            let layers =
-                Permutation::new(MaterialFlags::EYE | MaterialFlags::TRANSPARENT | flags, true, true);
+            let layers = Permutation::new(MaterialFlags::EYE | MaterialFlags::TRANSPARENT | flags);
             assert_eq!(layers.surface(), SurfaceVariant::EYE_LAYERS, "{flags:?}");
         }
+        // The layers (M1 C7) are a variant of their own for every part but eyes, which always
+        // compile them in: an eye's layers draw in one variant, in their order.
+        for part in Part::ALL {
+            let flags =
+                [MaterialFlags::empty(), MaterialFlags::FACE, MaterialFlags::HAIR, MaterialFlags::EYE]
+                    [part.index()]
+                    | MaterialFlags::LAYERS;
+            let variant = Permutation::new(flags).surface();
+            assert_eq!(variant, SurfaceVariant::layered(Coverage::Opaque, part), "{part:?}");
+            assert!(variant.layers && variant.constants().contains(&(override_constant::LAYERS, 1.0)));
+            let plain = SurfaceVariant::character(Coverage::Opaque, part);
+            assert_eq!(plain == variant, part == Part::Eye, "{part:?}");
+        }
+        // Every variant has its own index, in drawing order, and the sets hold what they say.
+        for (index, variant) in SurfaceVariant::ALL.into_iter().enumerate() {
+            assert_eq!(variant.index(), index, "{variant:?}");
+            let character = matches!(variant.shading, Shading::Character(_));
+            let depth = variant.coverage != Coverage::Transparent;
+            assert_eq!(
+                SurfaceVariant::DEPTH_WRITING.contains(&variant),
+                depth && variant.shading != Shading::FogCard
+            );
+            assert_eq!(SurfaceVariant::CHARACTER_DEPTH_WRITING.contains(&variant), character && depth);
+            assert_eq!(
+                SurfaceVariant::TRANSPARENT.contains(&variant),
+                !depth && variant != SurfaceVariant::FOG_CARD
+            );
+            let hair = variant.shading == Shading::Character(Part::Hair);
+            let prepass = [
+                &SurfaceVariant::CHARACTER_OPAQUE_BUT_HAIR[..],
+                &SurfaceVariant::CHARACTER_ALPHA_TEST_BUT_HAIR,
+                &SurfaceVariant::HAIR_OPAQUE,
+                &SurfaceVariant::HAIR_ALPHA_TEST,
+            ];
+            let drawn = prepass.iter().filter(|set| set.contains(&variant)).count();
+            assert_eq!(drawn, usize::from(character && depth), "{variant:?} in one character prepass set");
+            assert!(!hair || !SurfaceVariant::CHARACTER_OPAQUE_BUT_HAIR.contains(&variant));
+        }
+        assert_eq!(SurfaceVariant::DEPTH_WRITING, SurfaceVariant::ALL[..18]);
         assert!(SurfaceVariant::EYE_LAYERS.through_hair_index().is_some());
         assert!(!SurfaceVariant::CHARACTER_DEPTH_WRITING.contains(&SurfaceVariant::EYE_LAYERS));
         assert!(SurfaceVariant::THROUGH_HAIR.iter().all(|variant| variant.through_hair_index().is_some()));
-        assert_eq!(SurfaceVariant::ALL.len(), 3 * Shading::SURFACES.len() + 1, "and fog cards");
+        // The six shadings at three coverages, three of the anime character's with the layers too,
+        // and fog cards.
+        assert_eq!(SurfaceVariant::ALL.len(), 3 * (6 + 3) + 1, "and fog cards");
     }
 }

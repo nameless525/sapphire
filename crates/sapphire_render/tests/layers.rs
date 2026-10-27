@@ -24,6 +24,7 @@ use sapphire_assets::material::{
 };
 use sapphire_assets::mesh::{MaterialSlot, Mesh, PositionFormat, Submesh, Vertex, VertexFlags};
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
+use sapphire_math::sh;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
@@ -32,7 +33,6 @@ use sapphire_render::{
     MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, RenderStats, Renderer, SkyGradient,
     ToneCurve, ViewData, Vignette,
 };
-use sapphire_math::sh;
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;

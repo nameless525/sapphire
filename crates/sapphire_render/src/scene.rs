@@ -596,9 +596,9 @@ impl DrawList {
                 debug_assert!(drawn.is_some(), "uploads refuse {family} materials on meshes");
                 let Some((mut variant, outline)) = drawn else { continue };
                 foliage |= variant.shading == Shading::Foliage;
-                if faded && let Shading::Character(part) = variant.shading {
+                if faded && matches!(variant.shading, Shading::Character(_)) {
                     if variant.coverage == Coverage::Opaque {
-                        variant = SurfaceVariant::character(Coverage::AlphaTest, part);
+                        variant = variant.with_coverage(Coverage::AlphaTest);
                     }
                     self.faded += 1;
                 }

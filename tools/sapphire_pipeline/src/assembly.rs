@@ -13,8 +13,9 @@
 //!   `#box`, a unit cube about its origin; `#quad`, a unit square in XZ facing +Y; and `#ground`,
 //!   a disc one across in XZ facing +Y, for open land out to the horizon. Parametric builtins
 //!   (a placement's `shape`, [`Shape`]) build East Asian architecture from numbers: roofs with
-//!   modeled tiles, halls, walls, columns and lanterns (`assembly/shapes.rs`). The pieces'
-//!   triangles are transformed into the assembly's space and merged into one mesh.
+//!   modeled tiles, halls, walls, columns and lanterns, and a market's stalls and carts with
+//!   their goods (`assembly/shapes.rs`). The pieces' triangles are transformed into the
+//!   assembly's space and merged into one mesh.
 //! - **Ground is cut small where cameras stand.** A triangle that crosses a camera's near plane
 //!   is clipped there, to vertices far outside the screen (the near plane is centimeters from
 //!   the eye), and some rasterizers lose it: WARP dropped a 2.4 km grass quad outright and
@@ -102,8 +103,9 @@ mod shapes;
 mod tests;
 
 pub use shapes::{
-    Beam, Column, Coping, Detail, Hall, Lantern, LanternKind, Mount, Opening, OpeningKind, Part, Plinth,
-    Posts, Ridge, Roof, RoofKind, Shape, Side, Tiles, Wall,
+    Awning, Beam, Cart, ClothAwning, ClothKind, Column, Coping, Counter, Detail, Fill, Goods, GoodsKind,
+    Hall, Lantern, LanternKind, Mount, Opening, OpeningKind, Part, Plinth, Posts, Ridge, Roof, RoofKind,
+    Shape, Shelves, Side, Sign, Stall, Surface, TiledAwning, Tiles, Wall, Wheels,
 };
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:

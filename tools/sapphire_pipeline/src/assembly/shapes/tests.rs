@@ -311,6 +311,24 @@ fn bad_parameters_fail_naming_why() {
         ),
         ("Column((radius: 0.3, base: (0.2, 0.3)))", "drum must be wider"),
         ("Lantern((size: (0.0, 0.5)))", "must be positive"),
+        ("Stall((size: (0.4, 1.6)))", "leave no room"),
+        ("Stall((counter: Some((height: 2.0))))", "well under the beams"),
+        ("Stall((shelves: (depth: 0.9)))", "aisle"),
+        ("Stall((awning: Tiles((kind: Skirt(0.5)))))", "hip, hip-and-gable or gable"),
+        ("Stall((awning: Cloth((rise: 0.4, sag: 0.2))))", "sags at most"),
+        ("Stall((awning: Cloth((valance: (1.6, 0.2)))))", "upper half"),
+        ("Stall((sign: Some((size: (3.0, 0.3)))))", "along the front beam"),
+        ("Stall((goods: [(kind: Jar, on: Shelf(2))]))", "no shelf 2"),
+        ("Stall((goods: [(kind: Crate(Fruit), at: (1.0, 0.0), size: 0.5)]))", "reach past"),
+        (
+            "Stall((goods: [(kind: Jar, size: 0.3), (kind: Basket(Greens), at: (0.2, 0.0), size: 0.3)]))",
+            "overlap goods 0",
+        ),
+        ("Stall((shelves: (count: 6), goods: [(kind: Jar, on: Shelf(0), size: 0.28)]))", "too tall"),
+        ("Stall((goods: [(kind: Jar, on: Ground, size: 0.3)]))", "outside the frame"),
+        ("Stall((goods: [(on: Bed)]))", "no bed"),
+        ("Cart((wheels: (spokes: 2)))", "3 to 24 spokes"),
+        ("Cart((goods: [(on: Counter)]))", "bed or the ground"),
     ] {
         let error = read(text).validate().unwrap_err();
         assert!(error.contains(expected), "{text}: {error}");
@@ -330,6 +348,10 @@ fn light_detail_builds_clean_and_lighter() {
         "Lantern((size: (0.42, 0.5), mount: Hang(0.3)))",
         "Lantern((kind: Drum, size: (0.4, 0.5), mount: Bare))",
         "Column((height: 5.15, radius: 0.2, base: (0.36, 0.5), cap: (0.5, 0.25)))",
+        STALL,
+        "Stall((awning: Cloth(()), goods: [(kind: Basket(Greens)), (kind: Crate(Fruit), on: Ground, at: (0.0, 1.3))]))",
+        "Stall((awning: Cloth((kind: Shed)), goods: [(kind: Bolts, at: (-0.5, 0.0), size: 0.3, count: 2)]))",
+        CART,
     ] {
         let shape = read(text);
         let (full, full_parts) = build_in(&shape, Detail::Full);
@@ -341,6 +363,186 @@ fn light_detail_builds_clean_and_lighter() {
         let ((lo, hi), (light_lo, light_hi)) = (bounds(&full), bounds(&light));
         assert!(lo.distance(light_lo) < 0.1 && hi.distance(light_hi) < 0.1, "{text}: the same size");
     }
+}
+
+/// A stall with a little of everything: a tiled hip roof, a sign, goods on the counter, both
+/// shelves and the ground.
+const STALL: &str = "Stall((
+    sign: Some((size: (0.9, 0.3))),
+    goods: [
+        (kind: Basket(Fruit), at: (-0.7, 0.0), size: 0.4),
+        (kind: Crate(Greens), at: (0.0, 0.0), size: 0.45),
+        (kind: Jar, at: (0.75, 0.0), size: 0.3),
+        (kind: Jar, on: Shelf(1), size: 0.22, count: 4),
+        (kind: Bolts, on: Shelf(0), at: (-0.6, 0.0), size: 0.28),
+        (kind: Basket(Empty), on: Ground, at: (0.0, 1.3), size: 0.45),
+    ],
+))";
+
+/// A cart with goods in its bed and a jar beside it.
+const CART: &str = "Cart((
+    goods: [
+        (kind: Crate(Fruit), on: Bed, at: (-0.2, -0.3), size: 0.5),
+        (kind: Basket(Greens), on: Bed, at: (0.25, 0.3), size: 0.4),
+        (kind: Jar, on: Ground, at: (1.1, 0.4), size: 0.35),
+    ],
+))";
+
+#[test]
+fn every_stall_builds_clean_and_in_its_bounds() {
+    for text in [
+        STALL,
+        "Stall((awning: Tiles((kind: Gable)), sign: Some((at: 0.5, size: (0.4, 0.6))), shelves: (count: 0)))",
+        "Stall((size: (3.2, 1.8), awning: Tiles((kind: HipGable(0.55))), counter: None))",
+        "Stall((awning: Cloth(()), goods: [(kind: Basket(Greens), size: 0.3, count: 3)]))",
+        "Stall((awning: Cloth((kind: Shed, valance: (0.0, 0.2))), shelves: (back: false)))",
+    ] {
+        let shape = read(text);
+        let Shape::Stall(stall) = &shape else { unreachable!() };
+        let (triangles, parts) = build(&shape);
+        let (cloth, valance) = match stall.awning {
+            Awning::Cloth(cloth) => (true, cloth.valance[0] > 0.0),
+            Awning::Tiles(_) => (false, false),
+        };
+        for part in ["timber", "plinth"] {
+            assert!(parts.contains(part), "{text}: {part}");
+        }
+        let awning: &[&str] = if cloth { &["cloth"] } else { &["tiles", "ridge", "eaves"] };
+        for part in awning {
+            assert!(parts.contains(part), "{text}: {part}");
+        }
+        let bolts = stall.goods.iter().any(|goods| goods.kind == GoodsKind::Bolts);
+        assert_eq!(parts.contains("valance"), valance || bolts, "{text}");
+        assert_eq!(parts.contains("sign"), stall.sign.is_some(), "{text}");
+        assert_eq!(parts.contains("boards"), stall.counter.is_some(), "{text}");
+        assert_eq!(parts.contains("back"), stall.shelves.back, "{text}");
+        let (lo, hi) = bounds(&triangles);
+        // On the ground, within the awning's reach (and the goods' before it), and under its top.
+        let reach = Vec2::from(stall.size) * 0.5 + Vec2::splat(0.9);
+        assert!(lo.y.abs() < 1e-5, "{text}: {lo}");
+        assert!(
+            lo.x >= -reach.x && hi.x <= reach.x && lo.z >= -reach.y && hi.z <= reach.y + 0.8,
+            "{text}: {lo} {hi}"
+        );
+        assert!(hi.y > stall.height + 0.3 && hi.y < stall.height + 2.0, "{text}: {hi}");
+        assert_eq!(self_fights(&triangles), 0, "{text}");
+    }
+}
+
+#[test]
+fn goods_stand_on_their_surfaces_under_the_roof() {
+    let (triangles, parts) = build(&read(STALL));
+    for part in ["wicker", "pottery", "fruit", "produce", "cloth", "valance", "boards", "sign"] {
+        assert!(parts.contains(part), "{part}");
+    }
+    let down = -Vec3::Y;
+    let hit = |origin: Vec3, direction: Vec3| first(&triangles, origin, direction).map(|(_, part)| part);
+    // The counter's goods stand along its middle, half a meter in: into the basket's heap and
+    // the crate's, onto the jar's lid, and onto the counter's bare top at 0.9 m.
+    assert_eq!(hit(Vec3::new(-0.7, 2.0, 0.5), down), Some("fruit"));
+    assert_eq!(hit(Vec3::new(0.0, 2.0, 0.5), down), Some("produce"));
+    assert_eq!(hit(Vec3::new(0.75, 2.0, 0.5), down), Some("pottery"));
+    let (distance, part) = first(&triangles, Vec3::new(1.05, 2.0, 0.5), down).unwrap();
+    assert!(part == "timber" && (2.0 - distance - 0.9).abs() < 1e-4, "the counter's top: {part} {distance}");
+    // The roof's ridge over it all; from the front, the empty basket on the ground and the
+    // counter's boards behind it.
+    assert_eq!(hit(Vec3::new(0.0, 5.0, 0.0), down), Some("ridge"));
+    assert_eq!(hit(Vec3::new(0.1, 0.1, 3.0), -Vec3::Z), Some("wicker"));
+    assert_eq!(hit(Vec3::new(0.6, 0.4, 3.0), -Vec3::Z), Some("boards"));
+    // Every basket's and jar's lowest point is on a surface: the ground, the counter or a shelf.
+    let surfaces = [0.0, 0.9, 0.72, 1.44];
+    for part in ["wicker", "pottery"] {
+        let lowest = triangles
+            .iter()
+            .filter(|t| Part::ALL[t.material].name() == part)
+            .flat_map(|t| t.positions)
+            .map(|p| p.y)
+            .fold(f32::MAX, f32::min);
+        assert!(surfaces.iter().any(|s| (lowest - s).abs() < 1e-4), "{part} stands at {lowest}");
+    }
+}
+
+#[test]
+fn cloth_awnings_sweep_up_at_their_corners_and_lie_over_their_poles() {
+    let shape = read("Stall((awning: Cloth(())))");
+    let Shape::Stall(stall) = &shape else { unreachable!() };
+    let Awning::Cloth(cloth) = stall.awning else { unreachable!() };
+    let (triangles, _) = build(&shape);
+    // Along the front eave's edge: highest near the corners.
+    let eave = 0.5 * stall.size[1] + cloth.overhang;
+    let edge = |x0: f32, x1: f32| {
+        triangles
+            .iter()
+            .filter(|t| Part::ALL[t.material] == Part::Cloth)
+            .flat_map(|t| t.positions)
+            .filter(|p| (p.z - eave).abs() < 1e-4 && p.x.abs() >= x0 && p.x.abs() <= x1)
+            .map(|p| p.y)
+            .fold(f32::MIN, f32::max)
+    };
+    let (middle, corner) = (edge(0.0, 0.3), edge(1.3, 10.0));
+    assert!(corner > middle + 0.6 * cloth.sweep, "the corners sweep up: {corner} against {middle}");
+    let hits = |origin: Vec3| {
+        let mut hits: Vec<(f32, &str)> = triangles
+            .iter()
+            .filter_map(|t| {
+                ray_triangle(origin, -Vec3::Y, t.positions).map(|d| (d, Part::ALL[t.material].name()))
+            })
+            .collect();
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        hits
+    };
+    // Down between the ridge and the eaves: the cloth's top and underside, over the frame's
+    // top, then the counter.
+    let through = hits(Vec3::new(0.3, 5.0, 0.4));
+    assert_eq!((through[0].1, through[1].1), ("cloth", "cloth"), "{through:?}");
+    assert!(through[2].1 != "cloth" && 5.0 - through[1].0 > stall.height, "{through:?}");
+    // Down beside the ridge: the cloth, then the ridge pole just under it.
+    let ridge = hits(Vec3::new(0.3, 5.0, 0.01));
+    assert_eq!((ridge[0].1, ridge[1].1, ridge[2].1), ("cloth", "cloth", "timber"), "{ridge:?}");
+    assert!(ridge[2].0 - ridge[1].0 < 0.03, "the pole holds the cloth: {ridge:?}");
+}
+
+#[test]
+fn carts_stand_level_on_spoked_wheels() {
+    let shape = read(CART);
+    let Shape::Cart(cart) = &shape else { unreachable!() };
+    let (triangles, parts) = build(&shape);
+    for part in ["timber", "boards", "iron", "fruit", "produce", "wicker", "pottery"] {
+        assert!(parts.contains(part), "{part}");
+    }
+    let radius = cart.wheels.radius;
+    // The tyres reach the ground and no further from the axle than the wheels' radius.
+    let axle_z = -0.12 * cart.bed[1];
+    let tyre: Vec<Vec3> =
+        triangles.iter().filter(|t| Part::ALL[t.material] == Part::Iron).flat_map(|t| t.positions).collect();
+    assert!(tyre.iter().all(|p| Vec2::new(p.y - radius, p.z - axle_z).length() < radius + 1e-4));
+    let lowest = tyre.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    assert!(lowest.abs() < 1e-4, "the tyres meet the ground: {lowest}");
+    let (lo, hi) = bounds(&triangles);
+    assert!(lo.y.abs() < 1e-4 && hi.z <= 0.5 * cart.bed[1] + cart.shafts + 1e-4, "{lo} {hi}");
+    // Along the axle into the left wheel, a quarter meter out from its middle: a spoke at a
+    // spoke's angle, and between spokes through the wheel.
+    let wheel_x = 0.5 * cart.bed[0] + 0.05 + 0.5 * cart.wheels.rim[1];
+    let at = |angle: f32| {
+        let out = Vec3::new(0.0, -angle.cos(), -angle.sin());
+        first(&triangles, Vec3::new(-3.0, radius, axle_z) + 0.25 * out, Vec3::X)
+    };
+    let pitch = std::f32::consts::TAU / cart.wheels.spokes as f32;
+    let (distance, part) = at(0.5 * pitch).unwrap();
+    assert!(part == "timber" && (distance - (3.0 - wheel_x)).abs() < 0.05, "a spoke: {part} at {distance}");
+    let between = at(pitch).map_or(f32::MAX, |(distance, _)| distance);
+    assert!(between > 3.0 - wheel_x + 0.1, "between spokes, through the wheel: {between}");
+    assert_eq!(self_fights(&triangles), 0);
+}
+
+/// The nearest triangle along `direction` from `origin`: its distance and part.
+fn first(triangles: &[PieceTriangle], origin: Vec3, direction: Vec3) -> Option<(f32, &'static str)> {
+    triangles
+        .iter()
+        .filter_map(|t| {
+            ray_triangle(origin, direction, t.positions).map(|d| (d, Part::ALL[t.material].name()))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
 }
 
 /// The distance along `direction` (unit) from `origin` to where it meets `triangle` from its

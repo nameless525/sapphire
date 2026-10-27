@@ -1,5 +1,6 @@
-//! Parametric builtins (M1 X1 part 2): East Asian architecture an assembly builds from numbers,
-//! sized per building, where a kit would ship fixed pieces.
+//! Parametric builtins (M1 X1 part 2): East Asian architecture, and a market's stalls and carts
+//! (part 2f), an assembly builds from numbers, sized per building, where a kit would ship fixed
+//! pieces.
 //!
 //! A placement's `shape` (in place of a `piece`) is one of [`Shape`]'s, each a builtin whose
 //! parameters say its size and form:
@@ -12,6 +13,9 @@
 //! - `#wall` ([`Wall`]): a freestanding wall with a tiled coping, its openings through it.
 //! - `#column` ([`Column`]): a round timber column on a stone drum, a block on its top.
 //! - `#lantern` ([`Lantern`]): paper lanterns, round, drum or square, hanging or on a post.
+//! - `#stall` ([`Stall`]): a market stall, posts and beams under a tiled or cloth awning, a
+//!   counter, shelves and a sign, with goods on them ([`Goods`]: baskets, crates, jars, cloth).
+//! - `#cart` ([`Cart`]): a hand cart, an open bed on two spoked wheels, with goods in it.
 //!
 //! Every shape is built in its own meters about its origin (a building's walls stand on it, a
 //! roof sits on its walls' tops), so a placement normally places it unscaled; a scale scales its
@@ -25,25 +29,32 @@
 //! The desktop cook builds shapes in full detail and the mobile cook in a lighter one
 //! ([`Detail`]), about half the triangles; both cook clean under the coplanar check.
 //!
-//! Surfaces that curve (roof tiles, soffits, lanterns, columns) carry texture coordinates of
-//! their own, in meters along and down them ([`ShapeUv`]); flat faces are projected by their
-//! slot as kit pieces are. Each corner may carry occlusion of the shape's own (tile channels,
-//! soffits toward the wall, reveals toward their back), multiplied into the assembly's.
+//! Surfaces that curve (roof tiles, soffits, lanterns, columns, awnings' cloth, goods) carry
+//! texture coordinates of their own, in meters along and down them ([`ShapeUv`]); flat faces are
+//! projected by their slot as kit pieces are. Each corner may carry occlusion of the shape's own
+//! (tile channels, soffits toward the wall, reveals toward their back, a stall's inside),
+//! multiplied into the assembly's.
 
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
 use super::{PieceTriangle, ShapeUv};
 
+mod cart;
+mod goods;
 mod polygon;
 mod props;
 mod roof;
+mod stall;
 #[cfg(test)]
 mod tests;
 mod walls;
 
+pub use cart::{Cart, Wheels};
+pub use goods::{Fill, Goods, GoodsKind, Surface};
 pub use props::{Column, Lantern, LanternKind, Mount};
 pub use roof::{Ridge, Roof, RoofKind, Tiles};
+pub use stall::{Awning, ClothAwning, ClothKind, Counter, Shelves, Sign, Stall, TiledAwning};
 pub use walls::{Beam, Coping, Hall, Opening, OpeningKind, Plinth, Posts, Side, Wall};
 
 /// Meters across one repeat of plaster's map along a wall: plaster runs once up each wall, from
@@ -59,7 +70,9 @@ pub const TILE_COURSES: f32 = 1.2;
 
 /// How finely shapes are built: the desktop cook's full detail, or the mobile cook's lighter one
 /// (tile rows of two faces each and 40% wider apart, fewer rows up roofs, fewer samples along
-/// ridges, at most 8 sides round columns and 6 round lanterns), about half the triangles.
+/// ridges, at most 8 sides round columns and 6 round lanterns; cloth awnings on half the rows
+/// and columns, goods turned on three fifths the sides with no fruit on their heaps, 12 sides
+/// round wheels), about half the triangles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Detail {
     #[default]
@@ -75,6 +88,8 @@ pub enum Shape {
     Wall(Wall),
     Column(Column),
     Lantern(Lantern),
+    Stall(Stall),
+    Cart(Cart),
 }
 
 impl Shape {
@@ -86,6 +101,8 @@ impl Shape {
             Self::Wall(_) => "#wall",
             Self::Column(_) => "#column",
             Self::Lantern(_) => "#lantern",
+            Self::Stall(_) => "#stall",
+            Self::Cart(_) => "#cart",
         }
     }
 
@@ -97,6 +114,8 @@ impl Shape {
             Self::Wall(wall) => wall.validate(),
             Self::Column(column) => column.validate(),
             Self::Lantern(lantern) => lantern.validate(),
+            Self::Stall(stall) => stall.validate(),
+            Self::Cart(cart) => cart.validate(),
         }
     }
 
@@ -110,6 +129,8 @@ impl Shape {
             Self::Wall(wall) => wall.build(&mut mesh, detail)?,
             Self::Column(column) => column.build(&mut mesh, detail),
             Self::Lantern(lantern) => lantern.build(&mut mesh, detail),
+            Self::Stall(stall) => stall.build(&mut mesh, detail)?,
+            Self::Cart(cart) => cart.build(&mut mesh, detail)?,
         }
         Ok(mesh.triangles)
     }
@@ -143,12 +164,32 @@ pub enum Part {
     Door,
     /// Lanterns' paper.
     Paper,
-    /// Lanterns' caps, frames and cords.
+    /// Lanterns' caps, frames and cords, and signs' cords.
     Frame,
+    /// Boards: stalls' counters, crates, carts' beds.
+    Boards,
+    /// Stalls' boarded backs.
+    Back,
+    /// Awnings' cloth, and the top roll of a stack of cloth for sale.
+    Cloth,
+    /// Awnings' valances, and the lower rolls of a stack of cloth.
+    Valance,
+    /// Signs' boards.
+    Sign,
+    /// Baskets.
+    Wicker,
+    /// Jars.
+    Pottery,
+    /// Heaps of greens.
+    Produce,
+    /// Heaps of fruit.
+    Fruit,
+    /// Carts' tyres.
+    Iron,
 }
 
 impl Part {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 23] = [
         Self::Plaster,
         Self::Plinth,
         Self::Trim,
@@ -162,6 +203,16 @@ impl Part {
         Self::Door,
         Self::Paper,
         Self::Frame,
+        Self::Boards,
+        Self::Back,
+        Self::Cloth,
+        Self::Valance,
+        Self::Sign,
+        Self::Wicker,
+        Self::Pottery,
+        Self::Produce,
+        Self::Fruit,
+        Self::Iron,
     ];
 
     pub fn name(self) -> &'static str {
@@ -179,6 +230,16 @@ impl Part {
             Self::Door => "door",
             Self::Paper => "paper",
             Self::Frame => "frame",
+            Self::Boards => "boards",
+            Self::Back => "back",
+            Self::Cloth => "cloth",
+            Self::Valance => "valance",
+            Self::Sign => "sign",
+            Self::Wicker => "wicker",
+            Self::Pottery => "pottery",
+            Self::Produce => "produce",
+            Self::Fruit => "fruit",
+            Self::Iron => "iron",
         }
     }
 
@@ -541,6 +602,36 @@ impl Mesh {
                 let (a, b) = (middle + directions[k] * radius, middle + directions[k + 1] * radius);
                 self.flat(part, [middle, a, b], out, [1.0; 3]);
             }
+        }
+    }
+
+    /// A box section from `a` to `b`, `size[0]` across square to `up` and `size[1]` along it:
+    /// its four sides and, where `caps` says, its ends.
+    pub fn bar(&mut self, part: Part, a: Vec3, b: Vec3, size: [f32; 2], up: Vec3, caps: [bool; 2]) {
+        let along = (b - a).normalize();
+        let across = along.cross(up).normalize();
+        let (side, lift) = (across * (0.5 * size[0]), across.cross(along) * (0.5 * size[1]));
+        let section = |p: Vec3| [p - side - lift, p + side - lift, p + side + lift, p - side + lift];
+        let (start, end) = (section(a), section(b));
+        for k in 0..4 {
+            let (i, j) = (k, (k + 1) % 4);
+            let out = 0.5 * (start[i] + start[j]) - a;
+            self.quad(part, [start[i], start[j], end[j], end[i]], out, [1.0; 4]);
+        }
+        if caps[0] {
+            self.quad(part, start, -along, [1.0; 4]);
+        }
+        if caps[1] {
+            self.quad(part, end, along, [1.0; 4]);
+        }
+    }
+
+    /// `other`'s triangles, turned by `rotation` and moved by `offset`.
+    pub fn append(&mut self, other: Mesh, rotation: Quat, offset: Vec3) {
+        for mut triangle in other.triangles {
+            triangle.positions = triangle.positions.map(|p| rotation * p + offset);
+            triangle.normals = triangle.normals.map(|n| rotation * n);
+            self.triangles.push(triangle);
         }
     }
 

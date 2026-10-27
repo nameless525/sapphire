@@ -435,7 +435,7 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
         highlight: 0.25,
         highlight_reveal: 0.1,
         blush_color: [1.0, 0.5, 0.6],
-        hair_shadow: HairShadow { distance: 0.02, strength: 0.75 },
+        hair_shadow: HairShadow { distance: 0.02, strength: 0.75, softness: 0.01 },
         through_hair: Some(ThroughHair { opacity: 0.6, fade_yaw: 60.0, fade_pitch: 90.0, distance: 0.1 }),
         ..FaceShading::new(id(RAMP))
     };
@@ -461,7 +461,18 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
     assert_eq!(params.modes[0], bound);
     assert_eq!(params.swizzles[3] >> SWIZZLE_BITS, swizzle_code(RA01), "slot 7, the expression map's");
     assert!(material.material_flags().contains(MaterialFlags::FACE | MaterialFlags::THROUGH_HAIR));
-    assert_eq!(params.hair_shadow, [0.02, 0.75, 0.0, 0.0]);
+    assert_eq!(params.hair_shadow, [0.02, 0.75, 0.01, 0.0]);
+    // A block edited after packing, through a copy out of the archive, as the sandbox derives
+    // softened faces.
+    let cooked = material.to_cooked().unwrap();
+    let mut copy = Material::read(&cooked).unwrap().to_material().unwrap();
+    assert_eq!(copy, material);
+    assert!(copy.edit_anime_character(|params| params.hair_shadow[2] = 0.05));
+    let edited: AnimeCharacterParams = bytemuck::pod_read_unaligned(&copy.params);
+    assert_eq!(edited, AnimeCharacterParams { hair_shadow: [0.02, 0.75, 0.05, 0.0], ..params });
+    let mut other = Material { family: MaterialFamily::Environment, ..copy.clone() };
+    assert!(!other.edit_anime_character(|params| params.hair_shadow[2] = 1.0), "another family");
+    assert_eq!(other.params, copy.params, "left as it was");
     let [opacity, yaw, pitch, distance] = params.through_hair;
     assert_eq!((opacity, distance), (0.6, 0.1));
     assert!((yaw - 0.5).abs() < 1e-6 && pitch.abs() < 1e-6, "the fades' cosines: {yaw}, {pitch}");
@@ -494,6 +505,7 @@ fn face_materials_bind_their_maps_and_pack_their_settings() {
     assert!(invalid(|f| f.blush_color = [2.0, -1.0, 0.0]).starts_with("surface.blush_color"));
     assert!(invalid(|f| f.hair_shadow.strength = 1.5).starts_with("surface.hair_shadow.strength"));
     assert!(invalid(|f| f.hair_shadow.distance = -0.1).starts_with("surface.hair_shadow.distance"));
+    assert!(invalid(|f| f.hair_shadow.softness = f32::NAN).starts_with("surface.hair_shadow.softness"));
     let through = |edit: fn(&mut ThroughHair)| {
         let mut through = ThroughHair::default();
         edit(&mut through);

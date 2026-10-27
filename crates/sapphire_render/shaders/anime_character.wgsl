@@ -114,6 +114,12 @@
 //   prepass there: the share of its own hair in front of the face, bilinearly weighted, × the
 //   material's strength occludes the split as a cast shadow would, so the face darkens into its
 //   own authored shadow tone. Desktop and mobile alike: the prepass is on every tier.
+//   Its soft edge (M1 C8; `soft_hair_cover`): with the material's softness, the face looks at
+//   HAIR_SHADOW_TAPS reaches spread evenly over that width (meters at the face's depth) around
+//   the distance instead, and its light split blends from the open face's to the fully shadowed
+//   face's by the share of hair they find, so the edge fades over that width along the light's
+//   screen direction rather than snapping to the split. Its sides, along the light, stay hard.
+//   Without a softness the one look is exactly as before.
 // - Masks (`character_maps::face_mask`, `face_expression`): always-lit eyes and brows; a face
 //   highlight that brightens the lit tone away from the shadow's edge; a nose line in the
 //   region's outline color that appears as the head turns from the camera; blush tinting the
@@ -234,6 +240,8 @@ const HAIR_HIGHLIGHT_SHADOW: f32 = 0.3;
 // How far in front of a face, in meters, its own hair must be to shadow it: bangs that rest on the
 // forehead cast nothing where they touch it.
 const HAIR_SHADOW_BIAS: f32 = 0.005;
+// The bangs' shadow's soft edge (M1 C8): how many reaches the face looks toward the light at.
+const HAIR_SHADOW_TAPS: u32 = 4u;
 // Eyes through hair write the hair's depth × this: a little nearer, so the main pass's depth test
 // passes where the hair is the nearest surface across the pixel's samples.
 const THROUGH_HAIR_DEPTH_NUDGE: f32 = 1.002;
@@ -520,17 +528,49 @@ fn hair_visibility(
     let light = (view.view_from_world * vec4<f32>(toward_light, 0.0)).xy;
     let pixels_per_meter = 0.5 * view.clip_from_view[1][1] * view.viewport.y / distance;
     let at = pixel + vec2<f32>(light.x, -light.y) * (shadow.x * pixels_per_meter);
+    let nearer = depth_at_distance(max(distance - HAIR_SHADOW_BIAS, 1e-4));
+    return 1.0 - hair_cover(character, at, nearer) * shadow.y;
+}
+
+// The share of character `character`'s hair nearer than the depth `nearer` around `at`
+// (framebuffer coordinates) in the character prepass, bilinearly weighted.
+fn hair_cover(character: u32, at: vec2<f32>, nearer: f32) -> f32 {
     let uv = at * view.viewport.zw;
     let ids = textureGather(0, character_ids, character_sampler, uv);
     let depths = textureGather(character_depth, character_sampler, uv);
     let hair = vec4<u32>(character_id(character, CHARACTER_SURFACE_HAIR));
-    let nearer = depth_at_distance(max(distance - HAIR_SHADOW_BIAS, 1e-4));
     let covered = select(vec4<f32>(0.0), vec4<f32>(1.0), (ids == hair) & (depths > vec4<f32>(nearer)));
     // Bilinear weights of the gathered texels, in gather order: (u0, v1), (u1, v1), (u1, v0),
     // (u0, v0).
     let f = fract(at - 0.5);
     let weights = vec4<f32>((1.0 - f.x) * f.y, f.x * f.y, f.x * (1.0 - f.y), (1.0 - f.x) * (1.0 - f.y));
-    return 1.0 - dot(covered, weights) * shadow.y;
+    return dot(covered, weights);
+}
+
+// The bangs' shadow's soft edge (M1 C8; see the top of this file): the share of the character's
+// hair a face at `pixel` and `position` finds toward the light, averaged over HAIR_SHADOW_TAPS
+// reaches spread evenly over the material's softness around its distance (none nearer than the
+// face itself).
+fn soft_hair_cover(
+    material: u32,
+    character: u32,
+    pixel: vec2<f32>,
+    position: vec3<f32>,
+    toward_light: vec3<f32>,
+) -> f32 {
+    let shadow = materials[material].hair_shadow;
+    let distance = max(view_distance(position), 1e-4);
+    let light = (view.view_from_world * vec4<f32>(toward_light, 0.0)).xy;
+    let pixels_per_meter = 0.5 * view.clip_from_view[1][1] * view.viewport.y / distance;
+    let along = vec2<f32>(light.x, -light.y) * pixels_per_meter;
+    let nearer = depth_at_distance(max(distance - HAIR_SHADOW_BIAS, 1e-4));
+    var cover = 0.0;
+    for (var tap = 0u; tap < HAIR_SHADOW_TAPS; tap++) {
+        let spread = (f32(tap) + 0.5) / f32(HAIR_SHADOW_TAPS) - 0.5;
+        let reach = max(shadow.x + shadow.z * spread, 0.0);
+        cover += hair_cover(character, pixel + along * reach, nearer);
+    }
+    return cover / f32(HAIR_SHADOW_TAPS);
 }
 
 // The eye and iris layers' parallax refraction fake (M1 C6; see the top of this file): `uv`
@@ -1132,6 +1172,10 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // The environment's shadow over a face or an eye, whole (1 for the body, which takes
     // `cast_shadow`).
     var head_visibility = 1.0;
+    // The bangs' soft shadow (M1 C8): the share of hair found, and the light split's input
+    // under the full shadow, which the split blends toward by that share.
+    var soft_hair = 0.0;
+    var hair_hidden = 0.0;
     if PERMUTATION_FACE {
         // The face map shadows a face; an environment shadow reaches it whole, and the bangs'
         // from the character prepass, as occlusion of the split, never shadow-map texels on it.
@@ -1140,7 +1184,14 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         var hair = 1.0;
         let hair_shadow = materials[material].hair_shadow;
         if in.character != 0u && hair_shadow.x > 0.0 && hair_shadow.y > 0.0 {
-            hair = hair_visibility(material, in.character, in.clip_position.xy, in.world_position, key_direction);
+            if hair_shadow.z > 0.0 {
+                let pixel = in.clip_position.xy;
+                soft_hair = soft_hair_cover(material, in.character, pixel, in.world_position, key_direction);
+                let hidden = surface.occlusion * head_visibility * (1.0 - hair_shadow.y);
+                hair_hidden = split_input(face_n_dot_l(face_lit_margin, surface.split.x), hidden, surface.shadow_bias);
+            } else {
+                hair = hair_visibility(material, in.character, in.clip_position.xy, in.world_position, key_direction);
+            }
         }
         let face_occlusion = surface.occlusion * head_visibility * hair;
         x = split_input(face_n_dot_l(face_lit_margin, surface.split.x), face_occlusion, surface.shadow_bias);
@@ -1156,6 +1207,12 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     let width = max(softness, 0.5 * fwidth(x));
     var lit = bias_locks(light_step(surface.split.x, width, x), surface.shadow_bias);
     if PERMUTATION_FACE {
+        // The bangs' soft shadow (M1 C8): toward the fully shadowed face's split by the share of
+        // hair found, so the edge fades instead of snapping to the split.
+        if soft_hair > 0.0 {
+            let hidden = bias_locks(light_step(surface.split.x, width, hair_hidden), surface.shadow_bias);
+            lit = mix(lit, hidden, soft_hair);
+        }
         // Always-lit eyes and brows hold against the face map and the bangs' shadow, but go into
         // an environment shadow with the rest of the face.
         lit = max(lit, always_lit * head_visibility);

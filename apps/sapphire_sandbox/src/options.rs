@@ -81,6 +81,9 @@ pub(crate) struct Options {
     pub materials: bool,
     /// `--two-sided`: place the two-sided garment samples on the character's left (M1 C8).
     pub two_sided: bool,
+    /// `--hair-shadow-softness <meters>`: soften every face material's bangs' shadow to an edge
+    /// this wide (M1 C8).
+    pub hair_shadow_softness: Option<f32>,
     /// `--fade <0..1>`: draw the characters at this opacity, through the proximity fade's
     /// dither (M1 C7).
     pub fade: Option<f32>,
@@ -90,7 +93,8 @@ pub(crate) struct Options {
     /// in this layout (`lights` without `--face-layout`; the layouts are `FaceLayout::NAMES`:
     /// lights, hair, highlights, turn, gi, gi-clamped, eyes, eyes-turned, gaze and blink).
     pub faces: Option<FaceLayout>,
-    /// `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character (M1 C5).
+    /// `--rim-rig angles|backlit|folded`: show the rim look-dev rig instead of the character
+    /// (M1 C5; `folded`, M1 C8).
     pub rim_rig: Option<RimLayout>,
     /// `--environment`: place the character in the courtyard, the environment shader's test
     /// scene.
@@ -485,6 +489,15 @@ impl Options {
                 "--swatches" => options.swatches = true,
                 "--materials" => options.materials = true,
                 "--two-sided" => options.two_sided = true,
+                "--hair-shadow-softness" => {
+                    let softness: f32 = number(&value("--hair-shadow-softness")?, "--hair-shadow-softness")?;
+                    if !(softness.is_finite() && softness >= 0.0) {
+                        return Err(format!(
+                            "--hair-shadow-softness expects meters, at least 0, got {softness}"
+                        ));
+                    }
+                    options.hair_shadow_softness = Some(softness);
+                }
                 "--fade" => {
                     let opacity: f32 = number(&value("--fade")?, "--fade")?;
                     if !(0.0..=1.0).contains(&opacity) {
@@ -502,10 +515,9 @@ impl Options {
                 }
                 "--rim-rig" => {
                     let raw = value("--rim-rig")?;
-                    options.rim_rig = Some(
-                        RimLayout::from_name(&raw)
-                            .ok_or_else(|| format!("--rim-rig expects angles or backlit, got {raw:?}"))?,
-                    );
+                    options.rim_rig = Some(RimLayout::from_name(&raw).ok_or_else(|| {
+                        format!("--rim-rig expects angles, backlit or folded, got {raw:?}")
+                    })?);
                 }
                 "--environment" => options.environment = true,
                 "--foliage" => {
@@ -945,6 +957,15 @@ mod tests {
         assert!(unknown.is_empty());
         assert!(options.two_sided && !Options::default().two_sided);
         assert!(parse(&["--two-sided", "--swatches"]).is_err(), "both stand on the character's left");
+    }
+
+    #[test]
+    fn hair_shadow_softness_parses_meters() {
+        assert_eq!(parse(&["--hair-shadow-softness", "0.02"]).unwrap().0.hair_shadow_softness, Some(0.02));
+        assert_eq!(Options::default().hair_shadow_softness, None);
+        for wrong in ["-0.01", "NaN", "inf", "soft"] {
+            assert!(parse(&["--hair-shadow-softness", wrong]).is_err(), "{wrong}");
+        }
     }
 
     #[test]

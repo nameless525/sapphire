@@ -1,7 +1,7 @@
 //! Tests of the character prepass's readers that need a GPU (M1 C5): the depth-offset rim's
 //! width, light gate, region mask and overlap, and its camera rim (M1 C8); the bangs' shadow on
-//! faces; eyes through hair, its fade with the view, the IDs it keys on and the fog over it; and
-//! the prepass's counters.
+//! faces, and its soft edge (M1 C8); eyes through hair, its fade with the view, the IDs it keys
+//! on and the fog over it; and the prepass's counters.
 //! Run with
 //! `cargo test -p sapphire_render --test rim_hair -- --ignored`.
 //!
@@ -634,10 +634,16 @@ const FACE_SHADOW: [f32; 3] = [0.2, 0.175, 0.15];
 
 /// A face that the bangs shade from `distance` meters, its SDF map always lit.
 fn face_material(distance: f32) -> AnimeCharacterMaterial {
+    soft_face_material(distance, 0.0)
+}
+
+/// A face that the bangs shade from `distance` meters with an edge `softness` meters wide, its
+/// SDF map always lit.
+fn soft_face_material(distance: f32, softness: f32) -> AnimeCharacterMaterial {
     let face = FaceShading {
         softness: 0.0,
         highlight: 0.0,
-        hair_shadow: HairShadow { distance, strength: 1.0 },
+        hair_shadow: HairShadow { distance, strength: 1.0, softness },
         ..FaceShading::new(id(SDF))
     };
     flat_material(CharacterSurface::Face(face), FACE)
@@ -689,6 +695,35 @@ fn the_bangs_shadow_falls_on_the_face_away_from_the_key_light() {
     let frame = harness.render();
     assert_near(face_at(&frame, 0.0, -0.08), FACE, "no shadow at distance 0");
     assert_eq!(frame.stats.character_prepass.hair_shadow_characters, 0);
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn the_bangs_shadow_fades_over_its_softness() {
+    let mut harness = Harness::new();
+    let sdf = harness.always_lit_sdf();
+    harness.view(Vec3::Z, 1.0 / 19f32.to_radians().tan(), 38.0);
+    let (face, _) = bangs_scene(&mut harness, &sdf, toward(0.0, 60.0));
+    let face_at = |frame: &Frame, y: f32| frame.at(Vec3::new(0.0, y, 0.0));
+    // Hard, as before: the edge sin 60° × 0.3 ≈ 0.26 m below the patch.
+    let hard = harness.render();
+    assert_near(face_at(&hard, -0.215), FACE_SHADOW, "hard: inside the edge");
+    assert_near(face_at(&hard, -0.3), FACE, "hard: outside it");
+
+    // Softened over 0.2 m: the face looks at four reaches, 0.3 ± 0.075 and ± 0.025 m, each
+    // sin 60° of it down the screen below the patch, whose lower edge lies at y = 0. A point
+    // takes the shadow's share of those that find the patch.
+    harness.update_with(face, &soft_face_material(0.3, 0.2), Some(&sdf));
+    let soft = harness.render();
+    let drops = [0.225f32, 0.275, 0.325, 0.375].map(|reach| reach * 60f32.to_radians().sin());
+    for y in [-0.1, -0.15, -0.215, -0.26, -0.3, -0.36, -0.42] {
+        let cover = drops.iter().filter(|&&drop| y + drop >= 0.0).count() as f32 / drops.len() as f32;
+        assert_near(face_at(&soft, y), mix(FACE, FACE_SHADOW, cover), &format!("{cover} at {y}"));
+    }
+    // Beside the patch and above it the face stays lit, as with the hard edge.
+    for (x, y) in [(0.45, 0.25), (0.0, 0.7)] {
+        assert_near(soft.at(Vec3::new(x, y, 0.0)), FACE, "beside or above");
+    }
 }
 
 /// Eye and hair colors for the eyes-through-hair scenes.

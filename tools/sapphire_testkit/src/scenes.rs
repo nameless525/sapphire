@@ -85,7 +85,10 @@ pub struct Scene {
 /// hour, with and without the hue, and pin what the face scenes pin; the folded rim scenes light
 /// the rim scenes' figures from behind through the gameplay rig's limits (`--rim-rig folded`),
 /// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin.
-pub fn scenes() -> [Scene; 92] {
+/// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin; the soft
+/// bangs' shadow scene softens the face rig's faces (`--hair-shadow-softness`) under the hair
+/// scene's keys and pins what it pins.
+pub fn scenes() -> [Scene; 93] {
     [
         Scene {
             name: "turntable-start",
@@ -2232,6 +2235,32 @@ pub fn scenes() -> [Scene; 92] {
                 "folded",
                 "--camera-rim",
                 "1",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The bangs' shadow of `hair-shadow` with a soft edge as wide as its reach (M1 C8): it
+        // fades in along each key's direction below the strands instead of snapping to the face's
+        // light split.
+        Scene {
+            name: "hair-shadow-soft",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--faces",
+                "--face-layout",
+                "hair",
+                "--hair-shadow-softness",
+                "0.03",
                 "--plain-post",
                 "--plain-sky",
                 "--aa",

@@ -96,9 +96,14 @@
 //!   four-fold (`gi`), or the same with its HSV clamp's ceilings pulled down into the GI's range
 //!   (`gi-clamped`). Then the eyes' layouts (M1 C6), framed close on the eyes: one head facing the
 //!   camera, one turned to three-quarter, heads looking around, and lids half closed and closed.
-//! - `--rim-rig angles|backlit`: show the rim look-dev rig instead of the character: a row of it
-//!   before dark and bright panels, each figure lit from its own angle around it, from the front
-//!   round to behind (`angles`) or from behind at several heights (`backlit`; M1 C5).
+//! - `--hair-shadow-softness <meters>`: soften every face material's bangs' shadow to an edge
+//!   this wide (M1 C8), as it loads: the face rig's heads (`--face-layout hair` shows it) and the
+//!   look-dev character.
+//! - `--rim-rig angles|backlit|folded`: show the rim look-dev rig instead of the character: a row
+//!   of it before dark and bright panels, each figure lit from its own angle around it, from the
+//!   front round to behind (`angles`) or from behind at several heights (`backlit`; M1 C5), or
+//!   from behind through the gameplay rig's limits, which fold the keys round toward the camera
+//!   (`folded`; M1 C8).
 //! - `--environment`: place the character in the courtyard, the environment shader's test scene
 //!   (rolling ground, boulders, a colonnade, a wall and paper lanterns in environment materials;
 //!   M1 W4), seen from farther back, with fog cards (mist across the valley, haze among the

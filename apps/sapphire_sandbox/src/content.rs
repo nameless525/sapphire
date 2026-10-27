@@ -17,7 +17,9 @@
 //! they name ([`Content::layer_materials`]). With `--faces` it loads the face test head
 //! ([`faces::HEAD`]), whose face slot the head's sidecar binds to a face material, which names an
 //! SDF face map, a face mask and an expression map: all of it cooked content
-//! ([`Content::face_head`]). With `--hard-edges` it loads the hard-edged outline sample
+//! ([`Content::face_head`]); with `--hair-shadow-softness`, face materials upload with their
+//! bangs' shadow softened (M1 C8, [`Content::soften_hair_shadows`]), a copy of the cooked
+//! material edited. With `--hard-edges` it loads the hard-edged outline sample
 //! ([`outlines::HARD_EDGES`], [`Content::hard_edges`]).
 //!
 //! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), or the one the scene
@@ -171,6 +173,8 @@ struct GpuAssets {
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
+    /// The width faces' bangs' shadows soften to as they upload (`--hair-shadow-softness`).
+    hair_shadow_softness: Option<f32>,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
 }
@@ -185,6 +189,7 @@ impl GpuAssets {
             character,
             character_mesh: None,
             keep_character,
+            hair_shadow_softness: None,
             probe_grid: None,
         }
     }
@@ -208,6 +213,18 @@ impl GpuAssets {
             let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
             self.textures.insert(id, Held { slot, generation, object });
         } else if let Some(material) = upload.get::<Material>() {
+            // A face softened for `--hair-shadow-softness` (M1 C8): a copy, edited and read back.
+            let softened = match self.hair_shadow_softness {
+                Some(softness) => {
+                    let mut copy = material.to_material()?;
+                    faces::soften_hair_shadow(&mut copy, softness).then(|| copy.to_cooked()).transpose()?
+                }
+                None => None,
+            };
+            let material = match &softened {
+                Some(bytes) => Material::read(bytes)?,
+                None => material,
+            };
             let textures = &self.textures;
             let resolve = |texture| textures.get(&texture).map(|held| &held.object);
             match self.materials.get_mut(&id).filter(|held| held.slot == slot) {
@@ -411,6 +428,13 @@ impl Content {
     /// (the stage's figure and pedestal). Call before [`Self::character`].
     pub fn keep_character_mesh(&mut self) {
         self.gpu.keep_character = true;
+    }
+
+    /// Softens every face material's bangs' shadow to an edge `softness` meters wide as it
+    /// uploads (`--hair-shadow-softness`, M1 C8): the face test head's and the look-dev
+    /// character's. Call before loading them.
+    pub fn soften_hair_shadows(&mut self, softness: f32) {
+        self.gpu.hair_shadow_softness = Some(softness);
     }
 
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.

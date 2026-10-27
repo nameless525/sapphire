@@ -56,6 +56,7 @@
 //! [`Scene::frame_packet`]: crate::scene::Scene::frame_packet
 
 use sapphire_assets::AssetId;
+use sapphire_assets::material::{AnimeCharacterParams, Material};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat3, Mat4, Quat, Vec3};
 use sapphire_render::{CharacterFace, CharacterLighting, FaceExpression, HeadBasis};
@@ -446,11 +447,50 @@ pub(crate) fn character(
     (lighting, CharacterFace { head, expression: rig.expression })
 }
 
+/// Softens `material`'s bangs' shadow to an edge `softness` meters wide (`--hair-shadow-softness`,
+/// M1 C8), if it is a face that casts one. Returns whether it changed.
+pub(crate) fn soften_hair_shadow(material: &mut Material, softness: f32) -> bool {
+    let mut softened = false;
+    material.edit_anime_character(|params| {
+        if params.modes[2] == AnimeCharacterParams::SURFACE_FACE && params.hair_shadow[0] > 0.0 {
+            params.hair_shadow[2] = softness;
+            softened = true;
+        }
+    });
+    softened
+}
+
 #[cfg(test)]
 mod tests {
+    use sapphire_assets::material::{AnimeCharacterMaterial, CharacterSurface, FaceShading};
+    use sapphire_assets::texture::Swizzle;
     use sapphire_render::{CharacterGi, DirectionalLight};
 
     use super::*;
+
+    #[test]
+    fn faces_soften_their_bangs_shadow_and_nothing_else_does() {
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let cook = |surface| {
+            let document = AnimeCharacterMaterial { surface, ..AnimeCharacterMaterial::default() };
+            Material::from_document(&document, &swizzles).expect("valid")
+        };
+        let face = FaceShading::new(AssetId::from_text("79309b71-b35f-4ce6-9d53-b629493934e7"));
+        let mut material = cook(CharacterSurface::Face(face.clone()));
+        assert!(soften_hair_shadow(&mut material, 0.02));
+        let mut hair_shadow = [0.0; 4];
+        material.edit_anime_character(|params| hair_shadow = params.hair_shadow);
+        assert_eq!(hair_shadow, [0.03, 1.0, 0.02, 0.0], "the default distance and strength, softened");
+        // A face that casts none, and a body, stay as they are.
+        let mut shadowless = face;
+        shadowless.hair_shadow.distance = 0.0;
+        let mut shadowless = cook(CharacterSurface::Face(shadowless));
+        let before = shadowless.clone();
+        assert!(!soften_hair_shadow(&mut shadowless, 0.02));
+        assert_eq!(shadowless, before);
+        let mut body = cook(CharacterSurface::Body);
+        assert!(!soften_hair_shadow(&mut body, 0.02));
+    }
 
     const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
 

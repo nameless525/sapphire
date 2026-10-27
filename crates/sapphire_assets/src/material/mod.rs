@@ -462,9 +462,22 @@ impl Material {
 
     /// [`Self::read`], then a copy out of the archive, for tools and tests.
     pub fn from_cooked(bytes: &[u8]) -> Result<Self, MaterialError> {
-        let archived = Self::read(bytes)?;
-        rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)
-            .map_err(|error| MaterialError::Cooked(error.into()))
+        Self::read(bytes)?.to_material()
+    }
+
+    /// Edits an anime character material's GPU block through `edit`, for tools, tests and
+    /// materials derived at runtime (the sandbox softens faces' bangs' shadows, M1 C8). Returns
+    /// false, leaving the material as it was, for another family or a block of the wrong size.
+    pub fn edit_anime_character(&mut self, edit: impl FnOnce(&mut AnimeCharacterParams)) -> bool {
+        if self.family != MaterialFamily::AnimeCharacter {
+            return false;
+        }
+        let Ok(mut params) = bytemuck::try_pod_read_unaligned::<AnimeCharacterParams>(&self.params) else {
+            return false;
+        };
+        edit(&mut params);
+        self.params = bytemuck::bytes_of(&params).to_vec();
+        true
     }
 
     /// The flags, if every bit is known.
@@ -474,6 +487,12 @@ impl Material {
 }
 
 impl ArchivedMaterial {
+    /// A copy out of the archive, for tools, tests and materials derived at runtime.
+    pub fn to_material(&self) -> Result<Material, MaterialError> {
+        rkyv::deserialize::<Material, rkyv::rancor::Error>(self)
+            .map_err(|error| MaterialError::Cooked(error.into()))
+    }
+
     /// Checks what the renderer relies on beyond bytecheck: the block's size and the slot count
     /// match the family, swizzles are valid and unbound slots have none, and flags are known.
     pub fn validate(&self) -> Result<(), MaterialError> {

@@ -272,11 +272,24 @@ pub struct HairShadow {
     pub distance: f32,
     /// How dark it is: 1 the face's full shadow tone.
     pub strength: f32,
+    /// How soft its edge is (M1 C8), in meters across the face like [`Self::distance`]: the
+    /// width over which it fades in along the key light's direction, centered on the hard
+    /// edge's place, as a penumbra. The renderer looks toward the light at reaches spread over
+    /// it and blends the face's tone from lit to the shadow's by the share of them that find
+    /// hair, so the edge fades smoothly instead of snapping to the face's light split. 0 (the
+    /// default) keeps the hard edge exactly, with one look. Written only when set, so documents
+    /// from before it read and write as they did.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub softness: f32,
+}
+
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 impl Default for HairShadow {
     fn default() -> Self {
-        Self { distance: 0.03, strength: 1.0 }
+        Self { distance: 0.03, strength: 1.0, softness: 0.0 }
     }
 }
 
@@ -1259,7 +1272,8 @@ pub struct AnimeCharacterParams {
     /// The rim ([`Rim`]): x depth threshold in meters; y Fresnel extent; z light gate; w
     /// back-light weighting.
     pub rim: [f32; 4],
-    /// A face's hair shadow ([`HairShadow`]): x distance in meters; y strength; z, w: zero.
+    /// A face's hair shadow ([`HairShadow`]): x distance in meters; y strength; z softness in
+    /// meters (M1 C8, zero before it, so earlier blocks pack as they did); w: zero.
     pub hair_shadow: [f32; 4],
     /// Eyes through hair ([`ThroughHair`]): x opacity, 0 for none; y, z the cosines of the yaw
     /// and pitch fades; w the distance in meters.
@@ -1494,7 +1508,8 @@ impl AnimeCharacterMaterial {
         let (hair_shadow, through_hair) = match &self.surface {
             CharacterSurface::Face(face) => {
                 let shadow = face.hair_shadow;
-                ([shadow.distance, shadow.strength, 0.0, 0.0], ThroughHair::gpu(face.through_hair.as_ref()))
+                let packed = [shadow.distance, shadow.strength, shadow.softness, 0.0];
+                (packed, ThroughHair::gpu(face.through_hair.as_ref()))
             }
             CharacterSurface::Eye(eye) => ([0.0; 4], ThroughHair::gpu(eye.through_hair.as_ref())),
             CharacterSurface::Body | CharacterSurface::Hair(_) => ([0.0; 4], [0.0; 4]),
@@ -1685,6 +1700,7 @@ impl MaterialDocument for AnimeCharacterMaterial {
                 color("surface.blush_color", &face.blush_color)?;
                 non_negative("surface.hair_shadow.distance", face.hair_shadow.distance)?;
                 unit("surface.hair_shadow.strength", face.hair_shadow.strength)?;
+                non_negative("surface.hair_shadow.softness", face.hair_shadow.softness)?;
                 face.through_hair.map_or(Ok(()), |t| t.validate("surface.through_hair"))
             }
             CharacterSurface::Hair(hair) => {

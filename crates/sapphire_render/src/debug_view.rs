@@ -1,7 +1,8 @@
 //! The renderer's debug views (spec §5.12 "Debug views", M1 F5 part 2): the frame drawn as a
-//! wireframe, as overdraw or as the light-cluster heatmap instead of as it looks, for look-dev
-//! and profiling. The app picks one with [`Renderer::set_debug_view`](crate::Renderer::set_debug_view)
-//! every frame, as it passes `r.outline_distance`; its hook is the `r.debug_view` cvar
+//! wireframe, as overdraw, as the light-cluster heatmap, or as the anime characters' material
+//! IDs, ramp rows or outline widths instead of as it looks, for look-dev and profiling. The app
+//! picks one with [`Renderer::set_debug_view`](crate::Renderer::set_debug_view) every frame, as
+//! it passes `r.outline_distance`; its hook is the `r.debug_view` cvar
 //! ([`DEBUG_VIEW`], declared here, so the debug overlay's cvar panel lists it as a choice). The
 //! sandbox passes the cvar on and sets it from `--debug-view`, which is how the golden scenes of
 //! the views take it.
@@ -85,15 +86,40 @@
 //!   lights, over the pixels where it is the nearest surface: the surfaces replayed
 //!   (`Replay::Tag`) once per count with each instance of that count tagging its pixels in the
 //!   stencil. Fog cards walk no list, so neither path shows them.
+//! - **The material views** ([`DebugView::MaterialIds`], [`DebugView::RampRows`],
+//!   [`DebugView::OutlineWidths`]; F5's second phase, on C7's character shaders): what each
+//!   anime character pixel shades with. One replay serves all three (`Replay::Values`): first
+//!   the other families' surfaces that write depth, whatever their order in the main pass, then
+//!   every anime character pipeline (surfaces of every coverage, outline hulls, eyes through
+//!   hair), writing values into a color target (`Rgba16Float`, exact for these integers) where
+//!   the main pass draws them: what drew the pixel (a surface or a line); the region it shades
+//!   with (its control map's material ID or its vertices', clamped to the material's regions as
+//!   the shader clamps it); its ramp rows (day and night in one value) or, for a material
+//!   without a ramp, its band mode; and its material's slot or, on a line, the line's width in
+//!   pixels on a 1080-row target (the material's width × its region's × the vertex color's G ×
+//!   the model scale × the width curve at the line's effective distance; the cutoff's fade is
+//!   left out). The character and outline shaders write them from debug entry points
+//!   (`fs_anime_character_debug`, `fs_through_hair_debug`, `vs_outline_debug`,
+//!   `fs_outline_debug`) that run the same shading functions to their single exit, so they cut
+//!   the same pixels, alpha tests and fades included; transparent surfaces show where they cover
+//!   at least half. **Decision: debug entry points rather than a debug override constant in the
+//!   shared code.** The main pass's pipelines never name the entry points, so their count and
+//!   constants are what they were, and nothing a view adds can multiply them; the three views
+//!   share one set of copies, so switching between them builds only a view's pass over the
+//!   frame. That pass turns the values into flat colors, darkened along silhouettes, creases and
+//!   the borders between materials, with lines darker ([`LINE_SHADE`]) or in their width's
+//!   color, and a legend:
+//!   - Material IDs: each region in its color ([`region_color`]).
+//!   - Ramp rows: each row in its material ID's color, a night row bluer ([`ramp_row_color`]),
+//!     with time of day's blend of the two as diagonal stripes, the night row's share of them;
+//!     band modes' two or three bands in greys ([`BAND_TONES`]).
+//!   - Outline widths: each line's width on the heat ramp from 0 to [`OUTLINE_WIDTH_SCALE`]
+//!     pixels at 1080 rows, white beyond, over the characters in one grey ([`CHARACTER_TONE`]).
+//!
+//!   Where no character drew, the frame shows, dimmed.
 //!
 //! # Later milestones
 //!
-//! - **The material views** (F5 part 2's second phase, on C7's character materials): the
-//!   material ID and ramp-row views and the outline-width view, as replays whose copies compile
-//!   the anime character and outline shaders with a debug override constant (0 in the main pass's
-//!   pipelines, so they don't change) that makes their single exit write the region's ID, its
-//!   ramp row or the hull's width in pixels into the replay's color target, which their pass
-//!   over the frame turns into flat colors and a legend.
 //! - Probe spheres (W5), a face-SDF threshold view (C3) and a bloom-mask view, as the
 //!   techniques they show ask for them; a view of the GPU's own cluster occupancy (overflowed
 //!   lists) would need the cluster pass to count them.
@@ -101,6 +127,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use sapphire_assets::character_maps::{MATERIAL_IDS, ramp};
 use sapphire_assets::mesh::PositionFormat;
 use sapphire_core::cvar::{AnyCvar, Cvar, CvarKind, CvarType, CvarValue};
 use sapphire_rhi::{TransientDesc, wgpu};
@@ -112,7 +139,7 @@ use crate::graph::{FrameGraph, TextureId};
 use crate::lights::{LightPath, Lights};
 use crate::pipelines::{
     Coverage, Layouts, MainPipeline, Pipelines, REPLAY_COLOR_FORMAT, Replay, ReplayTarget, Shading,
-    SurfaceVariant, format_index, replay_depth_format,
+    SurfaceVariant, VALUES_FORMAT, format_index, replay_depth_format,
 };
 use crate::renderer::{DrawThrough, PrepassTargets, draw_main_pass};
 use crate::scene::DrawList;
@@ -131,13 +158,31 @@ pub enum DebugView {
     Overdraw,
     /// The light-cluster heatmap: the local lights each pixel's surface walks.
     Lights,
+    /// The anime characters' material IDs: the region each pixel shades with, in its color
+    /// ([`region_color`]).
+    MaterialIds,
+    /// The ramp rows the anime characters' shadow sides read ([`ramp_row_color`]), or their
+    /// band modes ([`BAND_TONES`]).
+    RampRows,
+    /// The anime characters' outline widths, in pixels on a 1080-row target, from 0 to
+    /// [`OUTLINE_WIDTH_SCALE`] and beyond.
+    OutlineWidths,
 }
 
 /// The views' names, as the cvar and the sandbox's `--debug-view` spell them.
-const NAMES: [&str; 4] = ["off", "wireframe", "overdraw", "lights"];
+const NAMES: [&str; 7] =
+    ["off", "wireframe", "overdraw", "lights", "material-ids", "ramp-rows", "outline-widths"];
 
 impl DebugView {
-    pub const ALL: [Self; 4] = [Self::Off, Self::Wireframe, Self::Overdraw, Self::Lights];
+    pub const ALL: [Self; 7] = [
+        Self::Off,
+        Self::Wireframe,
+        Self::Overdraw,
+        Self::Lights,
+        Self::MaterialIds,
+        Self::RampRows,
+        Self::OutlineWidths,
+    ];
 
     /// How the cvar and the command line spell it: `overdraw`.
     pub fn name(self) -> &'static str {
@@ -182,8 +227,9 @@ impl CvarType for DebugView {
 pub static DEBUG_VIEW: Cvar<DebugView> = Cvar::new(
     "r.debug_view",
     DebugView::Off,
-    "Debug view (spec §5.12): wireframe, overdraw (fragments shaded per pixel) or lights (the lights each pixel walks, \
-     per cluster or per object), drawn over the frame after post. Off builds and draws nothing.",
+    "Debug view (spec §5.12): wireframe, overdraw (fragments shaded per pixel), lights (the lights each pixel walks, \
+     per cluster or per object), or the anime characters' material-ids, ramp-rows or outline-widths, drawn over the \
+     frame after post. Off builds and draws nothing.",
 );
 
 /// This module's cvars, for the app's registry.
@@ -229,6 +275,62 @@ const HEAT: [[f32; 3]; 7] = [
 /// first cell (`debug_lights` in `shaders/debug_view.wgsl`).
 pub const NO_LIGHTS: [f32; 3] = [0.15; 3];
 
+/// The material ID view's color per region (display, sRGB-encoded), apart from each other and
+/// from the band modes' greys (`debug_region_color` in `shaders/debug_view.wgsl`).
+const REGION_COLORS: [[f32; 3]; MATERIAL_IDS as usize] = [
+    [0.90, 0.30, 0.30],
+    [0.95, 0.62, 0.20],
+    [0.92, 0.88, 0.30],
+    [0.40, 0.80, 0.35],
+    [0.30, 0.80, 0.85],
+    [0.30, 0.50, 0.95],
+    [0.65, 0.40, 0.90],
+    [0.95, 0.50, 0.75],
+];
+
+/// The night rows' shade: a night row is its material ID's color halfway to this (display).
+const NIGHT_ROW_SHADE: [f32; 3] = [0.10, 0.12, 0.35];
+
+/// The ramp-row view's tones for materials in band mode, which read no ramp (display): two bands,
+/// and three (a deep threshold).
+pub const BAND_TONES: [[f32; 3]; 2] = [[0.75; 3], [0.5; 3]];
+
+/// The outline-width view's top, in pixels on a 1080-row target (the unit materials author
+/// widths in): red; wider shows white.
+pub const OUTLINE_WIDTH_SCALE: u32 = 8;
+
+/// The outline-width view's anime character surfaces, which its lines draw over (display).
+pub const CHARACTER_TONE: [f32; 3] = [0.3; 3];
+
+/// The share of its color an outline pixel keeps in the material ID and ramp-row views, so lines
+/// read apart from the surfaces they outline.
+pub const LINE_SHADE: f32 = 0.45;
+
+/// Region `region`'s color in the material ID view (display), as it draws it; past the last
+/// region's, the last's.
+pub fn region_color(region: u32) -> [f32; 3] {
+    REGION_COLORS[(region as usize).min(REGION_COLORS.len() - 1)]
+}
+
+/// Ramp row `row`'s color in the ramp-row view (display): a day row its material ID's
+/// ([`region_color`]), a night row that halfway to a night blue (`character_maps::ramp`'s
+/// layout: the day rows, then the night rows).
+pub fn ramp_row_color(row: u32) -> [f32; 3] {
+    let ids = u32::from(MATERIAL_IDS);
+    let color = region_color(row % ids);
+    if row < ids {
+        color
+    } else {
+        std::array::from_fn(|channel| (color[channel] + NIGHT_ROW_SHADE[channel]) / 2.0)
+    }
+}
+
+/// The outline-width view's color for a line `width` pixels wide on a 1080-row target (display):
+/// the heat ramp from 0 to [`OUTLINE_WIDTH_SCALE`], white beyond.
+pub fn outline_width_color(width: f32) -> [f32; 3] {
+    if width > OUTLINE_WIDTH_SCALE as f32 { [1.0; 3] } else { heat(width / OUTLINE_WIDTH_SCALE as f32) }
+}
+
 /// The views' heat ramp at `t` (0 to 1, clamped) as a display (sRGB-encoded) color, as the views
 /// draw it, for legends drawn elsewhere (the debug overlay's).
 pub fn heat(t: f32) -> [f32; 3] {
@@ -259,10 +361,10 @@ pub struct DebugViewStats {
     /// The view asked for can't draw this frame, which is drawn as it is: the wireframe of a
     /// mesh pool whose line indices would pass one storage binding.
     pub unsupported: bool,
-    /// The top of the shown view's scale, which its legend ends at: [`OVERDRAW_SCALE`], or the
+    /// The top of the shown view's scale, which its legend ends at: [`OVERDRAW_SCALE`], the
     /// most lights a list holds
-    /// ([`LightStats::list_capacity`](crate::LightStats::list_capacity)); 0 without one (the
-    /// wireframe).
+    /// ([`LightStats::list_capacity`](crate::LightStats::list_capacity)), the material IDs, the
+    /// ramp rows, or [`OUTLINE_WIDTH_SCALE`]; 0 without one (the wireframe).
     pub scale: u32,
     /// Pipelines the views hold: copies of the main pass's and their own passes'.
     pub pipelines: u32,
@@ -294,10 +396,24 @@ enum Plan {
     ClusterLights,
     /// The surfaces tagged with their instances' lists' counts.
     ObjectLights,
+    /// The anime characters' values (`Replay::Values`), shown as their regions.
+    MaterialIds,
+    /// The same, shown as their ramp rows.
+    RampRows,
+    /// The same, shown as their lines' widths.
+    OutlineWidths,
 }
 
 impl Plan {
-    const ALL: [Self; 4] = [Self::Wireframe, Self::Overdraw, Self::ClusterLights, Self::ObjectLights];
+    const ALL: [Self; 7] = [
+        Self::Wireframe,
+        Self::Overdraw,
+        Self::ClusterLights,
+        Self::ObjectLights,
+        Self::MaterialIds,
+        Self::RampRows,
+        Self::OutlineWidths,
+    ];
 
     /// `view`'s, on `light_path`; none for `Off`.
     fn of(view: DebugView, light_path: LightPath) -> Option<Self> {
@@ -309,7 +425,16 @@ impl Plan {
                 LightPath::Clustered => Some(Self::ClusterLights),
                 LightPath::PerObject => Some(Self::ObjectLights),
             },
+            DebugView::MaterialIds => Some(Self::MaterialIds),
+            DebugView::RampRows => Some(Self::RampRows),
+            DebugView::OutlineWidths => Some(Self::OutlineWidths),
         }
+    }
+
+    /// Whether it shows the anime characters' values (`Replay::Values`), which its pass over the
+    /// frame reads with the depth.
+    fn values(self) -> bool {
+        matches!(self, Self::MaterialIds | Self::RampRows | Self::OutlineWidths)
     }
 
     fn index(self) -> usize {
@@ -323,6 +448,7 @@ impl Plan {
             Self::Overdraw => &[Replay::Count, Replay::Invocations, Replay::Depth],
             Self::ClusterLights => &[Replay::Depth],
             Self::ObjectLights => &[Replay::Tag],
+            Self::MaterialIds | Self::RampRows | Self::OutlineWidths => &[Replay::Values],
         }
     }
 
@@ -330,10 +456,21 @@ impl Plan {
     /// [module docs](self)): the wireframe hides behind the surfaces that write depth and draws
     /// every surface's edges; overdraw counts every pipeline, opaque ones as they keep fragments
     /// and the rest (which may discard) as they run, and writes the depth of those that write it
-    /// after counting; the light lists take every surface but fog cards, which walk no list.
+    /// after counting; the light lists take every surface but fog cards, which walk no list; the
+    /// material views take every anime character pipeline, which writes its values, and the
+    /// depth of every other surface that writes depth, which hides them.
     fn copies(self, replay: Replay, pipeline: MainPipeline) -> bool {
         use MainPipeline::{Outline, Surface, ThroughHair};
         let card = |variant: SurfaceVariant| variant == SurfaceVariant::FOG_CARD;
+        if self.values() && replay == Replay::Values {
+            return match pipeline {
+                Surface(variant) => {
+                    matches!(variant.shading, Shading::Character(_))
+                        || variant.coverage != Coverage::Transparent
+                }
+                Outline(_) | ThroughHair(_) => true,
+            };
+        }
         match (self, replay, pipeline) {
             (Self::Wireframe, Replay::Hide, Surface(variant)) => variant.coverage != Coverage::Transparent,
             (Self::Wireframe, Replay::Edges, Surface(_)) => true,
@@ -356,15 +493,19 @@ impl Plan {
             Self::Overdraw => "fs_debug_overdraw",
             Self::ClusterLights => "fs_debug_cluster_lights",
             Self::ObjectLights => "fs_debug_object_lights",
+            Self::MaterialIds => "fs_debug_material_ids",
+            Self::RampRows => "fs_debug_ramp_rows",
+            Self::OutlineWidths => "fs_debug_outline_widths",
         }
     }
 
     /// The store ops of its replay's depth and stencil: what its pass over the frame reads is
-    /// kept (the light lists' depth for their silhouettes, and the cluster lookup).
+    /// kept (the light lists' and material views' depth for their silhouettes, and the cluster
+    /// lookup; the other views' stencil).
     fn stores(self) -> (wgpu::StoreOp, wgpu::StoreOp) {
         let keep = |kept: bool| if kept { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard };
-        let depth = matches!(self, Self::ClusterLights | Self::ObjectLights);
-        let stencil = !matches!(self, Self::ClusterLights);
+        let depth = matches!(self, Self::ClusterLights | Self::ObjectLights) || self.values();
+        let stencil = !matches!(self, Self::ClusterLights) && !self.values();
         (keep(depth), keep(stencil))
     }
 }
@@ -378,6 +519,7 @@ fn replay_index(replay: Replay) -> usize {
         Replay::Invocations => 3,
         Replay::Tag => 4,
         Replay::Edges => 5,
+        Replay::Values => 6,
     }
 }
 
@@ -494,6 +636,10 @@ impl LineIndices {
     }
 }
 
+/// The material views' values in their passes' group 2 (`view_values` in `debug_view.wgsl`), beside
+/// the depth at 1.
+const VALUES_BINDING: u32 = 2;
+
 /// `cs_debug_lines`' bindings in its group 0, past the frame group's, which `debug_view.wgsl`
 /// declares too.
 const LINES_TRIANGLES_BINDING: u32 = 20;
@@ -509,6 +655,10 @@ struct ViewLayouts {
     input: wgpu::BindGroupLayout,
     /// The passes over the frame: groups 0 (the frame's), 1 (the view) and 2 (the input).
     pass: wgpu::PipelineLayout,
+    /// The material views' group 2: the replay's depth (binding 1) and values (2).
+    values_input: wgpu::BindGroupLayout,
+    /// Their passes over the frame, as `pass` with `values_input`.
+    values_pass: wgpu::PipelineLayout,
     /// No groups: the sky's stand-in in the overdraw replay.
     sky: wgpu::PipelineLayout,
     /// `cs_debug_lines`' group 0: the pool's indices copied, and the line indices.
@@ -537,6 +687,16 @@ impl ViewLayouts {
             bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&input)],
             immediate_size: 0,
         });
+        let values = wgpu::TextureSampleType::Float { filterable: false };
+        let values_input = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("debug view values"),
+            entries: &[texture(1, wgpu::TextureSampleType::Depth), texture(VALUES_BINDING, values)],
+        });
+        let values_pass = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("debug view values"),
+            bind_group_layouts: &[Some(&layouts.frame), Some(&layouts.view), Some(&values_input)],
+            immediate_size: 0,
+        });
         let sky = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("debug view sky"),
             bind_group_layouts: &[],
@@ -561,7 +721,7 @@ impl ViewLayouts {
             bind_group_layouts: &[Some(&lines_group)],
             immediate_size: 0,
         });
-        Self { input, pass, sky, lines_group, lines }
+        Self { input, pass, values_input, values_pass, sky, lines_group, lines }
     }
 }
 
@@ -631,7 +791,7 @@ impl ViewBuilder<'_> {
     fn pass(&self, module: &wgpu::ShaderModule, plan: Plan) -> wgpu::RenderPipeline {
         self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(VIEW_PASS),
-            layout: Some(&self.layouts.pass),
+            layout: Some(if plan.values() { &self.layouts.values_pass } else { &self.layouts.pass }),
             vertex: wgpu::VertexState {
                 module,
                 entry_point: Some("vs_debug_view"),
@@ -746,7 +906,7 @@ pub(crate) struct DebugViews {
     layouts: ViewLayouts,
     pipelines: ViewPipelines,
     /// Copies of the main pass's pipelines, per kind (`replay_index`).
-    replays: [ReplayPipelines; 6],
+    replays: [ReplayPipelines; 7],
     copies_made: u32,
     /// The wireframe's line indices, made with its first frame.
     lines: Option<LineIndices>,
@@ -901,6 +1061,9 @@ impl DebugViews {
         let scale = match self.plan {
             Some(Plan::Overdraw) => OVERDRAW_SCALE,
             Some(Plan::ClusterLights | Plan::ObjectLights) => self.list_capacity,
+            Some(Plan::MaterialIds) => u32::from(MATERIAL_IDS),
+            Some(Plan::RampRows) => ramp::ROWS,
+            Some(Plan::OutlineWidths) => OUTLINE_WIDTH_SCALE,
             Some(Plan::Wireframe) | None => 0,
         };
         let copies: usize = self.replays.iter().map(|replay| replay.copies.len()).sum();
@@ -971,22 +1134,30 @@ impl DebugViews {
         Some(&lines.lines)
     }
 
-    /// The main pass replayed for `plan` into a depth and stencil of the scene's size, which it
-    /// returns; the wireframe draws its edges from `lines`.
+    /// The main pass replayed for `plan` into a depth and stencil of the scene's size, and for
+    /// the material views their values, which it returns; the wireframe draws its edges from
+    /// `lines`.
     fn record_replay<'f>(
         &'f self,
         graph: &mut FrameGraph<'f>,
         plan: Plan,
         frame: &DebugFrame<'f>,
         lines: Option<&'f wgpu::Buffer>,
-    ) -> TextureId {
+    ) -> Replayed {
         let (width, height) = frame.size;
         let transient = |format, usage| TransientDesc { width, height, format, sample_count: 1, usage };
-        // The copies write no color: the target stays in tile memory where the GPU has it.
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT;
-        let color = graph.create_texture("debug view color", transient(REPLAY_COLOR_FORMAT, usage));
-        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let depth = graph.create_texture("debug view depth", transient(self.depth_format, usage));
+        let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        // The material views' copies write the values, which their pass reads; the others' write
+        // no color, so their target stays in tile memory where the GPU has it.
+        let (color, color_store) = if plan.values() {
+            let values = graph.create_texture("debug view values", transient(VALUES_FORMAT, sampled));
+            (values, wgpu::StoreOp::Store)
+        } else {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT;
+            let color = graph.create_texture("debug view color", transient(REPLAY_COLOR_FORMAT, usage));
+            (color, wgpu::StoreOp::Discard)
+        };
+        let depth = graph.create_texture("debug view depth", transient(self.depth_format, sampled));
         let (depth_store, stencil_store) = plan.stores();
         let pass = graph
             .add_pass(REPLAY_PASS)
@@ -1009,7 +1180,7 @@ impl DebugViews {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Discard,
+                        store: color_store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1133,9 +1304,23 @@ impl DebugViews {
                         draw_main_pass(&mut pass, &through, &draws, scene_bind_groups, None, None, tagged);
                     }
                 }
+                Plan::MaterialIds | Plan::RampRows | Plan::OutlineWidths => {
+                    // What hides the anime characters first, the other families' surfaces that
+                    // write depth, whatever their order in the main pass; then the characters,
+                    // which write their values where the main pass draws them.
+                    let values = one(Replay::Values);
+                    for characters in [false, true] {
+                        let ours = |format, variant: SurfaceVariant, set| {
+                            let character = matches!(variant.shading, Shading::Character(_));
+                            (character == characters).then(|| values(format, variant, set)).flatten()
+                        };
+                        group(&mut pass);
+                        draw_main_pass(&mut pass, &ours, &draws, scene_bind_groups, None, None, everything);
+                    }
+                }
             }
         });
-        depth
+        Replayed { depth, values: plan.values().then_some(color) }
     }
 
     /// `plan`'s pass over the frame, reading `replayed`, blended into `frame.target`.
@@ -1143,33 +1328,54 @@ impl DebugViews {
         &'f self,
         graph: &mut FrameGraph<'f>,
         plan: Plan,
-        replayed: TextureId,
+        replayed: Replayed,
         frame: &DebugFrame<'f>,
     ) {
         let Some(pipeline) = self.pipelines.passes[plan.index()].as_ref() else { return };
         let target = frame.target;
         // It draws over the frame post finished, keeping it where it blends.
-        let builder = graph.add_pass(VIEW_PASS).read(replayed).read(target).write(target);
-        let (device, view_bind_group, layout) = (&self.device, &self.view_bind_group, &self.layouts.input);
+        let mut builder = graph.add_pass(VIEW_PASS).read(replayed.depth).read(target).write(target);
+        if let Some(values) = replayed.values {
+            builder = builder.read(values);
+        }
+        let (device, view_bind_group, layouts) = (&self.device, &self.view_bind_group, &self.layouts);
         let (frame_bind_group, labels) = (frame.frame_bind_group, frame.labels);
         builder.record(move |ctx| {
             let aspect = |aspect| {
-                ctx.texture(replayed)
+                ctx.texture(replayed.depth)
                     .create_view(&wgpu::TextureViewDescriptor { aspect, ..Default::default() })
             };
-            let (stencil, depth) =
-                (aspect(wgpu::TextureAspect::StencilOnly), aspect(wgpu::TextureAspect::DepthOnly));
-            let inputs = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(VIEW_PASS),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&stencil),
-                    },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) },
-                ],
-            });
+            let depth = aspect(wgpu::TextureAspect::DepthOnly);
+            let depth_entry =
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) };
+            // The material views read the values beside the depth; the others the stencil.
+            let inputs = match replayed.values {
+                Some(values) => device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(VIEW_PASS),
+                    layout: &layouts.values_input,
+                    entries: &[
+                        depth_entry,
+                        wgpu::BindGroupEntry {
+                            binding: VALUES_BINDING,
+                            resource: wgpu::BindingResource::TextureView(ctx.view(values)),
+                        },
+                    ],
+                }),
+                None => {
+                    let stencil = aspect(wgpu::TextureAspect::StencilOnly);
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some(VIEW_PASS),
+                        layout: &layouts.input,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&stencil),
+                            },
+                            depth_entry,
+                        ],
+                    })
+                }
+            };
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some(VIEW_PASS),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1188,6 +1394,13 @@ impl DebugViews {
             pass.draw(0..3, 0..1);
         });
     }
+}
+
+/// What a view's replay gathered: its depth and stencil, and the material views' values.
+#[derive(Clone, Copy)]
+struct Replayed {
+    depth: TextureId,
+    values: Option<TextureId>,
 }
 
 /// What a debug view draws with in a frame's graph, from [`Renderer::record`](crate::Renderer::record).
@@ -1239,21 +1452,42 @@ mod tests {
         assert_eq!(Plan::of(DebugView::Lights, clustered), Some(Plan::ClusterLights));
         assert_eq!(Plan::of(DebugView::Lights, LightPath::PerObject), Some(Plan::ObjectLights));
         assert_eq!(Plan::Wireframe.replays(), [Replay::Hide, Replay::Edges], "what hides edges first");
+        // The material views share one replay, whatever the light path.
+        for (view, plan) in [
+            (DebugView::MaterialIds, Plan::MaterialIds),
+            (DebugView::RampRows, Plan::RampRows),
+            (DebugView::OutlineWidths, Plan::OutlineWidths),
+        ] {
+            assert_eq!(Plan::of(view, clustered), Some(plan));
+            assert_eq!(Plan::of(view, LightPath::PerObject), Some(plan));
+            assert!(plan.values());
+            assert_eq!(plan.replays(), [Replay::Values]);
+        }
         for (index, plan) in Plan::ALL.into_iter().enumerate() {
             assert_eq!(plan.index(), index);
-            // What each pass reads is kept.
+            // What each pass reads is kept: the stencil, the depth, or the depth and the values.
             let (depth, stencil) = plan.stores();
             let lights = matches!(plan, Plan::ClusterLights | Plan::ObjectLights);
-            assert_eq!(depth == wgpu::StoreOp::Store, lights, "{plan:?}");
-            assert_eq!(stencil == wgpu::StoreOp::Store, plan != Plan::ClusterLights, "{plan:?}");
+            assert_eq!(depth == wgpu::StoreOp::Store, lights || plan.values(), "{plan:?}");
+            let stencil_read = !matches!(plan, Plan::ClusterLights) && !plan.values();
+            assert_eq!(stencil == wgpu::StoreOp::Store, stencil_read, "{plan:?}");
+            let writes_values = plan.replays().iter().any(|replay| replay.color_format() == VALUES_FORMAT);
+            assert_eq!(writes_values, plan.values(), "{plan:?}");
         }
         let mut indices = REPLAYS.map(replay_index);
         indices.sort_unstable();
-        assert_eq!(indices, [0, 1, 2, 3, 4, 5], "one set of copies per kind");
+        assert_eq!(indices, [0, 1, 2, 3, 4, 5, 6], "one set of copies per kind");
     }
 
-    const REPLAYS: [Replay; 6] =
-        [Replay::Depth, Replay::Hide, Replay::Count, Replay::Invocations, Replay::Tag, Replay::Edges];
+    const REPLAYS: [Replay; 7] = [
+        Replay::Depth,
+        Replay::Hide,
+        Replay::Count,
+        Replay::Invocations,
+        Replay::Tag,
+        Replay::Edges,
+        Replay::Values,
+    ];
 
     #[test]
     fn replays_copy_what_their_view_draws() {
@@ -1268,24 +1502,52 @@ mod tests {
         let (outline, tested_outline) =
             (MainPipeline::Outline(Coverage::Opaque), MainPipeline::Outline(Coverage::AlphaTest));
         let eyes = MainPipeline::ThroughHair(SurfaceVariant::EYE_LAYERS);
-        let all = [opaque, tested, blended, card, outline, tested_outline, eyes];
+        let world = |coverage| MainPipeline::Surface(SurfaceVariant::environment(coverage));
+        let (world, tested_world, glass) =
+            (world(Coverage::Opaque), world(Coverage::AlphaTest), world(Coverage::Transparent));
+        let leaves = MainPipeline::Surface(SurfaceVariant::foliage(Coverage::AlphaTest));
+        let all = [
+            opaque,
+            tested,
+            blended,
+            card,
+            outline,
+            tested_outline,
+            eyes,
+            world,
+            tested_world,
+            glass,
+            leaves,
+        ];
         let copied = |plan: Plan, replay| {
             all.iter().filter(|&&pipeline| plan.copies(replay, pipeline)).copied().collect::<Vec<_>>()
         };
         // The wireframe hides behind what writes depth, and draws every surface's edges.
-        assert_eq!(copied(Plan::Wireframe, Replay::Hide), [opaque, tested]);
-        assert_eq!(copied(Plan::Wireframe, Replay::Edges), [opaque, tested, blended, card]);
+        assert_eq!(copied(Plan::Wireframe, Replay::Hide), [opaque, tested, world, tested_world, leaves]);
+        assert_eq!(
+            copied(Plan::Wireframe, Replay::Edges),
+            [opaque, tested, blended, card, world, tested_world, glass, leaves]
+        );
         // Overdraw counts every pipeline once: opaque ones as they keep fragments, the rest as
         // they run; those that write depth then write it.
-        assert_eq!(copied(Plan::Overdraw, Replay::Count), [opaque, outline]);
+        assert_eq!(copied(Plan::Overdraw, Replay::Count), [opaque, outline, world]);
         assert_eq!(
             copied(Plan::Overdraw, Replay::Invocations),
-            [tested, blended, card, tested_outline, eyes]
+            [tested, blended, card, tested_outline, eyes, tested_world, glass, leaves]
         );
-        assert_eq!(copied(Plan::Overdraw, Replay::Depth), [tested, tested_outline]);
+        assert_eq!(copied(Plan::Overdraw, Replay::Depth), [tested, tested_outline, tested_world, leaves]);
         // Fog cards walk no light list.
-        assert_eq!(copied(Plan::ClusterLights, Replay::Depth), [opaque, tested, blended]);
-        assert_eq!(copied(Plan::ObjectLights, Replay::Tag), [opaque, tested, blended]);
+        let lit = [opaque, tested, blended, world, tested_world, glass, leaves];
+        assert_eq!(copied(Plan::ClusterLights, Replay::Depth), lit);
+        assert_eq!(copied(Plan::ObjectLights, Replay::Tag), lit);
+        // The material views write every anime character pipeline's values, behind every other
+        // surface that writes depth; glass and fog cards hide no character.
+        for plan in [Plan::MaterialIds, Plan::RampRows, Plan::OutlineWidths] {
+            assert_eq!(
+                copied(plan, Replay::Values),
+                [opaque, tested, blended, outline, tested_outline, eyes, world, tested_world, leaves]
+            );
+        }
         // Nothing else.
         for plan in Plan::ALL {
             for replay in REPLAYS {
@@ -1327,6 +1589,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_material_views_colors_tell_their_values_apart() {
+        let regions: Vec<[f32; 3]> = (0..u32::from(MATERIAL_IDS)).map(region_color).collect();
+        for (index, color) in regions.iter().enumerate() {
+            assert!(!regions[..index].contains(color), "region {index}'s color is its own");
+            assert!(!BAND_TONES.contains(color), "and no band mode's");
+        }
+        assert_eq!(region_color(99), region_color(7), "clamped");
+        // A day row is its material ID's color; a night row a darker, bluer one of it.
+        for row in 0..ramp::ROWS {
+            let id = row % u32::from(MATERIAL_IDS);
+            let color = ramp_row_color(row);
+            if row < u32::from(MATERIAL_IDS) {
+                assert_eq!(color, region_color(id));
+            } else {
+                assert_ne!(color, region_color(id));
+                assert!(color.iter().sum::<f32>() < region_color(id).iter().sum::<f32>() + 0.05, "row {row}");
+            }
+        }
+        assert_eq!(outline_width_color(0.0), HEAT[0]);
+        assert_eq!(outline_width_color(OUTLINE_WIDTH_SCALE as f32), HEAT[6], "red at the top");
+        assert_eq!(outline_width_color(OUTLINE_WIDTH_SCALE as f32 + 0.5), [1.0; 3], "white beyond");
+        assert_eq!(outline_width_color(4.0), heat(0.5));
+    }
+
     /// The `vec3<f32>(…)` rows after the line of `source` containing `start`.
     fn wgsl_rows(source: &str, start: &str, rows: usize) -> Vec<[f32; 3]> {
         source
@@ -1349,9 +1636,24 @@ mod tests {
         assert_eq!(wgsl_rows(source, "var stops = array<vec3<f32>, 7>(", HEAT.len()), HEAT);
         let tones: Vec<[f32; 3]> = WIREFRAME_TONES.iter().map(|&(_, tone)| tone).collect();
         assert_eq!(wgsl_rows(source, "var tones = array<vec3<f32>, 4>(", tones.len()), tones);
+        assert_eq!(
+            wgsl_rows(source, "var colors = array<vec3<f32>, 8>(", REGION_COLORS.len()),
+            REGION_COLORS
+        );
+        let [two, three] = BAND_TONES.map(|tone| tone[0]);
+        assert!(BAND_TONES.iter().all(|tone| tone.iter().all(|&channel| channel == tone[0])), "greys");
+        let [r, g, b] = NIGHT_ROW_SHADE;
         for constant in [
             format!("const DEBUG_OVERDRAW_SCALE: u32 = {OVERDRAW_SCALE}u;"),
             format!("const DEBUG_NO_LIGHTS: f32 = {:?};", NO_LIGHTS[0]),
+            format!("const DEBUG_MATERIAL_IDS: u32 = {MATERIAL_IDS}u;"),
+            format!("const DEBUG_RAMP_ROWS: u32 = {}u;", ramp::ROWS),
+            format!("const DEBUG_OUTLINE_WIDTH_SCALE: u32 = {OUTLINE_WIDTH_SCALE}u;"),
+            format!("const DEBUG_CHARACTER_TONE: f32 = {:?};", CHARACTER_TONE[0]),
+            format!("const DEBUG_LINE_SHADE: f32 = {LINE_SHADE:?};"),
+            format!("let night = mix(color, vec3<f32>({r:?}, {g:?}, {b:?}), 0.5);"),
+            format!("return select(vec3<f32>({three:?}), vec3<f32>({two:?}), code == DEBUG_TWO_BANDS);"),
+            format!("@group(2) @binding({VALUES_BINDING}) var view_values: texture_2d<f32>;"),
             format!("@group(0) @binding({LINES_TRIANGLES_BINDING}) var<storage, read> debug_triangles"),
             format!("@group(0) @binding({LINES_OUTPUT_BINDING}) var<storage, read_write> debug_lines"),
             format!("@compute @workgroup_size({LINES_WORKGROUP})"),
@@ -1359,5 +1661,23 @@ mod tests {
             assert!(source.contains(&constant), "{constant}");
         }
         assert!(NO_LIGHTS.iter().all(|&channel| channel == NO_LIGHTS[0]), "a grey");
+        assert!(CHARACTER_TONE.iter().all(|&channel| channel == CHARACTER_TONE[0]), "a grey");
+    }
+
+    #[test]
+    fn the_values_codes_match_between_the_shaders() {
+        // `character_debug_values` writes them (anime_character.wgsl); `debug_view.wgsl`, which
+        // doesn't include that file, reads them.
+        let writer = Program::AnimeCharacter.files().last().expect("its own file last").compiled_in();
+        let reader = Program::DebugView.files().last().expect("its own file last").compiled_in();
+        for constant in [
+            "const DEBUG_DRAWN_SURFACE: f32 = 1.0;",
+            "const DEBUG_DRAWN_LINE: f32 = 2.0;",
+            "const DEBUG_TWO_BANDS: f32 = -1.0;",
+            "const DEBUG_THREE_BANDS: f32 = -2.0;",
+        ] {
+            assert!(writer.contains(constant) && reader.contains(constant), "{constant}");
+        }
+        assert!(writer.contains(&format!("const RAMP_ROWS: f32 = {:?};", ramp::ROWS as f32)));
     }
 }

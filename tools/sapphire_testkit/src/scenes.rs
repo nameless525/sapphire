@@ -79,7 +79,7 @@ pub struct Scene {
 /// and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade scenes
 /// fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post,
 /// AO off, through temporal AA and through MSAA.
-pub fn scenes() -> [Scene; 82] {
+pub fn scenes() -> [Scene; 85] {
     [
         Scene {
             name: "turntable-start",
@@ -1902,6 +1902,83 @@ pub fn scenes() -> [Scene; 82] {
                 "off",
                 "--debug-view",
                 "lights",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The material IDs (F5's second phase) on the shader swatches: the regions each pixel
+        // shades with, the ramp spheres' four latitude bands from their control map and the band
+        // sphere's from its vertices, the mannequin's arms apart from the rest of it, and every
+        // outline in its region's color, darker.
+        Scene {
+            name: "debug-material-ids",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--swatches",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "material-ids",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The ramp rows on the same at 19:30 on Mobile-Low: the ramp spheres' day rows striped
+        // with their night rows, time of day's blend of the two, and the band sphere's three
+        // bands and the mannequin's two in their greys.
+        Scene {
+            name: "debug-ramp-rows",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--swatches",
+                "--plain-sky",
+                "--time-of-day",
+                "19.5",
+                "--tier",
+                "mobile-low",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "ramp-rows",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The outline widths along the row of mannequins under temporal AA: in pixels on a
+        // 1080-row target, the nearest's widest, thinning with distance as the width curve says,
+        // its pedestal's wider still, the farthest gone past the cutoff.
+        Scene {
+            name: "debug-outline-widths",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--outline-row",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "outline-widths",
             ],
             thresholds: Thresholds::default(),
         },

@@ -97,11 +97,12 @@
 //!   and RAM, the `r.*` overrides, and each frame's render scale with dynamic resolution. The
 //!   scene renders at the render scale ([`Renderer::set_render_scale`]) and post's final pass
 //!   upsamples it to the target (see "Render scale" below).
-//! - Debug views ([`debug_view`], M1 F5): the frame drawn as a wireframe, as overdraw or as the
-//!   local lights each pixel walks, picked per frame ([`Renderer::set_debug_view`], the
-//!   `r.debug_view` cvar). Each replays the main pass through copies of its own pipelines into
-//!   a depth and stencil it reads, and draws over the frame after post. Off, the default, builds
-//!   and draws nothing.
+//! - Debug views ([`debug_view`], M1 F5): the frame drawn as a wireframe, as overdraw, as the
+//!   local lights each pixel walks, or as the anime characters' material IDs, ramp rows or
+//!   outline widths, picked per frame ([`Renderer::set_debug_view`], the `r.debug_view` cvar).
+//!   Each replays the main pass through copies of its own pipelines into a depth and stencil (or
+//!   the characters' values) it reads, and draws over the frame after post. Off, the default,
+//!   builds and draws nothing.
 //!
 //! # Does not own
 //!
@@ -289,7 +290,10 @@
 //! with group 1 its own buffer holding the main view without TAA's jitter. Its pass over the
 //! frame binds group 0, that view group, and a group 2 of its own: the replay's stencil
 //! (`texture_2d<u32>`, binding 0) and depth (`texture_depth_2d`, binding 1), so it reads one
-//! storage buffer, the light lists. The wireframe's line indices pass (`cs_debug_lines`) binds a
+//! storage buffer, the light lists; the material views' group 2 holds the depth and the
+//! characters' values (`texture_2d<f32>`, binding 2) in place of the stencil. Their replay's
+//! copies of the anime character family's pipelines write those values through debug entry
+//! points of the character and outline shaders, with the same bindings as the main pass. The wireframe's line indices pass (`cs_debug_lines`) binds a
 //! group 0 of its own, all compute: the pool's indices copied (binding 20, read-only) and the
 //! line indices (21, read-write), past the frame group's bindings that its file declares too.
 //!

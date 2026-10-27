@@ -119,10 +119,12 @@
 //!   shapes whose cooked outline normals keep every corner's hull closed (M1 C4).
 //! - `--outline-distance <0..4>`: the scale on every material's outline LOD cutoff
 //!   (`r.outline_distance`, 1 by default); 0 draws no outlines, for profiling.
-//! - `--debug-view off|wireframe|overdraw|lights`: draw the frame as one of the renderer's debug
-//!   views (`r.debug_view`, M1 F5): its triangles' edges, the fragments it shades per pixel, or
-//!   the local lights each pixel walks, over the frame after post. In every build, so captures and
-//!   golden scenes show them; the overlay's cvar panel switches them in `dev` builds.
+//! - `--debug-view off|wireframe|overdraw|lights|material-ids|ramp-rows|outline-widths`: draw
+//!   the frame as one of the renderer's debug views (`r.debug_view`, M1 F5): its triangles'
+//!   edges, the fragments it shades per pixel, the local lights each pixel walks, or the anime
+//!   characters' regions, ramp rows or outline widths, over the frame after post. In every
+//!   build, so captures and golden scenes show them; the overlay's cvar panel switches them in
+//!   `dev` builds.
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.

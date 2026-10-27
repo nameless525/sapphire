@@ -25,6 +25,10 @@
 //!   time controls, and the time-of-day scrubber (`time_of_day`, M1 W1: the day strip, the
 //!   resolved values and a character preview, which shows the first character's light rig, M1
 //!   C2), and the screen effects panel (`effects`, M1 P3: fire a preset, watch the stack).
+//!   The renderer's debug views (`sapphire_render::debug_view`, M1 F5: wireframe, overdraw,
+//!   light lists, material IDs, ramp rows and outline widths) are a list in the cvar panel
+//!   (`r.debug_view`), and the stats panel's "Debug view" row names the one shown with its
+//!   legend's values.
 //! - **[`TimeControls`]**: pause, single-step and speed on the world clock's time-scale stack.
 //! - **[`TodControls`]**: scrubbing the hour, pausing the cycle and setting the day's length on
 //!   the world's `sapphire_world::tod::TimeOfDay`.
@@ -84,11 +88,6 @@
 //!
 //! # Later milestones
 //!
-//! - **The renderer's material debug views** (spec §5.12, F5 part 2's second phase): material
-//!   ID and ramp-row views and the outline-width view, as further choices of `r.debug_view`. The
-//!   wireframe, overdraw and light-list views are built (`sapphire_render::debug_view`): the cvar
-//!   panel switches them as a list, and the stats panel's "Debug view" row names the one shown
-//!   with its legend's values.
 //! - The rest of spec §5.20: the debug-draw API (lines, shapes and text from any thread, merged
 //!   at extract into the packet's `DebugDrawList`, with `sapphire_core` no-ops when no overlay is
 //!   linked), the entity inspector over `sapphire_reflect`, hitbox and hurtbox views and the

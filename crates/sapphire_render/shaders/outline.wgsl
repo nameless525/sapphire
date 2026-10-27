@@ -150,17 +150,13 @@ fn hull_vertex(world_from_object: mat4x4<f32>, position: vec3<f32>, outline_norm
 fn outline_clip(clip_from_world: mat4x4<f32>, hull: HullVertex, width: HullWidth) -> vec4<f32> {
     let clip = clip_from_world * vec4<f32>(hull.position, 1.0);
     let direction = clip_from_world * vec4<f32>(hull.normal, 0.0);
-    // The rows of clip x and y have the focal lengths' lengths: the view is rigid.
-    let focal = vec2<f32>(
-        length(vec3<f32>(clip_from_world[0].x, clip_from_world[1].x, clip_from_world[2].x)),
-        length(vec3<f32>(clip_from_world[0].y, clip_from_world[1].y, clip_from_world[2].y)),
-    );
+    let focal = focal_lengths(clip_from_world);
     // The outline normal in view space (x right, y up, z toward the camera), then flattened: its
     // part across the screen, with the material's flattening away from the camera as its depth.
     let normal = safe_normalize(vec3<f32>(direction.xy / focal, -direction.w));
     let extrusion = safe_normalize(vec3<f32>(normal.xy, -materials[width.material].outline_shape.w));
     let depth = max(clip.w, 1e-4);
-    let distance = depth / (focal.y * OUTLINE_REFERENCE_TAN_HALF_FOV);
+    let distance = effective_distance(depth, focal.y);
     let pixels = width.pixels * (view.viewport.y / OUTLINE_REFERENCE_HEIGHT) * outline_curve(width.material, distance);
     // Pixels to view-space meters at this depth: the target's height spans 2 × depth / focal y.
     let meters = pixels * 2.0 * depth / (focal.y * view.viewport.y);
@@ -170,6 +166,21 @@ fn outline_clip(clip_from_world: mat4x4<f32>, hull: HullVertex, width: HullWidth
     return vec4<f32>(across * back, clip.z, clip.w * back);
 }
 
+// The focal lengths of `clip_from_world` (see `outline_clip`): the rows of clip x and y have
+// their lengths, since the view is rigid.
+fn focal_lengths(clip_from_world: mat4x4<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        length(vec3<f32>(clip_from_world[0].x, clip_from_world[1].x, clip_from_world[2].x)),
+        length(vec3<f32>(clip_from_world[0].y, clip_from_world[1].y, clip_from_world[2].y)),
+    );
+}
+
+// The effective distance (see the top of this file) at view depth `depth`, through a vertical
+// focal length `focal_y`.
+fn effective_distance(depth: f32, focal_y: f32) -> f32 {
+    return depth / (focal_y * OUTLINE_REFERENCE_TAN_HALF_FOV);
+}
+
 // `clip` with this frame's jitter (M1 R7), as the jittered projection would have it.
 fn jittered(clip: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(clip.xy + view.jitter.zw * clip.w, clip.zw);
@@ -177,6 +188,11 @@ fn jittered(clip: vec4<f32>) -> vec4<f32> {
 
 @vertex
 fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
+    return outline_varyings(packed, draw);
+}
+
+// A hull vertex, for the main pass's entry point and the material debug views' (M1 F5).
+fn outline_varyings(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     let vertex = decode_vertex(packed, draw);
     let instance = instances[draw.instance];
     let region = outline_region(vertex, draw.material);
@@ -194,10 +210,12 @@ fn vs_outline(packed: PackedVertex, draw: DrawRecord) -> OutlineVaryings {
     return out;
 }
 
-// A hull pixel (`fs_outline`): its final color and alpha, and whether it is kept.
+// A hull pixel (`fs_outline`): its final color and alpha, whether it is kept, and the region
+// whose line it draws (the material debug views', M1 F5).
 struct OutlinePixel {
     color: vec4<f32>,
     kept: bool,
+    region: u32,
 }
 
 fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
@@ -241,8 +259,9 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     if material_has_texture(modes, CHARACTER_CONTROL) {
         region = control_material_id(swizzles, in.uv);
     }
+    region = min(region, max(modes.y, 1u) - 1u);
     var surface: CharacterSurface;
-    surface.region = materials[material].regions[min(region, max(modes.y, 1u) - 1u)];
+    surface.region = materials[material].regions[region];
     let line = surface.region.outline.rgb * mix(vec3<f32>(1.0), base.rgb, style.x);
     // The world's share of the pixel, as the surface writes it (anime_character.wgsl).
     let world = select(1.0, 0.0, in.character != 0u);
@@ -267,7 +286,7 @@ fn outline_pixel(in: OutlineVaryings) -> OutlinePixel {
     let line_color = select(mix(line, lit_line, style.y), line, style.y <= 0.0);
     // The final color, in one variable at the one exit.
     let color = vec4<f32>(fogged(line_color, in.world_position, fog_share(in.character)), world);
-    return OutlinePixel(color, kept);
+    return OutlinePixel(color, kept, region);
 }
 
 @fragment
@@ -294,6 +313,67 @@ fn fs_outline_covered(in: OutlineVaryings) -> CoveredOutput {
         discard;
     }
     return out;
+}
+
+// A hull vertex for the material debug views (M1 F5; see the end of anime_character.wgsl): the
+// main pass's, with the line's width.
+struct OutlineDebugVaryings {
+    @builtin(position) @invariant clip_position: vec4<f32>,
+    @location(0) @interpolate(flat) material: u32,
+    @location(1) @interpolate(flat) region: u32,
+    @location(2) uv: vec2<f32>,
+    @location(3) @interpolate(flat) character: u32,
+    @location(4) world_position: vec3<f32>,
+    @location(5) world_normal: vec3<f32>,
+    @location(6) occlusion: f32,
+    // The line's width at the vertex in pixels on a 1080-row target, as its extrusion takes it:
+    // the material's, the region's and the vertex's scales × the distance curve (`outline_clip`,
+    // without the target's own height; the cutoff's fade, which fades the line rather than
+    // narrowing it, is left out).
+    @location(7) width: f32,
+}
+
+@vertex
+fn vs_outline_debug(packed: PackedVertex, draw: DrawRecord) -> OutlineDebugVaryings {
+    let main = outline_varyings(packed, draw);
+    let vertex = decode_vertex(packed, draw);
+    let clip_from_world = view.unjittered_clip_from_world;
+    let width = hull_width(vertex, draw.material, main.region);
+    let depth = max((clip_from_world * vec4<f32>(main.world_position, 1.0)).w, 1e-4);
+    let distance = effective_distance(depth, focal_lengths(clip_from_world).y);
+    var out: OutlineDebugVaryings;
+    out.clip_position = main.clip_position;
+    out.material = main.material;
+    out.region = main.region;
+    out.uv = main.uv;
+    out.character = main.character;
+    out.world_position = main.world_position;
+    out.world_normal = main.world_normal;
+    out.occlusion = main.occlusion;
+    out.width = width.pixels * outline_curve(draw.material, distance);
+    return out;
+}
+
+// A hull pixel's values: `fs_outline`'s, its width in w.
+@fragment
+fn fs_outline_debug(in: OutlineDebugVaryings) -> @location(0) vec4<f32> {
+    let main = OutlineVaryings(
+        in.clip_position,
+        in.material,
+        in.region,
+        in.uv,
+        in.character,
+        in.world_position,
+        in.world_normal,
+        in.occlusion,
+    );
+    let pixel = outline_pixel(main);
+    let values = character_debug_values(DEBUG_DRAWN_LINE, in.material, pixel.region, in.width);
+    // The one exit, as the main pass's.
+    if PERMUTATION_ALPHA_TEST && !pixel.kept {
+        discard;
+    }
+    return values;
 }
 
 // The hull in the scene prepass: `ScenePrepassVaryings` (frame.wgsl), and how squarely the

@@ -10,7 +10,8 @@ use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_platform::PacingSource;
 use sapphire_render::debug_view::{
-    self, NO_LIGHTS, OVERDRAW_SCALE, WIREFRAME_TONES, heat, light_position, overdraw_position,
+    self, BAND_TONES, CHARACTER_TONE, NO_LIGHTS, OUTLINE_WIDTH_SCALE, OVERDRAW_SCALE, WIREFRAME_TONES, heat,
+    light_position, outline_width_color, overdraw_position, ramp_row_color, region_color,
 };
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
@@ -907,6 +908,39 @@ fn debug_view(ui: &mut Ui, stats: &DebugViewStats) {
                     swatch(ui, heat(light_position(count, stats.scale)));
                     ui.monospace(count.to_string());
                 }
+            }
+            DebugView::MaterialIds => {
+                ui.monospace("regions:");
+                for region in 0..stats.scale {
+                    swatch(ui, region_color(region));
+                    ui.monospace(region.to_string());
+                }
+            }
+            DebugView::RampRows => {
+                // The day rows, then the night rows (the material IDs' own by default), as the
+                // view's legend runs; time of day's blend of the two shows as stripes.
+                let ids = stats.scale / 2;
+                for (half, rows) in [("day rows:", 0..ids), ("night:", ids..stats.scale)] {
+                    ui.monospace(half);
+                    for row in rows {
+                        swatch(ui, ramp_row_color(row));
+                    }
+                }
+                for (tone, bands) in BAND_TONES.into_iter().zip(["2 bands", "3 bands"]) {
+                    swatch(ui, tone);
+                    ui.monospace(bands);
+                }
+            }
+            DebugView::OutlineWidths => {
+                ui.monospace("outline px at 1080 rows:");
+                swatch(ui, CHARACTER_TONE);
+                ui.monospace("surface");
+                for width in [0, 1, 2, 4, OUTLINE_WIDTH_SCALE] {
+                    swatch(ui, outline_width_color(width as f32));
+                    ui.monospace(width.to_string());
+                }
+                swatch(ui, [1.0; 3]);
+                ui.monospace("wider");
             }
         }
     });

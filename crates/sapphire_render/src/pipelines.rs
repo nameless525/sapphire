@@ -48,6 +48,11 @@ pub(crate) const OUTLINES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8U
 /// write nothing to: the smallest the copies' fragment stages can have.
 pub(crate) const REPLAY_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
+/// The color target of the material debug views' replay ([`Replay::Values`]): the values the
+/// anime character pipelines' debug entry points write (`character_debug_values` in
+/// `anime_character.wgsl`), whole numbers, exact in half floats.
+pub(crate) const VALUES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// The depth and stencil of a debug view's replay of the main pass ([`Replay`]) on `device`:
 /// 32-bit float depth, as the main pass's, where the device has it with a stencil
 /// (`DEPTH32FLOAT_STENCIL8`, which `sapphire_rhi` enables wherever the adapter has it), else
@@ -980,6 +985,17 @@ struct PassDesc<'a> {
     blend: Option<wgpu::BlendState>,
     /// Values of the shaders' pipeline-overridable constants.
     constants: &'a [(&'a str, f64)],
+    /// The material debug views' entry points (M1 F5), which a [`Replay::Values`] copy draws
+    /// through: the anime character family's surfaces, outlines and eyes through hair have them.
+    debug: Option<DebugEntries>,
+}
+
+/// A pipeline's entry points for the material debug views (M1 F5; [`Replay::Values`]): the
+/// fragment stage's, and the vertex stage's where it differs from the main pass's.
+#[derive(Clone, Copy, Debug)]
+struct DebugEntries {
+    vertex: Option<&'static str>,
+    fragment: &'static str,
 }
 
 /// Transparent surfaces, and eyes through hair: blended by coverage, keeping the scene color's
@@ -1205,9 +1221,26 @@ pub(crate) enum Replay {
     /// don't write; each line's pixels take the stencil reference: the wireframe, which tags
     /// each shading family's lines.
     Edges,
+    /// Depth tested and written as the main pass does, into a [`VALUES_FORMAT`] color target
+    /// that the anime character family's pipelines write their debug values to, through their
+    /// debug entry points (`*_debug`, M1 F5), and every other family's leave: the material
+    /// views' replay (regions, ramp rows, outline widths), which draws the other families
+    /// first, so what hides a character in the main pass hides it whatever the order there.
+    Values,
 }
 
 impl Replay {
+    /// The format of its color target: [`VALUES_FORMAT`] for [`Self::Values`], which writes it,
+    /// else [`REPLAY_COLOR_FORMAT`].
+    pub(crate) fn color_format(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Values => VALUES_FORMAT,
+            Self::Depth | Self::Hide | Self::Count | Self::Invocations | Self::Tag | Self::Edges => {
+                REPLAY_COLOR_FORMAT
+            }
+        }
+    }
+
     /// Its depth and stencil state in `format`, for a pipeline the main pass draws as `pass`
     /// says.
     fn depth_stencil(self, format: wgpu::TextureFormat, pass: &PassDesc<'_>) -> wgpu::DepthStencilState {
@@ -1234,6 +1267,7 @@ impl Replay {
             Self::Edges => {
                 (false, wgpu::CompareFunction::GreaterEqual, stencil(wgpu::StencilOperation::Replace), None)
             }
+            Self::Values => (write, compare, none(), None),
         };
         wgpu::DepthStencilState {
             format,
@@ -1409,7 +1443,7 @@ impl PipelineTarget {
     fn replayed(&self, replay: &ReplayTarget) -> Self {
         Self {
             sample_count: 1,
-            color_format: REPLAY_COLOR_FORMAT,
+            color_format: replay.replay.color_format(),
             replay: Some(replay.clone()),
             ..self.clone()
         }
@@ -1860,6 +1894,8 @@ fn build_surface(
             shader_depth: false,
             blend: transparent.then_some(TRANSPARENT_BLEND),
             constants: &constants,
+            debug: matches!(variant.shading, Shading::Character(_))
+                .then_some(DebugEntries { vertex: None, fragment: "fs_anime_character_debug" }),
         },
     )
 }
@@ -1893,6 +1929,7 @@ fn build_outline(
             shader_depth: false,
             blend: None,
             constants: &constants,
+            debug: Some(DebugEntries { vertex: Some("vs_outline_debug"), fragment: "fs_outline_debug" }),
         },
     )
 }
@@ -2092,6 +2129,7 @@ fn build_through_hair(
             shader_depth: true,
             blend: Some(TRANSPARENT_BLEND),
             constants: &constants,
+            debug: Some(DebugEntries { vertex: None, fragment: "fs_through_hair_debug" }),
         },
     )
 }
@@ -2179,14 +2217,22 @@ impl PipelineTarget {
         pass: PassDesc<'_>,
     ) -> wgpu::RenderPipeline {
         let entry = pass.name.replace(' ', "_");
-        let vs = format!("vs_{entry}");
-        let fs = pass.fragment.map_or_else(|| format!("fs_{entry}"), str::to_owned);
+        let mut vs = format!("vs_{entry}");
+        let mut fs = pass.fragment.map_or_else(|| format!("fs_{entry}"), str::to_owned);
+        // The material views' copies draw the anime character family through its debug entry
+        // points, which write the values; every other family's write nothing.
+        let values = self.replay.as_ref().is_some_and(|target| target.replay == Replay::Values);
+        let debug = pass.debug.filter(|_| values);
+        if let Some(entries) = debug {
+            vs = entries.vertex.map_or(vs, str::to_owned);
+            fs = entries.fragment.to_owned();
+        }
         let compilation_options =
             wgpu::PipelineCompilationOptions { constants: pass.constants, ..Default::default() };
         // A debug view's copy changes the depth, stencil and primitive state alone (`Replay`),
-        // and writes no color: what it gathers is in its depth and stencil. Edges draw as line
-        // lists (cull modes are for triangles), and a count of invocations through a stand-in
-        // fragment stage that keeps every fragment.
+        // and but for the material views' values writes no color: what it gathers is in its
+        // depth and stencil. Edges draw as line lists (cull modes are for triangles), and a count
+        // of invocations through a stand-in fragment stage that keeps every fragment.
         let mut topology = wgpu::PrimitiveTopology::TriangleList;
         let mut fragment = (pass.module, fs.as_str(), compilation_options.clone());
         let (depth_stencil, cull_mode, blend, write_mask) = match &self.replay {
@@ -2209,10 +2255,12 @@ impl PipelineTarget {
                     Replay::Invocations => {
                         fragment = (&target.stand_in, "fs_debug_stand_in", Default::default())
                     }
-                    Replay::Depth | Replay::Hide | Replay::Count | Replay::Tag => {}
+                    Replay::Depth | Replay::Hide | Replay::Count | Replay::Tag | Replay::Values => {}
                 }
                 let depth_stencil = target.replay.depth_stencil(target.depth_format, &pass);
-                (depth_stencil, cull, None, wgpu::ColorWrites::empty())
+                let writes =
+                    if debug.is_some() { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
+                (depth_stencil, cull, None, writes)
             }
         };
         let color_targets = [Some(wgpu::ColorTargetState { format: self.color_format, blend, write_mask })];

@@ -28,6 +28,13 @@
 //   those that hide them, each line's pixels tagged in the stencil with its shading family, whose
 //   tone it takes, over the frame at a fifth of its light. Its line indices come from
 //   `cs_debug_lines`.
+// - The material views (`fs_debug_material_ids`, `fs_debug_ramp_rows`,
+//   `fs_debug_outline_widths`): the values the anime character pipelines' debug entry points
+//   wrote where the main pass draws them (`character_debug_values` in anime_character.wgsl, which
+//   this program doesn't include, so their codes are mirrored here): each surface pixel's region
+//   or the ramp rows it reads, flat but for silhouettes, creases and the borders between
+//   materials, and each outline pixel's the same, darker, or its width. Where no character is, the
+//   frame shows, dimmed.
 //
 // Fragment stages here have one exit each (WARP's shader compiler crashes on an early return
 // under a per-pixel condition).
@@ -36,14 +43,39 @@
 @group(0) @binding(2) var<storage, read> light_lists: array<u32>;
 
 // Group 2: what the view's replay gathered, at the scene's size: its stencil (counts, or tags)
-// as unsigned integers, and its depth.
+// as unsigned integers, and its depth; the material views' group holds their values in place of
+// the stencil.
 @group(2) @binding(0) var view_stencil: texture_2d<u32>;
 @group(2) @binding(1) var view_depth: texture_depth_2d;
+@group(2) @binding(2) var view_values: texture_2d<f32>;
 
 // Fragments a pixel at the top of the overdraw view's scale (`debug_view::OVERDRAW_SCALE`).
 const DEBUG_OVERDRAW_SCALE: u32 = 16u;
 // The light lists' grey for a surface walking no light (`debug_view::NO_LIGHTS`).
 const DEBUG_NO_LIGHTS: f32 = 0.15;
+// How much of a flat view color shows along silhouettes and creases (`debug_edge_shade`).
+const DEBUG_EDGE_SHADE: f32 = 0.55;
+
+// The material views' values (`character_debug_values` in anime_character.wgsl): what drew the
+// pixel (x; 0 nothing), and the band modes' codes in place of ramp rows (z).
+const DEBUG_DRAWN_SURFACE: f32 = 1.0;
+const DEBUG_DRAWN_LINE: f32 = 2.0;
+const DEBUG_TWO_BANDS: f32 = -1.0;
+const DEBUG_THREE_BANDS: f32 = -2.0;
+// Ramp rows (`character_maps::ramp::ROWS`): the day rows of the material IDs, then their night
+// rows.
+const DEBUG_RAMP_ROWS: u32 = 16u;
+const DEBUG_MATERIAL_IDS: u32 = 8u;
+// The share of an outline pixel's color the material ID and ramp-row views keep, so lines read
+// as lines.
+const DEBUG_LINE_SHADE: f32 = 0.45;
+// The width view's top, in pixels on a 1080-row target (`debug_view::OUTLINE_WIDTH_SCALE`), and
+// its tone for character surfaces (`debug_view::CHARACTER_TONE`).
+const DEBUG_OUTLINE_WIDTH_SCALE: u32 = 8u;
+const DEBUG_CHARACTER_TONE: f32 = 0.3;
+// The ramp-row view's diagonal stripes, in target pixels: the night row's share of them is time
+// of day's blend of the two (`frame.day_night`).
+const DEBUG_STRIPES: f32 = 8.0;
 
 struct DebugVaryings {
     @builtin(position) position: vec4<f32>,
@@ -138,7 +170,7 @@ fn debug_edge_shade(texel: vec2<i32>, depth: f32) -> f32 {
     let up = textureLoad(view_depth, clamp(texel - vec2<i32>(0, 1), vec2<i32>(0), last), 0);
     let down = textureLoad(view_depth, clamp(texel + vec2<i32>(0, 1), vec2<i32>(0), last), 0);
     let bend = max(abs(left + right - 2.0 * depth), abs(up + down - 2.0 * depth));
-    return select(1.0, 0.55, bend > 0.02 * depth);
+    return select(1.0, DEBUG_EDGE_SHADE, bend > 0.02 * depth);
 }
 
 // A light-list view's color: the legend's cell or its frame, else `count` lights on a
@@ -222,6 +254,117 @@ fn fs_debug_wireframe(in: DebugVaryings) -> @location(0) vec4<f32> {
         color = vec4<f32>(debug_linear(tones[min(tag, 4u) - 1u]), 1.0);
     }
     return color;
+}
+
+// Region `region`'s color in the material ID view, display (`debug_view::REGION_COLORS`).
+fn debug_region_color(region: u32) -> vec3<f32> {
+    var colors = array<vec3<f32>, 8>(
+        vec3<f32>(0.9, 0.3, 0.3),
+        vec3<f32>(0.95, 0.62, 0.2),
+        vec3<f32>(0.92, 0.88, 0.3),
+        vec3<f32>(0.4, 0.8, 0.35),
+        vec3<f32>(0.3, 0.8, 0.85),
+        vec3<f32>(0.3, 0.5, 0.95),
+        vec3<f32>(0.65, 0.4, 0.9),
+        vec3<f32>(0.95, 0.5, 0.75),
+    );
+    return colors[min(region, DEBUG_MATERIAL_IDS - 1u)];
+}
+
+// Ramp row `row`'s color, display (`debug_view::ramp_row_color`): a day row its material ID's, a
+// night row that halfway to a night blue.
+fn debug_row_color(row: u32) -> vec3<f32> {
+    let color = debug_region_color(row % DEBUG_MATERIAL_IDS);
+    let night = mix(color, vec3<f32>(0.1, 0.12, 0.35), 0.5);
+    return select(color, night, row >= DEBUG_MATERIAL_IDS);
+}
+
+// The band modes' tones in the ramp-row view, display (`debug_view::BAND_TONES`): two bands
+// (`DEBUG_TWO_BANDS`), else three.
+fn debug_band_tone(code: f32) -> vec3<f32> {
+    return select(vec3<f32>(0.5), vec3<f32>(0.75), code == DEBUG_TWO_BANDS);
+}
+
+// A line `width` pixels wide on a 1080-row target, display (`debug_view::outline_width_color`).
+fn debug_width_color(width: f32) -> vec3<f32> {
+    let scale = f32(DEBUG_OUTLINE_WIDTH_SCALE);
+    return select(debug_heat(width / scale), vec3<f32>(1.0), width > scale);
+}
+
+// Whether `next`, a neighbour's values, is another material's surface than `values`'.
+fn debug_other_material(values: vec4<f32>, next: vec4<f32>) -> bool {
+    return values.x == DEBUG_DRAWN_SURFACE && next.x == DEBUG_DRAWN_SURFACE && next.w != values.w;
+}
+
+// How much of a character surface's flat color shows at `texel`, whose values are `values`: as
+// `debug_edge_shade`, and darkened where the material changes to the right or below too.
+fn debug_surface_shade(texel: vec2<i32>, values: vec4<f32>) -> f32 {
+    let last = vec2<i32>(textureDimensions(view_values)) - 1;
+    let right = textureLoad(view_values, min(texel + vec2<i32>(1, 0), last), 0);
+    let below = textureLoad(view_values, min(texel + vec2<i32>(0, 1), last), 0);
+    let border = debug_other_material(values, right) || debug_other_material(values, below);
+    let edge = debug_edge_shade(texel, textureLoad(view_depth, texel, 0));
+    return min(edge, select(1.0, DEBUG_EDGE_SHADE, border));
+}
+
+// A material view's color: the legend's cell or its frame (`cell` its cell's color), else
+// `tone` where a character drew (`drawn`), else the frame dimmed.
+fn debug_values_color(legend: i32, cell: vec3<f32>, drawn: bool, tone: vec3<f32>) -> vec4<f32> {
+    var color = vec4<f32>(0.0, 0.0, 0.0, 0.75);
+    if drawn {
+        color = vec4<f32>(debug_linear(tone), 1.0);
+    }
+    if legend >= 0 {
+        color = vec4<f32>(debug_linear(cell), 1.0);
+    }
+    if legend == -1 {
+        color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    return color;
+}
+
+@fragment
+fn fs_debug_material_ids(in: DebugVaryings) -> @location(0) vec4<f32> {
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), DEBUG_MATERIAL_IDS);
+    let texel = debug_texel(in.uv, textureDimensions(view_values));
+    let values = textureLoad(view_values, texel, 0);
+    let line = values.x == DEBUG_DRAWN_LINE;
+    let shade = select(debug_surface_shade(texel, values), DEBUG_LINE_SHADE, line);
+    let tone = debug_region_color(u32(max(values.y, 0.0))) * shade;
+    let cell = debug_region_color(u32(max(legend, 0)));
+    return debug_values_color(legend, cell, values.x > 0.0, tone);
+}
+
+@fragment
+fn fs_debug_ramp_rows(in: DebugVaryings) -> @location(0) vec4<f32> {
+    // A cell per row, the day rows and then the night rows, then the band modes'.
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), DEBUG_RAMP_ROWS + 2u);
+    let texel = debug_texel(in.uv, textureDimensions(view_values));
+    let values = textureLoad(view_values, texel, 0);
+    // The day row, or in stripes over time of day's share of the blend, the night row.
+    let rows = u32(max(values.z, 0.0));
+    let stripe = fract((in.position.x + in.position.y) / DEBUG_STRIPES);
+    let row = select(rows % DEBUG_RAMP_ROWS, rows / DEBUG_RAMP_ROWS, stripe < frame.day_night);
+    let flat = select(debug_band_tone(values.z), debug_row_color(row), values.z >= 0.0);
+    let line = values.x == DEBUG_DRAWN_LINE;
+    let tone = flat * select(debug_surface_shade(texel, values), DEBUG_LINE_SHADE, line);
+    let index = u32(max(legend, 0));
+    let band = select(DEBUG_TWO_BANDS, DEBUG_THREE_BANDS, index > DEBUG_RAMP_ROWS);
+    let cell = select(debug_band_tone(band), debug_row_color(index), index < DEBUG_RAMP_ROWS);
+    return debug_values_color(legend, cell, values.x > 0.0, tone);
+}
+
+@fragment
+fn fs_debug_outline_widths(in: DebugVaryings) -> @location(0) vec4<f32> {
+    // A cell per pixel of width up to the scale's top, then one for wider.
+    let legend = debug_legend_cell(in.uv, fwidth(in.uv), DEBUG_OUTLINE_WIDTH_SCALE + 1u);
+    let texel = debug_texel(in.uv, textureDimensions(view_values));
+    let values = textureLoad(view_values, texel, 0);
+    let line = values.x == DEBUG_DRAWN_LINE;
+    let surface = vec3<f32>(DEBUG_CHARACTER_TONE) * debug_surface_shade(texel, values);
+    let tone = select(surface, debug_width_color(values.w), line);
+    let cell = debug_width_color(f32(max(legend, 0)) + 0.5);
+    return debug_values_color(legend, cell, values.x > 0.0, tone);
 }
 
 // The wireframe's line indices (`debug_view::LineIndices`): the mesh pool's indices in use,

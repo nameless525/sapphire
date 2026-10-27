@@ -978,6 +978,8 @@ struct ShadedCharacter {
     // Whether the pixel stays (M1 C7): false where the alpha test or the proximity fade cuts it
     // out, which the entry points discard at their one exit. Always true in opaque variants.
     kept: bool,
+    // The region it shades with, which the material debug views show (M1 F5).
+    region: u32,
 }
 
 // Shades an anime character surface pixel (see the top of this file). Quads cut out whole
@@ -1275,13 +1277,16 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         shaded.glow = saturate(materials[material].layers.w * share);
     }
     shaded.kept = kept;
+    shaded.region = region;
     return shaded;
 }
 
-// A surface pixel (`fs_anime_character`): its final color and alpha, and whether it is kept.
+// A surface pixel (`fs_anime_character`): its final color and alpha, whether it is kept, and its
+// region (the material debug views', M1 F5).
 struct CharacterPixel {
     color: vec4<f32>,
     kept: bool,
+    region: u32,
 }
 
 fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
@@ -1299,7 +1304,7 @@ fn character_pixel(in: CharacterVaryings) -> CharacterPixel {
     // The final color, with the frame's fog over it (M1 W3): characters take their share of it,
     // so they stay readable where the world melts into the sky. One variable, at the one exit.
     let color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);
-    return CharacterPixel(color, shaded.kept);
+    return CharacterPixel(color, shaded.kept, shaded.region);
 }
 
 @fragment
@@ -1387,13 +1392,15 @@ fn through_hair(in: CharacterVaryings) -> ThroughHairPixel {
     drawn.out.color = vec4<f32>(fogged(shaded.color, in.world_position, fog_share(in.character)), alpha);
     drawn.out.depth = min(hair_depth * THROUGH_HAIR_DEPTH_NUDGE, 1.0);
     drawn.kept = passes && shaded.kept && alpha > 0.0;
+    drawn.region = shaded.region;
     return drawn;
 }
 
-// An eye-through-hair pixel, and whether it is kept.
+// An eye-through-hair pixel, whether it is kept, and its region (M1 F5).
 struct ThroughHairPixel {
     out: ThroughHairOutput,
     kept: bool,
+    region: u32,
 }
 
 @fragment
@@ -1424,6 +1431,74 @@ fn fs_through_hair_covered(in: CharacterVaryings) -> CoveredThroughHairOutput {
     out.mask = fade_mask(character_fade(in.character), in.clip_position.xy, in.character);
     // The one exit, where the pixels cut out leave.
     if !pixel.kept {
+        discard;
+    }
+    return out;
+}
+
+// --- The material debug views (M1 F5; spec §5.12 "Debug views", the `debug_view` module).
+//
+// A debug view's replay of the main pass draws its copies of the anime character pipelines
+// through these entry points (`pipelines::Replay::Values`): the main pass's vertex stages and
+// shading, cutting out the pixels the main pass cuts, but writing what the material views show
+// in place of the color, which `debug_view.wgsl` reads. A transparent surface (an eye's layers,
+// eyes through hair) stands for a pixel where it covers at least half of it. The main pass's own
+// pipelines never draw through them.
+
+// What drew a pixel (the values' x): a surface, or an outline hull (outline.wgsl).
+const DEBUG_DRAWN_SURFACE: f32 = 1.0;
+const DEBUG_DRAWN_LINE: f32 = 2.0;
+// The values' z for the band modes, which read no ramp: two bands, and three.
+const DEBUG_TWO_BANDS: f32 = -1.0;
+const DEBUG_THREE_BANDS: f32 = -2.0;
+// The coverage from which a transparent surface stands for its pixel.
+const DEBUG_COVERS: f32 = 0.5;
+// Material slots as the values' w holds them: modulo this, exact in a half float.
+const DEBUG_MATERIALS: u32 = 2048u;
+
+// A pixel's values (`debug_view::VALUES_FORMAT`, whole numbers exact in its half floats): x what
+// drew it, y its region, z the ramp rows its shadow side reads in ramp mode (the day row +
+// RAMP_ROWS × the night row; time of day blends the two), or the band mode's code, and w
+// `extra`: a surface's material slot, or a line's width.
+fn character_debug_values(drawn: f32, material: u32, region: u32, extra: f32) -> vec4<f32> {
+    let modes = materials[material].modes.x;
+    let day = materials[material].regions[region].shade.a;
+    let night = materials[material].regions[region].deep_shade.a;
+    let bands = select(DEBUG_TWO_BANDS, DEBUG_THREE_BANDS, (modes & CHARACTER_FLAG_DEEP_SHADE) != 0u);
+    let rows = select(bands, day + RAMP_ROWS * night, (modes & CHARACTER_FLAG_RAMP) != 0u);
+    return vec4<f32>(drawn, f32(region), rows, extra);
+}
+
+// A surface's values: `fs_anime_character`'s pixel.
+@fragment
+fn fs_anime_character_debug(in: CharacterVaryings) -> @location(0) vec4<f32> {
+    let pixel = character_pixel(in);
+    let shows = pixel.kept && (!PERMUTATION_TRANSPARENT || pixel.color.a >= DEBUG_COVERS);
+    let slot = f32(in.material % DEBUG_MATERIALS);
+    let values = character_debug_values(DEBUG_DRAWN_SURFACE, in.material, pixel.region, slot);
+    // The one exit, as the main pass's: opaque variants keep every pixel.
+    if (PERMUTATION_ALPHA_TEST || PERMUTATION_TRANSPARENT) && !shows {
+        discard;
+    }
+    return values;
+}
+
+struct ThroughHairDebugOutput {
+    @location(0) values: vec4<f32>,
+    // The hair's depth, as `fs_through_hair` writes it.
+    @builtin(frag_depth) depth: f32,
+}
+
+// Eyes through hair's values: `fs_through_hair`'s pixel.
+@fragment
+fn fs_through_hair_debug(in: CharacterVaryings) -> ThroughHairDebugOutput {
+    let pixel = through_hair(in);
+    var out: ThroughHairDebugOutput;
+    let slot = f32(in.material % DEBUG_MATERIALS);
+    out.values = character_debug_values(DEBUG_DRAWN_SURFACE, in.material, pixel.region, slot);
+    out.depth = pixel.out.depth;
+    // The one exit.
+    if !(pixel.kept && pixel.out.color.a >= DEBUG_COVERS) {
         discard;
     }
     return out;

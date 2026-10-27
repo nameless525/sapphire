@@ -16,10 +16,16 @@
 //! With `--locked` (CI), a source without a committed `.meta` sidecar fails the cook instead
 //! of getting a fresh ID that would be thrown away. A lock file per cook keeps concurrent
 //! xtask runs from changing content another run is still copying or running against.
+//!
+//! Generating missing sources comes first, under a lock of its own
+//! (`target/content/generate.lock`), taken and released before the cook's: concurrent runs (a
+//! desktop and a mobile cook in one checkout) never generate at once, and none cooks while
+//! another is generating. The generators write only missing files, so generation never
+//! overwrites a hand edit.
 
 use std::fmt;
 use std::fs::{self, File, TryLockError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
@@ -185,6 +191,21 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/mountains/mountains.png",
 ];
 
+/// A pipeline command that generates sources, the directory it writes (relative to
+/// [`SOURCE_DIR`]) and the files it writes there (relative to [`SOURCE_DIR`] too).
+#[derive(Clone, Copy, Debug)]
+struct Generator {
+    command: &'static str,
+    dir: &'static str,
+    sources: &'static [&'static str],
+}
+
+/// The generators `cook` runs when one of their files is missing.
+const GENERATORS: [Generator; 2] = [
+    Generator { command: "gen-samples", dir: "samples", sources: SAMPLE_SOURCES },
+    Generator { command: "gen-lookdev", dir: "lookdev", sources: LOOKDEV_SOURCES },
+];
+
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
 /// Android. Mirrors `sapphire_pipeline::cook::Cook`; xtask runs the pipeline as a
 /// process rather than linking it, since nothing may depend on a tool crate.
@@ -254,19 +275,18 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     )?;
 
     let source = workspace::root().join(SOURCE_DIR);
-    if SAMPLE_SOURCES.iter().any(|sample| !source.join(sample).exists()) {
-        workspace::run(Command::new(&pipeline).arg("gen-samples").arg("--out").arg(source.join("samples")))?;
-    }
-    if LOOKDEV_SOURCES.iter().any(|file| !source.join(file).exists()) {
-        workspace::run(Command::new(&pipeline).arg("gen-lookdev").arg("--out").arg(source.join("lookdev")))?;
-    }
+    fs::create_dir_all(workspace::output_dir().join("content"))?;
+    generate_missing(&generate_lock(), &source, &GENERATORS, &mut |generator| {
+        workspace::run(
+            Command::new(&pipeline).arg(generator.command).arg("--out").arg(source.join(generator.dir)),
+        )
+    })?;
 
     let out = cooked_dir(cook);
     let lock_path = out.with_extension("lock");
-    fs::create_dir_all(workspace::output_dir().join("content"))?;
     let lock =
         File::create(&lock_path).with_context(|| format!("failed to create {}", lock_path.display()))?;
-    wait_for(&lock, File::try_lock, File::lock, cook)?;
+    wait_for(&lock, File::try_lock, File::lock, &format!("to finish with the {cook} content"))?;
     let mut command = Command::new(&pipeline);
     command
         .arg("cook")
@@ -285,30 +305,67 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     workspace::run(&mut command)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
     lock.unlock()?;
-    wait_for(&lock, File::try_lock_shared, File::lock_shared, cook)?;
+    wait_for(&lock, File::try_lock_shared, File::lock_shared, &format!("to finish with the {cook} content"))?;
     Ok(Cooked { dir: out, _lock: lock })
 }
 
+/// The lock generation runs under: `target/content/generate.lock`.
+fn generate_lock() -> PathBuf {
+    workspace::output_dir().join("content").join("generate.lock")
+}
+
+/// Runs `generate` for each of `generators` with a file missing under `source`, holding the
+/// lock file at `lock` from before the first check until the last generator is done (review
+/// BC-007). A run that waited for the lock checks once it has it, so it finds what the other
+/// run generated. Returns the generators that ran.
+///
+/// The lock is released before the cook takes its own, so the two are never nested: a run
+/// holding a cook's lock (an app running against its content) never blocks another run's
+/// generation, and generation never waits on a cook.
+fn generate_missing(
+    lock: &Path,
+    source: &Path,
+    generators: &[Generator],
+    generate: &mut dyn FnMut(&Generator) -> anyhow::Result<()>,
+) -> anyhow::Result<Vec<&'static str>> {
+    let file = File::create(lock).with_context(|| format!("failed to create {}", lock.display()))?;
+    wait_for(&file, File::try_lock, File::lock, "to finish generating sources")?;
+    let mut ran = Vec::new();
+    for generator in generators {
+        if generator.sources.iter().any(|file| !source.join(file).exists()) {
+            generate(generator)?;
+            ran.push(generator.command);
+        }
+    }
+    file.unlock()?;
+    Ok(ran)
+}
+
 /// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
-/// another xtask run holds it.
+/// another xtask run holds it: "waiting for another xtask run `until`...".
 fn wait_for(
     file: &File,
     try_lock: fn(&File) -> Result<(), TryLockError>,
     lock: fn(&File) -> std::io::Result<()>,
-    cook: Cook,
+    until: &str,
 ) -> anyhow::Result<()> {
     match try_lock(file) {
         Ok(()) => Ok(()),
         Err(TryLockError::WouldBlock) => {
-            eprintln!("waiting for another xtask run to finish with the {cook} content...");
+            eprintln!("waiting for another xtask run {until}...");
             Ok(lock(file)?)
         }
-        Err(TryLockError::Error(error)) => Err(error).context("failed to lock cooked content"),
+        Err(TryLockError::Error(error)) => Err(error).context("failed to lock content"),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -319,5 +376,56 @@ mod tests {
         assert!(cooked_dir(Cook::Mobile).ends_with("target/content/mobile"));
         assert!(loose_dir(Cook::Mobile).ends_with("target/content/loose/mobile"));
         assert!(cache_dir().ends_with("target/content/cache"));
+        assert!(generate_lock().ends_with("target/content/generate.lock"));
+    }
+
+    #[test]
+    fn concurrent_runs_generate_once() {
+        // Review BC-007: two runs that find a source missing must not both generate, nor go on to
+        // cook while the other is still generating.
+        const SOURCES: &[&str] = &["gen/a.txt", "gen/nested/b.txt"];
+        let generators = [Generator { command: "gen-test", dir: "gen", sources: SOURCES }];
+        let dir = std::env::temp_dir().join(format!("xtask-generate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("gen")).unwrap();
+        fs::write(dir.join(SOURCES[0]), "kept").unwrap();
+        let lock = dir.join("generate.lock");
+        let runs = AtomicUsize::new(0);
+        let start = Barrier::new(2);
+        let ran: Vec<Vec<&str>> = thread::scope(|scope| {
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        let ran = generate_missing(&lock, &dir, &generators, &mut |generator| {
+                            runs.fetch_add(1, Ordering::SeqCst);
+                            // A slow generator, which writes only what's missing.
+                            thread::sleep(Duration::from_millis(200));
+                            for file in generator.sources {
+                                let path = dir.join(file);
+                                if !path.exists() {
+                                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                                    fs::write(path, "generated").unwrap();
+                                }
+                            }
+                            Ok(())
+                        })
+                        .unwrap();
+                        // Whichever run generated, every source is there once either goes on.
+                        assert!(SOURCES.iter().all(|file| dir.join(file).exists()));
+                        ran
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|thread| thread.join().unwrap()).collect()
+        });
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "one run generates");
+        assert_eq!(ran.concat(), ["gen-test"]);
+        assert_eq!(fs::read_to_string(dir.join(SOURCES[0])).unwrap(), "kept");
+
+        // Nothing missing: nothing runs.
+        let ran = generate_missing(&lock, &dir, &generators, &mut |_| panic!("nothing is missing")).unwrap();
+        assert!(ran.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

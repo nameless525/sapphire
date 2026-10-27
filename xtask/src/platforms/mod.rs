@@ -12,6 +12,7 @@
 mod android;
 mod apple;
 mod desktop;
+mod ios;
 mod ios_sim;
 mod macos;
 
@@ -34,17 +35,20 @@ pub enum Platform {
     Desktop,
     MacOs,
     IosSim,
+    /// An iPhone or iPad, signed for development.
+    Ios,
     Android,
 }
 
 impl Platform {
-    const ALL: [Self; 4] = [Self::Desktop, Self::MacOs, Self::IosSim, Self::Android];
+    const ALL: [Self; 5] = [Self::Desktop, Self::MacOs, Self::IosSim, Self::Ios, Self::Android];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Desktop => "desktop",
             Self::MacOs => "macos",
             Self::IosSim => "ios-sim",
+            Self::Ios => "ios",
             Self::Android => "android",
         }
     }
@@ -182,16 +186,24 @@ pub struct Options {
     pub exe: Option<PathBuf>,
     /// `run --platform ios-sim`: also show the device in Simulator.app.
     pub show: bool,
+    /// `--platform ios`: the signing identity (a name or SHA-1 `security find-identity` lists)
+    /// and development provisioning profile; without them the bundle is signed ad hoc.
+    pub identity: Option<String>,
+    pub profile: Option<PathBuf>,
+    /// `run --platform ios`: the device, by name or UDID (`xcrun devicectl list devices`).
+    pub device: Option<String>,
     /// `run`: build, cook and bundle, then print the launch instead of performing it.
     pub dry_run: bool,
 }
 
 /// Assembles an installable bundle and returns its path.
 pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+    check_device_options(platform, options)?;
     match platform {
         Platform::Desktop => desktop::bundle(app, options),
         Platform::MacOs => macos::bundle(app, options),
         Platform::IosSim => ios_sim::bundle(app, options),
+        Platform::Ios => ios::bundle(app, options),
         Platform::Android => android::bundle(app, options),
     }
 }
@@ -199,12 +211,25 @@ pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Resul
 /// Builds, cooks, deploys and launches, forwarding `args` to the app.
 pub fn run(platform: Platform, app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     ensure!(!options.show || platform == Platform::IosSim, "--show applies only to --platform ios-sim");
+    check_device_options(platform, options)?;
     match platform {
         Platform::Desktop => desktop::run(app, options, args),
         Platform::MacOs => macos::run(app, options, args),
         Platform::IosSim => ios_sim::run(app, options, args),
+        Platform::Ios => ios::run(app, options, args),
         Platform::Android => android::run(app, options, args),
     }
+}
+
+/// Fails if `--identity`, `--profile` or `--device`, which only iOS devices take, are given for
+/// another platform.
+fn check_device_options(platform: Platform, options: &Options) -> anyhow::Result<()> {
+    let given = options.identity.is_some() || options.profile.is_some() || options.device.is_some();
+    ensure!(
+        !given || platform == Platform::Ios,
+        "--identity, --profile and --device apply only to --platform ios"
+    );
+    Ok(())
 }
 
 /// The app's executable: `--exe` if given, else a fresh cargo build for `target` with the
@@ -283,9 +308,10 @@ mod tests {
         assert_eq!("desktop".parse::<Platform>().unwrap(), Platform::Desktop);
         assert_eq!("macos".parse::<Platform>().unwrap(), Platform::MacOs);
         assert_eq!("ios-sim".parse::<Platform>().unwrap(), Platform::IosSim);
+        assert_eq!("ios".parse::<Platform>().unwrap(), Platform::Ios);
         assert_eq!("android".parse::<Platform>().unwrap(), Platform::Android);
-        let err = "ios".parse::<Platform>().unwrap_err().to_string();
-        assert_eq!(err, "unknown platform `ios`; expected one of: desktop, macos, ios-sim, android");
+        let err = "iphone".parse::<Platform>().unwrap_err().to_string();
+        assert_eq!(err, "unknown platform `iphone`; expected one of: desktop, macos, ios-sim, ios, android");
     }
 
     #[test]

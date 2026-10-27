@@ -34,18 +34,23 @@ Commands:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
   bundle --platform <platform> [--release] [--features <list>] [--exe <path>]
+      [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/:
         desktop   SapphireSandbox/ with the executable and content/ (any host)
         macos     SapphireSandbox.app, ad-hoc signed
         ios-sim   SapphireSandbox.app for the simulator, ad-hoc signed
+        ios       SapphireSandbox.app for devices, signed with --identity and --profile
+                  (ad hoc without them, which no device installs)
         android   SapphireSandbox.apk, debug-signed (Gradle)
   run --platform <platform> [--release] [--features <list>] [--exe <path>] [--dry-run]
-      [--show] [-- <app args>]
+      [--show] [--identity <name> --profile <file> --device <name>] [-- <app args>]
       Cook, build and launch, with the app's output streamed here:
         desktop   runs the build in place with SAPPHIRE_CONTENT_DIR set (any host)
         macos     bundles, then runs the executable inside the .app
         ios-sim   bundles, boots a simulator headless if none is booted, installs and
                   launches with the console attached
+        ios       bundles and signs, installs on --device and launches it there with
+                  the console attached (devicectl, Xcode 15+)
         android   bundles, uses the connected device or boots the sapphire_api36
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
@@ -64,9 +69,11 @@ Commands:
         push [<file>...]     push packs (only the assets the device lacks are sent), RON
                              documents and WGSL sources; with no files, the packs of the
                              device's cook in target/content/<cook>/
-        watch                push what changes: packs after `cargo xtask content --cook
-                             <cook>`, the renderer's WGSL sources, the default day and the
-                             light rig presets
+        capture <png>        write the next frame the device draws to <png>
+        watch [<doc>...]     push what changes: packs after `cargo xtask content --cook
+                             <cook>`, the renderer's WGSL sources, the default day, the
+                             light rig and screen effect presets, and the RON documents named
+      Each command says how long the device took to answer.
       --addr <host:port> is the device (default 127.0.0.1:7811: desktop, the iOS Simulator,
       `iproxy` and `adb forward`); --listen <host:port> waits for a device that dials, behind
       `adb reverse` (the app's `--live-link connect=<addr>`).
@@ -80,9 +87,15 @@ Options:
                  Build the app with these Cargo features (comma-separated), such as `dev`
                  for the debug overlay.
   --exe <path>   Use a prebuilt sapphire_sandbox executable instead of building one
-                 (desktop, macos and ios-sim).
+                 (desktop, macos, ios-sim and ios).
   --dry-run      Build and bundle, then print the launch commands instead of running them.
   --show         ios-sim: also show the simulator in Simulator.app.
+  --identity <name or SHA-1>, --profile <file.mobileprovision>
+                 ios: the Apple Development signing identity (`security find-identity -v
+                 -p codesigning`) and a development provisioning profile covering the
+                 bundle identifier and the device.
+  --device <name or UDID>
+                 ios: the device to run on (`xcrun devicectl list devices`).
 
 Android environment:
   ANDROID_HOME      SDK location (default: ~/Library/Android/sdk, ~/Android/Sdk on Linux).
@@ -152,6 +165,9 @@ fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)>
         release: args.flag("--release"),
         features: features.split(',').map(str::trim).filter(|f| !f.is_empty()).map(str::to_owned).collect(),
         exe: args.value::<PathBuf>("--exe")?,
+        identity: args.value::<String>("--identity")?,
+        profile: args.value::<PathBuf>("--profile")?,
+        device: args.value::<String>("--device")?,
         ..Options::default()
     };
     Ok((platform, options))

@@ -30,6 +30,7 @@ These apply to every crate. The engine spec ([engine-spec.md](engine-spec.md)) s
 - **Logging:** use `tracing` macros, with targets in the form `sapphire::<subsystem>`. Don't use `println!` in runtime code.
 - **Profiling:** use `profiling::scope!("Name")` / `#[profiling::function]` on anything that could appear in a frame budget.
 - **GPU structs:** use `#[repr(C)]` plus `bytemuck::Pod` with plain arrays (`[f32; 4]`), padded explicitly to WGSL's alignment rules. Convert from `glam` types at the boundary.
+- **Fragment stages that cut pixels out** take their derivatives first, decide the cut, and `discard` once, at their exit, after the shading; only a 2 × 2 quad cut whole may leave early (eyes through hair's quad test in `anime_character.wgsl`). Apple's Metal compiler has miscompiled a per-pixel `discard` taken before the end: in M1 C7's dithered fade the pixels it cut came out black, with their depth written. Whether it does depends on the whole function, down to branches no pixel takes, so the single exit is the only shape known to be safe; the early cuts that predate this rule (the environment's alpha test, foliage's prepass) were checked pixel for pixel against single-exit twins on every tier. Every stage that cuts pixels out has a GPU test whose holes must show a background that isn't black (`sapphire_render`'s `tests/cutouts.rs`): over a black sky a black hole passes. WARP's compiler wants the single exit too: it crashes on an early `return` under a per-pixel condition.
 
 ## Tests
 

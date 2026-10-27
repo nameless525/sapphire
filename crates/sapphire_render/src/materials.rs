@@ -549,6 +549,9 @@ mod gpu_tests {
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let mut renderer = Renderer::new(&gpu, format, RenderSettings::default()).expect("renderer");
+        // The stats count the sky's default material from the start.
+        let stats = renderer.stats();
+        assert_eq!((stats.materials, stats.material_bytes), (1, size_of::<SkyParams>() as u64));
         let mut packets = FramePacketRing::new();
         let materials = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]].map(cooked);
         let handles = materials

@@ -680,7 +680,7 @@ impl Renderer {
             post_variants = ?settings.post_variants,
             "renderer created"
         );
-        Ok(Self {
+        let mut renderer = Self {
             builds: ShaderBuilds::default(),
             device,
             queue: gpu.queue().clone(),
@@ -728,7 +728,10 @@ impl Renderer {
             },
             #[cfg(test)]
             readable_depth: false,
-        })
+        };
+        // The pools' counters from the start: the sky's default material is uploaded already.
+        renderer.update_pool_stats();
+        Ok(renderer)
     }
 
     /// Validates and uploads a cooked material ([`sapphire_assets::material::Material::read`])

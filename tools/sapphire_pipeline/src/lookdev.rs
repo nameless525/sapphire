@@ -60,7 +60,7 @@ use sapphire_assets::character_maps::{face_expression, face_mask, hair_mask};
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
-use crate::samples::{foliage, sky};
+use crate::samples::{Existing, Generated, foliage, sky, write_files};
 
 /// The town's directory, under the look-dev directory.
 pub const TOWN_DIR: &str = "town";
@@ -180,9 +180,10 @@ pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
 
 /// Writes every generated file into the look-dev directory `dir` (creating the directories they
 /// sit in): the town's maps and the character's hair mask, irises and neck shadow, which
-/// [`HAIR_HIGHLIGHT`], [`IRIS_SOURCE`] and [`MODEL`] under `dir` are read for. Returns their
-/// paths.
-pub fn write_all(dir: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
+/// [`HAIR_HIGHLIGHT`], [`IRIS_SOURCE`] and [`MODEL`] under `dir` are read for. Only what's
+/// missing is written, as [`write_files`] says, unless `existing` replaces what differs. Returns
+/// what it did with each file.
+pub fn write_all(dir: &std::path::Path, existing: Existing) -> io::Result<Generated> {
     let highlight = std::fs::read(dir.join(HAIR_HIGHLIGHT))?;
     let iris = std::fs::read(dir.join(IRIS_SOURCE))?;
     let model = std::fs::read(dir.join(MODEL))?;
@@ -191,14 +192,7 @@ pub fn write_all(dir: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
     generated.push((HAIR_MASK.to_owned(), hair_mask_png(&highlight)?));
     generated.push((IRIS.to_owned(), eye_iris_png(&iris)?));
     generated.push((NECK_SHADOW.to_owned(), neck_shadow_png(&model)?));
-    let mut paths = Vec::new();
-    for (name, bytes) in generated {
-        let path = dir.join(name);
-        std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
-        std::fs::write(&path, bytes)?;
-        paths.push(path);
-    }
-    Ok(paths)
+    write_files(dir, generated, existing)
 }
 
 /// Linear RGB from 8-bit sRGB.

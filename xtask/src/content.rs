@@ -30,9 +30,10 @@ use crate::workspace::{self, CargoBuild};
 /// Source assets live here, relative to the workspace root.
 pub const SOURCE_DIR: &str = "content";
 
-/// Generated sample sources, relative to [`SOURCE_DIR`]. `gen-samples` writes all of them, and
-/// the face map's threshold masks (`samples/face/masks/`), which its document names: a cook
-/// missing one fails, naming it.
+/// Generated sample sources, relative to [`SOURCE_DIR`]. `gen-samples` writes them, and the face
+/// map's threshold masks (`samples/face/masks/`), which its document names: a cook missing one
+/// fails, naming it. It writes only the files that are missing, keeping any that differ from its
+/// output (a hand edit), unless run with `--force`.
 const SAMPLE_SOURCES: &[&str] = &[
     "samples/mannequin.glb",
     "samples/swatch.ramp.ron",
@@ -104,7 +105,8 @@ const SAMPLE_SOURCES: &[&str] = &[
 /// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps, its
 /// plants (W6's foliage samples, one file per look-dev material), the night sky's Milky Way,
 /// the character's hair mask, irises, face mask, expression map and neck shadow, and the far
-/// mountains' sectors and palette (X1 part 2d). `gen-lookdev` writes all of them.
+/// mountains' sectors and palette (X1 part 2d). `gen-lookdev` writes those that are missing, as
+/// `gen-samples` does.
 const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/foliage/tree_green.glb",
     "lookdev/foliage/tree_blossom.glb",

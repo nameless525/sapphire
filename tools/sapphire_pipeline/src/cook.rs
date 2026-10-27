@@ -1285,7 +1285,7 @@ mod tests {
     #[test]
     fn settings_reach_the_bake() {
         let source = TempDir::new("cook_settings");
-        let path = samples::write_all(source.path()).unwrap().remove(0);
+        let path = samples::write_all(source.path(), samples::Existing::Keep).unwrap().created.remove(0);
         // Without LODs, so the vertex order can't change with the seams the weld finds.
         let no_lods = MeshSettings { lods: LodSettings::none(), ..MeshSettings::default() };
         let default = cook_mesh(&path, &no_lods, Cook::Desktop).unwrap();
@@ -1303,7 +1303,7 @@ mod tests {
     #[test]
     fn lod_and_position_settings_reach_the_cook() {
         let source = TempDir::new("cook_lod_settings");
-        let path = samples::write_all(source.path()).unwrap().remove(0);
+        let path = samples::write_all(source.path(), samples::Existing::Keep).unwrap().created.remove(0);
         let cook = |settings: &MeshSettings, cook| cook_mesh(&path, settings, cook).unwrap();
         let default = cook(&MeshSettings::default(), Cook::Desktop);
         assert!(default.lods.len() > 1, "the mannequin simplifies");
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn the_mobile_cook_has_a_lower_detail_lod0_and_fewer_lods() {
         let source = TempDir::new("cook_mobile");
-        let path = samples::write_all(source.path()).unwrap().remove(0);
+        let path = samples::write_all(source.path(), samples::Existing::Keep).unwrap().created.remove(0);
         let desktop = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
         let mobile = cook_mesh(&path, &MeshSettings::default(), Cook::Mobile).unwrap();
         let triangles = |mesh: &Mesh, lod: usize| -> u32 {

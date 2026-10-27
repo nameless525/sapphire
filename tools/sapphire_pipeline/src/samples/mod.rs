@@ -33,6 +33,7 @@ mod shapes;
 pub mod sky;
 pub mod swatch;
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,7 @@ use serde_json::{Value, json};
 
 use crate::color::srgb8;
 use crate::gltf_writer::GltfWriter;
+use crate::meta;
 
 /// File name of the mannequin sample.
 pub const MANNEQUIN_FILE_NAME: &str = "mannequin.glb";
@@ -48,9 +50,72 @@ pub const MANNEQUIN_FILE_NAME: &str = "mannequin.glb";
 /// with a finer line than clothing does.
 pub const HEAD_OUTLINE_WIDTH: u8 = 140;
 
+/// What generation does with a generated file that is there but differs from what its generator
+/// makes now: a hand edit, or an older generator's output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Existing {
+    /// Keep it, and report it ([`Generated::kept`]): the generators' default, and so every
+    /// `cargo xtask` cook's.
+    Keep,
+    /// Replace it: the generators' `--force`, after a change to a generator.
+    Replace,
+}
+
+/// What a generator did with each of its files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Generated {
+    /// Files that weren't there, now written.
+    pub created: Vec<PathBuf>,
+    /// Files that differed from the generator's output and were replaced ([`Existing::Replace`]).
+    pub replaced: Vec<PathBuf>,
+    /// Files that differ from the generator's output, left as they are ([`Existing::Keep`]).
+    pub kept: Vec<PathBuf>,
+    /// Files that already held the generator's output, left untouched.
+    pub unchanged: Vec<PathBuf>,
+}
+
+/// Writes generated `files` (paths relative to `dir`, with their bytes) into `dir`, creating the
+/// directories they sit in.
+///
+/// Only what's missing is written (review BC-006): a file that holds these bytes is left alone,
+/// and one that differs is kept or replaced as `existing` says, never overwritten unasked. Each
+/// file is written whole, to a hidden staged file renamed into place, so a cook reading the tree
+/// meanwhile sees no file or a complete one.
+pub fn write_files(
+    dir: &Path,
+    files: impl IntoIterator<Item = (String, Vec<u8>)>,
+    existing: Existing,
+) -> io::Result<Generated> {
+    let mut generated = Generated::default();
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        let written = match fs::read(&path) {
+            Ok(current) if current == bytes => {
+                generated.unchanged.push(path);
+                continue;
+            }
+            Ok(_) if existing == Existing::Keep => {
+                generated.kept.push(path);
+                continue;
+            }
+            Ok(_) => &mut generated.replaced,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => &mut generated.created,
+            Err(error) => return Err(error),
+        };
+        fs::create_dir_all(path.parent().unwrap_or(dir))?;
+        let staged = meta::staging_path(&path);
+        if let Err(error) = fs::write(&staged, &bytes).and_then(|()| fs::rename(&staged, &path)) {
+            let _ = fs::remove_file(&staged);
+            return Err(error);
+        }
+        written.push(path);
+    }
+    Ok(generated)
+}
+
 /// Writes every sample source asset into `dir` (creating it and the subdirectories they sit
-/// in) and returns their paths.
-pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
+/// in) as [`write_files`] does, and returns what it did with each.
+pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
     let files = [
         (MANNEQUIN_FILE_NAME, mannequin_glb()),
         (swatch::RAMP_FILE_NAME, swatch::ramp_document().into_bytes()),
@@ -69,19 +134,12 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
         (hard_edges::FILE_NAME, hard_edges::glb()),
     ]
     .map(|(name, bytes)| (name.to_owned(), bytes));
-    let mut paths = Vec::new();
     let nested = face::files()?
         .into_iter()
         .chain(environment::files()?)
         .chain(foliage::files()?)
         .chain(materials::files()?);
-    for (name, bytes) in files.into_iter().chain(nested) {
-        let path = dir.join(name);
-        std::fs::create_dir_all(path.parent().unwrap_or(dir))?;
-        std::fs::write(&path, bytes)?;
-        paths.push(path);
-    }
-    Ok(paths)
+    write_files(dir, files.into_iter().chain(nested), existing)
 }
 
 /// A character material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
@@ -403,7 +461,7 @@ mod tests {
     fn writes_samples_to_disk() {
         let dir = crate::test_util::TempDir::new("samples");
         let nested = dir.path().join("nested");
-        let written = write_all(&nested).unwrap();
+        let written = write_all(&nested, Existing::Keep).unwrap().created;
         let names = [
             MANNEQUIN_FILE_NAME,
             swatch::RAMP_FILE_NAME,
@@ -440,6 +498,37 @@ mod tests {
         assert_eq!(written[first..first + foliage.len()], foliage, "then the foliage's");
         assert_eq!(written[first + foliage.len()..], materials, "then the material samples'");
         assert!(written.iter().all(|path| path.is_file()));
-        assert_eq!(std::fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
+        assert_eq!(fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
+    }
+
+    #[test]
+    fn generation_writes_only_missing_files_unless_forced() {
+        // Review BC-006: one missing sample regenerated every sample, over hand edits.
+        let dir = crate::test_util::TempDir::new("samples_missing");
+        let count = write_all(dir.path(), Existing::Keep).unwrap().created.len();
+        let edited = dir.path().join(swatch::BAND_MATERIAL_FILE_NAME);
+        let deleted = dir.path().join(sky::MOON_FILE_NAME);
+        let (band, moon) = (fs::read(&edited).unwrap(), fs::read(&deleted).unwrap());
+        fs::write(&edited, "edited by hand").unwrap();
+        fs::remove_file(&deleted).unwrap();
+
+        let generated = write_all(dir.path(), Existing::Keep).unwrap();
+        assert_eq!(fs::read_to_string(&edited).unwrap(), "edited by hand", "the edit survives");
+        assert_eq!(fs::read(&deleted).unwrap(), moon, "the missing file comes back as it was");
+        assert_eq!(generated.created, [deleted]);
+        assert_eq!(generated.kept, std::slice::from_ref(&edited));
+        assert!(generated.replaced.is_empty());
+        assert_eq!(generated.unchanged.len(), count - 2);
+
+        // Asked to, it replaces what differs, and only that.
+        let generated = write_all(dir.path(), Existing::Replace).unwrap();
+        assert_eq!(generated.replaced, std::slice::from_ref(&edited));
+        assert_eq!(fs::read(&edited).unwrap(), band);
+        assert!(generated.created.is_empty() && generated.kept.is_empty());
+        assert_eq!(generated.unchanged.len(), count - 1);
+        let hidden = fs::read_dir(dir.path()).unwrap().filter(|entry| {
+            entry.as_ref().unwrap().file_name().to_str().is_some_and(|name| name.starts_with('.'))
+        });
+        assert_eq!(hidden.count(), 0, "no staged file is left");
     }
 }

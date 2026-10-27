@@ -12,21 +12,23 @@ use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::extract::{self, ExtractOptions};
+use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
-use sapphire_pipeline::{lookdev, samples};
+use sapphire_pipeline::samples::{self, Existing, Generated};
 
 const USAGE: &str = "\
 Sapphire asset pipeline: generate, import, bake and cook source assets.
 
 Usage:
-  sapphire_pipeline gen-samples --out <DIR>
+  sapphire_pipeline gen-samples --out <DIR> [--force]
       Write the procedural sample source assets (mannequin.glb, the swatch maps and materials)
-      into DIR, created if missing.
-  sapphire_pipeline gen-lookdev --out <DIR>
+      into DIR, created if missing. Only missing files are written: a file that differs from
+      what the generator makes (a hand edit) is kept, with a warning, unless --force.
+  sapphire_pipeline gen-lookdev --out <DIR> [--force]
       Write the look-dev scene's generated sources into DIR, created if missing: the town's
       painted maps, and the character's hair mask from the model's highlight that DIR's
-      ../third_party holds.
+      ../third_party holds. Missing files only, as gen-samples, unless --force.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
       Cook one .gltf/.glb/.fbx/.vrm file into a .smesh file (default cook: desktop), with the
       settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
@@ -51,6 +53,8 @@ Usage:
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
+  --force                    gen-samples, gen-lookdev: also replace generated files that
+                             differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
   --cache <DIR>              Content cache: reuse the cooked output and pack encoding of
@@ -64,9 +68,11 @@ Options:
 enum Command {
     GenSamples {
         out: PathBuf,
+        force: bool,
     },
     GenLookdev {
         out: PathBuf,
+        force: bool,
     },
     CookMesh {
         input: PathBuf,
@@ -115,19 +121,15 @@ fn main() -> ExitCode {
 #[expect(clippy::print_stdout, reason = "--help and --version answer on stdout; progress goes to stderr")]
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
-        Command::GenSamples { out } => {
-            let written = samples::write_all(&out)
+        Command::GenSamples { out, force } => {
+            let generated = samples::write_all(&out, existing(force))
                 .with_context(|| format!("failed to write samples to {}", out.display()))?;
-            for path in written {
-                eprintln!("generated {}", path.display());
-            }
+            print_generated(&generated, "gen-samples");
         }
-        Command::GenLookdev { out } => {
-            let written = lookdev::write_all(&out)
+        Command::GenLookdev { out, force } => {
+            let generated = lookdev::write_all(&out, existing(force))
                 .with_context(|| format!("failed to write the look-dev sources to {}", out.display()))?;
-            for path in written {
-                eprintln!("generated {}", path.display());
-            }
+            print_generated(&generated, "gen-lookdev");
         }
         Command::CookMesh { input, output, cook, outline } => {
             let sidecar = meta::sidecar_path(&input);
@@ -188,6 +190,35 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Version => println!("sapphire_pipeline {}", env!("CARGO_PKG_VERSION")),
     }
     Ok(())
+}
+
+/// What a generator does with files that differ from its output: replaces them with `--force`,
+/// keeps them otherwise.
+fn existing(force: bool) -> Existing {
+    if force { Existing::Replace } else { Existing::Keep }
+}
+
+/// One line per file written, a warning per file kept, then a summary line.
+fn print_generated(generated: &Generated, command: &str) {
+    for path in &generated.created {
+        eprintln!("generated {}", path.display());
+    }
+    for path in &generated.replaced {
+        eprintln!("replaced {}", path.display());
+    }
+    for path in &generated.kept {
+        eprintln!(
+            "warning: kept {}: it differs from what {command} makes (--force replaces it)",
+            path.display()
+        );
+    }
+    eprintln!(
+        "{command}: {} generated, {} replaced, {} kept, {} up to date",
+        generated.created.len(),
+        generated.replaced.len(),
+        generated.kept.len(),
+        generated.unchanged.len()
+    );
 }
 
 /// Generates the map the document at `input` describes and writes it to `output` as a PNG.
@@ -288,8 +319,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
     let name = args.remove(0);
     let mut options = Options(args);
     let command = match name.as_str() {
-        "gen-samples" => Command::GenSamples { out: options.required("--out")? },
-        "gen-lookdev" => Command::GenLookdev { out: options.required("--out")? },
+        "gen-samples" => {
+            Command::GenSamples { out: options.required("--out")?, force: options.flag("--force") }
+        }
+        "gen-lookdev" => {
+            Command::GenLookdev { out: options.required("--out")?, force: options.flag("--force") }
+        }
         "cook-mesh" => {
             let cook = options.value("--cook")?.unwrap_or(Cook::Desktop);
             let outline = match options.value("--weld-tolerance")? {
@@ -386,11 +421,19 @@ mod tests {
     fn parses_every_command() {
         assert_eq!(
             parse(&["gen-samples", "--out", "dir"]).unwrap(),
-            Command::GenSamples { out: "dir".into() }
+            Command::GenSamples { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["gen-samples", "--force", "--out", "dir"]).unwrap(),
+            Command::GenSamples { out: "dir".into(), force: true }
         );
         assert_eq!(
             parse(&["gen-lookdev", "--out", "dir"]).unwrap(),
-            Command::GenLookdev { out: "dir".into() }
+            Command::GenLookdev { out: "dir".into(), force: false }
+        );
+        assert_eq!(
+            parse(&["gen-lookdev", "--out=dir", "--force"]).unwrap(),
+            Command::GenLookdev { out: "dir".into(), force: true }
         );
         assert_eq!(
             parse(&["cook-mesh", "a.glb", "--cook=mobile", "b.smesh", "--weld-tolerance", "0.001"]).unwrap(),
@@ -466,5 +509,6 @@ mod tests {
         );
         assert!(parse(&["cook-mesh", "a.glb", "b", "--weld-tolerance", "-1"]).is_err());
         assert!(parse(&["gen-samples", "--out", "dir", "--extra"]).is_err());
+        assert!(parse(&["cook", "--source", "a", "--out", "b", "--cook", "mobile", "--force"]).is_err());
     }
 }

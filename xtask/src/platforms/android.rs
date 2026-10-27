@@ -25,7 +25,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 use std::{env, thread};
 
-use anyhow::{Context as _, bail, ensure};
+use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
 use super::{App, Options, Platform};
@@ -89,7 +89,9 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
 }
 
 /// Bundles, picks the connected device (booting the emulator if there is none), installs
-/// and launches, then streams the app's logcat until the app exits or Ctrl-C.
+/// and launches, then streams the app's logcat until the app exits or Ctrl-C. Succeeds only
+/// if the app's main function returned: a process that ends without it, a logcat that stops
+/// under a running app and a device that drops all fail the run.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let apk = bundle(app, options)?;
     let sdk = sdk_dir()?;
@@ -125,55 +127,134 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     eprint!("{report}");
     ensure!(launch.status.success() && !report.contains("Error"), "failed to launch {component}");
 
-    let pid = workspace::output(adb.command().args(["shell", "pidof", &app.bundle_id]))?;
-    let pid = pid.trim();
-    ensure!(!pid.is_empty(), "{} exited during launch; see `adb logcat`", app.bundle_id);
+    let pids = adb.pids(&app.bundle_id).map_err(|why| anyhow!("lost {} during launch: {why}", adb.serial))?;
+    let pid = match pids.as_slice() {
+        [pid] => pid,
+        [] => bail!("{} exited during launch; see `adb logcat`", app.bundle_id),
+        _ => bail!("{} runs as several processes ({})", app.bundle_id, pids.join(", ")),
+    };
     eprintln!("streaming logcat for pid {pid}; Ctrl-C detaches and leaves the app running");
     follow_logcat(&adb, &app.bundle_id, pid)
 }
 
-/// Streams process `pid`'s logcat to stdout until the app's main function returns (the
-/// process itself lives on, cached) or the process dies. `logcat --pid` would outlive
-/// both.
-fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
-    /// SDLActivity logs this once `SDL_main` has returned.
-    const MAIN_FINISHED: &str = "Finished main function";
+/// SDLActivity logs this once `SDL_main` has returned, whatever it returned.
+const MAIN_FINISHED: &str = "Finished main function";
 
+/// What a process logs as it crashes: bionic for a fatal signal (a Rust panic aborts, and
+/// crash capture passes the signal on), the Java runtime for an uncaught exception.
+const CRASH_MARKERS: [&str; 2] = ["Fatal signal", "FATAL EXCEPTION"];
+
+/// Streams process `pid`'s logcat to stdout until the app's main function returns (the
+/// process itself lives on, cached), the process dies, logcat stops or the device drops
+/// (`logcat --pid` would outlive the first two), then judges the run by [`AppLog::outcome`].
+fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
     let mut command = adb.command();
     command.arg("logcat").arg(format!("--pid={pid}")).stdout(Stdio::piped());
     eprintln!("$ adb -s {} logcat --pid={pid}", adb.serial);
     let mut logcat = command.spawn().context("failed to start adb logcat")?;
     let stdout = logcat.stdout.take().expect("stdout is piped");
     let (finished, finished_rx) = mpsc::channel();
-    let forward = thread::spawn(move || -> std::io::Result<()> {
+    let forward = thread::spawn(move || -> std::io::Result<AppLog> {
+        let mut log = AppLog::default();
         let mut out = std::io::stdout().lock();
         for line in BufReader::new(stdout).lines() {
             let line = line?;
             writeln!(out, "{line}")?;
-            if line.contains(MAIN_FINISHED) {
+            if log.observe(&line) {
                 // The receiver is gone only if the caller already stopped following.
                 let _ = finished.send(());
             }
         }
-        Ok(())
+        Ok(log)
     });
 
-    let outcome = loop {
-        match finished_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(()) => break "the app's main function returned",
-            Err(mpsc::RecvTimeoutError::Disconnected) => break "adb logcat stopped",
-            Err(mpsc::RecvTimeoutError::Timeout) if !adb.is_running(package, pid) => {
-                break "the app's process ended";
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-        }
+    let stop = loop {
+        let stop = match finished_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(()) => break None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => match adb.process(package, pid) {
+                Process::Running => Stop::LogcatEnded,
+                Process::Gone => Stop::ProcessGone,
+                Process::Unreachable(why) => Stop::DeviceLost(why),
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => match adb.process(package, pid) {
+                Process::Running => continue,
+                Process::Gone => Stop::ProcessGone,
+                Process::Unreachable(why) => Stop::DeviceLost(why),
+            },
+        };
+        break Some(stop);
     };
     thread::sleep(Duration::from_secs(1)); // Let logcat print the last lines.
-    let _ = logcat.kill(); // It may have exited already.
-    logcat.wait()?;
-    forward.join().expect("the logcat forwarder doesn't panic")?;
-    eprintln!("{outcome}");
+    // Ok if it exited already: then `wait` returns its own status, which `Stop::LogcatEnded` reports.
+    let _ = logcat.kill();
+    let status = logcat.wait()?;
+    let log = forward.join().expect("the logcat forwarder doesn't panic")?;
+    eprintln!("{}", log.outcome(stop, &status.to_string())?);
     Ok(())
+}
+
+/// Why [`follow_logcat`] stopped before the app's main function returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stop {
+    /// `pidof` no longer lists the process.
+    ProcessGone,
+    /// `adb logcat` exited while the process still ran.
+    LogcatEnded,
+    /// adb no longer reaches the device: what it said.
+    DeviceLost(String),
+}
+
+/// What the app's logcat showed.
+#[derive(Debug, Default)]
+struct AppLog {
+    /// SDLActivity logged [`MAIN_FINISHED`].
+    main_finished: bool,
+    /// The first line that reported a crash.
+    crash: Option<String>,
+}
+
+impl AppLog {
+    /// Takes in one logcat line; true when it says the app's main function returned.
+    fn observe(&mut self, line: &str) -> bool {
+        if line.contains(MAIN_FINISHED) {
+            self.main_finished = true;
+            return true;
+        }
+        if self.crash.is_none() && CRASH_MARKERS.iter().any(|marker| line.contains(marker)) {
+            self.crash = Some(line.trim().to_owned());
+        }
+        false
+    }
+
+    /// The run's result once following stopped: `stop` is `None` when the main function
+    /// returned, and `logcat` is how logcat exited. Only a returned main function succeeds:
+    /// SDL's line carries no exit status, so an app that fails from main still passes here.
+    /// Ctrl-C never gets here; it ends xtask and leaves the app running.
+    fn outcome(&self, stop: Option<Stop>, logcat: &str) -> anyhow::Result<&'static str> {
+        let Some(stop) = stop.filter(|_| !self.main_finished) else {
+            return Ok("the app's main function returned");
+        };
+        match (stop, &self.crash) {
+            (Stop::ProcessGone, Some(crash)) => bail!("the app crashed: {crash}"),
+            (Stop::ProcessGone, None) => bail!(
+                "the app's process ended without returning from its main function: it was stopped (swiped \
+                 away, `am force-stop`, low memory) or crashed without saying why; see the log above"
+            ),
+            (Stop::LogcatEnded, _) => bail!("adb logcat ended ({logcat}) while the app still ran"),
+            (Stop::DeviceLost(why), _) => {
+                bail!("lost the device while the app ran ({why}); its outcome is unknown")
+            }
+        }
+    }
+}
+
+/// What became of the app's process.
+#[derive(Debug, PartialEq, Eq)]
+enum Process {
+    Running,
+    Gone,
+    /// adb no longer reaches the device: what it said.
+    Unreachable(String),
 }
 
 /// Everything the Gradle project takes from xtask (see `app/build.gradle.kts`).
@@ -481,13 +562,44 @@ impl Adb {
     }
 
     /// Whether `package` still runs as process `pid`.
-    fn is_running(&self, package: &str, pid: &str) -> bool {
-        match self.command().args(["shell", "pidof", package]).stderr(Stdio::null()).output() {
-            // `pidof` prints nothing once the process is gone.
-            Ok(output) => String::from_utf8_lossy(&output.stdout).split_whitespace().any(|p| p == pid),
-            // adb itself didn't start; keep following, and let Ctrl-C end it.
-            Err(_) => true,
+    fn process(&self, package: &str, pid: &str) -> Process {
+        match self.pids(package) {
+            Ok(pids) if pids.iter().any(|p| p == pid) => Process::Running,
+            Ok(_) => Process::Gone,
+            Err(why) => Process::Unreachable(why),
         }
+    }
+
+    /// The IDs of `package`'s processes, none once it has none, or what adb said when it no
+    /// longer reaches the device.
+    fn pids(&self, package: &str) -> Result<Vec<String>, String> {
+        let output = self
+            .command()
+            .args(["shell", "pidof", package])
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|error| format!("adb didn't start: {error}"))?;
+        let pids: Vec<String> =
+            String::from_utf8_lossy(&output.stdout).split_whitespace().map(str::to_owned).collect();
+        // `pidof` prints nothing and fails once the process is gone, as adb does once the
+        // device is: only the device's state tells them apart.
+        if pids.is_empty() {
+            self.online()?;
+        }
+        Ok(pids)
+    }
+
+    /// Ok while adb reports the device online; otherwise what adb said.
+    fn online(&self) -> Result<(), String> {
+        let output =
+            self.command().arg("get-state").output().map_err(|error| format!("adb didn't start: {error}"))?;
+        if output.status.success() && output.stdout.trim_ascii() == b"device" {
+            return Ok(());
+        }
+        let said =
+            [&output.stdout, &output.stderr].map(|text| String::from_utf8_lossy(text).trim().to_owned());
+        let said: Vec<&str> = said.iter().map(String::as_str).filter(|text| !text.is_empty()).collect();
+        Err(if said.is_empty() { format!("`adb get-state` {}", output.status) } else { said.join("; ") })
     }
 
     fn boot_completed(&self) -> bool {
@@ -687,6 +799,126 @@ mod tests {
                 (0..chunk.len() - 1).map(move |i| (bits >> (16 - 8 * i)) as u8)
             })
             .collect()
+    }
+
+    /// Feeds logcat lines to an [`AppLog`].
+    fn app_log(lines: &[&str]) -> AppLog {
+        let mut log = AppLog::default();
+        for line in lines {
+            log.observe(line);
+        }
+        log
+    }
+
+    #[test]
+    fn only_a_returned_main_function_passes() {
+        const RUNNING: &str = "10-27 12:00:00.000  4242  4260 V SDL     : Running main function SDL_main";
+        const FINISHED: &str = "10-27 12:00:09.000  4242  4260 V SDL     : Finished main function";
+        const NATIVE_CRASH: &str = "10-27 12:00:05.000  4242  4260 F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 4260";
+        const JAVA_CRASH: &str = "10-27 12:00:05.000  4242  4242 E AndroidRuntime: FATAL EXCEPTION: main";
+        let lost = || Some(Stop::DeviceLost("error: device offline".into()));
+
+        let finished = app_log(&[RUNNING, FINISHED]);
+        assert!(finished.main_finished);
+        assert!(finished.outcome(None, "signal: 9").is_ok());
+        // Whatever comes after: the main function returned.
+        for stop in [Stop::ProcessGone, Stop::LogcatEnded, Stop::DeviceLost("gone".into())] {
+            assert!(finished.outcome(Some(stop), "exit status: 1").is_ok());
+        }
+
+        let running = app_log(&[RUNNING]);
+        assert!(!running.main_finished && running.crash.is_none());
+        let error =
+            |log: &AppLog, stop: Option<Stop>| log.outcome(stop, "exit status: 7").unwrap_err().to_string();
+        let killed = error(&running, Some(Stop::ProcessGone));
+        assert!(
+            killed.contains("without returning from its main function") && killed.contains("swiped away")
+        );
+        assert_eq!(
+            error(&running, Some(Stop::LogcatEnded)),
+            "adb logcat ended (exit status: 7) while the app still ran"
+        );
+        assert!(
+            error(&running, lost()).contains("lost the device while the app ran (error: device offline)")
+        );
+
+        let native = app_log(&[RUNNING, NATIVE_CRASH, "F DEBUG   : backtrace:"]);
+        assert_eq!(native.crash.as_deref(), Some(NATIVE_CRASH));
+        assert_eq!(error(&native, Some(Stop::ProcessGone)), format!("the app crashed: {NATIVE_CRASH}"));
+        let java = app_log(&[RUNNING, JAVA_CRASH]);
+        assert_eq!(error(&java, Some(Stop::ProcessGone)), format!("the app crashed: {JAVA_CRASH}"));
+        // A lost device stays the reason, crash or not: the process may still be running.
+        assert!(error(&native, lost()).starts_with("lost the device"));
+    }
+
+    /// A stand-in for adb that plays the scenario named by its serial (`-s <scenario>`): the
+    /// app's logcat, `pidof` and `get-state`. Written once, before any test runs it.
+    #[cfg(unix)]
+    fn fake_adb() -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        static ADB: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        ADB.get_or_init(|| {
+            const SCRIPT: &str = r#"#!/bin/sh
+scenario=$2
+shift 2
+line() { printf '10-27 12:00:00.000  4242  4260 %s\n' "$1"; }
+case "$1 $scenario" in
+    "logcat offline") echo 'error: device offline' >&2; exit 7 ;;
+    "logcat finished") line 'V SDL     : Running main function SDL_main'; line 'V SDL     : Finished main function'; exec sleep 30 ;;
+    "logcat killed") line 'I sapphire::sandbox: frame stats fps=30.0'; exec sleep 30 ;;
+    "logcat crashed") line 'F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 4260 (SDLThread), pid 4242'; exec sleep 30 ;;
+    "logcat stopped") line 'I sapphire::sandbox: frame stats fps=30.0'; exit 0 ;;
+    "shell finished"|"shell stopped") echo 4242 ;;
+    "shell "*) exit 1 ;;
+    "get-state offline") echo 'error: device offline' >&2; exit 1 ;;
+    "get-state "*) echo device ;;
+    *) echo "fake adb: unexpected $*" >&2; exit 2 ;;
+esac
+"#;
+            let dir = env::temp_dir().join(format!("xtask-fake-adb-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let adb = dir.join("adb");
+            fs::write(&adb, SCRIPT).unwrap();
+            fs::set_permissions(&adb, fs::Permissions::from_mode(0o755)).unwrap();
+            adb
+        })
+        .clone()
+    }
+
+    #[cfg(unix)]
+    fn follow(scenario: &str) -> anyhow::Result<()> {
+        let adb = Adb { program: fake_adb(), serial: scenario.to_owned() };
+        follow_logcat(&adb, "dev.sapphire.sandbox", "4242")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_succeeds_once_main_returns() {
+        follow("finished").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_fails_when_the_device_drops() {
+        let error = follow("offline").unwrap_err().to_string();
+        assert!(error.contains("device offline"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_fails_when_the_app_dies() {
+        let error = follow("killed").unwrap_err().to_string();
+        assert!(error.contains("without returning from its main function"), "{error}");
+        let error = follow("crashed").unwrap_err().to_string();
+        assert!(error.contains("crashed") && error.contains("Fatal signal 6"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_fails_when_logcat_stops_under_a_running_app() {
+        // Logcat's own exit status, not the kill's.
+        let error = follow("stopped").unwrap_err().to_string();
+        assert_eq!(error, "adb logcat ended (exit status: 0) while the app still ran");
     }
 
     #[test]

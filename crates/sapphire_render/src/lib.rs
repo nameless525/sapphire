@@ -77,6 +77,9 @@
 //!   every tier, into persistent targets the main pass reads, and a scene prepass of depth,
 //!   world normals and velocity as frame-graph transients, which the graph culls while nothing
 //!   reads them ([`PrepassTargets`]).
+//! - Main-view culling (`view_cull`, review RA-O01): static instances of environment and foliage
+//!   surfaces wholly outside the main view's frustum are left out of the main pass, the scene
+//!   prepass and the debug views ([`RenderSettings::view_culling`], [`ViewCullingStats`]).
 //! - Temporal AA and upsampling ([`temporal`], M1 R7): the projection's sub-pixel jitter, the
 //!   responsive mask, and a resolve that accumulates frames in a history at the target's size,
 //!   upsampling a smaller scene, before bloom and grading. The desktop tiers resolve with it;
@@ -628,7 +631,8 @@
 //!   face pass), never jittered; [`RenderSettings::shadows`] `None` draws none and compiles the
 //!   shaders as they were. [`ShadowStats`] in [`RenderStats::shadows`] count them.
 //! - **Mesh bounds** live in the mesh records (the cooked bounds as a sphere), which the
-//!   per-object light lists, the outlines' LOD cutoff and the casters' culling read.
+//!   per-object light lists, the outlines' LOD cutoff, the casters' culling and the main view's
+//!   (`view_cull`) read.
 //! - **Outlines:** lit lines receive the cast shadow as their surface does (a face's line the
 //!   face pass's whole value); hulls cast none.
 //!
@@ -767,7 +771,8 @@
 //! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.
-//! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
+//! - **LOD selection**, with culling for every view (the main view culls only static world
+//!   instances so far, the `view_cull` module): the pool holds every LOD's indices and ranges, and each
 //!   cooked LOD carries its error in object-space meters, to project into pixels per view. Until
 //!   then draws use LOD0.
 //! - **Android pre-rotation:** whether the compositor rotates every frame has to be measured

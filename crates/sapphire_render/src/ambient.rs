@@ -945,16 +945,20 @@ impl AmbientPipelines {
             return Self::default();
         }
         let module = shaders::module(device, Program::Ambient, sources);
-        let build = |index: usize, entry_point: &str| {
+        let build_zeroing = |index: usize, entry_point: &str, zero_initialize_workgroup_memory: bool| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry_point),
                 layout: Some(&layouts.pipelines[index]),
                 module: &module,
                 entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory,
+                    ..Default::default()
+                },
                 cache,
             })
         };
+        let build = |index: usize, entry_point: &str| build_zeroing(index, entry_point, true);
         Self {
             projection: set.projection.then(|| ProjectionPipelines {
                 projection: build(0, "cs_sky_projection"),
@@ -967,7 +971,11 @@ impl AmbientPipelines {
                 character: build(3, "cs_character_ambient"),
             }),
             occlusion: set.occlusion.then(|| OcclusionPipelines {
-                depths: build(4, "cs_gtao_depths"),
+                // Every thread writes its texel of the tile before any reads it, as in temporal
+                // AA's resolve, so zeroing it first is wasted work. And the Android emulator's
+                // host Vulkan (MoltenVK, through SPIRV-Cross) can't compile the loop that zeroes
+                // it: the pipeline failed, which wgpu takes for a lost device (QA-001).
+                depths: build_zeroing(4, "cs_gtao_depths", false),
                 search: build(5, "cs_gtao"),
                 denoise: build(6, "cs_gtao_denoise"),
             }),

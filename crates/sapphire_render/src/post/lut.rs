@@ -68,13 +68,17 @@ pub(crate) struct LutKey {
 
 impl LutKey {
     /// Clamps every parameter to its working range, replacing non-finite values with neutral
-    /// ones: whatever the frame asks for bakes a finite, monotonic LUT.
+    /// ones: whatever the frame asks for bakes a finite, monotonic LUT. The tone curve's contrast
+    /// is held to what its black tightness allows ([`max_toe_contrast`]).
     pub(crate) fn new(curve: &ToneCurve, grade: &ColorGrade, strength: f32) -> Self {
         let (neutral, fallback) = (ColorGrade::NEUTRAL, ToneCurve::default());
         let max_brightness = finite_clamp(curve.max_brightness, 0.1, 4.0, fallback.max_brightness);
+        let black_tightness = finite_clamp(curve.black_tightness, 1.0, 3.0, fallback.black_tightness);
+        let contrast = finite_clamp(curve.contrast, 0.1, 4.0, fallback.contrast);
         let curve = ToneCurve {
             max_brightness,
-            contrast: finite_clamp(curve.contrast, 0.1, 4.0, fallback.contrast),
+            // Up to 1 the toe is monotonic at any tightness, so the default skips the search.
+            contrast: if contrast > 1.0 { contrast.min(max_toe_contrast(black_tightness)) } else { contrast },
             // The toe needs room below the shoulder.
             linear_start: finite_clamp(
                 curve.linear_start,
@@ -85,7 +89,7 @@ impl LutKey {
             .min(0.9 * max_brightness),
             // Below 1, so the shoulder has room to approach the maximum.
             linear_length: finite_clamp(curve.linear_length, 0.0, 0.99, fallback.linear_length),
-            black_tightness: finite_clamp(curve.black_tightness, 1.0, 3.0, fallback.black_tightness),
+            black_tightness,
         };
         let grade = ColorGrade {
             temperature: finite_clamp(grade.temperature, -2.0, 2.0, neutral.temperature),
@@ -116,6 +120,72 @@ fn finite_clamp3(value: Vec3, min: f32, max: f32, fallback: Vec3) -> Vec3 {
         finite_clamp(value.y, min, max, fallback.y),
         finite_clamp(value.z, min, max, fallback.z),
     )
+}
+
+/// Where the toe's blend weight stops pulling its slope down: the smaller root of
+/// 8t² − 15t + 6, (15 − √33) / 16 (see [`max_toe_contrast`]).
+const TOE_TURN: f64 = (15.0 - 5.744_562_646_538_029) / 16.0;
+/// [`max_toe_contrast`]'s samples below [`TOE_TURN`], each 2^-0.75 times the last.
+const TOE_SAMPLES: u32 = 32;
+const TOE_SAMPLE_STEP: f64 = 0.594_603_557_501_360_5;
+/// Golden-section steps refining the least sample, each narrowing by the golden ratio's
+/// reciprocal, (√5 − 1) / 2.
+const TOE_REFINEMENTS: u32 = 32;
+const GOLDEN: f64 = 0.618_033_988_749_894_9;
+/// What [`max_toe_contrast`] leaves to spare, for rounding where the toe's slope comes to 0.
+const TOE_MARGIN: f64 = 1e-3;
+
+/// The steepest contrast whose toe stays monotonic, and so never dips below black, at black
+/// tightness `c` (1 to 3): the GT curve's smoothstep blends the toe with the linear section
+/// extrapolated below its start, which a steep enough section takes below 0 (review PW-002).
+///
+/// Over the toe, t = x / `linear_start` from 0 to 1, the curve is `linear_start` · h(t), with
+/// h(t) = t^c (1 − s) + (1 + a(t − 1)) s and s = 3t² − 2t³, which depends on the contrast a and
+/// c alone. Its slope h′(t) = A(t) − a·D(t) is linear in a, where
+/// A = c t^(c−1) (1 − s) + s′ (1 − t^c) ≥ 0 and D = t (6 − 15t + 8t²), positive only below
+/// [`TOE_TURN`] (about 0.58). So a contrast of 1 or less never turns the toe down (A ≥ D there),
+/// and the steepest is the least A / D below the turn: about 2.45 at tightness 1, 2.43 at the
+/// default 1.15, 2.14 at 1.5. Toward black, A / D tends to 1 + c t^(c−2) / 6, unbounded below
+/// c = 2, 4/3 at it and 1 above: a toe starting flatter than the blend's t² dips below black
+/// under any steeper section, however close to black.
+fn max_toe_contrast(c: f32) -> f32 {
+    let c = f64::from(c);
+    if c > 2.0 {
+        return 1.0;
+    }
+    let ratio = |t: f64| {
+        let s = t * t * (3.0 - 2.0 * t);
+        let power = t.powf(c - 1.0);
+        let a = c * power * (1.0 - s) + 6.0 * t * (1.0 - t) * (1.0 - power * t);
+        a / (t * (6.0 - t * (15.0 - 8.0 * t)))
+    };
+    // Samples from the turn toward black (the least moves there as c nears 2), then a
+    // golden-section search between the least sample's neighbors.
+    let (mut sample, mut least, mut at) = (TOE_TURN, f64::INFINITY, TOE_TURN);
+    for _ in 0..TOE_SAMPLES {
+        sample *= TOE_SAMPLE_STEP;
+        let value = ratio(sample);
+        if value < least {
+            (least, at) = (value, sample);
+        }
+    }
+    let (mut low, mut high) = (at * TOE_SAMPLE_STEP, at / TOE_SAMPLE_STEP);
+    let (mut left, mut right) = (high - GOLDEN * (high - low), low + GOLDEN * (high - low));
+    let (mut at_left, mut at_right) = (ratio(left), ratio(right));
+    for _ in 0..TOE_REFINEMENTS {
+        if at_left < at_right {
+            (high, right, at_right) = (right, left, at_left);
+            left = high - GOLDEN * (high - low);
+            at_left = ratio(left);
+        } else {
+            (low, left, at_left) = (left, right, at_right);
+            right = low + GOLDEN * (high - low);
+            at_right = ratio(right);
+        }
+    }
+    let toward_black = if c == 2.0 { 4.0 / 3.0 } else { f64::INFINITY };
+    let least = least.min(at_left).min(at_right).min(toward_black);
+    ((least * (1.0 - TOE_MARGIN)) as f32).max(1.0)
 }
 
 /// The GT tone curve with its derived constants (see [`ToneCurve`]).
@@ -422,6 +492,108 @@ mod tests {
                 "{tone:?}: the shoulder reaches white"
             );
         }
+    }
+
+    /// Inputs above black up past the shoulder, ascending: tiny ones toward black (where the toe
+    /// starts, down to where its terms' rounding, near f32's subnormals, outweighs what they
+    /// leave), then [`sweep`].
+    fn inputs() -> Vec<f32> {
+        let tiny = (4..=50).rev().map(|step| 0.5f32.powi(step)).take_while(|&x| x < unshape(1.0 / 4000.0));
+        tiny.chain(sweep().skip(1)).collect()
+    }
+
+    /// Where `tone`'s sanitized curve first falls below black or below the value before it, over
+    /// [`inputs`].
+    fn first_break(tone: ToneCurve) -> Option<(f32, f32)> {
+        first_break_of(curve(tone))
+    }
+
+    fn first_break_of(curve: Curve) -> Option<(f32, f32)> {
+        let mut previous = curve.apply(0.0);
+        for x in inputs() {
+            let y = curve.apply(x);
+            if y < 0.0 || y < previous {
+                return Some((x, y));
+            }
+            previous = y;
+        }
+        None
+    }
+
+    #[test]
+    fn every_sanitized_tone_curve_stays_monotonic_and_above_black() {
+        // The toe's shape depends on contrast and black tightness alone: across both sanitized
+        // ranges, whatever is asked bakes a toe that never dips below black or turns down (review
+        // PW-002: contrast 4 at the default tightness clipped 0.02 to 0.14 to black after a
+        // brighter 0.01).
+        let contrasts = [0.1, 0.5, 1.0, 1.2, 1.33, 1.34, 1.5, 2.0, 2.14, 2.43, 2.46, 3.0, 4.0, 100.0];
+        for contrast in contrasts {
+            for step in 0..=40 {
+                let black_tightness = 1.0 + step as f32 * 0.05;
+                let tone = ToneCurve { contrast, black_tightness, ..ToneCurve::default() };
+                assert_eq!(first_break(tone), None, "{tone:?}");
+            }
+        }
+        // At the limit itself (contrast 4 is held to it), densely.
+        for step in 0..=200 {
+            let black_tightness = 1.0 + step as f32 * 0.01;
+            let tone = ToneCurve { contrast: 4.0, black_tightness, ..ToneCurve::default() };
+            assert_eq!(first_break(tone), None, "{tone:?}");
+        }
+        // The other parameters move the toe's ends, not its shape.
+        for (linear_start, linear_length, max_brightness) in
+            [(0.001, 0.99, 1.0), (0.6, 0.0, 1.0), (3.6, 0.5, 4.0), (0.05, 0.3, 0.1)]
+        {
+            for (contrast, black_tightness) in [(4.0, 1.0), (4.0, 1.15), (2.0, 2.0), (4.0, 3.0)] {
+                let tone =
+                    ToneCurve { max_brightness, contrast, linear_start, linear_length, black_tightness };
+                assert_eq!(first_break(tone), None, "{tone:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn contrast_reaches_its_toe_limit_and_no_further() {
+        // The limit falls with tightness: 27/11 at 1, where A / D is least at a quarter of the toe,
+        // down to 4/3 at 2 and 1 above it.
+        let near = |c: f32, expected: f32| {
+            let limit = max_toe_contrast(c);
+            assert!((limit / expected - 1.0).abs() < 2e-3, "{c}: {limit} against {expected}");
+        };
+        near(1.0, 27.0 / 11.0);
+        near(1.15, 2.432);
+        near(1.5, 2.136);
+        near(2.0, 4.0 / 3.0);
+        assert_eq!((max_toe_contrast(2.01), max_toe_contrast(3.0)), (1.0, 1.0));
+        // The limit is the toe's own: at it the curve holds, and 2% steeper it turns down or dips
+        // below black somewhere f32 can show it.
+        for c in [1.0, 1.15, 1.5, 1.75, 1.9, 2.0, 2.5, 3.0] {
+            let limit = max_toe_contrast(c);
+            let tone = ToneCurve { contrast: limit, black_tightness: c, ..ToneCurve::default() };
+            assert_eq!(curve(tone).a, limit, "{c}: the limit is kept");
+            assert_eq!(first_break(tone), None, "{c}: monotonic at {limit}");
+            let steeper = Curve::new(&ToneCurve { contrast: limit * 1.02, ..tone });
+            assert!(first_break_of(steeper).is_some(), "{c}: {limit} is the toe's limit");
+        }
+    }
+
+    #[test]
+    fn a_steep_tone_curve_bakes_a_dark_ramp_that_never_turns_down() {
+        // The review's case, through the baked table as the composite samples it.
+        let tone = ToneCurve { contrast: 4.0, ..ToneCurve::default() };
+        let mut texels = vec![0; LUT_TEXELS];
+        lut(tone, ColorGrade::NEUTRAL, 1.0).bake(&mut texels);
+        let mut previous = 0.0;
+        for step in 1..=600 {
+            let x = step as f32 * 0.0005;
+            let value = sample(&texels, Vec3::splat(x)).x;
+            assert!(value >= previous - 1e-6, "turns down at {x}: {value} after {previous}");
+            assert!(value > 0.0, "{x} is crushed to black");
+            previous = value;
+        }
+        // The default curve is untouched by the joint range.
+        let default = LutKey::new(&ToneCurve::default(), &ColorGrade::NEUTRAL, 1.0);
+        assert_eq!(default.curve, ToneCurve::default());
     }
 
     #[test]

@@ -149,7 +149,11 @@ impl Default for BloomParams {
 pub struct ToneCurve {
     /// What very bright input approaches: 1 is display white.
     pub max_brightness: f32,
-    /// Slope of the linear section: 1 leaves midtones as they are.
+    /// Slope of the linear section: 1 leaves midtones as they are. Up to 4, and only as steep as
+    /// the toe allows at `black_tightness`, which the renderer holds it to: steeper, the toe
+    /// would turn down and dip below black. The limit is about 2.45 at tightness 1 and 2.43 at
+    /// the default, 2.1 at 1.5 and 4/3 at 2; above 2 it is 1, as a toe that flat starts below
+    /// any steeper section.
     pub contrast: f32,
     /// Where the linear section starts. Below it, the toe curves into black.
     pub linear_start: f32,

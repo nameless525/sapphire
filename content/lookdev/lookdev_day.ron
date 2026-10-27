@@ -54,6 +54,13 @@
 //   at golden hour and 0.6 at sunset as they come on; whole from the blue hour (19:45) through
 //   the night to the blue hour before dawn, so dusk and night draw as before; 0.3 at sunrise.
 //   Characters' emission never follows it.
+// - Characters' shadow hue (M1 C8's `character_shade`): at every key a share of the light on her
+//   shadow side takes one cool blue-grey, (0.8, 0.87, 1.0), at the key light's luminance, instead
+//   of the key's color; her lit side keeps the key's. The share peaks around the warm keys: 0.4
+//   by day, so the day's peach skin shade only cools a touch; 0.45 in the afternoon; 0.7 at
+//   golden hour and 0.75 at sunset, where the warm key would otherwise leave her shadow side tan
+//   against the blue-violet world; 0.6 at sunrise; 0.3 at the blue hour and 0.2 through the
+//   night, whose cool key already shades her blue.
 // - Every number is a starting point for art direction, not a measurement.
 (
     type: "sapphire::world::TodTimeline",
@@ -101,6 +108,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
                 emission: 1.0,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.2),
             ),
             (
                 // The blue hour before dawn: the moon setting low on the left, the sky paling.
@@ -142,6 +150,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
                 emission: 1.0,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.2),
             ),
             (
                 // Sunrise: a low peach sun on the right behind the cameras, morning mist.
@@ -183,6 +192,7 @@
                 ],
                 lens_flare: (intensity: 0.8, color: (1.0, 0.75, 0.5)),
                 emission: 0.3,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.6),
             ),
             (
                 // Morning: the sun climbing behind the cameras' right shoulder, the air clearing.
@@ -224,6 +234,7 @@
                 ],
                 lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
                 emission: 0.08,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.4),
             ),
             (
                 // Midday: a strong warm sun on the right at about 37 degrees, clearly cool shadows,
@@ -266,6 +277,7 @@
                 ],
                 lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
                 emission: 0.08,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.4),
             ),
             (
                 // Afternoon: the sun round behind the cameras on the left, lower and a touch warmer.
@@ -307,6 +319,7 @@
                 ],
                 lens_flare: (intensity: 0.7, color: (1.0, 0.88, 0.7)),
                 emission: 0.08,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.45),
             ),
             (
                 // Golden hour: a low golden sun in front of the cameras on the left; a huge warm glow,
@@ -350,6 +363,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 0.8, 0.5)),
                 emission: 0.25,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.7),
             ),
             (
                 // Sunset: the sun on the horizon front left, orange-red; a pink-orange horizon under
@@ -392,6 +406,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 0.6, 0.4)),
                 emission: 0.6,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.75),
             ),
             (
                 // The blue hour: the sun gone, the moon rising low on the right behind the cameras,
@@ -434,6 +449,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
                 emission: 1.0,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.3),
             ),
             (
                 // Nightfall: the moon climbing behind the cameras on the right, the stars out.
@@ -475,6 +491,7 @@
                 ],
                 lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
                 emission: 1.0,
+                character_shade: (hue: (0.8, 0.87, 1.0), share: 0.2),
             ),
         ],
     ),

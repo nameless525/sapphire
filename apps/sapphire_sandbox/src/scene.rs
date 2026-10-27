@@ -231,6 +231,15 @@ impl Day {
             Self::LookDev => "look-dev day",
         }
     }
+
+    /// The name of the file the character light rig presets come from with this day: the
+    /// shipped presets, or the look-dev stage's own (M1 C8, [`lookdev::light_rigs`]).
+    pub fn light_rigs_file_name(self) -> &'static str {
+        match self {
+            Self::Default => "default_light_rigs.ron",
+            Self::LookDev => "lookdev_light_rigs.ron",
+        }
+    }
 }
 
 /// How the scene's characters fade (M1 C7; [`CharacterInstance::opacity`]).
@@ -600,11 +609,23 @@ impl Scene {
         self.ecs.world_mut().insert_resource(library);
     }
 
-    /// Replaces the character light rig presets (hot reload, `dev` builds). Characters keep their
-    /// preset IDs; one past the new presets' end is lit with their default.
-    #[cfg(feature = "dev")]
-    pub fn set_light_rigs(&mut self, rigs: LightRigLibrary) {
+    /// Replaces the character light rig presets with `rigs`, read from `origin` (a path or a file
+    /// name), if `origin` is the presets' file for the day the scene runs on
+    /// ([`Day::light_rigs_file_name`]: the shipped presets, or the look-dev stage's own), and says
+    /// which; otherwise keeps them. Characters keep their preset IDs; one past the new presets' end
+    /// is lit with their default. Hot reload and live link both come through here.
+    #[cfg(any(test, feature = "dev"))]
+    pub fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
+        let day = self.day();
+        let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
+        if name != Some(day.light_rigs_file_name()) {
+            return Err(format!(
+                "the scene's light rigs come from {}, which alone replaces them",
+                day.light_rigs_file_name()
+            ));
+        }
         self.ecs.world_mut().insert_resource(rigs);
+        Ok(day)
     }
 
     /// Places the shader swatches (`--swatches`) in a column beside the character, drawing
@@ -887,14 +908,16 @@ impl Scene {
     /// far mountains around the character, its fog cards and lamps, the character held in
     /// `look.pose` (its turntable stopped, its light rig finding its head and body by
     /// `look.figure`) and the `shot`'s camera. Time of day runs on the stage's own day
-    /// ([`lookdev::day`]) and the wind blows the stage's breeze. The town, its plants, mountains
-    /// and cards never move, so they are extracted once.
+    /// ([`lookdev::day`]), characters are lit by the stage's light rigs
+    /// ([`lookdev::light_rigs`], M1 C8) and the wind blows the stage's breeze. The town, its
+    /// plants, mountains and cards never move, so they are extracted once.
     pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
         self.figure = look.figure;
         self.extract_poses();
         self.time_of_day_mut().set_timeline(lookdev::day()).expect("the look-dev day sets every group");
         self.wind = lookdev::WIND;
         let world = self.ecs.world_mut();
+        world.insert_resource(lookdev::light_rigs());
         world.insert_resource(shot.camera());
         let mut character = world.entity_mut(self.character);
         character.insert(look.pose);
@@ -1475,6 +1498,26 @@ mod tests {
         let replaced = scene.replace_day("content/lookdev/lookdev_day.ron", default_day.clone());
         assert_eq!(replaced, Ok(Day::LookDev));
         assert_eq!(scene.time_of_day().timeline(), &default_day);
+
+        // The stage lights its character by its own light rigs (M1 C8), which the shipped
+        // presets' file, which `watch` pushes too, leaves alone.
+        let rigs = |scene: &Scene| scene.ecs.world().resource::<LightRigLibrary>().clone();
+        assert_eq!(rigs(&scene), lookdev::light_rigs());
+        let shipped = LightRigLibrary::default_rigs();
+        let error =
+            scene.replace_light_rigs("default_light_rigs.ron", shipped.clone()).expect_err("not hers");
+        assert!(error.contains("lookdev_light_rigs.ron"), "{error}");
+        assert_eq!(rigs(&scene), lookdev::light_rigs(), "kept");
+        let replaced = scene.replace_light_rigs("content/lookdev/lookdev_light_rigs.ron", shipped.clone());
+        assert_eq!((replaced, rigs(&scene)), (Ok(Day::LookDev), shipped.clone()));
+        let mut plain = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        assert_eq!(rigs(&plain), shipped, "elsewhere, the shipped presets");
+        plain
+            .replace_light_rigs("lookdev_light_rigs.ron", lookdev::light_rigs())
+            .expect_err("not this scene's");
+        let replaced =
+            plain.replace_light_rigs("crates/sapphire_world/default_light_rigs.ron", lookdev::light_rigs());
+        assert_eq!(replaced, Ok(Day::Default));
     }
 
     #[test]

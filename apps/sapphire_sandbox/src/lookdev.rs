@@ -40,6 +40,12 @@
 //!   default day and every other scene stay as they are. Tests here hold it to the character light
 //!   contract and keep the square clear of haze.
 //! - **Its own sky** ([`SKY`]): the sandbox sky's maps with a teal Milky Way and a larger sun.
+//! - **Its own light rigs** ([`light_rigs`], M1 C8): `content/lookdev/lookdev_light_rigs.ron`, the
+//!   shipped character light rig presets each with a camera rim held behind her and above,
+//!   replaces the shipped presets while the stage runs (`--camera-rim` still overrides it), so
+//!   every other scene keeps its rim. The day keys her shadow hue (`character_shade`), and her
+//!   materials draw two-sided where the VRM marks them, soften the bangs' shadow and let a back
+//!   light through her hair.
 //! - **Plants** ([`PLANTINGS`]): W6's foliage meshes, each its own mesh rooted at its origin so the
 //!   wind sways it about its root, set in the square's verges, in the town's planters and pots,
 //!   and beyond the rows; the stage blows a light breeze ([`WIND`]).
@@ -54,6 +60,7 @@ use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::{FaceExpression, LightKind, LocalLight, MeshHandle, Renderer};
 use sapphire_rhi::GpuContext;
+use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::tod::TodTimeline;
 
 use crate::content::Content;
@@ -303,6 +310,16 @@ pub(crate) fn day() -> TodTimeline {
     TodTimeline::from_ron(DAY).expect("the look-dev day is checked by this module's tests")
 }
 
+/// The look-dev light rigs (`content/lookdev/lookdev_light_rigs.ron`, M1 C8), compiled in as the
+/// shipped presets are: the presets `--look-dev` lights its character by instead of the shipped
+/// ones, so every other scene keeps its look.
+const LIGHT_RIGS: &str = include_str!("../../../content/lookdev/lookdev_light_rigs.ron");
+
+/// The look-dev light rig presets: the shipped ones with a camera rim (M1 C8).
+pub(crate) fn light_rigs() -> LightRigLibrary {
+    LightRigLibrary::from_ron(LIGHT_RIGS).expect("the look-dev light rigs are checked by this module's tests")
+}
+
 /// A look-dev camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shot {
@@ -533,6 +550,8 @@ fn check_counts(rig: &ArchivedCharacterRig, mesh: &Mesh) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_world::light_rig::LightRig;
+
     use super::*;
 
     /// The look-dev day is a complete base timeline with keys on the golden scenes' hours, so their
@@ -545,6 +564,23 @@ mod tests {
             assert!(day.keys().iter().any(|key| key.time == hours), "a key at {hours}");
         }
         assert_ne!(day, sapphire_world::tod::default_day(), "the stage's own");
+    }
+
+    /// The look-dev light rigs are the shipped presets, by name and in order, each as shipped but
+    /// for its camera rim (M1 C8), which every one holds from behind and above: the stage judges
+    /// the shipped lighting with the rim held.
+    #[test]
+    fn the_look_dev_light_rigs_are_the_shipped_ones_with_a_camera_rim() {
+        let (shipped, stage) = (LightRigLibrary::default_rigs(), light_rigs());
+        assert_eq!(stage.names().collect::<Vec<_>>(), shipped.names().collect::<Vec<_>>());
+        for name in shipped.names() {
+            let (ours, theirs) =
+                (stage.rig(stage.find(name).unwrap()), shipped.rig(shipped.find(name).unwrap()));
+            assert_eq!(LightRig { camera_rim: theirs.camera_rim, ..*ours }, *theirs, "{name}: as shipped");
+            assert!(ours.camera_rim.share > 0.0, "{name}: a camera rim");
+            assert!(ours.camera_rim.direction.azimuth.abs() > 150.0, "{name}: from behind");
+            assert!(ours.camera_rim.direction.elevation > 0.0, "{name}: from above");
+        }
     }
 
     #[test]

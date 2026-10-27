@@ -11,8 +11,10 @@
 //!   has if they don't compile;
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
 //!   scene runs on ([`Scene::replace_day`]);
-//! - edited presets replace the scene's (the `LightRigLibrary` resource); characters keep their
-//!   preset IDs;
+//! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
+//!   the presets the scene runs on (the shipped ones, or with `--look-dev` the look-dev stage's,
+//!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`]); characters keep
+//!   their preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
 //!   variants the new presets draw through.
@@ -47,8 +49,10 @@ pub(crate) enum Document {
     /// time of day's base timeline, if it comes from the file of the day the scene runs on
     /// ([`Scene::replace_day`]), parses and is complete.
     Day,
-    /// The character light rig presets (`default_light_rigs.ron`): they replace the scene's
-    /// library, if they parse and are valid; characters keep their preset IDs.
+    /// The character light rig presets (`default_light_rigs.ron`, or the look-dev stage's with
+    /// `--look-dev`): they replace the scene's library, if they come from the file of the presets
+    /// the scene runs on ([`Scene::replace_light_rigs`]), parse and are valid; characters keep
+    /// their preset IDs.
     LightRigs,
     /// The screen effect presets (`default_screen_effects.ron`, M1 P3): they replace the scene's
     /// library, if they parse and are valid.
@@ -99,7 +103,7 @@ impl Document {
             }
             Self::LightRigs => {
                 let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.set_light_rigs(rigs);
+                scene.replace_light_rigs(origin, rigs)?;
                 Ok(self.name())
             }
             Self::ScreenEffects => {
@@ -124,6 +128,18 @@ pub(crate) fn day_source(options: &crate::options::Options) -> PathBuf {
     }
 }
 
+/// The light rig presets' document the scene's characters are lit by: the shipped presets, or the
+/// look-dev stage's own with `--look-dev` (M1 C8; in the repository this build was compiled from,
+/// as `sources` finds the engine's own).
+pub(crate) fn light_rigs_source(options: &crate::options::Options) -> PathBuf {
+    match options.look_dev {
+        Some(_) => Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../content/lookdev")
+            .join(Day::LookDev.light_rigs_file_name()),
+        None => sources::default_light_rigs(),
+    }
+}
+
 /// Hot reload's state in the app.
 pub(crate) struct Reload {
     hot: Option<HotReload>,
@@ -142,9 +158,10 @@ pub(crate) struct Reload {
 
 impl Reload {
     /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
-    /// ([`day_source`]), the light rig presets and the screen effect presets, unless `enabled` is
-    /// false. A source that can't be watched is left out, with a warning.
-    pub fn start(enabled: bool, content_root: &Path, day: &Path) -> Self {
+    /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]) and the
+    /// screen effect presets, unless `enabled` is false. A source that can't be watched is left
+    /// out, with a warning.
+    pub fn start(enabled: bool, content_root: &Path, day: &Path, light_rigs: &Path) -> Self {
         let mut reload = Self {
             hot: None,
             watching: String::new(),
@@ -180,12 +197,12 @@ impl Reload {
         }
         for (document, path, what) in [
             (Document::Day, day.to_owned(), "the day"),
-            (Document::LightRigs, sources::default_light_rigs(), "the light rigs"),
+            (Document::LightRigs, light_rigs.to_owned(), "the light rigs"),
             (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
         ] {
             match hot.watch_document(&path) {
                 Ok(id) => {
-                    // Its file's name, which says which day a timeline is.
+                    // Its file's name, which says which day a timeline or the presets are for.
                     let origin =
                         path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
                     reload.documents.push((id, document, origin));

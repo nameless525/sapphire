@@ -1,0 +1,63 @@
+// The look-dev stage's character light rig presets (M1 C8): the light rigs `--look-dev` runs on
+// instead of the shipped ones (`crates/sapphire_world/default_light_rigs.ron`), so every scene
+// that isn't the look-dev town lights its characters as before. The sandbox compiles it in
+// (`apps/sapphire_sandbox/src/lookdev.rs`, whose tests hold its presets to the shipped ones in
+// everything but what this file adds); it is a `LightRigLibrary` document
+// (`sapphire_world::light_rig`), and hot reload watches it in dev builds while `--look-dev` runs.
+// The cooker leaves it alone: no importer reads a bare `.ron`.
+//
+// - The shipped presets, `gameplay` and `portrait`, as they are, each with a camera rim (M1 C8):
+//   a rim light held behind the character and above as the camera sees it, which takes a share
+//   of the depth-offset rim's light gate and back-light weighting from the key light. The stage's
+//   sun swings from the cameras' right at midday round behind them, then sets in front of them on
+//   the left, where the gameplay preset folds it back toward the camera's side; the rim followed
+//   it round the front. Held straight behind and above, the rim stays on both of her silhouettes
+//   and keeps its back light whatever the hour, as the reference games' character rims do.
+// - Angles are degrees, as in the shipped file: azimuth around the vertical axis through the
+//   head from the camera's side (±180° from behind), elevation above the horizon.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::LightRigLibrary",
+    version: 1,
+    data: (
+        rigs: [
+            (
+                name: "gameplay",
+                rig: (
+                    key: (
+                        min_elevation: 5.0,
+                        max_elevation: 65.0,
+                        max_azimuth: 120.0,
+                    ),
+                    gi: (
+                        camera_bias: 0.3,
+                        max_saturation: 0.6,
+                        max_value: Some(0.5),
+                        skin_tint: (1.12, 0.96, 0.86),
+                    ),
+                    // Most of the rim's gating from behind, a little left with the key, so the
+                    // lit side's rim stays a touch brighter than the shadow side's.
+                    camera_rim: (share: 0.75, direction: (azimuth: 180.0, elevation: 30.0)),
+                ),
+            ),
+            (
+                name: "portrait",
+                rig: (
+                    key: (
+                        camera_follow: 1.0,
+                        camera_direction: (azimuth: -35.0, elevation: 30.0),
+                    ),
+                    gi: (
+                        camera_bias: 0.6,
+                        max_saturation: 0.5,
+                        max_value: Some(0.5),
+                        skin_tint: (1.12, 0.96, 0.86),
+                    ),
+                    rim: 0.8,
+                    local_light_ceiling: 1.5,
+                    camera_rim: (share: 0.75, direction: (azimuth: 180.0, elevation: 30.0)),
+                ),
+            ),
+        ],
+    ),
+)

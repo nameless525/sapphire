@@ -63,5 +63,6 @@
             albedo: 0.0,
             lighting: 1.0,
         ),
+        double_sided: true,
     ),
 )

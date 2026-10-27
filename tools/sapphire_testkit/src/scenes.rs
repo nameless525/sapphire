@@ -79,7 +79,7 @@ pub struct Scene {
 /// and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade scenes
 /// fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post,
 /// AO off, through temporal AA and through MSAA.
-pub fn scenes() -> [Scene; 85] {
+pub fn scenes() -> [Scene; 86] {
     [
         Scene {
             name: "turntable-start",
@@ -1605,6 +1605,28 @@ pub fn scenes() -> [Scene; 85] {
                 "sky",
                 "--time-of-day",
                 "23",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The street out of the square at night (X1 part 2b): Jinzhou's white walls and charcoal
+        // tile roofs under a blue night, its parametric halls, gateway and tower, the paper
+        // lanterns strung across it and on posts glowing amber (the posts' lamps lighting the
+        // flagstones), the windows warm.
+        Scene {
+            name: "lookdev-street-night",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "street",
+                "--time-of-day",
+                "21",
                 "--tier",
                 "desktop-high",
                 "--ao",

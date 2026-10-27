@@ -71,7 +71,7 @@ const RULES: &str = r#"surfaces: [
 fn assemble_text(text: &str) -> Result<ImportedMesh, AssemblyError> {
     let assembly = assembly(text)?;
     let mut imported = Vec::new();
-    let mesh = assemble(&assembly, &mut |file: &str| {
+    let mesh = assemble(&assembly, Detail::Full, &mut |file: &str| {
         imported.push(file.to_owned());
         Ok(wall_piece())
     })?;
@@ -250,7 +250,7 @@ fn placement_slots_override_the_rules_and_builtins_take_them() {
 fn ground_builtins_come_in_small_cells_near_their_center_without_t_junctions() {
     let builtins = |place: &str| {
         let assembly = assembly(&format!("{RULES} place: [{place}],"))?;
-        assemble(&assembly, &mut |file: &str| unreachable!("no pieces, not {file}"))
+        assemble(&assembly, Detail::Full, &mut |file: &str| unreachable!("no pieces, not {file}"))
     };
     let mesh = builtins(
         r##"(piece: "#quad", at: (0.0, 0.0, 0.0), scale: (37.2, 1.0, 5.0), slot: Some("Stone")),
@@ -399,7 +399,7 @@ fn faces_of_one_placement_never_fight() {
         r#"{RULES} place: [(piece: "kit/wall"), (piece: "kit/wall", at: (3.0, 0.0, 0.0))],"#
     ))
     .unwrap();
-    let mesh = assemble(&assembly, &mut |_: &str| Ok(panel.clone())).unwrap();
+    let mesh = assemble(&assembly, Detail::Full, &mut |_: &str| Ok(panel.clone())).unwrap();
     assert_eq!(triangles(&mesh)["Timber"].len(), 4, "each wall's right half and its panel");
 }
 

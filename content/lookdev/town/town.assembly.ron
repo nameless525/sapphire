@@ -44,6 +44,19 @@
             (name: "iron", tile: (1.0, 1.0), projection: Box),
             (name: "lamp", tile: (1.0, 1.0)),
             (name: "cliff", tile: (16.0, 16.0), projection: Box),
+            // Jinzhou (X1 part 2b): the parametric builtins' parts, sent here by the rules below.
+            (name: "whitewash", tile: (3.2, 3.2)),
+            (name: "plinth_stone", tile: (2.0, 2.0)),
+            (name: "stone_pale", tile: (1.0, 1.0)),
+            (name: "roof_tile", tile: (1.0, 1.2)),
+            (name: "roof_ridge", tile: (1.0, 1.0)),
+            (name: "eaves", tile: (1.2, 1.2)),
+            (name: "wood", tile: (1.0, 1.0)),
+            (name: "wood_dark", tile: (1.0, 1.0)),
+            (name: "paper_window", tile: (1.0, 1.0)),
+            (name: "paper_lantern", tile: (1.0, 1.0)),
+            (name: "lacquer", tile: (1.0, 1.0)),
+            (name: "paving", tile: (4.0, 4.0)),
         ],
         surfaces: [
             // The kit's woods: frames and props in timber, doors and boards darker.
@@ -82,6 +95,22 @@
             (pieces: ["rock*"], cell: Some((3, 2)), slot: "cliff"),
             // The fountain's water is its own glTF material.
             (pieces: ["fountain*"], material: Some("Water"), slot: "water"),
+            // Jinzhou: the parametric builtins' parts (`#roof`, `#hall`, `#wall`, `#column`,
+            // `#lantern`), by part name. White plaster and gables on cool grey stone, charcoal tiles
+            // and ridges, warm timber, amber paper.
+            (pieces: ["#*"], material: Some("plaster"), slot: "whitewash"),
+            (pieces: ["#*"], material: Some("gable"), slot: "whitewash"),
+            (pieces: ["#*"], material: Some("plinth"), slot: "plinth_stone"),
+            (pieces: ["#*"], material: Some("trim"), slot: "stone_pale"),
+            (pieces: ["#*"], material: Some("tiles"), slot: "roof_tile"),
+            (pieces: ["#*"], material: Some("ridge"), slot: "roof_ridge"),
+            (pieces: ["#*"], material: Some("eaves"), slot: "eaves"),
+            (pieces: ["#*"], material: Some("timber"), slot: "wood"),
+            (pieces: ["#*"], material: Some("lattice"), slot: "wood_dark"),
+            (pieces: ["#*"], material: Some("window"), slot: "paper_window"),
+            (pieces: ["#*"], material: Some("door"), slot: "wood_dark"),
+            (pieces: ["#*"], material: Some("paper"), slot: "paper_lantern"),
+            (pieces: ["#*"], material: Some("frame"), slot: "lacquer"),
         ],
         occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
         groups: {
@@ -195,6 +224,179 @@
             "lantern": [
                 (piece: "kenney/lantern", scale: 1.6),
             ],
+            // Jinzhou's buildings (X1 part 2b), in meters, each standing on its footprint's middle
+            // with its front toward +Z. Neighbors keep their roofs apart (or at other heights):
+            // two roofs of one height overlapping in plan would share a plane.
+            //
+            // A house: one storey under a gable roof, a door between two lattice windows, moon
+            // windows in its ends.
+            "jz_house": [
+                (shape: Some(Hall((
+                    size: (6.4, 5.0, 3.6),
+                    plinth: (height: 0.45, proud: 0.06),
+                    posts: Some((width: 0.22, proud: 0.04, bays: (3, 1))),
+                    beams: [(at: 3.6, height: 0.26, proud: 0.07)],
+                    openings: [
+                        (kind: Door, size: (1.3, 2.4)),
+                        (kind: Window, at: (-2.13, 1.1), size: (1.2, 1.2), lattice: (3, 2)),
+                        (kind: Window, at: (2.13, 1.1), size: (1.2, 1.2), lattice: (3, 2)),
+                        (side: Right, kind: Moon, at: (0.0, 1.1), size: (1.3, 1.3), lattice: (2, 2)),
+                        (side: Left, kind: Moon, at: (0.0, 1.1), size: (1.3, 1.3), lattice: (2, 2)),
+                        (side: Back, kind: Window, at: (0.0, 1.4), size: (1.6, 1.0), lattice: (4, 1)),
+                    ],
+                )))),
+                (shape: Some(Roof((size: (6.4, 5.0), kind: Gable, rise: 2.0, overhang: 0.8, barge: 0.5, sweep: 0.3))), at: (0.0, 3.6, 0.0)),
+            ],
+            // A shop: two storeys, the upper one stepping in over a skirt roof, under a
+            // hip-and-gable roof; a shop window and a door on the street, lanterns under the skirt.
+            "jz_shop": [
+                (shape: Some(Hall((
+                    size: (8.0, 6.0, 3.6),
+                    plinth: (height: 0.5, proud: 0.06),
+                    posts: Some((width: 0.24, proud: 0.04, bays: (4, 2))),
+                    beams: [(at: 3.6, height: 0.28, proud: 0.07)],
+                    openings: [
+                        (kind: Window, at: (-3.0, 1.1), size: (1.3, 1.3), lattice: (3, 2)),
+                        (kind: Door, at: (-1.0, 0.0), size: (1.3, 2.5)),
+                        (kind: Window, at: (1.0, 0.75), size: (1.4, 2.0), lattice: (3, 3)),
+                        (kind: Window, at: (3.0, 1.1), size: (1.3, 1.3), lattice: (3, 2)),
+                        (side: Right, kind: Window, at: (-1.5, 1.2), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Right, kind: Window, at: (1.5, 1.2), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Left, kind: Window, at: (-1.5, 1.2), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Left, kind: Window, at: (1.5, 1.2), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Back, kind: Door, at: (1.0, 0.0), size: (1.1, 2.3)),
+                    ],
+                )))),
+                (shape: Some(Roof((size: (8.0, 6.0), kind: Skirt(1.3), rise: 0.9, overhang: 0.8, sweep: 0.25, sweep_reach: 1.6))), at: (0.0, 3.6, 0.0)),
+                (shape: Some(Hall((
+                    size: (7.0, 5.0, 3.0),
+                    plinth: (height: 0.0),
+                    posts: Some((width: 0.22, proud: 0.04, bays: (3, 2))),
+                    beams: [(at: 3.0, height: 0.24, proud: 0.07)],
+                    openings: [
+                        (kind: Moon, at: (0.0, 0.95), size: (1.3, 1.3), lattice: (3, 3)),
+                        (kind: Window, at: (-2.25, 1.0), size: (1.0, 1.2), lattice: (2, 2)),
+                        (kind: Window, at: (2.25, 1.0), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Back, kind: Window, at: (-2.25, 1.0), size: (1.0, 1.2), lattice: (2, 2)),
+                        (side: Back, kind: Window, at: (2.25, 1.0), size: (1.0, 1.2), lattice: (2, 2)),
+                    ],
+                ))), at: (0.0, 3.6, 0.0)),
+                (shape: Some(Roof((size: (7.0, 5.0), kind: HipGable(0.5), rise: 2.3, overhang: 0.9, barge: 0.35))), at: (0.0, 6.6, 0.0)),
+                (shape: Some(Lantern((size: (0.42, 0.5), mount: Hang(0.3)))), at: (-2.0, 3.3, 3.45)),
+                (shape: Some(Lantern((size: (0.42, 0.5), mount: Hang(0.3)))), at: (2.0, 3.3, 3.45)),
+            ],
+            // A hall: one tall storey of five bays under a big hip-and-gable roof.
+            "jz_hall": [
+                (shape: Some(Hall((
+                    size: (10.4, 7.2, 4.4),
+                    plinth: (height: 0.6, proud: 0.07),
+                    posts: Some((width: 0.26, proud: 0.045, bays: (5, 3))),
+                    beams: [(at: 4.4, height: 0.32, proud: 0.08), (at: 3.3, height: 0.18, proud: 0.075)],
+                    openings: [
+                        (kind: Door, size: (1.5, 2.8)),
+                        (kind: Window, at: (-2.08, 1.15), size: (1.4, 1.7), lattice: (3, 3)),
+                        (kind: Window, at: (2.08, 1.15), size: (1.4, 1.7), lattice: (3, 3)),
+                        (kind: Moon, at: (-4.16, 1.0), size: (1.3, 1.3), lattice: (2, 2)),
+                        (kind: Moon, at: (4.16, 1.0), size: (1.3, 1.3), lattice: (2, 2)),
+                        (side: Right, kind: Window, at: (0.0, 1.15), size: (1.4, 1.7), lattice: (3, 3)),
+                        (side: Left, kind: Window, at: (0.0, 1.15), size: (1.4, 1.7), lattice: (3, 3)),
+                    ],
+                )))),
+                (shape: Some(Roof((size: (10.4, 7.2), kind: HipGable(0.45), rise: 3.0, overhang: 1.0, barge: 0.4, sweep: 0.45, ridge: (height: 0.34, width: 0.3, ends: 0.8)))), at: (0.0, 4.4, 0.0)),
+            ],
+            // A tower of three storeys, each stepping in over a skirt, under a pyramid roof and
+            // its finial: the town's landmark.
+            "jz_tower": [
+                (shape: Some(Hall((
+                    size: (7.2, 7.2, 4.4),
+                    plinth: (height: 0.7, proud: 0.08),
+                    posts: Some((width: 0.28, proud: 0.045, bays: (3, 3))),
+                    beams: [(at: 4.4, height: 0.3, proud: 0.08)],
+                    openings: [
+                        (kind: Door, size: (1.5, 2.8)),
+                        (side: Right, kind: Moon, at: (0.0, 1.3), size: (1.5, 1.5), lattice: (3, 3)),
+                        (side: Left, kind: Moon, at: (0.0, 1.3), size: (1.5, 1.5), lattice: (3, 3)),
+                        (side: Back, kind: Moon, at: (0.0, 1.3), size: (1.5, 1.5), lattice: (3, 3)),
+                    ],
+                )))),
+                (shape: Some(Roof((size: (7.2, 7.2), kind: Skirt(1.6), rise: 1.0, overhang: 0.9, sweep: 0.35, sweep_reach: 1.8))), at: (0.0, 4.4, 0.0)),
+                (shape: Some(Hall((
+                    size: (5.8, 5.8, 3.6),
+                    plinth: (height: 0.0),
+                    posts: Some((width: 0.24, proud: 0.04, bays: (2, 2))),
+                    beams: [(at: 3.6, height: 0.26, proud: 0.07)],
+                    openings: [
+                        (kind: Window, at: (-1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (kind: Window, at: (1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Right, kind: Window, at: (-1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Right, kind: Window, at: (1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Back, kind: Window, at: (-1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Back, kind: Window, at: (1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Left, kind: Window, at: (-1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                        (side: Left, kind: Window, at: (1.45, 1.1), size: (1.0, 1.5), lattice: (2, 3)),
+                    ],
+                ))), at: (0.0, 4.4, 0.0)),
+                (shape: Some(Roof((size: (5.8, 5.8), kind: Skirt(1.4), rise: 0.9, overhang: 0.8, sweep: 0.35, sweep_reach: 1.6))), at: (0.0, 8.0, 0.0)),
+                (shape: Some(Hall((
+                    size: (4.6, 4.6, 3.0),
+                    plinth: (height: 0.0),
+                    posts: Some((width: 0.22, proud: 0.04, bays: (1, 1))),
+                    beams: [(at: 3.0, height: 0.24, proud: 0.07)],
+                    openings: [
+                        (kind: Moon, at: (0.0, 0.9), size: (1.4, 1.4), lattice: (3, 3)),
+                        (side: Right, kind: Moon, at: (0.0, 0.9), size: (1.4, 1.4), lattice: (3, 3)),
+                        (side: Back, kind: Moon, at: (0.0, 0.9), size: (1.4, 1.4), lattice: (3, 3)),
+                        (side: Left, kind: Moon, at: (0.0, 0.9), size: (1.4, 1.4), lattice: (3, 3)),
+                    ],
+                ))), at: (0.0, 8.0, 0.0)),
+                (shape: Some(Roof((size: (4.6, 4.6), kind: Hip, rise: 2.8, overhang: 1.0, sweep: 0.5, ridge: (height: 0.3, width: 0.28, ends: 1.1)))), at: (0.0, 11.0, 0.0)),
+                (shape: Some(Lantern((size: (0.5, 0.6), mount: Hang(0.35)))), at: (-1.6, 4.05, 4.15)),
+                (shape: Some(Lantern((size: (0.5, 0.6), mount: Hang(0.35)))), at: (1.6, 4.05, 4.15)),
+            ],
+            // A courtyard wall: plaster on a plinth under a tiled coping, a moon gate through it
+            // and a lattice window either side.
+            "jz_wall": [
+                (shape: Some(Wall((
+                    size: (6.0, 2.8, 0.34),
+                    openings: [
+                        (kind: Gate, size: (2.2, 2.1)),
+                        (kind: Window, at: (-2.1, 1.1), size: (0.8, 0.8), lattice: (2, 2)),
+                        (kind: Window, at: (2.1, 1.1), size: (0.8, 0.8), lattice: (2, 2)),
+                    ],
+                )))),
+            ],
+            // A gateway (paifang) of three bays: two tall middle columns under the highest roof,
+            // a plaque between their beams, and lower roofs over the side bays.
+            "jz_paifang": [
+                (shape: Some(Column((height: 5.15, radius: 0.2, base: (0.36, 0.5), cap: (0.5, 0.25)))), at: (-1.7, 0.0, 0.0)),
+                (shape: Some(Column((height: 5.15, radius: 0.2, base: (0.36, 0.5), cap: (0.5, 0.25)))), at: (1.7, 0.0, 0.0)),
+                (shape: Some(Column((height: 3.95, radius: 0.17, base: (0.3, 0.45), cap: (0.42, 0.22)))), at: (-4.3, 0.0, 0.0)),
+                (shape: Some(Column((height: 3.95, radius: 0.17, base: (0.3, 0.45), cap: (0.42, 0.22)))), at: (4.3, 0.0, 0.0)),
+                (piece: "#box", at: (0.0, 4.35, 0.0), scale: (3.9, 0.3, 0.26), slot: Some("wood")),
+                (piece: "#box", at: (0.0, 3.51, 0.0), scale: (3.9, 0.22, 0.22), slot: Some("wood")),
+                (piece: "#box", at: (0.0, 3.91, 0.0), scale: (1.7, 0.58, 0.12), slot: Some("lacquer")),
+                (piece: "#box", at: (0.0, 4.85, 0.0), scale: (4.2, 0.7, 1.1), slot: Some("wood_dark")),
+                (shape: Some(Roof((size: (4.2, 1.1), kind: Hip, rise: 1.05, overhang: 0.6, curve: 0.45, sweep: 0.32, sweep_reach: 1.0, thickness: 0.18, tiles: (period: 0.26, depth: 0.04), ridge: (height: 0.22, width: 0.2, ends: 0.55)))), at: (0.0, 5.2, 0.0)),
+                (piece: "#box", at: (-3.0, 3.32, 0.0), scale: (3.0, 0.24, 0.2), slot: Some("wood")),
+                (piece: "#box", at: (3.0, 3.32, 0.0), scale: (3.0, 0.24, 0.2), slot: Some("wood")),
+                (piece: "#box", at: (-3.12, 3.72, 0.0), scale: (2.76, 0.56, 0.9), slot: Some("wood_dark")),
+                (piece: "#box", at: (3.12, 3.72, 0.0), scale: (2.76, 0.56, 0.9), slot: Some("wood_dark")),
+                (shape: Some(Roof((size: (2.76, 0.9), kind: Hip, rise: 0.8, overhang: 0.5, curve: 0.45, sweep: 0.26, sweep_reach: 0.8, thickness: 0.16, tiles: (period: 0.24, depth: 0.035), ridge: (height: 0.18, width: 0.17, ends: 0.42)))), at: (-3.12, 4.0, 0.0)),
+                (shape: Some(Roof((size: (2.76, 0.9), kind: Hip, rise: 0.8, overhang: 0.5, curve: 0.45, sweep: 0.26, sweep_reach: 0.8, thickness: 0.16, tiles: (period: 0.24, depth: 0.035), ridge: (height: 0.18, width: 0.17, ends: 0.42)))), at: (3.12, 4.0, 0.0)),
+            ],
+            // A string of lanterns across a street 7.2 m wide, from front to front.
+            "jz_lantern_string": [
+                (piece: "#box", at: (0.0, 0.0, 0.0), scale: (7.4, 0.03, 0.03), slot: Some("lacquer")),
+                (shape: Some(Lantern((size: (0.34, 0.4), sides: 8, mount: Hang(0.1)))), at: (-2.8, 0.0, 0.0)),
+                (shape: Some(Lantern((size: (0.34, 0.4), sides: 8, mount: Hang(0.1)))), at: (-1.4, 0.0, 0.0)),
+                (shape: Some(Lantern((size: (0.34, 0.4), sides: 8, mount: Hang(0.1)))), at: (0.0, 0.0, 0.0)),
+                (shape: Some(Lantern((size: (0.34, 0.4), sides: 8, mount: Hang(0.1)))), at: (1.4, 0.0, 0.0)),
+                (shape: Some(Lantern((size: (0.34, 0.4), sides: 8, mount: Hang(0.1)))), at: (2.8, 0.0, 0.0)),
+            ],
+            // A square lantern on a post, by a street's edge.
+            "jz_lantern_post": [
+                (shape: Some(Lantern((kind: Square, size: (0.34, 0.46), mount: Post(1.25))))),
+            ],
             // A planter for the stage's plants (`apps/sapphire_sandbox/src/lookdev.rs`): a stone
             // curb 0.38 m tall, a unit square here, and a lawn of soil and turf just over its top,
             // inset 12 cm, whose bottom sits inside the stone so no face of one lies in a plane of
@@ -212,7 +414,7 @@
         place: [
             // Ground: the square's paving, the street out of it, lawns beyond.
             (piece: "#quad", at: (0.0, 0.0, 0.7), scale: (37.2, 1.0, 39.2), slot: Some("cobbles")),
-            (piece: "#quad", at: (3.2, 0.0, -50.0), scale: (6.4, 1.0, 62.6), slot: Some("cobbles")),
+            (piece: "#quad", at: (3.2, 0.0, -50.1), scale: (7.2, 1.0, 62.4), slot: Some("paving")),
             (piece: "#ground", at: (0.0, -0.03, 0.0), scale: (4000.0, 1.0, 4000.0), slot: Some("grass")),
 
             // The back row, facing the square across from the cameras, with the gate in it.
@@ -244,13 +446,26 @@
             (piece: "@house2", at: (20.0, 0.0, 1.6), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
             (piece: "@house3", at: (20.0, 0.0, 4.8), turn: -90.0, scale: (3.2, 3.3, 3.2)),
 
-            // The street beyond the gate, its houses facing it.
-            (piece: "@house3", at: (-1.6, 0.0, -30.0), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
-            (piece: "@house2", at: (-1.6, 0.0, -33.2), turn: 90.0, scale: (3.2, 3.3, 3.2)),
-            (piece: "@house3", at: (-1.6, 0.0, -36.4), turn: 90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
-            (piece: "@house2", at: (8.0, 0.0, -30.0), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("sky")),
-            (piece: "@house3", at: (8.0, 0.0, -33.2), turn: -90.0, scale: (3.2, 3.3, 3.2)),
-            (piece: "@house2", at: (8.0, 0.0, -36.4), turn: -90.0, scale: (3.2, 3.3, 3.2), variant: Some("rose")),
+            // The street beyond the gate (X1 part 2b's test street): Jinzhou's houses facing
+            // it across 7.2 m of flagstones (fronts at x -0.4 and 6.8), lanterns strung across it
+            // and on posts, a gateway near its end and the tower closing it.
+            (piece: "@jz_shop", at: (-3.4, 0.0, -30.5), turn: 90.0),
+            (piece: "@jz_wall", at: (-0.57, 0.0, -39.0), turn: 90.0),
+            (piece: "@jz_house", at: (-2.9, 0.0, -46.0), turn: 90.0),
+            (piece: "@jz_shop", at: (-3.4, 0.0, -56.0), turn: 90.0),
+            (piece: "@jz_house", at: (9.3, 0.0, -30.0), turn: -90.0),
+            (piece: "@jz_hall", at: (10.4, 0.0, -41.0), turn: -90.0),
+            (piece: "@jz_shop", at: (9.8, 0.0, -56.0), turn: -90.0),
+            (piece: "@jz_paifang", at: (3.2, 0.0, -64.0)),
+            (piece: "@jz_tower", at: (3.2, 0.0, -74.0)),
+            (piece: "#quad", at: (3.2, 0.0, -73.0), scale: (22.0, 1.0, 14.0), slot: Some("paving")),
+            (piece: "@jz_lantern_string", at: (3.2, 3.3, -33.2)),
+            (piece: "@jz_lantern_string", at: (3.2, 3.35, -44.2)),
+            (piece: "@jz_lantern_string", at: (3.2, 3.25, -54.0)),
+            (piece: "@jz_lantern_post", at: (0.3, 0.0, -35.4)),
+            (piece: "@jz_lantern_post", at: (6.1, 0.0, -34.6)),
+            (piece: "@jz_lantern_post", at: (0.3, 0.0, -50.6)),
+            (piece: "@jz_lantern_post", at: (6.1, 0.0, -48.4)),
 
             // The bell tower over the back row's roofs.
             (piece: "@tower", at: (-11.0, 0.0, -30.0), scale: (3.6, 3.4, 3.6), variant: Some("sky")),
@@ -265,14 +480,12 @@
             (piece: "kenney/stall-bench", at: (-9.0, 0.0, -5.0), turn: 70.0, scale: 2.2),
             (piece: "kenney/stall-bench", at: (0.4, 0.0, -9.5), turn: -20.0, scale: 2.2),
 
-            // Lanterns around the square and along the street (the stage lights their glass).
+            // Lanterns around the square (the stage lights their glass).
             (piece: "@lantern", at: (-8.0, 0.0, -2.0)),
             (piece: "@lantern", at: (-1.0, 0.0, -13.0)),
             (piece: "@lantern", at: (8.0, 0.0, -2.5)),
             (piece: "@lantern", at: (-14.0, 0.0, -10.0)),
             (piece: "@lantern", at: (14.5, 0.0, -14.0)),
-            (piece: "@lantern", at: (0.6, 0.0, -28.0)),
-            (piece: "@lantern", at: (5.8, 0.0, -38.0)),
 
             // Planters and pots for the stage's trees, flowers and grass beds (the trees themselves
             // are foliage instances the stage places, `apps/sapphire_sandbox/src/lookdev.rs`): one

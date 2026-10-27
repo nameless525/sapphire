@@ -869,19 +869,23 @@ impl Scene {
         if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
             rig.head = look.figure.head;
         }
-        self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(Mat4::IDENTITY))).id());
+        // The town moves so the character, at the origin, stands where the shot has her.
+        let stand = shot.stand();
+        let town = Mat4::from_translation(-stand);
+        self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(town))).id());
         self.town_plants = lookdev::plantings()
             .map(|(plant, place)| {
-                (world.spawn((RenderMesh(look.town.plant(plant)), RenderTransform(place))).id(), plant)
+                (world.spawn((RenderMesh(look.town.plant(plant)), RenderTransform(town * place))).id(), plant)
             })
             .collect();
-        for light in lookdev::lamps() {
+        for mut light in lookdev::lamps() {
+            light.position -= stand;
             world.spawn((Lamp { intensity: light.intensity }, RenderLight(light)));
         }
         if let Some(meshes) = look.fog_cards {
             self.fog_cards = environment::place_cards(&lookdev::CARDS)
                 .map(|(mesh, place)| {
-                    (world.spawn((RenderMesh(meshes[mesh]), RenderTransform(place))).id(), mesh)
+                    (world.spawn((RenderMesh(meshes[mesh]), RenderTransform(town * place))).id(), mesh)
                 })
                 .collect();
         }

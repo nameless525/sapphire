@@ -16,13 +16,17 @@
 //!   sidecar) say which parts are face, hair and eyes, as MToon doesn't, so the character
 //!   prepass's IDs tell them apart.
 //! - **Shots** ([`Shot`]): a wide establishing shot across the square, a three-quarter hero shot
-//!   of the character and a low angle up past her toward the sky and the rooftops. `--view`,
-//!   `--fov` and `--zoom` adjust them as they do the turntable's framing.
+//!   of the character, a low angle up past her toward the sky and the rooftops, and the street
+//!   out of the square with her standing in it. `--view`, `--fov` and `--zoom` adjust them as
+//!   they do the turntable's framing. The character always stands at the world's origin: a shot
+//!   elsewhere in the town ([`Shot::stand`]) moves the town, its lamps and its cards instead.
 //! - **Fog cards**, where frames draw fog: the courtyard's mist sheets and haze cards
 //!   ([`crate::environment::FOG_CARDS`]), placed across the valley beyond the town and down the
 //!   street out of the square.
-//! - **Lamps**: a warm point light at each lantern's glass, its intensity following time of day's
-//!   night ([`LAMPS`]), so the square lights up at dusk.
+//! - **Lamps**: a warm point light in each standing lantern (the kit's lanterns round the square,
+//!   the paper lanterns on posts down the street), its intensity following time of day's night
+//!   ([`LAMPS`]), so the town lights up at dusk. The lanterns strung across the street glow by
+//!   their paper's emission alone.
 //! - **Its own day** ([`day`]): `content/lookdev/lookdev_day.ron`, a time-of-day timeline aimed at
 //!   Wuthering Waves' light (X1 part 2), replaces the default day while the stage runs, so the
 //!   default day and every other scene stay as they are. Tests here hold it to the character light
@@ -148,7 +152,8 @@ const POT: f32 = 0.555;
 
 /// The town's plants: the trees that were the assembly's kit trees, now foliage (a green and a
 /// blossom tree in the back corners, the wide shot's left and the hero shot's background; kit
-/// trees and two card trees in blossom and autumn over the rooftops); an autumn tree in a planter
+/// trees over the rooftops; card trees in autumn and blossom off the street, one in the courtyard
+/// seen through its moon gate, one between its houses on the right); an autumn tree in a planter
 /// framing the wide shot's left, with lavender at its foot; the beds before the back row and
 /// beside the left row, grass with lavender and green bushes; and bushes in the pots between the
 /// back row's doors and by the stalls. Planters and pots are the assembly's (`@planter`, `@pot`).
@@ -163,7 +168,8 @@ pub(crate) const PLANTINGS: [Planting; 32] = [
     (Plant::KitTree, [-20.0, 0.0, -34.0], even(1.22), 60.0),
     (Plant::KitTreeRound, [16.0, 0.0, -31.0], even(1.31), 20.0),
     (Plant::KitTree, [22.0, 0.0, -36.0], even(1.28), 0.0),
-    (Plant::AutumnTree, [-1.0, 0.0, -48.0], even(2.0), 0.0),
+    // Off the street: in the courtyard behind its moon gate, and between its houses.
+    (Plant::AutumnTree, [-3.6, 0.0, -38.8], even(1.6), 0.0),
     (Plant::BlossomTree, [12.0, 0.0, -50.0], even(2.0), 30.0),
     // The planter framing the wide shot (3.4 m square).
     (Plant::AutumnTree, [-3.0, PLANTER, 5.2], even(1.25), 200.0),
@@ -226,16 +232,29 @@ pub(crate) enum Shot {
     Hero,
     /// Low and in front of the character, looking up past her at the rooftops and the sky.
     Sky,
+    /// The street out of the square, the character standing in it and the street running away
+    /// behind her: its houses, lanterns, gateway and the tower at its end.
+    Street,
 }
 
 impl Shot {
-    pub const ALL: [Self; 3] = [Self::Wide, Self::Hero, Self::Sky];
+    pub const ALL: [Self; 4] = [Self::Wide, Self::Hero, Self::Sky, Self::Street];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Wide => "wide",
             Self::Hero => "hero",
             Self::Sky => "sky",
+            Self::Street => "street",
+        }
+    }
+
+    /// Where in the town the character stands for this shot: the stage draws the town (and its
+    /// lamps and cards) moved by the opposite, so she stays at the world's origin.
+    pub fn stand(self) -> Vec3 {
+        match self {
+            Self::Wide | Self::Hero | Self::Sky => Vec3::ZERO,
+            Self::Street => STREET,
         }
     }
 
@@ -250,17 +269,34 @@ impl Shot {
             Self::Wide => (Vec3::new(-1.0, 2.8, -9.0), 14.0, 1.5, 20.0, 50.0),
             Self::Hero => (Vec3::new(0.0, 1.2, 0.0), -38.0, 6.0, 3.0, 32.0),
             Self::Sky => (Vec3::new(0.0, 1.45, 0.0), -28.0, -18.0, 3.2, 58.0),
+            Self::Street => (Vec3::new(0.2, 2.4, -6.0), 6.0, -4.0, 10.0, 55.0),
         };
         OrbitCamera::shot(target, yaw.to_radians(), pitch.to_radians(), distance, fov.to_radians())
     }
 }
 
-/// The lanterns' glass, where their lights are: each lantern's place in the town (x, z) at the
-/// glass's height. The same places as the `@lantern` placements in the town's assembly.
-pub(crate) const LAMPS: [[f32; 2]; 7] =
-    [[-8.0, -2.0], [-1.0, -13.0], [8.0, -2.5], [-14.0, -10.0], [14.5, -14.0], [0.6, -28.0], [5.8, -38.0]];
-/// The glass's height: 1.39 of the lantern's 1.556 at its scale of 1.6.
-const LAMP_HEIGHT: f32 = 2.22;
+/// Where the character stands in the street out of the square, in the town ([`Shot::Street`]).
+const STREET: Vec3 = Vec3::new(3.2, 0.0, -31.0);
+
+/// Where the lamps' lights are, in the town: the glass of each kit lantern (`@lantern` in the
+/// town's assembly, [`KIT_GLASS`] over its foot) and the paper of each lantern on a post
+/// (`@jz_lantern_post`, [`POST_PAPER`] over its foot), in the assembly's order.
+pub(crate) const LAMPS: [[f32; 3]; 9] = [
+    [0.3, POST_PAPER, -35.4],
+    [6.1, POST_PAPER, -34.6],
+    [0.3, POST_PAPER, -50.6],
+    [6.1, POST_PAPER, -48.4],
+    [-8.0, KIT_GLASS, -2.0],
+    [-1.0, KIT_GLASS, -13.0],
+    [8.0, KIT_GLASS, -2.5],
+    [-14.0, KIT_GLASS, -10.0],
+    [14.5, KIT_GLASS, -14.0],
+];
+/// A kit lantern's glass over its foot: 1.39 of the lantern's 1.556 at its scale of 1.6.
+const KIT_GLASS: f32 = 2.22;
+/// A post lantern's paper over its foot: the middle of its 0.46 m of paper, over a cap of
+/// 0.046 m on its 1.25 m post (`jz_lantern_post` in the town's assembly).
+const POST_PAPER: f32 = 1.53;
 /// A lamp's light at full night: a warm candle color, its reach and intensity.
 const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.55, 0.24);
 const LAMP_RANGE: f32 = 6.0;
@@ -268,8 +304,8 @@ pub(crate) const LAMP_INTENSITY: f32 = 0.9;
 
 /// The lamps' lights at full intensity, by night: scale them by time of day's `day_night`.
 pub(crate) fn lamps() -> impl Iterator<Item = LocalLight> {
-    LAMPS.iter().map(|&[x, z]| LocalLight {
-        position: Vec3::new(x, LAMP_HEIGHT, z),
+    LAMPS.iter().map(|&at| LocalLight {
+        position: Vec3::from(at),
         color: LAMP_COLOR,
         intensity: LAMP_INTENSITY,
         range: LAMP_RANGE,
@@ -476,6 +512,7 @@ mod tests {
             let eye = camera.eye();
             assert!(eye.z > 0.0, "{shot:?} in front of her: {eye}");
             assert!(eye.x.atan2(eye.z).abs() < std::f32::consts::FRAC_PI_2, "{shot:?} sees her face");
+            assert_eq!(shot.stand() == Vec3::ZERO, shot != Shot::Street, "{shot:?} stands in the square");
         }
         assert!(Shot::Sky.camera().eye().y < 1.45, "below her chest, looking up");
         assert!(Shot::Wide.camera().eye().distance(Vec3::ZERO) > 10.0, "from across the square");
@@ -484,13 +521,19 @@ mod tests {
     #[test]
     fn lamps_light_the_town_s_lanterns() {
         let town = include_str!("../../../content/lookdev/town/town.assembly.ron");
-        let lanterns: Vec<[f32; 2]> = town
+        let lanterns: Vec<[f32; 3]> = town
             .lines()
-            .filter(|line| line.contains(r#"(piece: "@lantern""#))
-            .map(|line| {
+            .filter_map(|line| {
+                let light = if line.contains(r#"(piece: "@lantern""#) {
+                    KIT_GLASS
+                } else if line.contains(r#"(piece: "@jz_lantern_post""#) {
+                    POST_PAPER
+                } else {
+                    return None;
+                };
                 let at = line.split("at: (").nth(1).expect("placed").split(')').next().expect("closed");
                 let numbers: Vec<f32> = at.split(',').map(|n| n.trim().parse().expect("a number")).collect();
-                [numbers[0], numbers[2]]
+                Some([numbers[0], numbers[1] + light, numbers[2]])
             })
             .collect();
         assert_eq!(lanterns, LAMPS);

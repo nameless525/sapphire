@@ -17,6 +17,12 @@
 //! | `foliage.png` | 2 m | Leaf clusters, light on their upper sides, for tree crowns and hedges |
 //! | `rock.png` | 16 m | Banded rock for the far cliffs, which fog and distance mostly paint over |
 //! | `band.png` | — | The terminator band: white ends, a warm apricot across the transition |
+//! | `whitewash.png` | 3.2 m | Jinzhou's white plaster: near white, faint cool mottling and soft rain streaks |
+//! | `granite.png` | 2 m | Cool grey blocks in four courses, bevelled, in dark joints: plinths and stone trim |
+//! | `tiles.png` | 1.2 m | Courses across a tiled slope (the rows of tiles are modeled): each course's lit lower lip and the shadow under the next; near white |
+//! | `rafters.png` | 1.2 m | A soffit's rafters, four to the map, along V over darker boards between; near white |
+//! | `flagstones.png` | 4 m | Grey stone slabs in staggered rows, five rows of three or four, each its own cool grey, in thin joints |
+//! | `lantern.png` | one rib | A lantern's paper between two ribs, brightest between them, with bands at top and bottom; its emission map too |
 //!
 //! Colors are picked in 8-bit sRGB, as an artist would, and maps tile seamlessly: every pattern
 //! repeats on the map's own period.
@@ -118,6 +124,12 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path("foliage.png"), foliage_png()?),
         (path("rock.png"), rock_png()?),
         (path("band.png"), band_png()?),
+        (path("whitewash.png"), whitewash_png()?),
+        (path("granite.png"), granite_png()?),
+        (path("tiles.png"), tiles_png()?),
+        (path("rafters.png"), rafters_png()?),
+        (path("lantern.png"), lantern_png()?),
+        (path("flagstones.png"), flagstones_png()?),
     ])
 }
 
@@ -387,6 +399,127 @@ pub fn rock_png() -> io::Result<Vec<u8>> {
     })
 }
 
+/// Whitewash: near white with a faint cool mottling and soft streaks running down it, as rain
+/// leaves on lime plaster; kept quiet, so walls read as clean planes.
+pub fn whitewash_png() -> io::Result<Vec<u8>> {
+    let base = rgb(246, 245, 241);
+    let cool = rgb(226, 229, 232);
+    let warm = rgb(244, 238, 228);
+    paint(512, |p| {
+        let broad = tiling(p, 3, 4, 0x3a01);
+        let patches = tiling(p + Vec2::splat(0.27), 7, 3, 0x3a02);
+        // Streaks: noise stretched down V.
+        let streaks = fbm(Vec2::new(p.x * 48.0, p.y * 3.0), (48, 3), 3, 0x3a03);
+        let grain = tiling(p, 64, 2, 0x3a04);
+        let mut color = base.lerp(cool, 0.6 * smoothstep(0.55, 0.85, broad));
+        color = color.lerp(warm, 0.5 * smoothstep(0.6, 0.85, patches));
+        color *= 1.0 - 0.035 * smoothstep(0.55, 0.8, streaks);
+        color * (0.99 + 0.02 * grain)
+    })
+}
+
+/// Granite: four courses of blocks in cool greys, staggered, bevelled light on their upper left
+/// and shaded on their lower right, in dark joints.
+pub fn granite_png() -> io::Result<Vec<u8>> {
+    const COURSES: u32 = 4;
+    let joint = rgb(96, 100, 108);
+    let tints =
+        [rgb(178, 182, 188), rgb(166, 170, 178), rgb(186, 188, 190), rgb(170, 172, 176), rgb(160, 166, 174)];
+    paint(512, |p| {
+        let course = ((p.y * COURSES as f32) as u32).min(COURSES - 1);
+        let within_y = p.y * COURSES as f32 - course as f32;
+        // Blocks a third of the map long, each course shifted.
+        let shift = random(course, 0x6a01);
+        let along = (p.x + shift).rem_euclid(1.0) * 3.0;
+        let block = along.floor();
+        let within_x = along - block;
+        let id = course * 16 + block as u32;
+        let tint = tints[(random(id, 0x6a02) * tints.len() as f32) as usize % tints.len()];
+        let mut color = tint * (0.95 + 0.08 * random(id, 0x6a03));
+        let (to_left, to_right) = (within_x / 3.0, (1.0 - within_x) / 3.0);
+        let (to_top, to_bottom) = (within_y / COURSES as f32, (1.0 - within_y) / COURSES as f32);
+        let lit = 1.0 - smoothstep(0.004, 0.018, to_top.min(to_left));
+        let shaded = 1.0 - smoothstep(0.004, 0.018, to_bottom.min(to_right));
+        color *= 1.0 + 0.08 * lit - 0.12 * shaded;
+        color *= 0.95 + 0.1 * tiling(p, 24, 3, 0x6a04);
+        let edge = to_left.min(to_right).min(to_top).min(to_bottom);
+        joint.lerp(color, smoothstep(0.002, 0.005, edge))
+    })
+}
+
+/// Tile courses: four to the map down the slope, each tile course lit along its lower lip and
+/// shaded under the course above, a thin dark line where it ends; near white, for the roof's
+/// charcoal to tint. The rows across are modeled, so U varies only a little.
+pub fn tiles_png() -> io::Result<Vec<u8>> {
+    const COURSES: f32 = 4.0;
+    paint(256, |p| {
+        let course = (p.y * COURSES).floor();
+        let within = p.y * COURSES - course;
+        let mut value = 0.9 + 0.06 * random(course as u32 * 7 + (p.x * 4.0) as u32, 0x7c01);
+        value *= 0.84 + 0.16 * smoothstep(0.0, 0.6, within);
+        value *= 1.0 + 0.06 * smoothstep(0.7, 0.92, within) - 0.22 * smoothstep(0.94, 1.0, within);
+        value *= 0.96 + 0.06 * tiling(p, 32, 2, 0x7c02);
+        Vec3::new(value * 0.98, value * 0.99, value)
+    })
+}
+
+/// Rafters under the eaves: four to the map across U, running along V, each lit across its
+/// middle, with darker boards between; near white, tinted warm by its material.
+pub fn rafters_png() -> io::Result<Vec<u8>> {
+    const RAFTERS: f32 = 4.0;
+    paint(256, |p| {
+        let within = (p.x * RAFTERS).fract();
+        // A rafter across the middle 55% of each step, rounded; boards between.
+        let edge = (within - 0.5).abs();
+        let rafter = 1.0 - smoothstep(0.24, 0.29, edge);
+        let round = 1.0 - 0.18 * (edge / 0.29).min(1.0).powi(2);
+        let mut value = 0.62 + (0.92 * round - 0.62) * rafter;
+        let grain = fbm(Vec2::new(p.x * 64.0, p.y * 4.0), (64, 4), 3, 0x8d01);
+        value *= 0.92 + 0.12 * grain;
+        Vec3::new(value, value * 0.96, value * 0.92)
+    })
+}
+
+/// Flagstones: five rows of slabs, alternate rows of three and four so the joints stagger, each
+/// slab its own cool grey with a little mottling, softly worn at its edges, in thin dark joints.
+pub fn flagstones_png() -> io::Result<Vec<u8>> {
+    const ROWS: f32 = 5.0;
+    let joint = rgb(104, 106, 110);
+    let tints =
+        [rgb(186, 188, 190), rgb(176, 180, 186), rgb(194, 194, 192), rgb(180, 182, 184), rgb(170, 174, 180)];
+    paint(512, |p| {
+        let row = (p.y * ROWS).floor();
+        let across = if (row as u32).is_multiple_of(2) { 3.0 } else { 4.0 };
+        let shift = random(row as u32, 0xf1a1);
+        let along = (p.x + shift).rem_euclid(1.0) * across;
+        let slab = along.floor();
+        let (u, v) = (along - slab, p.y * ROWS - row);
+        let id = row as u32 * 16 + slab as u32;
+        let tint = tints[(random(id, 0xf1a2) * tints.len() as f32) as usize % tints.len()];
+        let mut color = tint * (0.95 + 0.07 * random(id, 0xf1a3));
+        color *= 0.95 + 0.09 * tiling(p, 20, 3, 0xf1a4);
+        // Distance to the slab's edge in map units; worn a little darker toward it.
+        let edge = (u.min(1.0 - u) / across).min(v.min(1.0 - v) / ROWS);
+        color *= 0.92 + 0.08 * smoothstep(0.0, 0.02, edge);
+        joint.lerp(color, smoothstep(0.0015, 0.004, edge))
+    })
+}
+
+/// A lantern's paper between two ribs: brightest midway, dimming toward the ribs at U's ends,
+/// a band of darker paper at the top and the bottom; it is both the paper's color and the
+/// mask on its glow.
+pub fn lantern_png() -> io::Result<Vec<u8>> {
+    paint(128, |p| {
+        let across = 1.0 - (2.0 * p.x - 1.0).abs();
+        let rib = smoothstep(0.0, 0.08, across);
+        let glow = 0.78 + 0.22 * smoothstep(0.0, 1.0, across);
+        let band = 1.0 - 0.35 * (1.0 - smoothstep(0.03, 0.09, p.y.min(1.0 - p.y)));
+        let fibers = 0.97 + 0.05 * tiling(p, 16, 3, 0x9e01);
+        let value = (0.25 + 0.75 * rib) * glow * band * fibers;
+        Vec3::new(value, value * 0.97, value * 0.92)
+    })
+}
+
 /// The terminator band: white at both ends and a warm apricot across the middle of the
 /// transition. Rows are alike; the shader reads one.
 pub fn band_png() -> io::Result<Vec<u8>> {
@@ -519,14 +652,22 @@ mod tests {
     fn the_town_assembles_in_its_own_slots() {
         let path = lookdev_dir().join("town/town.assembly.ron");
         let bytes = std::fs::read(&path).unwrap();
-        let mesh = crate::assembly::import(&path, &bytes).unwrap();
+        let mesh = crate::assembly::import(&path, &bytes, crate::assembly::Detail::Full).unwrap();
+        let light = crate::assembly::import(&path, &bytes, crate::assembly::Detail::Light).unwrap();
         let triangles = mesh.indices.len() / 3;
         let slots = mesh.lods[0].submeshes.len();
         assert_eq!(slots, mesh.materials.len(), "every slot draws");
         assert!(
-            (50_000..150_000).contains(&triangles),
+            (100_000..200_000).contains(&triangles),
             "{triangles} triangles, {} vertices",
             mesh.vertices.len()
+        );
+        // The mobile cook's lighter shapes.
+        assert_eq!(light.lods[0].submeshes.len(), slots);
+        assert!(
+            light.indices.len() < mesh.indices.len() * 4 / 5,
+            "{} light triangles",
+            light.indices.len() / 3
         );
     }
 
@@ -647,7 +788,7 @@ mod tests {
     #[test]
     fn maps_tile_without_a_seam() {
         for (name, bytes) in files().unwrap() {
-            if name.ends_with("band.png") {
+            if name.ends_with("band.png") || name.ends_with("lantern.png") {
                 continue;
             }
             let image = image::load_from_memory(&bytes).unwrap().to_rgb8();

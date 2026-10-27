@@ -121,6 +121,12 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/town/textures/foliage.png",
     "lookdev/town/textures/rock.png",
     "lookdev/town/textures/band.png",
+    "lookdev/town/textures/whitewash.png",
+    "lookdev/town/textures/granite.png",
+    "lookdev/town/textures/tiles.png",
+    "lookdev/town/textures/rafters.png",
+    "lookdev/town/textures/lantern.png",
+    "lookdev/town/textures/flagstones.png",
     "lookdev/character/hair_mask.png",
 ];
 

@@ -11,8 +11,10 @@
 //!   file in a kit's directory) and groups of placements (`"@group"`) by a position, a turn about
 //!   +Y and a scale, nested as deep as groups go. Three builtin shapes fill what kits lack:
 //!   `#box`, a unit cube about its origin; `#quad`, a unit square in XZ facing +Y; and `#ground`,
-//!   a disc one across in XZ facing +Y, for open land out to the horizon. The pieces' triangles
-//!   are transformed into the assembly's space and merged into one mesh.
+//!   a disc one across in XZ facing +Y, for open land out to the horizon. Parametric builtins
+//!   (a placement's `shape`, [`Shape`]) build East Asian architecture from numbers: roofs with
+//!   modeled tiles, halls, walls, columns and lanterns (`assembly/shapes.rs`). The pieces'
+//!   triangles are transformed into the assembly's space and merged into one mesh.
 //! - **Ground is cut small where cameras stand.** A triangle that crosses a camera's near plane
 //!   is clipped there, to vertices far outside the screen (the near plane is centimeters from
 //!   the eye), and some rasterizers lose it: WARP dropped a 2.4 km grass quad outright and
@@ -95,13 +97,19 @@ use crate::import::gltf::{self, GltfImportError};
 use crate::mesh::{ImportedMaterial, ImportedMesh};
 
 mod coplanar;
+mod shapes;
 #[cfg(test)]
 mod tests;
+
+pub use shapes::{
+    Beam, Column, Coping, Detail, Hall, Lantern, LanternKind, Mount, Opening, OpeningKind, Part, Plinth,
+    Posts, Ridge, Roof, RoofKind, Shape, Side, Tiles, Wall,
+};
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// pieces are imported by it, so a bump there must recook assemblies too. Bump the high bits
 /// whenever assembly output changes for the same document and pieces.
-pub const IMPORTER: Stage = Stage { name: "assembly", version: (2 << 16) | gltf::IMPORTER.version };
+pub const IMPORTER: Stage = Stage { name: "assembly", version: (3 << 16) | gltf::IMPORTER.version };
 
 /// The end of an assembly document's file name, lowercase.
 pub const SOURCE_SUFFIX: &str = ".assembly.ron";
@@ -272,12 +280,17 @@ impl Default for Occlusion {
     }
 }
 
-/// One placement: a piece (`"kit/model"`), a builtin shape (`"#box"`, `"#quad"`) or a group
-/// (`"@name"`), transformed by `at · turn · scale` within whatever places it.
+/// One placement: a piece (`"kit/model"`), a builtin shape (`"#box"`, `"#quad"`), a group
+/// (`"@name"`) or, in place of a piece, a parametric `shape` ([`Shape`]: `#roof`, `#hall`, ...),
+/// transformed by `at · turn · scale` within whatever places it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Placement {
+    #[serde(default)]
     pub piece: String,
+    /// A parametric builtin, in place of `piece`.
+    #[serde(default)]
+    pub shape: Option<Shape>,
     #[serde(default)]
     pub at: [f32; 3],
     /// Degrees about +Y, counter-clockwise seen from above.
@@ -289,9 +302,21 @@ pub struct Placement {
     #[serde(default)]
     pub variant: Option<String>,
     /// Draws every triangle in this slot, whatever the rules say, and everything in it unless
-    /// it names its own. Builtin shapes need one, their own or one from a group they are in.
+    /// it names its own. The simple builtins (`#box`, `#quad`, `#ground`) need one, their own or
+    /// one from a group they are in; a parametric shape's parts otherwise go by the rules.
     #[serde(default)]
     pub slot: Option<String>,
+}
+
+impl Placement {
+    /// What it places, as rules, allowances and messages name it: its piece, or its shape's
+    /// builtin name.
+    pub fn name(&self) -> &str {
+        match &self.shape {
+            Some(shape) => shape.name(),
+            None => &self.piece,
+        }
+    }
 }
 
 /// Lets through the overlaps in one plane (see the module docs) that match every filter it
@@ -360,6 +385,10 @@ pub enum AssemblyError {
     UnknownSlot { what: String, slot: String },
     #[error("builtin {0:?} needs a slot")]
     BuiltinWithoutSlot(String),
+    #[error("no surface rule claims the {part:?} part of {shape:?} (variant {variant:?}): add a rule for it")]
+    UnclaimedPart { shape: String, part: String, variant: Option<String> },
+    #[error("{shape} at {path}: {message}")]
+    Shape { shape: String, path: String, message: String },
     #[error(
         "no surface rule claims the triangles of {piece:?} in palette cell {cell:?} \
          (glTF material {material:?}, variant {variant:?}): add a rule for them"
@@ -496,7 +525,7 @@ impl Assembly {
         let lists = self.groups.iter().map(|(name, list)| (format!("group {name:?}"), list));
         for (owner, list) in std::iter::once(("the assembly".to_owned(), &self.place)).chain(lists) {
             for placement in list {
-                let what = || format!("{owner}'s placement of {:?}", placement.piece);
+                let what = || format!("{owner}'s placement of {:?}", placement.name());
                 if let Some(slot) = &placement.slot {
                     known(slot, &what)?;
                 }
@@ -508,7 +537,19 @@ impl Assembly {
                         what()
                     ));
                 }
+                if let Some(shape) = &placement.shape {
+                    if !placement.piece.is_empty() {
+                        return invalid(format!("{} gives both a piece and a shape: give one", what()));
+                    }
+                    shape
+                        .validate()
+                        .map_err(|message| AssemblyError::Invalid(format!("{}: {message}", what())))?;
+                    continue;
+                }
                 match placement.piece.chars().next() {
+                    None => {
+                        return invalid(format!("{owner} has a placement with neither a piece nor a shape"));
+                    }
                     Some('@') if !self.groups.contains_key(&placement.piece[1..]) => {
                         return Err(AssemblyError::UnknownGroup(placement.piece[1..].to_owned()));
                     }
@@ -549,7 +590,7 @@ impl Assembly {
         let lists = std::iter::once(&self.place).chain(self.groups.values());
         let mut files: Vec<String> = lists
             .flatten()
-            .filter(|placement| !placement.piece.starts_with(['@', '#']))
+            .filter(|placement| placement.shape.is_none() && !placement.piece.starts_with(['@', '#']))
             .map(|placement| self.piece_file(&placement.piece).map(|(file, _)| file))
             .collect::<Result<_, _>>()?;
         files.sort();
@@ -559,9 +600,9 @@ impl Assembly {
 }
 
 /// Reads the assembly at `path` (`bytes`) and the pieces it places, and assembles its mesh.
-pub fn import(path: &Path, bytes: &[u8]) -> Result<ImportedMesh, AssemblyError> {
+pub fn import(path: &Path, bytes: &[u8], detail: Detail) -> Result<ImportedMesh, AssemblyError> {
     let assembly = read(bytes)?;
-    assemble(&assembly, &mut |file: &str| {
+    assemble(&assembly, detail, &mut |file: &str| {
         let resolved = character_maps::resolve_input(path, file)
             .map_err(|_| AssemblyError::PiecePath(file.to_owned()))?;
         let bytes = std::fs::read(&resolved)
@@ -584,8 +625,24 @@ struct PieceTriangle {
     cell: [u32; 2],
     /// Each corner's place in its cell, 0 at the top and 1 at the bottom.
     down: [f32; 3],
-    /// Index into [`Piece`]'s source materials.
+    /// Index into [`Piece`]'s source materials (a shape's [`Part::ALL`]).
     material: usize,
+    /// How its texture coordinates are made.
+    uv: ShapeUv,
+    /// The piece's own ambient occlusion at each corner (1 open), times the assembly's.
+    occlusion: [f32; 3],
+}
+
+/// A triangle's texture coordinates: projected by its slot (kit pieces, flat faces), or a
+/// shape's own for surfaces that curve.
+#[derive(Clone, Copy, Debug)]
+enum ShapeUv {
+    Project,
+    /// In the shape's meters: scaled by the placement's (uniform) scale, then by the slot's tile.
+    Meters([Vec2; 3]),
+    /// In tiles, as they are: one repeat of the slot's maps per unit whatever the slot's tile
+    /// (a lantern's paper, a rib a tile).
+    Tiles([Vec2; 3]),
 }
 
 /// A piece's glTF material names.
@@ -597,10 +654,11 @@ struct PieceInfo {
 /// Assembles `assembly`, importing each piece file it names with `import_piece` (once each).
 pub fn assemble(
     assembly: &Assembly,
+    detail: Detail,
     import_piece: &mut dyn FnMut(&str) -> Result<ImportedMesh, AssemblyError>,
 ) -> Result<ImportedMesh, AssemblyError> {
     assembly.validate()?;
-    let mut builder = Builder::new(assembly);
+    let mut builder = Builder::new(assembly, detail);
     let mut pieces: HashMap<String, PieceInfo> = HashMap::new();
     for file in assembly.files()? {
         let mesh = import_piece(&file)?;
@@ -642,6 +700,8 @@ fn piece_info(mesh: &ImportedMesh, palette: &Palette) -> PieceInfo {
                 cell,
                 down,
                 material: submesh.material as usize,
+                uv: ShapeUv::Project,
+                occlusion: [1.0; 3],
             });
         }
     }
@@ -651,7 +711,15 @@ fn piece_info(mesh: &ImportedMesh, palette: &Palette) -> PieceInfo {
 
 /// A builtin's triangle, facing its corners' winding.
 fn builtin_triangle(positions: [Vec3; 3], normal: Vec3) -> PieceTriangle {
-    PieceTriangle { positions, normals: [normal; 3], cell: [0, 0], down: [0.0; 3], material: 0 }
+    PieceTriangle {
+        positions,
+        normals: [normal; 3],
+        cell: [0, 0],
+        down: [0.0; 3],
+        material: 0,
+        uv: ShapeUv::Project,
+        occlusion: [1.0; 3],
+    }
 }
 
 /// The builtin shapes' triangles, the ground builtins cut for `transform`, which places them
@@ -763,6 +831,8 @@ struct Emit {
 /// Collects placed triangles by slot.
 struct Builder<'a> {
     assembly: &'a Assembly,
+    /// How finely shapes are built.
+    detail: Detail,
     slots: HashMap<&'a str, usize>,
     /// Per slot: vertices and triangles, welded.
     vertices: Vec<Vec<Vertex>>,
@@ -802,7 +872,7 @@ impl Placed<'_> {
 impl CoplanarAllowance {
     /// Whether its pieces and group name `placed`'s, as an overlap between them needs.
     fn names(&self, placed: [&Placed<'_>; 2]) -> bool {
-        let [a, b] = placed.map(|placed| placed.placement.piece.as_str());
+        let [a, b] = placed.map(|placed| placed.placement.name());
         let pieces = |(first, second): &(String, String)| {
             (matches_pattern(first, a) && matches_pattern(second, b))
                 || (matches_pattern(first, b) && matches_pattern(second, a))
@@ -823,10 +893,11 @@ impl CoplanarAllowance {
 }
 
 impl<'a> Builder<'a> {
-    fn new(assembly: &'a Assembly) -> Self {
+    fn new(assembly: &'a Assembly, detail: Detail) -> Self {
         let count = assembly.slots.len();
         Self {
             assembly,
+            detail,
             slots: assembly
                 .slots
                 .iter()
@@ -876,6 +947,28 @@ impl<'a> Builder<'a> {
         }
         let placed = self.placements.len();
         self.placements.push(Placed { placement, path: path.clone() });
+        if let Some(shape) = &placement.shape {
+            let triangles = shape.triangles(self.detail).map_err(|message| AssemblyError::Shape {
+                shape: shape.name().to_owned(),
+                path: self.placements[placed].path_text(),
+                message,
+            })?;
+            for triangle in &triangles {
+                let part = Part::ALL[triangle.material].name();
+                let slot = match slot {
+                    Some(slot) => slot,
+                    None => self.rule_slot(shape.name(), [0, 0], part, variant).ok_or_else(|| {
+                        AssemblyError::UnclaimedPart {
+                            shape: shape.name().to_owned(),
+                            part: part.to_owned(),
+                            variant: variant.map(str::to_owned),
+                        }
+                    })?,
+                };
+                self.emit(triangle, transform, slot, Emit { gradient: false, wrap: true, placed });
+            }
+            return Ok(());
+        }
         if placement.piece.starts_with('#') {
             let slot = slot.ok_or_else(|| AssemblyError::BuiltinWithoutSlot(placement.piece.clone()))?;
             let piece = builtin(&placement.piece, transform)?;
@@ -927,11 +1020,18 @@ impl<'a> Builder<'a> {
         let mut positions = triangle.positions.map(|p| transform.transform_point3(p));
         let mut normals = triangle.normals.map(|n| (normal_matrix * n).normalize_or_zero());
         let mut down = triangle.down;
+        let mut own_uv = triangle.uv;
+        let mut own_occlusion = triangle.occlusion;
         // A mirroring transform turns the winding inside out.
         if linear.determinant() < 0.0 {
             positions.swap(1, 2);
             normals.swap(1, 2);
             down.swap(1, 2);
+            own_occlusion.swap(1, 2);
+            match &mut own_uv {
+                ShapeUv::Project => {}
+                ShapeUv::Meters(uv) | ShapeUv::Tiles(uv) => uv.swap(1, 2),
+            }
         }
         let face = (positions[1] - positions[0]).cross(positions[2] - positions[0]);
         if face.length_squared() < 1e-12 {
@@ -951,7 +1051,17 @@ impl<'a> Builder<'a> {
         let (u_axis, v_axis) = projection_axes(spec.projection, face);
         let occlusion = &self.assembly.occlusion;
         let level = face.y.abs() > LEVEL_FACE;
-        let mut uvs = positions.map(|p| [p.dot(u_axis) / spec.tile[0], p.dot(v_axis) / spec.tile[1]]);
+        let mut uvs = match own_uv {
+            ShapeUv::Project => {
+                positions.map(|p| [p.dot(u_axis) / spec.tile[0], p.dot(v_axis) / spec.tile[1]])
+            }
+            ShapeUv::Meters(uv) => {
+                // The placement's scale, as one factor (a uniform scale's).
+                let scale = linear.determinant().abs().cbrt();
+                uv.map(|uv| [uv.x * scale / spec.tile[0], uv.y * scale / spec.tile[1]])
+            }
+            ShapeUv::Tiles(uv) => uv.map(|uv| uv.to_array()),
+        };
         if how.wrap {
             // Whole blocks of tiles off, which a repeating map can't tell apart: the triangle
             // starts in the first block.
@@ -966,7 +1076,7 @@ impl<'a> Builder<'a> {
         for k in 0..3 {
             let position = positions[k];
             let uv = uvs[k];
-            let mut ao = 1.0;
+            let mut ao = own_occlusion[k].clamp(0.0, 1.0);
             if !level && occlusion.ground > 0.0 {
                 ao *= 1.0 - occlusion.ground * (1.0 - smoothstep(0.0, occlusion.ground_height, position.y));
             }
@@ -1030,7 +1140,7 @@ impl<'a> Builder<'a> {
         if let Some((&pair, &(at, slots))) = fights.iter().next() {
             let placed = pair.map(|placement| &self.placements[placement]);
             return Err(AssemblyError::Coplanar(Box::new(CoplanarFight {
-                pieces: placed.map(|placed| placed.placement.piece.clone()),
+                pieces: placed.map(|placed| placed.placement.name().to_owned()),
                 paths: placed.map(Placed::path_text),
                 slots: slots.map(|slot| self.assembly.slots[slot].name.clone()),
                 at: at.to_array(),

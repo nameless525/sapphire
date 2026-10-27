@@ -779,6 +779,14 @@ fn assembly_dependencies(path: &Path, bytes: &[u8]) -> Result<Vec<Dependency>, C
     Ok(dependencies)
 }
 
+/// The detail an assembly's shapes are built in for `cook`: the mobile cook's lighter.
+fn assembly_detail(cook: Cook) -> assembly::Detail {
+    match cook {
+        Cook::Desktop => assembly::Detail::Full,
+        Cook::Mobile => assembly::Detail::Light,
+    }
+}
+
 /// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF,
 /// FBX, VRM or an assembly), for `cook`.
 fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook) -> Result<Mesh, CookError> {
@@ -797,7 +805,7 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
             (vrm::import(bytes, settings.version).map_err(vrm_error(path))?.mesh, &settings.mesh)
         }
         ImportSettings::Assembly(settings) => (
-            assembly::import(path, bytes)
+            assembly::import(path, bytes, assembly_detail(cook))
                 .map_err(|source| CookError::Assembly { path: path.to_owned(), source: Box::new(source) })?,
             settings,
         ),

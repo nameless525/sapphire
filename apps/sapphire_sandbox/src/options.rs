@@ -95,7 +95,7 @@ pub(crate) struct Options {
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
-    /// `--look-dev wide|hero|sky`: the look-dev town (M1 X1) with the VRM character standing in
+    /// `--look-dev wide|hero|sky|street`: the look-dev town (M1 X1) with the VRM character standing in
     /// it, seen from that shot. A scene of its own rather than a `--stage` layout: it replaces the
     /// character and the ground the other scenes put under it, so it excludes `--stage`,
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that

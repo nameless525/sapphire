@@ -53,7 +53,9 @@
 //! then serves the new version (assembled from those bytes and the old version's) and remounts
 //! it, and the asset server reloads exactly the assets whose blake3 hashes changed, behind their
 //! handles: the path hot reload takes on desktop. `packs` has the details. A pack the device
-//! refuses, or an asset whose new version fails, keeps the version it had.
+//! refuses, or an asset whose new version fails, keeps the version it had. Pushed packs, mounted
+//! or not, are served until replaced or the app restarts, within [`PushLimits`]: 16 pack names
+//! and 1 GiB of received bytes by default, past which a push is refused as it begins.
 //!
 //! # Transports
 //!
@@ -80,10 +82,10 @@
 //! which only the machine itself and USB forwards reach; listening on the LAN is an explicit
 //! opt-in, logged as a warning, for trusted networks only; and only development builds have any of
 //! it. A malformed request can't make the device allocate unboundedly or hold its frame: frames
-//! are capped ([`protocol::MAX_FRAME`]), pushes too ([`packs::MAX_PUSH`]), their buffers grow only
-//! as bytes come, queues of pushes and replies are bounded, so are connections, the app applies a
-//! few pushes a frame, and every pushed byte an asset is decoded from passes the pack's blake3
-//! checks first. Names (a cvar's and its value, a document's origin, a shader file's, a pack's)
+//! are capped ([`protocol::MAX_FRAME`]), pushes too ([`packs::MAX_PUSH`]), and what pushed packs
+//! hold in all ([`PushLimits`]); their buffers grow only as bytes come, queues of pushes and
+//! replies are bounded, so are connections, the app applies a few pushes a frame, and every
+//! pushed byte an asset is decoded from passes the pack's blake3 checks first. Names (a cvar's and its value, a document's origin, a shader file's, a pack's)
 //! longer than 1 KiB are refused on the connection's thread, so the app never looks one up or
 //! quotes it; error messages are cut at 64 KiB; and a reply too large for a frame is answered
 //! with an error saying so, the connection going on.
@@ -109,7 +111,7 @@ pub mod protocol;
 
 pub use client::Client;
 pub use device::{LinkCounters, LinkMode, LiveLink, Push, ReloadTracker, Responder, set_cvar};
-pub use packs::{LivePacks, PushedPack};
+pub use packs::{LivePacks, PushLimits, PushedPack};
 pub use protocol::{DEFAULT_PORT, LinkError, PROTOCOL_VERSION};
 
 /// Log target for this crate.

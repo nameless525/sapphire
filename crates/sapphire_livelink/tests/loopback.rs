@@ -22,7 +22,8 @@ use sapphire_livelink::protocol::{
     write_frame,
 };
 use sapphire_livelink::{
-    Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, ReloadTracker, set_cvar,
+    Client, LinkError, LinkMode, LiveLink, LivePacks, PROTOCOL_VERSION, Push, PushLimits, ReloadTracker,
+    set_cvar,
 };
 use sapphire_time::Stopwatch;
 use sapphire_world::tod::{TodTimeline, default_day};
@@ -97,7 +98,12 @@ struct App {
 
 impl App {
     fn new(base: MemoryPackSource) -> Self {
-        let packs = Arc::new(LivePacks::new(base));
+        Self::with_limits(base, PushLimits::DEFAULT)
+    }
+
+    /// An app whose pushed packs may hold at most `limits`.
+    fn with_limits(base: MemoryPackSource, limits: PushLimits) -> Self {
+        let packs = Arc::new(LivePacks::with_limits(base, limits));
         let mut server = AssetServer::new(packs.clone(), AssetBudgets::DESKTOP);
         server.mount("shared").unwrap();
         let link =
@@ -265,6 +271,36 @@ fn a_capture_answers_with_the_frame_drawn_after_what_came_before_it() {
     assert!(capture.png.iter().all(|&byte| byte == capture.frame as u8));
     let counters = app.link.counters();
     assert_eq!((counters.applied, counters.refused), (1, 0), "the document applied; a capture is a read");
+}
+
+#[test]
+fn pushes_past_the_limits_are_refused_as_they_begin() {
+    let base = MemoryPackSource::new();
+    base.insert("shared", shared([1.0; 4]));
+    let mut app = App::with_limits(base, PushLimits { packs: 1, ..PushLimits::DEFAULT });
+    let zone = |seed| {
+        write_pack(vec![packed(ZONE_TEXTURE, AssetKind::Texture, &texture(64, seed), Vec::new())]).unwrap()
+    };
+    let (first, second) = (zone(1), zone(2));
+    let (errors, sent) = app.serve(on_client(app.address(), move |client| {
+        let mut sent = client.push_pack("zone", &first).unwrap().received;
+        // The one place is taken: another name, the app's own pack included, is refused before
+        // any of it is sent, on a connection that goes on.
+        let refused = [
+            client.push_pack("zone2", &second).unwrap_err(),
+            client.push_pack("shared", &second).unwrap_err(),
+        ];
+        sent += client.push_pack("zone", &second).unwrap().received;
+        (refused, sent)
+    }));
+    for error in &errors {
+        assert!(
+            matches!(error, LinkError::Refused(message) if message.contains("1 pushed packs already")),
+            "{error}"
+        );
+    }
+    assert_eq!(app.packs.pushed().len(), 1);
+    assert_eq!(app.link.counters().received, sent, "the refused pushes sent nothing");
 }
 
 #[test]

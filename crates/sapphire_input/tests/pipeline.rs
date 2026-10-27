@@ -4,8 +4,8 @@
 
 use sapphire_input::ActionEventKind::{Canceled, Completed, Started, Triggered};
 use sapphire_input::{
-    ActionEventKind, ActionId, DeviceKind, GamepadFamily, InputMap, InputSystem, Key, MAX_FINGERS, PadAxis,
-    PadButton, RawInput, RebindError, Source, Timestamp,
+    ActionEventKind, ActionId, DeviceKind, GamepadFamily, InputMap, InputSystem, Key, MAX_FINGERS,
+    MouseButton, PadAxis, PadButton, RawInput, RebindError, Source, Timestamp,
 };
 use sapphire_math::Vec2;
 use sapphire_platform::{
@@ -87,6 +87,14 @@ impl Rig {
 
     fn value(&self, action: &str) -> Vec2 {
         self.input.state(self.action(action)).value()
+    }
+
+    fn mouse(&mut self, t: u64, x: f32) {
+        self.push(t, RawInput::MouseMotion { delta: Vec2::new(x, 0.0) });
+    }
+
+    fn left(&mut self, t: u64, down: bool) {
+        self.push(t, RawInput::MouseButton { button: MouseButton::Left, down });
     }
 
     fn wheel(&mut self, t: u64) {
@@ -760,6 +768,132 @@ fn a_removed_gamepad_leaves_other_devices_sequences_alone() {
     assert_eq!(rig.update(50), [ev("guard", Completed, 40)]);
     rig.key(60, Scancode::K, true);
     assert_eq!(rig.update(70), [ev("dash", Triggered, 60), ev("dash", Completed, 60)]);
+}
+
+/// `look` reads mouse motion while `grab` (the left button) is held, and finger drags always.
+/// `pan` reads mouse motion too, but `grab`'s chord blocks it while held.
+fn drag_map() -> InputMap {
+    map(
+        r#"(name: "grab", kind: Button), (name: "look", kind: Axis2D), (name: "pan", kind: Axis2D)"#,
+        r#"(name: "main", bindings: [
+            (action: "grab", source: Mouse(Left)),
+            (action: "look", source: MouseMotion, chord: "grab"),
+            (action: "look", source: Touch(Drag)),
+            (action: "pan", source: MouseMotion),
+        ])"#,
+    )
+}
+
+#[test]
+fn a_chorded_drag_takes_only_the_motion_after_its_press() {
+    // Review FI-002: motion counts toward a chorded binding only while the chord is held.
+    let mut rig = Rig::new(drag_map(), &["main"]);
+    rig.mouse(1, 100.0);
+    rig.left(2, true);
+    rig.mouse(3, 1.0);
+    assert_eq!(
+        rig.update_for(16, "look"),
+        [ev("look", Started, 3), ev("look", Triggered, 3)],
+        "the drag starts with its first motion"
+    );
+    assert_eq!(rig.value("look"), Vec2::new(1.0, 0.0), "the motion before the press isn't a drag");
+    assert_eq!(rig.value("pan"), Vec2::new(100.0, 0.0), "it pans, until the chord blocks panning");
+}
+
+#[test]
+fn a_chorded_drag_keeps_the_motion_before_its_release() {
+    // Review FI-002: motion taken while the chord was held is delivered, even when the chord
+    // lets go later in the same update. The action stays triggered for that update.
+    let mut rig = Rig::new(drag_map(), &["main"]);
+    rig.left(2, true);
+    rig.mouse(3, 1.0);
+    rig.left(4, false);
+    rig.mouse(5, 10.0);
+    assert_eq!(rig.update_for(16, "look"), [ev("look", Started, 3), ev("look", Triggered, 3)]);
+    assert_eq!(rig.value("look"), Vec2::new(1.0, 0.0), "the motion while held");
+    assert!(rig.input.state(rig.action("look")).is_triggered());
+    assert_eq!(rig.value("pan"), Vec2::new(10.0, 0.0), "the motion after the release pans");
+    assert_eq!(rig.update_for(32, "look"), [ev("look", Completed, 32)]);
+}
+
+#[test]
+fn motion_adds_up_the_same_however_updates_split_it() {
+    // Review FI-002: every motion counts toward the chord's state when it arrived, so the
+    // per-update values add up to the same totals wherever the frame boundaries fall.
+    let mouse = |x: f32| RawInput::MouseMotion { delta: Vec2::new(x, 0.0) };
+    let left = |down| RawInput::MouseButton { button: MouseButton::Left, down };
+    let finger = |phase, x| RawInput::Touch { finger: 0, phase, position: Vec2::new(x, 100.0) };
+    let inputs = [
+        (10, mouse(5.0)),
+        (20, left(true)),
+        (30, mouse(1.0)),
+        (40, finger(TouchPhase::Down, 100.0)),
+        (50, mouse(2.0)),
+        (60, finger(TouchPhase::Moved, 110.0)),
+        (70, mouse(3.0)),
+        (80, left(false)),
+        (90, mouse(7.0)),
+        (100, finger(TouchPhase::Moved, 130.0)),
+        (110, left(true)),
+        (120, mouse(20.0)),
+        (130, finger(TouchPhase::Up, 130.0)),
+        (140, left(false)),
+    ];
+    let splits: [Vec<u64>; 4] =
+        [vec![], vec![75], vec![25, 55, 85, 115], (1..15).map(|n| 10 * n + 5).collect()];
+    for split in splits {
+        let mut rig = Rig::new(drag_map(), &["main"]);
+        let (mut look, mut pan) = (Vec2::ZERO, Vec2::ZERO);
+        let mut next = 0;
+        for end in split.iter().copied().chain([200, 216]) {
+            while let Some(&(t, input)) = inputs.get(next).filter(|(t, _)| *t < end) {
+                rig.push(t, input);
+                next += 1;
+            }
+            rig.input.update(ms(end));
+            look += rig.value("look");
+            pan += rig.value("pan");
+        }
+        // Held: 1 + 2 + 3 and 20 of mouse motion, plus 10 + 20 of finger drag. Not held: 5 + 7.
+        assert_eq!((look, pan), (Vec2::new(56.0, 0.0), Vec2::new(12.0, 0.0)), "updates ending at {split:?}");
+    }
+}
+
+#[test]
+fn losing_focus_judges_motion_bindings_on_what_they_took() {
+    // Review FI-002 with FI-003: losing focus judges motion bindings too. A drag keeps the
+    // motion it took before the loss, and a binding that has taken none yet this update goes
+    // idle, so a wheel notch after the loss starts a new run.
+    let map = map(
+        r#"(name: "grab", kind: Button), (name: "look", kind: Axis2D), (name: "next", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "grab", source: Mouse(Left)),
+            (action: "look", source: MouseMotion, chord: "grab"),
+            (action: "next", source: MouseWheel, trigger: Pressed),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.left(1, true);
+    rig.mouse(2, 3.0);
+    rig.wheel(3);
+    rig.update(16);
+    assert_eq!(rig.input.state(rig.action("next")).fire_count(), 1);
+
+    rig.mouse(18, 4.0);
+    rig.focus_lost(20);
+    rig.mouse(22, 50.0);
+    rig.wheel(30);
+    assert_eq!(
+        rig.update(32),
+        [
+            ev("grab", Completed, 20),
+            ev("next", Started, 30),
+            ev("next", Triggered, 30),
+            ev("next", Completed, 30)
+        ]
+    );
+    assert_eq!(rig.value("look"), Vec2::new(4.0, 0.0), "the drag keeps the motion it took before the loss");
+    assert_eq!(rig.update_for(48, "look"), [ev("look", Completed, 48)]);
 }
 
 #[test]

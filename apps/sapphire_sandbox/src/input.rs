@@ -246,6 +246,27 @@ mod tests {
     }
 
     #[test]
+    fn a_mouse_drag_orbits_by_the_motion_made_while_the_button_is_held() {
+        // Review FI-002: within one frame, motion before the press doesn't orbit, and motion
+        // before the release still does.
+        let mut input = input(true);
+        let left = |down| RawInput::MouseButton { button: sapphire_input::MouseButton::Left, down };
+        input.push(1, RawInput::MouseMotion { delta: Vec2::new(100.0, 0.0) });
+        input.push(2, left(true));
+        input.push(3, RawInput::MouseMotion { delta: Vec2::new(10.0, 5.0) });
+        input.update(ms(16));
+        assert!(close(input.orbit().x, -0.08) && close(input.orbit().y, 0.04), "{}", input.orbit());
+
+        input.push(20, RawInput::MouseMotion { delta: Vec2::new(10.0, 5.0) });
+        input.push(21, left(false));
+        input.push(22, RawInput::MouseMotion { delta: Vec2::new(100.0, 0.0) });
+        input.update(ms(32));
+        assert!(close(input.orbit().x, -0.08) && close(input.orbit().y, 0.04), "{}", input.orbit());
+        input.update(ms(48));
+        assert_eq!(input.orbit(), Vec2::ZERO);
+    }
+
+    #[test]
     fn touch_orbits_zooms_and_reaches_the_debug_actions() {
         let mut input = input(false);
         let touch = |input: &mut SandboxInput, t, finger, phase, x, y| {

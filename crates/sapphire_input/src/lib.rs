@@ -51,7 +51,11 @@
 //! Gameplay reads the events after the update and hands them to the next fixed step, where
 //! queued input lands on the first step (rule R3); the timestamps let it judge input buffers
 //! against real time. Motion sources (mouse motion, wheel, drag, pinch) are summed per update
-//! instead of judged per event, since their value is "how far this frame".
+//! instead of judged per event, since their value is "how far this frame". Each motion binding
+//! sums only the motion that arrives while its chord is held and no chord blocks it, and keeps
+//! that sum for the rest of the update even if the chord lets go: a drag counts the motion
+//! from its press to its release, wherever the frame boundaries fall, and its action starts at
+//! the first motion it takes.
 //!
 //! Motion is an impulse. A motion binding is actuated in the updates that gave it motion, and
 //! stays actuated from one such update to the next, so an edge trigger on motion fires once

@@ -144,6 +144,8 @@ struct Output {
 struct BindingState {
     memory: Memory,
     output: Output,
+    /// A motion binding's share of its channel's motion this update.
+    accepted: Accepted,
     active: bool,
     /// Scratch for rebuilding the active set.
     include: bool,
@@ -151,8 +153,51 @@ struct BindingState {
     blockers: (usize, usize),
 }
 
-/// Which motion bindings an evaluation reads afresh; the others keep their last state and
-/// value, without its pulse.
+/// The motion a motion binding has taken this update: only what arrived while its gate was
+/// open (its chord held, no chord blocking it), so a drag counts from its press to its release
+/// however the frames fall. A gate changes only at an evaluation, so each evaluation settles
+/// the motion that arrived since the one before under that one's gate (review FI-002).
+#[derive(Clone, Copy, Debug, Default)]
+struct Accepted {
+    /// The update the sums below belong to.
+    frame: u64,
+    /// Whether the gate was open as of the latest evaluation.
+    open: bool,
+    /// The channel's sum when the gate last opened this update.
+    opened_at: Vec2,
+    /// What earlier open stretches of this update took.
+    banked: Vec2,
+}
+
+impl Accepted {
+    /// Settles the motion up to `reading` (the channel's sum in update `frame`), then sets the
+    /// gate from here on. Returns what the binding has taken this update.
+    ///
+    /// While the gate stays open all update, the result is `reading` exactly.
+    fn settle(&mut self, reading: Vec2, frame: u64, open: bool) -> Vec2 {
+        if self.frame != frame {
+            // The channel's sum starts again from zero, and the gate carries on.
+            *self = Self { frame, open: self.open, ..Self::default() };
+        }
+        match (self.open, open) {
+            (true, false) => self.banked += reading - self.opened_at,
+            (false, true) => self.opened_at = reading,
+            _ => {}
+        }
+        self.open = open;
+        if open { self.banked + (reading - self.opened_at) } else { self.banked }
+    }
+
+    /// Whether the gate opened after motion had arrived this update and has let none through
+    /// since, given what `settle` returned. The binding's first motion is then not its
+    /// channel's first of the update, which is judged anyway, so it needs judging of its own.
+    fn waiting(&self, accepted: Vec2) -> bool {
+        self.open && self.opened_at != Vec2::ZERO && accepted == Vec2::ZERO
+    }
+}
+
+/// Which motion bindings an evaluation judges afresh; the others keep their last state and
+/// value, without its pulse. Every evaluation settles every motion binding's gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MotionPass {
     Keep,
@@ -161,11 +206,11 @@ enum MotionPass {
 }
 
 impl MotionPass {
-    fn reads(self, source: SourceId) -> bool {
-        match (source.channel(), self) {
-            (None, _) | (Some(_), Self::All) => true,
-            (Some(channel), Self::Channel(fresh)) => channel == fresh,
-            (Some(_), Self::Keep) => false,
+    fn judges(self, channel: Channel) -> bool {
+        match self {
+            Self::Keep => false,
+            Self::Channel(fresh) => channel == fresh,
+            Self::All => true,
         }
     }
 }
@@ -200,7 +245,8 @@ impl Combined {
 /// 2. Call [`update`](Self::update) once with the current time on the platform's event clock
 ///    (`Platform::now`). It plays the queued input back in order, judging every binding at each
 ///    input's own timestamp, so a press and release within one frame both count and holds
-///    complete at their exact instant.
+///    complete at their exact instant. Motion is summed per update, each motion binding taking
+///    only what arrives while its chord is held (see the crate docs).
 /// 3. Read the [`events`](Self::events) of that update (for intents with their timestamps) and
 ///    [`state`](Self::state) (for held buttons and axes).
 #[derive(Debug)]
@@ -231,6 +277,10 @@ pub struct InputSystem {
     dt: f32,
     /// Counts updates; motion belongs to the update it arrived in.
     frame: u64,
+    /// Channels with a motion binding whose gate opened after the update's first motion and
+    /// has let nothing through since: their next motion is judged at once, so the binding's
+    /// action starts at its timestamp.
+    waiting: [bool; Channel::COUNT],
     next_deadline: Option<Timestamp>,
     capture_armed: bool,
     captured: Option<Source>,
@@ -259,6 +309,7 @@ impl InputSystem {
             last_update: None,
             dt: 0.0,
             frame: 0,
+            waiting: [false; Channel::COUNT],
             next_deadline: None,
             capture_armed: false,
             captured: None,
@@ -527,15 +578,19 @@ impl InputSystem {
             RawInput::ReleaseAll => {
                 self.devices.release_all();
                 self.gestures.reset();
-                self.evaluate(now, MotionPass::Keep, Abort::All);
+                // Motion bindings are judged too, on what they took so far, so the loss ends
+                // their sequences as well.
+                self.evaluate(now, MotionPass::All, Abort::All);
             }
         }
     }
 
-    /// Adds motion; the first of an update is judged at once, so its action starts at that
-    /// motion's timestamp. The rest only add up until the update's final evaluation.
+    /// Adds motion. The first of an update, and the first a binding takes once its gate
+    /// opens, is judged at once, so the action starts at that motion's timestamp. The rest only
+    /// add up until the update's final evaluation.
     fn add_motion(&mut self, channel: Channel, delta: Vec2, now: Timestamp) {
-        if self.devices.add_motion(channel, delta, self.frame) {
+        let first = self.devices.add_motion(channel, delta, self.frame);
+        if first || self.waiting[channel.index()] {
             self.evaluate(now, MotionPass::Channel(channel), Abort::No);
         }
     }
@@ -559,6 +614,7 @@ impl InputSystem {
     /// Judges every active binding at `now` and turns the changes into action events.
     fn evaluate(&mut self, now: Timestamp, pass: MotionPass, abort: Abort) {
         self.time = now;
+        self.waiting = [false; Channel::COUNT];
         let map = &self.map;
         for &action in map.order() {
             let (start, end) = self.action_ranges[action.index()];
@@ -566,22 +622,35 @@ impl InputSystem {
             for &index in &self.active[start..end] {
                 let binding = &map.bindings()[index];
                 let state = &mut self.bindings[index];
-                if !pass.reads(binding.source) {
-                    // The pulse fired in the evaluation that produced it; replaying it would fire
-                    // again for every unrelated input (review FI-006).
-                    combined.add(Output { pulse: false, ..state.output });
-                    continue;
-                }
-                let raw = self.devices.value(binding.source, self.frame);
-                let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
-                let actuated = is_actuated(value, binding.threshold);
-                let fire = trigger::evaluate(binding.trigger, &mut state.memory, actuated, now, abort);
+                // Chords come earlier in the order, so they are already judged as of `now`.
                 let triggered = |chord: ActionId| self.actions[chord.index()].phase == ActionPhase::Triggered;
                 let gated = binding.chord.is_some_and(|chord| !triggered(chord))
                     || self.blockers[state.blockers.0..state.blockers.1]
                         .iter()
                         .any(|&chord| triggered(chord));
-                state.output = if gated {
+                let channel = binding.source.channel();
+                let raw = match channel {
+                    None => self.devices.value(binding.source, self.frame),
+                    Some(channel) => {
+                        let reading = self.devices.value(binding.source, self.frame);
+                        let accepted = state.accepted.settle(reading, self.frame, !gated);
+                        if state.accepted.waiting(accepted) {
+                            self.waiting[channel.index()] = true;
+                        }
+                        if !pass.judges(channel) {
+                            // The pulse fired in the evaluation that produced it; replaying it
+                            // would fire again for every unrelated input (review FI-006).
+                            combined.add(Output { pulse: false, ..state.output });
+                            continue;
+                        }
+                        accepted
+                    }
+                };
+                let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
+                let actuated = is_actuated(value, binding.threshold);
+                let fire = trigger::evaluate(binding.trigger, &mut state.memory, actuated, now, abort);
+                // Motion met its gate as it arrived: what got through counts after the gate closes.
+                state.output = if gated && channel.is_none() {
                     Output::default()
                 } else {
                     Output { state: fire.state, pulse: fire.pulse, value }
@@ -664,10 +733,13 @@ impl InputSystem {
                     let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
                     state.memory = Memory::entering(is_actuated(value, binding.threshold));
                     state.output = Output::default();
+                    // Closed until the evaluation after this rebuild opens it.
+                    state.accepted = Accepted::default();
                 }
                 (true, false) => {
                     state.memory = Memory::default();
                     state.output = Output::default();
+                    state.accepted = Accepted::default();
                 }
                 _ => {}
             }
@@ -761,4 +833,47 @@ fn transition(
     }
     state.phase = next;
     state.value = value;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_motion_follows_the_gate() {
+        let v = |x: f32| Vec2::new(x, 0.0);
+        // Open all update: exactly the channel's sum, however many evaluations read it.
+        let mut accepted = Accepted::default();
+        assert_eq!(accepted.settle(v(0.0), 1, true), v(0.0));
+        assert_eq!(accepted.settle(v(0.1), 1, true), v(0.1));
+        assert_eq!(accepted.settle(v(0.1 + 0.2 + 0.3), 1, true), v(0.1 + 0.2 + 0.3));
+
+        // Closed at a reading of 1 and opened again at 5: what arrived in between doesn't count.
+        let mut accepted = Accepted::default();
+        accepted.settle(v(0.0), 1, true);
+        assert_eq!(accepted.settle(v(1.0), 1, false), v(1.0), "arrived while open");
+        assert_eq!(accepted.settle(v(5.0), 1, true), v(1.0), "arrived while closed");
+        assert_eq!(accepted.settle(v(7.0), 1, true), v(3.0));
+        assert_eq!(accepted.settle(v(7.0), 1, false), v(3.0));
+
+        // A new update starts from nothing, under the gate as it was.
+        assert_eq!(accepted.settle(v(2.0), 2, false), v(0.0), "closed since the last update");
+        assert_eq!(accepted.settle(v(4.0), 2, true), v(0.0));
+        assert_eq!(accepted.settle(v(6.0), 3, true), v(6.0), "open since the last update");
+    }
+
+    #[test]
+    fn a_gate_opened_after_motion_waits_for_its_own() {
+        let v = |x: f32| Vec2::new(x, 0.0);
+        let mut accepted = Accepted::default();
+        let taken = accepted.settle(v(0.0), 1, true);
+        assert!(!accepted.waiting(taken), "open before any motion: the update's first is judged anyway");
+
+        let mut accepted = Accepted::default();
+        accepted.settle(v(0.0), 1, false);
+        let taken = accepted.settle(v(2.0), 1, true);
+        assert!(accepted.waiting(taken), "opened after motion: the next is the binding's first");
+        let taken = accepted.settle(v(5.0), 1, true);
+        assert!(!accepted.waiting(taken));
+    }
 }

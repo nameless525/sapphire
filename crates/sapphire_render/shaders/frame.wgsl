@@ -581,6 +581,18 @@ fn mapped_normal(
     return safe_normalize((tangent * xy.x - bitangent * xy.y) * scale + normal * z);
 }
 
+// Whether `passes` holds for any pixel of this pixel's 2 × 2 quad: the same answer in all four,
+// from the pass/fail value's fine derivatives, which give its neighbors' in the quad. Taken in
+// uniform control flow. A fragment stage that cuts pixels out discards the quads it cuts whole
+// early on it and every other pixel it cuts at its one exit (docs/conventions.md): Apple's Metal
+// compiler has miscompiled a per-pixel `discard` taken earlier.
+fn quad_any(passes: bool) -> bool {
+    let value = select(0.0, 1.0, passes);
+    let across = dpdxFine(value);
+    let down = dpdyFine(value);
+    return value + abs(across) + abs(down) + abs(dpdyFine(across)) > 0.0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Shadows (M1 R4, `sapphire_render::shadows`): the world key light's cascades, which hold
 // environment casters alone, and each character's own shadow, a tile of the character atlas

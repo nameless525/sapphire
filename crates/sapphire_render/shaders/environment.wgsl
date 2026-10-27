@@ -84,10 +84,11 @@
 // lobes carry the matching π.
 //
 // Static permutations are pipeline-overridable constants (`pipelines::SurfaceVariant`):
-// alpha-tested materials discard below their cutoff, transparent ones write their coverage for
-// blending, and the tier picks the specular model. The environment draws no outline hulls in
-// M1: its edges are the spec's screen-space edge pass (a desktop option, later); props that
-// should read like characters use the anime character family.
+// alpha-tested materials discard below their cutoff (at the one exit, whole quads before the
+// lighting: docs/conventions.md), transparent ones write their coverage for blending, and the
+// tier picks the specular model. The environment draws no outline hulls in M1: its edges are
+// the spec's screen-space edge pass (a desktop option, later); props that should read like
+// characters use the anime character family.
 //
 // Wetness (later): the frame carries the weather's wetness and puddle coverage
 // (`frame.weather`, `FramePacket::weather`) for the wet surface model that arrives with weather
@@ -448,8 +449,13 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
         derivatives.position_dx = position_dx;
         derivatives.position_dy = position_dy;
     }
-    if PERMUTATION_ALPHA_TEST && base.a < shaping.z {
-        discard;
+    // The alpha test: 2 × 2 quads it cuts whole leave here, before the lighting; any other pixel
+    // it cuts, at the one exit below (`quad_any` in frame.wgsl).
+    let kept = !(PERMUTATION_ALPHA_TEST && base.a < shaping.z);
+    if PERMUTATION_ALPHA_TEST {
+        if !quad_any(kept) {
+            discard;
+        }
     }
 
     var band = vec3<f32>(1.0);
@@ -490,5 +496,8 @@ fn fs_environment(in: EnvironmentVaryings) -> @location(0) vec4<f32> {
     // in frame.wgsl, which every world pass shares): the one place it is produced. Opaque passes
     // keep alpha 1; transparent ones blend by their coverage.
     let final_color = fogged(color + emission, in.world_position, 1.0);
+    if !kept {
+        discard;
+    }
     return vec4<f32>(final_color, select(1.0, base.a, PERMUTATION_TRANSPARENT));
 }

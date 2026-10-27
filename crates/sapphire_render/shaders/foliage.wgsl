@@ -55,6 +55,8 @@
 // map's mip level so distant canopies keep their fullness (Golus, "Anti-aliased Alpha Test",
 // 2017). That is the desktop path, where temporal AA's jittered history resolves the edges, and
 // the prepass and the shadow casters test alike, so every depth matches and shadows cut out.
+// Each stage cuts at its one exit (docs/conventions.md), with nothing after the test worth
+// skipping.
 // Under MSAA (the phones) the main pass writes alpha-to-coverage instead (the tier's
 // `alpha_to_coverage`, through `fs_foliage_coverage`): the coverage sharpened to a pixel,
 // `(alpha - cutoff) / fwidth(alpha) + 0.5`, covers that share of the pixel's samples through the
@@ -539,10 +541,12 @@ fn foliage_covered(material: u32, uv: vec2<f32>) -> bool {
 
 @fragment
 fn fs_foliage_prepass(in: FoliagePrepassVaryings) -> ScenePrepassTargets {
-    if !foliage_covered(in.material, in.uv) {
+    let covered = foliage_covered(in.material, in.uv);
+    let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous));
+    if !covered {
         discard;
     }
-    return scene_prepass_targets(ScenePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous));
+    return targets;
 }
 
 struct FoliageCasterVaryings {

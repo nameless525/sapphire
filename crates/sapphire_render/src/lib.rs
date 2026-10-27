@@ -304,7 +304,8 @@
 //! group's uniforms carry the jitter (appended in M1 R7: the unjittered `clip_from_world` and
 //! the jitter itself). The light-cluster pass (`shaders/clusters.wgsl`)
 //! binds its own group 0 (the frame constants, the lights read-only and the cluster lists
-//! read-write: the same buffers) and the view group as group 1. The ambient pass's dispatches
+//! read-write: the same buffers; and at binding 3 its own buffer of the lights in view space,
+//! which its first dispatch writes) and the view group as group 1. The ambient pass's dispatches
 //! (`shaders/probes.wgsl`, `occlusion.wgsl`, M1 W5) bind an "ambient frame" group 0 of their
 //! own (the frame constants and bindings 11–13 and 16, without the characters, which the
 //! character dispatch binds read-write as its group 1) and their own group 3, or the view group
@@ -313,12 +314,12 @@
 //!
 //! Storage buffers per stage are budgeted against the 4-per-stage floor of Vulkan 1.1 phones
 //! (see `sapphire_rhi`): vertex 2 (instances, materials), fragment 4 (materials, lights, light
-//! lists, characters), compute 2 in the cluster pass (lights, cluster lists) and 3 in the
-//! skinning pass (sources, frame data, outputs). That leaves none in the fragment stage, two in
-//! the vertex stage and one in the skinning pass. The fragment stage's last went to per-character
-//! data (M1 C2) because every later per-character need joins it rather than taking a binding:
-//! faces' head basis and expressions (C3, beside the rig), the environment's shadow over the face
-//! (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
+//! lists, characters), compute 3 in the cluster pass (lights, cluster lists, view-space lights)
+//! and 3 in the skinning pass (sources, frame data, outputs). That leaves none in the fragment
+//! stage, two in the vertex stage and one in each compute pass. The fragment stage's last went
+//! to per-character data (M1 C2) because every later per-character need joins it rather than
+//! taking a binding: faces' head basis and expressions (C3, beside the rig), the environment's
+//! shadow over the face (R4), outlines lit by the rig (C4). Frame-wide data that is not per character goes into
 //! uniforms or textures: the shadows' uniforms, cascades and character atlas (R4), the character
 //! prepass's targets (C5), the ambient uniforms, the probe grid's atlas and brick table, the
 //! reflection cube and GTAO (W5), whose relight packs the grid's data into one storage buffer

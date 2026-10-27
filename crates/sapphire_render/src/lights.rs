@@ -68,7 +68,7 @@ use crate::mesh_pool::MeshRecord;
 use crate::scene::InstanceSlots;
 use crate::shaders::ShaderSources;
 use crate::{CameraData, FramePacket, LightKind, LocalLight, MeshHandle, RenderSettings};
-use clusters::ClusterPass;
+use clusters::{ClusterPass, ClusterPipelines};
 use objects::{LIGHTS_PER_OBJECT, LIST_BYTES, ObjectLists};
 
 /// The most local lights any frame can draw, whatever
@@ -297,19 +297,19 @@ impl Lights {
         }
     }
 
-    /// The cluster pass's pipeline built from `sources` instead, if the clustered path runs, for
-    /// [`Self::set_cluster_pipeline`] (shader hot reload).
-    pub(crate) fn rebuilt_cluster_pipeline(
+    /// The cluster pass's pipelines built from `sources` instead, if the clustered path runs,
+    /// for [`Self::set_cluster_pipelines`] (shader hot reload).
+    pub(crate) fn rebuilt_cluster_pipelines(
         &self,
         device: &wgpu::Device,
         sources: &ShaderSources,
-    ) -> Option<wgpu::ComputePipeline> {
+    ) -> Option<ClusterPipelines> {
         self.cluster_pass.as_ref().map(|pass| pass.rebuilt(device, sources))
     }
 
-    pub(crate) fn set_cluster_pipeline(&mut self, pipeline: wgpu::ComputePipeline) {
+    pub(crate) fn set_cluster_pipelines(&mut self, pipelines: ClusterPipelines) {
         if let Some(pass) = &mut self.cluster_pass {
-            pass.set_pipeline(pipeline);
+            pass.set_pipelines(pipelines);
         }
     }
 
@@ -419,8 +419,8 @@ impl Lights {
     }
 
     /// Splits the lights between a frame's passes: the uploads pass writes what changed, and
-    /// the cluster pass, if it runs this frame, bins.
-    pub(crate) fn split_for_record(&mut self) -> (LightUpload<'_>, Option<&ClusterPass>) {
+    /// the cluster pass, if it runs this frame, bins the drawn lights (the count beside it).
+    pub(crate) fn split_for_record(&mut self) -> (LightUpload<'_>, Option<(&ClusterPass, u32)>) {
         let Self {
             ref packed,
             ref mut unsent,
@@ -432,7 +432,8 @@ impl Lights {
             ..
         } = *self;
         let upload = LightUpload { packed, unsent, light_buffer, lists: lists.buffer(), objects };
-        (upload, cluster_pass.as_ref().filter(|_| bin))
+        let drawn = packed.len() as u32;
+        (upload, cluster_pass.as_ref().filter(|_| bin).map(|pass| (pass, drawn)))
     }
 }
 

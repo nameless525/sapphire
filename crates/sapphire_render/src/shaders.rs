@@ -419,7 +419,7 @@ mod tests {
         (Program::Environment, &["vs_environment", "fs_environment"]),
         (Program::FogCard, &["vs_fog_card", "fs_fog_card"]),
         (Program::Outline, &["vs_outline", "fs_outline", "vs_outline_prepass", "fs_outline_prepass"]),
-        (Program::Clusters, &["cs_clusters"]),
+        (Program::Clusters, &["cs_cluster_lights", "cs_clusters"]),
         (
             Program::Prepass,
             &["vs_character_prepass", "fs_character_prepass", "vs_scene_prepass", "fs_scene_prepass"],
@@ -716,6 +716,7 @@ mod tests {
             (Program::Shadows, "ShadowUniforms", size_of::<ShadowUniforms>()),
             (Program::Shadows, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Clusters, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Clusters, "ClusterLight", crate::lights::clusters::VIEW_LIGHT_BYTES as usize),
             (Program::Environment, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::Environment, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::Environment, "InstanceData", size_of::<InstanceData>()),
@@ -961,7 +962,9 @@ mod tests {
     #[test]
     fn wgsl_light_constants_match_rust() {
         use crate::lights::ListMode;
-        use crate::lights::clusters::{CLUSTER_COUNT, SLICES, TILES_X, TILES_Y, WORKGROUP_SIZE};
+        use crate::lights::clusters::{
+            CLUSTER_COUNT, LIGHT_WORKGROUP_SIZE, SLICES, TILES_X, TILES_Y, WORKGROUP_SIZE,
+        };
         let character = validate(Program::AnimeCharacter);
         let clusters = validate(Program::Clusters);
         for module in [&character, &clusters] {
@@ -974,6 +977,7 @@ mod tests {
             assert_eq!(wgsl_u32(module, "LIGHT_LISTS_OBJECTS"), ListMode::Objects as u32);
         }
         assert_eq!(wgsl_u32(&clusters, "CLUSTER_WORKGROUP"), WORKGROUP_SIZE);
+        assert_eq!(wgsl_u32(&clusters, "CLUSTER_LIGHT_WORKGROUP"), LIGHT_WORKGROUP_SIZE);
     }
 
     #[test]

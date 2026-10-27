@@ -31,6 +31,7 @@ use crate::fog::{FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
+use crate::lights::clusters::ClusterPipelines;
 use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
@@ -999,13 +1000,14 @@ impl Renderer {
         pipelines += if temporal.is_some() { TemporalPipelines::COUNT } else { 0 };
         let clusters = changed
             .contains(&Program::Clusters)
-            .then(|| self.lights.rebuilt_cluster_pipeline(device, sources))
+            .then(|| self.lights.rebuilt_cluster_pipelines(device, sources))
             .flatten();
         let skinning = changed
             .contains(&Program::Skinning)
             .then(|| self.skinning.rebuilt_pipeline(device, cache, sources))
             .flatten();
-        pipelines += u32::from(clusters.is_some()) + u32::from(skinning.is_some());
+        pipelines += if clusters.is_some() { ClusterPipelines::COUNT } else { 0 };
+        pipelines += u32::from(skinning.is_some());
         let shadows = changed
             .contains(&Program::Shadows)
             .then(|| self.shadows.rebuilt_pipelines(device, sources))
@@ -1038,7 +1040,7 @@ impl Renderer {
             temporal.set_pipelines(pipelines);
         }
         if let Some(clusters) = clusters {
-            self.lights.set_cluster_pipeline(clusters);
+            self.lights.set_cluster_pipelines(clusters);
         }
         if let Some(skinning) = skinning {
             self.skinning.set_pipeline(skinning);
@@ -1483,10 +1485,10 @@ impl Renderer {
                 skinning.record(ctx.encoder, labels, ctx.compute_timestamp_writes());
             });
         }
-        if let Some(cluster_pass) = cluster_pass {
+        if let Some((cluster_pass, light_count)) = cluster_pass {
             graph.add_pass("light clusters").side_effect().record(move |ctx| {
                 let timestamps = ctx.compute_timestamp_writes();
-                cluster_pass.record(ctx.encoder, view_bind_group, labels, timestamps);
+                cluster_pass.record(ctx.encoder, view_bind_group, light_count, labels, timestamps);
             });
         }
         // The sky cube's face (all six on the first frame): persistent, so a side effect too,

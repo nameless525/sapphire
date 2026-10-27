@@ -24,11 +24,30 @@
 //!
 //! # The pass
 //!
-//! One thread per cluster, 128 to a workgroup. Each workgroup loads the lights into workgroup
-//! memory a batch at a time, in view space, and every thread tests the batch against its
+//! Two dispatches in one compute pass. The first, one thread per light, 64 to a workgroup, moves
+//! the frame's lights into view space ([`VIEW_LIGHT_BYTES`] each, in a buffer of the pass's
+//! own). The second, one thread per cluster, 128 to a workgroup, tests every light against its
 //! cluster's box: the light's range sphere against the box, then, for spots narrower than 90°,
 //! the cone against a sphere around the box. Lists come out in index order, so the GPU result
 //! is deterministic and matches the CPU [`reference`] the tests compare it with.
+//!
+//! **No workgroup memory or barriers.** Until the fix after M1 W5 the pass was one dispatch whose
+//! workgroups loaded the lights into workgroup memory, in view space, a batch at a time between
+//! two `workgroupBarrier`s. WARP, the Windows CI's CPU rasterizer, took 5.5–6.1 s to create that
+//! pipeline in every desktop process and 69–72 s more to run it the first time, whatever the
+//! light count: about 76 s on every golden scene with local lights, and 6 s on every other
+//! desktop scene. One batch with its barrier outside any loop cost the same, and so did dropping
+//! naga's loop bounding; a pipeline without a barrier takes about 40 ms to create and its first
+//! run about 24 ms. Lavapipe compiles either in milliseconds. Of the barrier-free shapes, on an
+//! Apple M5 at 1080p (the pass's GPU time, minima of alternating rounds, 3 to 253 lights):
+//!
+//! - moving every light into view space in every binning thread cost 5–52 µs more than the
+//!   shared batches at 253 lights;
+//! - the CPU writing the view-space lights cost 17 µs more at 253 lights in the night courtyard,
+//!   where each thread's walk through them starts cold in the cache after a heavy frame;
+//! - this pass's two dispatches cost what the batches did at 64 and 253 lights (within 6 µs,
+//!   mostly less), and about 4 µs more at 3 lights on the turntable, where the binning waits for
+//!   the first dispatch on an otherwise idle GPU (no more in the courtyard, or at Mobile-High).
 //!
 //! Buffers aren't frame graph resources (see the graph's later milestones), so the pass is a
 //! side effect added after the uploads and before the main pass. It runs only on frames that
@@ -57,9 +76,17 @@ pub(crate) const SLICE_FAR: f32 = 500.0;
 /// The most lights a cluster lists.
 pub(crate) const MAX_LIGHTS_PER_CLUSTER: u32 = 64;
 
-/// Threads per workgroup (`CLUSTER_WORKGROUP` in `shaders/clusters.wgsl`): the device floor's
-/// limit, and a divisor of [`CLUSTER_COUNT`].
+/// Threads per workgroup of the binning dispatch (`CLUSTER_WORKGROUP` in
+/// `shaders/clusters.wgsl`): the device floor's limit, and a divisor of [`CLUSTER_COUNT`].
 pub(crate) const WORKGROUP_SIZE: u32 = 128;
+
+/// Threads per workgroup of the view-space dispatch, one per light
+/// (`CLUSTER_LIGHT_WORKGROUP` in `shaders/clusters.wgsl`).
+pub(crate) const LIGHT_WORKGROUP_SIZE: u32 = 64;
+
+/// Bytes per light in view space (`ClusterLight` in `shaders/clusters.wgsl`: the culling sphere
+/// and the spot's cone).
+pub(crate) const VIEW_LIGHT_BYTES: u64 = 32;
 
 /// Slices per doubling of view depth beyond [`SLICE_START`] (`frame.clusters.z`).
 pub(crate) fn slices_per_octave() -> f32 {
@@ -78,19 +105,33 @@ pub(crate) fn depth_uniforms(near: f32, farthest: f32) -> [f32; 4] {
     [near, SLICE_START, slices_per_octave(), farthest.max(SLICE_FAR)]
 }
 
-/// The cluster pass's pipeline and its bind group 0 (frame constants, lights and the cluster
-/// buffer, which never move: the cluster buffer is sized once, and the light buffer for
-/// `max_lights`). Group 1 is the renderer's view bind group.
+/// The cluster pass's two pipelines, from one module: the lights into view space, then the
+/// binning.
+#[derive(Debug)]
+pub(crate) struct ClusterPipelines {
+    view_lights: wgpu::ComputePipeline,
+    bin: wgpu::ComputePipeline,
+}
+
+impl ClusterPipelines {
+    /// Pipelines per set, for hot reload's count.
+    pub(crate) const COUNT: u32 = 2;
+}
+
+/// The cluster pass's pipelines and its bind group 0 (frame constants, lights, the cluster buffer
+/// and the lights in view space, which never move: the cluster buffer is sized once, and the
+/// light buffers for `max_lights`). Group 1 is the renderer's view bind group.
 #[derive(Debug)]
 pub(crate) struct ClusterPass {
-    pipeline: wgpu::ComputePipeline,
+    pipelines: ClusterPipelines,
     bind_group: wgpu::BindGroup,
-    /// Kept to build the pipeline again from new shader sources.
+    /// Kept to build the pipelines again from new shader sources.
     layout: wgpu::PipelineLayout,
     cache: Option<wgpu::PipelineCache>,
 }
 
 impl ClusterPass {
+    /// The view-space light buffer holds as many lights as `lights` does.
     pub(crate) fn new(
         device: &wgpu::Device,
         view_layout: &wgpu::BindGroupLayout,
@@ -100,6 +141,12 @@ impl ClusterPass {
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
     ) -> Self {
+        let view_lights = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view-space lights"),
+            size: lights.size() / size_of::<GpuLight>() as u64 * VIEW_LIGHT_BYTES,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let buffer = |binding, ty, min_size: usize| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -116,6 +163,7 @@ impl ClusterPass {
                 buffer(0, wgpu::BufferBindingType::Uniform, size_of::<FrameUniforms>()),
                 buffer(1, wgpu::BufferBindingType::Storage { read_only: true }, size_of::<GpuLight>()),
                 buffer(2, wgpu::BufferBindingType::Storage { read_only: false }, size_of::<u32>()),
+                buffer(3, wgpu::BufferBindingType::Storage { read_only: false }, VIEW_LIGHT_BYTES as usize),
             ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -125,6 +173,7 @@ impl ClusterPass {
                 wgpu::BindGroupEntry { binding: 0, resource: frame_uniforms.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: lights.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: clusters.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: view_lights.as_entire_binding() },
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -132,26 +181,28 @@ impl ClusterPass {
             bind_group_layouts: &[Some(&layout), Some(view_layout)],
             immediate_size: 0,
         });
-        let pipeline = build(device, &layout, cache, sources);
-        Self { pipeline, bind_group, layout, cache: cache.cloned() }
+        let pipelines = build(device, &layout, cache, sources);
+        Self { pipelines, bind_group, layout, cache: cache.cloned() }
     }
 
-    /// The pass's pipeline built from `sources` instead, for [`Self::set_pipeline`] (shader hot
-    /// reload).
-    pub(crate) fn rebuilt(&self, device: &wgpu::Device, sources: &ShaderSources) -> wgpu::ComputePipeline {
+    /// The pass's pipelines built from `sources` instead, for [`Self::set_pipelines`] (shader
+    /// hot reload).
+    pub(crate) fn rebuilt(&self, device: &wgpu::Device, sources: &ShaderSources) -> ClusterPipelines {
         build(device, &self.layout, self.cache.as_ref(), sources)
     }
 
-    pub(crate) fn set_pipeline(&mut self, pipeline: wgpu::ComputePipeline) {
-        self.pipeline = pipeline;
+    pub(crate) fn set_pipelines(&mut self, pipelines: ClusterPipelines) {
+        self.pipelines = pipelines;
     }
 
-    /// Bins the frame's lights, viewed through `view` (the main view's bind group).
-    /// `timestamp_writes` times the pass for the frame graph's GPU timing.
+    /// Bins the frame's `lights` lights, viewed through `view` (the main view's bind group):
+    /// moves them into view space, then tests them against every cluster. `timestamp_writes`
+    /// times the pass for the frame graph's GPU timing.
     pub(crate) fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::BindGroup,
+        lights: u32,
         labels: bool,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
@@ -159,28 +210,39 @@ impl ClusterPass {
             label: labels.then_some("light clusters"),
             timestamp_writes,
         });
-        pass.set_pipeline(&self.pipeline);
+        // Both pipelines share the layout, so the groups stay bound. wgpu orders the view-space
+        // lights' writes before the binning reads them.
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_bind_group(1, view, &[0]);
+        pass.set_pipeline(&self.pipelines.view_lights);
+        pass.dispatch_workgroups(lights.div_ceil(LIGHT_WORKGROUP_SIZE), 1, 1);
+        pass.set_pipeline(&self.pipelines.bin);
         pass.dispatch_workgroups(CLUSTER_COUNT.div_ceil(WORKGROUP_SIZE), 1, 1);
     }
 }
 
-/// The cluster pass's pipeline on `layout`, from the light-cluster program in `sources`.
+/// The cluster pass's pipelines on `layout`, from the light-cluster program in `sources`.
 fn build(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
     sources: &ShaderSources,
-) -> wgpu::ComputePipeline {
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("light clusters"),
-        layout: Some(layout),
-        module: &shaders::module(device, Program::Clusters, sources),
-        entry_point: Some("cs_clusters"),
-        compilation_options: Default::default(),
-        cache,
-    })
+) -> ClusterPipelines {
+    let module = shaders::module(device, Program::Clusters, sources);
+    let pipeline = |label, entry_point| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            module: &module,
+            entry_point: Some(entry_point),
+            compilation_options: Default::default(),
+            cache,
+        })
+    };
+    ClusterPipelines {
+        view_lights: pipeline("view-space lights", "cs_cluster_lights"),
+        bin: pipeline("light clusters", "cs_clusters"),
+    }
 }
 
 /// The CPU reference: the grid and culling math of `shaders/lights.wgsl` and

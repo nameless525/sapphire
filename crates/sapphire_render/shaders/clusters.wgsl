@@ -1,19 +1,20 @@
 // The light-cluster pass (spec §5.12 "Lighting", clustered forward+): bins the frame's local
-// lights into the 16 × 9 × 24 cluster grid of the main view, one thread per cluster. Mirrors the
-// CPU reference in `src/lights/clusters.rs`, which the GPU tests compare it with.
+// lights into the 16 × 9 × 24 cluster grid of the main view. Mirrors the CPU reference in
+// `src/lights/clusters.rs`, which the GPU tests compare it with.
 //
-// Bind groups: 0 holds the frame constants, the lights and the cluster buffer (written here,
-// read by the anime character pass); 1 is the main view.
+// Bind groups: 0 holds the frame constants, the lights, the cluster buffer (written here, read by
+// the anime character pass) and the lights in view space (this pass's own); 1 is the main view.
 //
-// Each workgroup walks the lights in batches of one per thread: every thread moves one light
-// into view space and workgroup memory, then every thread tests the whole batch against its
-// cluster. A cluster lists the lights it touches in index order and keeps the first
-// `frame.lights.w`; the CPU puts lights in packet order, so the packet's first lights win in a
-// cluster that overflows.
+// Two dispatches in one compute pass, with no workgroup memory and no barrier:
+// 1. `cs_cluster_lights`, one thread per light, moves the lights into view space.
+// 2. `cs_clusters`, one thread per cluster, tests every light against its cluster. A cluster lists
+//    the lights it touches in index order and keeps the first `frame.lights.w`; the CPU puts
+//    lights in packet order, so the packet's first lights win in a cluster that overflows.
+// Workgroups could share the view-space lights through workgroup memory instead, but WARP (the
+// Windows CI's rasterizer) spends over a minute on a shader with a workgroup barrier (see
+// `src/lights/clusters.rs`).
 
 @group(0) @binding(2) var<storage, read_write> cluster_lists: array<u32>;
-
-const CLUSTER_WORKGROUP: u32 = 128u;
 
 // A light as the culling tests read it, in view space.
 struct ClusterLight {
@@ -24,11 +25,17 @@ struct ClusterLight {
     cone: vec4<f32>,
 }
 
+// The frame's lights in view space, in the order of `lights`: written by `cs_cluster_lights`,
+// read by `cs_clusters`. (Binding 3 is the characters' in the frame group; this pass has its
+// own.)
+@group(0) @binding(3) var<storage, read_write> view_lights: array<ClusterLight>;
+
+const CLUSTER_WORKGROUP: u32 = 128u;
+const CLUSTER_LIGHT_WORKGROUP: u32 = 64u;
+
 // Grows each light's culling radius, so a pixel whose depth rounds into a neighboring slice
 // still finds every light that reaches it.
 const CLUSTER_CULL_PADDING: f32 = 1.001;
-
-var<workgroup> batch: array<ClusterLight, CLUSTER_WORKGROUP>;
 
 // A cluster's view-space box (camera looking down −Z).
 struct ClusterBox {
@@ -112,11 +119,16 @@ fn cone_touches_sphere(light: ClusterLight, center: vec3<f32>, radius: f32) -> b
     return !(outside_angle || beyond || behind);
 }
 
-@compute @workgroup_size(128)
-fn cs_clusters(
-    @builtin(global_invocation_id) global: vec3<u32>,
-    @builtin(local_invocation_index) local: u32,
-) {
+@compute @workgroup_size(CLUSTER_LIGHT_WORKGROUP)
+fn cs_cluster_lights(@builtin(global_invocation_id) global: vec3<u32>) {
+    let index = global.x;
+    if index < frame.lights.x {
+        view_lights[index] = cluster_light(lights[index]);
+    }
+}
+
+@compute @workgroup_size(CLUSTER_WORKGROUP)
+fn cs_clusters(@builtin(global_invocation_id) global: vec3<u32>) {
     let cluster = global.x;
     let in_grid = cluster < CLUSTER_COUNT;
     let bounds = cluster_box(min(cluster, CLUSTER_COUNT - 1u));
@@ -129,25 +141,16 @@ fn cs_clusters(
     var count = 0u;
     // Indices waiting for the high half of their word.
     var pair = 0u;
-    for (var first = 0u; first < light_count; first += CLUSTER_WORKGROUP) {
-        if first + local < light_count {
-            batch[local] = cluster_light(lights[first + local]);
-        }
-        workgroupBarrier();
-        let batch_len = min(CLUSTER_WORKGROUP, light_count - first);
-        for (var i = 0u; i < batch_len && in_grid && count < capacity; i++) {
-            let light = batch[i];
-            if sphere_touches_box(light.sphere, bounds) && cone_touches_sphere(light, center, radius) {
-                let index = first + i;
-                if (count & 1u) == 0u {
-                    pair = index;
-                } else {
-                    cluster_lists[base + 1u + count / 2u] = pair | (index << 16u);
-                }
-                count++;
+    for (var index = 0u; index < light_count && in_grid && count < capacity; index++) {
+        let light = view_lights[index];
+        if sphere_touches_box(light.sphere, bounds) && cone_touches_sphere(light, center, radius) {
+            if (count & 1u) == 0u {
+                pair = index;
+            } else {
+                cluster_lists[base + 1u + count / 2u] = pair | (index << 16u);
             }
+            count++;
         }
-        workgroupBarrier();
     }
     if in_grid {
         if (count & 1u) == 1u {

@@ -24,6 +24,8 @@
 //!   time and reads its block from the mirror ([`Materials::params`]), binding only its group 3.
 //!
 //! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
+//! An upload of several materials that fails partway takes back the ones it took
+//! ([`Materials::roll_back`]), so rejected content uses up no slots.
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
@@ -94,6 +96,15 @@ pub(crate) struct Materials {
     fallback: wgpu::TextureView,
     /// Slots the next uploads pass writes (stats).
     pending: u32,
+}
+
+/// How many materials there were, and slots in each family's buffer: where
+/// [`Materials::roll_back`] goes back to.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MaterialsMark {
+    records: usize,
+    /// Per [`MaterialFamily::ALL`] entry.
+    slots: [u32; MaterialFamily::ALL.len()],
 }
 
 /// One uploaded material.
@@ -330,6 +341,27 @@ impl Materials {
         }))
     }
 
+    /// Where the materials are now, for [`Self::roll_back`].
+    pub(crate) fn mark(&self) -> MaterialsMark {
+        MaterialsMark {
+            records: self.records.len(),
+            slots: self.families.each_ref().map(FamilyBuffer::slots),
+        }
+    }
+
+    /// Takes back every material uploaded since `mark`, as if never uploaded: their handles and
+    /// slots go to the next uploads, and nothing of theirs reaches the GPU. Buffers that grew
+    /// for them keep their size. Only for uploads that failed partway (RA-005), before any
+    /// handle uploaded since `mark` was given out; materials updated since keep their update.
+    pub(crate) fn roll_back(&mut self, mark: MaterialsMark) {
+        self.records.truncate(mark.records);
+        for (family, slots) in self.families.iter_mut().zip(mark.slots) {
+            let stride = family.stride();
+            family.mirror.truncate(slots as usize * stride);
+            family.dirty.retain(|&slot| slot < slots);
+        }
+    }
+
     pub(crate) fn record(&self, handle: MaterialHandle) -> Option<&MaterialRecord> {
         self.records.get(handle.index())
     }
@@ -388,6 +420,17 @@ impl Materials {
 
     pub(crate) fn growths(&self) -> u32 {
         self.families.iter().map(|family| family.buffer.growths()).sum()
+    }
+
+    /// Gives `family` a new, empty buffer that holds at most `slots` slots, for tests of a full
+    /// one. Bind groups made with the old buffer keep it, so only for tests that draw nothing of
+    /// the family's.
+    #[cfg(test)]
+    pub(crate) fn limit_slots(&mut self, device: &wgpu::Device, family: MaterialFamily, slots: u64) {
+        let buffer = &mut self.families[family.index()];
+        assert!(buffer.mirror.is_empty(), "{family} already has materials");
+        let max = slots * family.params_size() as u64;
+        buffer.buffer = GrowableBuffer::new(device, family.name(), wgpu::BufferUsages::STORAGE, max, max);
     }
 
     /// Splits the materials between a frame's passes: the uploads pass writes every family's
@@ -549,5 +592,82 @@ mod gpu_tests {
         let error =
             renderer.update_material(unknown, Material::read(&yellow).unwrap(), |_| None).unwrap_err();
         assert!(matches!(error, RenderError::UnknownMaterial(_)), "{error}");
+    }
+
+    /// A cooked triangle drawn once per material of `colors`, slot `i` by the `i`th, embedded.
+    fn mesh_embedding(colors: &[[f32; 4]]) -> AlignedVec {
+        use sapphire_assets::mesh::{
+            MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+        };
+
+        let vertex = |position: [f32; 3]| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            outline_normal: [0.0, 0.0, 1.0],
+            uv: [0.0; 2],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        };
+        let vertices = [vertex([0.0; 3]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])];
+        let count = colors.len() as u32;
+        let indices = [0, 1, 2].repeat(colors.len());
+        let submeshes =
+            (0..count).map(|i| Submesh { first_index: 3 * i, index_count: 3, material: i }).collect();
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let slots = colors
+            .iter()
+            .map(|&base_color| {
+                let document = AnimeCharacterMaterial { base_color, ..AnimeCharacterMaterial::default() };
+                MaterialSlot::embedded("slot", Material::from_document(&document, &swizzles).unwrap())
+            })
+            .collect();
+        Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+            .to_cooked()
+            .unwrap()
+    }
+
+    /// RA-005: a mesh whose embedded materials don't all fit their family's buffer uploads none
+    /// of them, however often it is retried; the slots it took go to the next uploads, and frames
+    /// upload only those.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_full_family_takes_back_what_the_upload_took() {
+        use sapphire_assets::mesh::Mesh;
+
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut renderer = Renderer::new(&gpu, format, RenderSettings::default()).expect("renderer");
+        renderer.limit_material_slots(MaterialFamily::AnimeCharacter, SLOTS as u64);
+        let mut packets = FramePacketRing::new();
+        let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [1.0, 1.0, 0.0, 1.0]];
+        // The sky's default material, uploaded at creation.
+        let before = (renderer.materials().len(), renderer.materials().bytes_used());
+
+        let too_many = mesh_embedding(&colors);
+        for attempt in 1..=3 {
+            let error = renderer.upload_embedded_materials(Mesh::read(&too_many).unwrap()).unwrap_err();
+            assert!(
+                matches!(error, RenderError::MaterialPoolFull(MaterialFamily::AnimeCharacter)),
+                "{error}"
+            );
+            let materials = renderer.materials();
+            assert_eq!((materials.len(), materials.bytes_used()), before, "attempt {attempt}");
+            assert_eq!(renderer.stats().materials, before.0, "the stats follow");
+        }
+
+        // What fits takes the first slots and handles, as if nothing had been tried before it.
+        let fits = mesh_embedding(&colors[1..]);
+        let handles = renderer.upload_embedded_materials(Mesh::read(&fits).unwrap()).unwrap();
+        assert_eq!(handles, (0..SLOTS as u32).map(|i| MaterialHandle(before.0 + i)).collect::<Vec<_>>());
+        let slots: Vec<u32> =
+            handles.iter().map(|&handle| renderer.materials().record(handle).unwrap().slot).collect();
+        assert_eq!(slots, [0, 1, 2]);
+        // A frame uploads those and the sky's: nothing of the slots taken back.
+        let uploaded = frame(&gpu, &mut renderer, &mut packets);
+        assert_eq!(renderer.stats().material_uploads, SLOTS as u32 + 1);
+        let expected: Vec<AnimeCharacterParams> =
+            colors[1..].iter().map(|&color| params(&cooked(color))).collect();
+        assert_eq!(uploaded, expected);
     }
 }

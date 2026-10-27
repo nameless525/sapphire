@@ -822,30 +822,68 @@ impl Renderer {
 
     /// One material handle per slot of `mesh`, for [`Self::upload_mesh`]: the materials it embeds
     /// are uploaded, and slots bound to material assets take the handles `assets` gives for their
-    /// IDs (the asset runtime uploads a mesh's materials before the mesh, M1 A4). A slot `assets`
-    /// can't resolve fails with [`RenderError::UnresolvedMaterial`], before anything is uploaded.
+    /// IDs (the asset runtime uploads a mesh's materials before the mesh, M1 A4). All or nothing:
+    /// a slot `assets` can't resolve ([`RenderError::UnresolvedMaterial`]), or an embedded
+    /// material that is invalid, of a family meshes don't draw with or names a texture, fails
+    /// before anything is uploaded, and a failure partway (a family's buffer full) takes back the
+    /// materials uploaded before it. [`Self::upload_mesh_with_slots`] also takes them back if the
+    /// mesh then fails.
     pub fn upload_slot_materials(
         &mut self,
         mesh: &ArchivedMesh,
         assets: impl Fn(AssetId) -> Option<MaterialHandle>,
     ) -> Result<Vec<MaterialHandle>, RenderError> {
-        // Checked first: slots are never freed, so a failure halfway would leak the earlier ones.
         for slot in mesh.materials.iter() {
             match &slot.material {
-                ArchivedSlotMaterial::Embedded(material) => material.validate()?,
+                ArchivedSlotMaterial::Embedded(material) => check_embedded(material)?,
                 ArchivedSlotMaterial::Asset(id) if assets(*id).is_none() => {
                     return Err(RenderError::UnresolvedMaterial { slot: slot.name.to_string(), id: *id });
                 }
                 ArchivedSlotMaterial::Asset(_) => {}
             }
         }
-        mesh.materials
-            .iter()
-            .map(|slot| match &slot.material {
-                ArchivedSlotMaterial::Embedded(material) => self.upload_material(material, |_| None),
-                ArchivedSlotMaterial::Asset(id) => Ok(assets(*id).expect("resolved above")),
-            })
-            .collect()
+        self.all_or_nothing(|renderer| {
+            mesh.materials
+                .iter()
+                .map(|slot| match &slot.material {
+                    ArchivedSlotMaterial::Embedded(material) => renderer.upload_material(material, |_| None),
+                    ArchivedSlotMaterial::Asset(id) => Ok(assets(*id).expect("resolved above")),
+                })
+                .collect()
+        })
+    }
+
+    /// Uploads `mesh` with its slots' materials, as [`Self::upload_slot_materials`] and then
+    /// [`Self::upload_mesh`] would, but all or nothing: if the mesh fails (an invalid mesh,
+    /// foliage materials on a mesh that can't draw them, a full mesh pool), the materials just
+    /// uploaded for it are taken back too, so content the renderer rejects uses up no material
+    /// slots however often it is retried (RA-005). How the asset runtime uploads a mesh.
+    pub fn upload_mesh_with_slots(
+        &mut self,
+        mesh: &ArchivedMesh,
+        assets: impl Fn(AssetId) -> Option<MaterialHandle>,
+    ) -> Result<MeshHandle, RenderError> {
+        self.all_or_nothing(|renderer| {
+            let materials = renderer.upload_slot_materials(mesh, assets)?;
+            renderer.upload_mesh(mesh, &materials)
+        })
+    }
+
+    /// Runs `upload`, taking back every material it uploaded if it fails: material slots are
+    /// otherwise the renderer's for its lifetime. `upload` must give out no handle of a material
+    /// it uploads unless it succeeds, and the mesh pool must be unchanged when it fails (its
+    /// uploads and replacements change nothing when they fail).
+    fn all_or_nothing<T>(
+        &mut self,
+        upload: impl FnOnce(&mut Self) -> Result<T, RenderError>,
+    ) -> Result<T, RenderError> {
+        let mark = self.materials.mark();
+        let result = upload(self);
+        if result.is_err() {
+            self.materials.roll_back(mark);
+            self.update_pool_stats();
+        }
+        result
     }
 
     /// Validates and uploads a cooked mesh, read in place ([`sapphire_assets::mesh::Mesh::read`]),
@@ -883,10 +921,9 @@ impl Renderer {
     /// rewrite, slot by slot, the material slots the old mesh's embedded ones had where the family
     /// matches, rather than taking new ones; slots bound to material assets take `assets`'
     /// handles, as in [`Self::upload_slot_materials`]. The old streams' room in the mesh pool is
-    /// given back. Fails, changing nothing, if the mesh or a material it embeds is invalid or a
-    /// slot can't be resolved; a mesh pool too full for the new mesh fails after the materials of
-    /// slots that need new ones were uploaded, as [`Self::upload_mesh`] does after
-    /// [`Self::upload_slot_materials`].
+    /// given back. Fails, changing nothing, if the mesh or a material it embeds is invalid, a
+    /// slot can't be resolved, or the mesh pool or a material buffer is too full: materials it
+    /// uploaded for slots that needed new ones are taken back.
     pub fn update_mesh(
         &mut self,
         handle: MeshHandle,
@@ -918,19 +955,10 @@ impl Renderer {
                     Plan::Asset(handle)
                 }
                 ArchivedSlotMaterial::Embedded(material) => {
-                    material.validate()?;
-                    if !MESH_FAMILIES.contains(&material.family) {
-                        return Err(RenderError::NotDrawable(material.family));
-                    }
+                    // Checked to name no textures, so rewriting one after the pool has the new
+                    // mesh can't fail.
+                    check_embedded(material)?;
                     families.push(material.family);
-                    // Embedded materials name no textures (importers make no texture assets), so
-                    // rewriting one after the pool has the new mesh can't fail.
-                    let mut slots = material.family.texture_slots().iter().zip(material.textures.iter());
-                    if let Some((desc, id)) =
-                        slots.find_map(|(desc, binding)| Some((desc, binding.texture()?)))
-                    {
-                        return Err(RenderError::MissingTexture { slot: desc.name, id });
-                    }
                     let reusable =
                         old_slots.get(index).filter(|old| old.embedded).map(|old| old.material.handle);
                     match reusable {
@@ -945,15 +973,19 @@ impl Renderer {
             });
         }
         check_foliage(mesh, families)?;
-        let mut handles = Vec::with_capacity(plans.len());
-        for plan in &plans {
-            handles.push(match *plan {
-                Plan::Asset(handle) | Plan::Rewrite(handle, _) => handle,
-                Plan::Upload(material) => self.upload_material(material, |_| None)?,
-            });
-        }
-        let materials = self.submesh_materials(&handles)?;
-        let moves = self.meshes.replace(&self.device, &self.queue, handle, mesh, &materials)?;
+        let (materials, moves) = self.all_or_nothing(|renderer| {
+            let mut handles = Vec::with_capacity(plans.len());
+            for plan in &plans {
+                handles.push(match *plan {
+                    Plan::Asset(handle) | Plan::Rewrite(handle, _) => handle,
+                    Plan::Upload(material) => renderer.upload_material(material, |_| None)?,
+                });
+            }
+            let materials = renderer.submesh_materials(&handles)?;
+            let moves =
+                renderer.meshes.replace(&renderer.device, &renderer.queue, handle, mesh, &materials)?;
+            Ok((materials, moves))
+        })?;
         for plan in plans {
             if let Plan::Rewrite(handle, material) = plan {
                 self.update_material(handle, material, |_| None)?;
@@ -2144,6 +2176,13 @@ impl Renderer {
         &self.materials
     }
 
+    /// Limits `family`'s material buffer to `slots` slots (tests of a full one, see
+    /// `Materials::limit_slots`).
+    #[cfg(test)]
+    pub(crate) fn limit_material_slots(&mut self, family: MaterialFamily, slots: u64) {
+        self.materials.limit_slots(&self.device, family, slots);
+    }
+
     /// The sky, for tests that read its cube back.
     #[cfg(test)]
     pub(crate) fn sky(&self) -> &Sky {
@@ -2304,6 +2343,20 @@ fn draw_main<'p>(
                 draws.draw_deformed_through_where(pass, kind, variant, set, instance, &pipelines);
             }
         }
+    }
+}
+
+/// Checks a material a mesh embeds, before anything is uploaded: valid, of a family meshes draw
+/// with, and naming no textures (importers make no texture assets, so none could be bound).
+fn check_embedded(material: &ArchivedMaterial) -> Result<(), RenderError> {
+    material.validate()?;
+    if !MESH_FAMILIES.contains(&material.family) {
+        return Err(RenderError::NotDrawable(material.family));
+    }
+    let mut slots = material.family.texture_slots().iter().zip(material.textures.iter());
+    match slots.find_map(|(desc, binding)| Some((desc, binding.texture()?))) {
+        Some((desc, id)) => Err(RenderError::MissingTexture { slot: desc.name, id }),
+        None => Ok(()),
     }
 }
 

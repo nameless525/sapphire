@@ -1808,3 +1808,94 @@ fn uploads_and_frames_after_a_device_loss_do_not_panic() {
     }
     assert!(gpu.is_lost());
 }
+
+/// The material counters [`failed_material_uploads_leave_nothing_behind`] holds still.
+fn material_counts(renderer: &Renderer) -> (u32, u64) {
+    let stats = renderer.stats();
+    (stats.materials, stats.material_bytes)
+}
+
+/// A unit sphere whose two submeshes draw with the two embedded materials given, cooked.
+fn two_slot_sphere(first: Material, second: Material) -> sapphire_assets::material::AlignedVec {
+    let (vertices, indices) = sphere_geometry(Vec3::ZERO, 1.0);
+    let half = (indices.len() / 6 * 3) as u32;
+    let submeshes = vec![
+        Submesh { first_index: 0, index_count: half, material: 0 },
+        Submesh { first_index: half, index_count: indices.len() as u32 - half, material: 1 },
+    ];
+    let slots = vec![MaterialSlot::embedded("first", first), MaterialSlot::embedded("second", second)];
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+        .to_cooked()
+        .expect("cook")
+}
+
+/// RA-005: an upload that fails partway takes back every material it uploaded, so retrying
+/// rejected content never uses up material slots. (A family's buffer filling up partway is
+/// `materials`' `a_full_family_takes_back_what_the_upload_took`.)
+#[test]
+#[ignore = "needs a GPU"]
+fn failed_material_uploads_leave_nothing_behind() {
+    use sapphire_assets::AssetId;
+    use sapphire_assets::material::{EnvironmentMaterial, FoliageMaterial, SkyMaterial};
+
+    let gpu = gpu();
+    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+    // Counted from a mesh that uploads, so the stats are current.
+    upload(&mut renderer, &sphere(white(0.0)));
+    let start = material_counts(&renderer);
+    let character = cooked(&white(0.0));
+
+    // A valid material, then one naming a texture: embedded materials have none to name.
+    let textured =
+        AnimeCharacterMaterial { base_color_map: Some(AssetId::from_bytes([7; 16])), ..white(0.0) };
+    let bytes = two_slot_sphere(character.clone(), cooked(&textured));
+    for attempt in 1..=3 {
+        let error = renderer.upload_embedded_materials(Mesh::read(&bytes).unwrap()).unwrap_err();
+        assert!(matches!(error, RenderError::MissingTexture { slot: "base_color", .. }), "{error}");
+        assert_eq!(material_counts(&renderer), start, "attempt {attempt} left materials behind");
+        let error = renderer.upload_mesh_with_slots(Mesh::read(&bytes).unwrap(), |_| None).unwrap_err();
+        assert!(matches!(error, RenderError::MissingTexture { .. }), "{error}");
+        assert_eq!(material_counts(&renderer), start, "attempt {attempt} left materials behind");
+    }
+
+    // Then a sky material, which meshes don't draw with.
+    let sky = Material::from_document(
+        &SkyMaterial::default(),
+        &[Swizzle::IDENTITY; SkyMaterial::TEXTURE_SLOTS.len()],
+    )
+    .expect("a valid material");
+    let bytes = two_slot_sphere(character.clone(), sky);
+    let error = renderer.upload_mesh_with_slots(Mesh::read(&bytes).unwrap(), |_| None).unwrap_err();
+    assert!(matches!(error, RenderError::NotDrawable(_)), "{error}");
+    assert_eq!(material_counts(&renderer), start);
+
+    // Then foliage, which the materials take but the mesh can't draw (no foliage stream): the
+    // mesh fails after its materials were uploaded, and they go too.
+    let leaves = Material::from_document(
+        &FoliageMaterial::default(),
+        &[Swizzle::IDENTITY; FoliageMaterial::TEXTURE_SLOTS.len()],
+    )
+    .expect("a valid material");
+    let bytes = two_slot_sphere(character.clone(), leaves);
+    for _ in 0..3 {
+        let error = renderer.upload_mesh_with_slots(Mesh::read(&bytes).unwrap(), |_| None).unwrap_err();
+        assert!(matches!(error, RenderError::NoFoliageStream), "{error}");
+        assert_eq!(material_counts(&renderer), start);
+    }
+    // Uploaded in two calls, the materials are the caller's, given back as handles it holds.
+    let mesh = Mesh::read(&bytes).unwrap();
+    let handles = renderer.upload_slot_materials(mesh, |_| None).expect("drawable materials");
+    assert!(matches!(renderer.upload_mesh(mesh, &handles), Err(RenderError::NoFoliageStream)));
+    assert_eq!(material_counts(&renderer).0, start.0 + 2);
+
+    // A mesh that uploads keeps its materials, of any families meshes draw with.
+    let start = material_counts(&renderer);
+    let wall = Material::from_document(
+        &EnvironmentMaterial::default(),
+        &[Swizzle::IDENTITY; EnvironmentMaterial::TEXTURE_SLOTS.len()],
+    )
+    .expect("a valid material");
+    let bytes = two_slot_sphere(character, wall);
+    renderer.upload_mesh_with_slots(Mesh::read(&bytes).unwrap(), |_| None).expect("upload");
+    assert_eq!(material_counts(&renderer).0, start.0 + 2);
+}

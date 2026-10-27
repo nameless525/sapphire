@@ -253,8 +253,8 @@ impl GpuAssets {
                     *held = Held { slot, generation, object: GpuMesh { handle: held.object.handle, bounds } };
                 }
                 None => {
-                    let materials = renderer.upload_slot_materials(mesh, resolve)?;
-                    let handle = renderer.upload_mesh(mesh, &materials)?;
+                    // All or nothing, so a mesh the renderer rejects leaves no materials behind.
+                    let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
                     self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
                 }
             }

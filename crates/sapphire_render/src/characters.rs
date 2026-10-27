@@ -15,6 +15,15 @@
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't
 //!   uploaded again; one that moves in the list, joins it or leaves it is uploaded once.
+//! - **A character's parts share its entry** (M1 review RS-001). A character drawn as several
+//!   instances (body, face, hair, a weapon) lists each with one state: equal lighting, face,
+//!   body and opacity, and a body that casts. A listing in the state of an earlier one points
+//!   its instance at that entry, so the parts are one character wherever the shaders tell
+//!   characters apart: the character prepass's IDs (the eye layers' mask, eyes through hair,
+//!   the bangs' shadow, the rim and the camera rim's gating), the fade's dither and capsule AO.
+//!   Parts with the default body (radius 0) can't be told from characters that happen to be lit
+//!   alike, so each takes an entry of its own. An explicit actor key, which would group parts
+//!   whatever their state, waits for M2's gameplay actors.
 //! - Frames without a main view draw nothing, so they leave every entry as it was.
 //!
 //! # The proximity fade (M1 C7)
@@ -61,6 +70,8 @@
 //! Later ones (C4's outline lighting) add theirs the same way. A character's data is then found
 //! through one index and one binding: the fragment stage's fourth and last storage buffer (see
 //! the crate docs, "Binding budget").
+
+use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -458,6 +469,22 @@ impl CharacterUpload<'_> {
     }
 }
 
+/// A body's bits, −0 taken as 0: bodies that compare equal (valid ones are finite) have the
+/// same key.
+type BodyKey = [u32; 7];
+
+fn body_key(body: &CharacterBody) -> BodyKey {
+    let CharacterBody { base, top, radius } = *body;
+    [base.x, base.y, base.z, top.x, top.y, top.z, radius].map(|value| (value + 0.0).to_bits())
+}
+
+/// Whether `a` and `b` list one character's parts: its lighting, face, body and fade, all
+/// equal, with a body that casts (M1 review RS-001). Parts of a character with no body of its
+/// own can't be told from characters that happen to be lit alike, so they never share.
+fn one_character(a: &CharacterInstance, b: &CharacterInstance) -> bool {
+    a.body.casts() && a.body == b.body && a.lighting == b.lighting && a.face == b.face && a.fade() == b.fade()
+}
+
 /// The entries and which instance reads which, on the CPU. Its vectors are reused, so a warm
 /// frame allocates nothing.
 #[derive(Debug, Default)]
@@ -473,6 +500,12 @@ struct CharacterList {
     next: Vec<u32>,
     /// Per entry of the frame being built, its body, for capsule AO between characters.
     bodies: Vec<CharacterBody>,
+    /// Per entry of the frame being built: the listing it was made from (its index in the
+    /// packet), and the entry made before it with the same body that casts, 0 for none.
+    sources: Vec<u32>,
+    same_body: Vec<u32>,
+    /// While the frame's entries are built: the last entry made with each body that casts.
+    by_body: HashMap<BodyKey, u32>,
     /// Per instance slot: how far its character has faded this frame, 0 for none (M1 C7).
     fades: Vec<f32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
@@ -485,20 +518,26 @@ struct CharacterList {
 
 impl CharacterList {
     /// Builds the entries for `packet`: the fallback from its key light, with a face at rest,
-    /// then each valid character of an instance in `slots`, in packet order. Points each of
-    /// those instances at its entry and gives it its fade, and every instance the last frame
-    /// listed but this one doesn't back at the fallback, whole. With `capsule_ao`, each
-    /// character's ambient takes what the others' bodies leave of it ([`capsule_visibility`]).
-    /// Returns whether the entries changed.
+    /// then each valid character of an instance in `slots`, in packet order. A listing in the
+    /// state of an earlier one ([`one_character`]: the same character's other part) shares its
+    /// entry. Points each of those instances at its entry and gives it its fade, and every
+    /// instance the last frame listed but this one doesn't back at the fallback, whole. With
+    /// `capsule_ao`, each character's ambient takes what the others' bodies leave of it
+    /// ([`capsule_visibility`]). Returns whether the entries changed.
     fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots, capsule_ao: bool) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
         self.bodies.clear();
+        self.sources.clear();
+        self.same_body.clear();
+        self.by_body.clear();
         let fallback = CharacterLighting::unstyled(packet.sun);
         let ambient = &packet.ambient;
         let none = CharacterBody::default();
         self.entries.push(GpuCharacter::new(&fallback, &CharacterFace::default(), &none, ambient, 0.0));
         self.bodies.push(none);
+        self.sources.push(u32::MAX);
+        self.same_body.push(0);
         // Slots are never given back, so the last frame's are all below this.
         self.next.resize(slots.len(), 0);
         self.fades.resize(slots.len(), 0.0);
@@ -508,14 +547,20 @@ impl CharacterList {
         }
         self.listing.clear();
         (self.lit, self.ignored, self.faded, self.fading_changed) = (0, 0, 0, false);
-        for character in &packet.characters {
-            // An entry past the character prepass's ID bits would alias an earlier character's
-            // (or none), so the frame's characters stop there.
-            let room = self.entries.len() <= ID_ENTRY_MASK as usize;
-            let slot = slots.slot(character.id).filter(|_| character.is_valid() && room);
-            let Some(slot) = slot else {
+        for (index, character) in packet.characters.iter().enumerate() {
+            let Some(slot) = slots.slot(character.id).filter(|_| character.is_valid()) else {
                 self.ignored += 1;
                 continue;
+            };
+            let entry = match self.shared(character, &packet.characters) {
+                Some(entry) => entry,
+                // An entry past the character prepass's ID bits would alias an earlier
+                // character's (or none), so new characters stop there.
+                None if self.entries.len() > ID_ENTRY_MASK as usize => {
+                    self.ignored += 1;
+                    continue;
+                }
+                None => self.push(index, character, ambient),
             };
             // Every slot is 0 here until this frame gives it an entry: an instance listed again
             // takes its last entry, and counts once.
@@ -523,10 +568,8 @@ impl CharacterList {
                 self.lit += 1;
                 self.listing.push(slot);
             }
-            self.next[slot as usize] = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
+            self.next[slot as usize] = entry;
             self.fades[slot as usize] = character.fade();
-            self.entries.push(GpuCharacter::of(character, ambient));
-            self.bodies.push(character.body);
         }
         if capsule_ao {
             for (entry, body) in self.entries.iter_mut().zip(&self.bodies).skip(1) {
@@ -541,6 +584,35 @@ impl CharacterList {
         self.faded = self.listing.iter().filter(|&&slot| self.fades[slot as usize] > 0.0).count() as u32;
         std::mem::swap(&mut self.listed, &mut self.listing);
         self.entries != self.previous
+    }
+
+    /// The entry this frame already made for `character`'s character, if an earlier listing in
+    /// `listed` (the packet's) is another of its parts.
+    fn shared(&self, character: &CharacterInstance, listed: &[CharacterInstance]) -> Option<u32> {
+        if !character.body.casts() {
+            return None;
+        }
+        let mut entry = *self.by_body.get(&body_key(&character.body))?;
+        while entry != 0 {
+            if one_character(&listed[self.sources[entry as usize] as usize], character) {
+                return Some(entry);
+            }
+            entry = self.same_body[entry as usize];
+        }
+        None
+    }
+
+    /// Makes an entry for `character`, the packet's listing `source`, under the frame's
+    /// `ambient` light, and returns it.
+    fn push(&mut self, source: usize, character: &CharacterInstance, ambient: &AmbientLight) -> u32 {
+        let entry = u32::try_from(self.entries.len()).expect("fewer than 2³² characters");
+        self.entries.push(GpuCharacter::of(character, ambient));
+        self.bodies.push(character.body);
+        self.sources.push(u32::try_from(source).expect("fewer than 2³² listings"));
+        let body = &character.body;
+        let before = body.casts().then(|| self.by_body.insert(body_key(body), entry)).flatten();
+        self.same_body.push(before.unwrap_or(0));
+        entry
     }
 }
 
@@ -821,5 +893,36 @@ mod tests {
         assert_eq!(fallback.axis[3], 1.0, "the world's fallback has no body");
         assert!(first.axis[3] < 1.0 && first.axis[3] == second.axis[3], "{first:?}");
         assert_eq!(first.sky[0], first.axis[3], "the hemisphere scaled by it");
+    }
+
+    /// The entry the instance `id` reads.
+    fn entry_of(slots: &InstanceSlots, id: u64) -> u32 {
+        slots.character(slots.slot(InstanceId(id)).expect("live"))
+    }
+
+    #[test]
+    fn parts_listed_with_one_casting_state_share_an_entry() {
+        // Instances 0 to 2 are one character's parts (body, face, hair): one state, a body that
+        // casts. 3 has a body of its own, 4 and 5 the default body, which casts nothing, and 6
+        // the parts' body under another key light.
+        let mut slots = slots(0..7);
+        let mut list = CharacterList::default();
+        let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        let mut frame = packet(&[(0, 1.0), (1, 1.0), (2, 1.0), (3, 1.0), (4, 1.0), (5, 1.0), (6, 2.0)]);
+        for character in &mut frame.characters[..3] {
+            character.body = body;
+        }
+        frame.characters[3].body = CharacterBody::capsule(Vec3::X, Vec3::X + Vec3::Y, 0.3);
+        frame.characters[6].body = body;
+        list.update(&frame, &mut slots, false);
+        assert_eq!((0..7).map(|id| entry_of(&slots, id)).collect::<Vec<_>>(), [1, 1, 1, 2, 3, 4, 5]);
+        assert_eq!(list.entries.len(), 6, "the fallback and five characters");
+        assert_eq!(list.lit, 7, "every instance is lit by its rig");
+        // A part with another face, or faded apart: an entry of its own.
+        let mut apart = frame.clone();
+        apart.characters[1].face.expression.blush = 0.5;
+        apart.characters[2].opacity = 0.5;
+        list.update(&apart, &mut slots, false);
+        assert_eq!((0..3).map(|id| entry_of(&slots, id)).collect::<Vec<_>>(), [1, 2, 3]);
     }
 }

@@ -1,9 +1,15 @@
-//! Proximity fade tests that read the prepasses' targets back (M1 C7): every pass that draws a
-//! fading character keeps the pixels the main pass keeps. They need a GPU: run them with
+//! Character tests that need a GPU: proximity fade tests that read the prepasses' targets back
+//! (M1 C7), where every pass that draws a fading character keeps the pixels the main pass keeps;
+//! and a character drawn as one instance per part, whose parts share its entry and so its
+//! identity in the character prepass (M1 review RS-001). Run them with
 //! `cargo test -p sapphire_render --tests -- --ignored`.
 
 use glam::{Mat4, Vec3};
-use sapphire_assets::material::{AnimeCharacterMaterial, Material, Outline};
+use sapphire_assets::character_maps::MaterialId;
+use sapphire_assets::material::{
+    AlphaMode, AnimeCharacterMaterial, CharacterRegion, CharacterSurface, EyeLayer, EyeShading,
+    HairHighlight, HairShading, LightSplit, Material, Outline, Rim, ThroughHair,
+};
 use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
@@ -19,6 +25,26 @@ use crate::{
 
 const SIDE: u32 = 128;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Post-processing that shows linear values below about 0.98 as they are.
+fn passthrough() -> PostParams {
+    PostParams {
+        exposure: 0.0,
+        bloom: BloomParams { intensity: 0.0, ..BloomParams::default() },
+        tone_curve: ToneCurve {
+            linear_start: 0.001,
+            linear_length: 0.99,
+            black_tightness: 1.0,
+            ..ToneCurve::default()
+        },
+        grade_a: ColorGrade::NEUTRAL,
+        grade_b: ColorGrade::NEUTRAL,
+        grade_blend: 0.0,
+        filter_strength: 1.0,
+        vignette: Vignette { intensity: 0.0, ..Vignette::default() },
+        ..PostParams::default()
+    }
+}
 
 /// A lit, outlined ball of radius 0.5 at the origin, its material embedded.
 fn ball() -> Mesh {
@@ -125,22 +151,7 @@ impl Scene {
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
         packet.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
         packet.ambient = AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 };
-        packet.post = PostParams {
-            exposure: 0.0,
-            bloom: BloomParams { intensity: 0.0, ..BloomParams::default() },
-            tone_curve: ToneCurve {
-                linear_start: 0.001,
-                linear_length: 0.99,
-                black_tightness: 1.0,
-                ..ToneCurve::default()
-            },
-            grade_a: ColorGrade::NEUTRAL,
-            grade_b: ColorGrade::NEUTRAL,
-            grade_blend: 0.0,
-            filter_strength: 1.0,
-            vignette: Vignette { intensity: 0.0, ..Vignette::default() },
-            ..PostParams::default()
-        };
+        packet.post = passthrough();
         if !self.added {
             let instance = MeshInstance { id: InstanceId(1), mesh: self.ball, transform: Mat4::IDENTITY };
             packet.instances.changed.push(instance);
@@ -307,4 +318,229 @@ fn under_msaa_the_prepasses_keep_the_pixels_the_main_pass_covers_any_sample_of()
     let frame = scene.render(0.1);
     let color = &frame.color;
     assert_coherent(&frame, &inside, |pixel| color[pixel][..3].iter().any(|&c| c > 0), 0.4);
+}
+
+/// The split character's colors: the eye white, the iris over it and the hair in front of both.
+const WHITE: [f32; 3] = [0.9, 0.9, 0.9];
+const IRIS: [f32; 3] = [0.1, 0.2, 0.7];
+const HAIR: [f32; 3] = [0.1, 0.6, 0.2];
+
+/// A flat-lit material in `color` and `surface`: a one-pixel split, no rim or outline.
+fn flat(surface: CharacterSurface, color: [f32; 3], alpha: AlphaMode) -> AnimeCharacterMaterial {
+    AnimeCharacterMaterial {
+        surface,
+        alpha,
+        base_color: [color[0], color[1], color[2], 1.0],
+        light_split: LightSplit { threshold: 0.0, softness: 0.0 },
+        regions: vec![CharacterRegion { shade_color: [0.25; 3], ..CharacterRegion::default() }],
+        rim: Rim { strength: 0.0, ..Rim::default() },
+        outline: Outline { width: 0.0, ..Outline::default() },
+        ..AnimeCharacterMaterial::default()
+    }
+}
+
+/// An eye layer that shows through hair at half strength: the eye white opaque, the iris blended
+/// over it.
+fn eye_layer(layer: EyeLayer) -> AnimeCharacterMaterial {
+    let through_hair = Some(ThroughHair { opacity: 0.5, distance: 0.5, ..ThroughHair::default() });
+    let eye = CharacterSurface::Eye(EyeShading { layer, through_hair, ..EyeShading::default() });
+    if layer.is_overlay() { flat(eye, IRIS, AlphaMode::Blend) } else { flat(eye, WHITE, AlphaMode::Opaque) }
+}
+
+fn hair() -> AnimeCharacterMaterial {
+    let hair = HairShading {
+        mask_map: None,
+        highlight: HairHighlight { strength: 0.0, ..HairHighlight::default() },
+        ..HairShading::default()
+    };
+    flat(CharacterSurface::Hair(hair), HAIR, AlphaMode::Opaque)
+}
+
+/// A rectangle facing the camera (+Z), drawn with its material.
+#[derive(Clone)]
+struct Part {
+    vertices: [Vertex; 4],
+    material: AnimeCharacterMaterial,
+}
+
+/// A part at depth `z`, from `min` to `max` in x and y, drawn with `material`.
+fn part(min: (f32, f32), max: (f32, f32), z: f32, material: AnimeCharacterMaterial) -> Part {
+    let vertices = [(min.0, min.1), (max.0, min.1), (max.0, max.1), (min.0, max.1)].map(|(x, y)| Vertex {
+        position: [x, y, z],
+        normal: [0.0, 0.0, 1.0],
+        outline_normal: [0.0, 0.0, 1.0],
+        uv: [(x - min.0) / (max.0 - min.0), (max.1 - y) / (max.1 - min.1)],
+        color: [255; 3],
+        flags: VertexFlags::with_material_id(MaterialId::new(0).expect("a material ID")),
+    });
+    Part { vertices, material }
+}
+
+/// `parts` as one mesh: a submesh each, drawn with its own embedded material, in order.
+fn mesh_of(parts: &[Part]) -> Mesh {
+    let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+    let (mut vertices, mut indices, mut submeshes, mut slots) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (index, part) in parts.iter().enumerate() {
+        let base = vertices.len() as u32;
+        let first_index = indices.len() as u32;
+        vertices.extend_from_slice(&part.vertices);
+        indices.extend([0, 1, 2, 0, 2, 3].map(|corner| base + corner));
+        submeshes.push(Submesh { first_index, index_count: 6, material: index as u32 });
+        let material = Material::from_document(&part.material, &swizzles).expect("valid");
+        slots.push(MaterialSlot::embedded(format!("part {index}"), material));
+    }
+    Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Float32)
+}
+
+/// Draws one frame of `instances`, each a mesh of its parts at the origin listed as a character
+/// with its body (a key light from the camera's side, a face at rest, whole), before a black sky
+/// with no ambient light, and reads the target back.
+fn draw(instances: &[(&[Part], CharacterBody)]) -> Vec<[u8; 4]> {
+    draw_faded(instances, 1.0)
+}
+
+/// [`draw`], every instance listed at `opacity`.
+fn draw_faded(instances: &[(&[Part], CharacterBody)], opacity: f32) -> Vec<[u8; 4]> {
+    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+    let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+    let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
+    let mut renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
+    let mut packets = FramePacketRing::new();
+    let packet = packets.begin();
+    let camera = CameraData::look_at(Vec3::new(0.0, 0.0, 4.0), Vec3::ZERO, Vec3::Y, 0.66, 1.0, 0.05);
+    packet.views.push(ViewData::new(camera));
+    packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
+    packet.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+    packet.ambient = AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 };
+    packet.post = passthrough();
+    for (index, &(parts, body)) in instances.iter().enumerate() {
+        let bytes = mesh_of(parts).to_cooked().expect("cook");
+        let mesh = Mesh::read(&bytes).expect("valid");
+        let materials = renderer.upload_embedded_materials(mesh).expect("materials");
+        let mesh = renderer.upload_mesh(mesh, &materials).expect("upload");
+        let id = InstanceId(index as u64);
+        packet.instances.changed.push(MeshInstance { id, mesh, transform: Mat4::IDENTITY });
+        packet.characters.push(CharacterInstance {
+            id,
+            lighting: CharacterLighting::unstyled(packet.sun),
+            face: CharacterFace::default(),
+            body,
+            opacity,
+        });
+    }
+    renderer.prepare(&gpu, packets.current());
+    let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+    let view = target.create_view(&Default::default());
+    let mut graph = FrameGraph::new();
+    let output = graph.import_texture("target", &view);
+    renderer.record(&mut graph, output).expect("a view and a target");
+    GraphExecutor::new().execute(&gpu, graph).expect("a valid graph");
+    let row = (SIDE * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: u64::from(row * SIDE),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.device().create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(SIDE),
+            },
+        },
+        target.size(),
+    );
+    gpu.queue().submit([encoder.finish()]);
+    let error = pollster::block_on(scope.pop());
+    assert!(error.is_none(), "{error:?}");
+    buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+    gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let mapped = buffer.get_mapped_range(..).expect("mapped");
+    mapped
+        .chunks_exact(row as usize)
+        .flat_map(|r| r[..SIDE as usize * 4].as_chunks::<4>().0.to_vec())
+        .collect()
+}
+
+/// How many pixels of `a` and `b` differ.
+fn differing(a: &[[u8; 4]], b: &[[u8; 4]]) -> usize {
+    a.iter().zip(b).filter(|(a, b)| a != b).count()
+}
+
+/// The linear color at the image's center: the middle of the eye.
+fn center(pixels: &[[u8; 4]]) -> [f32; 3] {
+    let pixel = pixels[(SIDE / 2 * SIDE + SIDE / 2) as usize];
+    [0, 1, 2].map(|channel| {
+        let c = f32::from(pixel[channel]) / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    })
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_character_drawn_as_one_instance_per_part_draws_as_one_mesh() {
+    // An eye white with an iris over it, and hair in front that the eye shows through: drawn as
+    // one mesh, or as one instance per part listed with one state and a body that casts, as
+    // `CharacterInstance` says to list a character's parts. The iris draws only over its own
+    // character's eye, and eyes only through their own character's hair, so the parts must
+    // share one identity in the character prepass.
+    let body = CharacterBody::capsule(Vec3::new(0.0, -0.5, 0.0), Vec3::new(0.0, 0.5, 0.0), 0.3);
+    let white = part((-0.5, -0.5), (0.5, 0.5), 0.0, eye_layer(EyeLayer::Eye));
+    let iris = part((-0.2, -0.2), (0.2, 0.2), 0.01, eye_layer(EyeLayer::Iris));
+    let bangs = part((-1.0, -1.0), (1.0, 1.0), 0.1, hair());
+
+    let eye = [white.clone(), iris.clone()];
+    let merged = draw(&[(&eye, body)]);
+    let split = draw(&[(&eye[..1], body), (&eye[1..], body)]);
+    let iris_drawn = |pixels: &[[u8; 4]]| center(pixels).iter().zip(IRIS).all(|(a, e)| (a - e).abs() < 0.03);
+    assert!(iris_drawn(&merged), "the iris over the eye: {:?}", center(&merged));
+    let layers = (differing(&merged, &split), center(&merged), center(&split));
+
+    let whole = [white, iris, bangs];
+    let merged = draw(&[(&whole, body)]);
+    let split = draw(&[(&whole[..1], body), (&whole[1..2], body), (&whole[2..], body)]);
+    let hair_alone = draw(&[(&whole[2..], body)]);
+    assert!(differing(&merged, &hair_alone) > 1000, "the eye shows through the hair: {:?}", center(&merged));
+    let through_hair = (differing(&merged, &split), center(&merged), center(&split));
+    // (pixels that differ, the center merged, the center split)
+    assert_eq!((layers.0, through_hair.0), (0, 0), "eye layers {layers:?}, through hair {through_hair:?}");
+
+    // Faded, the parts' dither shares the character's phase too.
+    for opacity in [0.25, 0.5, 0.75] {
+        let merged = draw_faded(&[(&whole, body)], opacity);
+        let split = draw_faded(&[(&whole[..1], body), (&whole[1..2], body), (&whole[2..], body)], opacity);
+        assert_eq!(differing(&merged, &split), 0, "faded to {opacity}");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn another_characters_iris_never_draws_over_an_eye() {
+    // An iris listed with another body, or with the default body (which casts nothing, so its
+    // instance is a character of its own), belongs to another character than the eye under it:
+    // it never draws there, whatever else their state shares.
+    let body = CharacterBody::capsule(Vec3::new(0.0, -0.5, 0.0), Vec3::new(0.0, 0.5, 0.0), 0.3);
+    let beside = CharacterBody::capsule(Vec3::new(0.7, -0.5, 0.0), Vec3::new(0.7, 0.5, 0.0), 0.3);
+    let white = [part((-0.5, -0.5), (0.5, 0.5), 0.0, eye_layer(EyeLayer::Eye))];
+    let iris = [part((-0.2, -0.2), (0.2, 0.2), 0.01, eye_layer(EyeLayer::Iris))];
+    let alone = draw(&[(&white, body)]);
+    assert_eq!(differing(&alone, &draw(&[(&white, body), (&iris, beside)])), 0, "another body");
+    let none = CharacterBody::default();
+    assert_eq!(differing(&draw(&[(&white, none)]), &draw(&[(&white, none), (&iris, none)])), 0, "no body");
 }

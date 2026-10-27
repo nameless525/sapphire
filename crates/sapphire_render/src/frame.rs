@@ -535,7 +535,15 @@ impl Default for Wind {
 /// One character's data for a frame: the character light rig that lights the instance `id`
 /// (M1 C2), the character's face (M1 C3), its body, which its shadow is cast from (M1 R4), and
 /// how much of it draws (M1 C7). A character drawn as several instances (body, face, hair, a
-/// weapon) lists each, with the same lighting, face, body and opacity.
+/// weapon) lists each, with the same lighting, face, body and opacity, and a body that casts
+/// ([`CharacterBody::casts`]).
+///
+/// Listings in one state with a body that casts are one character's parts: the renderer draws
+/// them as one, sharing one per-character entry, so its eyes draw over its own eye whites and
+/// through its own hair, its bangs shadow its own face, its rim and fade treat the parts as
+/// one, and capsule AO counts its body once. Two characters therefore differ in at least their
+/// bodies. Parts listed with the default body (radius 0) are each a character of their own as
+/// far as those effects go.
 ///
 /// Being listed is what makes an instance a character for shadows too: it never casts into the
 /// world's shadow cascades and receives only them (environment casters), so a character never
@@ -582,9 +590,10 @@ impl CharacterInstance {
 ///   shadow onto environment surfaces.
 ///
 /// The instances listed with equal bodies are one character, which casts one shadow; a character
-/// drawn as several instances lists the same body with each. Capsule AO (W5) will read the body
-/// too. A body of radius 0 (the default) casts no shadow of a character's own: the character
-/// still receives the world's.
+/// drawn as several instances lists the same body with each (and the same state, so its parts
+/// share one entry: see [`CharacterInstance`]). Capsule AO (W5) will read the body too. A body
+/// of radius 0 (the default) casts no shadow of a character's own: the character still
+/// receives the world's.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CharacterBody {
     pub base: Vec3,

@@ -28,7 +28,8 @@ pub enum Envelope {
     },
     /// Rises over `attack` and holds full until released
     /// ([`EffectStack::release`](super::EffectStack::release)), then falls over `release` from
-    /// wherever it was, and ends: a perfect dodge's slow-motion look, an ultimate's lines.
+    /// wherever it was, and ends: a perfect dodge's slow-motion look, an ultimate's lines. A layer
+    /// released before its delay ran out never starts: the stack cancels it.
     Sustain {
         #[serde(default)]
         attack: f32,
@@ -71,6 +72,8 @@ impl Envelope {
     }
 
     /// When the effect ends, in its own seconds: infinity for a sustained one not yet released.
+    /// A release before 0 counts from 0, where a rise without attack is already full; the stack
+    /// never releases one there, but cancels it.
     pub fn end(&self, released: Option<f32>) -> f32 {
         match *self {
             Self::Pulse { attack, hold, release } => attack + hold + release,

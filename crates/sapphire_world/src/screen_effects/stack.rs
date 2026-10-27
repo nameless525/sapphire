@@ -6,6 +6,7 @@ use sapphire_math::Vec2;
 use sapphire_render::PostEffects;
 use sapphire_time::{LocalClock, SUBTICKS_PER_TICK, ScaledClock, SimDuration, TICK_HZ, TICK_SECONDS};
 
+use super::envelope::Envelope;
 use super::layer::{EffectClock, EffectKind, EffectLayer};
 use super::library::EffectPreset;
 
@@ -154,14 +155,25 @@ impl EffectStack {
         push
     }
 
-    /// Releases `handle`'s sustained layers: each falls over its release from now. Its other
-    /// layers play on as they would.
+    /// Releases `handle`'s sustained layers: each falls over its release from now, from wherever
+    /// it was. One still in its delay never showed, so it is cancelled instead: it would otherwise
+    /// start released, at the full weight of a rise without attack, and flash after whatever it
+    /// accented had ended (review PW-004). Its other layers play on as they would; releasing
+    /// again changes nothing.
     pub fn release(&mut self, handle: EffectHandle) {
-        for instance in self.instances_of(handle) {
-            if instance.released.is_none() {
+        let mut at = 0;
+        while at < self.len {
+            let instance = self.instances[at].as_mut().expect("the first `len` places hold layers");
+            if instance.push == handle && instance.released.is_none() {
+                if instance.time < 0.0 && matches!(instance.layer.envelope, Envelope::Sustain { .. }) {
+                    self.remove(at);
+                    continue;
+                }
                 instance.released = Some(instance.time.max(0.0));
             }
+            at += 1;
         }
+        self.stats.depth = self.len as u32;
     }
 
     /// Stops `handle`'s layers at once.

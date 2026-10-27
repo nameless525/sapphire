@@ -243,6 +243,57 @@ fn layers_start_after_their_delay_and_end_by_themselves() {
 }
 
 #[test]
+fn a_sustained_layer_released_in_its_delay_never_shows() {
+    // Review PW-004: released while it still waits out its delay, a sustained layer is cancelled.
+    // It used to wait, then show at its full weight when it started (with no attack) and fade.
+    // The preset's other layers play on by their own envelopes.
+    for clock in [EffectClock::World, EffectClock::Real] {
+        for attack in [0.0, 0.1] {
+            let (mut world, mut stack) = stack();
+            let sustain = Envelope::Sustain { attack, release: 0.2 };
+            let charge = EffectLayer { delay: 1.0, clock, ..blur(0.1, [0.5, 0.5], sustain) };
+            let lines = EffectLayer {
+                effect: ScreenEffect::SpeedLines(SpeedLinesEffect {
+                    rate: 0.0,
+                    ..SpeedLinesEffect::default()
+                }),
+                clock,
+                ..blur(0.0, [0.5, 0.5], pulse(0.0, 1.0, 0.0))
+            };
+            let handle = stack.push(&preset(&[charge, lines]));
+            run(&mut world, &mut stack, 1);
+            stack.release(handle);
+            assert_eq!((stack.len(), stack.stats().depth), (1, 1), "{clock:?}, attack {attack}: cancelled");
+            stack.release(handle);
+            assert_eq!(stack.len(), 1, "releasing again changes nothing");
+            assert_eq!(stack.resolve(0.0).speed_lines.opacity, 1.0, "the pulse plays on");
+            for step in 0..90 {
+                run(&mut world, &mut stack, 1);
+                let blur = stack.resolve(0.5).radial_blur;
+                assert_eq!(blur, PostEffects::NONE.radial_blur, "{clock:?}, attack {attack}, step {step}");
+            }
+            assert!(stack.is_empty());
+        }
+    }
+
+    // Once started, a delayed one is released as any other: it falls from where it was, mid-rise
+    // here (halfway up a 0.4 s attack, 0.2 s in).
+    let (mut world, mut stack) = stack();
+    let sustain = Envelope::Sustain { attack: 0.4, release: 0.5 };
+    let handle = stack.push(&preset(&[EffectLayer { delay: 0.5, ..blur(0.1, [0.5, 0.5], sustain) }]));
+    run(&mut world, &mut stack, 42);
+    let before = stack.resolve(0.0).radial_blur.strength;
+    assert!(close(before, 0.05), "{before}");
+    stack.release(handle);
+    assert!(close(stack.resolve(0.0).radial_blur.strength, before), "falls from where it was");
+    run(&mut world, &mut stack, 15);
+    let falling = stack.resolve(0.0).radial_blur.strength;
+    assert!(close(falling, 0.025), "halfway down: {falling}");
+    run(&mut world, &mut stack, 16);
+    assert!(stack.is_empty(), "ended with its release");
+}
+
+#[test]
 fn later_pushes_show_over_earlier_ones_kind_by_kind() {
     let (mut world, mut stack) = stack();
     let held = pulse(0.0, 10.0, 0.0);

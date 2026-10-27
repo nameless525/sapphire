@@ -69,8 +69,11 @@ pub struct Scene {
 /// normals, the HSV clamp's saturation and value, the skin tint, the occlusion) fails one of them
 /// when broken. The eye scenes (M1 C6) pin what the rim and hair scenes pin, AO off among it, so
 /// they show the eye layers alone, but for the highlight's, which draws post's glow and bloom
-/// over its glint.
-pub fn scenes() -> [Scene; 71] {
+/// over its glint. The debug view scenes (M1 F5) alone set a view (`--debug-view <view>`; off,
+/// every other scene's, builds and draws nothing, so nothing earlier needs pinning) and pin plain
+/// post, no shadows and AO off, so the frame they draw over changes only with what they show;
+/// the wireframe and overdraw keep fog for its cards.
+pub fn scenes() -> [Scene; 75] {
     [
         Scene {
             name: "turntable-start",
@@ -1730,6 +1733,109 @@ pub fn scenes() -> [Scene; 71] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The debug views (M1 F5), drawn over the frame after post. The wireframe low over the
+        // grass beside a bush, the character beyond, under temporal AA: every shading family's
+        // edges in its tone (the grass and bush green, the courtyard cyan, the character orange,
+        // the morning's fog cards among the pillars violet), hidden ones left out.
+        Scene {
+            name: "debug-wireframe",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--foliage",
+                "ground",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--shadows",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "wireframe",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Overdraw in the grove: fragments shaded per pixel, the sky and the ground one each, the
+        // trees' cards and the grass stacking up, the fog cards over the courtyard's back, and
+        // the character's outline one more around it.
+        Scene {
+            name: "debug-overdraw",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--foliage",
+                "grove",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--shadows",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "overdraw",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The light lists (the light-cluster heatmap) with the three colored local lights around
+        // the character in the courtyard: each pixel's cluster count, the clusters' tiles and
+        // depth slices showing where the lights' ranges reach the ground, the pedestal and the
+        // character.
+        Scene {
+            name: "debug-lights",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--environment",
+                "--lights",
+                "--aa",
+                "taa",
+                "--capture-frames",
+                "32",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "lights",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same on Mobile-Low (4× MSAA), whose per-object lists have no clusters: each
+        // instance's own list, 0 to 4 lights, over its pixels.
+        Scene {
+            name: "debug-lights-mobile",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--environment",
+                "--lights",
+                "--tier",
+                "mobile-low",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-view",
+                "lights",
+            ],
+            thresholds: Thresholds::default(),
+        },
     ]
 }
 
@@ -1964,6 +2070,17 @@ mod tests {
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_debug_scenes_show_a_debug_view_and_each_its_own() {
+        for scene in scenes() {
+            let view = scene.args.windows(2).find(|pair| pair[0] == "--debug-view").map(|pair| pair[1]);
+            match scene.name.strip_prefix("debug-") {
+                Some(name) => assert!(view.is_some_and(|view| name.starts_with(view)), "{}", scene.name),
+                None => assert_eq!(view, None, "{}", scene.name),
             }
         }
     }

@@ -5,8 +5,9 @@
 //! - a pushed pack is served in place of the app's own and remounted ([`Content::apply_pack`]):
 //!   the assets whose bytes changed reload behind their handles, and the push is answered once
 //!   their new versions are uploaded, with each one's generation;
-//! - a document goes to the owner of the type its envelope names ([`Document`]): the default
-//!   day's timeline, the character light rig presets or the screen effect presets;
+//! - a document goes to the owner of the type its envelope names ([`Document`]): the day's
+//!   timeline (from the day's own file only, so pushing the default day can't replace the
+//!   look-dev stage's), the character light rig presets or the screen effect presets;
 //! - shader sources replace those files in what the renderer builds with;
 //! - a cvar is set through the overlay's registry, as the console does;
 //! - a capture is answered with the next frame the app draws ([`FrameCapture`]): the windowed
@@ -175,10 +176,10 @@ impl Link {
                         refuse(&mut self.errors, reply, error);
                         continue;
                     };
-                    match document.apply(&text, scene, renderer) {
-                        Ok(()) => {
-                            tracing::info!(target: LOG_TARGET, origin, "live link replaced the {}", document.name());
-                            reply.reply(ReplyBody::DocumentApplied { owner: document.name().to_owned() });
+                    match document.apply(&origin, &text, scene, renderer) {
+                        Ok(replaced) => {
+                            tracing::info!(target: LOG_TARGET, origin, "live link replaced the {replaced}");
+                            reply.reply(ReplyBody::DocumentApplied { owner: replaced.to_owned() });
                         }
                         Err(error) => refuse(&mut self.errors, reply, format!("{origin}: {error}")),
                     }

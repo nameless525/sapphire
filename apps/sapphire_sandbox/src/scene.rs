@@ -190,6 +190,40 @@ pub(crate) struct LookDev {
     pub figure: Figure,
 }
 
+/// The day time of day runs on, by the document it comes from ([`Scene::day`]), for `dev`
+/// builds, which replace it from hot reload and live link. Both days are timelines
+/// (`TodTimeline`), so a timeline replaces the day only from the day's own file: the default
+/// day, which `cargo xtask link watch` pushes whenever it changes, can't replace the look-dev
+/// stage's ([`Scene::replace_day`]).
+#[cfg(any(test, feature = "dev"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Day {
+    /// The engine's default day, `crates/sapphire_world/default_day.ron`.
+    Default,
+    /// The look-dev stage's own (`--look-dev`), `content/lookdev/lookdev_day.ron`
+    /// ([`lookdev::day`]).
+    LookDev,
+}
+
+#[cfg(any(test, feature = "dev"))]
+impl Day {
+    /// The name of the file it comes from.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Default => "default_day.ron",
+            Self::LookDev => "lookdev_day.ron",
+        }
+    }
+
+    /// What it is, in messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default day",
+            Self::LookDev => "look-dev day",
+        }
+    }
+}
+
 /// How the scene's characters fade (M1 C7; [`CharacterInstance::opacity`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) enum Fade {
@@ -1072,6 +1106,32 @@ impl Scene {
         self.ecs.world_mut().resource_mut()
     }
 
+    /// The day time of day runs on: the look-dev stage's own once the stage is built (it sets
+    /// the timeline with the town, [`Scene::spawn_look_dev`]), the default day otherwise.
+    #[cfg(any(test, feature = "dev"))]
+    pub fn day(&self) -> Day {
+        if self.town.is_some() { Day::LookDev } else { Day::Default }
+    }
+
+    /// Replaces the day's timeline with `timeline`, read from `origin` (a path or a file name),
+    /// if `origin` is the day's own document ([`Day::file_name`]) and the timeline is complete,
+    /// and says which day it replaced; otherwise keeps the day. Hot reload and live link both
+    /// come through here.
+    #[cfg(any(test, feature = "dev"))]
+    pub fn replace_day(&mut self, origin: &str, timeline: TodTimeline) -> Result<Day, String> {
+        let day = self.day();
+        let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
+        if name != Some(day.file_name()) {
+            return Err(format!(
+                "the scene runs on the {} ({}), which only that file replaces",
+                day.name(),
+                day.file_name()
+            ));
+        }
+        self.time_of_day_mut().set_timeline(timeline).map_err(|error| error.to_string())?;
+        Ok(day)
+    }
+
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.
     pub fn set_character_mesh(&mut self, mesh: MeshHandle) {
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
@@ -1277,6 +1337,46 @@ mod tests {
         let full = lookdev::LAMP_INTENSITY * lookdev::LAMPS.len() as f32;
         assert!((midnight - full).abs() < 1e-3, "lamps at full by night: {midnight}");
         assert!(posed.is_empty(), "a held pose isn't sent again");
+    }
+
+    #[test]
+    fn a_timeline_replaces_the_day_only_from_the_days_own_file() {
+        let look = || {
+            let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
+            let pose = RenderPose { palette: Vec::new(), morph_weights: Vec::new() };
+            let figure = Figure { head: Vec3::Y, feet: Vec3::ZERO, body_radius: 0.16, face: Quat::IDENTITY };
+            LookDev { town, fog_cards: None, pose, figure }
+        };
+        // Two complete timelines that differ, standing for an edit of either file.
+        let (default_day, stage_day) = (TodTimeline::default_day(), lookdev::day());
+        assert_ne!(default_day, stage_day);
+
+        // A scene on the default day: its own file replaces it (by name, from any directory); the
+        // look-dev day's doesn't.
+        let mut scene = scene();
+        assert_eq!(scene.day(), Day::Default);
+        let error =
+            scene.replace_day("lookdev_day.ron", stage_day.clone()).expect_err("not this scene's day");
+        assert!(error.contains("default day (default_day.ron)"), "names the day's file: {error}");
+        assert_eq!(scene.time_of_day().timeline(), &default_day, "kept");
+        let replaced = scene.replace_day("crates/sapphire_world/default_day.ron", stage_day.clone());
+        assert_eq!(replaced, Ok(Day::Default));
+        assert_eq!(scene.time_of_day().timeline(), &stage_day);
+
+        // The look-dev stage runs on its own day: the default day's file, which the tool's `watch`
+        // pushes whenever it changes, leaves it alone, and the stage's own file replaces it.
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        scene.spawn_look_dev(Shot::Hero, look());
+        assert_eq!(scene.day(), Day::LookDev);
+        let revision = scene.time_of_day().revision();
+        let error =
+            scene.replace_day("default_day.ron", default_day.clone()).expect_err("not the stage's day");
+        assert!(error.contains("look-dev day (lookdev_day.ron)"), "{error}");
+        assert_eq!(scene.time_of_day().timeline(), &stage_day, "the stage keeps its day");
+        assert_eq!(scene.time_of_day().revision(), revision, "untouched");
+        let replaced = scene.replace_day("content/lookdev/lookdev_day.ron", default_day.clone());
+        assert_eq!(replaced, Ok(Day::LookDev));
+        assert_eq!(scene.time_of_day().timeline(), &default_day);
     }
 
     #[test]

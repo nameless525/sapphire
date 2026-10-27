@@ -9,7 +9,8 @@
 //!   versions within the frame's upload budget, in place;
 //! - new shader sources rebuild the renderer's pipelines from the next frame, or keep the ones it
 //!   has if they don't compile;
-//! - an edited timeline replaces time of day's base timeline;
+//! - an edited timeline replaces time of day's base timeline if it is the file of the day the
+//!   scene runs on ([`Scene::replace_day`]);
 //! - edited presets replace the scene's (the `LightRigLibrary` resource); characters keep their
 //!   preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
@@ -37,14 +38,15 @@ use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
 use crate::content::Content;
-use crate::scene::Scene;
+use crate::scene::{Day, Scene};
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Document {
     /// The day's timeline (`default_day.ron`, or the look-dev day with `--look-dev`): it replaces
-    /// time of day's base timeline, if it parses and is complete.
-    DefaultDay,
+    /// time of day's base timeline, if it comes from the file of the day the scene runs on
+    /// ([`Scene::replace_day`]), parses and is complete.
+    Day,
     /// The character light rig presets (`default_light_rigs.ron`): they replace the scene's
     /// library, if they parse and are valid; characters keep their preset IDs.
     LightRigs,
@@ -54,7 +56,7 @@ pub(crate) enum Document {
 }
 
 impl Document {
-    const ALL: [Self; 3] = [Self::DefaultDay, Self::LightRigs, Self::ScreenEffects];
+    const ALL: [Self; 3] = [Self::Day, Self::LightRigs, Self::ScreenEffects];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -63,7 +65,7 @@ impl Document {
 
     fn type_name(self) -> &'static str {
         match self {
-            Self::DefaultDay => stable_name::<TodTimeline>(),
+            Self::Day => stable_name::<TodTimeline>(),
             Self::LightRigs => stable_name::<LightRigLibrary>(),
             Self::ScreenEffects => stable_name::<EffectLibrary>(),
         }
@@ -72,42 +74,52 @@ impl Document {
     /// What it is, in messages.
     pub fn name(self) -> &'static str {
         match self {
-            Self::DefaultDay => "default day",
+            Self::Day => "day",
             Self::LightRigs => "light rigs",
             Self::ScreenEffects => "screen effects",
         }
     }
 
-    /// Parses `text` and swaps it into `scene`, or says why it keeps what it has. New screen
-    /// effect presets have `renderer` prewarm their post variants, which the overlay may fire.
-    pub fn apply(self, text: &str, scene: &mut Scene, renderer: &mut Renderer) -> Result<(), String> {
+    /// Parses `text`, read from `origin` (a path or a file name), and swaps it into `scene`,
+    /// returning what it replaced, or says why it keeps what it has. A timeline replaces the day
+    /// only from the file of the day the scene runs on, so the default day can't replace the
+    /// look-dev stage's ([`Scene::replace_day`]). New screen effect presets have `renderer`
+    /// prewarm their post variants, which the overlay may fire.
+    pub fn apply(
+        self,
+        origin: &str,
+        text: &str,
+        scene: &mut Scene,
+        renderer: &mut Renderer,
+    ) -> Result<&'static str, String> {
         match self {
-            Self::DefaultDay => {
-                TodTimeline::from_ron(text).map_err(|error| error_chain(&error)).and_then(|timeline| {
-                    scene.time_of_day_mut().set_timeline(timeline).map_err(|error| error.to_string())
-                })
+            Self::Day => {
+                let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
+                Ok(scene.replace_day(origin, timeline)?.name())
             }
             Self::LightRigs => {
                 let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_light_rigs(rigs);
-                Ok(())
+                Ok(self.name())
             }
             Self::ScreenEffects => {
                 let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_effect_library(effects);
                 renderer.prewarm_post(scene.effect_variants());
-                Ok(())
+                Ok(self.name())
             }
         }
     }
 }
 
-/// The timeline document the scene's day comes from: the default day's, or the look-dev day's
-/// with `--look-dev` (in the repository this build was compiled from, as `sources` finds the
-/// engine's own).
+/// The timeline document the scene's day comes from ([`Day`]): the default day's, or the
+/// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
+/// finds the engine's own).
 pub(crate) fn day_source(options: &crate::options::Options) -> PathBuf {
     match options.look_dev {
-        Some(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/lookdev_day.ron"),
+        Some(_) => {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev").join(Day::LookDev.file_name())
+        }
         None => sources::default_day(),
     }
 }
@@ -117,8 +129,8 @@ pub(crate) struct Reload {
     hot: Option<HotReload>,
     /// What is watched, or why nothing is.
     watching: String,
-    /// The watched documents.
-    documents: Vec<(DocumentId, Document)>,
+    /// The watched documents, with their files' names.
+    documents: Vec<(DocumentId, Document, String)>,
     /// The shader sources the renderer builds with since an edit replaced the compiled-in ones:
     /// a new renderer (a tier change, device loss) gets them too.
     shaders: Option<ShaderSources>,
@@ -167,13 +179,16 @@ impl Reload {
             Err(error) => warn("the shaders", &error),
         }
         for (document, path, what) in [
-            (Document::DefaultDay, day.to_owned(), "the day"),
+            (Document::Day, day.to_owned(), "the day"),
             (Document::LightRigs, sources::default_light_rigs(), "the light rigs"),
             (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
         ] {
             match hot.watch_document(&path) {
                 Ok(id) => {
-                    reload.documents.push((id, document));
+                    // Its file's name, which says which day a timeline is.
+                    let origin =
+                        path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                    reload.documents.push((id, document, origin));
                     watched.push(what);
                 }
                 Err(error) => warn(what, &error),
@@ -244,15 +259,16 @@ impl Reload {
             self.remember_shaders(renderer);
         }
         for (id, text) in documents {
-            let Some(&(_, document)) = self.documents.iter().find(|(watched, _)| *watched == id) else {
+            let Some((_, document, origin)) = self.documents.iter().find(|(watched, ..)| *watched == id)
+            else {
                 continue;
             };
-            match document.apply(&text, scene, renderer) {
-                Ok(()) => {
+            match document.apply(origin, &text, scene, renderer) {
+                Ok(replaced) => {
                     self.reloaded_documents += 1;
-                    tracing::info!(target: LOG_TARGET, "{} reloaded", document.name());
+                    tracing::info!(target: LOG_TARGET, "{replaced} reloaded");
                 }
-                Err(error) => errors.push(format!("{}: {error}", document.name())),
+                Err(error) => errors.push(format!("{origin}: {error}")),
             }
         }
         for error in &errors {

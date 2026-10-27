@@ -2447,7 +2447,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 - **As built (review BC-003, BC-004, BC-005, DT-007):**
   - **Info.plist:** the template's `$(NAME)` placeholders are filled in one pass and each value is escaped for XML, so a display name may hold `&`, `<` or `$(` and comes out as written. Unknown placeholders are still refused, and so are display names with control characters.
-  - **iOS signing:** the profile's entitlements are signed with their wildcards expanded as Xcode does. A wildcard App ID's `application-identifier`, and a keychain access group that is a wildcard of the App ID's prefix, become `<prefix>.<bundle id>`; the rest is signed as the profile has it. No device has checked it yet.
+  - **iOS signing:** an exact App ID's profile is signed with its entitlements as they are. A wildcard App ID's are expanded as Xcode does: its `application-identifier`, and a keychain access group that is a wildcard of the App ID's prefix, become `<prefix>.<bundle id>`, and the rest is signed as the profile has it. No device has checked it yet.
   - **`run --platform android`** succeeds only once SDL logs that the app's main function returned. A process that ends without it fails, naming the crash's log line if there is one, and so do a logcat that exits under a running app and a device that drops. SDL's line carries no exit status, so an app that returns failure from main still passes.
   - **`run --platform macos --features dev`** points the bundled app at `target/content/desktop/` through `SAPPHIRE_CONTENT_DIR`, unless the caller set it, so hot reload sees recooks. Other runs read the bundle's own copy, as players do.
 

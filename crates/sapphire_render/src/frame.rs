@@ -591,9 +591,10 @@ impl CharacterInstance {
 ///
 /// The instances listed with equal bodies are one character, which casts one shadow; a character
 /// drawn as several instances lists the same body with each (and the same state, so its parts
-/// share one entry: see [`CharacterInstance`]). Capsule AO (W5) will read the body too. A body
-/// of radius 0 (the default) casts no shadow of a character's own: the character still
-/// receives the world's.
+/// share one entry: see [`CharacterInstance`]). Capsule AO (W5) reads the body too: each
+/// character's ambient takes what the other bodies leave of it, each body once however many
+/// instances list it. A body of radius 0 (the default) casts no shadow of a character's own,
+/// nor capsule AO: the character still receives the world's.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CharacterBody {
     pub base: Vec3,

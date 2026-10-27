@@ -469,6 +469,9 @@ impl CharacterUpload<'_> {
     }
 }
 
+/// The group of an entry whose body casts nothing, or that no instance reads.
+const NO_GROUP: u32 = u32::MAX;
+
 /// A body's bits, −0 taken as 0: bodies that compare equal (valid ones are finite) have the
 /// same key.
 type BodyKey = [u32; 7];
@@ -504,8 +507,18 @@ struct CharacterList {
     /// packet), and the entry made before it with the same body that casts, 0 for none.
     sources: Vec<u32>,
     same_body: Vec<u32>,
-    /// While the frame's entries are built: the last entry made with each body that casts.
+    /// While the frame's entries are built, the last entry made with each body that casts; once
+    /// they are, each such body's group.
     by_body: HashMap<BodyKey, u32>,
+    /// Per entry of the frame being built: whether an instance reads it, and its body's group
+    /// (an index into `occluders`), or [`NO_GROUP`].
+    read: Vec<bool>,
+    groups: Vec<u32>,
+    /// The bodies that cast of the entries instances read, each once, in entry order: the
+    /// frame's characters as capsule AO counts them.
+    occluders: Vec<CharacterBody>,
+    /// Per occluder: what capsule AO from the others leaves of the ambient light around it.
+    visibilities: Vec<f32>,
     /// Per instance slot: how far its character has faded this frame, 0 for none (M1 C7).
     fades: Vec<f32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
@@ -523,7 +536,8 @@ impl CharacterList {
     /// entry. Points each of those instances at its entry and gives it its fade, and every
     /// instance the last frame listed but this one doesn't back at the fallback, whole. With
     /// `capsule_ao`, each character's ambient takes what the others' bodies leave of it
-    /// ([`capsule_visibility`]). Returns whether the entries changed.
+    /// ([`capsule_visibility`]), each body once however many entries carry it. Returns whether
+    /// the entries changed.
     fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots, capsule_ao: bool) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
@@ -571,10 +585,19 @@ impl CharacterList {
             self.next[slot as usize] = entry;
             self.fades[slot as usize] = character.fade();
         }
+        self.group_bodies();
         if capsule_ao {
-            for (entry, body) in self.entries.iter_mut().zip(&self.bodies).skip(1) {
-                let visibility = capsule_visibility(body, &self.bodies[1..]);
-                entry.ambient = entry.ambient.occluded(visibility);
+            // Each character's body occludes once, however many instances list it (M1 review
+            // RS-002), and every entry with one body sees the same others.
+            let occluders = &self.occluders;
+            self.visibilities.clear();
+            self.visibilities.extend(occluders.iter().map(|body| capsule_visibility(body, occluders)));
+            for (entry, gpu) in self.entries.iter_mut().enumerate().skip(1) {
+                let visibility = match self.groups[entry] {
+                    NO_GROUP => capsule_visibility(&self.bodies[entry], occluders),
+                    group => self.visibilities[group as usize],
+                };
+                gpu.ambient = gpu.ambient.occluded(visibility);
             }
         }
         for &slot in self.listed.iter().chain(&self.listing) {
@@ -600,6 +623,33 @@ impl CharacterList {
             entry = self.same_body[entry as usize];
         }
         None
+    }
+
+    /// Groups the bodies of the entries an instance reads, in entry order: each body that casts
+    /// goes into `occluders` once, and each entry's group into `groups`. An entry no instance
+    /// reads (one made for an instance listed again in another state) belongs to no group.
+    fn group_bodies(&mut self) {
+        self.read.clear();
+        self.read.resize(self.entries.len(), false);
+        for &slot in &self.listing {
+            self.read[self.next[slot as usize] as usize] = true;
+        }
+        self.by_body.clear();
+        self.occluders.clear();
+        self.groups.clear();
+        for (entry, body) in self.bodies.iter().enumerate() {
+            let group = if self.read[entry] && body.casts() {
+                let next = u32::try_from(self.occluders.len()).expect("fewer than 2³² bodies");
+                let group = *self.by_body.entry(body_key(body)).or_insert(next);
+                if group == next {
+                    self.occluders.push(*body);
+                }
+                group
+            } else {
+                NO_GROUP
+            };
+            self.groups.push(group);
+        }
     }
 
     /// Makes an entry for `character`, the packet's listing `source`, under the frame's
@@ -924,5 +974,53 @@ mod tests {
         apart.characters[2].opacity = 0.5;
         list.update(&apart, &mut slots, false);
         assert_eq!((0..3).map(|id| entry_of(&slots, id)).collect::<Vec<_>>(), [1, 2, 3]);
+    }
+
+    #[test]
+    fn capsule_ao_counts_each_neighbor_once_however_many_instances_list_it() {
+        // A receiver beside a neighbor whose body is listed with 1, 2, 4 and 8 instances, each
+        // under its own key light (so they don't share an entry), then the same with the
+        // receiver split in two: its ambient is the same every time.
+        let receiver = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        let neighbor = CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
+        let visibility = |receivers: u64, neighbors: u64| {
+            let count = receivers + neighbors;
+            let mut slots = slots(0..count);
+            let mut list = CharacterList::default();
+            let listed: Vec<(u64, f32)> = (0..count).map(|id| (id, 1.0 + id as f32)).collect();
+            let mut frame = packet(&listed);
+            frame.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+            for (index, character) in frame.characters.iter_mut().enumerate() {
+                character.body = if (index as u64) < receivers { receiver } else { neighbor };
+            }
+            list.update(&frame, &mut slots, true);
+            (0..receivers)
+                .map(|id| list.entries[entry_of(&slots, id) as usize].ambient.axis[3])
+                .collect::<Vec<_>>()
+        };
+        let once = visibility(1, 1)[0];
+        assert!(once < 1.0, "the neighbor occludes: {once}");
+        for (receivers, neighbors) in [(1, 2), (1, 4), (1, 8), (2, 1), (2, 8)] {
+            let got = visibility(receivers, neighbors);
+            assert!(got.iter().all(|&v| v == once), "{receivers} × {neighbors}: {got:?}, once {once}");
+        }
+    }
+
+    #[test]
+    fn a_body_no_instance_keeps_occludes_nothing() {
+        // Instance 1 is listed beside the receiver, then again far away: it reads its second
+        // entry, so its first body is no one's and darkens nothing.
+        let mut slots = slots(0..2);
+        let mut list = CharacterList::default();
+        let mut frame = packet(&[(0, 1.0), (1, 1.0), (1, 2.0)]);
+        frame.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+        frame.characters[0].body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.3);
+        frame.characters[1].body =
+            CharacterBody::capsule(Vec3::new(0.5, 0.0, 0.0), Vec3::new(0.5, 1.0, 0.0), 0.3);
+        frame.characters[2].body =
+            CharacterBody::capsule(Vec3::new(9.0, 0.0, 0.0), Vec3::new(9.0, 1.0, 0.0), 0.3);
+        list.update(&frame, &mut slots, true);
+        assert_eq!(entry_of(&slots, 1), 3, "its last entry");
+        assert_eq!(list.entries[1].ambient.axis[3], 1.0, "nothing near the receiver");
     }
 }

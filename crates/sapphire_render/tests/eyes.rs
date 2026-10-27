@@ -615,6 +615,73 @@ fn the_iris_shifts_behind_the_cornea_as_the_view_turns() {
 
 #[test]
 #[ignore = "needs a GPU adapter"]
+fn a_parallax_eye_cuts_out_where_its_surface_does() {
+    // Review RS-004. The parallax fake moves what the eye shows (the iris behind the cornea), but
+    // its alpha test cuts the eye's own surface, at its own texture coordinates, as the character
+    // and scene prepasses cut it: so the eye depth mask its layers blend within is the eye drawn,
+    // and no layer paints over a hole cut in it, whatever the view.
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(a, e)| (a - e).abs() < TOLERANCE);
+    let (over_eye, over_hole) = (mix(WHITE, IRIS, 0.5), mix(BACKDROP, IRIS, 0.5));
+    for msaa in [Msaa::Off, Msaa::X4] {
+        let mut harness = Harness::with_msaa(msaa);
+        // The eye's map: white, opaque from u = 0.5 to 0.85 and cut out elsewhere, so a shift
+        // of 0.1 either way never wraps round to the opaque part.
+        let clear = [255, 255, 255, 0];
+        harness.upload_eye_map(64, |u, _| if (0.5..0.85).contains(&u) { [255; 4] } else { clear });
+        let eye = EyeShading { parallax: 0.2, ..layer(EyeLayer::Eye) };
+        let document = AnimeCharacterMaterial {
+            base_color_map: Some(id(EYE_MAP)),
+            ..flat_material(CharacterSurface::Eye(eye), WHITE, AlphaMode::Mask { cutoff: 0.5 }, 1.0)
+        };
+        let white = harness.material(&document);
+        let iris = harness.material(&layer_material(layer(EyeLayer::Iris), IRIS, 0.5));
+        let parts = [rect((-0.5, -0.5), (0.5, 0.5), 0.0), rect((-0.4, -0.4), (0.4, 0.4), 0.01)];
+        let mesh = harness.mesh(&parts, &[white, iris]);
+        harness.character(mesh);
+        // A gray backdrop behind the eye that isn't a character, so a hole can't pass for black.
+        let backdrop = flat_material(CharacterSurface::Body, BACKDROP, AlphaMode::Opaque, 1.0);
+        let backdrop = harness.material(&backdrop);
+        let backdrop = harness.mesh(&[rect((-3.0, -3.0), (3.0, 3.0), -0.3)], &[backdrop]);
+        harness.added.push(MeshInstance { id: InstanceId(1000), mesh: backdrop, transform: Mat4::IDENTITY });
+        // Head-on the parallax shifts nothing; at 30° it would move the cut 0.1 along u.
+        for angle in [0.0f32, 30.0, -30.0] {
+            harness.view(Vec3::new(angle.to_radians().sin(), 0.0, angle.to_radians().cos()), 4.0, 38.0);
+            let frame = harness.render();
+            let what = format!("{msaa:?} at {angle}°");
+            let (iris, hole) = (frame.at(Vec3::new(0.2, 0.0, 0.01)), frame.at(Vec3::new(-0.2, 0.0, 0.01)));
+            assert_near(iris, over_eye, &format!("{what}: the iris over the eye"));
+            assert_near(hole, BACKDROP, &format!("{what}: the eye's hole"));
+            // The cut stays at u = 0.5: on the row above the iris, the eye starts at x = 0.
+            let (cut, row) = frame.project(Vec3::new(0.0, 0.45, 0.0));
+            let first = (0..SIDE as usize).find(|&x| near(frame.linear(x, row as usize), WHITE));
+            let first = first.expect("the eye on its row") as f32 + 0.5;
+            assert!((first - cut).abs() < 1.5, "{what}: the eye starts at {first}, its cut at {cut}");
+            // Nowhere does the iris blend over the hole, nor leave the eye bare inside it (the
+            // rectangle inside its corners, which perspective moves apart).
+            let corner = |x: f32, y: f32| frame.project(Vec3::new(x, y, 0.01));
+            let [top_left, top_right, bottom_left, bottom_right] =
+                [corner(-0.4, 0.4), corner(0.4, 0.4), corner(-0.4, -0.4), corner(0.4, -0.4)];
+            let (left, right) = (top_left.0.max(bottom_left.0), top_right.0.min(bottom_right.0));
+            let (top, bottom) = (top_left.1.max(top_right.1), bottom_left.1.min(bottom_right.1));
+            let inside = |x: usize, y: usize| {
+                let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
+                x > left + 2.0 && x < right - 2.0 && y > top + 2.0 && y < bottom - 2.0
+            };
+            let (mut through_hole, mut bare) = (0, 0);
+            for y in 0..SIDE as usize {
+                for x in 0..SIDE as usize {
+                    let pixel = frame.linear(x, y);
+                    through_hole += usize::from(near(pixel, over_hole));
+                    bare += usize::from(inside(x, y) && near(pixel, WHITE));
+                }
+            }
+            assert_eq!((through_hole, bare), (0, 0), "{what}: the iris over a hole, the eye bare under it");
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
 fn highlights_drift_and_sparkle_on_the_frames_clock() {
     let mut harness = Harness::new();
     let motion = HighlightMotion { drift: 0.1, drift_rate: 0.25, sparkle: 1.0, sparkle_rate: 0.5 };

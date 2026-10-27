@@ -162,7 +162,9 @@
 //   (× the eye mask's R, or a dome over the iris ellipse, or whole), offset-limited (Welsh: the
 //   view's along-surface part, not divided by N·V, so it never runs off at grazing angles), along
 //   the surface by the gradients of u and v from screen derivatives, as `mapped_normal` finds
-//   them. The pupil shifts against the limbal ring as the view turns.
+//   them. The pupil shifts against the limbal ring as the view turns. An alpha-tested eye's cut
+//   stays the cornea's: its alpha test reads the base color's alpha at the unshifted coordinates,
+//   as the masked prepasses do (review RS-004); a blended iris's coverage moves with its color.
 // - Highlights live (`highlight_drift`, `highlight_sparkle`): each drifts along a Lissajous curve
 //   across the model's front in the vertex stage and glints in a short pulse, brighter and its
 //   coverage with it, so its soft edge swells; both on the frame's clock (R4: the packet's
@@ -1079,8 +1081,19 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
         base_uv = iris_parallax(material, uv, in.world_normal, in.world_position, position_dx, position_dy);
     }
     var base = materials[material].base_color;
+    // The alpha test's coverage: the base color's alpha, which an alpha-tested eye with a depth
+    // reads at its own coordinates (review RS-004). The parallax moves what shows under the
+    // cornea, never the cornea's edge, so the eye cuts where the masked prepasses cut it
+    // (prepass.wgsl) and its layers' eye depth mask is the eye drawn.
+    let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
+    var coverage = base.a;
     if material_has_texture(modes, CHARACTER_BASE_COLOR) {
         base *= sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, base_uv);
+        coverage = base.a;
+        if PERMUTATION_EYE && PERMUTATION_ALPHA_TEST && alpha_tested && materials[material].surface.x > 0.0 {
+            let surface_alpha = sample_material(base_color_map, swizzles, CHARACTER_BASE_COLOR, uv).a;
+            coverage = materials[material].base_color.a * surface_alpha;
+        }
     }
     var surface: CharacterSurface;
     surface.albedo = base.rgb;
@@ -1245,9 +1258,8 @@ fn shade_character(in: CharacterVaryings) -> ShadedCharacter {
     // and the lighting follow; single pixels at the entry points' one exit
     // (docs/conventions.md).
     var kept = true;
-    let alpha_tested = (modes.x & CHARACTER_FLAG_ALPHA_TEST) != 0u;
     if PERMUTATION_ALPHA_TEST && alpha_tested {
-        kept = base.a >= materials[material].split.w;
+        kept = coverage >= materials[material].split.w;
     }
     var fade = 0.0;
     if PERMUTATION_ALPHA_TEST || PERMUTATION_TRANSPARENT {

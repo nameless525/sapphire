@@ -118,7 +118,9 @@ override FADE_SAMPLES: u32 = 1u;
 
 // Whether a masked prepass keeps the pixel at `pixel` of an anime character surface drawn with
 // `material` at `uv` (with its screen derivatives), of character entry `character` faded by
-// `fade`: not cut by its alpha test, nor left out by its dither.
+// `fade`: not cut by its alpha test, nor left out by its dither. The alpha test reads the
+// surface's own coordinates, as the main pass's does: an eye's parallax moves its color alone
+// (`iris_parallax` in anime_character.wgsl, review RS-004).
 fn masked_keeps(material: u32, uv: MaterialUv, pixel: vec2<f32>, fade: f32, character: u32) -> bool {
     let modes = materials[material].modes;
     var alpha = materials[material].base_color.a;

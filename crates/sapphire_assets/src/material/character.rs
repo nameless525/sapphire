@@ -464,7 +464,8 @@ pub struct EyeShading {
     pub mask_map: Option<AssetId>,
     /// How far below the cornea the iris lies at its deepest, in meters: the parallax
     /// refraction fake's depth on the eye and iris layers (M1 C6). 0 turns it off. A few
-    /// millimeters suit an anime eye a few centimeters wide.
+    /// millimeters suit an anime eye a few centimeters wide. An alpha-tested eye still cuts out at
+    /// its own texture coordinates, the cornea's edge: the depth moves only what shows inside it.
     pub parallax: f32,
     /// Where the iris lies in the layer's texture coordinates, for the parallax's dome.
     pub iris: Option<IrisShape>,

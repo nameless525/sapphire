@@ -1,5 +1,6 @@
 //! The sandbox [`App`]: window, GPU, renderer, clocks and the frame loop.
 
+use std::fmt;
 use std::time::Duration;
 
 use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
@@ -9,7 +10,7 @@ use sapphire_platform::{
 };
 use sapphire_render::graph::{FrameGraph, GraphError, GraphExecutor};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
-use sapphire_render::{MaterialHandle, MeshHandle, RenderSettings, Renderer};
+use sapphire_render::{AmbientOcclusion, MaterialHandle, MeshHandle, RenderSettings, Renderer};
 use sapphire_rhi::{
     GpuContext, GpuContextDesc, GpuDebug, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, PresentPolicy,
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget, wgpu,
@@ -59,6 +60,8 @@ pub struct SandboxApp {
     gpu: GpuContext,
     window: Window,
     recovery: SurfaceRecovery,
+    /// Devices lost while renderers were made, and what the next one is made with.
+    losses: CreationLosses,
     /// How the GPU stack is built, kept to rebuild it after device loss.
     gpu_debug: GpuDebug,
     /// The surface's format, which the renderer and the overlay draw into.
@@ -116,7 +119,7 @@ impl App for SandboxApp {
             object_labels: base.object_labels && !(info.is_emulator && info.os == Os::Android),
             ..base
         };
-        let device = create_device(platform, &window, debug)?;
+        let mut device = create_device(platform, &window, debug)?;
         // The tier comes from the device the GPU stack runs on; the renderer is made for it.
         let profile = DeviceProfile::new(info.device_class, device.gpu.caps(), info.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
@@ -128,13 +131,25 @@ impl App for SandboxApp {
             content.keep_character_mesh();
         }
         content.override_materials(options.material_overrides());
-        let mut renderer = create_renderer(
-            &mut content,
-            &device.gpu,
-            device.format,
-            options.render_settings(quality.render_settings()),
-            &options,
-        )?;
+        // A device lost while the renderer is made gets a new device and another try, under
+        // `CreationLosses`' policy, rather than a renderer of dead objects.
+        let mut losses = CreationLosses::default();
+        let mut renderer = loop {
+            let settings = losses.settings(options.render_settings(quality.render_settings()));
+            match create_renderer(&mut content, &device.gpu, device.format, settings, &options) {
+                Ok(renderer) => {
+                    losses.built();
+                    break renderer;
+                }
+                Err(error) if device.gpu.is_lost() => {
+                    losses.lost(&settings, quality.active().id, &error).map_err(AppInitError::msg)?;
+                    // The old surface goes before a new one is made for the same window.
+                    drop(device);
+                    device = create_device(platform, &window, debug)?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
@@ -210,6 +225,7 @@ impl App for SandboxApp {
             gpu: device.gpu,
             window,
             recovery: SurfaceRecovery::default(),
+            losses,
             gpu_debug: debug,
             format: device.format,
             quality,
@@ -282,14 +298,16 @@ impl App for SandboxApp {
             return self.frame_limit_control().unwrap_or(AppControl::Continue);
         }
         if self.gpu.is_lost() {
-            if self.recovery.due(self.real.elapsed()) {
-                self.recover_from_device_loss(platform);
+            if self.recovery.due(self.real.elapsed()) && self.recover_from_device_loss(platform).is_err() {
+                return AppControl::Fail;
             }
         } else if self.surface.is_none() && self.recovery.due(self.real.elapsed()) {
             self.rebuild_surface();
         }
         if !self.gpu.is_lost() {
-            self.follow_tier(platform);
+            if self.follow_tier(platform).is_err() {
+                return AppControl::Fail;
+            }
             // Packs, shaders and documents changed on disk, swapped in before loading.
             #[cfg(feature = "dev")]
             self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
@@ -562,8 +580,9 @@ impl SandboxApp {
     /// Rebuilds everything that lived on the lost device (instance, context, surface,
     /// renderer) and has the asset server upload every asset to it again, per the recovery contract on
     /// `GpuContext`. On failure the app keeps running without a GPU and [`SurfaceRecovery`]
-    /// paces the next attempt.
-    fn recover_from_device_loss(&mut self, platform: &Platform) {
+    /// paces the next attempt, made as [`CreationLosses`] says if the new device was lost too;
+    /// an error when it says to stop.
+    fn recover_from_device_loss(&mut self, platform: &Platform) -> Result<(), GaveUp> {
         tracing::warn!(target: LOG_TARGET, "GPU device lost; rebuilding the GPU stack");
         // The old surface has to go before a new one is created for the same native window.
         self.surface = None;
@@ -571,12 +590,15 @@ impl SandboxApp {
         self.recovery.attempted(self.real.elapsed());
         let settings = self.render_settings();
         let (content, options) = (&mut self.content, &self.options);
+        let mut lost = false;
         let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
-            let renderer = create_renderer(content, &device.gpu, device.format, settings, options)?;
+            let renderer = create_renderer(content, &device.gpu, device.format, settings, options)
+                .inspect_err(|_| lost = device.gpu.is_lost())?;
             Ok((device, renderer))
         });
         match stack {
             Ok((device, renderer)) => {
+                self.losses.built();
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
                 self.dev.recreate_gpu(&device.gpu, device.format);
@@ -593,25 +615,33 @@ impl SandboxApp {
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, "GPU stack rebuilt");
             }
+            Err(error) if lost => {
+                self.losses.lost(&settings, self.quality.active().id, &error).map_err(GaveUp::log)?;
+            }
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, retry_in = ?self.recovery.backoff, "GPU stack rebuild failed");
             }
         }
+        Ok(())
     }
 
-    /// The renderer settings: the quality tier's, with the command line's overrides.
+    /// The renderer settings: the quality tier's, with the command line's overrides, and GTAO off
+    /// if [`CreationLosses`] turned it off.
     fn render_settings(&self) -> RenderSettings {
-        self.options.render_settings(self.quality.render_settings())
+        self.losses.settings(self.options.render_settings(self.quality.render_settings()))
     }
 
     /// Follows `r.tier`: a new tier gets a new renderer with its settings, on the same device,
-    /// as after device loss, and its frame rate. If that fails the old tier and renderer stay.
-    fn follow_tier(&mut self, platform: &mut Platform) {
-        let Some(previous) = self.quality.update_tier() else { return };
+    /// as after device loss, and its frame rate. If that fails the old tier and renderer stay; if
+    /// it lost the device, it counts with [`CreationLosses`], and the recovery that follows
+    /// rebuilds at the old tier. An error when that policy says to stop.
+    fn follow_tier(&mut self, platform: &mut Platform) -> Result<(), GaveUp> {
+        let Some(previous) = self.quality.update_tier() else { return Ok(()) };
         self.steady = false;
         let settings = self.render_settings();
         match create_renderer(&mut self.content, &self.gpu, self.format, settings, &self.options) {
             Ok(renderer) => {
+                self.losses.built();
                 self.scene.set_meshes(&renderer);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
@@ -623,10 +653,14 @@ impl SandboxApp {
             }
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, tier = %self.quality.active().id, "no renderer for the quality tier; keeping the last one");
+                if self.gpu.is_lost() {
+                    self.losses.lost(&settings, self.quality.active().id, &error).map_err(GaveUp::log)?;
+                }
                 self.quality.restore(previous);
             }
         }
         platform.set_frame_rate(self.quality.frame_rate());
+        Ok(())
     }
 
     /// `--frames N`: exit successfully once N frames were presented, or fail once the run's
@@ -689,6 +723,102 @@ impl SurfaceRecovery {
 impl Default for SurfaceRecovery {
     fn default() -> Self {
         Self { next_attempt: Duration::ZERO, backoff: Self::INITIAL_BACKOFF }
+    }
+}
+
+/// What the app does when the GPU device is lost while a renderer is made: at startup, while the
+/// GPU stack is rebuilt after a loss, or for a new quality tier (QA-001). A device that is lost
+/// while the stack is made would otherwise be lost again on every attempt, rebuilding forever (the
+/// Android emulator lost its device building GTAO's pipelines on Mobile-High, every time).
+///
+/// - The first loss tries again with the same settings: a loss can be a one-off.
+/// - A second in a row tries again with GTAO off, capsule AO only, logged as a warning: the
+///   renderer's costliest pipelines to build, and what lost the emulator's device. GTAO stays off
+///   for the rest of the run, tier changes included.
+/// - A third in a row stops the app with an error.
+///
+/// A renderer made without losing the device ends the run of losses. Dev and release builds
+/// follow the same policy.
+#[derive(Debug, Default)]
+struct CreationLosses {
+    /// Devices lost in a row while renderers were made.
+    in_a_row: u32,
+    /// GTAO was turned off: two renderers in a row lost the device with it on.
+    gtao_off: bool,
+}
+
+impl CreationLosses {
+    /// Losses in a row after which the app stops.
+    const LIMIT: u32 = 3;
+
+    /// `settings`, with GTAO off if it was turned off.
+    fn settings(&self, mut settings: RenderSettings) -> RenderSettings {
+        if self.gtao_off && settings.ambient_occlusion.gtao.is_some() {
+            settings.ambient_occlusion = AmbientOcclusion { capsules: true, gtao: None };
+        }
+        settings
+    }
+
+    /// Counts a device lost while a renderer with `settings` was made for `tier`, failing with
+    /// `error`, and logs what follows: another try (with GTAO off from the second loss in a row),
+    /// or none, an error, from the [`Self::LIMIT`]th.
+    fn lost(
+        &mut self,
+        settings: &RenderSettings,
+        tier: impl fmt::Display,
+        error: &impl fmt::Display,
+    ) -> Result<(), GaveUp> {
+        self.in_a_row += 1;
+        let (losses, ambient_occlusion) = (self.in_a_row, settings.ambient_occlusion);
+        if losses >= Self::LIMIT {
+            return Err(GaveUp(format!(
+                "the GPU device was lost {losses} times in a row while the renderer was made \
+                 (tier {tier}, ambient occlusion {ambient_occlusion:?}); giving up: {error}"
+            )));
+        }
+        if losses == 2 && ambient_occlusion.gtao.is_some() {
+            self.gtao_off = true;
+            tracing::warn!(
+                target: LOG_TARGET,
+                %error,
+                %tier,
+                "GPU device lost twice in a row while the renderer was made; ambient occlusion \
+                 downgraded: GTAO off, capsule AO only, for the rest of the run"
+            );
+        } else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                %error,
+                %tier,
+                ?ambient_occlusion,
+                losses,
+                "GPU device lost while the renderer was made; trying again"
+            );
+        }
+        Ok(())
+    }
+
+    /// A renderer was made, and the device kept: the run of losses ends.
+    fn built(&mut self) {
+        self.in_a_row = 0;
+    }
+}
+
+/// [`CreationLosses`] stopped the app: why.
+#[derive(Debug)]
+struct GaveUp(String);
+
+impl GaveUp {
+    /// Logs why, for a stop after startup.
+    fn log(self) -> Self {
+        tracing::error!(target: LOG_TARGET, "{}", self.0);
+        self
+    }
+}
+
+impl fmt::Display for GaveUp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -826,7 +956,9 @@ struct SceneMeshes {
 /// `content` uploads to it from the start, and what `options` add beside it: the skinned stalk,
 /// the shader swatches and the material layer samples, whose materials `content` uploads too,
 /// the garment samples, the face test head, the rim rig, the courtyard, its fog cards, arcade and probe grid, the
-/// plants, the hard-edged outline sample, the stage and the look-dev town.
+/// plants, the hard-edged outline sample, the stage and the look-dev town. Fails if the device is
+/// lost while the renderer is made or the assets uploaded (`gpu.is_lost()` then says so), rather
+/// than hand back a renderer of dead objects.
 fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
@@ -889,6 +1021,13 @@ fn create_renderer(
             stage,
         };
         Ok((character, character_bounds, meshes, sky))
+    });
+    // Uploads to a lost device do nothing; the renderer would hold dead objects (QA-001).
+    let scene = scene.and_then(|scene| {
+        if gpu.is_lost() {
+            return Err(AppInitError::msg("the GPU device was lost while the assets were uploaded"));
+        }
+        Ok(scene)
     });
     match scene {
         Ok((character, character_bounds, meshes, sky)) => {
@@ -989,5 +1128,63 @@ mod tests {
         assert!(recovery.due(now));
         recovery.attempted(now);
         assert_eq!(recovery.next_attempt - now, at(250));
+    }
+
+    /// Mobile-High's settings: capsule AO and GTAO.
+    fn with_gtao() -> RenderSettings {
+        let ambient_occlusion =
+            AmbientOcclusion { capsules: true, gtao: Some(sapphire_render::GtaoSettings::DESKTOP) };
+        RenderSettings { ambient_occlusion, ..RenderSettings::default() }
+    }
+
+    #[test]
+    fn creation_losses_retry_then_turn_gtao_off_then_stop() {
+        let mut losses = CreationLosses::default();
+        let tier = "mobile-high";
+        assert_eq!(losses.settings(with_gtao()), with_gtao(), "nothing lost yet");
+
+        // The first loss tries again as it was.
+        let settings = losses.settings(with_gtao());
+        assert!(losses.lost(&settings, tier, &"lost").is_ok());
+        assert_eq!(losses.settings(with_gtao()), with_gtao());
+        // The second in a row turns GTAO off, keeping capsule AO.
+        assert!(losses.lost(&settings, tier, &"lost").is_ok());
+        let downgraded = losses.settings(with_gtao());
+        assert_eq!(downgraded.ambient_occlusion, AmbientOcclusion { capsules: true, gtao: None });
+        assert_eq!(
+            RenderSettings { ambient_occlusion: with_gtao().ambient_occlusion, ..downgraded },
+            with_gtao()
+        );
+        // The third in a row stops, saying why.
+        let error = losses.lost(&downgraded, tier, &"lost again").unwrap_err().to_string();
+        assert!(error.contains("3 times in a row") && error.contains("mobile-high"), "{error}");
+        assert!(error.contains("lost again"), "{error}");
+    }
+
+    #[test]
+    fn a_renderer_made_ends_the_run_of_losses_but_gtao_stays_off() {
+        let mut losses = CreationLosses::default();
+        for _ in 0..2 {
+            assert!(losses.lost(&with_gtao(), "mobile-high", &"lost").is_ok());
+        }
+        losses.built();
+        // Two more losses in a row are a new run: no stop yet.
+        let settings = losses.settings(with_gtao());
+        for _ in 0..2 {
+            assert!(losses.lost(&settings, "mobile-high", &"lost").is_ok());
+        }
+        assert!(losses.lost(&settings, "mobile-high", &"lost").is_err());
+        // GTAO stays off from the first downgrade on, for every tier that has it.
+        assert_eq!(losses.settings(with_gtao()).ambient_occlusion.gtao, None);
+        // Tiers without GTAO are as they were; and with GTAO already off, the second loss in a row
+        // has nothing to turn off, and tries again as it was.
+        let plain = RenderSettings::default();
+        assert_eq!(losses.settings(plain), plain);
+        let mut losses = CreationLosses::default();
+        for _ in 0..2 {
+            assert!(losses.lost(&plain, "mobile-low", &"lost").is_ok());
+        }
+        assert!(!losses.gtao_off);
+        assert!(losses.lost(&plain, "mobile-low", &"lost").is_err());
     }
 }

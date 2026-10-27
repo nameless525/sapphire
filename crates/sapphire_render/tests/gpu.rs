@@ -1706,3 +1706,105 @@ fn packed_meshes_draw_with_the_materials_and_textures_their_slots_name() {
     let center = linear_at(&read_back(&gpu, &target_texture), size, size.0 as usize / 2);
     assert_near(center, [0.2, 0.5, 0.8], "the packed texture, through the packed material");
 }
+
+/// A GPU device that is lost: destroyed, and the loss reported.
+fn lost_gpu() -> GpuContext {
+    let gpu = gpu();
+    gpu.device().destroy();
+    // wgpu reports a destroyed device once its queue drains, during a poll.
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    assert!(gpu.is_lost());
+    gpu
+}
+
+/// QA-001: a renderer made on a lost device is an error, not a cascade of validation errors from
+/// the dead objects it would hold (which stopped debug builds on the Android emulator).
+#[test]
+#[ignore = "needs a GPU"]
+fn renderers_report_a_lost_device() {
+    let gpu = lost_gpu();
+    let error = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect_err("no renderer");
+    assert!(matches!(error, RenderError::DeviceLost), "{error}");
+}
+
+/// QA-001: a shader build (hot reload, live link) whose device is lost before it is swapped in
+/// is answered with the loss, not swapped in as if it had built.
+#[test]
+#[ignore = "needs a GPU"]
+fn shader_builds_on_a_lost_device_are_answered_with_the_loss() {
+    use std::time::Duration;
+
+    use sapphire_render::{ShaderError, ShaderFile, ShaderSources};
+
+    let gpu = gpu();
+    let size = (16, 16);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let mut sources = ShaderSources::compiled_in();
+    sources.set(ShaderFile::Post, format!("{}\n// edited\n", sources.get(ShaderFile::Post)));
+    let request = frames.renderer.request_shader_sources(sources);
+    gpu.device().destroy();
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    let camera = framing_camera(38.0, size, 0.6);
+    // Frames 5 ms apart, for at most 30 s.
+    let mut frame = 0;
+    let outcome = loop {
+        draw_frame(&mut frames, &gpu, &view, camera, &[]);
+        if let Some(outcome) = frames.renderer.shader_outcomes().next() {
+            break outcome;
+        }
+        frame += 1;
+        assert!(frame < 6000, "the build never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(outcome.request, request);
+    let error = outcome.result.expect_err("nothing built on a lost device is swapped in");
+    assert!(matches!(&error, ShaderError::Pipeline { programs, .. } if programs == "post"), "{error}");
+    assert_eq!(frames.renderer.stats().shader_rebuilds, 0);
+}
+
+/// Prepares one frame seen by `camera` that adds or changes `changed`, records it into `view` and
+/// executes it, as an app does. Returns whether the renderer recorded anything.
+fn draw_frame(
+    frames: &mut Frames,
+    gpu: &GpuContext,
+    view: &wgpu::TextureView,
+    camera: CameraData,
+    changed: &[MeshInstance],
+) -> bool {
+    let packet = frames.packets.begin();
+    packet.views.push(ViewData::new(camera));
+    packet.instances.changed.extend_from_slice(changed);
+    frames.renderer.prepare(gpu, frames.packets.current());
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", view);
+    let recorded = frames.renderer.record(&mut graph, target).is_some();
+    frames.graph.execute(gpu, graph).expect("a valid graph");
+    recorded
+}
+
+/// QA-001: what the Android emulator's startup did after its device was lost, in a debug build:
+/// uploads that grow pool buffers (a skinned mesh's sources, as its character did), then frames,
+/// which record nothing. Nothing panics; the app sees the loss and rebuilds.
+#[test]
+#[ignore = "needs a GPU"]
+fn uploads_and_frames_after_a_device_loss_do_not_panic() {
+    let gpu = gpu();
+    let size = (64, 64);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, size, 0.6);
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+    let plain = upload(&mut frames.renderer, &sphere(white(1.0)));
+    assert!(draw_frame(&mut frames, &gpu, &view, camera, &[instance(0, plain, Mat4::IDENTITY)]));
+    gpu.device().destroy();
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    assert!(gpu.is_lost());
+    let skinned = upload(&mut frames.renderer, &skinned_sphere(white(1.0)));
+    for frame in 0..3 {
+        let changed = [instance(frame, plain, Mat4::IDENTITY), instance(10 + frame, skinned, Mat4::IDENTITY)];
+        assert!(!draw_frame(&mut frames, &gpu, &view, camera, &changed), "frame {frame} recorded");
+    }
+    assert!(gpu.is_lost());
+}

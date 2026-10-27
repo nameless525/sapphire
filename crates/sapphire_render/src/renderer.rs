@@ -231,6 +231,10 @@ pub enum RenderError {
     UnresolvedMaterial { slot: String, id: AssetId },
     #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
     ProbeGridTooLarge { bricks: u32 },
+    /// The GPU device was lost before or while the renderer was made
+    /// ([`GpuContext::is_lost`]): what it built is dead. Recover as `GpuContext`'s docs say.
+    #[error("the GPU device was lost")]
+    DeviceLost,
 }
 
 /// The character prepass's name in the frame graph (M1 C5): the characters' depth and IDs, on
@@ -495,6 +499,8 @@ pub struct Renderer {
     /// `shaders` aren't the compiled-in ones, so pipelines built later are checked
     /// (`Renderer::checked_build`).
     edited_shaders: bool,
+    /// The last [`Self::prepare`] found the device lost: frames record nothing (QA-001).
+    device_lost: bool,
     stats: RenderStats,
     /// Stores the main pass's depth so a test can read it back.
     #[cfg(test)]
@@ -513,12 +519,16 @@ impl Renderer {
     /// Creates pipelines for `color_format`, the target's: the surface's sRGB view format, or
     /// another format that encodes on write. Fails if the device can't render to it, or can't
     /// render, filter and resolve HDR scene color (`Rgba16Float`) and depth at the requested
-    /// sample count.
+    /// sample count, and with [`RenderError::DeviceLost`] if the device is lost before or while
+    /// it builds: a renderer is never handed back holding objects made on a dead device.
     pub fn new(
         gpu: &GpuContext,
         color_format: wgpu::TextureFormat,
         settings: RenderSettings,
     ) -> Result<Self, RenderError> {
+        if gpu.is_lost() {
+            return Err(RenderError::DeviceLost);
+        }
         let samples = settings.msaa.sample_count();
         if !gpu.format_support(color_format).renderable {
             return Err(RenderError::NotRenderable(color_format));
@@ -646,6 +656,16 @@ impl Renderer {
         let skinning = Skinning::new(&device);
         let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
+        // A device lost while the pipelines were built (the Android emulator's, building GTAO's
+        // on Mobile-High, QA-001) left everything made since invalid.
+        if gpu.is_lost() {
+            tracing::error!(
+                target: LOG_TARGET,
+                ambient_occlusion = ?settings.ambient_occlusion,
+                "GPU device lost while the renderer was created"
+            );
+            return Err(RenderError::DeviceLost);
+        }
         tracing::info!(
             target: LOG_TARGET,
             ?color_format,
@@ -701,6 +721,7 @@ impl Renderer {
             pipeline_cache: gpu.pipeline_cache().cloned(),
             shaders,
             edited_shaders: false,
+            device_lost: false,
             stats: RenderStats {
                 temporal: TemporalStats { enabled: settings.temporal, ..TemporalStats::default() },
                 ..RenderStats::default()
@@ -1128,8 +1149,10 @@ impl Renderer {
 
     /// At a frame boundary, before anything reads a pipeline: swaps a finished build in, answers
     /// one that failed, starts one again whose snapshot the renderer has built past, and starts
-    /// a request that superseded the build that just stopped. Never waits on a build.
-    fn poll_shader_builds(&mut self) {
+    /// a request that superseded the build that just stopped. Never waits on a build. On a lost
+    /// device (`device_lost`) a finished build is answered with the loss instead: wgpu drops the
+    /// loss's errors, so its error scopes caught nothing, but what it built is dead.
+    fn poll_shader_builds(&mut self, device_lost: bool) {
         let Some((request, built, finished)) = self.builds.poll() else { return };
         match finished {
             // Never swapped in: a newer request superseded it.
@@ -1138,6 +1161,12 @@ impl Renderer {
             // builds again rather than go unanswered.
             None => self.start_shader_build(request),
             Some(Err(error)) => self.builds.answer(request, Err(error)),
+            Some(Ok(_)) if device_lost => {
+                let changed = self.changed_programs(&request.sources);
+                let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
+                let message = "the GPU device was lost; nothing built on it is kept".to_owned();
+                self.builds.answer(request, Err(ShaderError::Pipeline { programs, message }));
+            }
             // Pipelines were built (or sources set) since its snapshot, which it lacks.
             Some(Ok(_)) if built != self.built() => {
                 tracing::debug!(
@@ -1248,9 +1277,10 @@ impl Renderer {
             "prepare() needs the GpuContext the renderer was created with"
         );
         let (device, queue) = (gpu.device(), gpu.queue());
+        self.device_lost = gpu.is_lost();
         // A finished shader build swaps in here, before anything reads a pipeline: the whole
         // frame draws with the old set or with the new.
-        self.poll_shader_builds();
+        self.poll_shader_builds(self.device_lost);
         self.stats.shader_builds = self.builds.stats();
 
         if self.scene.prepare(device, queue, packet.frame, &packet.instances) {
@@ -1422,7 +1452,7 @@ impl Renderer {
     /// graph has been executed, which submits the uploads and so returns their staging buffers
     /// for reuse. Scene changes and poses from prepared frames that were never recorded are
     /// uploaded by the next recorded one. Returns `None`, adding nothing, without a prepared
-    /// view or for an empty target.
+    /// view, for an empty target, or once [`Self::prepare`] found the device lost.
     ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
     /// textures (HDR scene color, MSAA color, depth, the scene prepass's targets, the bloom
@@ -1447,7 +1477,9 @@ impl Renderer {
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
         let PreparedFrame { camera, cut, constants } = self.prepared.take()?;
         let output = graph.size(target);
-        if output.0 == 0 || output.1 == 0 {
+        // On a lost device the frame's work would do nothing, and the staging belt can't map the
+        // buffers it would make for the uploads (wgpu panics on that).
+        if output.0 == 0 || output.1 == 0 || self.device_lost {
             return None;
         }
         // The scene renders at the render scale; the views, attachments, prepass targets and

@@ -28,8 +28,14 @@ pub struct GpuContextDesc {
 /// [`Self::is_lost`] returns `true`, everything created from this context is dead and every
 /// [`RenderSurface`] reports [`crate::SkipReason::DeviceLost`]. To recover, the app drops its
 /// renderer, surfaces and this context, in that order, creates a new [`GpuInstance`] and
-/// context, rebuilds its surfaces from fresh native handles and re-uploads every asset. GPU
-/// work issued meanwhile is ignored rather than reported as an error.
+/// context, rebuilds its surfaces from fresh native handles and re-uploads every asset.
+///
+/// GPU work issued meanwhile does nothing. wgpu drops the loss's own errors, but objects created
+/// after the loss are invalid, and it reports using them as validation errors. Those follow from
+/// the loss, so the error handler logs the first of them as a warning and lets the rest go,
+/// where on a live device every uncaptured error is logged and stops a development build. Code
+/// that builds a stack checks [`Self::is_lost`] when it is done, rather than hand on objects made
+/// on a dead device.
 #[derive(Debug)]
 pub struct GpuContext {
     instance: GpuInstance,
@@ -210,7 +216,20 @@ fn performance_rank(device_type: DeviceType) -> u8 {
 }
 
 fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>) {
-    device.on_uncaptured_error(Arc::new(|error: wgpu::Error| {
+    let is_lost = Arc::clone(&lost);
+    let warned = AtomicBool::new(false);
+    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        // After a loss, objects made since are invalid and using them is a validation error:
+        // consequences of the loss, which was reported (QA-001). The first is a warning, the rest
+        // debug lines, and none stops a development build.
+        if is_lost.load(Ordering::Acquire) {
+            if warned.swap(true, Ordering::Relaxed) {
+                tracing::debug!(target: LOG_TARGET, %error, "GPU error after device loss");
+            } else {
+                tracing::warn!(target: LOG_TARGET, %error, "GPU error after device loss; later ones are logged at debug");
+            }
+            return;
+        }
         tracing::error!(target: LOG_TARGET, %error, "uncaptured GPU error");
         // Development builds stop at the first error, like wgpu's default handler; shipping
         // builds log and keep running.
@@ -269,5 +288,51 @@ mod tests {
         // wgpu reports a destroyed device once its queue drains, during a poll.
         let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
         assert!(gpu.is_lost());
+    }
+
+    /// A buffer made on a lost device is invalid, and wgpu reports writing to it as a validation
+    /// error: what the Android emulator's renderer creation hit after its device was lost
+    /// (QA-001). It must not stop a debug build, since the loss was reported already. Needs a
+    /// GPU. Run with `cargo test -p sapphire_rhi -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn errors_after_device_loss_are_not_fatal() {
+        let instance = GpuInstance::new(&crate::GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        gpu.device().destroy();
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        assert!(gpu.is_lost());
+        for _ in 0..3 {
+            let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+                label: Some("made after the loss"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            gpu.queue().write_buffer(&buffer, 0, &[0; 16]);
+            let mut encoder = gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            encoder.clear_buffer(&buffer, 0, None);
+            gpu.queue().submit([encoder.finish()]);
+        }
+        assert!(gpu.is_lost());
+    }
+
+    /// The same error on a live device is a bug, and stops a debug build at once. Needs a GPU.
+    /// Run with `cargo test -p sapphire_rhi -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "uncaptured GPU error")]
+    fn errors_on_a_live_device_stop_debug_builds() {
+        let instance = GpuInstance::new(&crate::GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("too small"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // Past the buffer's end.
+        gpu.queue().write_buffer(&buffer, 0, &[0; 8]);
     }
 }

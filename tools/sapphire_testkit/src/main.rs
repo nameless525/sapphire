@@ -14,8 +14,9 @@ Usage:
                           [--update] [--scene <name> | --shard <index>/<count>]
                           [--scene-timeout <seconds>]
       Render the golden scenes with the sandbox and compare them with the goldens.
-      --shard renders every <count>-th scene from the <index>-th (from 1), so CI can split
-      a backend's scenes across runners.
+      --shard renders slice <index> of <count> (from 1), so CI can split a backend's scenes
+      across runners: split by the scenes' CI times for the family SAPPHIRE_GPU_BACKEND
+      forces (vulkan: lavapipe, dx12: WARP), otherwise every <count>-th scene.
       --scene-timeout stops a scene's sandbox after that long and fails the scene
       (default 900). Each scene's output is in <out>/<scene>.log, and every scene's time
       in <out>/timings.json.";

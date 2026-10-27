@@ -59,11 +59,11 @@ Commands:
       and compare them with tests/golden/<scene>.<backend family>.png using FLIP.
       Failures leave .actual.png and .diff.png files under target/golden/. A scene with
       no golden for this backend family fails in CI and is skipped locally. --update
-      writes this family's goldens instead. --shard renders every <count>-th scene from
-      the <index>-th (from 1); CI splits the slow backends' scenes across runners with it.
-      A scene still running after --scene-timeout (default 900) is stopped and fails.
-      Each scene's output is in target/golden/<scene>.log, and their times in
-      timings.json there.
+      writes this family's goldens instead. --shard renders slice <index> of <count>
+      (from 1), split by the scenes' CI times on the backend family SAPPHIRE_GPU_BACKEND
+      forces; CI splits the slow backends' scenes across runners with it. A scene still
+      running after --scene-timeout (default 900) is stopped and fails. Each scene's
+      output is in target/golden/<scene>.log, and their times in timings.json there.
   link <command> [options]
       Live link (spec §5.29): build the desktop tool and run it against a running dev build
       (`--features dev`), with this workspace's cooked content:

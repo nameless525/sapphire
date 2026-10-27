@@ -16,7 +16,10 @@
 //! as timed out with its log's last lines, and the run goes on to the next scene (review BC-008).
 //! Every scene's line gives its wall time, and `timings.json` in the output directory lists them
 //! all (scene, family, seconds, status), rewritten after each scene so a cancelled run keeps what
-//! it had (review BC-107).
+//! it had. `--shard` splits the scenes by those times as measured in CI ([`Shard`], review
+//! BC-107).
+
+mod costs;
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
@@ -27,10 +30,14 @@ use std::time::Duration;
 
 use sapphire_time::Stopwatch;
 
+use self::costs::Family;
 use crate::golden::{self, Image, Thresholds, backend_key};
 
 /// The environment variable the sandbox reads its cooked content from.
 const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
+/// The environment variable that forces the sandbox's GPU backend (`sapphire_rhi`'s
+/// `BACKEND_OVERRIDE_ENV`), which CI's golden jobs set: it says whose costs `--shard` splits by.
+const BACKEND_ENV: &str = "SAPPHIRE_GPU_BACKEND";
 /// Small enough for lavapipe and WARP to render each scene in a few seconds.
 const SIZE: &str = "640x360";
 /// How long a scene may take unless `--scene-timeout` says otherwise: about seven times the
@@ -2378,20 +2385,20 @@ pub enum Selection<'a> {
     Shard(Shard),
 }
 
-/// Slice `index` of `count` (from 1): every `count`-th scene, starting at position `index - 1`.
-/// Neighbouring scenes often share a feature and its cost on a CPU rasterizer (W5's six ambient
-/// scenes take minutes each on WARP), so dealing them out in turn keeps the slices' times close,
-/// where cutting the list into runs would give one slice all of them.
+/// Slice `index` of `count` (from 1), split by what the scenes cost on the run's backend family
+/// (review BC-107): costliest first, each scene joins the slice with the least so far, and each
+/// slice keeps the list's order. On lavapipe and WARP a scene takes from under a second to two
+/// minutes, so dealing the scenes out in turn, as the runner did before, left one of lavapipe's two
+/// slices taking 10.4 minutes against the other's 3.7 to 7.
+///
+/// The costs are the CI times of the family that `SAPPHIRE_GPU_BACKEND` forces (`vulkan`
+/// lavapipe's, `dx12` WARP's), kept in the `costs` module. Without them (another backend, or a
+/// local run that forces none) every scene costs the same, which deals them out in turn. The split
+/// depends on nothing else, so each of a family's runners computes the same one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shard {
     pub index: usize,
     pub count: usize,
-}
-
-impl Shard {
-    fn holds(self, position: usize) -> bool {
-        position % self.count == self.index - 1
-    }
 }
 
 impl std::str::FromStr for Shard {
@@ -2410,6 +2417,27 @@ impl std::str::FromStr for Shard {
     }
 }
 
+/// Which of `count` slices (from 0) each scene goes to, by position, given each scene's cost:
+/// costliest first (equal costs in list order), each to the slice with the least cost so far (the
+/// first of equals). Equal costs deal the scenes out in turn.
+fn split(costs: &[u32], count: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..costs.len()).collect();
+    order.sort_by_key(|&position| (std::cmp::Reverse(costs[position]), position));
+    let mut loads = vec![0_u64; count];
+    let mut slices = vec![0; costs.len()];
+    for position in order {
+        let lightest = (0..count).min_by_key(|&slice| (loads[slice], slice)).expect("a shard count from 1");
+        loads[lightest] += u64::from(costs[position]);
+        slices[position] = lightest;
+    }
+    slices
+}
+
+/// Each scene's cost on `family`, in tenths of a second; all equal without a family.
+fn costs(scenes: &[Scene], family: Option<Family>) -> Vec<u32> {
+    scenes.iter().map(|scene| family.map_or(1, |family| family.cost(scene.name))).collect()
+}
+
 /// Runs the selected scenes and returns one message per failure (empty: all passed). Each scene
 /// gets `timeout` (`--scene-timeout`; [`DEFAULT_SCENE_TIMEOUT`]).
 pub fn run(
@@ -2419,7 +2447,8 @@ pub fn run(
     timeout: Duration,
 ) -> Result<Vec<String>, String> {
     let scenes = scenes();
-    let selected = select(&scenes, selection)?;
+    let family = std::env::var(BACKEND_ENV).ok().and_then(|backend| Family::from_backend(&backend));
+    let selected = select(&scenes, selection, family)?;
     let sandbox = |_: &Scene| {
         let mut command = Command::new(&paths.sandbox);
         command.env(CONTENT_DIR_ENV, &paths.content);
@@ -2429,7 +2458,11 @@ pub fn run(
 }
 
 /// The scenes `selection` names, in their order.
-fn select<'s>(scenes: &'s [Scene], selection: Selection<'_>) -> Result<Vec<&'s Scene>, String> {
+fn select<'s>(
+    scenes: &'s [Scene],
+    selection: Selection<'_>,
+    family: Option<Family>,
+) -> Result<Vec<&'s Scene>, String> {
     match selection {
         Selection::All => Ok(scenes.iter().collect()),
         Selection::Scene(name) => match scenes.iter().find(|scene| scene.name == name) {
@@ -2440,12 +2473,10 @@ fn select<'s>(scenes: &'s [Scene], selection: Selection<'_>) -> Result<Vec<&'s S
             }
         },
         Selection::Shard(shard) => {
-            let held: Vec<&Scene> = scenes
-                .iter()
-                .enumerate()
-                .filter(|&(position, _)| shard.holds(position))
-                .map(|(_, scene)| scene)
-                .collect();
+            let costs = costs(scenes, family);
+            let slices = split(&costs, shard.count);
+            let held: Vec<usize> =
+                (0..scenes.len()).filter(|&position| slices[position] == shard.index - 1).collect();
             if held.is_empty() {
                 return Err(format!(
                     "shard {}/{} holds none of the {} scenes",
@@ -2454,8 +2485,28 @@ fn select<'s>(scenes: &'s [Scene], selection: Selection<'_>) -> Result<Vec<&'s S
                     scenes.len()
                 ));
             }
-            eprintln!("shard {}/{}: {} of {} scenes", shard.index, shard.count, held.len(), scenes.len());
-            Ok(held)
+            let (index, count, total) = (shard.index, shard.count, scenes.len());
+            match family {
+                Some(family) => {
+                    let minutes = |tenths: u64| tenths as f64 / 600.0;
+                    let ours: u64 = held.iter().map(|&position| u64::from(costs[position])).sum();
+                    let all: u64 = costs.iter().copied().map(u64::from).sum();
+                    eprintln!(
+                        "shard {index}/{count}: {} of {total} scenes, split by {}'s CI times: about {:.1} of their {:.1} \
+                         minutes",
+                        held.len(),
+                        family.name(),
+                        minutes(ours),
+                        minutes(all)
+                    );
+                }
+                None => eprintln!(
+                    "shard {index}/{count}: {} of {total} scenes, dealt out in turn ({BACKEND_ENV} names no family with \
+                     CI times)",
+                    held.len()
+                ),
+            }
+            Ok(held.into_iter().map(|position| &scenes[position]).collect())
         }
     }
 }
@@ -2786,23 +2837,105 @@ mod tests {
         }
     }
 
+    /// The shard counts CI runs (lavapipe 2, WARP 4), one, and a few more.
+    const SHARD_COUNTS: [usize; 6] = [1, 2, 3, 4, 5, 6];
+    const FAMILIES: [Option<Family>; 3] = [None, Some(Family::Lavapipe), Some(Family::Warp)];
+
+    /// Each shard's scenes, by name, as `select` picks them.
+    fn shards(scenes: &[Scene], count: usize, family: Option<Family>) -> Vec<Vec<&'static str>> {
+        (1..=count)
+            .map(|index| {
+                let held =
+                    select(scenes, Selection::Shard(Shard { index, count }), family).unwrap_or_default();
+                held.iter().map(|scene| scene.name).collect()
+            })
+            .collect()
+    }
+
     #[test]
-    fn shards_deal_out_every_scene_once_and_evenly() {
-        let total = scenes().len();
-        for count in 1..=6 {
-            let mut taken = vec![0; total];
-            let mut sizes = Vec::new();
-            for index in 1..=count {
-                let shard = Shard { index, count };
-                let held: Vec<usize> = (0..total).filter(|&position| shard.holds(position)).collect();
-                held.iter().for_each(|&position| taken[position] += 1);
-                sizes.push(held.len());
+    fn shards_hold_every_scene_once_in_order() {
+        let scenes = scenes();
+        let names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
+        for family in FAMILIES {
+            for count in SHARD_COUNTS {
+                let shards = shards(&scenes, count, family);
+                assert!(
+                    shards.iter().all(|shard| !shard.is_empty()),
+                    "{family:?}, {count} shards: an empty one"
+                );
+                for shard in &shards {
+                    let positions: Vec<usize> =
+                        shard.iter().map(|name| names.iter().position(|n| n == name).unwrap()).collect();
+                    assert!(positions.is_sorted(), "{family:?}, {count} shards: out of order");
+                }
+                let mut held: Vec<&str> = shards.concat();
+                held.sort_unstable();
+                let mut all = names.clone();
+                all.sort_unstable();
+                assert_eq!(held, all, "{family:?}, {count} shards: every scene exactly once");
             }
-            assert!(taken.iter().all(|&times| times == 1), "{count} shards");
-            assert!(
-                sizes.iter().max().unwrap() - sizes.iter().min().unwrap() <= 1,
-                "{count} shards: {sizes:?}"
-            );
+        }
+    }
+
+    #[test]
+    fn without_costs_shards_deal_the_scenes_out_in_turn() {
+        // As the runner split them before it had costs.
+        for count in SHARD_COUNTS {
+            let slices = split(&[1; 95], count);
+            assert!(slices.iter().enumerate().all(|(position, &slice)| slice == position % count), "{count}");
+        }
+        assert_eq!(Family::from_backend("metal"), None);
+        assert_eq!(Family::from_backend("Vulkan"), Some(Family::Lavapipe));
+        assert_eq!(Family::from_backend("dx12"), Some(Family::Warp));
+    }
+
+    #[test]
+    fn a_scene_without_a_cost_still_lands_in_one_shard() {
+        let mut scenes: Vec<Scene> = scenes().into_iter().collect();
+        scenes.insert(3, Scene { name: "scene-added-since", args: &[], thresholds: Thresholds::default() });
+        for family in [Family::Lavapipe, Family::Warp] {
+            let costliest = costs::COSTS.iter().map(|cost| family.cost(cost.scene)).max().unwrap();
+            assert_eq!(family.cost("scene-added-since"), costliest, "counts as the costliest");
+            for count in SHARD_COUNTS {
+                let shards = shards(&scenes, count, Some(family));
+                let holding = shards.iter().filter(|shard| shard.contains(&"scene-added-since")).count();
+                assert_eq!(holding, 1, "{family:?}, {count} shards");
+                assert_eq!(shards.iter().map(Vec::len).sum::<usize>(), scenes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn the_costs_name_only_scenes_that_exist_each_once() {
+        let names: Vec<&str> = scenes().iter().map(|scene| scene.name).collect();
+        let mut listed: Vec<&str> = costs::COSTS.iter().map(|cost| cost.scene).collect();
+        for scene in &listed {
+            assert!(names.contains(scene), "the costs name {scene:?}, which is no longer a scene: remove it");
+        }
+        listed.sort_unstable();
+        let before = listed.len();
+        listed.dedup();
+        assert_eq!(listed.len(), before, "a scene listed twice");
+        assert!(costs::COSTS.iter().all(|cost| cost.lavapipe > 0.0 && cost.warp > 0.0));
+    }
+
+    #[test]
+    fn splitting_by_cost_shortens_ci_s_slowest_shard() {
+        // CI's split: lavapipe in 2, WARP in 4.
+        let scenes = scenes();
+        for (family, count) in [(Family::Lavapipe, 2), (Family::Warp, 4)] {
+            let costs = costs(&scenes, Some(family));
+            let slowest = |slices: &[usize]| {
+                let mut loads = vec![0_u64; count];
+                slices.iter().zip(&costs).for_each(|(&slice, &cost)| loads[slice] += u64::from(cost));
+                loads.into_iter().max().unwrap()
+            };
+            let in_turn: Vec<usize> = (0..scenes.len()).map(|position| position % count).collect();
+            let by_cost = slowest(&split(&costs, count));
+            assert!(by_cost < slowest(&in_turn), "{family:?}");
+            // Longest-first is within 4/3 of the best split, and an equal share bounds that below.
+            let share = costs.iter().copied().map(u64::from).sum::<u64>().div_ceil(count as u64);
+            assert!(by_cost * 3 <= share * 4, "{family:?}: {by_cost} against a share of {share}");
         }
     }
 

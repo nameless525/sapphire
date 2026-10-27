@@ -127,12 +127,14 @@ jobs:
   # references in tests/golden by `cargo xtask golden`. Each runner renders with a pinned CPU or
   # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
   #
-  # The CPU rasterizers split their scenes across runners (`--shard <index>/<count>`, every
-  # count-th scene), each shard building the sandbox on its own. Since the light clusters and the
-  # sky's projection stopped looping over workgroup barriers (#56, #58), WARP no longer spends
-  # minutes on a scene: at 86 scenes, each of WARP's four shards takes 10–15 minutes with its
-  # build, and each of lavapipe's two 8–14. The slowest job sets how soon a change can land, so
-  # add shards as scenes are added, keeping each job well inside its time limit.
+  # The CPU rasterizers split their scenes across runners (`--shard <index>/<count>`), each shard
+  # building the sandbox on its own. The testkit splits them by each scene's CI time on the
+  # family SAPPHIRE_GPU_BACKEND picks (`sapphire_testkit`'s cost table, review BC-107), since a
+  # scene takes from under a second to two minutes there: from the same four `main` runs at 95
+  # scenes, the slowest shard's scenes take about 8.2 minutes on lavapipe and 7.9 on WARP, where
+  # dealing them out in turn took 10.4 and 9.3. Each job adds its build and cook, 3–5 minutes.
+  # The slowest job sets how soon a change can land, so add shards as scenes are added, keeping
+  # each job well inside its time limit, and refresh the cost table from the jobs' timings.json.
   golden:
     name: Golden images (${{ matrix.family }} ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:

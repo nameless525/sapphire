@@ -1,7 +1,8 @@
 //! Shadow tests that need a GPU (M1 R4): the cascades' stability and bias, who casts into what
 //! and who receives what, faces taking the environment's shadow whole, the characters' own maps
-//! and capsules, the environment shader's tinted shadows, and stability under temporal AA. Run
-//! with `cargo test -p sapphire_render --test shadows -- --ignored`.
+//! and capsules, the environment shader's tinted shadows, stability under temporal AA, and the
+//! cascades of frames lost before their passes run (M1 review RA-001). Run with
+//! `cargo test -p sapphire_render --test shadows -- --ignored`.
 //!
 //! Scenes use no ambient light, a black sky and no rim or outline, so every surface pixel is its
 //! material's lit tone (albedo × the key light) or its shade tone (albedo × [`SHADE`]), and a
@@ -31,7 +32,7 @@ use sapphire_render::{
     Msaa, PostParams, RenderSettings, RenderStats, Renderer, ShaderError, ShaderFile, ShaderSources,
     ShaderUpdate, ShadowFilter, ShadowSettings, SkyGradient, ToneCurve, ViewData, Vignette,
 };
-use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Square targets this many pixels a side.
@@ -310,7 +311,24 @@ struct Harness {
     added: Vec<MeshInstance>,
     removed: Vec<InstanceId>,
     next_id: u64,
+    /// The next frame is a camera cut.
+    cut: bool,
 }
+
+/// How a prepared frame is lost before its passes run (M1 review RA-001).
+#[derive(Clone, Copy, Debug)]
+enum Loss {
+    /// Never recorded, as an app does for a frame without a surface.
+    Unrecorded,
+    /// Recorded into a graph that is dropped unexecuted.
+    Dropped,
+    /// Recorded into a graph the executor rejects.
+    Rejected,
+    /// Recorded for a target of no size.
+    Empty,
+}
+
+const LOSSES: [Loss; 4] = [Loss::Unrecorded, Loss::Dropped, Loss::Rejected, Loss::Empty];
 
 impl Harness {
     fn new(settings: RenderSettings) -> Self {
@@ -340,6 +358,7 @@ impl Harness {
             added: Vec::new(),
             removed: Vec::new(),
             next_id: 0,
+            cut: false,
         }
     }
 
@@ -412,11 +431,13 @@ impl Harness {
         });
     }
 
-    /// Prepares, records and submits one frame and reads the target back. Fails on any
-    /// validation error.
-    fn render(&mut self) -> Frame {
+    /// Fills the next packet with the scene and prepares it: a cut if `cut` is set, which it
+    /// clears.
+    fn prepare(&mut self) {
         let packet = self.packets.begin();
-        packet.views.push(ViewData::new(self.camera));
+        let mut view = ViewData::new(self.camera);
+        view.cut = std::mem::take(&mut self.cut);
+        packet.views.push(view);
         packet.sun = self.sun;
         packet.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
         packet.ambient.intensity = 0.0;
@@ -425,8 +446,49 @@ impl Harness {
         packet.characters.extend_from_slice(&self.characters);
         packet.instances.changed.append(&mut self.added);
         packet.instances.removed.append(&mut self.removed);
-        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
+    }
+
+    /// Prepares a frame of the scene and loses it `how`, so none of its passes run.
+    fn lose(&mut self, how: Loss) {
+        self.prepare();
+        let view = self.target.create_view(&Default::default());
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &view);
+        match how {
+            Loss::Unrecorded => {}
+            Loss::Dropped => {
+                self.renderer.record(&mut graph, target).expect("a view and a target");
+            }
+            Loss::Rejected => {
+                self.renderer.record(&mut graph, target).expect("a view and a target");
+                let desc = TransientDesc {
+                    width: 4,
+                    height: 4,
+                    format: FORMAT,
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                };
+                let unwritten = graph.create_texture("never written", desc);
+                graph.add_pass("reads it").read(unwritten).side_effect().record(|_| {});
+                assert!(self.graph.execute(&self.gpu, graph).is_err(), "the executor rejects the graph");
+                return;
+            }
+            Loss::Empty => {
+                let usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+                let desc = TransientDesc { width: 0, height: 0, format: FORMAT, sample_count: 1, usage };
+                let empty = graph.create_texture("empty", desc);
+                assert!(self.renderer.record(&mut graph, empty).is_none(), "nothing to draw into");
+            }
+        }
+        drop(graph);
+    }
+
+    /// Prepares, records and submits one frame and reads the target back. Fails on any
+    /// validation error.
+    fn render(&mut self) -> Frame {
+        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        self.prepare();
         let view = self.target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);
@@ -1070,4 +1132,77 @@ fn an_edited_shadows_wgsl_rebuilds_the_shadow_passes() {
     let error = harness.renderer.set_shader_sources(&renamed).expect_err("no entry point");
     assert!(matches!(error, ShaderError::Pipeline { .. }), "{error}");
     assert_eq!(harness.render().pixels, before.pixels);
+}
+
+/// How many pixels of `a` and `b` differ.
+fn differing(a: &Frame, b: &Frame) -> usize {
+    a.pixels.iter().zip(&b.pixels).filter(|(a, b)| a != b).count()
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frame_lost_before_its_passes_run_leaves_no_stale_shadow() {
+    // The slab is the only environment caster: the ground and the sphere are characters, whose
+    // default bodies cast nothing of their own. A frame that removes it is prepared and lost
+    // before its passes run (M1 review RA-001): the frames after still clear its shadow from the
+    // cascades, and draw what a renderer that never saw the slab draws.
+    let scene = || {
+        let mut scene = canopy(desktop());
+        let sphere = scene.sphere;
+        scene.harness.character(InstanceId(0), CharacterBody::default(), None);
+        scene.harness.character(sphere, CharacterBody::default(), None);
+        scene
+    };
+    let mut fresh = scene();
+    let slab = fresh.slab;
+    fresh.harness.added.retain(|instance| instance.id != slab);
+    let expected = fresh.harness.render();
+    assert!(expected.lit_at(fresh.probe), "nothing shadows the sphere: {:?}", expected.at(fresh.probe));
+    for loss in LOSSES {
+        let mut scene = scene();
+        let before = scene.harness.render();
+        assert!(before.shaded_at(scene.probe), "{loss:?}: the slab's shadow: {:?}", before.at(scene.probe));
+        let slab = scene.slab;
+        scene.harness.removed.push(slab);
+        scene.harness.lose(loss);
+        for index in 0..5 {
+            let after = scene.harness.render();
+            after.dump(&format!("lost-removal-{loss:?}-{index}"));
+            let (probe, stats) = (after.at(scene.probe), after.stats.shadows);
+            assert_eq!(differing(&after, &expected), 0, "{loss:?}, frame {index}: {probe:?}, {stats:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_lost_frame_that_moves_the_cascades_has_them_drawn_with_the_next() {
+    // Seen from 60 m, the far box's shadow lies in the cached cascades. A frame that steps the
+    // key light, or cuts to a camera a meter and a half over, fits every cascade anew and is
+    // lost before drawing them (M1 review RA-001): the next frame draws them all, as a renderer
+    // new to that light or camera does, rather than sampling a map drawn for the old ones.
+    let height = 60.0;
+    let stepped = toward(50.0, 20.0);
+    let elsewhere = top_down(Vec3::new(-4.5, 0.0, 1.0), height);
+    for loss in LOSSES {
+        for cut in [false, true] {
+            let mut harness = far_box_scene(desktop(), height);
+            far_box(&mut harness, height);
+            far_box(&mut harness, height);
+            if cut {
+                (harness.camera, harness.cut) = (elsewhere, true);
+            } else {
+                harness.sun_toward(stepped);
+            }
+            harness.lose(loss);
+            let frame = harness.render();
+            let mut fresh = far_box_scene(desktop(), height);
+            (fresh.camera, fresh.sun) = (harness.camera, harness.sun);
+            let expected = fresh.render();
+            frame.dump(&format!("lost-moved-{loss:?}-{cut}"));
+            let what = if cut { "a cut" } else { "a light step" };
+            let got = (frame.stats.shadows.cascades_drawn, differing(&frame, &expected));
+            assert_eq!(got, (4, 0), "{loss:?}, {what}: (cascades drawn, pixels differing)");
+        }
+    }
 }

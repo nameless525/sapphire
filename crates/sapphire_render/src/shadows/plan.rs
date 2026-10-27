@@ -137,6 +137,21 @@ impl ShadowPlan {
         self.count_draws(list, settings);
     }
 
+    /// Takes back what this plan kept of the cascades it drew, which were never drawn: their
+    /// frame was prepared but its passes didn't run (never recorded, or recorded into a graph
+    /// that was dropped, rejected or sized to nothing; M1 review RA-001). Their maps hold what
+    /// they held before, so neither the fits cached for them nor the knowledge that they're
+    /// empty holds: the next frame draws (and clears) each of them again. The other cascades
+    /// keep what earlier frames that ran drew.
+    pub(crate) fn not_drawn(&mut self) {
+        for (index, drawn) in self.drawn.iter().enumerate() {
+            if drawn.is_some() {
+                self.cached[index] = None;
+                self.empty[index] = false;
+            }
+        }
+    }
+
     /// Fits the cascades for `camera` and picks the ones drawn this frame: the fresh ones
     /// always, a cached one on its turn, when it was never drawn, or once the view has moved an
     /// eighth of its width (a quarter of its radius) since it was ([`Self::skip_empty`] leaves some
@@ -725,6 +740,39 @@ mod tests {
         assert_eq!(plan.drawn_mask(), 0b1011, "cascade 3 is cleared of the cube that left");
         update(&mut plan, &SETTINGS, &stepped, &mut slots(&instances[..1]));
         assert_eq!(plan.drawn_mask() & 0b1100, 0, "and then left empty");
+    }
+
+    #[test]
+    fn the_cascades_a_lost_frame_drew_are_drawn_again() {
+        // A cube by the camera casts into the near two cascades. A frame that removes it plans
+        // them drawn, emptied, but its passes never run (M1 review RA-001): the next frame
+        // draws them again, clearing the cube's shadow, rather than take them for empty.
+        let cube = [instance(1, 0, Vec3::ZERO)];
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&cube));
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&cube));
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&[]));
+        assert_eq!(plan.drawn_mask(), 0b0011, "the near two, emptied");
+        plan.not_drawn();
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&[]));
+        assert_eq!(plan.drawn_mask(), 0b0011, "drawn again, though nothing casts into them");
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&[]));
+        assert_eq!(plan.drawn_mask(), 0, "and then left empty");
+        // A step of the light fits every cascade anew: lost, they are all drawn again, where a
+        // frame that ran leaves the far two to take turns.
+        let mut slots = everywhere();
+        let mut packet = packet(Vec::new());
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        packet.sun.direction = Vec3::new(0.6, -0.7, -0.45);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        assert_eq!(plan.drawn_mask(), 0b1111, "the step");
+        plan.not_drawn();
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        assert_eq!(plan.drawn_mask(), 0b1111, "the step again");
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        assert_eq!(plan.drawn_mask().count_ones(), 3, "then in turns");
     }
 
     /// `count` instances in a row, each listed as a character with a body of its own.

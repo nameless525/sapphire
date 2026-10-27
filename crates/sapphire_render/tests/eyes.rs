@@ -261,9 +261,13 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_msaa(Msaa::Off)
+    }
+
+    fn with_msaa(msaa: Msaa) -> Self {
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
-        let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
+        let settings = RenderSettings { msaa, ..RenderSettings::default() };
         let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -316,11 +320,19 @@ impl Harness {
     /// Uploads an eye's base color map, `side` texels square, white with a black disc of
     /// `radius` (texture coordinates) at its center: a pupil to follow.
     fn pupil_map(&mut self, side: u32, radius: f32) {
+        self.upload_eye_map(side, |u, v| {
+            let (u, v) = (u - 0.5, v - 0.5);
+            if u * u + v * v <= radius * radius { [0, 0, 0, 255] } else { [255; 4] }
+        });
+    }
+
+    /// Uploads an eye's base color map, `side` texels square, each texel `texel` at its center's
+    /// texture coordinates.
+    fn upload_eye_map(&mut self, side: u32, texel: impl Fn(f32, f32) -> [u8; 4]) {
         let texels: Vec<[u8; 4]> = (0..side * side)
             .map(|i| {
                 let (x, y) = ((i % side) as f32 + 0.5, (i / side) as f32 + 0.5);
-                let (u, v) = (x / side as f32 - 0.5, y / side as f32 - 0.5);
-                if u * u + v * v <= radius * radius { [0, 0, 0, 255] } else { [255; 4] }
+                texel(x / side as f32, y / side as f32)
             })
             .collect();
         let desc = TextureDesc {
@@ -332,7 +344,7 @@ impl Harness {
         };
         let bytes: &[u8] = bytemuck::cast_slice(&texels);
         let texture = Texture { desc, levels: vec![bytes] };
-        self.eye_map = Some(GpuTexture::upload(&self.gpu, &texture, "pupil").expect("texture"));
+        self.eye_map = Some(GpuTexture::upload(&self.gpu, &texture, "eye map").expect("texture"));
     }
 
     fn material(&mut self, document: &AnimeCharacterMaterial) -> MaterialHandle {
@@ -663,6 +675,97 @@ fn eyes_under_a_closed_lid_stay_hidden_through_hair() {
     let frame = harness.render();
     assert_near(frame.at(Vec3::new(0.35, 0.0, 0.1)), HAIR, "the closed eye's white");
     assert_near(frame.at(Vec3::new(0.0, 0.0, 0.1)), HAIR, "the closed eye's iris");
+}
+
+/// An eye in `color` drawn through hair at half opacity, as `alpha` says, on one side or both
+/// (M1 C8).
+fn eye_through_hair(color: [f32; 3], alpha: AlphaMode, double_sided: bool) -> AnimeCharacterMaterial {
+    let surface = CharacterSurface::Eye(through(EyeLayer::Eye, 0.5));
+    AnimeCharacterMaterial { double_sided, ..flat_material(surface, color, alpha, 1.0) }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn two_sided_eyes_through_hair_stay_under_their_layers() {
+    // Review WI-001. Through hair an eye and its layers all lie at the hair's depth, blended
+    // without writing it, so their drawing order alone puts the iris over the eye white. A
+    // two-sided eye (M1 C8) draws its front through its one-sided twin's pipeline and must draw
+    // before the layers as that twin does: opaque, alpha-tested or fading, with MSAA or without,
+    // both sides give the one-sided frame.
+    let over_hair = mix(HAIR, WHITE, 0.5);
+    let iris_over = mix(over_hair, IRIS, 0.5);
+    let (opaque, mask) = (AlphaMode::Opaque, AlphaMode::Mask { cutoff: 0.5 });
+    for msaa in [Msaa::Off, Msaa::X4] {
+        let mut harness = Harness::with_msaa(msaa);
+        let iris = harness.material(&layer_material(through(EyeLayer::Iris, 0.5), IRIS, 1.0));
+        let hair = harness.material(&hair_material());
+        for (alpha, opacity) in [(opaque, 1.0), (mask, 1.0), (opaque, 0.5), (mask, 0.5)] {
+            let [one, two] = [false, true].map(|double_sided| {
+                let white = harness.material(&eye_through_hair(WHITE, alpha, double_sided));
+                let parts = [
+                    rect((-0.5, -0.5), (0.5, 0.5), 0.0),
+                    rect((-0.2, -0.2), (0.2, 0.2), 0.01),
+                    rect((-1.0, -1.0), (1.0, 1.0), 0.1),
+                ];
+                let mesh = harness.mesh(&parts, &[white, iris, hair]);
+                let id = harness.character(mesh);
+                harness.characters[0].opacity = opacity;
+                let frame = harness.render();
+                harness.remove(id);
+                frame
+            });
+            let what = format!("{msaa:?}, {alpha:?} at opacity {opacity}");
+            assert_eq!(two.stats.character_prepass.through_hair_draws, 2, "{what}: the white and the iris");
+            if opacity == 1.0 {
+                for (frame, sides) in [(&one, "one side"), (&two, "both sides")] {
+                    let white = frame.at(Vec3::new(0.35, 0.0, 0.1));
+                    assert_near(white, over_hair, &format!("{what}, {sides}: the eye white over the hair"));
+                    let iris = frame.at(Vec3::new(0.0, 0.0, 0.1));
+                    assert_near(iris, iris_over, &format!("{what}, {sides}: the iris over it"));
+                }
+            }
+            // Pixel for pixel, the fading ones' dither included.
+            for y in 0..SIDE as usize {
+                for x in 0..SIDE as usize {
+                    let (one, two) = (one.linear(x, y), two.linear(x, y));
+                    assert_near(two, one, &format!("{what}: pixel ({x}, {y}) on both sides against one"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn eyes_through_hair_keep_their_coverages_order_on_either_side() {
+    // Through hair, opaque eyes draw before alpha-tested ones, as they did before eyes had two
+    // sides (M1 C8): an alpha-tested eye line stays over an opaque eye white whichever of the two
+    // is two-sided (review WI-001).
+    const LINE: [f32; 3] = [0.5, 0.1, 0.2];
+    let mut harness = Harness::new();
+    let hair = harness.material(&hair_material());
+    let over_hair = mix(HAIR, WHITE, 0.5);
+    for (white_sides, line_sides) in [(false, false), (true, false), (false, true), (true, true)] {
+        let white = harness.material(&eye_through_hair(WHITE, AlphaMode::Opaque, white_sides));
+        let line = harness.material(&eye_through_hair(LINE, AlphaMode::Mask { cutoff: 0.5 }, line_sides));
+        // The line listed first, so only the variants' order puts it over the white.
+        let parts = [
+            rect((-0.5, 0.3), (0.5, 0.45), 0.005),
+            rect((-0.5, -0.5), (0.5, 0.5), 0.0),
+            rect((-1.0, -1.0), (1.0, 1.0), 0.1),
+        ];
+        let mesh = harness.mesh(&parts, &[line, white, hair]);
+        let id = harness.character(mesh);
+        let frame = harness.render();
+        let what = format!("the white two-sided {white_sides}, the line {line_sides}");
+        assert_near(frame.at(Vec3::new(0.2, 0.0, 0.1)), over_hair, &format!("{what}: the eye white"));
+        assert_near(
+            frame.at(Vec3::new(0.2, 0.375, 0.1)),
+            mix(over_hair, LINE, 0.5),
+            &format!("{what}: the eye line over it"),
+        );
+        harness.remove(id);
+    }
 }
 
 #[test]

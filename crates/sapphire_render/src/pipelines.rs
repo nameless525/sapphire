@@ -770,18 +770,17 @@ impl SurfaceVariant {
         Self::layered(Coverage::AlphaTest, Part::Face),
         Self::EYE_LAYERS,
     ];
-    /// Every variant whose draws can draw eyes through hair: [`Self::THROUGH_HAIR`], then the
-    /// two-sided faces and eyes (M1 C8), which draw through their one-sided twins' pipelines.
+    /// Every variant whose draws can draw eyes through hair, in their drawing order: each face or
+    /// eye of [`Self::THROUGH_HAIR`] and then its two-sided twin (M1 C8), which draws through the
+    /// same pipeline, and the eyes' layers, which blend on both sides, last. Through hair every
+    /// overlay lies at the hair's depth and writes none, so this order alone puts an eye's layers
+    /// over it, and two-sidedness never moves an eye past another kind (review WI-001).
     pub(crate) const DRAWS_THROUGH_HAIR: [Self; 13] = {
-        let mut variants = [Self::OPAQUE; 13];
+        let mut variants = [Self::EYE_LAYERS; 13];
         let mut index = 0;
-        while index < Self::THROUGH_HAIR.len() {
-            variants[index] = Self::THROUGH_HAIR[index];
-            index += 1;
-        }
-        // Every one of them but the eyes' layers, which blend, on both sides.
-        while index < variants.len() {
-            variants[index] = Self::THROUGH_HAIR[index - Self::THROUGH_HAIR.len()].with_two_sided();
+        while index < Self::THROUGH_HAIR.len() - 1 {
+            variants[2 * index] = Self::THROUGH_HAIR[index];
+            variants[2 * index + 1] = Self::THROUGH_HAIR[index].with_two_sided();
             index += 1;
         }
         variants
@@ -2742,6 +2741,22 @@ mod tests {
             let flags = part_flag | MaterialFlags::TRANSPARENT;
             let blended = Permutation::new(flags | MaterialFlags::DOUBLE_SIDED).surface();
             assert_eq!(blended, Permutation::new(flags).surface(), "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn eyes_through_hair_draw_under_their_layers_on_either_side() {
+        // Through hair an eye and its layers lie at the hair's depth and blend without writing
+        // it, so their order alone stacks the layers on the eye (review WI-001): the layers last.
+        let order = SurfaceVariant::DRAWS_THROUGH_HAIR;
+        assert_eq!(order.last(), Some(&SurfaceVariant::EYE_LAYERS));
+        assert_eq!(order.iter().filter(|&&variant| variant == SurfaceVariant::EYE_LAYERS).count(), 1);
+        // Each face or eye, then its two-sided twin (M1 C8), in the pipelines' order: two-sidedness
+        // never moves a draw past another kind's, so an opaque eye stays under an alpha-tested one.
+        let pipelines = order.map(|variant| variant.through_hair_index().expect("draws through hair"));
+        assert!(pipelines.is_sorted(), "{order:?}");
+        for base in &SurfaceVariant::THROUGH_HAIR[..SurfaceVariant::THROUGH_HAIR.len() - 1] {
+            assert!(order.contains(base) && order.contains(&base.with_two_sided()), "{base:?}");
         }
     }
 }

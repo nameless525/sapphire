@@ -221,6 +221,12 @@ impl Frame {
         self.linear(x, y)
     }
 
+    /// The 8-bit code values where `point` projects.
+    fn code_at(&self, point: Vec3) -> [u8; 4] {
+        let (x, y) = self.pixel_of(point);
+        self.pixels[y * SIDE as usize + x]
+    }
+
     /// The pixels within `radius` pixels of where `point` projects.
     fn around(&self, point: Vec3, radius: usize) -> Vec<[f32; 3]> {
         let (cx, cy) = self.pixel_of(point);
@@ -750,6 +756,28 @@ fn emission_glows_unlit_and_breathes() {
     assert_near(harness.render().at(center), [0.15, 0.3, 0.05], "its bottom");
     harness.time = 1.0;
     assert_near(harness.render().at(center), [0.225, 0.45, 0.075], "halfway");
+
+    // A breath that doesn't divide the shaders' hourly clock (review RS-003): 7 s, all the way
+    // out. It runs as whole breaths an hour, so it doesn't jump where the clock wraps; unrounded,
+    // it jumped from about 0.39 of the glow to all of it.
+    let odd = Emission { period: 7.0, depth: 1.0, bloom: 1.0 };
+    harness.update(handle, &glowing([0.3, 0.6, 0.1], odd));
+    harness.time = 3599.999;
+    let before = harness.render();
+    harness.time = 3600.001;
+    let after = harness.render();
+    let [a, b] = [before.code_at(center), after.code_at(center)];
+    assert!(a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1), "across the wrap: {a:?}, then {b:?}");
+    assert_near(
+        before.at(center),
+        scale([0.3, 0.6, 0.1], odd.level(3599.999, 0.0)),
+        "as `Emission::level` has it",
+    );
+    // And it still breathes: a quarter of a breath on, half the glow.
+    harness.time = 3601.75;
+    let level = odd.level(3601.75, 0.0);
+    assert!((level - 0.5).abs() < 0.01, "a quarter breath on: {level}");
+    assert_near(harness.render().at(center), scale([0.3, 0.6, 0.1], level), "a quarter breath past the wrap");
 
     // The layer mask's B paints it.
     harness.texture(MASK, 4, 4, |_, _| [1.0, 1.0, 0.5, 1.0]);

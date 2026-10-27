@@ -21,12 +21,13 @@ use sapphire_serialize::ReflectDocument;
 use serde::{Deserialize, Serialize};
 
 use super::common::{
-    AlphaMode, GpuBlock, bound_bits, color, finite, invalid, non_negative, pack_swizzles, rgb_w, unit,
+    AlphaMode, GpuBlock, bound_bits, color, finite, invalid, non_negative, pack_swizzles, rgb_w, shader_time,
+    unit, whole_cycles,
 };
 use super::{MaterialDocument, MaterialError, MaterialFamily, MaterialFlags, TextureSlot, TextureUsage};
 use crate::AssetId;
 use crate::character_maps::ramp::{self, Half};
-use crate::character_maps::{MATERIAL_IDS, MaterialId, layer_mask};
+use crate::character_maps::{MATERIAL_IDS, MaterialId, eye_mask, layer_mask};
 use crate::texture::Swizzle;
 
 /// An anime character material, as a document:
@@ -542,13 +543,15 @@ pub struct HighlightMotion {
     /// (its X and Y): a Lissajous curve (`character_maps::eye_mask::highlight_drift`). 0 holds
     /// it still.
     pub drift: f32,
-    /// The drift's rate, in cycles a second.
+    /// The drift's rate, in cycles a second. It runs as whole pairs of cycles an hour on the
+    /// shaders' clock (`character_maps::eye_mask::drift_rate`), at most 1/3600 Hz off.
     pub drift_rate: f32,
     /// How much brighter the highlight glints at the peak of each sparkle: 0 none, 1 twice as
     /// bright (`character_maps::eye_mask::highlight_sparkle`). Its coverage scales with it, so
     /// a soft edge swells: a highlight tone mapping already holds at white still glints.
     pub sparkle: f32,
-    /// Sparkles a second.
+    /// Sparkles a second. It runs as whole sparkles an hour on the shaders' clock
+    /// (`character_maps::eye_mask::sparkle_rate`), at most 1/7200 Hz off.
     pub sparkle_rate: f32,
 }
 
@@ -597,7 +600,7 @@ impl EyeShading {
 
     /// The GPU block's `surface` and `surface_color`: x the parallax's depth, then by layer the
     /// iris (center, radius) of the eye and iris layers, zero without one, or a highlight's
-    /// motion (drift, its rate, sparkle, its rate).
+    /// motion (drift, its rate, sparkle, its rate), the rates as whole cycles an hour.
     fn gpu(&self) -> ([f32; 4], [f32; 4]) {
         let surface = [self.parallax, 0.0, 0.0, 0.0];
         let color = match self.layer {
@@ -605,7 +608,12 @@ impl EyeShading {
                 .iris
                 .map_or([0.0; 4], |iris| [iris.center[0], iris.center[1], iris.radius[0], iris.radius[1]]),
             EyeLayer::Shadow => [0.0; 4],
-            EyeLayer::Highlight(m) => [m.drift, m.drift_rate, m.sparkle, m.sparkle_rate],
+            EyeLayer::Highlight(m) => [
+                m.drift,
+                eye_mask::drift_rate(m.drift_rate),
+                m.sparkle,
+                eye_mask::sparkle_rate(m.sparkle_rate),
+            ],
         };
         (surface, color)
     }
@@ -1081,7 +1089,8 @@ pub enum FabricDirection {
 #[type_path = "sapphire::render"]
 #[serde(default)]
 pub struct Emission {
-    /// Seconds a breath takes; 0 holds the glow steady.
+    /// Seconds a breath takes; 0 holds the glow steady. It runs as whole breaths an hour on the
+    /// shaders' clock ([`Emission::breaths`]): a 7 s breath takes 3600 / 514 ≈ 7.004 s.
     pub period: f32,
     /// How far the glow dims at the bottom of a breath: 0 steady, 1 out.
     pub depth: f32,
@@ -1097,14 +1106,23 @@ impl Default for Emission {
 }
 
 impl Emission {
+    /// Breaths a second as the GPU block packs them and shaders run them: `1 / period` rounded
+    /// to whole breaths per [`SHADER_TIME_PERIOD`](super::SHADER_TIME_PERIOD) ([`whole_cycles`],
+    /// review RS-003), so a breath never jumps where the shaders' clock wraps. 0 holds the glow
+    /// steady: no period, or one over two hours.
+    pub fn breaths(&self) -> f32 {
+        if self.period > 0.0 { whole_cycles(1.0 / f64::from(self.period), 1) } else { 0.0 }
+    }
+
     /// The glow's level, 0 to 1, `seconds` into the frame clock for an instance at `phase`
-    /// radians: full at the top of each breath (`breath` in the anime character
-    /// shader).
+    /// radians, as the anime character shader's `breath` has it: full at the top of each breath,
+    /// on the clock wrapped as shaders read it ([`shader_time`]) at [`Emission::breaths`].
     pub fn level(&self, seconds: f32, phase: f32) -> f32 {
-        if self.period <= 0.0 {
+        let breaths = self.breaths();
+        if breaths <= 0.0 {
             return 1.0;
         }
-        let angle = std::f32::consts::TAU * seconds / self.period + phase;
+        let angle = std::f32::consts::TAU * breaths * shader_time(f64::from(seconds)) + phase;
         1.0 - self.depth * (0.5 - 0.5 * angle.cos())
     }
 
@@ -1294,7 +1312,8 @@ pub struct AnimeCharacterParams {
     /// Face: rgb blush color. Hair: rgb highlight color, w transmission sharpness (M1 C8, 0 with
     /// no transmission). Eye (M1 C6), by layer: the eye and iris
     /// layers' iris, xy its center and zw its radii in texture coordinates (zero for none); a
-    /// highlight's motion, x drift in meters, y its rate, z sparkle, w its rate.
+    /// highlight's motion, x drift in meters, y its rate, z sparkle, w its rate (the rates as
+    /// whole cycles an hour, `character_maps::eye_mask::{drift_rate, sparkle_rate}`).
     pub surface_color: [f32; 4],
     /// x: flags (bit `i` for texture slot `i`, then `FLAG_*`); y: region count; z: surface
     /// (`SURFACE_*`); w: specular model (`SPECULAR_*`), | a hair's highlight style
@@ -1324,8 +1343,8 @@ pub struct AnimeCharacterParams {
     /// Per region: x rim strength scale; y rim width scale; z rim on self-overlap; w zero.
     pub rim_regions: [[f32; 4]; AnimeCharacterParams::MAX_REGIONS],
     /// The layers (M1 C7): x the highlight's albedo share ([`Specular::albedo`]); y emission's
-    /// breaths a second (0 steady); z the breath's depth; w how much of the glow blooms as the
-    /// world's light.
+    /// breaths a second ([`Emission::breaths`], 0 steady); z the breath's depth; w how much of the
+    /// glow blooms as the world's light.
     pub layers: [f32; 4],
     /// Stockings ([`Stockings`]): rgb the fabric's color; a its opacity at the silhouette.
     pub stocking_color: [f32; 4],
@@ -1583,7 +1602,7 @@ impl AnimeCharacterMaterial {
             };
         }
         let (stockings, emission) = (&self.stockings, &self.emission);
-        let breaths = if emission.period > 0.0 { emission.period.recip() } else { 0.0 };
+        let breaths = emission.breaths();
         let along_v = match stockings.direction {
             FabricDirection::U => 0.0,
             FabricDirection::V => 1.0,

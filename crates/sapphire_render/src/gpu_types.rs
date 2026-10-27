@@ -3,15 +3,11 @@
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec2, Vec3};
+use sapphire_assets::material;
 
 use crate::fog::GpuFog;
 use crate::lights::LightUniforms;
 use crate::{CameraData, FramePacket};
-
-/// The period, in seconds, shaders see time wrapped to: an hour keeps f32 precision to a
-/// fraction of a millisecond. Only periodic effects (star twinkle) read it; motion that must not
-/// jump at the wrap (cloud drift) is reduced on the CPU in `f64` instead.
-pub(crate) const SHADER_TIME_PERIOD: f64 = 3600.0;
 
 /// Per-frame constants (WGSL `FrameUniforms`, group 0).
 #[repr(C)]
@@ -25,8 +21,13 @@ pub(crate) struct FrameUniforms {
     pub sky_zenith: [f32; 4],
     pub sky_horizon: [f32; 4],
     pub sky_ground: [f32; 4],
-    /// x: presentation time in seconds, wrapped to [`SHADER_TIME_PERIOD`] (see
-    /// `FramePacket::time_seconds`).
+    /// x: presentation time in seconds (`FramePacket::time_seconds`), wrapped in `f64` to
+    /// [`material::SHADER_TIME_PERIOD`], an hour, which keeps f32 precision to a fraction of a
+    /// millisecond ([`material::shader_time`]). Only periodic effects read it, and those with
+    /// authored rates complete whole cycles in it, so they never jump at the wrap: the anime
+    /// character family packs its breaths, drift and sparkle so ([`material::whole_cycles`], review
+    /// RS-003), and fog cards round their drift in the shader; star twinkle needn't. Motion that
+    /// isn't periodic (cloud drift) is reduced on the CPU in `f64` instead.
     pub time: [f32; 4],
     /// Light and list counts (see `LightUniforms`).
     pub lights: [u32; 4],
@@ -64,7 +65,7 @@ impl FrameUniforms {
             sky_horizon: frame.sky.horizon.extend(1.0).to_array(),
             sky_ground: frame.sky.ground.extend(1.0).to_array(),
             // NaN clamps to 0, so a bad packet draws day rather than spreading NaN.
-            time: [wrap_time(frame.time_seconds), 0.0, 0.0, 0.0],
+            time: [material::shader_time(frame.time_seconds), 0.0, 0.0, 0.0],
             lights: lights.lights,
             clusters: lights.clusters,
             day_night: frame.day_night,
@@ -78,12 +79,6 @@ impl FrameUniforms {
             fog: GpuFog::new(&frame.fog),
         }
     }
-}
-
-/// `seconds` wrapped into `0..SHADER_TIME_PERIOD`, as shaders see time; 0 for a time that isn't
-/// finite.
-pub(crate) fn wrap_time(seconds: f64) -> f32 {
-    if seconds.is_finite() { seconds.rem_euclid(SHADER_TIME_PERIOD) as f32 } else { 0.0 }
 }
 
 /// The packet's emission scale as shaders read it: never negative, and 1 (as authored) for a

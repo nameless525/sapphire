@@ -359,6 +359,8 @@ pub mod hair_mask {
 pub mod eye_mask {
     use std::f32::consts::TAU;
 
+    use crate::material::{shader_time, whole_cycles};
+
     /// R, the iris's depth below the cornea: 0 level with it, 1 the material's full parallax
     /// depth.
     pub const DEPTH: usize = 0;
@@ -366,6 +368,10 @@ pub mod eye_mask {
     /// The drift's second axis turns this many times as fast as its first: a Lissajous figure
     /// of 2 : 3, which wanders rather than circles.
     pub const DRIFT_RATIO: f32 = 1.5;
+    /// The drift's rate runs in steps of this many cycles per wrap of the shaders' clock
+    /// ([`drift_rate`]): [`DRIFT_RATIO`]'s denominator, so the second axis completes whole cycles
+    /// too.
+    pub const DRIFT_CYCLE_STEP: u32 = 2;
     /// The sparkle's wave is raised to this power: a short glint in each period rather than a
     /// slow throb.
     pub const SPARKLE_SHARPNESS: i32 = 6;
@@ -386,17 +392,32 @@ pub mod eye_mask {
         TAU * (instance as f32 * PHASE_STEP).fract()
     }
 
-    /// Where a highlight has drifted, at `seconds` on the frame's clock with `phase`: an offset
-    /// across the model's front (X, Y), in meters, `drift` at most on each axis.
+    /// A drift rate, in cycles a second, as the material block packs it and shaders run it: whole
+    /// steps of [`DRIFT_CYCLE_STEP`] cycles per wrap of the shaders' clock ([`whole_cycles`],
+    /// review RS-003), so neither axis jumps there. It moves `rate` by at most 1/3600 Hz.
+    pub fn drift_rate(rate: f32) -> f32 {
+        whole_cycles(f64::from(rate), DRIFT_CYCLE_STEP)
+    }
+
+    /// A sparkle rate as the material block packs it and shaders run it: whole sparkles per wrap
+    /// of the shaders' clock ([`whole_cycles`]), at most 1/7200 Hz from `rate`.
+    pub fn sparkle_rate(rate: f32) -> f32 {
+        whole_cycles(f64::from(rate), 1)
+    }
+
+    /// Where a highlight has drifted, at `seconds` on the frame's clock with `phase`, as shaders
+    /// draw it (at [`drift_rate`], on the clock wrapped as they read it, [`shader_time`]): an
+    /// offset across the model's front (X, Y), in meters, `drift` at most on each axis.
     pub fn highlight_drift(drift: f32, rate: f32, seconds: f32, phase: f32) -> [f32; 2] {
-        let angle = TAU * rate * seconds + phase;
+        let angle = TAU * drift_rate(rate) * shader_time(f64::from(seconds)) + phase;
         [drift * angle.sin(), drift * (DRIFT_RATIO * angle + 1.0).sin()]
     }
 
-    /// How much brighter a highlight is, at `seconds` with `phase`: 1, rising to `1 + sparkle`
-    /// in a short glint `rate` times a second.
+    /// How much brighter a highlight is, at `seconds` with `phase`, as shaders draw it (at
+    /// [`sparkle_rate`], on the wrapped clock): 1, rising to `1 + sparkle` in a short glint
+    /// `rate` times a second.
     pub fn highlight_sparkle(sparkle: f32, rate: f32, seconds: f32, phase: f32) -> f32 {
-        let wave = 0.5 + 0.5 * (TAU * rate * seconds + phase).sin();
+        let wave = 0.5 + 0.5 * (TAU * sparkle_rate(rate) * shader_time(f64::from(seconds)) + phase).sin();
         1.0 + sparkle * wave.powi(SPARKLE_SHARPNESS)
     }
 }

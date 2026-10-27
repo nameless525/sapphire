@@ -135,7 +135,9 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag). 12: embedded
+    /// 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag) or 11, whose
+    /// whole-cycle rates (review RS-003) leave every block an importer generates as it was: their
+    /// rates are the defaults or 0, which divide the hour already. 12: embedded
     /// materials of `Material::VERSION` 9 (M1 X1 part 2e's sky slots; the embedded anime
     /// character blocks are as in 11). 11: embedded materials of `Material::VERSION` 8 (M1 C7's
     /// layers). 10: the optional
@@ -156,9 +158,9 @@ impl Versioned for Mesh {
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
-// format too.
+// format too, unless it can't change a block an importer generates (`Material::VERSION` 11).
 const _: () = assert!(
-    Mesh::VERSION == 13 && Material::VERSION == 10,
+    Mesh::VERSION == 13 && Material::VERSION == 11,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

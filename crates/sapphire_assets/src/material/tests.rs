@@ -1,7 +1,7 @@
 use sapphire_serialize::{from_ron, to_ron};
 
 use super::*;
-use crate::character_maps::layer_mask;
+use crate::character_maps::{eye_mask, layer_mask};
 use crate::texture::Component;
 
 const TEXTURE: &str = "7c4b0a9e-3f1d-4c2a-9b8e-5d6f7a8b9c0d";
@@ -867,6 +867,100 @@ fn layer_references_match_their_shapes() {
     let shifted = emission.level(1.0, std::f32::consts::PI);
     assert!((shifted - emission.level(3.0, 0.0)).abs() < 1e-6, "the phase");
     assert_eq!(Emission { period: 0.0, ..emission }.level(1.7, 0.3), 1.0);
+}
+
+/// Rates on the shaders' clock pack as whole cycles per wrap (review RS-003): a breath, drift or
+/// sparkle with a fraction of a cycle left over at the wrap would jump there every hour. Packing
+/// moves a rate by at most half a step an hour, and leaves rates that divide the hour, every
+/// shipped one among them, exactly as authored.
+#[test]
+fn rates_on_the_shaders_clock_pack_as_whole_cycles_an_hour() {
+    let identity = [Swizzle::IDENTITY; 8];
+    // How many cycles a packed rate completes in a wrap, and whether they're whole (as an `f32`,
+    // a rate is good to a few ten-thousandths of a cycle an hour).
+    let cycles = |rate: f32| f64::from(rate) * SHADER_TIME_PERIOD;
+    let whole = |cycles: f64| (cycles - cycles.round()).abs() < 1e-3;
+    let off = |packed: f32, rate: f32| f64::from((packed - rate).abs());
+    let highlight = |motion| AnimeCharacterMaterial {
+        surface: CharacterSurface::Eye(EyeShading {
+            layer: EyeLayer::Highlight(motion),
+            ..EyeShading::default()
+        }),
+        alpha: AlphaMode::Blend,
+        ..AnimeCharacterMaterial::default()
+    };
+    for rate in [0.37f32, 1.0 / 7.0, 1.0 / 11.0, 0.013, 2.71] {
+        let emission = Emission { period: rate.recip(), ..Emission::default() };
+        let material = AnimeCharacterMaterial { emission, ..AnimeCharacterMaterial::default() };
+        let breaths = material.gpu_params(&identity).layers[1];
+        assert_eq!(breaths, emission.breaths(), "the block holds what the shaders run");
+        assert!(whole(cycles(breaths)), "{rate} breaths a second: {} an hour", cycles(breaths));
+        assert!(off(breaths, rate) <= 1.0 / 7200.0 + 1e-7, "{rate}: {breaths}");
+
+        let motion = HighlightMotion { drift: 0.001, drift_rate: rate, sparkle: 0.5, sparkle_rate: rate };
+        let [_, drift_rate, _, sparkle_rate] = highlight(motion).gpu_params(&identity).surface_color;
+        assert_eq!(drift_rate, eye_mask::drift_rate(rate));
+        assert_eq!(sparkle_rate, eye_mask::sparkle_rate(rate));
+        // Both of the drift's axes, the second turning 1.5 times as fast.
+        let second = cycles(drift_rate) * f64::from(eye_mask::DRIFT_RATIO);
+        assert!(
+            whole(cycles(drift_rate)) && whole(second),
+            "{rate} Hz drifts {} and {second}",
+            cycles(drift_rate)
+        );
+        assert!(off(drift_rate, rate) <= 1.0 / 3600.0 + 1e-7, "{rate}: {drift_rate}");
+        assert!(whole(cycles(sparkle_rate)), "{rate} sparkles a second: {}", cycles(sparkle_rate));
+        assert!(off(sparkle_rate, rate) <= 1.0 / 7200.0 + 1e-7, "{rate}: {sparkle_rate}");
+    }
+    // The shipped rates (the look-dev eye's and the sample face's, the defaults) and periods.
+    for rate in [0.25, 0.3, 0.35, 0.4, 0.5, 2.0] {
+        assert_eq!((eye_mask::drift_rate(rate), eye_mask::sparkle_rate(rate)), (rate, rate));
+    }
+    for period in [2.5f32, 3.0, 4.0] {
+        assert_eq!(Emission { period, ..Emission::default() }.breaths(), period.recip(), "{period} s");
+    }
+    // Under one breath in two hours rounds to none: steady, as without a period.
+    assert_eq!(Emission { period: 9000.0, ..Emission::default() }.breaths(), 0.0);
+    assert_eq!(Emission { period: 0.0, ..Emission::default() }.breaths(), 0.0);
+}
+
+/// The CPU references of motion on the shaders' clock (`Emission::level`, the eye mask's
+/// `highlight_drift` and `highlight_sparkle`) read the clock wrapped as shaders do, at the packed
+/// rates, so across the wrap (an hour in, two, and just before 0) they follow the same motion on
+/// an unwrapped clock, within what it covers in a few milliseconds (review RS-003).
+#[test]
+fn motion_references_cross_the_shaders_clock_wrap_continuously() {
+    use std::f64::consts::TAU;
+
+    use eye_mask::{
+        DRIFT_RATIO, SPARKLE_SHARPNESS, drift_rate, highlight_drift, highlight_sparkle, phase, sparkle_rate,
+    };
+    for rate in [0.37f32, 1.0 / 7.0, 1.0 / 11.0] {
+        let emission = Emission { period: rate.recip(), depth: 1.0, bloom: 1.0 };
+        for instance in [0, 5] {
+            let phase = phase(instance);
+            // The motion at the packed rates, in `f64` on the unwrapped clock.
+            let angle = |rate: f32, seconds: f64| TAU * f64::from(rate) * seconds + f64::from(phase);
+            let breath = |s| 0.5 + 0.5 * angle(emission.breaths(), s).cos();
+            let drift = |s| {
+                let a = angle(drift_rate(rate), s);
+                [a.sin(), (f64::from(DRIFT_RATIO) * a + 1.0).sin()]
+            };
+            let glint = |s| 1.0 + (0.5 + 0.5 * angle(sparkle_rate(rate), s).sin()).powi(SPARKLE_SHARPNESS);
+            for seconds in [-0.001f32, 0.001, 3599.999, 3600.001, 7199.999, 7200.001] {
+                let s = f64::from(seconds);
+                let near = |cpu: f32, continuous: f64, what: &str| {
+                    let gap = (f64::from(cpu) - continuous).abs();
+                    assert!(gap < 0.01, "{what} at {seconds} s, {rate} Hz: {cpu}, continuously {continuous}");
+                };
+                near(emission.level(seconds, phase), breath(s), "the breath");
+                let ([x, y], [cx, cy]) = (highlight_drift(1.0, rate, seconds, phase), drift(s));
+                near(x, cx, "the drift's x");
+                near(y, cy, "the drift's y");
+                near(highlight_sparkle(1.0, rate, seconds, phase), glint(s), "the sparkle");
+            }
+        }
+    }
 }
 
 /// Documents from before the layers (M1 C7) load unchanged and draw as they did: no layer flag,

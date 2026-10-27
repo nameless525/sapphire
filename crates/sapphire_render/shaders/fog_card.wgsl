@@ -25,7 +25,7 @@ const CARD_FACING_WORLD: u32 = 0u;
 const CARD_FACING_UPRIGHT: u32 = 2u;
 // The map's texture slot (`FogCardMaterial::MAP`).
 const FOG_CARD_MAP: u32 = 0u;
-// The shaders' clock wraps to this many seconds (`gpu_types::SHADER_TIME_PERIOD`): the drift is
+// The shaders' clock wraps to this many seconds (`material::SHADER_TIME_PERIOD`): the drift is
 // rounded to a whole number of repeats in it, so it never jumps at the wrap.
 const FOG_CARD_TIME_PERIOD: f32 = 3600.0;
 

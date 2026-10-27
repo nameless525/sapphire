@@ -108,6 +108,28 @@ pub(crate) fn rgb_w(rgb: [f32; 3], w: f32) -> [f32; 4] {
     [rgb[0], rgb[1], rgb[2], w]
 }
 
+/// The period, in seconds, of the clock shaders read: the renderer wraps the frame's
+/// presentation time to it ([`shader_time`]), since an hour keeps `f32` precision to a fraction of
+/// a millisecond. Anything periodic on that clock must complete whole cycles in it, or it jumps at
+/// every wrap, so materials pack their rates as whole cycles an hour ([`whole_cycles`]).
+pub const SHADER_TIME_PERIOD: f64 = 3600.0;
+
+/// `seconds` of presentation time as shaders read it: wrapped into `0..SHADER_TIME_PERIOD` in
+/// `f64` before it becomes an `f32`, and 0 for a time that isn't finite.
+pub fn shader_time(seconds: f64) -> f32 {
+    if seconds.is_finite() { seconds.rem_euclid(SHADER_TIME_PERIOD) as f32 } else { 0.0 }
+}
+
+/// `rate`, in cycles a second, as shaders run it (review RS-003): rounded to the nearest whole
+/// multiple of `step` cycles per [`SHADER_TIME_PERIOD`], so an oscillator at it, and at the rate
+/// times any ratio whose denominator divides `step`, completes whole cycles every time the
+/// shaders' clock wraps and never jumps there. That moves a rate by at most `step / 7200` Hz, and a
+/// rate under half a step an hour runs at 0.
+pub fn whole_cycles(rate: f64, step: u32) -> f32 {
+    let step = f64::from(step);
+    ((rate * SHADER_TIME_PERIOD / step).round() * step / SHADER_TIME_PERIOD) as f32
+}
+
 /// Bits per swizzled component in a GPU swizzle code.
 const COMPONENT_BITS: u32 = 3;
 /// Bits per texture slot: four components.

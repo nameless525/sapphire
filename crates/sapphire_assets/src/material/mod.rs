@@ -42,8 +42,13 @@
 //!   branch. [`Material::read`] checks both against the bindings, and that every float in the
 //!   block is finite.
 //! - A block whose layout or packing changes bumps [`Material::VERSION`], so every material
-//!   recooks, and with it `Mesh::VERSION`, since meshes embed generated materials (a
-//!   compile-time check pairs the two).
+//!   recooks, and with it `Mesh::VERSION` whenever a generated material's block can change, since
+//!   meshes embed generated materials (a compile-time check pairs the two).
+//! - **Rates on the shaders' clock pack as whole cycles an hour** ([`whole_cycles`], review
+//!   RS-003). Shaders read presentation time wrapped to [`SHADER_TIME_PERIOD`] ([`shader_time`]),
+//!   so a rate with a fraction of a cycle left over at the wrap would jump there. Packing moves an
+//!   authored rate by at most 1/7200 Hz (emission's breaths, a highlight's sparkle) or 1/3600 Hz (a
+//!   highlight's drift, whose second axis turns 1.5 times as fast).
 //!
 //! # Meshes and their materials
 //!
@@ -103,7 +108,9 @@ pub use self::character::{
     IrisShape, LightSplit, Matcap, MatcapBlend, MatcapChannel, Outline, OutlineCurve, RampDiffuse, RegionGi,
     RegionMatcap, Rim, Specular, SpecularModel, Stockings, ThroughHair,
 };
-pub use self::common::{AlphaMode, DistanceStylization, SWIZZLE_BITS, swizzle_code};
+pub use self::common::{
+    AlphaMode, DistanceStylization, SHADER_TIME_PERIOD, SWIZZLE_BITS, shader_time, swizzle_code, whole_cycles,
+};
 use self::common::{GpuBlock, bound_bits, pack_swizzles};
 pub use self::environment::{EnvironmentMaterial, EnvironmentParams, Terminator, TerminatorBand};
 pub use self::fog_card::{CardFacing, FogCardMaterial, FogCardParams};
@@ -341,9 +348,13 @@ pub struct Material {
 }
 
 impl Versioned for Material {
-    /// 10: the anime character family's double-sided flag ([`MaterialFlags::DOUBLE_SIDED`], M1
-    /// C8). 9: the sky family's sixth texture slot, the nebula, and how its card clouds are shaded
-    /// in `modes[1]` (M1 X1 part 2e). 8: the anime character family's layers (M1 C7): five
+    /// 11: the anime character family packs its rates on the shaders' clock (emission's breaths,
+    /// a highlight's drift and sparkle) as whole cycles per [`SHADER_TIME_PERIOD`]
+    /// ([`whole_cycles`], review RS-003), so they don't jump where the clock wraps. Rates that
+    /// divide the hour already, as every generated material's do, pack as before, so meshes keep
+    /// version 13. 10: the anime character family's double-sided flag
+    /// ([`MaterialFlags::DOUBLE_SIDED`], M1 C8). 9: the sky family's sixth texture slot, the
+    /// nebula, and how its card clouds are shaded in `modes[1]` (M1 X1 part 2e). 8: the anime character family's layers (M1 C7): five
     /// vectors of stockings, emission and
     /// specular settings and three vectors per region after the regions' rim settings, the
     /// layers' flags in `modes.x`, and a body's layer mask in the surface mask slot. 7: the
@@ -359,9 +370,9 @@ impl Versioned for Material {
     /// rig's GI weights (M1 C2) into their subsurface and rim vectors' fourth components. 1: M1
     /// A3's blocks. Bump it whenever a family's block layout, its packing (`gpu_params`) or its
     /// texture slots change: the cache key holds it, so every material recooks, and meshes, whose
-    /// generated materials embed blocks, must bump
-    /// `Mesh::VERSION` with it (a compile-time check in `mesh` pairs the two).
-    const VERSION: u32 = 10;
+    /// generated materials embed blocks, must bump `Mesh::VERSION` with it unless no block an
+    /// importer generates can change (a compile-time check in `mesh` pairs the two).
+    const VERSION: u32 = 11;
 }
 
 /// What one texture slot binds.

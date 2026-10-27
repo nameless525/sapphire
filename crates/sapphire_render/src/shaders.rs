@@ -1878,7 +1878,10 @@ mod tests {
         assert_eq!(wgsl_u32(&cards, "CARD_FACING_WORLD"), CardFacing::World.code());
         assert_eq!(wgsl_u32(&cards, "CARD_FACING_UPRIGHT"), CardFacing::Upright.code());
         assert_eq!(wgsl_u32(&cards, "FOG_CARD_MAP") as usize, FogCardMaterial::MAP);
-        assert_eq!(f64::from(wgsl_f32(&cards, "FOG_CARD_TIME_PERIOD")), crate::gpu_types::SHADER_TIME_PERIOD);
+        assert_eq!(
+            f64::from(wgsl_f32(&cards, "FOG_CARD_TIME_PERIOD")),
+            sapphire_assets::material::SHADER_TIME_PERIOD
+        );
         assert!(
             cards.overrides.iter().any(|(_, o)| o.name.as_deref() == Some(crate::fog::DEPTH_FADE_CONSTANT))
         );

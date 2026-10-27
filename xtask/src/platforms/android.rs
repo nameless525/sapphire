@@ -852,13 +852,24 @@ mod tests {
     }
 
     /// A stand-in for adb that plays the scenario named by its serial (`-s <scenario>`): the
-    /// app's logcat, `pidof` and `get-state`. Written once, before any test runs it.
+    /// app's logcat, `pidof` and `get-state`. It lives in `$TMPDIR/xtask-fake-adb-<pid>/`,
+    /// which dropping it removes. One exists at a time, made during a [`Turn`]: the tests
+    /// that use it take turns, so none writes the script while another's adb is being spawned
+    /// (a child forked then would hold the script open for writing, and running it would fail
+    /// with ETXTBSY on Linux).
     #[cfg(unix)]
-    fn fake_adb() -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
-        static ADB: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        ADB.get_or_init(|| {
-            const SCRIPT: &str = r#"#!/bin/sh
+    struct FakeAdb {
+        dir: PathBuf,
+        adb: Adb,
+    }
+
+    /// A test's turn with [`FakeAdb`].
+    #[cfg(unix)]
+    type Turn = std::sync::MutexGuard<'static, ()>;
+
+    #[cfg(unix)]
+    impl FakeAdb {
+        const SCRIPT: &str = r#"#!/bin/sh
 scenario=$2
 shift 2
 line() { printf '10-27 12:00:00.000  4242  4260 %s\n' "$1"; }
@@ -875,20 +886,44 @@ case "$1 $scenario" in
     *) echo "fake adb: unexpected $*" >&2; exit 2 ;;
 esac
 "#;
+
+        /// Waits for this test's turn.
+        fn turn() -> Turn {
+            static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            // A test that failed during its turn left nothing behind: its fake adb dropped.
+            TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        fn new(_turn: &Turn, scenario: &str) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
             let dir = env::temp_dir().join(format!("xtask-fake-adb-{}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
-            let adb = dir.join("adb");
-            fs::write(&adb, SCRIPT).unwrap();
-            fs::set_permissions(&adb, fs::Permissions::from_mode(0o755)).unwrap();
-            adb
-        })
-        .clone()
+            let program = dir.join("adb");
+            fs::write(&program, Self::SCRIPT).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            Self { dir, adb: Adb { program, serial: scenario.to_owned() } }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for FakeAdb {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
     }
 
     #[cfg(unix)]
     fn follow(scenario: &str) -> anyhow::Result<()> {
-        let adb = Adb { program: fake_adb(), serial: scenario.to_owned() };
-        follow_logcat(&adb, "dev.sapphire.sandbox", "4242")
+        let turn = FakeAdb::turn();
+        let fake = FakeAdb::new(&turn, scenario);
+        let result = follow_logcat(&fake.adb, "dev.sapphire.sandbox", "4242");
+        let dir = fake.dir.clone();
+        assert!(fake.adb.program.is_file());
+        drop(fake);
+        // Checked within the turn, before another test makes it again.
+        assert!(!dir.exists(), "the fake adb's directory outlived it");
+        drop(turn);
+        result
     }
 
     #[cfg(unix)]

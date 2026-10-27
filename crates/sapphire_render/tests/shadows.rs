@@ -1051,10 +1051,10 @@ fn an_edited_shadows_wgsl_rebuilds_the_shadow_passes() {
     );
     assert_eq!(harness.render().pixels, before.pixels, "a comment draws the same frame");
     // The receivers live in frame.wgsl: every program with it, the shadow passes', foliage's (M1
-    // W6) and the ambient passes' (M1 W5) included.
+    // W6), the ambient passes' (M1 W5) and the debug views' (M1 F5) included.
     let frame = comment(&shadows, ShaderFile::Frame);
     let update = harness.renderer.set_shader_sources(&frame).expect("a valid edit");
-    assert_eq!(update.programs, 10);
+    assert_eq!(update.programs, 11);
     assert_eq!(harness.render().pixels, before.pixels);
     // A renamed entry point validates but no pipeline can build from it: refused, and the
     // shadows go on drawing with what the renderer has.

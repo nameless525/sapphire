@@ -94,6 +94,11 @@
 //!   and RAM, the `r.*` overrides, and each frame's render scale with dynamic resolution. The
 //!   scene renders at the render scale ([`Renderer::set_render_scale`]) and post's final pass
 //!   upsamples it to the target (see "Render scale" below).
+//! - Debug views ([`debug_view`], M1 F5): the frame drawn as a wireframe, as overdraw or as the
+//!   local lights each pixel walks, picked per frame ([`Renderer::set_debug_view`], the
+//!   `r.debug_view` cvar). Each replays the main pass through copies of its own pipelines into
+//!   a depth and stencil it reads, and draws over the frame after post. Off, the default, builds
+//!   and draws nothing.
 //!
 //! # Does not own
 //!
@@ -272,6 +277,14 @@
 //! frame's `SkyUniforms`, one uniform at binding 2, past the scene group's bindings
 //! `frame.wgsl` declares) and the sky family's group 3 (five texture slots and the trilinear
 //! sampler), so the sky reads no storage buffer beyond group 0's.
+//!
+//! A debug view ([`debug_view`], M1 F5) binds groups 0–3 as the main pass does in its replay,
+//! with group 1 its own buffer holding the main view without TAA's jitter. Its pass over the
+//! frame binds group 0, that view group, and a group 2 of its own: the replay's stencil
+//! (`texture_2d<u32>`, binding 0) and depth (`texture_depth_2d`, binding 1), so it reads one
+//! storage buffer, the light lists. The wireframe's line indices pass (`cs_debug_lines`) binds a
+//! group 0 of its own, all compute: the pool's indices copied (binding 20, read-only) and the
+//! line indices (21, read-write), past the frame group's bindings that its file declares too.
 //!
 //! The skinning pass (`shaders/skinning.wgsl`) binds its own group 0, all compute:
 //!
@@ -669,7 +682,7 @@
 //!   now that TAA turns MSAA off on desktop, letting the main pass
 //!   reuse the scene prepass's depth (load it and test `Equal`, skipping overdraw), which needs
 //!   the prepass to cut alpha-tested surfaces out first.
-//! - **Local lights** (see the `lights` module): the light-cluster heatmap debug view, light
+//! - **Local lights** (see the `lights` module): cluster occupancy counted on the GPU, light
 //!   layers (VFX lights kept off faces and rims), local-light shadows, and two-level culling for
 //!   hundreds of lights.
 //! - **LOD selection**, with culling: the pool holds every LOD's indices and ranges, and each
@@ -731,6 +744,7 @@ mod bounds;
 mod buffer;
 mod character_prepass;
 mod characters;
+pub mod debug_view;
 mod draw;
 mod environment;
 pub mod fog;
@@ -758,6 +772,7 @@ pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
 };
 pub use character_prepass::CharacterPrepassStats;
+pub use debug_view::{DebugView, DebugViewStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;
 pub use foliage::FoliageSettings;

@@ -68,10 +68,13 @@ pub enum ShaderFile {
     Probes,
     /// GTAO and its denoiser.
     Occlusion,
+    /// The renderer's debug views' passes over the frame, their replays' stand-in fragment stage and
+    /// the wireframe's line indices (M1 F5).
+    DebugView,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -90,6 +93,7 @@ impl ShaderFile {
         Self::Ambient,
         Self::Probes,
         Self::Occlusion,
+        Self::DebugView,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -113,6 +117,7 @@ impl ShaderFile {
             Self::Ambient => "ambient.wgsl",
             Self::Probes => "probes.wgsl",
             Self::Occlusion => "occlusion.wgsl",
+            Self::DebugView => "debug_view.wgsl",
         }
     }
 
@@ -142,6 +147,7 @@ impl ShaderFile {
             Self::Ambient => include_str!("../shaders/ambient.wgsl"),
             Self::Probes => include_str!("../shaders/probes.wgsl"),
             Self::Occlusion => include_str!("../shaders/occlusion.wgsl"),
+            Self::DebugView => include_str!("../shaders/debug_view.wgsl"),
         }
     }
 
@@ -173,10 +179,13 @@ pub(crate) enum Program {
     Foliage,
     /// The ambient passes and GTAO (M1 W5).
     Ambient,
+    /// The debug views' passes over the frame, their replays' stand-in fragment stage and the
+    /// wireframe's line indices (M1 F5).
+    DebugView,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -190,6 +199,7 @@ impl Program {
         Self::Shadows,
         Self::Foliage,
         Self::Ambient,
+        Self::DebugView,
     ];
 
     /// Its files, in order.
@@ -209,6 +219,7 @@ impl Program {
             Self::Shadows => &[F::Frame, F::Materials, F::Shadows],
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
             Self::Ambient => &[F::Frame, F::Materials, F::Ambient, F::Probes, F::Occlusion],
+            Self::DebugView => &[F::Frame, F::Materials, F::Lights, F::DebugView],
         }
     }
 
@@ -228,6 +239,7 @@ impl Program {
             Self::Shadows => "shadows",
             Self::Foliage => "foliage",
             Self::Ambient => "ambient",
+            Self::DebugView => "debug view",
         }
     }
 
@@ -398,7 +410,7 @@ mod tests {
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 13] = [
+    const PASSES: [(Program, &[&str]); 14] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -449,6 +461,18 @@ mod tests {
                 "cs_gtao_depths",
                 "cs_gtao",
                 "cs_gtao_denoise",
+            ],
+        ),
+        (
+            Program::DebugView,
+            &[
+                "vs_debug_view",
+                "fs_debug_stand_in",
+                "fs_debug_overdraw",
+                "fs_debug_cluster_lights",
+                "fs_debug_object_lights",
+                "fs_debug_wireframe",
+                "cs_debug_lines",
             ],
         ),
     ];
@@ -722,6 +746,8 @@ mod tests {
             (Program::Ambient, "PrefilterUniforms", size_of::<PrefilterUniforms>()),
             (Program::Ambient, "GtaoUniforms", size_of::<GtaoUniforms>()),
             (Program::Ambient, "SkyLight", crate::ambient::SKY_LIGHT_BYTES as usize),
+            (Program::DebugView, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::DebugView, "ViewUniforms", size_of::<ViewUniforms>()),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);

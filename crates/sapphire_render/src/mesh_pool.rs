@@ -627,6 +627,12 @@ impl MeshPool {
         self.indices.buffer()
     }
 
+    /// The end of the indices in use in [`Self::index_buffer`]: every mesh's lie below it, each
+    /// at a multiple of 3 (whole triangles, as every mesh's index count is a multiple of 3).
+    pub(crate) fn index_end(&self) -> u32 {
+        self.index_ranges.end()
+    }
+
     /// Static foliage meshes' foliage streams, drawn as slot 5.
     pub(crate) fn foliage_buffer(&self) -> &wgpu::Buffer {
         self.foliage.buffer()

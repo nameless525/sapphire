@@ -45,9 +45,10 @@
 //!   would pop as lights reorder).
 //! - **Ramp and band modes (C1):** each light indexes the ramp (or bands) with its own split, as
 //!   the sun does.
-//! - **The light-cluster heatmap (F5's debug views):** a renderer debug view drawing each
-//!   pixel's list count from the cluster buffer; [`LightStats`] already counts lights and
-//!   clusters. GPU-side occupancy (fullest cluster, overflow) would need a readback.
+//! - **Cluster occupancy on the GPU:** the light lists' debug view (M1 F5, the
+//!   [`debug_view`](crate::debug_view) module) draws each pixel's list count from the cluster
+//!   buffer, and [`LightStats`] counts lights and clusters; the fullest cluster and the lights a
+//!   full one dropped would need the cluster pass to count them and a readback.
 //! - **More lights:** beyond a few hundred, cull per tile column first (or z-bin), and
 //!   scalarize the per-pixel loop across waves.
 //! - **Local-light shadows** for a few hero lights, and environment shading (W4) through the
@@ -399,6 +400,16 @@ impl Lights {
     /// Times the list buffer grew.
     pub(crate) fn growths(&self) -> u32 {
         self.lists.growths()
+    }
+
+    /// On the per-object path, the lights each instance slot's pixels walk in the last prepared
+    /// frame, by slot (none on the clustered path, and 0 for every slot in a frame without
+    /// lights): the light-list debug view's tags.
+    pub(crate) fn object_counts(&self) -> impl Iterator<Item = u32> + '_ {
+        let listed = self.uniforms.lights[1] == ListMode::Objects as u32;
+        let capacity = self.capacity;
+        let counts = (self.path == LightPath::PerObject).then(|| self.objects.counts()).into_iter().flatten();
+        counts.map(move |count| if listed { count.min(capacity) } else { 0 })
     }
 
     /// The lights the last frame with a view draws, as packed for the GPU.

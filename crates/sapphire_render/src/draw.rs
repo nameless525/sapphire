@@ -13,6 +13,11 @@
 //! material draws through (M1 C5), and the shadow passes and the character prepass draw only the
 //! instances that cast into the map they draw, or are characters (`*_where`). Fog cards draw in
 //! an order of the frame's own, back to front ([`MeshDraws::draw_ordered`]).
+//!
+//! The debug views' replays of the main pass (M1 F5, the `debug_view` module) draw through the
+//! same calls: the overdraw view's draw each alpha-tested draw twice, through two pipelines in
+//! turn (`*_through_where`), and the wireframe's draw its edges, with each draw's index range doubled
+//! into the line indices it binds as the index buffer ([`MeshDraws::lines`]).
 
 use std::ops::Range;
 
@@ -46,6 +51,10 @@ pub(crate) struct MeshDraws<'a> {
     /// Per draw record: whether the frame draws its hull, if it has one (the LOD cutoff,
     /// `outlines::OutlineCull`).
     pub hulls: &'a [bool],
+    /// Draws index a line list of each triangle's three edges instead of the pool's triangles:
+    /// the debug view's line indices, two per triangle index at twice its position
+    /// (`debug_view`, the wireframe's replay), bound in its place. Off for every other pass.
+    pub lines: bool,
 }
 
 /// One of a variant's draws in the draw list: a static mesh's command, by format and position
@@ -126,6 +135,23 @@ impl MeshDraws<'_> {
         set: DrawSet,
         instance: impl Fn(u32) -> bool,
     ) {
+        self.draw_static_through_where(pass, kind, format, variant, set, instance, &[]);
+    }
+
+    /// As [`Self::draw_static_where`], but each draw once through each of `pipelines` in turn,
+    /// set before it (none: once, through the pipeline already set): a debug view's replay that
+    /// counts a draw's fragments and then writes its depth (`debug_view`).
+    #[expect(clippy::too_many_arguments, reason = "the `_where` draw's, and the pipelines")]
+    pub(crate) fn draw_static_through_where(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        format: PositionFormat,
+        variant: SurfaceVariant,
+        set: DrawSet,
+        instance: impl Fn(u32) -> bool,
+        pipelines: &[&wgpu::RenderPipeline],
+    ) {
         let mut bound = Bound::default();
         for command in &self.list.commands[format_index(format)][variant.index()] {
             if !self.includes(set, command.draw_id, command.material, command.outline)
@@ -133,7 +159,13 @@ impl MeshDraws<'_> {
             {
                 continue;
             }
-            self.draw_command(pass, kind, format, command, &mut bound);
+            if pipelines.is_empty() {
+                self.draw_command(pass, kind, format, command, &mut bound);
+            }
+            for pipeline in pipelines {
+                pass.set_pipeline(pipeline);
+                self.draw_command(pass, kind, format, command, &mut bound);
+            }
         }
     }
 
@@ -197,6 +229,20 @@ impl MeshDraws<'_> {
         set: DrawSet,
         instance: impl Fn(u32) -> bool,
     ) {
+        self.draw_deformed_through_where(pass, kind, variant, set, instance, &[]);
+    }
+
+    /// As [`Self::draw_deformed_where`], but each draw once through each of `pipelines` in turn,
+    /// as [`Self::draw_static_through_where`] draws.
+    pub(crate) fn draw_deformed_through_where(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        kind: MeshPass,
+        variant: SurfaceVariant,
+        set: DrawSet,
+        instance: impl Fn(u32) -> bool,
+        pipelines: &[&wgpu::RenderPipeline],
+    ) {
         debug_assert!(!kind.reads_foliage(), "foliage draws on static meshes alone");
         let mut bound = Bound::default();
         for command in &self.list.deformed[variant.index()] {
@@ -205,7 +251,13 @@ impl MeshDraws<'_> {
             {
                 continue;
             }
-            self.draw_deformed_command(pass, kind, command, &mut bound);
+            if pipelines.is_empty() {
+                self.draw_deformed_command(pass, kind, command, &mut bound);
+            }
+            for pipeline in pipelines {
+                pass.set_pipeline(pipeline);
+                self.draw_deformed_command(pass, kind, command, &mut bound);
+            }
         }
     }
 
@@ -295,6 +347,14 @@ impl MeshDraws<'_> {
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw_id: u32, indices: Range<u32>) {
         let record = u64::from(draw_id) * DRAW_STRIDE;
         pass.set_vertex_buffer(slot::DRAW, self.records.buffer().slice(record..record + DRAW_STRIDE));
+        // A draw's whole triangles lie at a multiple of 3 (every mesh's index count is one), so
+        // its edges' line indices at twice its range.
+        let indices = if self.lines {
+            debug_assert!(indices.start.is_multiple_of(3), "{indices:?} starts mid-triangle");
+            2 * indices.start..2 * indices.end
+        } else {
+            indices
+        };
         pass.draw_indexed(indices, 0, 0..1);
     }
 }

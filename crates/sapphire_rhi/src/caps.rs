@@ -43,6 +43,9 @@ fn optional_features() -> Features {
         | Features::MULTI_DRAW_INDIRECT_COUNT
         | Features::SHADER_F16
         | Features::PIPELINE_CACHE
+        // 32-bit float depth with a stencil: the renderer's debug views' replays (M1 F5) keep the
+        // main pass's depth precision. Enabling it changes nothing else.
+        | Features::DEPTH32FLOAT_STENCIL8
 }
 
 /// What the device can do. Every flag describes the *created device*, so a `true` here means
@@ -77,6 +80,8 @@ pub struct GpuCaps {
     pub shader_f16: bool,
     /// [`wgpu::PipelineCache`] is supported (Vulkan only in wgpu 30).
     pub pipeline_cache: bool,
+    /// `Depth32FloatStencil8` is supported: the renderer's debug views' replays use it.
+    pub depth32float_stencil8: bool,
     /// Limits the device was created with; see [`required_limits`] for how they are chosen.
     pub limits: Limits,
     /// Everything the adapter could offer. Higher tiers may request more in later milestones.
@@ -127,6 +132,7 @@ impl GpuCaps {
                 && limits.max_binding_array_elements_per_shader_stage > 0,
             shader_f16: features.contains(Features::SHADER_F16),
             pipeline_cache: features.contains(Features::PIPELINE_CACHE),
+            depth32float_stencil8: features.contains(Features::DEPTH32FLOAT_STENCIL8),
             features,
             downlevel,
             limits,
@@ -182,6 +188,7 @@ impl GpuCaps {
             binding_arrays = self.binding_arrays,
             shader_f16 = self.shader_f16,
             pipeline_cache = self.pipeline_cache,
+            depth32float_stencil8 = self.depth32float_stencil8,
             transient_saves_memory = ?info.transient_saves_memory,
             max_texture_2d = self.limits.max_texture_dimension_2d,
             adapter_max_storage_binding = self.adapter_limits.max_storage_buffer_binding_size,

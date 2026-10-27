@@ -290,14 +290,14 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
 
     // A shared file: every program that includes it (the environment's, fog cards' and foliage's
     // too, with no pipeline built from them yet, the shadow passes', M1 R4, which build nothing
-    // with shadows off, and the ambient pass's, M1 W5, which builds nothing without a grid or
-    // GTAO), and every pipeline built from them (the sky's six, surface, outline, scene prepass,
-    // outline prepass, the character prepass's two (hair's writes one ID, M1 C6), light
-    // clusters).
+    // with shadows off, the ambient pass's, M1 W5, which builds nothing without a grid or GTAO,
+    // and the debug views', M1 F5, which build nothing while none shows), and every pipeline
+    // built from them (the sky's six, surface, outline, scene prepass, outline prepass, the
+    // character prepass's two (hair's writes one ID, M1 C6), light clusters).
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 13 });
+    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 13 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -522,11 +522,11 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     // The shared file: the sky's six, four surfaces, two outlines, the scene and outline
     // prepasses, the character prepass's two (hair's writes one ID, M1 C6) and the light
     // clusters (and the environment's, fog cards' and foliage's programs, which built no
-    // pipeline, the shadow passes', unbuilt with shadows off, and the ambient pass's, unbuilt
-    // without a grid or GTAO, M1 W5).
+    // pipeline, the shadow passes', unbuilt with shadows off, the ambient pass's, unbuilt
+    // without a grid or GTAO, M1 W5, and the debug views', unbuilt while none shows, M1 F5).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 10, pipelines: 17 });
+    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 17 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 6, "the same set, rebuilt");
 }

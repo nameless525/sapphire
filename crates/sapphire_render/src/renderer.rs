@@ -24,7 +24,8 @@ use crate::ambient::{
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
-use crate::draw::{DrawSet, MeshDraws};
+use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews, RebuiltViews};
+use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
 use crate::fog::{FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
@@ -329,6 +330,8 @@ pub struct RenderStats {
     pub shadows: ShadowStats,
     /// The ambient probe grid, the reflection cube and ambient occlusion (M1 W5).
     pub ambient: AmbientStats,
+    /// The debug view shown and what the views built (M1 F5, [`Renderer::set_debug_view`]).
+    pub debug_view: DebugViewStats,
 }
 
 /// What [`Renderer::set_shader_sources`] rebuilt.
@@ -404,10 +407,17 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     settings: RenderSettings,
+    /// The target's format, given to [`Self::new`].
+    color_format: wgpu::TextureFormat,
     /// The scene's size as a fraction of the target's, clamped as [`scaled_size`] does.
     render_scale: f32,
     /// The scale on materials' outline LOD cutoffs ([`Self::set_outline_distance`]).
     outline_distance: f32,
+    /// The debug view asked for ([`Self::set_debug_view`]).
+    debug_view: DebugView,
+    /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
+    /// then, so a renderer that never shows one builds nothing for them.
+    debug_views: Option<Box<DebugViews>>,
     labels: bool,
     layouts: Layouts,
     pipelines: Pipelines,
@@ -624,8 +634,11 @@ impl Renderer {
             device,
             queue: gpu.queue().clone(),
             settings,
+            color_format,
             render_scale: 1.0,
             outline_distance: 1.0,
+            debug_view: DebugView::Off,
+            debug_views: None,
             labels: gpu.label("").is_some(),
             layouts,
             pipelines,
@@ -1001,6 +1014,12 @@ impl Renderer {
         // Only those built so far: none without a grid or GTAO.
         let ambient = changed.contains(&Program::Ambient).then(|| self.ambient.rebuilt_pipelines(sources));
         pipelines += ambient.as_ref().map_or(0, AmbientPipelines::count);
+        // The debug views' own (their copies of the mesh pipelines follow those at the next frame).
+        let debug = changed
+            .contains(&Program::DebugView)
+            .then(|| self.debug_views.as_ref().map(|views| views.rebuilt_pipelines(sources)))
+            .flatten();
+        pipelines += debug.as_ref().map_or(0, RebuiltViews::count);
         let error = scope_error(internal.pop()).or(scope_error(validation.pop()));
         if let Some(error) = error {
             let programs = changed.iter().map(|program| program.name()).collect::<Vec<_>>().join(", ");
@@ -1029,6 +1048,9 @@ impl Renderer {
         }
         if let Some(ambient) = ambient {
             self.ambient.set_pipelines(ambient);
+        }
+        if let (Some(debug), Some(views)) = (debug, self.debug_views.as_mut()) {
+            views.set_pipelines(debug);
         }
         self.shaders = sources.clone();
         self.edited_shaders = !sources.is_compiled_in();
@@ -1209,6 +1231,33 @@ impl Renderer {
         self.stats.ambient = self.ambient.stats();
         self.stats.material_uploads = self.materials.pending();
         self.update_pool_stats();
+        // The debug view (M1 F5): a comparison while none shows.
+        if self.debug_view != DebugView::Off {
+            let generation = self.pipelines.generation();
+            self.checked_build(Self::prepare_debug_view);
+            // A copy that failed sent the renderer back to the compiled-in shaders: copy those.
+            if self.pipelines.generation() != generation {
+                self.prepare_debug_view();
+            }
+        } else if let Some(views) = &mut self.debug_views {
+            views.hide();
+        }
+        self.stats.debug_view =
+            self.debug_views.as_ref().map_or_else(DebugViewStats::default, |views| views.stats());
+    }
+
+    /// Readies the debug view asked for in the frame just prepared, making the views' state
+    /// with the first one shown and building what it needs that isn't built.
+    fn prepare_debug_view(&mut self) {
+        if self.debug_views.is_none() {
+            let cache = self.pipeline_cache.as_ref();
+            let views = DebugViews::new(&self.device, &self.layouts, self.color_format, &self.shaders, cache);
+            self.debug_views = Some(Box::new(views));
+        }
+        let views = self.debug_views.as_mut().expect("made above");
+        let (list, path, indices) =
+            (self.scene.draw_list(), self.settings.light_path, self.meshes.index_end());
+        views.prepare(self.debug_view, &self.pipelines, list, &self.lights, (path, indices));
     }
 
     /// The GPU half of a frame: adds the frame's uploads, the skinning pass, the prepasses, the
@@ -1338,6 +1387,7 @@ impl Renderer {
             ref mut post,
             ref mut temporal,
             ref mut uploads,
+            ref debug_views,
             ..
         } = *self;
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
@@ -1381,6 +1431,7 @@ impl Renderer {
             skinned: skinning.outputs(),
             materials: material_records,
             hulls: outlines.visible(),
+            lines: false,
         };
         // Temporal AA's resolve writes the target's size, so post upsamples only without it.
         let (post_uniforms, post_buffer) = post.uniforms(temporal.is_none() && size != output, output);
@@ -1391,6 +1442,12 @@ impl Renderer {
             (uniforms, buffer.clone())
         });
         let view = ViewUniforms::new(&camera, size, previous_clip_from_world, jitter);
+        // A debug view draws through the main view without temporal AA's jitter, so it holds
+        // still (M1 F5). Boxed, so the uploads' pass doesn't grow by a view while none shows.
+        let debug_view = debug_views.as_deref().filter(|views| views.shown() != DebugView::Off);
+        let debug_upload = debug_view.map(|views| {
+            Box::new((views.view_uniforms(), ViewUniforms::new(&camera, size, clip_from_world, [0.0; 2])))
+        });
 
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
@@ -1413,6 +1470,10 @@ impl Renderer {
             shadows.upload(uploads, ctx.encoder, view_uniforms, FIRST_SHADOW_VIEW, view_stride);
             if let Some(ambient_upload) = &ambient_upload {
                 ambient_upload.write(uploads, ctx.encoder);
+            }
+            if let Some(debug_upload) = &debug_upload {
+                let (buffer, view) = &**debug_upload;
+                upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(view));
             }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
@@ -1672,62 +1733,13 @@ impl Renderer {
                 ..Default::default()
             });
             bind(&mut pass);
-            // Opaque and alpha-tested surfaces (characters before the world in each coverage, so
-            // depth rejects the world behind them), then the characters' outlines, after them so
-            // depth rejects the hull wherever a surface covers it, then eyes through the bangs
-            // over the hair (M1 C5), then the sky where no geometry wrote depth, then transparent
-            // surfaces over all of it. Each surface variant draws through its own pipeline (a
-            // face's outline is its coverage's), binding its family's scene group when the
-            // family changes; skinned and morphed instances draw last in each group, through the
-            // f32 pipelines.
-            let groups = SurfaceVariant::DEPTH_WRITING
-                .map(|variant| (variant, DrawSet::Surfaces))
-                .into_iter()
-                .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
-                .chain(SurfaceVariant::THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
-            let mut scene_group = Some(0);
-            for (variant, set) in groups {
-                draw_main(
-                    &mut pass,
-                    pipelines,
-                    &mesh_draws,
-                    scene_bind_groups,
-                    &mut scene_group,
-                    variant,
-                    set,
-                );
-            }
-            sky_draw.draw(&mut pass);
-            // The sky's pipeline bound its own groups 2 and 3; mesh draws bind their family's
-            // group 2 again, and group 3 per draw.
-            let mut scene_group = None;
-            for variant in SurfaceVariant::TRANSPARENT {
-                draw_main(
-                    &mut pass,
-                    pipelines,
-                    &mesh_draws,
-                    scene_bind_groups,
-                    &mut scene_group,
-                    variant,
-                    DrawSet::Surfaces,
-                );
-            }
-            // Fog cards last, back to front (M1 W3), their scene group holding the depth they
-            // fade against.
-            if !card_draws.is_empty() {
-                pass.set_bind_group(2, card_group, &[]);
-                let pipeline = |format| {
-                    let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-                    mesh.surface(SurfaceVariant::FOG_CARD).expect("built when a fog card draw was added")
-                };
-                mesh_draws.draw_ordered(
-                    &mut pass,
-                    MeshPass::Main,
-                    SurfaceVariant::FOG_CARD,
-                    card_draws,
-                    pipeline,
-                );
-            }
+            let pipeline = |format, variant, set| {
+                main_pass_pipeline(pipelines, format, variant, set).map(DrawThrough::One)
+            };
+            // Fog cards' scene group holds the depth they fade against.
+            let cards = Some((card_group, card_draws));
+            let sky = |pass: &mut wgpu::RenderPass<'_>| sky_draw.draw(pass);
+            draw_main_pass(&mut pass, &pipeline, &mesh_draws, scene_bind_groups, Some(&sky), cards, |_| true);
         });
 
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
@@ -1747,6 +1759,22 @@ impl Renderer {
             _ => scene_color,
         };
         post.record(graph, resolved, scene_color, target, labels);
+        // The debug view over the finished frame (M1 F5).
+        if let Some(views) = debug_view {
+            let frame = DebugFrame {
+                target,
+                size,
+                prepass: targets,
+                draws: mesh_draws,
+                frame_bind_group,
+                scene_bind_groups,
+                index_buffer: meshes.index_buffer(),
+                index_end: meshes.index_end(),
+                cards: card_draws,
+                labels,
+            };
+            views.record(graph, frame);
+        }
         Some(targets)
     }
 
@@ -1846,6 +1874,16 @@ impl Renderer {
         self.outline_distance = if scale.is_finite() { scale.max(0.0) } else { 1.0 };
     }
 
+    /// Shows `view` from the next [`Self::prepare`] (M1 F5, the [`debug_view`](crate::debug_view)
+    /// module): the frame as a wireframe, as overdraw or as the light-cluster heatmap, drawn over
+    /// the finished frame after post; `Off` draws it as it looks. The hook for the `r.debug_view`
+    /// cvar ([`DEBUG_VIEW`](crate::debug_view::DEBUG_VIEW)), which apps pass on every frame, as
+    /// they pass `r.outline_distance`. Nothing is built for the views until one is shown; the
+    /// first frame that shows one builds what it needs, on this thread.
+    pub fn set_debug_view(&mut self, view: DebugView) {
+        self.debug_view = view;
+    }
+
     /// The render scale the next [`Self::record`] uses.
     pub fn render_scale(&self) -> f32 {
         self.render_scale
@@ -1894,18 +1932,109 @@ impl Renderer {
     }
 }
 
-/// Draws `set` of the main pass's draws of `variant`, static meshes per format and then the
-/// skinned and morphed ones, each group through its pipeline: the surface's, or the outline
-/// hull's. Binds the variant's family's scene group first unless `bound` says it is bound
-/// already, and only if the variant has draws.
-fn draw_main(
+/// Gives the pipeline the main pass, or a debug view's replay of it, draws `set` of a variant's
+/// draws in a position format with; `None` leaves them out.
+pub(crate) type MainPassPipeline<'p> =
+    dyn Fn(PositionFormat, SurfaceVariant, DrawSet) -> Option<DrawThrough<'p>> + 'p;
+
+/// The pipelines a group of the main pass's draws goes through.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DrawThrough<'p> {
+    /// The main pass's, or one copy of it.
+    One(&'p wgpu::RenderPipeline),
+    /// Each draw through both in turn: a debug view's replay that counts a draw's fragments and
+    /// then writes its depth (`debug_view`).
+    Both([&'p wgpu::RenderPipeline; 2]),
+}
+
+/// The main pass's draws, in their order (see [`Renderer::record`]): opaque and alpha-tested
+/// surfaces (characters before the world in each coverage, so depth rejects the world behind
+/// them), then the characters' outlines, after them so depth rejects the hull wherever a surface
+/// covers it, then eyes through the bangs over the hair (M1 C5), then `sky` where no geometry
+/// wrote depth, then transparent surfaces over all of it, and the fog cards last, back to front
+/// (M1 W3), through `cards`: their scene group (with the depth they fade against) and their
+/// order. Each surface variant draws through its own pipeline (a face's outline is its
+/// coverage's), binding its family's scene group when the family changes; skinned and morphed
+/// instances draw last in each group, through the f32 pipelines.
+///
+/// Groups 0 and 1 and the index buffer must be bound, and group 2 as the anime character
+/// family's. A debug view replays the pass through it (`debug_view`) with copies of the
+/// pipelines, of a subset (`pipeline` gives `None` for what it leaves out) or of the instance
+/// slots `instance` takes.
+pub(crate) fn draw_main_pass<'p>(
     pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &MainPassPipeline<'p>,
+    draws: &MeshDraws<'_>,
+    scene_bind_groups: &[wgpu::BindGroup],
+    sky: Option<&dyn Fn(&mut wgpu::RenderPass<'_>)>,
+    cards: Option<(&wgpu::BindGroup, &[DrawRef])>,
+    instance: impl Fn(u32) -> bool + Copy,
+) {
+    let groups = SurfaceVariant::DEPTH_WRITING
+        .map(|variant| (variant, DrawSet::Surfaces))
+        .into_iter()
+        .chain(SurfaceVariant::OUTLINED.map(|variant| (variant, DrawSet::Outlines)))
+        .chain(SurfaceVariant::THROUGH_HAIR.map(|variant| (variant, DrawSet::ThroughHair)));
+    let mut scene_group = Some(0);
+    for (variant, set) in groups {
+        draw_main(pass, pipeline, draws, scene_bind_groups, &mut scene_group, variant, set, instance);
+    }
+    if let Some(sky) = sky {
+        sky(pass);
+    }
+    // The sky's pipeline bound its own groups 2 and 3; mesh draws bind their family's group 2
+    // again, and group 3 per draw.
+    let mut scene_group = None;
+    for variant in SurfaceVariant::TRANSPARENT {
+        let set = DrawSet::Surfaces;
+        draw_main(pass, pipeline, draws, scene_bind_groups, &mut scene_group, variant, set, instance);
+    }
+    if let Some((group, order)) = cards.filter(|(_, order)| !order.is_empty()) {
+        pass.set_bind_group(2, group, &[]);
+        let card = |format| match pipeline(format, SurfaceVariant::FOG_CARD, DrawSet::Surfaces) {
+            Some(DrawThrough::One(pipeline)) => pipeline,
+            Some(DrawThrough::Both(_)) => unreachable!("fog cards write no depth to draw after a count"),
+            None => panic!("built when a fog card draw was added"),
+        };
+        draws.draw_ordered(pass, MeshPass::Main, SurfaceVariant::FOG_CARD, order, card);
+    }
+}
+
+/// The main pass's own pipeline for `set` of `variant`'s draws in `format`, built when the draws
+/// were added. Eyes through hair are only for the draws whose material draws through: a face or
+/// eye variant with none has no pipeline for it, and nothing to draw.
+fn main_pass_pipeline(
     pipelines: &Pipelines,
+    format: PositionFormat,
+    variant: SurfaceVariant,
+    set: DrawSet,
+) -> Option<&wgpu::RenderPipeline> {
+    let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
+    match set {
+        DrawSet::Surfaces => {
+            Some(mesh.surface(variant).expect("built when a draw of this variant was added"))
+        }
+        DrawSet::Outlines => {
+            Some(mesh.outline(variant).expect("built when a draw of this variant was added"))
+        }
+        DrawSet::ThroughHair => mesh.through_hair(variant),
+    }
+}
+
+/// Draws `set` of the main pass's draws of `variant` whose instance slot `instance` takes, static
+/// meshes per format and then the skinned and morphed ones, each group through the pipeline
+/// `pipeline` gives, if any. Binds the variant's family's scene group first unless `bound` says
+/// it is bound already, and only if the variant has draws.
+#[expect(clippy::too_many_arguments, reason = "the pass's shared state, then what to draw of it")]
+fn draw_main<'p>(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &MainPassPipeline<'p>,
     draws: &MeshDraws<'_>,
     scene_bind_groups: &[wgpu::BindGroup],
     bound: &mut Option<usize>,
     variant: SurfaceVariant,
     set: DrawSet,
+    instance: impl Fn(u32) -> bool + Copy,
 ) {
     if !draws.has_any(variant) {
         return;
@@ -1915,35 +2044,35 @@ fn draw_main(
         pass.set_bind_group(2, &scene_bind_groups[group], &[]);
         *bound = Some(group);
     }
-    // Eyes through hair are only for the draws whose material draws through: a face or eye
-    // variant with none has no pipeline for it, and nothing to draw.
-    let pipeline = |format| {
-        let mesh = pipelines.mesh(format).expect("built when a mesh in this format was uploaded");
-        match set {
-            DrawSet::Surfaces => {
-                Some(mesh.surface(variant).expect("built when a draw of this variant was added"))
-            }
-            DrawSet::Outlines => {
-                Some(mesh.outline(variant).expect("built when a draw of this variant was added"))
-            }
-            DrawSet::ThroughHair => mesh.through_hair(variant),
-        }
-    };
     // Foliage reads its own stream too.
     let kind = variant.shading.main_pass();
     for format in PositionFormat::ALL {
         if draws.has_static(format, variant)
-            && let Some(pipeline) = pipeline(format)
+            && let Some(through) = pipeline(format, variant, set)
         {
-            pass.set_pipeline(pipeline);
-            draws.draw_static(pass, kind, format, variant, set);
+            match through {
+                DrawThrough::One(pipeline) => {
+                    pass.set_pipeline(pipeline);
+                    draws.draw_static_where(pass, kind, format, variant, set, instance);
+                }
+                DrawThrough::Both(pipelines) => {
+                    draws.draw_static_through_where(pass, kind, format, variant, set, instance, &pipelines);
+                }
+            }
         }
     }
     if draws.has_deformed(variant)
-        && let Some(pipeline) = pipeline(PositionFormat::Float32)
+        && let Some(through) = pipeline(PositionFormat::Float32, variant, set)
     {
-        pass.set_pipeline(pipeline);
-        draws.draw_deformed(pass, kind, variant, set);
+        match through {
+            DrawThrough::One(pipeline) => {
+                pass.set_pipeline(pipeline);
+                draws.draw_deformed_where(pass, kind, variant, set, instance);
+            }
+            DrawThrough::Both(pipelines) => {
+                draws.draw_deformed_through_where(pass, kind, variant, set, instance, &pipelines);
+            }
+        }
     }
 }
 

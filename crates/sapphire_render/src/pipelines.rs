@@ -15,6 +15,7 @@ use crate::LOG_TARGET;
 use crate::ambient;
 use crate::character_prepass;
 use crate::characters::GpuCharacter;
+use crate::draw::DrawSet;
 use crate::environment::{self, EnvironmentSettings};
 use crate::fog;
 use crate::foliage::{self, FoliageSettings, WindUniforms};
@@ -41,6 +42,22 @@ pub(crate) const VELOCITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg1
 
 /// The scene prepass's outline mask (M1 C4): 1 where an outline hull is the nearest surface.
 pub(crate) const OUTLINES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+
+/// The color target of a debug view's replay of the main pass ([`Replay`]), which its copies
+/// write nothing to: the smallest the copies' fragment stages can have.
+pub(crate) const REPLAY_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+
+/// The depth and stencil of a debug view's replay of the main pass ([`Replay`]) on `device`:
+/// 32-bit float depth, as the main pass's, where the device has it with a stencil
+/// (`DEPTH32FLOAT_STENCIL8`, which `sapphire_rhi` enables wherever the adapter has it), else
+/// WebGPU's always-available `Depth24PlusStencil8`.
+pub(crate) fn replay_depth_format(device: &wgpu::Device) -> wgpu::TextureFormat {
+    if device.features().contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+        wgpu::TextureFormat::Depth32FloatStencil8
+    } else {
+        wgpu::TextureFormat::Depth24PlusStencil8
+    }
+}
 
 /// The scene prepass's color targets: normals, velocity and the outline mask, which only the
 /// hulls write (`outlines`); surfaces leave it as cleared, drawn before the hulls.
@@ -810,6 +827,9 @@ struct PassDesc<'a> {
     cull: Option<wgpu::Face>,
     depth_write: bool,
     depth_compare: wgpu::CompareFunction,
+    /// The fragment stage writes `frag_depth`, so the GPU runs it on every fragment before the
+    /// depth test (a debug view's count of invocations, [`Replay::Invocations`]).
+    shader_depth: bool,
     /// Blending into the color target; `None` replaces it.
     blend: Option<wgpu::BlendState>,
     /// Values of the shaders' pipeline-overridable constants.
@@ -927,6 +947,134 @@ impl MeshPipelines {
     }
 }
 
+/// How a debug view's copy of a main pass pipeline differs from it (the `debug_view` module):
+/// the same vertex stage, layout, vertex streams, culling and constants, and (but for
+/// [`Self::Invocations`]) the same fragment stage, drawn single-sampled into the replay's depth
+/// and stencil ([`replay_depth_format`]) with the view's depth, stencil and primitive state and
+/// no color written, so the copy draws exactly the fragments the main pass draws, where it keeps
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Replay {
+    /// Depth tested as the main pass tests it and written by every surface drawn, transparent
+    /// ones too: the nearest surface's depth, without temporal AA's jitter.
+    Depth,
+    /// [`Self::Depth`] pushed back from the camera by a slope-scaled bias, so the edges of what
+    /// it drew pass its test ([`Self::Edges`]): what hides the wireframe's hidden edges.
+    Hide,
+    /// Every fragment the depth test keeps (and the shader doesn't discard) increments the
+    /// stencil, with depth as the main pass tests and writes it: the overdraw view's count of
+    /// shaders that keep every fragment they run for.
+    Count,
+    /// Every fragment the shader runs for increments the stencil, whether the real shader then
+    /// keeps or discards it: the real vertex stage with a stand-in fragment stage that keeps
+    /// them all, depth tested as the main pass tests it (not at all where the real shader writes
+    /// `frag_depth`, which runs it before the test) and not written. The overdraw view's count
+    /// of alpha-tested surfaces, transparent ones, fog cards and eyes through hair; those that
+    /// write depth then draw [`Self::Depth`] too.
+    Invocations,
+    /// Every kept fragment writes depth and the stencil reference, which the replay sets per
+    /// group of draws, so each pixel holds the nearest surface's: the per-object light lists'
+    /// view tags each instance's pixels with its list.
+    Tag,
+    /// Triangles' edges as line lists, drawn from the debug view's line indices (each
+    /// triangle's three edges), tested against what [`Self::Hide`] wrote first, which they
+    /// don't write; each line's pixels take the stencil reference: the wireframe, which tags
+    /// each shading family's lines.
+    Edges,
+}
+
+impl Replay {
+    /// Its depth and stencil state in `format`, for a pipeline the main pass draws as `pass`
+    /// says.
+    fn depth_stencil(self, format: wgpu::TextureFormat, pass: &PassDesc<'_>) -> wgpu::DepthStencilState {
+        let stencil = |pass_op| {
+            let face = wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Always,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op,
+            };
+            wgpu::StencilState { front: face, back: face, read_mask: 0xff, write_mask: 0xff }
+        };
+        let none = wgpu::StencilState::default;
+        let (compare, write) = (pass.depth_compare, pass.depth_write);
+        let (depth_write, depth_compare, stencil, bias) = match self {
+            Self::Depth => (true, compare, none(), None),
+            Self::Hide => (true, compare, none(), Some(HIDE_BIAS)),
+            Self::Count => (write, compare, stencil(wgpu::StencilOperation::IncrementClamp), None),
+            Self::Invocations => {
+                let compare = if pass.shader_depth { wgpu::CompareFunction::Always } else { compare };
+                (false, compare, stencil(wgpu::StencilOperation::IncrementClamp), None)
+            }
+            Self::Tag => (true, compare, stencil(wgpu::StencilOperation::Replace), None),
+            Self::Edges => {
+                (false, wgpu::CompareFunction::GreaterEqual, stencil(wgpu::StencilOperation::Replace), None)
+            }
+        };
+        wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(depth_compare),
+            stencil,
+            bias: bias.unwrap_or_default(),
+        }
+    }
+}
+
+/// [`Replay::Hide`]'s push away from the camera (reverse-Z: toward 0), so the edges of what it
+/// drew, which lines can't bias (WebGPU allows no depth bias on them), pass its test: a line's
+/// pixels sample its triangle up to about half a pixel off their centers, which the slope term
+/// covers with room.
+const HIDE_BIAS: wgpu::DepthBiasState = wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 };
+
+/// What a debug view's copies of the main pass's pipelines are built for
+/// ([`Pipelines::build_replay`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ReplayTarget {
+    pub replay: Replay,
+    /// The replay's depth and stencil format ([`replay_depth_format`]).
+    pub depth_format: wgpu::TextureFormat,
+    /// The debug view program's module, whose `fs_debug_stand_in` [`Replay::Invocations`] draws
+    /// with instead of the real fragment stage.
+    pub stand_in: wgpu::ShaderModule,
+}
+
+/// One of the main pass's pipelines for a position format: what draws `variant`'s surfaces, the
+/// outline hulls of a coverage, or a variant's eyes through hair. A debug view's replay copies
+/// them ([`Pipelines::build_replay`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MainPipeline {
+    Surface(SurfaceVariant),
+    Outline(Coverage),
+    ThroughHair(SurfaceVariant),
+}
+
+impl MainPipeline {
+    /// The pipeline the main pass draws `set` of `variant`'s draws with, if the set has one:
+    /// only the anime character variants that write depth draw hulls, and only faces and eyes
+    /// draw through hair.
+    pub(crate) fn of(variant: SurfaceVariant, set: DrawSet) -> Option<Self> {
+        match set {
+            DrawSet::Surfaces => Some(Self::Surface(variant)),
+            DrawSet::Outlines => {
+                SurfaceVariant::OUTLINED.contains(&variant).then_some(Self::Outline(variant.coverage))
+            }
+            DrawSet::ThroughHair => variant.through_hair_index().map(|_| Self::ThroughHair(variant)),
+        }
+    }
+}
+
+impl MeshPipelines {
+    /// The main pass's `pipeline`, once it was prepared.
+    pub(crate) fn main(&self, pipeline: MainPipeline) -> Option<&wgpu::RenderPipeline> {
+        match pipeline {
+            MainPipeline::Surface(variant) => self.surface(variant),
+            MainPipeline::Outline(coverage) => self.outline.get(coverage.index())?.as_ref(),
+            MainPipeline::ThroughHair(variant) => self.through_hair(variant),
+        }
+    }
+}
+
 /// The mesh pipelines (the sky's are the `sky` module's). Quantized-mesh pipelines are built up
 /// front, the prepasses' and opaque anime character surfaces only; the f32 ones when the first
 /// f32 mesh, or skinned or morphed mesh, is uploaded ([`Self::prepare_format`]); the other
@@ -935,13 +1083,18 @@ impl MeshPipelines {
 /// through ([`Self::prepare_through_hair`]). Apps never pay for compiling what they don't draw.
 ///
 /// They are built from the renderer's current shader sources, whose modules they keep; new
-/// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]).
+/// sources (hot reload) rebuild the same set from new modules ([`Self::rebuilt`]). A debug view
+/// copies them with its own fixed-function state ([`Self::build_replay`]).
 #[derive(Debug)]
 pub(crate) struct Pipelines {
     /// Per [`PositionFormat::ALL`] entry.
     mesh: [Option<MeshPipelines>; 2],
     target: PipelineTarget,
     modules: MeshModules,
+    /// Counts the times the main pass's pipelines built so far were built again (new shader
+    /// sources for them, new ambient constants), so copies of them can tell they are stale
+    /// ([`Self::generation`]).
+    generation: u32,
 }
 
 /// The modules the mesh pipelines are built from.
@@ -971,7 +1124,8 @@ impl MeshModules {
             | Program::Post
             | Program::Temporal
             | Program::Shadows
-            | Program::Ambient => unreachable!("not a mesh program"),
+            | Program::Ambient
+            | Program::DebugView => unreachable!("not a mesh program"),
         }
     }
 
@@ -1016,6 +1170,23 @@ struct PipelineTarget {
     /// The environment shader's ambient constants (M1 W5, `ambient::constants`): only those on,
     /// so without a probe grid or ambient occlusion it is the shader as it was without them.
     ambient: Vec<(&'static str, f64)>,
+    /// A debug view's copy ([`Pipelines::build_replay`]): what it is built for. `None` for the
+    /// renderer's own pipelines.
+    replay: Option<ReplayTarget>,
+}
+
+impl PipelineTarget {
+    /// The target a debug view's copies are built for: single-sampled, so they draw at the
+    /// scene's size whatever the main pass's sample count (alpha-tested foliage then cuts out by
+    /// its alpha test, as without MSAA), into the replay's own color target.
+    fn replayed(&self, replay: &ReplayTarget) -> Self {
+        Self {
+            sample_count: 1,
+            color_format: REPLAY_COLOR_FORMAT,
+            replay: Some(replay.clone()),
+            ..self.clone()
+        }
+    }
 }
 
 impl Pipelines {
@@ -1085,6 +1256,7 @@ impl Pipelines {
             shadows: shadows.map(ShadowSettings::constants),
             card_depth_fade,
             ambient,
+            replay: None,
         };
         let modules = MeshModules {
             character: shaders::module(device, Program::AnimeCharacter, sources),
@@ -1094,7 +1266,7 @@ impl Pipelines {
             prepass: shaders::module(device, Program::Prepass, sources),
             foliage: shaders::module(device, Program::Foliage, sources),
         };
-        let mut pipelines = Self { mesh: [None, None], target, modules };
+        let mut pipelines = Self { mesh: [None, None], target, modules, generation: 0 };
         pipelines.prepare_format(device, PositionFormat::Unorm16);
         pipelines
     }
@@ -1183,7 +1355,10 @@ impl Pipelines {
             }
             mesh[format_index(format)] = Some(pipelines);
         }
-        let pipelines = Self { mesh, target: self.target.clone(), modules };
+        // Copies of the main pass's pipelines are stale once any of them is built again.
+        let main = changed.iter().any(|&program| program.is_mesh() && program != Program::Prepass);
+        let generation = self.generation + u32::from(main);
+        let pipelines = Self { mesh, target: self.target.clone(), modules, generation };
         (pipelines, built)
     }
 
@@ -1291,6 +1466,7 @@ impl Pipelines {
             return 0;
         }
         self.target.ambient = constants;
+        self.generation += 1;
         let mut built = 0;
         for format in PositionFormat::ALL {
             let Some(mesh) = self.mesh[format_index(format)].as_mut() else { continue };
@@ -1317,6 +1493,35 @@ impl Pipelines {
     /// The mesh pipelines for `format`, once [`Self::prepare_format`] built them.
     pub(crate) fn mesh(&self, format: PositionFormat) -> Option<&MeshPipelines> {
         self.mesh[format_index(format)].as_ref()
+    }
+
+    /// Changes whenever the main pass's pipelines built so far are built again (new shader
+    /// sources for them, a probe grid's ambient constants): copies made from older ones
+    /// ([`Self::build_replay`]) are stale.
+    pub(crate) fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// A debug view's copy of the main pass's `pipeline` for meshes in `format`, which must have
+    /// been prepared: the same shaders, constants, layout and vertex streams with `replay`'s
+    /// state ([`Replay`], the `debug_view` module). Built on this thread, as a new variant's are.
+    pub(crate) fn build_replay(
+        &self,
+        device: &wgpu::Device,
+        replay: &ReplayTarget,
+        format: PositionFormat,
+        pipeline: MainPipeline,
+    ) -> wgpu::RenderPipeline {
+        let target = self.target.replayed(replay);
+        match pipeline {
+            MainPipeline::Surface(variant) => build_surface(device, &target, &self.modules, format, variant),
+            MainPipeline::Outline(coverage) => {
+                build_outline(device, &target, &self.modules, format, coverage)
+            }
+            MainPipeline::ThroughHair(variant) => {
+                build_through_hair(device, &target, &self.modules, format, variant)
+            }
+        }
     }
 }
 
@@ -1384,6 +1589,7 @@ fn build_surface(
             } else {
                 wgpu::CompareFunction::Greater
             },
+            shader_depth: false,
             blend: transparent.then_some(TRANSPARENT_BLEND),
             constants: &constants,
         },
@@ -1413,6 +1619,7 @@ fn build_outline(
             cull: Some(wgpu::Face::Front),
             depth_write: true,
             depth_compare: wgpu::CompareFunction::Greater,
+            shader_depth: false,
             blend: None,
             constants: &constants,
         },
@@ -1586,6 +1793,8 @@ fn build_through_hair(
             cull: Some(wgpu::Face::Back),
             depth_write: false,
             depth_compare: wgpu::CompareFunction::GreaterEqual,
+            // Eyes through hair write their depth over the bangs' (M1 C5).
+            shader_depth: true,
             blend: Some(TRANSPARENT_BLEND),
             constants: &constants,
         },
@@ -1655,45 +1864,68 @@ impl PipelineTarget {
         layout: &wgpu::PipelineLayout,
         pass: PassDesc<'_>,
     ) -> wgpu::RenderPipeline {
-        let color_targets = [Some(wgpu::ColorTargetState {
-            format: self.color_format,
-            blend: pass.blend,
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
         let entry = pass.name.replace(' ', "_");
         let vs = format!("vs_{entry}");
         let fs = pass.fragment.map_or_else(|| format!("fs_{entry}"), str::to_owned);
         let compilation_options =
             wgpu::PipelineCompilationOptions { constants: pass.constants, ..Default::default() };
+        // A debug view's copy changes the depth, stencil and primitive state alone (`Replay`),
+        // and writes no color: what it gathers is in its depth and stencil. Edges draw as line
+        // lists (cull modes are for triangles), and a count of invocations through a stand-in
+        // fragment stage that keeps every fragment.
+        let mut topology = wgpu::PrimitiveTopology::TriangleList;
+        let mut fragment = (pass.module, fs.as_str(), compilation_options.clone());
+        let (depth_stencil, cull_mode, blend, write_mask) = match &self.replay {
+            None => (
+                wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(pass.depth_write),
+                    depth_compare: Some(pass.depth_compare),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                },
+                pass.cull,
+                pass.blend,
+                wgpu::ColorWrites::ALL,
+            ),
+            Some(target) => {
+                let mut cull = pass.cull;
+                match target.replay {
+                    Replay::Edges => (topology, cull) = (wgpu::PrimitiveTopology::LineList, None),
+                    Replay::Invocations => {
+                        fragment = (&target.stand_in, "fs_debug_stand_in", Default::default())
+                    }
+                    Replay::Depth | Replay::Hide | Replay::Count | Replay::Tag => {}
+                }
+                let depth_stencil = target.replay.depth_stencil(target.depth_format, &pass);
+                (depth_stencil, cull, None, wgpu::ColorWrites::empty())
+            }
+        };
+        let color_targets = [Some(wgpu::ColorTargetState { format: self.color_format, blend, write_mask })];
         let (pipeline, samples) = (pass.name, self.sample_count);
         tracing::debug!(target: LOG_TARGET, pipeline, samples, constants = ?pass.constants, "building a mesh pipeline");
+        let (fragment_module, fragment_entry, fragment_options) = fragment;
         let built = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(pass.name),
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module: pass.module,
                 entry_point: Some(&vs),
-                compilation_options: compilation_options.clone(),
+                compilation_options,
                 buffers: pass.vertex_buffers,
             },
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: pass.cull,
+                cull_mode,
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(pass.depth_write),
-                depth_compare: Some(pass.depth_compare),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: Some(depth_stencil),
             multisample: wgpu::MultisampleState { count: self.sample_count, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
-                module: pass.module,
-                entry_point: Some(&fs),
-                compilation_options,
+                module: fragment_module,
+                entry_point: Some(fragment_entry),
+                compilation_options: fragment_options,
                 targets: &color_targets,
             }),
             multiview_mask: None,

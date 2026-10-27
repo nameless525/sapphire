@@ -141,6 +141,11 @@ impl ObjectLists {
         self.chosen
     }
 
+    /// The lights each instance slot's list holds, by slot.
+    pub(crate) fn counts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.lists.iter().map(|list| list.count)
+    }
+
     /// Chooses lists from `lights`: every live instance's if the lights changed since the last
     /// update (or it was invalidated), otherwise only the `changed` instances' (the packet's
     /// additions and changes, already applied to `slots`). `bounds` gives each mesh's

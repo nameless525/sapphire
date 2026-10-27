@@ -1533,7 +1533,8 @@ pub fn scenes() -> [Scene; 86] {
             thresholds: Thresholds::default(),
         },
         // The hero shot at golden hour: the character in three-quarter view with her SDF face map
-        // and outlines, the market behind her in the low sun's warm light and blue-violet shade.
+        // and outlines, the pavilion behind her with the low sun's glow round its roof, the gate
+        // wall and the lantern-lit street through its moon gate (X1 part 2b).
         Scene {
             name: "lookdev-town-hero",
             args: &[

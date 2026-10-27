@@ -14,7 +14,7 @@ use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
 use super::roof::{Ridge, Roof, RoofKind, Tiles};
-use super::{Detail, Frame, Mesh, Part, check, finite};
+use super::{Detail, Frame, Mesh, PLASTER_REPEAT, Part, check, finite};
 
 /// Margin kept between openings, and between them and their face's edges, in meters.
 const MARGIN: f32 = 0.05;
@@ -625,7 +625,13 @@ impl Body<'_> {
         }
         outer.extend([Vec2::new(half, plinth), Vec2::new(half, self.height), Vec2::new(-half, self.height)]);
         outer.dedup_by(|a, b| a.distance_squared(*b) < 1e-10);
-        mesh.fill(Part::Plaster, &face.frame(0.0), &outer, &holes, &|_| 1.0)?;
+        // Plaster's map runs once from the wall's top to its plinth, each side starting at its own
+        // place along the map.
+        let (top, foot) = (self.height, plinth);
+        let start =
+            (0.37 * face.half + 0.61 * self.height + face.normal.x * 0.29 + face.normal.z * 0.53).fract();
+        let uv = |p: Vec2| Vec2::new((p.x + half) / PLASTER_REPEAT + start, (top - p.y) / (top - foot));
+        mesh.fill_mapped(Part::Plaster, &face.frame(0.0), &outer, &holes, &|_| 1.0, Some(&uv))?;
 
         if plinth <= 0.0 {
             return Ok(());

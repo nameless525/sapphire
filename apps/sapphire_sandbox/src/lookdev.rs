@@ -4,10 +4,11 @@
 //! compositing layers, the outlines, and the character prepass's readers (the rim, the hair's
 //! highlight, the bangs' shadow and eyes through the bangs).
 //!
-//! - **The town** is content: `content/lookdev/town/town.assembly.ron`, an assembly of Kenney's
-//!   Fantasy Town Kit (`sapphire_pipeline::assembly`) cooked into one static mesh whose slots its
-//!   sidecar binds to the town's environment materials ([`TOWN`]). It never moves, so it is
-//!   extracted once.
+//! - **The town** is content: `content/lookdev/town/town.assembly.ron`, an assembly
+//!   (`sapphire_pipeline::assembly`) of Jinzhou-style halls, shops, walls, roofs and lanterns
+//!   built by its parametric builtins, the Chinese pavilion and a few of Kenney's Fantasy Town
+//!   Kit's pieces, cooked into one static mesh whose slots its sidecar binds to the town's
+//!   environment materials ([`TOWN`]). It never moves, so it is extracted once.
 //! - **The character** is pixiv's VRM sample (A6, [`CHARACTER`]) in place of the mannequin. VRM
 //!   characters rest in a T-pose, so the stage holds a standing pose ([`held_pose`]): humanoid
 //!   bones turned from rest, the rig's twist and aim constraints followed ([`crate::pose`]), and a
@@ -23,10 +24,10 @@
 //! - **Fog cards**, where frames draw fog: the courtyard's mist sheets and haze cards
 //!   ([`crate::environment::FOG_CARDS`]), placed across the valley beyond the town and down the
 //!   street out of the square.
-//! - **Lamps**: a warm point light in each standing lantern (the kit's lanterns round the square,
-//!   the paper lanterns on posts down the street), its intensity following time of day's night
-//!   ([`LAMPS`]), so the town lights up at dusk. The lanterns strung across the street glow by
-//!   their paper's emission alone.
+//! - **Lamps**: a warm point light in each paper lantern on a post, round the square and down the
+//!   street, its intensity following time of day's night ([`LAMPS`]), so the town lights up at
+//!   dusk. The lanterns strung across the street and hung under eaves glow by their paper's
+//!   emission alone.
 //! - **Its own day** ([`day`]): `content/lookdev/lookdev_day.ron`, a time-of-day timeline aimed at
 //!   Wuthering Waves' light (X1 part 2), replaces the default day while the stage runs, so the
 //!   default day and every other scene stay as they are. Tests here hold it to the character light
@@ -155,16 +156,18 @@ const POT: f32 = 0.555;
 /// trees over the rooftops; card trees in autumn and blossom off the street, one in the courtyard
 /// seen through its moon gate, one between its houses on the right); an autumn tree in a planter
 /// framing the wide shot's left, with lavender at its foot; the beds before the back row and
-/// beside the left row, grass with lavender and green bushes; and bushes in the pots between the
-/// back row's doors and by the stalls. Planters and pots are the assembly's (`@planter`, `@pot`).
-pub(crate) const PLANTINGS: [Planting; 32] = [
+/// beside the left row, grass with lavender and green bushes; bushes in the pots before the back
+/// row, by the stalls and by the street's doors; climbers (green bushes drawn up thin) against the
+/// gate wall and the street's courtyard wall; and a green tree in the courtyard behind the gate
+/// wall. Planters and pots are the assembly's (`@planter`, `@pot`).
+pub(crate) const PLANTINGS: [Planting; 40] = [
     // The square's corners, and beyond.
-    (Plant::GreenTree, [-17.0, 0.0, -17.0], even(1.35), 20.0),
-    (Plant::BlossomTree, [16.8, 0.0, -16.8], even(1.45), 40.0),
+    (Plant::GreenTree, [-15.6, 0.0, -15.4], even(1.35), 20.0),
+    (Plant::BlossomTree, [15.6, 0.0, -15.6], even(1.45), 40.0),
     (Plant::KitTree, [13.0, 0.0, 5.0], even(0.85), 15.0),
     (Plant::KitTreeRound, [11.5, 0.0, 1.5], even(1.0), 70.0),
     // Over the rooftops.
-    (Plant::KitTreeRound, [-17.0, 0.0, -29.0], even(1.25), 0.0),
+    (Plant::KitTreeRound, [-19.5, 0.0, -28.0], even(1.25), 0.0),
     (Plant::KitTree, [-20.0, 0.0, -34.0], even(1.22), 60.0),
     (Plant::KitTreeRound, [16.0, 0.0, -31.0], even(1.31), 20.0),
     (Plant::KitTree, [22.0, 0.0, -36.0], even(1.28), 0.0),
@@ -193,11 +196,23 @@ pub(crate) const PLANTINGS: [Planting; 32] = [
     (Plant::Lavender, [-12.6, PLANTER, -2.0], even(0.55), 150.0),
     // Potted plants between the back row's doors and by the stalls.
     (Plant::GreenBush, [-12.8, POT, -16.5], even(0.42), 0.0),
-    (Plant::GreenBush, [-3.2, POT, -16.5], even(0.42), 90.0),
+    (Plant::GreenBush, [-1.6, POT, -16.6], even(0.42), 90.0),
     (Plant::GreenBush, [9.6, POT, -16.5], even(0.42), 45.0),
     (Plant::GreenBush, [12.8, POT, -16.9], even(0.42), 135.0),
     (Plant::Lavender, [4.4, POT, -9.6], even(0.42), 20.0),
     (Plant::GreenBush, [15.2, POT, -8.4], even(0.42), 160.0),
+    // Down the street: potted plants by the doors.
+    (Plant::GreenBush, [0.1, POT, -27.6], even(0.42), 30.0),
+    (Plant::Lavender, [6.3, POT, -37.4], even(0.42), 100.0),
+    (Plant::GreenBush, [0.1, POT, -44.2], even(0.42), 200.0),
+    (Plant::GreenBush, [6.3, POT, -52.6], even(0.42), 290.0),
+    // Climbers: green bushes drawn up thin against the gate wall beside its moon gates and
+    // against the street's courtyard wall.
+    (Plant::GreenBush, [-5.5, 0.0, -17.55], [0.9, 2.4, 0.3], 0.0),
+    (Plant::GreenBush, [5.4, 0.0, -17.55], [0.8, 2.8, 0.3], 0.0),
+    (Plant::GreenBush, [-0.25, 0.0, -36.8], [0.3, 2.2, 0.8], 0.0),
+    // A tree in the courtyard behind the gate wall's small moon gate.
+    (Plant::GreenTree, [-3.8, 0.0, -22.2], even(0.9), 140.0),
 ];
 
 /// Every plant with its world transform, about its root.
@@ -224,11 +239,14 @@ pub(crate) fn day() -> TodTimeline {
 /// A look-dev camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shot {
-    /// Across the square from its open side: the fountain, the market, the rows of houses, the
-    /// gate and the tower over the roofs, the character small in the middle ground.
+    /// Across the square from its open side: the pavilion, the market, the rows of halls and
+    /// shops, the gate wall with the street's moon gate and the tower over the roofs, the
+    /// character small in the middle ground.
     Wide,
-    /// The character in three-quarter view from her right at chest height on a long lens, the
-    /// market behind her; at golden hour the sun comes from behind her left shoulder.
+    /// The character in three-quarter view from her left at chest height on a long lens, looking
+    /// a little up: the pavilion behind her left shoulder, the gate wall and the street's moon
+    /// gate behind her right; at golden hour the low sun is behind the pavilion's roof, its glow
+    /// round it.
     Hero,
     /// Low and in front of the character, looking up past her at the rooftops and the sky.
     Sky,
@@ -267,7 +285,7 @@ impl Shot {
     pub fn camera(self) -> OrbitCamera {
         let (target, yaw, pitch, distance, fov): (Vec3, f32, f32, f32, f32) = match self {
             Self::Wide => (Vec3::new(-1.0, 2.8, -9.0), 14.0, 1.5, 20.0, 50.0),
-            Self::Hero => (Vec3::new(0.0, 1.2, 0.0), -38.0, 6.0, 3.0, 32.0),
+            Self::Hero => (Vec3::new(0.0, 1.2, 0.0), 18.0, -4.0, 3.0, 32.0),
             Self::Sky => (Vec3::new(0.0, 1.45, 0.0), -28.0, -18.0, 3.2, 58.0),
             Self::Street => (Vec3::new(0.2, 2.4, -6.0), 6.0, -4.0, 10.0, 55.0),
         };
@@ -278,22 +296,20 @@ impl Shot {
 /// Where the character stands in the street out of the square, in the town ([`Shot::Street`]).
 const STREET: Vec3 = Vec3::new(3.2, 0.0, -31.0);
 
-/// Where the lamps' lights are, in the town: the glass of each kit lantern (`@lantern` in the
-/// town's assembly, [`KIT_GLASS`] over its foot) and the paper of each lantern on a post
-/// (`@jz_lantern_post`, [`POST_PAPER`] over its foot), in the assembly's order.
+/// Where the lamps' lights are, in the town: the paper of each lantern on a post
+/// (`@jz_lantern_post` in the town's assembly, [`POST_PAPER`] over its foot), in the assembly's
+/// order: down the street, then round the square.
 pub(crate) const LAMPS: [[f32; 3]; 9] = [
     [0.3, POST_PAPER, -35.4],
     [6.1, POST_PAPER, -34.6],
     [0.3, POST_PAPER, -50.6],
     [6.1, POST_PAPER, -48.4],
-    [-8.0, KIT_GLASS, -2.0],
-    [-1.0, KIT_GLASS, -13.0],
-    [8.0, KIT_GLASS, -2.5],
-    [-14.0, KIT_GLASS, -10.0],
-    [14.5, KIT_GLASS, -14.0],
+    [-8.0, POST_PAPER, -2.0],
+    [-1.0, POST_PAPER, -13.0],
+    [8.0, POST_PAPER, -2.5],
+    [-14.0, POST_PAPER, -10.0],
+    [14.5, POST_PAPER, -14.0],
 ];
-/// A kit lantern's glass over its foot: 1.39 of the lantern's 1.556 at its scale of 1.6.
-const KIT_GLASS: f32 = 2.22;
 /// A post lantern's paper over its foot: the middle of its 0.46 m of paper, over a cap of
 /// 0.046 m on its 1.25 m post (`jz_lantern_post` in the town's assembly).
 const POST_PAPER: f32 = 1.53;
@@ -523,17 +539,11 @@ mod tests {
         let town = include_str!("../../../content/lookdev/town/town.assembly.ron");
         let lanterns: Vec<[f32; 3]> = town
             .lines()
-            .filter_map(|line| {
-                let light = if line.contains(r#"(piece: "@lantern""#) {
-                    KIT_GLASS
-                } else if line.contains(r#"(piece: "@jz_lantern_post""#) {
-                    POST_PAPER
-                } else {
-                    return None;
-                };
+            .filter(|line| line.contains(r#"(piece: "@jz_lantern_post""#))
+            .map(|line| {
                 let at = line.split("at: (").nth(1).expect("placed").split(')').next().expect("closed");
                 let numbers: Vec<f32> = at.split(',').map(|n| n.trim().parse().expect("a number")).collect();
-                Some([numbers[0], numbers[1] + light, numbers[2]])
+                [numbers[0], numbers[1] + POST_PAPER, numbers[2]]
             })
             .collect();
         assert_eq!(lanterns, LAMPS);

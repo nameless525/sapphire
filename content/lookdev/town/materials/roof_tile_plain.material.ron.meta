@@ -2,7 +2,7 @@
     type: "sapphire::assets::AssetMeta",
     version: 1,
     data: (
-        id: "69f1c04a-e9bb-4b40-a0fa-69002b86ecac",
+        id: "f6a58193-ddc7-496e-b316-aad702be23dc",
         importer: Material(()),
     ),
 )

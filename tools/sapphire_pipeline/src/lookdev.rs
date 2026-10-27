@@ -1,31 +1,31 @@
 //! The look-dev scene's generated sources (M1 X1): the painted maps the town's environment
 //! materials read, written under `content/lookdev/` by `sapphire_pipeline gen-lookdev`.
 //!
-//! The town itself is authored, not generated: `town/town.assembly.ron` places pieces of
-//! Kenney's Fantasy Town Kit ([`crate::assembly`]) and `town/materials/` holds its materials. Its
-//! maps are painted here instead, in code, so they regenerate byte for byte and owe nothing to
-//! the kit's palette:
+//! The town itself is authored, not generated: `town/town.assembly.ron` ([`crate::assembly`])
+//! builds Jinzhou's halls, shops, walls, roofs and lanterns from the assembly's parametric
+//! builtins, and places the Chinese pavilion (`town/pieces/pavilion.glb`) and a few of Kenney's
+//! Fantasy Town Kit's pieces (market stalls, a cart, the far rocks); `town/materials/` holds its
+//! materials. Its maps are painted here instead, in code, so they regenerate byte for byte and owe
+//! nothing to a kit's palette:
 //!
 //! | File (in `town/textures/`) | Repeats every | What |
 //! |---|---|---|
-//! | `plaster.png` | 3.2 m | Warm cream plaster: broad, soft mottling and a faint grain |
 //! | `stone.png` | 2 m | Ashlar: courses of cut blocks, each its own warm grey, with painted bevels and mortar |
-//! | `cobbles.png` | 3 m | Setts in running bond, sixteen rows, warm greys in dark joints |
-//! | `roof.png` | 1.2 m | Slate tiles in staggered rows, each row's lower edge lit and a shadow under the row above; near white, for the roof materials to tint |
 //! | `timber.png` | 1 m | Planks and beams: soft streaks along V, a seam every quarter meter; near white, tinted |
 //! | `grass.png` | 6 m | A vivid lawn: yellow-green patches and darker clumps |
 //! | `foliage.png` | 2 m | Leaf clusters, light on their upper sides, for tree crowns and hedges |
 //! | `rock.png` | 16 m | Banded rock for the far cliffs, which fog and distance mostly paint over |
 //! | `band.png` | — | The terminator band: white ends, a warm apricot across the transition |
-//! | `whitewash.png` | 3.2 m | Jinzhou's white plaster: near white, faint cool mottling and soft rain streaks |
+//! | `whitewash.png` | 3.2 m across, once down a wall | Jinzhou's weathered plaster: grey-white with cool and warm mottling, a stain and streaks under the eaves, grime rising from the plinth |
 //! | `granite.png` | 2 m | Cool grey blocks in four courses, bevelled, in dark joints: plinths and stone trim |
-//! | `tiles.png` | 1.2 m | Courses across a tiled slope (the rows of tiles are modeled): each course's lit lower lip and the shadow under the next; near white |
+//! | `tiles.png` | 4 tile periods, 1.2 m | The tile rows on their modeled phase (channels dark, cover tiles rounded to their crests, the seams between) and four courses, each lip lit and shaded under; near white |
+//! | `tiles_mask.png` | as `tiles.png` | Its mask, linear: occlusion in the channels, seams and under each lip; cavity at the seams; specular on the crests |
 //! | `rafters.png` | 1.2 m | A soffit's rafters, four to the map, along V over darker boards between; near white |
-//! | `flagstones.png` | 4 m | Grey stone slabs in staggered rows, five rows of three or four, each its own cool grey, in thin joints |
+//! | `flagstones.png` | 4 m | Dark grey stone slabs in staggered rows, five rows of three or four, each its own cool grey, in thin darker joints |
 //! | `lantern.png` | one rib | A lantern's paper between two ribs, brightest between them, with bands at top and bottom; its emission map too |
 //!
 //! Colors are picked in 8-bit sRGB, as an artist would, and maps tile seamlessly: every pattern
-//! repeats on the map's own period.
+//! repeats on the map's own period (whitewash across only: it runs once down a wall).
 //!
 //! X1 part 2 adds two more sets of generated sources:
 //!
@@ -115,10 +115,7 @@ pub const HAIR_MASK: &str = "character/hair_mask.png";
 pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let path = |name: &str| format!("{TOWN_DIR}/textures/{name}");
     Ok(vec![
-        (path("plaster.png"), plaster_png()?),
         (path("stone.png"), stone_png()?),
-        (path("cobbles.png"), cobbles_png()?),
-        (path("roof.png"), roof_png()?),
         (path("timber.png"), timber_png()?),
         (path("grass.png"), grass_png()?),
         (path("foliage.png"), foliage_png()?),
@@ -127,6 +124,7 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path("whitewash.png"), whitewash_png()?),
         (path("granite.png"), granite_png()?),
         (path("tiles.png"), tiles_png()?),
+        (path("tiles_mask.png"), tiles_mask_png()?),
         (path("rafters.png"), rafters_png()?),
         (path("lantern.png"), lantern_png()?),
         (path("flagstones.png"), flagstones_png()?),
@@ -218,22 +216,6 @@ fn random(id: u32, seed: u32) -> f32 {
     hash(id ^ hash(seed)) as f32 / 4_294_967_296.0
 }
 
-/// Plaster: cream, warmer and a touch darker in broad soft blotches, lighter in others, with
-/// a faint fine grain.
-pub fn plaster_png() -> io::Result<Vec<u8>> {
-    let base = rgb(240, 228, 206);
-    let warm = rgb(228, 208, 184);
-    let light = rgb(246, 240, 226);
-    paint(512, |p| {
-        let broad = tiling(p, 3, 4, 0x7a01);
-        let patches = tiling(p + Vec2::splat(0.31), 6, 3, 0x7a02);
-        let grain = tiling(p, 64, 2, 0x7a03);
-        let mut color = base.lerp(warm, 0.75 * smoothstep(0.5, 0.8, broad));
-        color = color.lerp(light, 0.6 * smoothstep(0.55, 0.8, patches));
-        color * (0.985 + 0.03 * grain)
-    })
-}
-
 /// Ashlar: five courses of blocks, staggered, each block tinted on its own, bevelled light on
 /// its upper left and shaded on its lower right, in light mortar.
 pub fn stone_png() -> io::Result<Vec<u8>> {
@@ -278,60 +260,6 @@ pub fn stone_png() -> io::Result<Vec<u8>> {
         // Mortar about 1.5 cm wide on the 2 m map.
         let edge = to_left.min(to_right).min(to_top).min(to_bottom);
         mortar.lerp(color, smoothstep(0.002, 0.005, edge))
-    })
-}
-
-/// Paving: rows of rectangular setts in running bond, each its own warm grey with a little
-/// variation, softly rounded and lit from the upper left, in dark joints.
-pub fn cobbles_png() -> io::Result<Vec<u8>> {
-    const ROWS: f32 = 16.0;
-    const ACROSS: f32 = 8.0;
-    let joint = rgb(132, 122, 112);
-    let tints =
-        [rgb(214, 204, 188), rgb(204, 196, 182), rgb(222, 212, 196), rgb(210, 198, 186), rgb(198, 194, 188)];
-    paint(512, |p| {
-        let row = (p.y * ROWS).floor();
-        let shift = if row as i32 % 2 == 0 { 0.0 } else { 0.5 };
-        let along = p.x * ACROSS + shift;
-        let column = along.floor();
-        let id = (row as u32) * 64 + (column as i32).rem_euclid(ACROSS as i32) as u32;
-        // Distance to the sett's nearest edge, in sett heights (setts are twice as long).
-        let (u, v) = (along - column, p.y * ROWS - row);
-        let edge = (u.min(1.0 - u) * 2.0).min(v.min(1.0 - v));
-        let tint = tints[(random(id, 0xc0b2) * tints.len() as f32) as usize % tints.len()];
-        let mut color = tint * (0.94 + 0.08 * random(id, 0xc0b3));
-        let round = smoothstep(0.0, 0.3, edge);
-        color *= 0.88 + 0.12 * round;
-        // Lit from the upper left: the upper and left edges brighter, the others darker.
-        let lit = if u < 0.5 && v < 0.5 { 1.0 } else { -1.0 };
-        color *= 1.0 + 0.05 * lit * (1.0 - smoothstep(0.05, 0.25, edge));
-        color *= 0.96 + 0.08 * tiling(p, 32, 2, 0xc0b5);
-        joint.lerp(color, smoothstep(0.04, 0.1, edge))
-    })
-}
-
-/// Roof tiles: six staggered rows of slates, each slate lit along its lower edge, a shadow
-/// under the row above, and a dark line where slates meet; near white.
-pub fn roof_png() -> io::Result<Vec<u8>> {
-    const ROWS: u32 = 6;
-    const ACROSS: u32 = 6;
-    paint(256, |p| {
-        let row = ((p.y * ROWS as f32) as u32).min(ROWS - 1);
-        let within_y = p.y * ROWS as f32 - row as f32;
-        let shifted = p.x * ACROSS as f32 + if row % 2 == 1 { 0.5 } else { 0.0 };
-        let column = shifted.floor() as u32 % ACROSS;
-        let within_x = shifted.fract();
-        let id = row * 32 + column;
-        let mut value = 0.86 + 0.1 * random(id, 0x2f01);
-        // Under the row above: in shadow at the top, opening to light toward the lower edge.
-        value *= 0.72 + 0.28 * smoothstep(0.0, 0.55, within_y);
-        // The lower edge catches the light, then a thin dark lip.
-        value *= 1.0 + 0.08 * smoothstep(0.75, 0.93, within_y) - 0.3 * smoothstep(0.95, 1.0, within_y);
-        // Where two slates meet.
-        let seam = within_x.min(1.0 - within_x);
-        value *= 0.8 + 0.2 * smoothstep(0.0, 0.04, seam);
-        value *= 0.97 + 0.06 * tiling(p, 32, 2, 0x2f02);
-        Vec3::new(value, value * 0.995, value * 1.0)
     })
 }
 
@@ -399,22 +327,48 @@ pub fn rock_png() -> io::Result<Vec<u8>> {
     })
 }
 
-/// Whitewash: near white with a faint cool mottling and soft streaks running down it, as rain
-/// leaves on lime plaster; kept quiet, so walls read as clean planes.
+/// Whitewash, weathered: grey-white lime plaster with cool and warm mottling. V runs once down
+/// a wall (`assembly`'s plaster coordinates: 0 under its eaves, 1 at its plinth), so the map
+/// carries what weather does there: a stain under the eaves with soft streaks hanging from it, each
+/// its own length, and grime rising unevenly from the plinth. U repeats every 3.2 m.
 pub fn whitewash_png() -> io::Result<Vec<u8>> {
-    let base = rgb(246, 245, 241);
-    let cool = rgb(226, 229, 232);
-    let warm = rgb(244, 238, 228);
+    const STREAKS: i32 = 24;
+    let base = rgb(234, 233, 228);
+    let cool = rgb(214, 218, 222);
+    let warm = rgb(232, 225, 212);
+    let stain = rgb(176, 174, 168);
+    let grime = rgb(146, 142, 132);
     paint(512, |p| {
         let broad = tiling(p, 3, 4, 0x3a01);
         let patches = tiling(p + Vec2::splat(0.27), 7, 3, 0x3a02);
-        // Streaks: noise stretched down V.
-        let streaks = fbm(Vec2::new(p.x * 48.0, p.y * 3.0), (48, 3), 3, 0x3a03);
         let grain = tiling(p, 64, 2, 0x3a04);
-        let mut color = base.lerp(cool, 0.6 * smoothstep(0.55, 0.85, broad));
-        color = color.lerp(warm, 0.5 * smoothstep(0.6, 0.85, patches));
-        color *= 1.0 - 0.035 * smoothstep(0.55, 0.8, streaks);
-        color * (0.99 + 0.02 * grain)
+        let mut color = base.lerp(cool, 0.7 * smoothstep(0.5, 0.85, broad));
+        color = color.lerp(warm, 0.6 * smoothstep(0.58, 0.85, patches));
+        // Streaks from the eaves: in some of 24 columns, each reaching its own way down, wavering.
+        let wobble = 0.6 * (fbm(Vec2::new(p.x * 8.0, p.y * 4.0), (8, 4), 2, 0x3a05) - 0.5);
+        let along = p.x * STREAKS as f32 + wobble;
+        let column = along.floor().rem_euclid(STREAKS as f32) as u32;
+        let within = (along.fract() - 0.5).abs();
+        let present = random(column, 0x3a06) < 0.6;
+        let length = 0.12 + 0.5 * random(column, 0x3a07);
+        let strength = 0.2 + 0.35 * random(column, 0x3a08);
+        let width = 0.3 + 0.25 * random(column, 0x3a09);
+        let streak = if present {
+            strength
+                * (1.0 - smoothstep(0.1 * width, width, within))
+                * (1.0 - smoothstep(0.1 * length, length, p.y))
+        } else {
+            0.0
+        };
+        // The stain right under the eaves.
+        let under_eaves = 0.7 * (1.0 - smoothstep(0.0, 0.14, p.y)) * (0.7 + 0.3 * broad);
+        color = color.lerp(stain, (streak + under_eaves).min(0.8));
+        // Grime rising from the plinth to an uneven edge, splashed above it.
+        let edge = 0.8 + 0.08 * (fbm(Vec2::new(p.x * 12.0, 0.5), (12, 4), 3, 0x3a0a) - 0.5);
+        let splash = tiling(p, 48, 2, 0x3a0b);
+        let rising = smoothstep(edge - 0.08, 1.0, p.y) * (0.75 + 0.25 * splash);
+        color = color.lerp(grime, 0.75 * rising);
+        color * (0.985 + 0.03 * grain)
     })
 }
 
@@ -447,20 +401,70 @@ pub fn granite_png() -> io::Result<Vec<u8>> {
     })
 }
 
-/// Tile courses: four to the map down the slope, each tile course lit along its lower lip and
-/// shaded under the course above, a thin dark line where it ends; near white, for the roof's
-/// charcoal to tint. The rows across are modeled, so U varies only a little.
+/// Tile rows across a tiled slope and courses down it, near white for the roof's charcoal to
+/// tint: four tile periods across (U, `assembly`'s tile coordinates, on the modeled rows' phase:
+/// a pan tile's channel over the period's first 40%, a cover tile rounded over the rest, its
+/// crest at 70%) and four courses up the slope (V), each course's lower lip lit and the slope
+/// just under it shaded. Painted in, the rows read where the modeled ones are too small to.
 pub fn tiles_png() -> io::Result<Vec<u8>> {
-    const COURSES: f32 = 4.0;
     paint(256, |p| {
-        let course = (p.y * COURSES).floor();
-        let within = p.y * COURSES - course;
-        let mut value = 0.9 + 0.06 * random(course as u32 * 7 + (p.x * 4.0) as u32, 0x7c01);
-        value *= 0.84 + 0.16 * smoothstep(0.0, 0.6, within);
-        value *= 1.0 + 0.06 * smoothstep(0.7, 0.92, within) - 0.22 * smoothstep(0.94, 1.0, within);
-        value *= 0.96 + 0.06 * tiling(p, 32, 2, 0x7c02);
+        let tile = tile_at(p);
+        let value = tile.light * tile.tint;
         Vec3::new(value * 0.98, value * 0.99, value)
     })
+}
+
+/// The tiles' mask, linear: R occlusion (deep in the channels, at the seams and under each
+/// course's lip), G cavity (the seams), B specular (the crests catch it, the channels less).
+pub fn tiles_mask_png() -> io::Result<Vec<u8>> {
+    let image = image::RgbImage::from_fn(256, 256, |x, y| {
+        let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / 256.0;
+        let tile = tile_at(p);
+        image::Rgb([tile.occlusion, tile.cavity, tile.specular].map(|c| unorm8(c.clamp(0.0, 1.0))))
+    });
+    png(image)
+}
+
+/// Tile periods and courses on the tiles' map.
+const TILE_MAP_PERIODS: f32 = 4.0;
+const TILE_MAP_COURSES: f32 = 4.0;
+
+/// One texel of the tiles' map, for its color and its mask.
+struct TileTexel {
+    light: f32,
+    tint: f32,
+    occlusion: f32,
+    cavity: f32,
+    specular: f32,
+}
+
+fn tile_at(p: Vec2) -> TileTexel {
+    let along = p.x * TILE_MAP_PERIODS;
+    let phase = along.fract();
+    let course = (p.y * TILE_MAP_COURSES).floor();
+    let within = p.y * TILE_MAP_COURSES - course;
+    let id = course as u32 * 16 + along.floor() as u32;
+    // A channel's pan tile, a little lighter in its middle; a cover tile rounded to its crest.
+    let (mut light, mut occlusion, mut specular) = if phase < 0.4 {
+        let middle = 1.0 - (phase - 0.2).abs() / 0.2;
+        (0.5 + 0.06 * middle, 0.72, 0.5)
+    } else {
+        let round = (std::f32::consts::PI * (phase - 0.4) / 0.6).sin().max(0.0).sqrt();
+        (0.66 + 0.32 * round, 0.85 + 0.15 * round, 0.6 + 0.4 * round)
+    };
+    // Seams where cover tiles meet the channels.
+    let seam = (phase - 0.4).abs().min(phase).min(1.0 - phase);
+    let open = smoothstep(0.0, 0.035, seam);
+    light *= 0.7 + 0.3 * open;
+    occlusion *= 0.75 + 0.25 * open;
+    // Each course's lower lip (the start of V within it) lit, the slope under the next shaded.
+    let lip = 1.0 - smoothstep(0.0, 0.08, within);
+    let under = smoothstep(0.82, 1.0, within);
+    light *= 1.0 + 0.08 * lip - 0.22 * under;
+    occlusion *= 1.0 - 0.2 * under;
+    specular *= 1.0 - 0.3 * under;
+    let tint = 0.93 + 0.08 * random(id, 0x7c01) + 0.04 * (tiling(p, 32, 2, 0x7c02) - 0.5);
+    TileTexel { light, tint, occlusion, cavity: 0.7 + 0.3 * open, specular }
 }
 
 /// Rafters under the eaves: four to the map across U, running along V, each lit across its
@@ -481,12 +485,12 @@ pub fn rafters_png() -> io::Result<Vec<u8>> {
 }
 
 /// Flagstones: five rows of slabs, alternate rows of three and four so the joints stagger, each
-/// slab its own cool grey with a little mottling, softly worn at its edges, in thin dark joints.
+/// slab its own dark cool grey with a little mottling, softly worn at its edges, in thin dark joints.
 pub fn flagstones_png() -> io::Result<Vec<u8>> {
     const ROWS: f32 = 5.0;
-    let joint = rgb(104, 106, 110);
+    let joint = rgb(62, 64, 68);
     let tints =
-        [rgb(186, 188, 190), rgb(176, 180, 186), rgb(194, 194, 192), rgb(180, 182, 184), rgb(170, 174, 180)];
+        [rgb(128, 131, 136), rgb(118, 122, 128), rgb(136, 137, 138), rgb(122, 125, 128), rgb(112, 117, 124)];
     paint(512, |p| {
         let row = (p.y * ROWS).floor();
         let across = if (row as u32).is_multiple_of(2) { 3.0 } else { 4.0 };
@@ -647,7 +651,8 @@ mod tests {
     /// The committed town assembles: every triangle of every piece claimed by a rule, every slot
     /// drawn, no two placements fighting in one plane but those its `allow_coplanar` names, and
     /// every entry there needed. Its size is the scene's budget line (spec §3.4's draw calls are
-    /// one per slot).
+    /// one per slot): about 217k triangles in the desktop cook's full detail and 147k in the
+    /// mobile cook's light one, the pavilion's 31k in both.
     #[test]
     fn the_town_assembles_in_its_own_slots() {
         let path = lookdev_dir().join("town/town.assembly.ron");
@@ -658,7 +663,7 @@ mod tests {
         let slots = mesh.lods[0].submeshes.len();
         assert_eq!(slots, mesh.materials.len(), "every slot draws");
         assert!(
-            (100_000..200_000).contains(&triangles),
+            (150_000..250_000).contains(&triangles),
             "{triangles} triangles, {} vertices",
             mesh.vertices.len()
         );
@@ -813,6 +818,10 @@ mod tests {
                 .map(|(x, y)| vertical(x, y))
                 .max()
                 .unwrap();
+            // Whitewash runs once down a wall, so only its sides meet.
+            if name.ends_with("whitewash.png") {
+                continue;
+            }
             let across = (0..width).map(|x| vertical(x, height - 1)).max().unwrap();
             assert!(across <= inside, "{name}: {across} across the top and bottom edges, {inside} inside");
         }

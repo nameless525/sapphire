@@ -46,6 +46,17 @@ pub use props::{Column, Lantern, LanternKind, Mount};
 pub use roof::{Ridge, Roof, RoofKind, Tiles};
 pub use walls::{Beam, Coping, Hall, Opening, OpeningKind, Plinth, Posts, Side, Wall};
 
+/// Meters across one repeat of plaster's map along a wall: plaster runs once up each wall, from
+/// under its eaves (V 0) to its plinth (V 1), so the map's weathering (streaks under the eaves,
+/// grime over the plinth) fits every wall's height ([`Part::Plaster`]).
+pub const PLASTER_REPEAT: f32 = 3.2;
+
+/// Tile periods across one repeat of the tiles' map, and meters down the slope in one: tiles run
+/// in periods across the slope, so the map's painted channels and cover tiles lie on the modeled
+/// ones ([`Part::Tiles`]).
+pub const TILE_PERIODS: f32 = 4.0;
+pub const TILE_COURSES: f32 = 1.2;
+
 /// How finely shapes are built: the desktop cook's full detail, or the mobile cook's lighter one
 /// (tile rows of two faces each and 40% wider apart, fewer rows up roofs, fewer samples along
 /// ridges, at most 8 sides round columns and 6 round lanterns), about half the triangles.
@@ -247,7 +258,8 @@ impl Mesh {
     }
 
     /// The flat polygon `outer` less `holes` on `frame` (2D points in its plane), facing its
-    /// front, its occlusion from each corner's 2D point.
+    /// front, its occlusion from each corner's 2D point; its texture coordinates projected by its
+    /// slot.
     pub fn fill(
         &mut self,
         part: Part,
@@ -256,12 +268,35 @@ impl Mesh {
         holes: &[Vec<Vec2>],
         occlusion: &dyn Fn(Vec2) -> f32,
     ) -> Result<(), String> {
+        self.fill_mapped(part, frame, outer, holes, occlusion, None)
+    }
+
+    /// [`Mesh::fill`], with texture coordinates in tiles from each corner's 2D point when `uv`
+    /// is given (as plaster's run once up a wall).
+    pub fn fill_mapped(
+        &mut self,
+        part: Part,
+        frame: &Frame,
+        outer: &[Vec2],
+        holes: &[Vec<Vec2>],
+        occlusion: &dyn Fn(Vec2) -> f32,
+        uv: Option<&dyn Fn(Vec2) -> Vec2>,
+    ) -> Result<(), String> {
         let triangles = polygon::triangulate(outer, holes)?;
         let points: Vec<Vec2> = outer.iter().chain(holes.iter().flatten()).copied().collect();
         let out = frame.normal();
         for [a, b, c] in triangles {
-            let corners = [points[a], points[b], points[c]];
-            self.flat(part, corners.map(|p| frame.at(p)), out, corners.map(occlusion));
+            let mut corners = [points[a], points[b], points[c]];
+            let mut positions = corners.map(|p| frame.at(p));
+            if (positions[1] - positions[0]).cross(positions[2] - positions[0]).dot(out) < 0.0 {
+                positions.swap(1, 2);
+                corners.swap(1, 2);
+            }
+            let mapped = match uv {
+                Some(uv) => ShapeUv::Tiles(corners.map(uv)),
+                None => ShapeUv::Project,
+            };
+            self.triangle(part, positions, [Vec3::ZERO; 3], mapped, corners.map(occlusion));
         }
         Ok(())
     }

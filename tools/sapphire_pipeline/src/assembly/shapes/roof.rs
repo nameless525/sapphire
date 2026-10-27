@@ -30,7 +30,9 @@ use glam::{Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
 use super::polygon::{self, HalfPlane};
-use super::{Detail, Frame, Mesh, Part, check, finite, smoothstep};
+use super::{
+    Detail, Frame, Mesh, PLASTER_REPEAT, Part, TILE_COURSES, TILE_PERIODS, check, finite, smoothstep,
+};
 use crate::assembly::ShapeUv;
 
 /// A tiled roof (`#roof`); see the module docs.
@@ -594,11 +596,13 @@ impl<'a> Plan<'a> {
                     let local = self.smooth_local(slope, p.x, p.y) + Vec3::Y * depth * self.wave(p.x);
                     let position = self.to_roof(slope, local);
                     let normal = self.normal(slope, p.x, p.y, tile_slope);
-                    let uv = Vec2::new(p.x, -self.arc_length(p.y));
+                    // In tile periods across, so the map's channels lie on the modeled ones.
+                    let across = (p.x / self.period() + CREST) / TILE_PERIODS;
+                    let uv = Vec2::new(across, self.arc_length(p.y) / TILE_COURSES);
                     let shade = CHANNEL_SHADE + (1.0 - CHANNEL_SHADE) * self.wave(p.x);
                     (position, normal, uv, shade)
                 };
-                fan(mesh, Part::Tiles, cell, &corner, false);
+                fan(mesh, Part::Tiles, cell, &corner, false, ShapeUv::Tiles);
             });
         }
     }
@@ -625,7 +629,7 @@ impl<'a> Plan<'a> {
                         let shade = if p.y <= self.wall { 0.85 - 0.3 * p.y / self.wall } else { 0.6 };
                         (position, normal, uv, shade)
                     };
-                    fan(mesh, Part::Eaves, cell, &corner, true);
+                    fan(mesh, Part::Eaves, cell, &corner, true, ShapeUv::Meters);
                 });
             }
         }
@@ -709,7 +713,10 @@ impl<'a> Plan<'a> {
         for side in [1.0, -1.0] {
             let frame =
                 Frame { origin: self.origin + Vec3::X * (side * x), right: -Vec3::Z * side, up: Vec3::Y };
-            mesh.fill(Part::Gable, &frame, &outline, &[], &shade)?;
+            // Plaster's map from its top (streaks under the ridge) to a little past its middle.
+            let uv =
+                move |p: Vec2| Vec2::new(p.x / PLASTER_REPEAT, 0.6 * (high - p.y) / (high - low).max(1e-3));
+            mesh.fill_mapped(Part::Gable, &frame, &outline, &[], &shade, Some(&uv))?;
         }
         Ok(())
     }
@@ -819,13 +826,15 @@ impl<'a> Plan<'a> {
 }
 
 /// Fans a convex cell of a slope's grid, each corner placed by `corner` (position, normal,
-/// texture coordinates in meters, occlusion); `under` faces it down.
+/// texture coordinates, occlusion), the coordinates read as `uv` says (meters or tiles);
+/// `under` faces it down.
 fn fan(
     mesh: &mut Mesh,
     part: Part,
     cell: &[Vec2],
     corner: &dyn Fn(Vec2) -> (Vec3, Vec3, Vec2, f32),
     under: bool,
+    uv: fn([Vec2; 3]) -> ShapeUv,
 ) {
     let corners: Vec<(Vec3, Vec3, Vec2, f32)> = cell.iter().map(|&p| corner(p)).collect();
     for k in 1..corners.len() - 1 {
@@ -844,7 +853,7 @@ fn fan(
             part,
             tri.map(|i| corners[i].0),
             tri.map(|i| corners[i].1),
-            ShapeUv::Meters(tri.map(|i| corners[i].2)),
+            uv(tri.map(|i| corners[i].2)),
             tri.map(|i| corners[i].3),
         );
     }

@@ -10,6 +10,7 @@ use super::{
     ShadowSettings, ShadowStats, ShadowUniforms,
 };
 use crate::bounds::Sphere;
+use crate::characters::CharacterTable;
 use crate::mesh_pool::{MeshRecord, MeshStreams};
 use crate::pipelines::SurfaceVariant;
 use crate::scene::{DrawList, InstanceSlots};
@@ -28,13 +29,13 @@ pub(crate) struct SlotCaster {
     pub map: Option<u8>,
 }
 
-/// Whether an instance slot is a character this frame (listed with a valid entry), and the
-/// character group it belongs to if that casts a shadow of its own.
+/// Whether an instance slot is a character this frame (it has an entry in the character
+/// buffer), and the character group it belongs to if that casts a shadow of its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SlotCharacter {
     #[default]
     Environment,
-    Character(Option<u16>),
+    Character(Option<u32>),
 }
 
 /// A character casting a shadow of its own this frame: its instances share `body`.
@@ -81,7 +82,7 @@ pub(crate) struct ShadowPlan {
     characters: Vec<SlotCharacter>,
     groups: Vec<CharacterGroup>,
     /// The groups' indices, nearest the camera first.
-    order: Vec<u16>,
+    order: Vec<u32>,
     /// What receivers read.
     pub uniforms: ShadowUniforms,
     /// The frame has a main view: there is something to draw.
@@ -94,8 +95,8 @@ impl ShadowPlan {
     /// casters and the receivers' uniforms. `slots` has the packet's instance deltas applied,
     /// `meshes` are the pool's records, `wind_margin` how far the frame's wind can carry each
     /// mesh's vertices past its bounds (foliage's; 0 for the rest), `list` the frame's draw list
-    /// (for the stats' counts), `entries` the character buffer's entries this frame, and `atlas`
-    /// the character atlas's size in texels.
+    /// (for the stats' counts), `characters` the frame's characters as the character buffer
+    /// resolved them, and `atlas` the character atlas's size in texels.
     #[expect(clippy::too_many_arguments, reason = "the frame's inputs, each read once")]
     pub(crate) fn update(
         &mut self,
@@ -105,7 +106,7 @@ impl ShadowPlan {
         meshes: &[MeshRecord],
         wind_margin: &WindMargin<'_>,
         list: &DrawList,
-        entries: u32,
+        characters: CharacterTable<'_>,
         atlas: (u32, u32),
     ) {
         profiling::scope!("ShadowPlan::update");
@@ -130,9 +131,9 @@ impl ShadowPlan {
             self.toward = Some(toward);
         }
         self.plan_cascades(settings, camera, light);
-        self.classify(packet, slots, (meshes, wind_margin), settings, camera, light);
+        self.classify(characters, slots, (meshes, wind_margin), settings, camera, light);
         self.skip_empty();
-        self.uniforms = self.pack(settings, camera, light, entries, atlas);
+        self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
         self.count_draws(list, settings);
     }
 
@@ -168,12 +169,12 @@ impl ShadowPlan {
         }
     }
 
-    /// Classifies every instance as character or environment, groups characters by body, gives
-    /// the nearest groups maps (desktop) and the next capsules, and culls environment casters
-    /// per cascade drawn.
+    /// Classifies every instance as character or environment by `characters`, groups characters
+    /// by body, gives the nearest groups maps (desktop) and the next capsules, and culls
+    /// environment casters per cascade drawn.
     fn classify(
         &mut self,
-        packet: &FramePacket,
+        characters: CharacterTable<'_>,
         slots: &InstanceSlots,
         (meshes, wind_margin): (&[MeshRecord], &WindMargin<'_>),
         settings: &ShadowSettings,
@@ -184,41 +185,35 @@ impl ShadowPlan {
         self.casters.resize(slots.len(), SlotCaster::default());
         self.characters.clear();
         self.characters.resize(slots.len(), SlotCharacter::Environment);
+        // Characters: the instances with an entry in the character buffer, grouped by the body
+        // their entry casts with (M1 review RS-005), so each casts as the character, or the
+        // world, it shades as. Its bodies come each once, in entry order.
         self.groups.clear();
-        // Characters: listed with a valid entry, as the character buffer lists them. An instance
-        // listed twice takes its last entry there, and its last body here.
-        for character in &packet.characters {
-            let Some(slot) = slots.slot(character.id).filter(|_| character.is_valid()) else { continue };
-            let body = character.body;
-            if !body.casts() {
-                self.characters[slot as usize] = SlotCharacter::Character(None);
-                continue;
-            }
-            let group = match self.groups.iter().position(|group| group.body == body) {
-                Some(index) => index,
-                None => {
-                    let sphere = capsule_sphere(&body);
-                    self.groups.push(CharacterGroup { body, sphere, distance: 0.0, cast: Cast::Nothing });
-                    self.groups.len() - 1
-                }
-            };
+        self.groups.extend(characters.bodies.iter().map(|&body| CharacterGroup {
+            body,
+            sphere: capsule_sphere(&body),
+            distance: 0.0,
+            cast: Cast::Nothing,
+        }));
+        for &slot in characters.listed {
+            let group = characters.body(slot);
             let instance = slots
                 .mesh(slot)
                 .and_then(|mesh| meshes.get(mesh.index()))
                 .zip(slots.transform(slot))
                 .map(|(record, transform)| record.bounds.transformed(transform));
-            if let Some(instance) = instance {
-                self.groups[group].sphere = self.groups[group].sphere.union(instance);
+            if let Some((group, instance)) = group.zip(instance) {
+                let group = &mut self.groups[group as usize];
+                group.sphere = group.sphere.union(instance);
             }
-            let group = u16::try_from(group).expect("fewer than 2¹⁶ characters");
-            self.characters[slot as usize] = SlotCharacter::Character(Some(group));
+            self.characters[slot as usize] = SlotCharacter::Character(group);
         }
         // The nearest get maps (desktop), the next capsules; those past the shadow distance, or
         // past both budgets, cast nothing.
         self.order.clear();
         for (index, group) in self.groups.iter_mut().enumerate() {
             group.distance = (group.sphere.center.distance(camera.position) - group.sphere.radius).max(0.0);
-            self.order.push(index as u16);
+            self.order.push(index as u32);
         }
         let groups = &self.groups;
         // In place (a stable sort allocates); equal distances keep the packet's order.
@@ -422,6 +417,8 @@ mod tests {
     use glam::{Mat4, Vec3};
 
     use super::*;
+    use crate::character_prepass::ID_ENTRY_MASK;
+    use crate::characters::CharacterList;
     use crate::gpu_types::Dequantize;
     use crate::mesh_pool::{DeformSource, Placement};
     use crate::{
@@ -495,8 +492,18 @@ mod tests {
         slots
     }
 
-    fn update(plan: &mut ShadowPlan, settings: &ShadowSettings, packet: &FramePacket, slots: &InstanceSlots) {
-        plan.update(settings, packet, slots, &meshes(), &|_| 0.0, &DrawList::default(), 3, (4096, 2048));
+    /// Plans `packet`'s frame with `settings`, its characters resolved into `slots` by the
+    /// character buffer's own list, as the renderer does.
+    fn update(
+        plan: &mut ShadowPlan,
+        settings: &ShadowSettings,
+        packet: &FramePacket,
+        slots: &mut InstanceSlots,
+    ) {
+        let mut list = CharacterList::default();
+        list.update(packet, slots, false);
+        let (meshes, list_of_draws) = (meshes(), DrawList::default());
+        plan.update(settings, packet, slots, &meshes, &|_| 0.0, &list_of_draws, list.table(), (4096, 2048));
     }
 
     #[test]
@@ -504,11 +511,11 @@ mod tests {
         let body = CharacterBody::capsule(Vec3::new(0.0, 0.25, 0.0), Vec3::new(0.0, 1.6, 0.0), 0.25);
         let instances =
             [instance(1, 0, Vec3::ZERO), instance(2, 1, Vec3::Y), instance(3, 0, Vec3::new(2.0, 0.0, 0.0))];
-        let slots = slots(&instances);
+        let mut slots = slots(&instances);
         // Instances 1 and 2 are one character (the same body); 3 is environment.
         let packet = packet(vec![character(1, body), character(2, body)]);
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert!(plan.active);
         assert_eq!(plan.drawn_mask(), 0b1111, "every cascade on the first frame");
         assert_eq!(plan.maps.len(), 1, "one character, one map");
@@ -523,7 +530,8 @@ mod tests {
         assert!(!plan.is_character(2));
         assert_eq!(plan.casters[2].map, None);
         assert_eq!(plan.casters[2].cascades & 1, 1, "the environment casts into the first cascade");
-        assert_eq!(plan.uniforms.counts, [4, 1, 0, 3]);
+        // The entries: the fallback and the character's, which its instances share.
+        assert_eq!(plan.uniforms.counts, [4, 1, 0, 2]);
         // Its map holds the whole body and the deformable instance's bounds.
         let fit = plan.maps[0];
         for point in [body.base, body.top, Vec3::new(0.5, 1.5, 0.5)] {
@@ -538,7 +546,7 @@ mod tests {
         let instances = [instance(1, 0, Vec3::ZERO), instance(2, 0, Vec3::X)];
         let packet = packet(vec![character(1, body), character(2, CharacterBody::default())]);
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &mobile, &packet, &slots(&instances));
+        update(&mut plan, &mobile, &packet, &mut slots(&instances));
         assert!(plan.maps.is_empty());
         assert_eq!(plan.uniforms.counts[..3], [2, 0, 1]);
         assert_eq!(plan.uniforms.capsules[0].base, [0.0, 0.0, 0.0, 0.3]);
@@ -560,7 +568,7 @@ mod tests {
             })
             .collect();
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet(characters), &slots(&instances));
+        update(&mut plan, &SETTINGS, &packet(characters), &mut slots(&instances));
         assert_eq!(plan.maps.len(), MAX_CHARACTER_MAPS);
         assert_eq!(plan.uniforms.counts[2], 12 - MAX_CHARACTER_MAPS as u32, "the rest cast capsules");
         for slot in 0..MAX_CHARACTER_MAPS as u32 {
@@ -579,24 +587,24 @@ mod tests {
 
     #[test]
     fn cached_cascades_take_turns_and_everything_redraws_when_the_light_steps() {
-        let slots = everywhere();
+        let mut slots = everywhere();
         let mut packet = packet(Vec::new());
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_eq!(plan.drawn_mask(), 0b1111);
         let mut masks = Vec::new();
         for _ in 0..4 {
-            update(&mut plan, &SETTINGS, &packet, &slots);
+            update(&mut plan, &SETTINGS, &packet, &mut slots);
             masks.push(plan.drawn_mask());
         }
         assert_eq!(masks, [0b1011, 0b0111, 0b1011, 0b0111], "the far two alternate");
         assert_eq!((plan.stats.cascades_drawn, plan.stats.cascades_cached), (3, 1));
         // A sub-step turn of the sun keeps the cache; a step draws everything again.
         packet.sun.direction = Vec3::new(0.5501, -0.7, -0.45);
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_ne!(plan.drawn_mask(), 0b1111);
         packet.sun.direction = Vec3::new(0.6, -0.7, -0.45);
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_eq!(plan.drawn_mask(), 0b1111);
         assert_eq!(plan.stats.light_steps, 1);
         // One cached cascade is drawn every other frame; a cut draws them all.
@@ -604,23 +612,23 @@ mod tests {
         let mut plan = ShadowPlan::default();
         let masks: Vec<u8> = (0..5)
             .map(|_| {
-                update(&mut plan, &mobile, &packet, &slots);
+                update(&mut plan, &mobile, &packet, &mut slots);
                 plan.drawn_mask()
             })
             .collect();
         assert_eq!(masks, [0b11, 0b01, 0b11, 0b01, 0b11]);
         packet.views[0].cut = true;
-        update(&mut plan, &mobile, &packet, &slots);
+        update(&mut plan, &mobile, &packet, &mut slots);
         assert_eq!(plan.drawn_mask(), 0b11, "a cut");
     }
 
     #[test]
     fn a_cached_cascade_left_behind_by_the_view_is_drawn_early() {
-        let slots = everywhere();
+        let mut slots = everywhere();
         let mut packet = packet(Vec::new());
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet, &slots);
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_eq!(plan.drawn_mask(), 0b1011);
         // The camera turns around: cascade 3 is cached, but its square is now behind the view.
         packet.views[0].camera = CameraData::look_at(
@@ -631,7 +639,7 @@ mod tests {
             1.5,
             0.05,
         );
-        update(&mut plan, &SETTINGS, &packet, &slots);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
         assert_eq!(plan.drawn_mask(), 0b1111);
     }
 
@@ -644,7 +652,7 @@ mod tests {
             instance(3, 1, Vec3::new(500.0, 0.0, 0.0)),
         ];
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots(&instances));
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&instances));
         assert_eq!(plan.casters[0].cascades & 1, 1);
         assert_eq!(plan.casters[1].cascades & 1, 0, "past the first cascade");
         assert_ne!(plan.casters[1].cascades & 0b1000, 0, "in the last");
@@ -665,7 +673,7 @@ mod tests {
                 &meshes(),
                 &|_| margin,
                 &DrawList::default(),
-                3,
+                CharacterList::default().table(),
                 (4096, 2048),
             );
             plan.casters[0].cascades & 1 == 1
@@ -679,12 +687,12 @@ mod tests {
 
     #[test]
     fn frames_without_a_view_plan_nothing_and_start_the_cache_over() {
-        let slots = everywhere();
+        let mut slots = everywhere();
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots);
-        update(&mut plan, &SETTINGS, &FramePacket::default(), &slots);
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots);
+        update(&mut plan, &SETTINGS, &FramePacket::default(), &mut slots);
         assert!(!plan.active && plan.drawn_mask() == 0);
-        update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots);
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots);
         assert_eq!(plan.drawn_mask(), 0b1111);
     }
 
@@ -694,9 +702,9 @@ mod tests {
         // once, then left as they are, cached or not.
         let mut instances = vec![instance(1, 0, Vec3::ZERO)];
         let mut plan = ShadowPlan::default();
-        update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots(&instances));
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&instances));
         assert_eq!(plan.drawn_mask(), 0b1111, "the first frame clears every map");
-        update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots(&instances));
+        update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&instances));
         assert_eq!(plan.drawn_mask(), 0b0011);
         assert_eq!((plan.stats.cascades_drawn, plan.stats.cascades_cached), (2, 2));
         // Their fits are kept for the receivers all the same.
@@ -705,7 +713,7 @@ mod tests {
         instances.push(instance(2, 0, Vec3::new(0.0, 0.0, -80.0)));
         let masks: Vec<u8> = (0..3)
             .map(|_| {
-                update(&mut plan, &SETTINGS, &packet(Vec::new()), &slots(&instances));
+                update(&mut plan, &SETTINGS, &packet(Vec::new()), &mut slots(&instances));
                 plan.drawn_mask()
             })
             .collect();
@@ -713,9 +721,126 @@ mod tests {
         // A step of the light draws again only the cascades that hold something.
         let mut stepped = packet(Vec::new());
         stepped.sun.direction = Vec3::new(0.6, -0.7, -0.45);
-        update(&mut plan, &SETTINGS, &stepped, &slots(&instances[..1]));
+        update(&mut plan, &SETTINGS, &stepped, &mut slots(&instances[..1]));
         assert_eq!(plan.drawn_mask(), 0b1011, "cascade 3 is cleared of the cube that left");
-        update(&mut plan, &SETTINGS, &stepped, &slots(&instances[..1]));
+        update(&mut plan, &SETTINGS, &stepped, &mut slots(&instances[..1]));
         assert_eq!(plan.drawn_mask() & 0b1100, 0, "and then left empty");
+    }
+
+    /// `count` instances in a row, each listed as a character with a body of its own.
+    fn crowd(count: u64) -> (Vec<MeshInstance>, Vec<CharacterInstance>) {
+        let instances: Vec<MeshInstance> =
+            (0..count).map(|index| instance(index, 0, Vec3::new(index as f32, 0.0, -2.0))).collect();
+        let characters = instances
+            .iter()
+            .map(|instance| {
+                let base = instance.transform.transform_point3(Vec3::ZERO);
+                character(instance.id.0, CharacterBody::capsule(base, base + Vec3::Y, 0.25))
+            })
+            .collect();
+        (instances, characters)
+    }
+
+    #[test]
+    fn characters_past_the_entries_are_environment() {
+        // The character buffer stops at the prepass IDs' 16,383 entries: the instances past them
+        // shade as the world does, so they cast as the world does (M1 review RS-005).
+        let cap = ID_ENTRY_MASK as u64;
+        for count in [cap, cap + 1, cap + 117] {
+            let (instances, characters) = crowd(count);
+            let mut slots = slots(&instances);
+            let mut plan = ShadowPlan::default();
+            update(&mut plan, &SETTINGS, &packet(characters), &mut slots);
+            let listed = (0..count as u32).filter(|&slot| slots.character(slot) != 0).count();
+            assert_eq!(listed as u64, count.min(cap), "{count}: the entries there are");
+            for slot in 0..count as u32 {
+                assert_eq!(plan.is_character(slot), slots.character(slot) != 0, "{count}: slot {slot}");
+            }
+            assert_eq!(plan.groups.len() as u64, count.min(cap), "{count}: a group per character");
+        }
+    }
+
+    #[test]
+    fn an_instance_listed_again_casts_only_the_body_its_entry_has() {
+        // Listed twice in two states, the instance reads its second entry: its first body is no
+        // one's, and casts nothing.
+        let body = CharacterBody::capsule(Vec3::ZERO, Vec3::Y, 0.25);
+        let moved = CharacterBody::capsule(Vec3::X, Vec3::X + Vec3::Y, 0.25);
+        let twice = packet(vec![character(1, body), character(1, moved)]);
+        let mut one = slots(&[instance(1, 0, Vec3::ZERO)]);
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &twice, &mut one);
+        assert_eq!(plan.maps.len(), 1, "one character, one map");
+        let mobile = ShadowSettings { character_shadow: false, ..SETTINGS };
+        update(&mut plan, &mobile, &twice, &mut one);
+        assert_eq!(plan.uniforms.counts[2], 1, "one capsule");
+        assert_eq!(plan.uniforms.capsules[0].base, [1.0, 0.0, 0.0, 0.25], "the last body's");
+        // At the last entry there is, the second listing finds no room: the instance keeps its
+        // first entry, and casts with that body. A part listed later in the first listing's
+        // state shares the entry, room or not.
+        let cap = ID_ENTRY_MASK as u64;
+        let (mut instances, mut characters) = crowd(cap - 1);
+        instances.extend([instance(cap, 0, Vec3::ZERO), instance(cap + 1, 0, Vec3::Y)]);
+        characters.extend([character(cap, body), character(cap, moved), character(cap + 1, body)]);
+        let mut slots = slots(&instances);
+        update(&mut plan, &mobile, &packet(characters), &mut slots);
+        let [last, part] = [cap, cap + 1].map(|id| slots.slot(InstanceId(id)).expect("live"));
+        assert_eq!([last, part].map(|slot| slots.character(slot)), [ID_ENTRY_MASK; 2], "the last entry");
+        let SlotCharacter::Character(Some(group)) = plan.characters[last as usize] else {
+            panic!("a character with a body: {:?}", plan.characters[last as usize]);
+        };
+        assert_eq!(plan.groups[group as usize].body, body, "the body of the entry it reads");
+        assert_eq!(plan.characters[part as usize], SlotCharacter::Character(Some(group)), "one character");
+        assert!(plan.groups.iter().all(|group| group.body != moved), "its second body is no one's");
+    }
+
+    #[test]
+    fn more_bodies_than_a_frame_holds_plan_without_panicking() {
+        // 70,000 distinct bodies, past the 2¹⁶ groups a 16-bit index held: the frame's
+        // characters stop at the entries there are, and so do its groups.
+        let (instances, characters) = crowd(70_000);
+        let mut slots = slots(&instances);
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &packet(characters), &mut slots);
+        assert_eq!(plan.groups.len(), ID_ENTRY_MASK as usize);
+        assert_eq!(plan.maps.len(), MAX_CHARACTER_MAPS);
+    }
+
+    #[test]
+    fn the_plan_classifies_and_groups_by_the_character_buffers_entries() {
+        // The cross-check: a frame lists one character in two parts (one state), one instance
+        // twice in two states, one character with no body, then one first listed before them
+        // all, an instance that isn't drawn and lighting that isn't valid. Each instance casts
+        // as the entry it reads makes it, and the groups come in entry order, which is the order
+        // the packet first lists their bodies in.
+        let at = |x: f32| CharacterBody::capsule(Vec3::new(x, 0.0, -2.0), Vec3::new(x, 1.0, -2.0), 0.25);
+        let instances: Vec<MeshInstance> =
+            (0..6).map(|id| instance(id, 0, Vec3::new(id as f32, 0.0, -2.0))).collect();
+        let mut invalid = character(5, at(5.0));
+        invalid.lighting.rim = f32::NAN;
+        let characters = vec![
+            character(3, at(3.0)),
+            character(0, at(0.0)),
+            character(1, at(0.0)),
+            character(2, at(2.0)),
+            character(2, at(7.0)),
+            character(4, CharacterBody::default()),
+            character(9, at(9.0)),
+            invalid,
+        ];
+        let mut slots = slots(&instances);
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &packet(characters), &mut slots);
+        let bodies: Vec<CharacterBody> = plan.groups.iter().map(|group| group.body).collect();
+        assert_eq!(bodies, [at(3.0), at(0.0), at(7.0)]);
+        assert_eq!((0..6).map(|slot| slots.character(slot)).collect::<Vec<_>>(), [2, 2, 4, 1, 5, 0]);
+        use SlotCharacter::{Character, Environment};
+        let expected = [Character(Some(1)), Character(Some(1)), Character(Some(2)), Character(Some(0))];
+        assert_eq!(plan.characters[..4], expected);
+        assert_eq!(plan.characters[4..6], [Character(None), Environment]);
+        for slot in 0..6 {
+            assert_eq!(plan.is_character(slot), slots.character(slot) != 0, "slot {slot}");
+        }
+        assert_eq!(plan.maps.len(), 3, "a map each");
     }
 }

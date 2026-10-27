@@ -11,6 +11,10 @@
 //! this frame; every other instance is environment. No flag or layer of its own: the renderer
 //! already resolves each instance's character entry per frame (`InstanceData::character`, M1
 //! C2), and the shaders branch on that same index, so casting and receiving can never disagree.
+//! The planner classifies from that resolution itself (the `characters` module's table, M1
+//! review RS-005), not from the packet again: an instance past the 16,383 entries the
+//! character prepass's IDs hold shades as the world and casts as the world, and an instance
+//! listed twice in two states casts with the body of the entry it reads.
 //!
 //! | | casts into | receives |
 //! |---|---|---|
@@ -22,8 +26,9 @@
 //! Characters don't shadow each other either (optional in the contract; see "Later milestones").
 //!
 //! - **Character bodies** ([`CharacterBody`](crate::CharacterBody)) group a character's
-//!   instances: instances listed with equal bodies are one character, which draws one map or
-//!   casts one capsule.
+//!   instances: instances whose entries have equal bodies are one character, which draws one
+//!   map or casts one capsule. A body no instance's entry has (an instance listed again in
+//!   another state left it) casts nothing.
 //! - **Faces** never sample a shadow map (C3's contract). A small compute pass (`face shadows`)
 //!   samples the cascades over a sphere around each character's head once a frame, in frames
 //!   where a face draws, and writes the result into the character's entry
@@ -163,7 +168,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::FramePacket;
 use crate::buffer;
-use crate::characters::GpuCharacter;
+use crate::characters::{CharacterTable, GpuCharacter};
 use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
@@ -684,7 +689,7 @@ impl Shadows {
     /// Plans the frame's shadows from `packet` (CPU only; see [`ShadowPlan::update`]): `slots`
     /// has the packet's instance deltas applied, `meshes` are the pool's records, `wind_margin`
     /// how far the frame's wind carries each one's vertices past its bounds, `list` the draw list,
-    /// `entries` the character buffer's entries this frame.
+    /// `characters` the frame's characters as the character buffer resolved them.
     pub(crate) fn prepare(
         &mut self,
         packet: &FramePacket,
@@ -692,10 +697,10 @@ impl Shadows {
         meshes: &[MeshRecord],
         wind_margin: &WindMargin<'_>,
         list: &DrawList,
-        entries: u32,
+        characters: CharacterTable<'_>,
     ) {
         let Some(settings) = self.settings else { return };
-        self.entries = entries;
+        self.entries = characters.count;
         let face = Shading::Character(Part::Face);
         self.faces =
             SurfaceVariant::ALL.iter().any(|&variant| variant.shading == face && list.len(variant) > 0);
@@ -706,7 +711,7 @@ impl Shadows {
             meshes,
             wind_margin,
             list,
-            entries,
+            characters,
             self.textures.atlas_size,
         );
     }

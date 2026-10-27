@@ -1380,7 +1380,7 @@ impl Renderer {
             self.meshes.records(),
             &wind_margin,
             self.scene.draw_list(),
-            entries,
+            self.characters.table(),
         );
 
         // Without a main view the frame has nothing to draw. A cut in a frame that was prepared

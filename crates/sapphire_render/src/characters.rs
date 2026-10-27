@@ -427,6 +427,11 @@ impl Characters {
         self.list.next.get(slot as usize).copied().unwrap_or(0)
     }
 
+    /// The last frame with a view's characters as the entries resolved them, for shadows.
+    pub(crate) fn table(&self) -> CharacterTable<'_> {
+        self.list.table()
+    }
+
     /// Splits the characters between a frame's passes: the uploads pass writes the entries, and
     /// the character prepass draws the instances with an entry, by slot.
     pub(crate) fn split_for_record(&mut self) -> (CharacterUpload<'_>, CharacterSlots<'_>) {
@@ -450,6 +455,35 @@ impl CharacterSlots<'_> {
     /// Whether the instance in `slot` is a character this frame.
     pub(crate) fn listed(&self, slot: u32) -> bool {
         self.entries.get(slot as usize).is_some_and(|&entry| entry != 0)
+    }
+}
+
+/// A frame's characters as its entries resolved them (M1 review RS-005): the instances listed,
+/// the entry each reads and the body each entry's character casts with. The shadow planner
+/// classifies and groups instances by it, so each casts as the character, or the world, it
+/// shades as: an instance past the entries the prepass's IDs hold, or listed again in another
+/// state, is what its entry makes it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CharacterTable<'a> {
+    /// The instance slots given an entry, in the order the packet first lists them.
+    pub listed: &'a [u32],
+    /// Per slot: its entry, 0 for none.
+    entries: &'a [u32],
+    /// Per entry: its body's index in `bodies`, or [`NO_GROUP`].
+    groups: &'a [u32],
+    /// The bodies that cast of the entries instances read, each once, in entry order: one per
+    /// character with a shadow of its own.
+    pub bodies: &'a [CharacterBody],
+    /// The entries, the fallback included.
+    pub count: u32,
+}
+
+impl CharacterTable<'_> {
+    /// The index in [`Self::bodies`] of the body the instance in `slot` casts with: `None` if
+    /// its character's body casts nothing, or the frame doesn't list it.
+    pub(crate) fn body(&self, slot: u32) -> Option<u32> {
+        let entry = self.entries.get(slot as usize).copied().unwrap_or(0);
+        self.groups.get(entry as usize).copied().filter(|&group| group != NO_GROUP)
     }
 }
 
@@ -491,7 +525,7 @@ fn one_character(a: &CharacterInstance, b: &CharacterInstance) -> bool {
 /// The entries and which instance reads which, on the CPU. Its vectors are reused, so a warm
 /// frame allocates nothing.
 #[derive(Debug, Default)]
-struct CharacterList {
+pub(crate) struct CharacterList {
     /// The last frame with a view: the fallback, then one entry per character it listed.
     entries: Vec<GpuCharacter>,
     /// The frame before's, to tell whether they changed.
@@ -515,7 +549,7 @@ struct CharacterList {
     read: Vec<bool>,
     groups: Vec<u32>,
     /// The bodies that cast of the entries instances read, each once, in entry order: the
-    /// frame's characters as capsule AO counts them.
+    /// frame's characters as capsule AO and shadows count them.
     occluders: Vec<CharacterBody>,
     /// Per occluder: what capsule AO from the others leaves of the ambient light around it.
     visibilities: Vec<f32>,
@@ -538,7 +572,12 @@ impl CharacterList {
     /// `capsule_ao`, each character's ambient takes what the others' bodies leave of it
     /// ([`capsule_visibility`]), each body once however many entries carry it. Returns whether
     /// the entries changed.
-    fn update(&mut self, packet: &FramePacket, slots: &mut InstanceSlots, capsule_ao: bool) -> bool {
+    pub(crate) fn update(
+        &mut self,
+        packet: &FramePacket,
+        slots: &mut InstanceSlots,
+        capsule_ao: bool,
+    ) -> bool {
         std::mem::swap(&mut self.entries, &mut self.previous);
         self.entries.clear();
         self.bodies.clear();
@@ -623,6 +662,17 @@ impl CharacterList {
             entry = self.same_body[entry as usize];
         }
         None
+    }
+
+    /// The last update's characters as its entries resolved them.
+    pub(crate) fn table(&self) -> CharacterTable<'_> {
+        CharacterTable {
+            listed: &self.listed,
+            entries: &self.next,
+            groups: &self.groups,
+            bodies: &self.occluders,
+            count: u32::try_from(self.entries.len()).expect("fewer than 2³² characters"),
+        }
     }
 
     /// Groups the bodies of the entries an instance reads, in entry order: each body that casts

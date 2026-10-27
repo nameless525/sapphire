@@ -21,6 +21,10 @@ are the project's own (MIT):
 - **textured** (FBX only, as `textured_external.fbx` naming `textures/checker.png` and
   `textures/bumps.png` beside it, and `textured_embedded.fbx` embedding them): a box whose
   material samples a base color texture and a normal map, for `extract-materials`.
+- **textured_shared** (FBX only, as `textured_shared.fbx` naming the same two images, and
+  `textured_shared_embedded.fbx` embedding them): the box's sides in Stone, as above, and its
+  caps in Lacquer, whose normal map is Stone's base color image, `checker.png`: one image that two
+  materials use in two roles, which extraction must not reclass (review BR-002).
 
 Every face is a triangle, so neither exporter triangulates: the FBX importer's own triangulation
 is tested elsewhere, on the pavilion and on hand-written polygons. The exports agree in what they
@@ -284,11 +288,40 @@ def textured(out):
     links.new(normal_map.outputs["Normal"], principled.inputs["Normal"])
 
 
-def export_textured(out):
-    """The textured scene as an FBX naming its images relative to itself (beside them in
-    `textures/`), and as one embedding them."""
+def sample_normal_map(material, image):
+    """Makes `material`'s Principled BSDF take its normal from `image`, through a Normal Map node."""
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    texture = nodes.new("ShaderNodeTexImage")
+    texture.image = image
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    links.new(texture.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], nodes.get("Principled BSDF").inputs["Normal"])
+
+
+def textured_shared(out):
+    """The textured box with its caps in a second material, Lacquer, whose normal map is the
+    image Stone's base color samples; see the module docs."""
+    collection = empty_scene().collection
+    vertices, triangles, faces = prism(4, 0.5, 1.0)
+    obj = mesh_object(
+        "Crate", vertices, triangles, ["Stone", "Lacquer"], [0 if f == "side" else 1 for f in faces], collection
+    )
+    stone, lacquer = obj.data.materials
+    nodes, links = stone.node_tree.nodes, stone.node_tree.links
+    base = nodes.new("ShaderNodeTexImage")
+    base.image = image("checker", out, lambda x, y: (230, 200, 120, 255) if (x + y) % 2 else (60, 40, 30, 255))
+    links.new(base.outputs["Color"], nodes.get("Principled BSDF").inputs["Base Color"])
+    sample_normal_map(stone, image("bumps", out, lambda x, y: (128 + 20 * (x - 2), 128 + 20 * (y - 2), 255, 255)))
+    sample_normal_map(lacquer, base.image)
+
+
+def export_textured(out, name="textured"):
+    """The scene as an FBX naming its images relative to itself (beside them in `textures/`), as
+    `<name>_external.fbx` (`textured_shared.fbx` for the shared scene), and as one embedding
+    them, `<name>_embedded.fbx`."""
+    external = "textured_external.fbx" if name == "textured" else f"{name}.fbx"
     bpy.ops.export_scene.fbx(
-        filepath=os.path.join(out, "textured_external.fbx"),
+        filepath=os.path.join(out, external),
         object_types={"MESH"},
         colors_type="LINEAR",
         bake_anim=False,
@@ -296,7 +329,7 @@ def export_textured(out):
         path_mode="RELATIVE",
     )
     bpy.ops.export_scene.fbx(
-        filepath=os.path.join(out, "textured_embedded.fbx"),
+        filepath=os.path.join(out, f"{name}_embedded.fbx"),
         object_types={"MESH"},
         colors_type="LINEAR",
         bake_anim=False,
@@ -304,7 +337,7 @@ def export_textured(out):
         path_mode="COPY",
         embed_textures=True,
     )
-    print(f"wrote the textured scene to {out}")
+    print(f"wrote the {name} scene to {out}")
 
 
 def keep_every_materials_vertex_colors():
@@ -392,6 +425,8 @@ def main():
         export(arguments.out, name)
     textured(arguments.out)
     export_textured(arguments.out)
+    textured_shared(arguments.out)
+    export_textured(arguments.out, "textured_shared")
 
 
 if __name__ == "__main__":

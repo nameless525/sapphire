@@ -163,11 +163,14 @@ fn run(command: Command) -> anyhow::Result<()> {
             for (slot, id) in &extraction.bound {
                 eprintln!("bound {slot:?} to {id}");
             }
-            for (image, class) in &extraction.mismatched {
+            for conflict in &extraction.conflicts {
                 eprintln!(
-                    "warning: {} is used as a {class} texture, but its sidecar gives it another class, \
-                     which it keeps",
-                    image.display()
+                    "warning: {:?} uses {} as a {} texture, but it keeps its first role, {}: that map \
+                     is left unbound; give the use an image of its own to bind it",
+                    conflict.slot,
+                    conflict.image.display(),
+                    conflict.used_as,
+                    conflict.keeps
                 );
             }
             eprintln!(

@@ -479,7 +479,7 @@ fn fbx_images_beside_the_file_are_bound_where_they_lie() {
 
     let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
     assert_eq!(extraction.bound.iter().map(|(slot, _)| slot.as_str()).collect::<Vec<_>>(), ["Stone"]);
-    assert!(extraction.mismatched.is_empty());
+    assert!(extraction.conflicts.is_empty());
     let stone = document(&scratch.path().join("content/props/crate/materials/Stone.material.ron"));
     assert_eq!(stone.base_color_map, Some(id(&checker)));
     assert_eq!(stone.normal_map, Some(bumps_id));
@@ -496,7 +496,8 @@ fn fbx_images_beside_the_file_are_bound_where_they_lie() {
     let mesh = Mesh::from_cooked(&read_aligned(mesh_output)).unwrap();
     assert_eq!(mesh.materials[0].material, SlotMaterial::Asset(bindings(&source)["Stone"]));
 
-    // A sidecar that says something else is kept, and reported.
+    // A sidecar that says something else keeps its class, and the use is left unbound and
+    // reported, so the tree still cooks.
     let scratch = TempDir::new("extract_fbx_external_mask");
     let source = fbx_tree(&scratch, "textured_external.fbx", true);
     let bumps = source.parent().unwrap().join("textures/bumps.png");
@@ -506,8 +507,37 @@ fn fbx_images_beside_the_file_are_bound_where_they_lie() {
     );
     meta::rewrite(&meta::sidecar_path(&bumps), &mask).unwrap();
     let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
-    assert_eq!(extraction.mismatched, [(bumps.clone(), "normal")]);
+    assert_eq!(extraction.conflicts, [conflict("Stone", &bumps, "normal", "mask")]);
     assert_eq!(texture_class(&bumps), TextureClass::Mask(MaskSettings::default()));
+    let stone = document(&scratch.path().join("content/props/crate/materials/Stone.material.ron"));
+    assert_eq!((stone.base_color_map, stone.normal_map), (Some(id(&checker_of(&source))), None));
+    cook(&scratch);
+
+    // A normal map sidecar with settings of its own is the normal map's, and stays as it is.
+    let scratch = TempDir::new("extract_fbx_external_flipped");
+    let source = fbx_tree(&scratch, "textured_external.fbx", true);
+    let bumps = source.parent().unwrap().join("textures/bumps.png");
+    let flipped = TextureClass::Normal(NormalSettings { flip_y: true, ..NormalSettings::default() });
+    meta::rewrite(
+        &meta::sidecar_path(&bumps),
+        &AssetMeta::new(id(&bumps), ImportSettings::Texture(TextureSettings { class: flipped })),
+    )
+    .unwrap();
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert!(extraction.conflicts.is_empty(), "{:?}", extraction.conflicts);
+    assert_eq!(texture_class(&bumps), flipped);
+    let stone = document(&scratch.path().join("content/props/crate/materials/Stone.material.ron"));
+    assert_eq!(stone.normal_map, Some(id(&bumps)));
+}
+
+/// `props/textures/checker.png` beside the FBX at `source`.
+fn checker_of(source: &Path) -> PathBuf {
+    source.parent().unwrap().join("textures/checker.png")
+}
+
+/// A conflict as extraction reports it: the image by its canonical path.
+fn conflict(slot: &str, image: &Path, used_as: &'static str, keeps: &'static str) -> RoleConflict {
+    RoleConflict { slot: slot.to_owned(), image: fs::canonicalize(image).unwrap(), used_as, keeps }
 }
 
 #[test]
@@ -537,6 +567,249 @@ fn an_fbx_image_found_nowhere_fails_extraction() {
         "{error:?}"
     );
     assert!(bindings(&source).is_empty(), "nothing bound");
+}
+
+/// `fixture`'s bytes with each `(from, to)` replaced, keeping every string's length (FBX strings
+/// carry their lengths), as the review's reproductions edited the textured fixture.
+fn edited_fbx(fixture: &str, edits: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let mut bytes = fs::read(fbx_fixture(fixture)).unwrap();
+    for (from, to) in edits {
+        assert_eq!(from.len(), to.len());
+        let mut found = 0;
+        let mut at = 0;
+        while let Some(offset) = bytes[at..].windows(from.len()).position(|window| window == *from) {
+            bytes[at + offset..at + offset + to.len()].copy_from_slice(to);
+            at += offset + to.len();
+            found += 1;
+        }
+        assert!(found > 0, "{} names no {:?}", fixture, String::from_utf8_lossy(from));
+    }
+    bytes
+}
+
+/// A content tree with `fbx` at `content/<relative>`, cooked once.
+fn fbx_at(scratch: &TempDir, relative: &str, fbx: &[u8]) -> PathBuf {
+    let source = scratch.path().join("content").join(relative);
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, fbx).unwrap();
+    cook(scratch);
+    source
+}
+
+/// Copies the fixtures' images into `dir`, as `names` (checker's first, then bumps').
+fn copy_images(dir: &Path, names: [&str; 2]) {
+    fs::create_dir_all(dir).unwrap();
+    for (image, name) in ["checker.png", "bumps.png"].into_iter().zip(names) {
+        fs::copy(fbx_fixture(&format!("textures/{image}")), dir.join(name)).unwrap();
+    }
+}
+
+/// Every file under `dir`, relative to it.
+fn listing(dir: &Path) -> BTreeSet<PathBuf> {
+    let mut files = BTreeSet::new();
+    let mut dirs = vec![dir.to_owned()];
+    while let Some(next) = dirs.pop() {
+        for entry in fs::read_dir(&next).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                files.insert(path.strip_prefix(dir).unwrap().to_owned());
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn fbx_images_outside_the_folder_fail_until_copied_beside_it() {
+    // The fixture's images named one directory up, `../other/`: outside the content tree for an
+    // FBX at its root, and inside it but outside the FBX's folder for one in `props/` (review
+    // BR-003).
+    let fbx = edited_fbx("textured_external.fbx", &[(b"textures/", b"../other/")]);
+    for (relative, other) in [("crate.fbx", "other"), ("props/crate.fbx", "content/other")] {
+        let scratch = TempDir::new("extract_fbx_outside");
+        let other = scratch.path().join(other);
+        copy_images(&other, ["checker.png", "bumps.png"]);
+        let source = fbx_at(&scratch, relative, &fbx);
+        let dir = source.parent().unwrap().to_owned();
+        let (others, sidecar) = (listing(&other), fs::read(meta::sidecar_path(&source)).unwrap());
+
+        let error = extract_materials(&source, &ExtractOptions::default()).unwrap_err();
+        let ExtractError::OutsideFolder { slot, image, folder, copy } = &error else { panic!("{error:?}") };
+        assert_eq!(
+            (slot.as_str(), image.ends_with("other/checker.png"), folder, copy),
+            ("Stone", true, &dir, &dir.join("checker.png")),
+            "{relative}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("copy it to") && message.contains("MODIFIED.md"), "{message}");
+        // Nothing written anywhere: beside the images, the extraction folder, the binding.
+        assert_eq!(listing(&other), others, "{relative}");
+        assert!(!dir.join("crate").exists(), "{relative}");
+        assert_eq!(fs::read(meta::sidecar_path(&source)).unwrap(), sidecar, "{relative}");
+
+        // Copied beside the FBX, as the error asks, they are bound there.
+        copy_images(&dir, ["checker.png", "bumps.png"]);
+        let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+        assert!(extraction.conflicts.is_empty(), "{relative}");
+        let stone = document(&dir.join("crate/materials/Stone.material.ron"));
+        assert_eq!(stone.base_color_map, Some(id(&dir.join("checker.png"))), "{relative}");
+        assert_eq!(stone.normal_map, Some(id(&dir.join("bumps.png"))), "{relative}");
+        assert_eq!(texture_class(&dir.join("bumps.png")), TextureClass::Normal(NormalSettings::default()));
+        assert_eq!(listing(&other), others, "{relative}");
+        cook(&scratch);
+    }
+}
+
+#[test]
+fn fbx_images_are_bound_in_place_only_inside_the_folder() {
+    let scratch = TempDir::new("extract_fbx_paths");
+    let props = scratch.path().join("content/props");
+    copy_images(&props.join("textures"), ["checker.png", "bumps.png"]);
+    copy_images(&scratch.path().join("elsewhere"), ["checker.png", "bumps.png"]);
+    let source = props.join("crate.fbx");
+    let mut images = FbxImages::new(&source, BTreeMap::new()).unwrap();
+    let texture = |file: &Path| FbxTexture {
+        name: "checker".into(),
+        file: file.to_string_lossy().replace('\\', "/"),
+        embedded: None,
+    };
+    let inside = fs::canonicalize(props.join("textures/checker.png")).unwrap();
+    // Absolute, and climbing out and back in: both inside.
+    for file in [props.join("textures/checker.png"), PathBuf::from("textures/../textures/./checker.png")] {
+        assert!(
+            matches!(images.locate(&texture(&file)), Located::Inside(found) if found == inside),
+            "{file:?}"
+        );
+    }
+    // Absolute, and climbing out: both outside, so planning a slot that uses them fails.
+    let outside = scratch.path().join("elsewhere/checker.png");
+    for file in [outside.clone(), PathBuf::from("../../elsewhere/checker.png")] {
+        let slot = Slot {
+            name: "Stone".into(),
+            generated: AnimeCharacterMaterial::default(),
+            mtoon: None,
+            textures: SlotTextures { base_color: Some(texture(&file)), normal: None },
+        };
+        let error = images.plan(&[slot], &[0]).unwrap_err();
+        assert!(
+            matches!(&error, ExtractError::OutsideFolder { image, .. } if image.ends_with("elsewhere/checker.png")),
+            "{error:?}"
+        );
+        // An embedded copy is written out instead: the file isn't read.
+        let embedded = FbxTexture { embedded: Some(vec![1]), ..texture(&file) };
+        let slot = Slot {
+            name: "Stone".into(),
+            generated: AnimeCharacterMaterial::default(),
+            mtoon: None,
+            textures: SlotTextures { base_color: Some(embedded), normal: None },
+        };
+        images.plan(&[slot], &[0]).unwrap();
+    }
+    assert!(!meta::sidecar_path(&outside).exists());
+}
+
+#[test]
+fn an_image_two_materials_use_in_two_roles_keeps_its_first() {
+    // Stone's base color is Lacquer's normal map (review BR-002). The cook gave the image a
+    // color sidecar: it stays one, and Lacquer's normal map is left unbound and reported.
+    let scratch = TempDir::new("extract_fbx_shared");
+    let source = fbx_tree(&scratch, "textured_shared.fbx", true);
+    let (checker, bumps) = (checker_of(&source), source.parent().unwrap().join("textures/bumps.png"));
+    let sidecar = fs::read(meta::sidecar_path(&checker)).unwrap();
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(
+        extraction.bound.iter().map(|(slot, _)| slot.as_str()).collect::<Vec<_>>(),
+        ["Stone", "Lacquer"]
+    );
+    assert_eq!(extraction.conflicts, [conflict("Lacquer", &checker, "normal", "color")]);
+    assert_eq!(fs::read(meta::sidecar_path(&checker)).unwrap(), sidecar, "the sidecar keeps its bytes");
+    // Bumps is Stone's normal map only, so the cook's default sidecar is switched.
+    assert_eq!(texture_class(&bumps), TextureClass::Normal(NormalSettings::default()));
+    let materials = source.parent().unwrap().join("crate/materials");
+    let stone = document(&materials.join("Stone.material.ron"));
+    assert_eq!((stone.base_color_map, stone.normal_map), (Some(id(&checker)), Some(id(&bumps))));
+    let lacquer = document(&materials.join("Lacquer.material.ron"));
+    assert_eq!((lacquer.base_color_map, lacquer.normal_map), (None, None));
+    cook(&scratch);
+    // Again: nothing changes.
+    let again = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!((again.written.len(), again.kept.len()), (0, 2));
+    assert_eq!(fs::read(meta::sidecar_path(&checker)).unwrap(), sidecar);
+
+    // Without sidecars, the image's first role is color, as its sidecar is created.
+    let scratch = TempDir::new("extract_fbx_shared_fresh");
+    let source = fbx_tree(&scratch, "textured_shared.fbx", true);
+    let checker = checker_of(&source);
+    for image in [&checker, &source.parent().unwrap().join("textures/bumps.png")] {
+        fs::remove_file(meta::sidecar_path(image)).unwrap();
+    }
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(extraction.conflicts, [conflict("Lacquer", &checker, "normal", "color")]);
+    assert_eq!(texture_class(&checker), TextureClass::Color(ColorSettings::default()));
+    cook(&scratch);
+}
+
+#[test]
+fn one_image_named_two_ways_is_one_image() {
+    // One material's base color `textures/./image.png` and normal map `textures/image.png`.
+    let scratch = TempDir::new("extract_fbx_alias");
+    let fbx = edited_fbx(
+        "textured_external.fbx",
+        &[(b"checker.png", b"./image.png"), (b"bumps.png", b"image.png")],
+    );
+    let props = scratch.path().join("content/props");
+    copy_images(&props.join("textures"), ["image.png", "unused.png"]);
+    let source = fbx_at(&scratch, "props/crate.fbx", &fbx);
+    let image = props.join("textures/image.png");
+    let sidecar = fs::read(meta::sidecar_path(&image)).unwrap();
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(extraction.conflicts, [conflict("Stone", &image, "normal", "color")]);
+    assert_eq!(fs::read(meta::sidecar_path(&image)).unwrap(), sidecar);
+    let stone = document(&props.join("crate/materials/Stone.material.ron"));
+    assert_eq!((stone.base_color_map, stone.normal_map), (Some(id(&image)), None));
+    cook(&scratch);
+}
+
+#[test]
+fn an_image_another_material_binds_keeps_its_class() {
+    // A material beside the FBX binds Stone's normal map image as its base color: the cook's
+    // default sidecar isn't switched under it.
+    let scratch = TempDir::new("extract_fbx_elsewhere");
+    let source = fbx_tree(&scratch, "textured_external.fbx", true);
+    let bumps = source.parent().unwrap().join("textures/bumps.png");
+    let painted =
+        AnimeCharacterMaterial { base_color_map: Some(id(&bumps)), ..AnimeCharacterMaterial::default() };
+    fs::write(source.with_file_name("painted.material.ron"), sapphire_serialize::to_ron(&painted).unwrap())
+        .unwrap();
+    cook(&scratch);
+    let sidecar = fs::read(meta::sidecar_path(&bumps)).unwrap();
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert_eq!(extraction.conflicts, [conflict("Stone", &bumps, "normal", "color")]);
+    assert_eq!(fs::read(meta::sidecar_path(&bumps)).unwrap(), sidecar);
+    cook(&scratch);
+}
+
+#[test]
+fn embedded_images_used_in_two_roles_are_written_once_a_role() {
+    let scratch = TempDir::new("extract_fbx_shared_embedded");
+    let source = fbx_tree(&scratch, "textured_shared_embedded.fbx", false);
+    let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+    assert!(extraction.conflicts.is_empty());
+    let written = scratch.path().join("content/props/crate/textures");
+    let [color, normal, bumps] =
+        ["checker-color.png", "checker-normal.png", "bumps.png"].map(|name| written.join(name));
+    for copy in [&color, &normal] {
+        assert_eq!(fs::read(copy).unwrap(), fs::read(fbx_fixture("textures/checker.png")).unwrap());
+    }
+    assert_eq!(texture_class(&color), TextureClass::Color(ColorSettings::default()));
+    assert_eq!(texture_class(&normal), TextureClass::Normal(NormalSettings::default()));
+    let materials = scratch.path().join("content/props/crate/materials");
+    let stone = document(&materials.join("Stone.material.ron"));
+    assert_eq!((stone.base_color_map, stone.normal_map), (Some(id(&color)), Some(id(&bumps))));
+    assert_eq!(document(&materials.join("Lacquer.material.ron")).normal_map, Some(id(&normal)));
+    cook(&scratch);
 }
 
 #[test]

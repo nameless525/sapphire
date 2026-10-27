@@ -39,14 +39,32 @@
 //!
 //! **FBX textures** (M1 A10): a slot's document is the material its import generated, with the
 //! base color and normal map images its FBX material uses bound as `base_color_map` and
-//! `normal_map`. An image the FBX names relative to itself that is a texture source (PNG, TGA or
-//! EXR) is bound where it lies, through its own sidecar, created as the use's class (color or
-//! normal) when it has none. One whose sidecar a cook created with the default settings (color)
-//! is switched to its use's class, keeping its ID; one whose sidecar says anything else keeps it,
-//! and is reported ([`Extraction::mismatched`]). An image the FBX embeds, or names in another
-//! format (JPEG), is written as `textures/<image>.png` as a VRM's are (PNG bytes copied, others
-//! converted). An image that is neither embedded nor found beside the FBX fails the extraction,
-//! naming the slot and the file.
+//! `normal_map`.
+//!
+//! - **Bound where they lie:** an image the FBX names (relative to itself, or absolute) that is a
+//!   texture source (PNG, TGA or EXR) inside the FBX's folder tree is bound through its own
+//!   sidecar. Paths are compared canonical, so `..`, `.` and links can't lead out of the folder,
+//!   and two spellings of one file are one image.
+//! - **One role an image** (review BR-002): an image keeps one class, its *first role*, decided
+//!   over every slot before anything is written. With no sidecar that is its first use's class,
+//!   color before normal, which its sidecar is created as. A sidecar a cook created with the
+//!   default settings (color) is switched to the image's use, keeping its ID, when that use is
+//!   its only one and no material document under the FBX's folder binds it; otherwise, and with
+//!   any other sidecar, the sidecar's class stays as it is. A use of another class is left
+//!   unbound, so the tree still cooks, and reported ([`Extraction::conflicts`]): giving that use
+//!   an image of its own (a copy) is the artist's call. Material documents elsewhere in the
+//!   content tree aren't looked at; the next cook catches one an earlier switch broke.
+//! - **Never outside the folder** (review BR-003): extraction neither binds nor reads an image
+//!   outside the FBX's folder tree, as a downloaded kit's `../Textures/` or an absolute path from
+//!   the exporting machine names, which no cook of the folder would see. It fails, naming the
+//!   slot and the image, and asks for a copy beside the FBX (listed in the folder's
+//!   `MODIFIED.md` for third-party content): an image not found inside the folder is looked for
+//!   there by its file name. Nothing is written before every image the extracted slots use is
+//!   found.
+//! - **Written out:** an image the FBX embeds, or names in another format (JPEG), is written as
+//!   `textures/<image>.png` as a VRM's are (PNG bytes copied, others converted), once per class
+//!   it is used as. An image that is neither embedded nor found fails the extraction, naming the
+//!   slot and the file.
 //!
 //! **Images:** every image an extracted MToon material uses is written, including those the
 //! anime character family can't bind (a shade texture other than the base color's, a rim
@@ -88,7 +106,7 @@ use crate::import::gltf::{self, GltfImportError};
 use crate::import::image::SourceFormat;
 use crate::import::vrm::mtoon::{Binding, Channel, LayerTexture, Mtoon};
 use crate::import::vrm::{self, ImageFormat, VrmImport, VrmImportError};
-use crate::material::MaterialSettings;
+use crate::material::{MaterialSettings, TextureKind};
 use crate::meta::{self, AssetMeta, ImportSettings, MetaError};
 use crate::texture::{
     ColorSettings, IlmSettings, MaskSettings, NormalSettings, TextureClass, TextureSettings,
@@ -110,9 +128,23 @@ pub struct Extraction {
     pub bound: Vec<(String, AssetId)>,
     /// Slots left alone because the sidecar already binds them.
     pub kept: Vec<String>,
-    /// FBX images bound where they lie whose sidecars give them another class than their use
-    /// (`color` or `normal`), which they keep.
-    pub mismatched: Vec<(PathBuf, &'static str)>,
+    /// Uses of FBX images left unbound, because the image keeps another role.
+    pub conflicts: Vec<RoleConflict>,
+}
+
+/// A slot's use of an FBX image that extraction left unbound, because the image, bound where it
+/// lies, keeps another role (see the [module docs](self)): its document draws without that map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleConflict {
+    /// The slot whose material uses the image.
+    pub slot: String,
+    /// The image, as a canonical path.
+    pub image: PathBuf,
+    /// The class the slot's material uses it as (`color` or `normal`).
+    pub used_as: &'static str,
+    /// The class it keeps: its sidecar's (`non-texture` if that isn't a texture's), or its first
+    /// use's.
+    pub keeps: &'static str,
 }
 
 /// Errors from [`extract_materials`].
@@ -151,6 +183,15 @@ pub enum ExtractError {
     },
     #[error("slot {slot:?} uses the image {texture}, which isn't embedded or beside the FBX")]
     MissingTexture { slot: String, texture: String },
+    #[error(
+        "slot {slot:?} uses the image {}, which lies outside {}, the FBX's folder, so it can't be \
+         bound: copy it to {} (and list the copy in the folder's MODIFIED.md if it is third-party \
+         content), then extract again",
+        image.display(),
+        folder.display(),
+        copy.display()
+    )]
+    OutsideFolder { slot: String, image: PathBuf, folder: PathBuf, copy: PathBuf },
     #[error("failed to convert the image {texture} to a PNG")]
     TextureImage {
         texture: String,
@@ -276,12 +317,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     let names = Names::new(&slots, import.as_ref());
     let mut writer = Writer { written: Vec::new() };
     let mut resolved = Resolved::default();
-    let mut images = FbxImages {
-        dir: source.parent().unwrap_or(Path::new("")),
-        names: fbx_image_names(&slots),
-        bound: BTreeMap::new(),
-        mismatched: Vec::new(),
-    };
+    let mut images = FbxImages::new(source, fbx_image_names(&slots))?;
+    images.plan(&slots, &chosen)?;
     let mut bound = Vec::new();
     for index in chosen {
         let slot = &slots[index];
@@ -306,7 +343,9 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
             _ => {
                 let mut document = slot.generated.clone();
                 for (class, texture) in fbx_uses(&slot.textures) {
-                    let id = images.bind(&slot.name, texture, class, &root, &mut writer)?;
+                    let Some(id) = images.bind(&slot.name, texture, class, &root, &mut writer)? else {
+                        continue;
+                    };
                     match class {
                         TextureClass::Normal(_) => document.normal_map = Some(id),
                         _ => document.base_color_map = Some(id),
@@ -334,7 +373,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
     writer.written.push(sidecar);
     extraction.written = writer.written;
     extraction.bound = bound;
-    extraction.mismatched = images.mismatched;
+    extraction.conflicts = images.conflicts;
     Ok(extraction)
 }
 
@@ -381,20 +420,200 @@ fn fbx_image_names(slots: &[Slot]) -> BTreeMap<(String, &'static str), String> {
     names
 }
 
+/// The bytes of an FBX image extraction writes out.
+enum ImageSource<'t> {
+    Embedded(&'t [u8]),
+    /// A file inside the FBX's folder.
+    File(PathBuf),
+}
+
+/// Where an image an FBX names lies.
+enum Located {
+    /// Inside the FBX's folder tree: its canonical path.
+    Inside(PathBuf),
+    /// Outside it: the file named.
+    Outside(PathBuf),
+    /// Nowhere on disk.
+    Missing,
+}
+
 /// An FBX's images as extraction binds them (see the [module docs](self)).
 struct FbxImages<'a> {
     /// The FBX's directory, which the files it names are relative to.
     dir: &'a Path,
+    /// That directory, canonical: the tree images are bound where they lie in.
+    folder: PathBuf,
     /// By [`fbx_image_key`].
     names: BTreeMap<(String, &'static str), String>,
-    /// The texture assets bound so far, by [`fbx_image_key`].
+    /// The texture assets written under the extraction folder so far, by [`fbx_image_key`].
     bound: BTreeMap<(String, &'static str), AssetId>,
-    mismatched: Vec<(PathBuf, &'static str)>,
+    /// The role each image bound where it lies keeps, by its canonical path ([`Self::plan`]).
+    roles: BTreeMap<PathBuf, Role>,
+    conflicts: Vec<RoleConflict>,
 }
 
-impl FbxImages<'_> {
+/// The class an image bound where it lies keeps, whatever else the FBX uses it as.
+#[derive(Clone, Copy, Debug)]
+struct Role {
+    /// Its class name: the sidecar's, or the class it is created or switched to.
+    keeps: &'static str,
+    /// The class a sidecar is created as, or switched to from the cook's default: an image with
+    /// a sidecar that stays as it is has none.
+    writes: Option<TextureClass>,
+}
+
+impl<'a> FbxImages<'a> {
+    /// The images of the FBX at `source`, written under the file names `names` gives.
+    fn new(source: &'a Path, names: BTreeMap<(String, &'static str), String>) -> Result<Self, ExtractError> {
+        let dir = source.parent().unwrap_or(Path::new(""));
+        let folder = fs::canonicalize(if dir.as_os_str().is_empty() { Path::new(".") } else { dir })
+            .map_err(|error| ExtractError::Read { path: dir.to_owned(), source: error })?;
+        Ok(Self { dir, folder, names, bound: BTreeMap::new(), roles: BTreeMap::new(), conflicts: Vec::new() })
+    }
+
+    /// Where the file `texture` names lies. One not inside the FBX's folder tree (outside it, or
+    /// missing) is looked for beside the FBX by its file name: where the error for an image
+    /// outside the folder asks for a copy.
+    fn locate(&self, texture: &FbxTexture) -> Located {
+        if texture.file.is_empty() {
+            return Located::Missing;
+        }
+        let named = self.dir.join(&texture.file);
+        // Canonical, so `..`, `.` and links can't lead out of the folder unseen.
+        let inside = |path: &Path| {
+            fs::canonicalize(path).ok().filter(|found| found.starts_with(&self.folder) && found.is_file())
+        };
+        if let Some(found) = inside(&named) {
+            return Located::Inside(found);
+        }
+        let beside = Path::new(&texture.file).file_name().map(|name| self.dir.join(name));
+        if let Some(found) = beside.as_deref().and_then(inside) {
+            return Located::Inside(found);
+        }
+        if named.is_file() { Located::Outside(named) } else { Located::Missing }
+    }
+
+    /// The texture source inside the FBX's folder that `texture` binds where it lies, if any.
+    fn in_place(&self, texture: &FbxTexture) -> Option<PathBuf> {
+        match self.locate(texture) {
+            Located::Inside(path) if SourceFormat::from_path(&path).is_some() => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Decides, before anything is written, the role each image bound where it lies keeps
+    /// ([`Self::keeps`]), over every use of every slot, whatever this run extracts (as file
+    /// names are decided), and fails if an image `chosen` slots use can't be found or lies
+    /// outside the FBX's folder.
+    fn plan(&mut self, slots: &[Slot], chosen: &[usize]) -> Result<(), ExtractError> {
+        let mut uses: BTreeMap<PathBuf, Vec<TextureClass>> = BTreeMap::new();
+        for slot in slots {
+            for (class, texture) in fbx_uses(&slot.textures) {
+                if let Some(path) = self.in_place(texture) {
+                    let classes = uses.entry(path).or_default();
+                    if !classes.iter().any(|known| known.name() == class.name()) {
+                        classes.push(class);
+                    }
+                }
+            }
+        }
+        for (path, classes) in uses {
+            let role = self.keeps(&path, &classes)?;
+            self.roles.insert(path, role);
+        }
+        for &index in chosen {
+            let slot = &slots[index];
+            for (_, texture) in fbx_uses(&slot.textures) {
+                self.source(&slot.name, texture)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Where `texture`'s bytes come from when it isn't bound where it lies: its embedded copy, or
+    /// a file inside the FBX's folder in another format. Fails for one found nowhere or outside
+    /// the folder, which extraction never binds or reads.
+    fn source<'t>(&self, slot: &str, texture: &'t FbxTexture) -> Result<ImageSource<'t>, ExtractError> {
+        if let Some(bytes) = &texture.embedded {
+            return Ok(ImageSource::Embedded(bytes));
+        }
+        match self.locate(texture) {
+            Located::Inside(path) => Ok(ImageSource::File(path)),
+            Located::Outside(image) => {
+                let copy = self.dir.join(image.file_name().unwrap_or_default());
+                Err(ExtractError::OutsideFolder {
+                    slot: slot.to_owned(),
+                    image,
+                    folder: self.dir.to_owned(),
+                    copy,
+                })
+            }
+            Located::Missing => {
+                Err(ExtractError::MissingTexture { slot: slot.to_owned(), texture: texture.to_string() })
+            }
+        }
+    }
+
+    /// The role of the image at `path`, which the FBX uses as `classes`:
+    ///
+    /// - With no sidecar, its first class, color before normal (as file names go), which its
+    ///   sidecar is created as.
+    /// - With the sidecar a cook gives every image (color, default settings), the one class the
+    ///   FBX uses it as, which the sidecar is switched to, keeping its ID; unless the FBX uses it
+    ///   as several, or a material document under the FBX's folder binds it (it is shared, and
+    ///   keeps color).
+    /// - With any other sidecar, the class it gives, unchanged.
+    fn keeps(&self, path: &Path, classes: &[TextureClass]) -> Result<Role, ExtractError> {
+        let first =
+            *classes.iter().min_by_key(|class| (class.name() != "color", class.name())).expect("one use");
+        let sidecar = meta::sidecar_path(path);
+        if !sidecar.exists() {
+            return Ok(Role { keeps: first.name(), writes: Some(first) });
+        }
+        let meta = meta::read(&sidecar)?;
+        let keeps = TextureKind::of(&meta.importer).map_or("non-texture", TextureKind::name);
+        let default = meta.importer == ImportSettings::Texture(TextureSettings::default());
+        Ok(match classes {
+            [only] if default && only.name() != keeps && !self.bound_elsewhere(meta.id)? => {
+                Role { keeps: only.name(), writes: Some(*only) }
+            }
+            _ => Role { keeps, writes: None },
+        })
+    }
+
+    /// Whether a material document under the FBX's folder binds asset `id`.
+    fn bound_elsewhere(&self, id: AssetId) -> Result<bool, ExtractError> {
+        let text = id.to_string();
+        let read_error = |path: &Path| {
+            let path = path.to_owned();
+            move |source| ExtractError::Read { path, source }
+        };
+        let mut dirs = vec![self.folder.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir).map_err(read_error(&dir))? {
+                let entry = entry.map_err(read_error(&dir))?;
+                let path = entry.path();
+                if entry.file_name().to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                // Not following links: the folder's own tree only.
+                let kind = entry.file_type().map_err(read_error(&path))?;
+                if kind.is_dir() {
+                    dirs.push(path);
+                } else if kind.is_file()
+                    && crate::material::is_source(&path)
+                    && fs::read_to_string(&path).map_err(read_error(&path))?.contains(&text)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// The texture asset that `texture`, used as `class` by `slot`, binds: the file where it
-    /// lies, or one written under `root`.
+    /// lies, or one written under `root`; `None` if the image keeps another role, reported in
+    /// [`Self::conflicts`].
     fn bind(
         &mut self,
         slot: &str,
@@ -402,67 +621,70 @@ impl FbxImages<'_> {
         class: TextureClass,
         root: &Path,
         writer: &mut Writer,
-    ) -> Result<AssetId, ExtractError> {
+    ) -> Result<Option<AssetId>, ExtractError> {
+        if let Some(path) = self.in_place(texture) {
+            return self.bind_in_place(slot, &path, class, writer);
+        }
         let key = fbx_image_key(texture, class);
         if let Some(&id) = self.bound.get(&key) {
-            return Ok(id);
+            return Ok(Some(id));
         }
-        let settings = ImportSettings::Texture(TextureSettings { class });
-        let external = Some(&texture.file).filter(|file| !file.is_empty()).map(|file| self.dir.join(file));
-        let external = external.filter(|path| path.is_file());
-        let id = match external {
-            Some(path) if SourceFormat::from_path(&path).is_some() => {
-                self.bind_in_place(&path, class, writer)?
-            }
-            external => {
-                let bytes = match (&texture.embedded, external) {
-                    (Some(bytes), _) => bytes.clone(),
-                    (None, Some(path)) => {
-                        fs::read(&path).map_err(|error| ExtractError::Read { path, source: error })?
-                    }
-                    (None, None) => {
-                        return Err(ExtractError::MissingTexture {
-                            slot: slot.to_owned(),
-                            texture: texture.to_string(),
-                        });
-                    }
-                };
-                let path = root.join("textures").join(&self.names[&key]);
-                writer.file(&path, || {
-                    as_png(&bytes)
-                        .map_err(|source| ExtractError::TextureImage { texture: texture.to_string(), source })
-                })?;
-                writer.sidecar(&path, settings)?
+        let bytes = match self.source(slot, texture)? {
+            ImageSource::Embedded(bytes) => bytes.to_vec(),
+            ImageSource::File(path) => {
+                fs::read(&path).map_err(|error| ExtractError::Read { path, source: error })?
             }
         };
+        let path = root.join("textures").join(&self.names[&key]);
+        writer.file(&path, || {
+            as_png(&bytes)
+                .map_err(|source| ExtractError::TextureImage { texture: texture.to_string(), source })
+        })?;
+        let id = writer.sidecar(&path, ImportSettings::Texture(TextureSettings { class }))?;
         self.bound.insert(key, id);
-        Ok(id)
+        Ok(Some(id))
     }
 
-    /// The ID of the texture source at `path`, its sidecar created as `class`, or switched to it
-    /// from the defaults a cook gave it.
+    /// The ID of the texture source at `path` (canonical) if it keeps `class`'s role, its
+    /// sidecar created or switched as planned; `None`, reported, if it keeps another.
     fn bind_in_place(
         &mut self,
+        slot: &str,
         path: &Path,
         class: TextureClass,
         writer: &mut Writer,
-    ) -> Result<AssetId, ExtractError> {
-        let settings = ImportSettings::Texture(TextureSettings { class });
+    ) -> Result<Option<AssetId>, ExtractError> {
+        // Planned with every use, unless the file appeared since (then this use is its only one).
+        let role = match self.roles.get(path) {
+            Some(&role) => role,
+            None => {
+                let role = self.keeps(path, &[class])?;
+                self.roles.insert(path.to_owned(), role);
+                role
+            }
+        };
+        if role.keeps != class.name() {
+            self.conflicts.push(RoleConflict {
+                slot: slot.to_owned(),
+                image: path.to_owned(),
+                used_as: class.name(),
+                keeps: role.keeps,
+            });
+            return Ok(None);
+        }
         let sidecar = meta::sidecar_path(path);
+        let Some(class) = role.writes else { return Ok(Some(meta::read(&sidecar)?.id)) };
+        let settings = ImportSettings::Texture(TextureSettings { class });
         if !sidecar.exists() {
-            return writer.sidecar(path, settings);
+            return writer.sidecar(path, settings).map(Some);
         }
         let mut meta = meta::read(&sidecar)?;
         if meta.importer != settings {
-            if meta.importer == ImportSettings::Texture(TextureSettings::default()) {
-                meta.importer = settings;
-                meta::rewrite(&sidecar, &meta)?;
-                writer.written.push(sidecar);
-            } else {
-                self.mismatched.push((path.to_owned(), class.name()));
-            }
+            meta.importer = settings;
+            meta::rewrite(&sidecar, &meta)?;
+            writer.written.push(sidecar);
         }
-        Ok(meta.id)
+        Ok(Some(meta.id))
     }
 }
 

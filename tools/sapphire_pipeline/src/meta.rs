@@ -54,7 +54,9 @@
 //!
 //! - **IDs never change.** A missing sidecar is created on first import, with a fresh random
 //!   ID and the default settings of the importer for the file's extension. An existing
-//!   sidecar is only ever read; one that doesn't parse is an error, never replaced.
+//!   sidecar is only ever read; one that doesn't parse is an error, never replaced. A new
+//!   sidecar appears whole or not at all, so cooks racing to create it agree on its ID, and a
+//!   cook killed while writing it leaves no partial one behind.
 //! - **Sidecars are committed with their sources.** A locked run (CI) fails on a missing
 //!   sidecar instead of creating one, because an ID made there would be thrown away.
 //! - **Identity moves with the sidecar.** Moving or renaming a source keeps its ID when its
@@ -94,9 +96,11 @@
 //! an asset no zone, character or encounter reaches will stay out of every group then.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy_reflect::TypePath;
 use sapphire_assets::AssetId;
@@ -364,16 +368,57 @@ pub fn read(path: &Path) -> Result<AssetMeta, MetaError> {
 
 /// Writes `meta` as a new sidecar at `path`. Never replaces a file: returns `false` if one
 /// is already there (another cook created it first).
+///
+/// The sidecar appears whole or not at all (review AP-006). Its text is written to a hidden
+/// sibling ([`staging_path`]) that is then hard-linked to `path`: a link, unlike a rename, fails
+/// rather than replace a file, so a cook racing another never changes an ID, and the loser reads
+/// the winner's complete sidecar. A cook killed mid-write leaves at most the hidden file, which
+/// scans skip, never a partial sidecar that every later cook would refuse.
 pub(crate) fn create(path: &Path, meta: &AssetMeta) -> Result<bool, MetaError> {
     let text = to_ron(meta).expect("an AssetMeta always serializes");
+    create_with(path, text.as_bytes(), |file, bytes| file.write_all(bytes))
+}
+
+/// [`create`], writing the staged file's bytes with `write` (a test stands in a writer that
+/// dies).
+fn create_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
+) -> Result<bool, MetaError> {
     let write_error = |source| MetaError::Write { path: path.to_owned(), source };
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-        Err(error) => return Err(write_error(error)),
-    };
-    file.write_all(text.as_bytes()).map_err(write_error)?;
-    Ok(true)
+    let staged = staging_path(path);
+    let linked = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&staged)
+        .and_then(|mut file| write(&mut file, bytes))
+        .map(|()| fs::hard_link(&staged, path));
+    // The staged file is only ever a copy: its link, if any, now holds the bytes.
+    let _ = fs::remove_file(&staged);
+    match linked.map_err(write_error)? {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        // A file system without hard links (FAT, exFAT): claim the name with `create_new`, which
+        // never replaces a file either but shows it before its bytes are written.
+        Err(_) => match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(mut file) => file.write_all(bytes).map(|()| true).map_err(write_error),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(write_error(error)),
+        },
+    }
+}
+
+/// A hidden sibling of `path` to stage a new file in before it takes `path`'s name:
+/// `.<name>.<process>-<count>.tmp`. Hidden, so [`SourceTree::scan`] skips it, and unique to the
+/// process and the call, so concurrent writers never share one.
+pub(crate) fn staging_path(path: &Path) -> PathBuf {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let mut name = OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(".{}-{}.tmp", std::process::id(), COUNT.fetch_add(1, Ordering::Relaxed)));
+    path.with_file_name(name)
 }
 
 /// Replaces the sidecar at `path` with `meta`, through a temporary file and a rename. Cooks
@@ -547,6 +592,16 @@ mod tests {
 
     fn resolve_dir(dir: &Path, locked: bool) -> Result<Resolved, MetaError> {
         resolve(&SourceTree::scan(dir).unwrap(), locked)
+    }
+
+    /// The names in `dir`, sorted.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
@@ -729,5 +784,79 @@ mod tests {
         let resolved = resolve_dir(dir.path(), true).unwrap();
         assert_eq!(resolved.orphaned, [sidecar_path(&b)]);
         assert_eq!(resolved.assets.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_cooks_agree_on_one_complete_sidecar() {
+        // Review AP-006: eight cooks race to create one sidecar, a hundred times over. Before, the
+        // losers could read the winner's sidecar before its bytes were written, and fail.
+        let dir = TempDir::new("meta_race");
+        for round in 0..100 {
+            let root = dir.path().join(round.to_string());
+            fs::create_dir_all(&root).unwrap();
+            let source = root.join("a.glb");
+            fs::write(&source, "{}").unwrap();
+            let tree = SourceTree::scan(&root).unwrap();
+            let start = std::sync::Barrier::new(8);
+            let results: Vec<Resolved> = std::thread::scope(|scope| {
+                let cooks: Vec<_> = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            start.wait();
+                            resolve(&tree, false)
+                        })
+                    })
+                    .collect();
+                cooks.into_iter().map(|cook| cook.join().unwrap().unwrap()).collect()
+            });
+            let id = read(&sidecar_path(&source)).unwrap().id;
+            assert!(results.iter().all(|resolved| resolved.assets[0].meta.id == id), "round {round}");
+            let creators = results.iter().filter(|resolved| !resolved.created.is_empty()).count();
+            assert_eq!(creators, 1, "round {round}: one cook creates it");
+            assert_eq!(listing(&root), ["a.glb", "a.glb.meta"], "round {round}: no staged file is left");
+        }
+    }
+
+    #[test]
+    fn a_sidecar_write_that_dies_leaves_no_sidecar() {
+        // Review AP-006: a cook that dies while writing a new sidecar must not leave a partial
+        // one, which every later cook would refuse.
+        let dir = TempDir::new("meta_dying_write");
+        let [a, b] = tree(dir.path());
+        let sidecar = sidecar_path(&a);
+        let text = to_ron(&meta(0.002)).unwrap();
+        let half = &text.as_bytes()[..text.len() / 2];
+        let result = create_with(&sidecar, text.as_bytes(), |file, _| {
+            file.write_all(half)?;
+            Err(io::Error::other("killed"))
+        });
+        assert!(matches!(&result, Err(MetaError::Write { path, .. }) if *path == sidecar), "{result:?}");
+        assert_eq!(listing(dir.path()), ["a.glb", "nested"], "nothing partial is published or left");
+
+        // A cook killed there leaves its staged file, which scans skip: the next cook creates the
+        // sidecar whole.
+        let staged = staging_path(&sidecar);
+        assert!(staged.file_name().unwrap().to_str().unwrap().starts_with(".a.glb.meta."));
+        fs::write(&staged, half).unwrap();
+        let resolved = resolve_dir(dir.path(), false).unwrap();
+        assert_eq!(resolved.created, [sidecar.clone(), sidecar_path(&b)]);
+        assert_eq!(read(&sidecar).unwrap(), resolved.assets[0].meta);
+        assert_eq!(resolve_dir(dir.path(), true).unwrap().assets, resolved.assets);
+    }
+
+    #[test]
+    fn creating_a_sidecar_never_replaces_one() {
+        let dir = TempDir::new("meta_no_replace");
+        let sidecar = dir.path().join("a.glb.meta");
+        let kept = to_ron(&meta(0.002)).unwrap();
+        fs::write(&sidecar, &kept).unwrap();
+        let other = AssetMeta::new(new_id().unwrap(), ImportSettings::Gltf(MeshSettings::default()));
+        assert!(!create(&sidecar, &other).unwrap(), "another cook made it first");
+        assert_eq!(fs::read_to_string(&sidecar).unwrap(), kept);
+
+        let fresh = dir.path().join("b.glb.meta");
+        assert!(create(&fresh, &other).unwrap());
+        assert_eq!(read(&fresh).unwrap(), other);
+        assert_eq!(listing(dir.path()), ["a.glb.meta", "b.glb.meta"]);
     }
 }

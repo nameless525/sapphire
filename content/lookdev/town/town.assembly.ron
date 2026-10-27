@@ -10,6 +10,12 @@
 // toward -X, so a facade facing +Z turns 90 and stands 0.9 tiles ahead of its tile's center:
 // front `turn: 90, at: (x, y, z + 0.9)`, back `turn: -90, at: (x, y, z - 0.9)`, right
 // `turn: 180, at: (x + 0.9, y, z)`, left `turn: 0, at: (x - 0.9, y, z)`.
+//
+// Kit pieces that meet share planes, and two placements' faces in one plane z-fight wherever
+// they draw differently. The cook fails on any it finds, naming both placements and where:
+// move one off the other's plane (a centimeter at house scale is plenty). `allow_coplanar`, at
+// the end, lets through the ones no camera can see, each entry saying why, and two known ones
+// that part 2 owes fixes for; an entry that lets nothing through fails the cook too.
 (
     type: "sapphire::pipeline::Assembly",
     version: 1,
@@ -120,7 +126,8 @@
             // 1 cm proud (at house scale) of the wall under it, so the gable's trim hanging over
             // the wall's top clears the plaster, and the back segment's front end sits inside the
             // front segment's back frame; the back segment sits 2.6 cm lower, under that frame
-            // where its eave overhangs.
+            // where its eave overhangs, which sinks its foot into the walls' planes (see
+            // allow_coplanar).
             "gable_roof": [
                 (piece: "kenney/roof-high-gable-detail", at: (0.0, 0.0, 0.003), turn: 90.0),
                 (piece: "kenney/roof-high-gable", at: (0.0, -0.008, -1.0), turn: 90.0),
@@ -278,6 +285,42 @@
             (piece: "#box", at: (30.0, 10.0, -118.0), scale: (3.0, 12.0, 3.0), slot: Some("plaster")),
             (piece: "kenney/roof-high-point", at: (30.0, 16.0, -118.0), scale: (3.4, 4.0, 3.4)),
             (piece: "kenney/windmill", at: (30.0, 13.5, -116.0), turn: 90.0, scale: 3.4),
+        ],
+        allow_coplanar: [
+            (
+                facing: Some((0.0, -1.0, 0.0)),
+                region: Some(((-30.0, -0.01, -45.0), (30.0, 0.01, 10.0))),
+                why: "Undersides on the paving: walls, doors and interiors stand on the ground together, and their bottoms face down into it, seen only from under the ground.",
+            ),
+            (
+                pieces: Some(("kenney/rock-*", "kenney/rock-*")),
+                facing: Some((0.0, -1.0, 0.0)),
+                why: "The far mountains' feet, 12 m under the fields, face down: seen only from under the ground.",
+            ),
+            (
+                pieces: Some(("#box", "kenney/wall*")),
+                facing: Some((0.0, 1.0, 0.0)),
+                why: "Attic floors: each building's interior ends flush with its top storey's walls, under the roof that rests on them.",
+            ),
+            (
+                pieces: Some(("#quad", "kenney/fountain-round-detail")),
+                why: "The lower basin's floor lies on the paving, under its opaque water.",
+            ),
+            (
+                pieces: Some(("kenney/pillar-stone", "kenney/fountain-round")),
+                within: Some("fountain"),
+                why: "The column's top is the upper basin's floor, under its opaque water.",
+            ),
+            (
+                pieces: Some(("kenney/wall-arch-top", "kenney/planks")),
+                within: Some("gate"),
+                why: "The gatehouse's floor planks lie in its arches' tops, enclosed by the storey's walls and interior. Not hidden: the planks' ends meet the arches' corner posts in the open, front and back, a 10 cm band in one slot that the kit's gradient shades two ways. Part 2 owes the fix (planks a centimeter shorter).",
+            ),
+            (
+                pieces: Some(("kenney/wall*", "kenney/roof-high-gable")),
+                within: Some("house*"),
+                why: "Not hidden: the back roof segment hangs 2.6 cm into its top storey's walls (gable_roof), in their slots but shaded by other cells of the kit's gradient, a band on the houses' backs and outer sides that no shot of the stage sees. Part 2 owes the fix.",
+            ),
         ],
     ),
 )

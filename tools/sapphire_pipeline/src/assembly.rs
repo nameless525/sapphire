@@ -46,6 +46,22 @@
 //!   rather than color.
 //! - Identical triangles from overlapping pieces (two walls' shared corner post) are kept once,
 //!   so they never fight in the depth buffer.
+//! - **Overlaps in one plane fail the cook.** Pieces that meet share planes (a banner on its
+//!   wall, a roof on its storey), and where two placements' triangles face the same way in one
+//!   plane, the depth buffer can't order them: they fight, differently on every backend and
+//!   from frame to frame. Once everything is placed, the cook finds every pair of triangles
+//!   from different placements whose normals are within 2.5° and planes within 1 mm over a
+//!   region more than 2 mm wide, and fails on the first, naming both pieces, their placements'
+//!   paths in the document (`place[8] > gate[14]`), their slots and where they meet. Triangles
+//!   in one slot fight only where they shade differently (other occlusion from the kit's
+//!   gradient, say, beyond four levels of 255): identical ones look the same whichever wins.
+//!   Back-to-back faces never fight, as back faces are culled. The document's `allow_coplanar`
+//!   ([`CoplanarAllowance`]) lets through the overlaps that may stay, those no camera can see
+//!   above all (undersides on the ground, attic floors under roofs), each entry naming pieces, a
+//!   group or a region and saying why; an entry that lets nothing through fails the cook too,
+//!   so the list stays as short as the assembly needs. The search buckets triangles by normal
+//!   and plane and sweeps each plane, so it costs little beside the rest of the cook (14 ms of
+//!   the look-dev town's 60–70 ms import, its 89k triangles).
 //!
 //! The cooked asset is a mesh like any glTF's (`town.assembly.ron` → `town.smesh`): outline
 //! normals are baked, the mesh optimized and LODs built as its sidecar says (`importer:
@@ -59,11 +75,13 @@
 //!   an assembly is one static mesh, the right shape for a slice that is seen whole.
 //! - Painted vertex colors and per-piece texture offsets, once the environment family reads
 //!   an albedo tint from the vertex (it reads ambient occlusion alone today).
+//! - Telling hidden overlaps in one plane from open ones without the document's word: rays
+//!   from each overlap past the assembly's own triangles would find the enclosed ones.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 use sapphire_assets::material::AnimeCharacterMaterial;
 use sapphire_assets::mesh::{Lod, Submesh, Vertex, VertexFlags};
 use sapphire_reflect::{TypePath, Versioned};
@@ -76,6 +94,7 @@ use crate::color::unorm8;
 use crate::import::gltf::{self, GltfImportError};
 use crate::mesh::{ImportedMaterial, ImportedMesh};
 
+mod coplanar;
 #[cfg(test)]
 mod tests;
 
@@ -116,6 +135,8 @@ const LEVEL_FACE: f32 = 0.9;
 const MAX_DEPTH: usize = 16;
 /// Positions of identical triangles agree to this, in meters.
 const SAME_POSITION: f32 = 1e-4;
+/// The assembly's own placement list, as placement paths name it.
+const PLACE: &str = "place";
 
 /// Whether `path` is an assembly document, by the end of its file name (in any case).
 pub fn is_source(path: &Path) -> bool {
@@ -154,6 +175,9 @@ pub struct Assembly {
     pub groups: BTreeMap<String, Vec<Placement>>,
     /// The assembly.
     pub place: Vec<Placement>,
+    /// Overlaps in one plane the cook lets through, each saying why (see the module docs).
+    #[serde(default)]
+    pub allow_coplanar: Vec<CoplanarAllowance>,
 }
 
 impl Versioned for Assembly {
@@ -270,6 +294,30 @@ pub struct Placement {
     pub slot: Option<String>,
 }
 
+/// Lets through the overlaps in one plane (see the module docs) that match every filter it
+/// gives, which must include `pieces`, `within` or `region`: by direction alone, it would let
+/// through everything facing that way.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoplanarAllowance {
+    /// Overlaps between a placement of one piece and one of the other, as placements name them
+    /// (`"kenney/planks"`, `"#box"`), `*` matching any run of characters.
+    #[serde(default)]
+    pub pieces: Option<(String, String)>,
+    /// Overlaps between two placements inside one placement of this group (`*` patterns too).
+    #[serde(default)]
+    pub within: Option<String>,
+    /// Overlaps whose faces face this way, within the check's angle.
+    #[serde(default)]
+    pub facing: Option<[f32; 3]>,
+    /// Overlaps whose middle lies in this box of the assembly's space: its least and greatest
+    /// corners, in meters.
+    #[serde(default)]
+    pub region: Option<([f32; 3], [f32; 3])>,
+    /// Why they can stay: what hides them from every camera, as a rule.
+    pub why: String,
+}
+
 /// A uniform scale, or one per axis.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -335,6 +383,43 @@ pub enum AssemblyError {
     Animated(String),
     #[error("the assembly places no triangles")]
     Empty,
+    #[error("{0}")]
+    Coplanar(Box<CoplanarFight>),
+    #[error("allow_coplanar entry {index} lets no overlap through: remove it ({why:?})")]
+    StaleAllowance { index: usize, why: String },
+}
+
+/// Two placements whose triangles fight in one plane, the first such pair by the document's
+/// order, and where.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoplanarFight {
+    /// The pieces as the placements name them.
+    pub pieces: [String; 2],
+    /// The placements' paths in the document: `place[8] > gate[14]`.
+    pub paths: [String; 2],
+    pub slots: [String; 2],
+    /// The middle of one place they fight, in the assembly's space.
+    pub at: [f32; 3],
+    /// How many more pairs of placements fight.
+    pub more: usize,
+}
+
+impl std::fmt::Display for CoplanarFight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { pieces, paths, slots, at, more } = self;
+        write!(
+            f,
+            "{} ({}) and {} ({}) draw in one plane around ({:.2}, {:.2}, {:.2}) m, in slots {:?} and {:?}, \
+             and the depth buffer can't order them: move one off the other's plane, or if no camera can \
+             see them, let them through in allow_coplanar saying why",
+            pieces[0], paths[0], pieces[1], paths[1], at[0], at[1], at[2], slots[0], slots[1]
+        )?;
+        match more {
+            0 => Ok(()),
+            1 => write!(f, " (one more pair of placements fights too)"),
+            _ => write!(f, " ({more} more pairs of placements fight too)"),
+        }
+    }
 }
 
 /// Reads an assembly document and checks it.
@@ -387,6 +472,26 @@ impl Assembly {
                 "occlusion {:?} must have strengths in 0..=1 and a positive height",
                 self.occlusion
             ));
+        }
+        for (index, allowance) in self.allow_coplanar.iter().enumerate() {
+            let what = format!("allow_coplanar entry {index}");
+            if allowance.why.trim().is_empty() {
+                return invalid(format!("{what} must say why its overlaps can stay"));
+            }
+            if allowance.pieces.is_none() && allowance.within.is_none() && allowance.region.is_none() {
+                return invalid(format!("{what} must name pieces, a group or a region"));
+            }
+            if let Some(facing) = allowance.facing.map(Vec3::from)
+                && !(facing.is_finite() && facing.length_squared() > 0.0)
+            {
+                return invalid(format!("{what}'s facing {facing:?} must be a direction"));
+            }
+            if let Some((least, greatest)) = allowance.region
+                && !(least.iter().chain(&greatest).all(|v| v.is_finite())
+                    && least.iter().zip(&greatest).all(|(a, b)| a <= b))
+            {
+                return invalid(format!("{what}'s region must run from its least corner to its greatest"));
+            }
         }
         let lists = self.groups.iter().map(|(name, list)| (format!("group {name:?}"), list));
         for (owner, list) in std::iter::once(("the assembly".to_owned(), &self.place)).chain(lists) {
@@ -504,8 +609,11 @@ pub fn assemble(
         }
         pieces.insert(file, piece_info(&mesh, &assembly.palette));
     }
-    for placement in &assembly.place {
-        builder.place(placement, Mat4::IDENTITY, None, None, 0, &pieces)?;
+    let mut path = Vec::new();
+    for (index, placement) in assembly.place.iter().enumerate() {
+        path.push((PLACE, index));
+        builder.place(placement, Mat4::IDENTITY, None, None, &mut path, &pieces)?;
+        path.pop();
     }
     builder.finish()
 }
@@ -648,6 +756,8 @@ struct Emit {
     gradient: bool,
     /// Take whole blocks of tiles off its texture coordinates (builtins; see the module docs).
     wrap: bool,
+    /// The placement it comes from: an index into [`Builder::placements`].
+    placed: usize,
 }
 
 /// Collects placed triangles by slot.
@@ -660,6 +770,56 @@ struct Builder<'a> {
     welds: Vec<HashMap<[u32; 9], u32>>,
     /// Triangles already placed, by slot and quantized corners in a canonical order.
     placed: HashSet<(usize, [[i32; 3]; 3])>,
+    /// Every piece and builtin placed, in order, and every triangle kept, for the coplanar
+    /// check.
+    placements: Vec<Placed<'a>>,
+    faces: Vec<coplanar::Face>,
+}
+
+/// A piece or builtin as placed.
+struct Placed<'a> {
+    placement: &'a Placement,
+    /// The lists it was placed through, from the assembly's down: each one's name ([`PLACE`],
+    /// or a group's) and the placement's index in it.
+    path: Vec<(&'a str, usize)>,
+}
+
+impl Placed<'_> {
+    /// Its path as messages print it: `place[45] > gate[14]`.
+    fn path_text(&self) -> String {
+        let steps: Vec<String> = self.path.iter().map(|(list, index)| format!("{list}[{index}]")).collect();
+        steps.join(" > ")
+    }
+
+    /// Whether it and `other` were placed through one placement of a group `pattern` matches.
+    fn within_one(&self, other: &Placed<'_>, pattern: &str) -> bool {
+        // Step k's list is the group step k − 1 placed.
+        (1..self.path.len().min(other.path.len()))
+            .any(|k| self.path[..k] == other.path[..k] && matches_pattern(pattern, self.path[k].0))
+    }
+}
+
+impl CoplanarAllowance {
+    /// Whether its pieces and group name `placed`'s, as an overlap between them needs.
+    fn names(&self, placed: [&Placed<'_>; 2]) -> bool {
+        let [a, b] = placed.map(|placed| placed.placement.piece.as_str());
+        let pieces = |(first, second): &(String, String)| {
+            (matches_pattern(first, a) && matches_pattern(second, b))
+                || (matches_pattern(first, b) && matches_pattern(second, a))
+        };
+        self.pieces.as_ref().is_none_or(pieces)
+            && self.within.as_deref().is_none_or(|group| placed[0].within_one(placed[1], group))
+    }
+
+    /// Whether its direction and region hold an overlap whose faces face `normal`, its middle
+    /// `at`.
+    fn holds(&self, normal: Vec3, at: Vec3) -> bool {
+        self.facing.is_none_or(|facing| {
+            Vec3::from(facing).normalize().dot(normal) >= coplanar::ANGLE.to_radians().cos()
+        }) && self.region.is_none_or(|(least, greatest)| {
+            at.cmpge(Vec3::from(least)).all() && at.cmple(Vec3::from(greatest)).all()
+        })
+    }
 }
 
 impl<'a> Builder<'a> {
@@ -677,19 +837,22 @@ impl<'a> Builder<'a> {
             indices: vec![Vec::new(); count],
             welds: vec![HashMap::new(); count],
             placed: HashSet::new(),
+            placements: Vec::new(),
+            faces: Vec::new(),
         }
     }
 
+    /// Places `placement`, the last step of `path`, and what it holds.
     fn place(
         &mut self,
-        placement: &Placement,
+        placement: &'a Placement,
         parent: Mat4,
         variant: Option<&str>,
         slot: Option<usize>,
-        depth: usize,
+        path: &mut Vec<(&'a str, usize)>,
         pieces: &HashMap<String, PieceInfo>,
     ) -> Result<(), AssemblyError> {
-        if depth > MAX_DEPTH {
+        if path.len() > MAX_DEPTH + 1 {
             return Err(AssemblyError::Cycle(placement.piece.clone()));
         }
         let local = Mat4::from_scale_rotation_translation(
@@ -704,16 +867,20 @@ impl<'a> Builder<'a> {
             None => slot,
         };
         if let Some(group) = placement.piece.strip_prefix('@') {
-            for child in &self.assembly.groups[group] {
-                self.place(child, transform, variant, slot, depth + 1, pieces)?;
+            for (index, child) in self.assembly.groups[group].iter().enumerate() {
+                path.push((group, index));
+                self.place(child, transform, variant, slot, path, pieces)?;
+                path.pop();
             }
             return Ok(());
         }
+        let placed = self.placements.len();
+        self.placements.push(Placed { placement, path: path.clone() });
         if placement.piece.starts_with('#') {
             let slot = slot.ok_or_else(|| AssemblyError::BuiltinWithoutSlot(placement.piece.clone()))?;
             let piece = builtin(&placement.piece, transform)?;
             for triangle in &piece.triangles {
-                self.emit(triangle, transform, slot, Emit { gradient: false, wrap: true });
+                self.emit(triangle, transform, slot, Emit { gradient: false, wrap: true, placed });
             }
             return Ok(());
         }
@@ -733,7 +900,7 @@ impl<'a> Builder<'a> {
                 })?,
             };
             let gradient = self.assembly.palette.gradient_columns.contains(&triangle.cell[0]);
-            self.emit(triangle, transform, slot, Emit { gradient, wrap: false });
+            self.emit(triangle, transform, slot, Emit { gradient, wrap: false, placed });
         }
         Ok(())
     }
@@ -795,6 +962,7 @@ impl<'a> Builder<'a> {
             }
         }
         let mut corner_indices = [0u32; 3];
+        let mut shading = [coplanar::Shading { normal: face, uv: Vec2::ZERO, occlusion: 1.0 }; 3];
         for k in 0..3 {
             let position = positions[k];
             let uv = uvs[k];
@@ -814,6 +982,8 @@ impl<'a> Builder<'a> {
                 color: [unorm8(ao), 255, 255],
                 flags: VertexFlags::NONE,
             };
+            shading[k] =
+                coplanar::Shading { normal, uv: uv.into(), occlusion: f32::from(vertex.color[0]) / 255.0 };
             let key = weld_key(&vertex);
             let vertices = &mut self.vertices[slot];
             corner_indices[k] = *self.welds[slot].entry(key).or_insert_with(|| {
@@ -822,11 +992,61 @@ impl<'a> Builder<'a> {
             });
         }
         self.indices[slot].extend(corner_indices);
+        self.faces.push(coplanar::Face {
+            corners: positions,
+            normal: face,
+            slot,
+            placement: how.placed,
+            shading,
+        });
+    }
+
+    /// Fails on the overlaps in one plane no allowance lets through (naming the first pair of
+    /// placements, by their order in the document), then on an allowance that lets none through.
+    fn check_coplanar(&self) -> Result<(), AssemblyError> {
+        let allowances = &self.assembly.allow_coplanar;
+        let mut used = vec![false; allowances.len()];
+        // The first fight of each pair of placements, which faces' order puts in order.
+        let mut fights: BTreeMap<[usize; 2], (Vec3, [usize; 2])> = BTreeMap::new();
+        // Which allowances name each pair of placements, matched once a pair.
+        let mut named: HashMap<[usize; 2], Vec<bool>> = HashMap::new();
+        for overlap in coplanar::overlaps(&self.faces) {
+            let faces = overlap.faces.map(|face| &self.faces[face]);
+            let pair = faces.map(|face| face.placement);
+            let named = named.entry(pair).or_insert_with(|| {
+                let placed = pair.map(|placement| &self.placements[placement]);
+                allowances.iter().map(|allowance| allowance.names(placed)).collect()
+            });
+            let mut allowed = false;
+            for (index, allowance) in allowances.iter().enumerate() {
+                if named[index] && allowance.holds(faces[0].normal, overlap.at) {
+                    (used[index], allowed) = (true, true);
+                }
+            }
+            if !allowed {
+                fights.entry(pair).or_insert((overlap.at, faces.map(|face| face.slot)));
+            }
+        }
+        if let Some((&pair, &(at, slots))) = fights.iter().next() {
+            let placed = pair.map(|placement| &self.placements[placement]);
+            return Err(AssemblyError::Coplanar(Box::new(CoplanarFight {
+                pieces: placed.map(|placed| placed.placement.piece.clone()),
+                paths: placed.map(Placed::path_text),
+                slots: slots.map(|slot| self.assembly.slots[slot].name.clone()),
+                at: at.to_array(),
+                more: fights.len() - 1,
+            })));
+        }
+        match used.iter().position(|&used| !used) {
+            Some(index) => Err(AssemblyError::StaleAllowance { index, why: allowances[index].why.clone() }),
+            None => Ok(()),
+        }
     }
 
     /// The mesh: a submesh per slot that has triangles, in slot order, and a material slot for
     /// every declared slot.
     fn finish(self) -> Result<ImportedMesh, AssemblyError> {
+        self.check_coplanar()?;
         let mut mesh = ImportedMesh::default();
         let mut submeshes = Vec::new();
         for (slot, (vertices, indices)) in self.vertices.into_iter().zip(self.indices).enumerate() {

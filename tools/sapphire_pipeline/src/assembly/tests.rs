@@ -321,6 +321,19 @@ fn documents_that_cant_assemble_fail_naming_why() {
         (r#"surfaces: [], place: [(piece: "other/wall")]"#, "other/wall"),
         (r#"surfaces: [], place: [(piece: "kit/wall", scale: 0.0)]"#, "nonzero"),
         (r#"surfaces: [(cell: Some((2, 0)), slot: "Stone")], place: []"#, "outside"),
+        (r#"surfaces: [], place: [], allow_coplanar: [(within: Some("g"), why: " ")]"#, "say why"),
+        (
+            r#"surfaces: [], place: [], allow_coplanar: [(facing: Some((0.0, 1.0, 0.0)), why: "Up.")]"#,
+            "name pieces",
+        ),
+        (
+            r#"surfaces: [], place: [], allow_coplanar: [(within: Some("g"), facing: Some((0.0, 0.0, 0.0)), why: "Up.")]"#,
+            "direction",
+        ),
+        (
+            r#"surfaces: [], place: [], allow_coplanar: [(region: Some(((0.0, 1.0, 0.0), (1.0, 0.0, 1.0))), why: "In.")]"#,
+            "least corner",
+        ),
     ];
     for (text, needle) in errors {
         let error = assembly(text).expect_err(text).to_string();
@@ -334,6 +347,141 @@ fn documents_that_cant_assemble_fail_naming_why() {
     let cycle = assemble_text(r#"surfaces: [], groups: { "a": [(piece: "@a")] }, place: [(piece: "@a")],"#);
     assert!(matches!(cycle, Err(AssemblyError::Cycle(_))), "{cycle:?}");
     assert!(matches!(assemble_text(r#"surfaces: [], place: [],"#), Err(AssemblyError::Empty)));
+}
+
+/// Two walls in `slots`, the first at `first` and the second at `second` turned `turn`, as
+/// placements' text.
+fn two_walls(first: [f32; 3], second: [f32; 3], turn: f32, slots: [&str; 2]) -> String {
+    let [a, b] = [first, second].map(|[x, y, z]| format!("({x:?}, {y:?}, {z:?})"));
+    format!(
+        r#"(piece: "kit/wall", at: {a}, slot: Some("{}")),
+        (piece: "kit/wall", at: {b}, turn: {turn:?}, slot: Some("{}")),"#,
+        slots[0], slots[1]
+    )
+}
+
+#[test]
+fn placements_overlapping_in_one_plane_fail_naming_both() {
+    // The second wall, in a group, half across the first.
+    let fight = assemble_text(&format!(
+        r#"{RULES}
+        groups: {{ "hung": [(piece: "kit/wall", at: (0.5, 0.0, 0.0), slot: Some("Stone"))] }},
+        place: [(piece: "kit/wall"), (piece: "@hung")],"#
+    ));
+    let Err(AssemblyError::Coplanar(found)) = &fight else {
+        panic!("{fight:?}");
+    };
+    let CoplanarFight { pieces, paths, slots, at, more } = found.as_ref();
+    assert_eq!(pieces, &["kit/wall", "kit/wall"]);
+    assert_eq!(paths, &["place[0]", "place[1] > hung[0]"]);
+    // The first wall's lower-left triangle against the second's, in the corner they share.
+    assert_eq!(slots, &["Plaster", "Stone"]);
+    assert!(Vec3::from(*at).abs_diff_eq(Vec3::new(2.0 / 3.0, 1.0 / 6.0, 0.0), 1e-4), "{at:?}");
+    assert_eq!(*more, 0, "one pair of placements");
+    let message = fight.unwrap_err().to_string();
+    for needle in ["place[1] > hung[0]", "(0.67, 0.17, 0.00) m", "allow_coplanar"] {
+        assert!(message.contains(needle), "{message}");
+    }
+}
+
+#[test]
+fn faces_of_one_placement_never_fight() {
+    // A wall with a painted panel in the second cell over its left triangle, in its own plane.
+    let mut panel = wall_piece();
+    let base = panel.vertices.len() as u32;
+    for position in [[0.1, 0.1, 0.0], [0.5, 0.1, 0.0], [0.1, 0.5, 0.0]] {
+        panel.vertices.push(Vertex { position, uv: [0.75, 0.5], ..panel.vertices[0] });
+    }
+    panel.indices.extend([base, base + 1, base + 2]);
+    panel.lods[0].submeshes[0].index_count += 3;
+    panel.authored_outline.resize(panel.vertices.len(), false);
+    let assembly = assembly(&format!(
+        r#"{RULES} place: [(piece: "kit/wall"), (piece: "kit/wall", at: (3.0, 0.0, 0.0))],"#
+    ))
+    .unwrap();
+    let mesh = assemble(&assembly, &mut |_: &str| Ok(panel.clone())).unwrap();
+    assert_eq!(triangles(&mesh)["Timber"].len(), 4, "each wall's right half and its panel");
+}
+
+#[test]
+fn gaps_offsets_turns_and_backs_dont_fight() {
+    for (at, turn, why) in [
+        ([1.0, 0.0, 0.0], 0.0, "edge to edge"),
+        ([0.999, 0.0, 0.0], 0.0, "overlapping by a millimeter, under the width that counts"),
+        ([1.5, 0.0, 0.0], 0.0, "apart"),
+        ([0.0, 0.0, 0.003], 0.0, "3 mm in front"),
+        ([0.0, 0.0, -0.002], 0.0, "2 mm behind"),
+        ([0.0, 0.0, 0.0], 5.0, "turned 5°, crossing it"),
+        ([1.0, 0.0, 0.0], 180.0, "back to back"),
+    ] {
+        let mesh = assemble_text(&format!(
+            "{RULES} place: [{}],",
+            two_walls([0.0; 3], at, turn, ["Plaster", "Stone"])
+        ));
+        assert!(mesh.is_ok(), "{why}: {mesh:?}");
+    }
+    for (at, turn, why) in [
+        ([0.0, 0.0, 0.0005], 0.0, "half a millimeter in front"),
+        ([0.0, 0.0, 0.0], 1.0, "turned 1°, crossing it: they meet over 6 cm"),
+        ([0.9, 0.0, 0.0], 0.0, "overlapping by 10 cm"),
+    ] {
+        let mesh = assemble_text(&format!(
+            "{RULES} place: [{}],",
+            two_walls([0.0; 3], at, turn, ["Plaster", "Stone"])
+        ));
+        assert!(matches!(mesh, Err(AssemblyError::Coplanar(_))), "{why}: {mesh:?}");
+    }
+}
+
+#[test]
+fn faces_in_one_slot_fight_only_where_they_shade_differently() {
+    let walls = two_walls([0.0; 3], [0.5, 0.0, 0.0], 0.0, ["Plaster", "Plaster"]);
+    let alike = assemble_text(&format!("{RULES} place: [{walls}],"));
+    assert!(alike.is_ok(), "one material, one texture space, no occlusion: {alike:?}");
+    // The kit's gradient darkens the right triangle toward its foot, over the other's left one.
+    let shaded = assemble_text(&format!("{RULES} occlusion: (gradient: 0.5), place: [{walls}],"));
+    assert!(
+        matches!(&shaded, Err(AssemblyError::Coplanar(found)) if found.slots == ["Plaster", "Plaster"]),
+        "{shaded:?}"
+    );
+}
+
+#[test]
+fn allowances_let_through_exactly_what_they_name() {
+    // Two fights: a wall hung on a wall in the porch, and two walls in the open further on.
+    let document = |allow: &str| {
+        assemble_text(&format!(
+            r#"{RULES}
+            groups: {{ "porch": [{}] }},
+            place: [(piece: "@porch"), {}],
+            allow_coplanar: [{allow}],"#,
+            two_walls([0.0; 3], [0.5, 0.0, 0.0], 0.0, ["Plaster", "Stone"]),
+            two_walls([10.0, 0.0, 0.0], [10.5, 0.0, 0.0], 0.0, ["Plaster", "Stone"]),
+        ))
+    };
+    let paths = |result: &Result<ImportedMesh, AssemblyError>| match result {
+        Err(AssemblyError::Coplanar(found)) => Some((found.paths.clone(), found.more)),
+        _ => None,
+    };
+    let porch = ["place[0] > porch[0]".to_owned(), "place[0] > porch[1]".to_owned()];
+    let open = ["place[1]".to_owned(), "place[2]".to_owned()];
+    assert_eq!(paths(&document("")), Some((porch.clone(), 1)), "the first of two pairs");
+    let message = document("").unwrap_err().to_string();
+    assert!(message.contains("one more pair of placements"), "{message}");
+
+    let in_porch =
+        r#"(pieces: Some(("kit/wall", "kit/w*")), within: Some("porch"), why: "Behind the porch's bench.")"#;
+    assert_eq!(paths(&document(in_porch)), Some((open.clone(), 0)), "the porch's pair let through");
+    let in_box = r#"(region: Some(((9.0, 0.0, -1.0), (12.0, 1.0, 1.0))), why: "In the box.")"#;
+    assert!(document(&format!("{in_porch}, {in_box}")).is_ok());
+    let facing_away = r#"(within: Some("porch"), facing: Some((0.0, 0.0, -1.0)), why: "Facing back.")"#;
+    assert_eq!(paths(&document(&format!("{facing_away}, {in_box}"))), Some((porch, 0)), "they face +Z");
+    let elsewhere = r#"(pieces: Some(("kit/door", "kit/wall")), why: "Never placed.")"#;
+    let stale = document(&format!("{in_porch}, {in_box}, {elsewhere}"));
+    assert!(
+        matches!(&stale, Err(AssemblyError::StaleAllowance { index: 2, why }) if why == "Never placed."),
+        "{stale:?}"
+    );
 }
 
 #[test]

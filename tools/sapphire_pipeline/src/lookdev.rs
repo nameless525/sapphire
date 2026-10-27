@@ -435,7 +435,9 @@ mod tests {
     }
 
     /// The committed town assembles: every triangle of every piece claimed by a rule, every slot
-    /// drawn. Its size is the scene's budget line (spec §3.4's draw calls are one per slot).
+    /// drawn, no two placements fighting in one plane but those its `allow_coplanar` names, and
+    /// every entry there needed. Its size is the scene's budget line (spec §3.4's draw calls are
+    /// one per slot).
     #[test]
     fn the_town_assembles_in_its_own_slots() {
         let path = lookdev_dir().join("town/town.assembly.ron");

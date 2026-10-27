@@ -354,7 +354,9 @@ impl DumpWriter {
 impl ServerHandler for DumpWriter {
     fn create_minidump_file(&self) -> Result<(File, PathBuf), io::Error> {
         let path = self.dump_dir.join(report::partial_name(&report::minidump_file_name(&self.run_id)));
-        let file = File::create(&path)?;
+        // Locked until `finish` has renamed it and the dump's file is dropped, so another
+        // process's startup cleanup leaves it alone (`report::cleanup_stale_partials`).
+        let file = report::create_partial(&path)?;
         Ok((file, path))
     }
 

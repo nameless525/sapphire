@@ -67,6 +67,10 @@ fn write_record(partial: &CStr, final_path: &CStr, header: &[u8], context: &Cras
     if fd < 0 {
         return;
     }
+    // The writer's lock, as `report::create_partial` takes it: a later launch's cleanup removes
+    // the partial only once it is free. flock(2) is a plain system call, safe in a signal handler.
+    // SAFETY: `fd` is open; flock only acts on it.
+    unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
 
     write_all(fd, header);
     let registers = registers(context);

@@ -10,15 +10,22 @@
 //! | `<run>.native.txt` | Android's in-process signal handler |
 //!
 //! Files are written under a `.partial` name and renamed into place once complete, so readers
-//! never see half a report.
+//! never see half a report. The writer holds an exclusive lock on its `.partial` file until the
+//! rename is done, which is how a later launch tells an abandoned partial from one that a live
+//! process (another sandbox, or a crashed app's monitor) is still writing.
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::CrashError;
+
+/// How long a `.partial` file must have gone unmodified, as of the current run's start, before
+/// the startup cleanup considers it. Its lock is what proves the writer gone; the age covers the
+/// moment between a writer creating its file and locking it, and filesystems without locks.
+const STALE_PARTIAL_AGE: Duration = Duration::from_secs(10 * 60);
 
 const PARTIAL_SUFFIX: &str = ".partial";
 const MINIDUMP_SUFFIX: &str = "dmp";
@@ -146,16 +153,27 @@ pub(crate) fn partial_name(final_name: &str) -> String {
     format!("{final_name}{PARTIAL_SUFFIX}")
 }
 
+/// Creates (or truncates) a `.partial` file and takes its writer's lock, which is held until the
+/// returned file is dropped, so keep it open until the rename to the final name is done.
+///
+/// Locking is best effort: where the filesystem has no locks, the startup cleanup can't prove
+/// the writer gone either, and it keeps the file.
+pub(crate) fn create_partial(path: &Path) -> io::Result<File> {
+    let file = File::create(path)?;
+    let _ = file.try_lock();
+    Ok(file)
+}
+
 /// Writes `contents` to `dir/name` through a `.partial` file, synced to disk before the rename.
 pub(crate) fn write_atomically(dir: &Path, name: &str, contents: &[u8]) -> io::Result<PathBuf> {
     let final_path = dir.join(name);
     let partial_path = dir.join(partial_name(name));
-    let result = File::create(&partial_path)
-        .and_then(|mut file| {
-            file.write_all(contents)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&partial_path, &final_path));
+    // The file, and with it the writer's lock, is dropped only after the rename.
+    let result = create_partial(&partial_path).and_then(|mut file| {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::rename(&partial_path, &final_path)
+    });
     match result {
         Ok(()) => Ok(final_path),
         Err(err) => {
@@ -310,12 +328,24 @@ fn parse_module_line(line: &str) -> Option<ModuleId> {
     Some(ModuleId { base, debug_id, name })
 }
 
-/// Removes `*.partial` files left by earlier runs that crashed or were killed mid-write.
+/// Removes `.partial` files whose writer is gone: runs that crashed or were killed mid-write.
 ///
-/// Only files whose embedded run ID is older than `current_run_id` are removed, so a monitor that
-/// another live process started is never disturbed. Called from [`crate::install`], before this
-/// run writes anything, so there are no partials of the current run to catch.
+/// The dump directory is shared by every process of the app (several sandboxes, captures, golden
+/// scenes), and a run's start order says nothing about whether its writer still lives: a crashed
+/// app's monitor may be writing its dump right now. So a file is removed only when all of these
+/// hold:
+///
+/// - its name is one of this crate's reports plus `.partial`, from another run;
+/// - it went unmodified for [`STALE_PARTIAL_AGE`] before this run started (taken from
+///   `current_run_id`, so the cleanup reads no clock);
+/// - its writer's lock is free (see [`create_partial`]): the lock goes when the writer closes the
+///   file or dies, whichever comes first.
+///
+/// Called from [`crate::install`], before this run writes anything.
 pub(crate) fn cleanup_stale_partials(dir: &Path, current_run_id: &str) {
+    let Some(run_start) = run_start(current_run_id) else {
+        return;
+    };
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -324,14 +354,40 @@ pub(crate) fn cleanup_stale_partials(dir: &Path, current_run_id: &str) {
         let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(PARTIAL_SUFFIX)) else {
             continue;
         };
-        // The stem is the final report name, e.g. `<run>.dmp`; its run ID is the first field.
-        let Some((run_id, _)) = stem.split_once('.') else {
+        // The stem is the final report name, e.g. `<run>.dmp`; anything else isn't ours.
+        let Some((_, run_id)) = classify(stem) else {
             continue;
         };
-        if is_valid_run_id(run_id) && run_id < current_run_id {
-            let _ = fs::remove_file(entry.path());
+        if run_id == current_run_id {
+            continue;
+        }
+        let path = entry.path();
+        // Removed while still locked by this process, so a second cleanup can't lock it meanwhile.
+        if let Some(_lock) = abandoned_partial(&path, run_start) {
+            let _ = fs::remove_file(&path);
         }
     }
+}
+
+/// Opens `path` and takes its writer's lock if the file is stale as of `run_start` and no live
+/// process holds the lock. `None` means the file must be kept.
+fn abandoned_partial(path: &Path, run_start: SystemTime) -> Option<File> {
+    let file = File::open(path).ok()?;
+    let modified = file.metadata().and_then(|metadata| metadata.modified()).ok()?;
+    // A file modified after this run started has a negative age and is kept.
+    let age = run_start.duration_since(modified).ok()?;
+    if age < STALE_PARTIAL_AGE {
+        return None;
+    }
+    // `WouldBlock` means a writer is alive; any other error means the lock can't tell.
+    file.try_lock().ok()?;
+    Some(file)
+}
+
+/// When the run started, from its ID's millisecond field.
+fn run_start(run_id: &str) -> Option<SystemTime> {
+    let (unix_ms, _pid) = run_id.split_once('-')?;
+    UNIX_EPOCH.checked_add(Duration::from_millis(unix_ms.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -433,35 +489,116 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cleanup_removes_only_older_partials() {
-        let dir = ScratchDir::new("cleanup");
-        let old_run = new_run_id(1_000, 10);
-        let current_run = new_run_id(2_000, 20);
-        let future_run = new_run_id(3_000, 30);
-        let old_partial = partial_name(&minidump_file_name(&old_run));
-        let current_partial = partial_name(&minidump_file_name(&current_run));
-        let future_partial = partial_name(&minidump_file_name(&future_run));
-        for name in [&old_partial, &current_partial, &future_partial, &"junk.partial".to_owned()] {
-            fs::write(dir.path().join(name), b"x").expect("write");
-        }
-        let finished = minidump_file_name(&old_run);
-        fs::write(dir.path().join(&finished), b"MDMP").expect("write");
+    /// Creates `name` in `dir`, last modified `age` before `run` started. Its lock is free.
+    fn partial_from(dir: &Path, name: &str, run: &str, age: Duration) -> File {
+        let file = File::create(dir.join(name)).expect("create partial");
+        let modified = run_start(run).expect("run start") - age;
+        file.set_modified(modified).expect("set mtime");
+        file
+    }
 
-        cleanup_stale_partials(dir.path(), &current_run);
-
-        let mut names: Vec<_> = fs::read_dir(dir.path())
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
             .expect("list")
             .map(|entry| entry.expect("entry").file_name().into_string().expect("utf-8"))
             .collect();
         names.sort();
-        // The older run's partial is gone; the current run's, a newer run's, junk and the
-        // finished report are all kept.
-        assert_eq!(names, {
-            let mut kept = vec![current_partial, future_partial, "junk.partial".to_owned(), finished];
-            kept.sort();
-            kept
-        });
+        names
+    }
+
+    fn sorted(mut names: Vec<String>) -> Vec<String> {
+        names.sort();
+        names
+    }
+
+    const HOUR: Duration = Duration::from_secs(60 * 60);
+    /// A writer's run started at this Unix millisecond; the current run two hours later.
+    const WRITER_START_MS: u64 = 1_761_300_000_000;
+    const CURRENT_START_MS: u64 = WRITER_START_MS + 2 * 3_600_000;
+
+    #[test]
+    fn cleanup_removes_abandoned_partials() {
+        let dir = ScratchDir::new("cleanup");
+        let old_run = new_run_id(WRITER_START_MS, 10);
+        let current_run = new_run_id(CURRENT_START_MS, 20);
+        for name in [
+            partial_name(&minidump_file_name(&old_run)),
+            partial_name(&panic_file_name(&old_run, 3)),
+            partial_name(&native_file_name(&old_run)),
+        ] {
+            drop(partial_from(dir.path(), &name, &current_run, HOUR));
+        }
+        // This run's own partial (none exist at install time, and one would be live) and a
+        // finished report are kept.
+        let current_partial = partial_name(&minidump_file_name(&current_run));
+        drop(partial_from(dir.path(), &current_partial, &current_run, HOUR));
+        let finished = minidump_file_name(&old_run);
+        drop(partial_from(dir.path(), &finished, &current_run, HOUR));
+
+        cleanup_stale_partials(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), sorted(vec![current_partial, finished]));
+    }
+
+    #[test]
+    fn cleanup_keeps_a_partial_whose_writer_is_alive() {
+        // PA-001: a process that started earlier is still writing its dump. Its file is old (a
+        // long write), but the writer holds its lock, so the file must survive.
+        let dir = ScratchDir::new("cleanup-live");
+        let writer_run = new_run_id(WRITER_START_MS, 10);
+        let current_run = new_run_id(CURRENT_START_MS, 20);
+        let name = partial_name(&minidump_file_name(&writer_run));
+        let writer = create_partial(&dir.path().join(&name)).expect("the writer's partial");
+        writer.set_modified(run_start(&current_run).expect("run start") - HOUR).expect("set mtime");
+
+        cleanup_stale_partials(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), std::slice::from_ref(&name), "a live writer's partial must survive");
+
+        // The writer finishes: its rename still finds the file, and with the file closed a later
+        // cleanup leaves the finished report alone.
+        let finished = minidump_file_name(&writer_run);
+        fs::rename(dir.path().join(&name), dir.path().join(&finished)).expect("rename");
+        drop(writer);
+        cleanup_stale_partials(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), [finished]);
+    }
+
+    #[test]
+    fn cleanup_keeps_a_fresh_partial() {
+        // A writer between creating its file and locking it: only the file's age protects it.
+        let dir = ScratchDir::new("cleanup-fresh");
+        let writer_run = new_run_id(WRITER_START_MS, 10);
+        let current_run = new_run_id(WRITER_START_MS + 1, 20);
+        let name = partial_name(&panic_file_name(&writer_run, 0));
+        let age = STALE_PARTIAL_AGE - Duration::from_secs(1);
+        let _writer = partial_from(dir.path(), &name, &current_run, age);
+
+        cleanup_stale_partials(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), [name]);
+    }
+
+    #[test]
+    fn cleanup_leaves_files_it_did_not_write() {
+        let dir = ScratchDir::new("cleanup-foreign");
+        let old_run = new_run_id(WRITER_START_MS, 10);
+        let current_run = new_run_id(CURRENT_START_MS, 20);
+        let foreign = vec![partial_name(&format!("{old_run}.log")), "junk.partial".to_owned()];
+        for name in &foreign {
+            drop(partial_from(dir.path(), name, &current_run, HOUR));
+        }
+
+        cleanup_stale_partials(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), sorted(foreign));
+    }
+
+    #[test]
+    fn partial_writers_hold_their_lock_until_they_close() {
+        let dir = ScratchDir::new("partial-lock");
+        let path = dir.path().join("x.dmp.partial");
+        let writer = create_partial(&path).expect("create");
+        let other = File::open(&path).expect("open");
+        assert!(other.try_lock().is_err(), "the writer's lock must be held");
+        drop(writer);
+        other.try_lock().expect("free once the writer has closed the file");
     }
 
     #[test]

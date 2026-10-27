@@ -42,6 +42,10 @@ impl BundleLayout {
 
 /// Fills an Info.plist template's Xcode-style `$(NAME)` placeholders, so the same
 /// template can later be handed to an Xcode project unchanged.
+///
+/// The values go into `<string>` elements, escaped for XML, and in one pass over the
+/// template: a value is never scanned for placeholders, so a display name may hold `&`, `<`
+/// or `$(` and comes out as written.
 pub fn render_info_plist(template: &str, app: &App) -> anyhow::Result<String> {
     let build = app.build.to_string();
     let variables = [
@@ -52,15 +56,33 @@ pub fn render_info_plist(template: &str, app: &App) -> anyhow::Result<String> {
         ("MARKETING_VERSION", &app.version),
         ("CURRENT_PROJECT_VERSION", &build),
     ];
-    let mut plist = template.to_owned();
-    for (name, value) in variables {
-        plist = plist.replace(&format!("$({name})"), value);
+    let mut plist = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("$(") {
+        plist.push_str(&rest[..start]);
+        let token = &rest[start..];
+        let Some(end) = token.find(')') else { bail!("unterminated placeholder in Info.plist template") };
+        let name = &token["$(".len()..end];
+        let Some((_, value)) = variables.iter().find(|(variable, _)| *variable == name) else {
+            bail!("unknown placeholder $({name}) in Info.plist template");
+        };
+        push_xml_escaped(&mut plist, value);
+        rest = &token[end + 1..];
     }
-    if let Some(start) = plist.find("$(") {
-        let placeholder: String = plist[start..].chars().take_while(|&c| c != ')').chain([')']).collect();
-        bail!("unknown placeholder {placeholder} in Info.plist template");
-    }
+    plist.push_str(rest);
     Ok(plist)
+}
+
+/// Appends `text` escaped for an XML text node.
+fn push_xml_escaped(out: &mut String, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
 }
 
 /// The `<string>` value of `key` in a plist's top-level dictionary.
@@ -175,10 +197,73 @@ mod tests {
         assert_eq!(target("IPHONEOS_DEPLOYMENT_TARGET"), value_of(&ios_template(), "MinimumOSVersion"));
     }
 
+    /// The display name is the one identity field people write freely, so it may hold XML's
+    /// metacharacters and even placeholder syntax; it must come out as the same text.
+    #[test]
+    fn display_names_round_trip_through_the_plist() {
+        for name in [
+            "Sword & Shield",
+            "A < B > C",
+            "Tom's \"Game\"",
+            "サファイア ✦",
+            "$(NAME)",
+            "$(MARKETING_VERSION)",
+            "&amp;",
+            "$(",
+        ] {
+            let app = App { display_name: name.into(), ..test_app() };
+            let plist = render_info_plist(&ios_template(), &app).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let written = value_of(&plist, "CFBundleDisplayName");
+            let bare = written.replace("&amp;", "").replace("&lt;", "").replace("&gt;", "");
+            assert!(!bare.contains(['&', '<', '>']), "{name} written unescaped: {written}");
+            assert_eq!(xml_unescape(written), name);
+            // Every other value is as before.
+            assert_eq!(value_of(&plist, "CFBundleShortVersionString"), app.version);
+        }
+    }
+
+    /// macOS's own plist parser reads the name back as written.
+    #[test]
+    fn plutil_reads_escaped_display_names() {
+        if std::env::consts::OS != "macos" {
+            return;
+        }
+        let scratch = std::env::temp_dir().join(format!("xtask-plist-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        for (index, name) in
+            ["Sword & Shield", "A < B > C", "Tom's \"Game\"", "$(NAME)"].into_iter().enumerate()
+        {
+            let app = App { display_name: name.into(), ..test_app() };
+            let path = scratch.join(format!("{index}.plist"));
+            std::fs::write(&path, render_info_plist(&macos_template(), &app).unwrap()).unwrap();
+            workspace::run(Command::new("plutil").arg("-lint").arg(&path)).unwrap();
+            let read = workspace::output(
+                Command::new("plutil").args(["-extract", "CFBundleDisplayName", "raw", "-o", "-"]).arg(&path),
+            )
+            .unwrap();
+            assert_eq!(read.strip_suffix('\n').unwrap_or(&read), name);
+        }
+        workspace::remove_dir_if_exists(&scratch).unwrap();
+    }
+
+    /// Text-node unescaping, enough for what `render_info_plist` writes.
+    fn xml_unescape(text: &str) -> String {
+        text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    }
+
     #[test]
     fn rejects_unknown_placeholders() {
         let err = render_info_plist("<string>$(DEVELOPMENT_TEAM)</string>", &test_app()).unwrap_err();
         assert_eq!(err.to_string(), "unknown placeholder $(DEVELOPMENT_TEAM) in Info.plist template");
+        // After a known one too: the scan goes on past each value.
+        let err =
+            render_info_plist("$(PRODUCT_NAME)$(PRODUCT_NAME:rfc1034identifier)", &test_app()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "unknown placeholder $(PRODUCT_NAME:rfc1034identifier) in Info.plist template"
+        );
+        let err = render_info_plist("<string>$(PRODUCT_NAME</string>", &test_app()).unwrap_err();
+        assert_eq!(err.to_string(), "unterminated placeholder in Info.plist template");
     }
 
     #[test]

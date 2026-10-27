@@ -152,6 +152,11 @@ impl App {
             "bundle-name `{bundle_name}`: use 1 to 15 ASCII letters and digits"
         );
         ensure!(!display_name.trim().is_empty(), "display-name is empty");
+        // XML (Info.plist, the Android manifest) can't hold most control characters at all.
+        ensure!(
+            !display_name.chars().any(char::is_control),
+            "display-name {display_name:?} holds a control character"
+        );
         ensure!(build >= 1, "build must be at least 1");
         // Apple accepts up to three dot-separated integers; no pre-release suffixes.
         ensure!(
@@ -341,5 +346,13 @@ mod tests {
         assert!(App::new("game", "1.2.3-beta".into(), identity("dev.studio.game", "Game")).is_err());
         let zero = Identity { build: 0, ..identity("dev.studio.game", "Game") };
         assert!(App::new("game", "1.2.3".into(), zero).is_err());
+        // Bundling escapes display names, so any text goes but control characters.
+        let named = |display_name: &str| Identity {
+            display_name: display_name.into(),
+            ..identity("dev.studio.game", "Game")
+        };
+        assert!(App::new("game", "1.2.3".into(), named("Sword & Shield <$(NAME)>")).is_ok());
+        assert!(App::new("game", "1.2.3".into(), named("Two\nLines")).is_err());
+        assert!(App::new("game", "1.2.3".into(), named("Bell\u{7}")).is_err());
     }
 }

@@ -11,14 +11,21 @@
 //!   egui's pointer, which is what widgets respond to.
 //! - **Text** arrives as [`Event::Text`], only while the window takes text input; the overlay
 //!   asks for it while a text field has focus ([`crate::OverlayOutput::text_input`]).
+//! - **Letting go without a click.** When the pointer's finger is cancelled, the window loses
+//!   focus or the foreground, or the overlay hides or shows, egui's pointer is reset with nothing
+//!   held or dragged (`reset_pointer`), and the overlay's touches end as cancelled. Never by a
+//!   release, which would click the widget under the press.
 //!
 //! Not translated yet: clipboard copy and paste (the platform has no clipboard API yet), IME
 //! composition previews, and cursor shapes.
 
+use std::collections::VecDeque;
+
 use egui::{Key, PointerButton, Pos2, Vec2};
+use sapphire_input::MAX_FINGERS;
 use sapphire_platform::{
-    Event, KeyEvent, Keycode, Modifiers, MouseButton, Os, Rect, Scancode, Size, TouchEvent, TouchPhase,
-    Window, WindowEvent,
+    Event, KeyEvent, Keycode, LifecycleEvent, Modifiers, MouseButton, Os, Rect, Scancode, Size, TouchEvent,
+    TouchPhase, Window, WindowEvent,
 };
 
 /// What converting window coordinates to egui points needs, taken fresh each frame.
@@ -70,7 +77,9 @@ impl WindowMetrics {
 /// egui events built from platform events, waiting for the next frame.
 #[derive(Debug)]
 pub(crate) struct EguiInput {
-    events: Vec<egui::Event>,
+    /// The events, in runs, each for a pass of its own ([`Self::run_pass`]): every run but the
+    /// last ends in a pointer reset, and the last may. Almost always one run.
+    runs: VecDeque<Run>,
     modifiers: egui::Modifiers,
     /// Points per window coordinate.
     points_per_unit: f32,
@@ -81,19 +90,30 @@ pub(crate) struct EguiInput {
     /// A finger lifted: the pointer goes away at the start of the next frame, not in the one
     /// with the release, or egui would lose the position it needs to see a tap as a click.
     pointer_gone_next: bool,
+    /// The touches egui will hold once the queued events reach it, by finger slot, where each
+    /// was last: what [`Self::release_all`] cancels.
+    touches: [Option<Pos2>; MAX_FINGERS],
     /// Whether Cmd is egui's `command` (Apple platforms).
     command_is_gui: bool,
+}
+
+/// Events for one pass, and whether egui's pointer is reset after it.
+#[derive(Debug, Default)]
+struct Run {
+    events: Vec<egui::Event>,
+    reset_after: bool,
 }
 
 impl Default for EguiInput {
     fn default() -> Self {
         Self {
-            events: Vec::new(),
+            runs: VecDeque::from([Run::default()]),
             modifiers: egui::Modifiers::NONE,
             points_per_unit: 1.0,
             window_size: Vec2::new(1.0, 1.0),
             pointer_finger: None,
             pointer_gone_next: false,
+            touches: [None; MAX_FINGERS],
             command_is_gui: matches!(Os::CURRENT, Os::MacOs | Os::Ios),
         }
     }
@@ -106,13 +126,66 @@ impl EguiInput {
         self.window_size = Vec2::new(metrics.size.width as f32, metrics.size.height as f32);
     }
 
-    /// The queued events, for the frame's `RawInput`.
-    pub fn take_events(&mut self) -> Vec<egui::Event> {
-        let events = std::mem::take(&mut self.events);
-        if std::mem::take(&mut self.pointer_gone_next) {
-            self.events.push(egui::Event::PointerGone);
+    /// Runs a pass of `ctx` on `raw` with the queued events, and resets egui's pointer after it
+    /// if they end in a reset ([`reset_pointer`]). Events queued after a reset wait for the next
+    /// pass, so the reset forgets only the presses before it.
+    pub fn run_pass(
+        &mut self,
+        ctx: &egui::Context,
+        mut raw: egui::RawInput,
+        ui: impl FnMut(&egui::Context),
+    ) -> egui::FullOutput {
+        let reset = self.take_events(&mut raw.events);
+        let output = ctx.run_pass(raw, ui);
+        if reset {
+            reset_pointer(ctx);
         }
-        events
+        output
+    }
+
+    /// The overlay hid or showed: drops what it had queued but its touches' events (which click
+    /// nothing, and end touches egui holds), releases everything, and resets egui's pointer now.
+    pub fn restart(&mut self, ctx: &egui::Context) {
+        let touches = self
+            .runs
+            .drain(..)
+            .flat_map(|run| run.events)
+            .filter(|event| matches!(event, egui::Event::Touch { .. }))
+            .collect();
+        self.runs.push_back(Run { events: touches, reset_after: false });
+        self.release_all();
+        reset_pointer(ctx);
+    }
+
+    /// Moves the next pass's events to `events`; `true` if egui's pointer is reset after it.
+    fn take_events(&mut self, events: &mut Vec<egui::Event>) -> bool {
+        let run = self.runs.pop_front().unwrap_or_default();
+        *events = run.events;
+        // A lift since the last reset is in the last run: its pointer-gone starts the pass after.
+        if self.runs.is_empty() {
+            self.runs.push_back(Run::default());
+            if std::mem::take(&mut self.pointer_gone_next) {
+                self.queue(egui::Event::PointerGone);
+            }
+        }
+        run.reset_after
+    }
+
+    /// Queues an event, after the last reset.
+    fn queue(&mut self, event: egui::Event) {
+        match self.runs.back_mut() {
+            Some(run) if !run.reset_after => run.events.push(event),
+            _ => self.runs.push_back(Run { events: vec![event], reset_after: false }),
+        }
+    }
+
+    /// Ends the queued events with a pointer reset, which also forgets where a lifted finger was.
+    fn queue_reset(&mut self) {
+        self.pointer_gone_next = false;
+        match self.runs.back_mut() {
+            Some(run) => run.reset_after = true,
+            None => self.runs.push_back(Run { events: Vec::new(), reset_after: true }),
+        }
     }
 
     /// A position in window coordinates, in points.
@@ -138,22 +211,22 @@ impl EguiInput {
             Event::Text(text) => {
                 let text: String = text.text().chars().filter(|&c| is_printable(c)).collect();
                 if !text.is_empty() {
-                    self.events.push(egui::Event::Text(text));
+                    self.queue(egui::Event::Text(text));
                 }
             }
             Event::MouseMotion(motion) => {
-                self.events.push(egui::Event::PointerMoved(self.to_points(motion.x, motion.y)))
+                self.queue(egui::Event::PointerMoved(self.to_points(motion.x, motion.y)))
             }
             Event::MouseButton(button) => {
                 let Some(pointer) = pointer_button(button.button) else { return };
-                self.events.push(egui::Event::PointerButton {
+                self.queue(egui::Event::PointerButton {
                     pos: self.to_points(button.x, button.y),
                     button: pointer,
                     pressed: button.down,
                     modifiers: self.modifiers,
                 });
             }
-            Event::MouseWheel(wheel) => self.events.push(egui::Event::MouseWheel {
+            Event::MouseWheel(wheel) => self.queue(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Line,
                 delta: Vec2::new(wheel.x, wheel.y),
                 phase: egui::TouchPhase::Move,
@@ -165,21 +238,37 @@ impl EguiInput {
                     self.touch(&touch, finger);
                 }
             }
-            Event::Window { event: WindowEvent::FocusLost, .. } => self.release_all(),
+            // The router forgets every press on both; so does egui.
+            Event::Window { event: WindowEvent::FocusLost, .. }
+            | Event::Lifecycle { event: LifecycleEvent::WillEnterBackground, .. } => self.release_all(),
             Event::Window { event: WindowEvent::FocusGained, .. } => {
-                self.events.push(egui::Event::WindowFocused(true));
+                self.queue(egui::Event::WindowFocused(true));
             }
             _ => {}
         }
     }
 
-    /// The window lost focus or the overlay hid: nothing stays pressed or hovered.
+    /// The window lost focus or the foreground, or the overlay hid or showed: nothing stays
+    /// pressed, touched or hovered. The overlay's touches end as cancelled, and egui's pointer
+    /// is reset after the pass that takes these events, with no release, so nothing is clicked.
     pub fn release_all(&mut self) {
         self.modifiers = egui::Modifiers::NONE;
         self.pointer_finger = None;
-        self.pointer_gone_next = false;
-        self.events.push(egui::Event::WindowFocused(false));
-        self.events.push(egui::Event::PointerGone);
+        let touches = std::mem::replace(&mut self.touches, [None; MAX_FINGERS]);
+        for (slot, pos) in touches.into_iter().enumerate() {
+            if let Some(pos) = pos {
+                self.queue(egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId(slot as u64),
+                    phase: egui::TouchPhase::Cancel,
+                    pos,
+                    force: None,
+                });
+            }
+        }
+        self.queue(egui::Event::WindowFocused(false));
+        self.queue(egui::Event::PointerGone);
+        self.queue_reset();
     }
 
     /// A touch the router took away from the overlay (the toggle gesture claimed it).
@@ -192,10 +281,10 @@ impl EguiInput {
         let physical = key_from_scancode(key.scancode);
         let Some(logical) = logical_key(key.keycode, key.scancode) else {
             // Modifier keys carry their news in `modifiers`.
-            self.events.push(egui::Event::ModifiersChanged(self.modifiers));
+            self.queue(egui::Event::ModifiersChanged(self.modifiers));
             return;
         };
-        self.events.push(egui::Event::Key {
+        self.queue(egui::Event::Key {
             key: logical,
             physical_key: physical,
             pressed: key.down,
@@ -212,13 +301,20 @@ impl EguiInput {
             TouchPhase::Up => egui::TouchPhase::End,
             TouchPhase::Canceled => egui::TouchPhase::Cancel,
         };
-        self.events.push(egui::Event::Touch {
+        self.queue(egui::Event::Touch {
             device_id: egui::TouchDeviceId(0),
             id: egui::TouchId(finger as u64),
             phase,
             pos,
             force: Some(touch.pressure),
         });
+        if let Some(held) = self.touches.get_mut(finger) {
+            *held = match touch.phase {
+                TouchPhase::Down => Some(pos),
+                TouchPhase::Moved => held.map(|_| pos),
+                TouchPhase::Up | TouchPhase::Canceled => None,
+            };
+        }
         // The first finger down is egui's pointer until it lifts.
         if touch.phase == TouchPhase::Down && self.pointer_finger.is_none() {
             self.pointer_finger = Some(finger);
@@ -228,17 +324,17 @@ impl EguiInput {
         }
         match touch.phase {
             TouchPhase::Down => {
-                self.events.push(egui::Event::PointerMoved(pos));
-                self.events.push(egui::Event::PointerButton {
+                self.queue(egui::Event::PointerMoved(pos));
+                self.queue(egui::Event::PointerButton {
                     pos,
                     button: PointerButton::Primary,
                     pressed: true,
                     modifiers: self.modifiers,
                 });
             }
-            TouchPhase::Moved => self.events.push(egui::Event::PointerMoved(pos)),
+            TouchPhase::Moved => self.queue(egui::Event::PointerMoved(pos)),
             TouchPhase::Up => {
-                self.events.push(egui::Event::PointerButton {
+                self.queue(egui::Event::PointerButton {
                     pos,
                     button: PointerButton::Primary,
                     pressed: false,
@@ -247,12 +343,33 @@ impl EguiInput {
                 self.pointer_gone_next = true;
                 self.pointer_finger = None;
             }
+            // `PointerGone` keeps egui's button down (drags may leave the window): the reset
+            // after this pass lets it go without a release, which would click.
             TouchPhase::Canceled => {
-                self.events.push(egui::Event::PointerGone);
+                self.queue(egui::Event::PointerGone);
+                self.queue_reset();
                 self.pointer_finger = None;
             }
         }
     }
+}
+
+/// Lets go of egui's pointer between passes: no button down and nothing dragged, without the
+/// release that would click the widget under the press (or, sent elsewhere, drag a slider
+/// there).
+///
+/// egui 0.37 has no event for it: `PointerGone` keeps buttons down so drags may leave the
+/// window, and `WindowFocused(false)` clears only keys and modifiers. So this replaces the
+/// context's `PointerState` with its default through `Context::input_mut_for` and ends any drag
+/// with `Context::stop_dragging`, both public in egui 0.37.0. The widget a press would click
+/// (egui's private `potential_click_id`) egui clears itself in a pass whose events end with the
+/// pointer gone, as a reset's do. A release egui then sees is no click, since it saw no press.
+/// The reset forgets every press before it, so one after it in the same frame waits for the
+/// next pass ([`EguiInput::run_pass`]). Recheck all of this on any egui upgrade; this module's
+/// tests hold it.
+pub(crate) fn reset_pointer(ctx: &egui::Context) {
+    ctx.input_mut_for(egui::ViewportId::ROOT, |input| input.pointer = egui::PointerState::default());
+    ctx.stop_dragging();
 }
 
 /// Characters egui should insert: not control characters, and not the private-use range macOS
@@ -474,6 +591,13 @@ mod tests {
         input
     }
 
+    /// The next pass's events.
+    fn take(input: &mut EguiInput) -> Vec<egui::Event> {
+        let mut events = Vec::new();
+        input.take_events(&mut events);
+        events
+    }
+
     fn key(scancode: Scancode, keycode: u32, down: bool, modifiers: Modifiers) -> Event {
         Event::Key(KeyEvent {
             timestamp: AT,
@@ -493,13 +617,13 @@ mod tests {
         input.push(&key(Scancode::Q, u32::from('a'), true, Modifiers::default()), None);
         // Enter has no character; the scancode names it.
         input.push(&key(Scancode::RETURN, (1 << 30) | 40, false, Modifiers::default()), None);
-        let events = input.take_events();
+        let events = take(&mut input);
         assert!(matches!(
             events[0],
             egui::Event::Key { key: Key::A, physical_key: Some(Key::Q), pressed: true, repeat: false, .. }
         ));
         assert!(matches!(events[1], egui::Event::Key { key: Key::Enter, pressed: false, .. }));
-        assert!(input.take_events().is_empty(), "taken once");
+        assert!(take(&mut input).is_empty(), "taken once");
 
         assert_eq!(key_from_scancode(Scancode::DIGIT_0), Some(Key::Num0));
         assert_eq!(key_from_scancode(Scancode::F12), Some(Key::F12));
@@ -525,7 +649,7 @@ mod tests {
             &key(Scancode::C, u32::from('c'), true, Modifiers { gui: true, ..Default::default() }),
             None,
         );
-        let events = input.take_events();
+        let events = take(&mut input);
         assert!(matches!(events[0], egui::Event::ModifiersChanged(m) if m.command));
         assert!(matches!(events[1], egui::Event::Key { key: Key::C, modifiers, .. } if modifiers.command));
         assert!(input.modifiers.mac_cmd);
@@ -551,7 +675,7 @@ mod tests {
             &Event::MouseWheel(MouseWheelEvent { timestamp: AT, window: WINDOW, x: 0.0, y: -2.0 }),
             None,
         );
-        let events = input.take_events();
+        let events = take(&mut input);
         assert_eq!(events.len(), 3, "unknown buttons are dropped");
         // 2 pixels per window unit on a Retina display, 2 pixels per point: 1 point per unit.
         assert_eq!(events[0], egui::Event::PointerMoved(Pos2::new(100.0, 50.0)));
@@ -589,10 +713,10 @@ mod tests {
         input.push(&touch(TouchPhase::Moved, 0.5), Some(0));
         input.push(&touch(TouchPhase::Up, 0.5), Some(0));
         input.push(&touch(TouchPhase::Down, 0.5), None);
-        let mut events = input.take_events();
+        let mut events = take(&mut input);
         // The lift's pointer-gone waits for the next frame, so a tap within one frame clicks.
         assert!(!events.contains(&egui::Event::PointerGone));
-        let next = input.take_events();
+        let next = take(&mut input);
         assert_eq!(next, [egui::Event::PointerGone]);
         events.extend(next);
         let pointer: Vec<&egui::Event> =
@@ -615,7 +739,7 @@ mod tests {
             input.push(&Event::Text(text), None);
         }
         input.push(&Event::Window { timestamp: AT, window: WINDOW, event: WindowEvent::FocusLost }, None);
-        let events = input.take_events();
+        let events = take(&mut input);
         assert_eq!(
             events[0],
             egui::Event::Text("oké".into()),
@@ -623,5 +747,223 @@ mod tests {
         );
         assert_eq!(&events[1..], [egui::Event::WindowFocused(false), egui::Event::PointerGone]);
         assert_eq!(input.modifiers, egui::Modifiers::NONE);
+    }
+
+    /// egui with a button and a slider under it, driven through [`EguiInput`] as the overlay
+    /// drives it, in the 800 × 600 window of [`input`], whose window coordinates are points.
+    struct Ui {
+        ctx: egui::Context,
+        input: EguiInput,
+        clicks: u32,
+        value: f32,
+        button: egui::Rect,
+        slider: egui::Rect,
+    }
+
+    impl Ui {
+        fn new() -> Self {
+            let mut ui = Self {
+                ctx: egui::Context::default(),
+                input: input(),
+                clicks: 0,
+                value: 0.0,
+                button: egui::Rect::NOTHING,
+                slider: egui::Rect::NOTHING,
+            };
+            // egui hit-tests what the last pass drew, and a new area takes input from its second.
+            ui.frame();
+            ui.frame();
+            ui
+        }
+
+        fn frame(&mut self) {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                ..egui::RawInput::default()
+            };
+            let Self { ctx, input, clicks, value, button, slider } = self;
+            let mut output = input.run_pass(ctx, raw, |ctx| {
+                egui::Area::new(egui::Id::unique("sapphire_debug.input_test")).fixed_pos(Pos2::ZERO).show(
+                    ctx,
+                    |ui| {
+                        let response = ui.button("A button");
+                        *clicks += u32::from(response.clicked());
+                        *button = response.rect;
+                        *slider = ui.add(egui::Slider::new(value, 0.0..=100.0)).rect;
+                    },
+                );
+            });
+            output.textures_delta.clear();
+        }
+
+        fn push(&mut self, event: &Event, finger: Option<usize>) {
+            self.input.push(event, finger);
+        }
+
+        fn down(&self) -> bool {
+            self.ctx.input(|input| input.pointer.any_down())
+        }
+    }
+
+    fn touch_at(finger: u64, phase: TouchPhase, at: Pos2) -> Event {
+        Event::Touch(TouchEvent {
+            timestamp: AT,
+            window: WINDOW,
+            finger: FingerId::new(TouchDeviceId::from_raw(1), finger),
+            phase,
+            x: at.x / 800.0,
+            y: at.y / 600.0,
+            pressure: 1.0,
+        })
+    }
+
+    fn mouse_button(down: bool, at: Pos2) -> Event {
+        Event::MouseButton(MouseButtonEvent {
+            timestamp: AT,
+            window: WINDOW,
+            button: MouseButton::Left,
+            down,
+            clicks: 1,
+            x: at.x,
+            y: at.y,
+        })
+    }
+
+    fn mouse_motion(at: Pos2) -> Event {
+        Event::MouseMotion(MouseMotionEvent {
+            timestamp: AT,
+            window: WINDOW,
+            x: at.x,
+            y: at.y,
+            dx: 0.0,
+            dy: 0.0,
+        })
+    }
+
+    const AWAY: Pos2 = Pos2::new(600.0, 400.0);
+
+    #[test]
+    fn taps_and_clicks_still_click() {
+        let mut ui = Ui::new();
+        let at = ui.button.center();
+        // A tap within one frame, and across frames.
+        ui.push(&touch_at(1, TouchPhase::Down, at), Some(0));
+        ui.push(&touch_at(1, TouchPhase::Up, at), Some(0));
+        ui.frame();
+        assert_eq!(ui.clicks, 1);
+        ui.push(&touch_at(1, TouchPhase::Down, at), Some(0));
+        ui.frame();
+        ui.push(&touch_at(1, TouchPhase::Up, at), Some(0));
+        ui.frame();
+        assert_eq!(ui.clicks, 2);
+        ui.push(&mouse_button(true, at), None);
+        ui.frame();
+        ui.push(&mouse_button(false, at), None);
+        ui.frame();
+        ui.frame();
+        assert_eq!((ui.clicks, ui.down()), (3, false));
+    }
+
+    #[test]
+    fn a_cancelled_touch_lets_go_without_a_click() {
+        // DT-003: `PointerGone` alone left egui's button down.
+        let mut ui = Ui::new();
+        let at = ui.button.center();
+        ui.push(&touch_at(1, TouchPhase::Down, at), Some(0));
+        ui.frame();
+        assert!(ui.down() && ui.ctx.input(|input| input.any_touches()));
+        ui.push(&touch_at(1, TouchPhase::Canceled, at), Some(0));
+        ui.frame();
+        assert!(!ui.down(), "a cancel lets go");
+        assert!(!ui.ctx.input(|input| input.any_touches()));
+        ui.frame();
+        assert_eq!(ui.clicks, 0);
+
+        // A cancel, and another finger pressing elsewhere in the same frame and lifting in the
+        // next: nothing is clicked.
+        ui.push(&touch_at(1, TouchPhase::Down, at), Some(0));
+        ui.frame();
+        ui.push(&touch_at(1, TouchPhase::Canceled, at), Some(0));
+        ui.push(&touch_at(2, TouchPhase::Down, AWAY), Some(1));
+        ui.frame();
+        assert!(!ui.down(), "the cancel's pass lets go");
+        ui.push(&touch_at(2, TouchPhase::Up, AWAY), Some(1));
+        ui.frame();
+        ui.frame();
+        assert_eq!((ui.clicks, ui.down()), (0, false), "the cancelled press never clicks");
+
+        // Nor is the other finger's press lost: it reaches egui in a pass after the reset, which
+        // would otherwise forget it too, and taps.
+        ui.push(&touch_at(1, TouchPhase::Down, at), Some(0));
+        ui.frame();
+        ui.push(&touch_at(1, TouchPhase::Canceled, at), Some(0));
+        ui.push(&touch_at(2, TouchPhase::Down, at), Some(1));
+        ui.frame();
+        ui.frame();
+        assert!(ui.down(), "the next finger's press, a pass later");
+        ui.push(&touch_at(2, TouchPhase::Up, at), Some(1));
+        ui.frame();
+        assert_eq!((ui.clicks, ui.down()), (1, false), "the next finger taps");
+    }
+
+    #[test]
+    fn losing_focus_or_the_foreground_lets_go_without_a_click() {
+        for lost in [
+            Event::Window { timestamp: AT, window: WINDOW, event: WindowEvent::FocusLost },
+            Event::Lifecycle { timestamp: AT, event: LifecycleEvent::WillEnterBackground },
+        ] {
+            let mut ui = Ui::new();
+            let at = ui.button.center();
+            ui.push(&mouse_button(true, at), None);
+            ui.frame();
+            assert!(ui.down());
+            ui.push(&lost, None);
+            ui.frame();
+            assert!(!ui.down(), "{lost:?} lets go");
+            // The router forgot the press, so its release reaches both sides.
+            ui.push(&mouse_button(false, at), None);
+            ui.frame();
+            assert_eq!(ui.clicks, 0, "{lost:?}");
+
+            // The overlay's fingers are cancelled too.
+            ui.push(&touch_at(1, TouchPhase::Down, AWAY), Some(0));
+            ui.push(&touch_at(2, TouchPhase::Down, AWAY), Some(1));
+            ui.frame();
+            assert!(ui.ctx.input(|input| input.any_touches()));
+            ui.push(&lost, None);
+            ui.frame();
+            assert!(!ui.down() && !ui.ctx.input(|input| input.any_touches()), "{lost:?}");
+        }
+    }
+
+    #[test]
+    fn hiding_and_showing_ends_a_drag() {
+        let mut ui = Ui::new();
+        let start = ui.slider.left_center() + Vec2::new(10.0, 0.0);
+        ui.push(&mouse_motion(start), None);
+        ui.push(&mouse_button(true, start), None);
+        ui.frame();
+        ui.push(&mouse_motion(start + Vec2::new(40.0, 0.0)), None);
+        ui.frame();
+        let dragged = ui.value;
+        assert!(dragged > 0.0 && ui.ctx.dragged_id().is_some(), "{dragged}");
+        // The overlay hides with the button held, and shows again later.
+        ui.input.restart(&ui.ctx);
+        ui.input.restart(&ui.ctx);
+        ui.frame();
+        ui.push(&mouse_motion(start + Vec2::new(80.0, 0.0)), None);
+        ui.frame();
+        ui.frame();
+        assert_eq!(ui.value, dragged, "the slider no longer follows the pointer");
+        assert!(!ui.down() && ui.ctx.dragged_id().is_none());
+        assert_eq!(ui.clicks, 0);
+
+        // A finger held on the overlay when it hides ends in egui too.
+        ui.push(&touch_at(1, TouchPhase::Down, AWAY), Some(0));
+        ui.frame();
+        ui.input.restart(&ui.ctx);
+        ui.input.restart(&ui.ctx);
+        ui.frame();
+        assert!(!ui.down() && !ui.ctx.input(|input| input.any_touches()));
     }
 }

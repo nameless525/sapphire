@@ -213,9 +213,8 @@ impl DebugOverlay {
         }
         self.visible = visible;
         // Hidden, the overlay runs no frames: drop what it had queued, and start its next
-        // frame with nothing held or hovered.
-        drop(self.input.take_events());
-        self.input.release_all();
+        // frame with nothing held, dragged or hovered, and no button down in egui (DT-003).
+        self.input.restart(&self.ctx);
         self.renderer.clear();
         self.wants_keyboard = false;
         tracing::debug!(target: crate::LOG_TARGET, visible, "debug overlay toggled");
@@ -334,7 +333,6 @@ impl DebugOverlay {
             time: Some(Duration::from_nanos(frame.now.as_nanos()).as_secs_f64()),
             focused: metrics.focused,
             max_texture_side: Some(self.max_texture_side),
-            events: self.input.take_events(),
             ..egui::RawInput::default()
         };
         raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point =
@@ -353,7 +351,8 @@ impl DebugOverlay {
         let (memory, time, day, effects) =
             (&mut self.memory, &mut self.time, &mut self.day, &mut self.effects);
         let mut hide = false;
-        let output = ctx.run_pass(raw, |ctx| hide = ui::show(ctx, memory, time, day, effects, &view));
+        let output =
+            self.input.run_pass(&ctx, raw, |ctx| hide = ui::show(ctx, memory, time, day, effects, &view));
 
         self.wants_keyboard = ctx.text_edit_focused();
         // Text input follows focus alone: egui reports the field's area only on frames it lays

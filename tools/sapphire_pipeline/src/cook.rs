@@ -5,7 +5,10 @@
 //!
 //! 1. Finds the source assets, leaving out the images that map documents read (they are
 //!    part of those assets), and resolves their sidecars ([`meta`]), creating missing ones.
-//!    Sources whose sidecars say `cook: false` go no further: the report lists them.
+//!    Sources whose sidecars say `cook: false` go no further: the report lists them. A map
+//!    document that doesn't cook isn't checked, but still leaves out the images it names, so
+//!    they don't become textures of their own; if its document doesn't parse, nothing says
+//!    which images those are.
 //! 2. Plans each asset's output: its path under the content root, mirrored under the output
 //!    directory with the cooked format's extension (`samples/mannequin.glb` →
 //!    `samples/mannequin.smesh`). Tools read cooked files by these paths; the runtime reads
@@ -678,12 +681,23 @@ fn map_error(path: &Path) -> impl Fn(MapError) -> CookError + '_ {
 /// An input inside the content tree must name a scanned file exactly, case included, so a
 /// cook claims the same files on every file system. It must not have a sidecar either: that
 /// would make it an asset of its own, which claiming it would silently drop.
+///
+/// A map whose sidecar says `cook: false` is looked at before its document (review BR-001): no
+/// cook reads it, so nothing in it can fail the cook, but the images it names without sidecars
+/// of their own are still claimed, as far as its document reads, so they stay out of the cook
+/// rather than become textures of their own.
 fn map_inputs(source_root: &Path, tree: &SourceTree) -> Result<HashSet<PathBuf>, CookError> {
     let sources: HashSet<&Path> = tree.sources.iter().map(PathBuf::as_path).collect();
     let sidecars: HashSet<&Path> = tree.sidecars.iter().map(PathBuf::as_path).collect();
     let mut inputs = HashSet::new();
     for document in &tree.sources {
         let Some(kind) = MapKind::for_path(document) else { continue };
+        let sidecar = meta::sidecar_path(document);
+        // A sidecar that doesn't parse is left for `meta::resolve` to report.
+        if sidecars.contains(sidecar.as_path()) && meta::read(&sidecar).is_ok_and(|meta| !meta.cook) {
+            inputs.extend(uncooked_map_inputs(document, kind, &sidecars));
+            continue;
+        }
         let fail = map_error(document);
         let bytes =
             fs::read(document).map_err(|source| CookError::Read { path: document.clone(), source })?;
@@ -707,6 +721,19 @@ fn map_inputs(source_root: &Path, tree: &SourceTree) -> Result<HashSet<PathBuf>,
         }
     }
     Ok(inputs)
+}
+
+/// The images a map that doesn't cook names, besides those with sidecars of their own (assets
+/// of their own): none if its document can't be read, and unchecked otherwise.
+fn uncooked_map_inputs(document: &Path, kind: MapKind, sidecars: &HashSet<&Path>) -> Vec<PathBuf> {
+    let names = fs::read(document).ok().and_then(|bytes| character_maps::inputs(kind, &bytes).ok());
+    names
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|input| character_maps::resolve_input(document, input).ok())
+        .filter(|path| image::SourceFormat::from_path(path).is_some())
+        .filter(|path| !sidecars.contains(meta::sidecar_path(path).as_path()))
+        .collect()
 }
 
 /// Whether a scan skips `relative`: some component of it is hidden, as [`SourceTree::scan`]
@@ -1842,5 +1869,62 @@ mod tests {
         assert_eq!(asset(&report, &renamed).output, out.join("Tex.ktx2"));
         assert_eq!(listing(&out), ["Tex.ktx2"]);
         assert_eq!(fs::read(out.join("Tex.ktx2")).unwrap(), cooked);
+    }
+
+    #[test]
+    fn maps_that_dont_cook_are_not_checked() {
+        // Review BR-001: a map whose sidecar says `cook: false` was parsed and its inputs checked
+        // before the flag was read, so a draft or broken map failed the whole cook.
+        let scratch = Scratch::new("cook_uncooked_maps");
+        let map = scratch.source().join("maps/body.ilm.ron");
+        fs::create_dir_all(map.parent().unwrap()).unwrap();
+        let mut meta =
+            AssetMeta::new(id(HAIR), ImportSettings::CharacterMap(MapKind::Ilm.default_settings()));
+        meta.cook = false;
+        let write_meta = |meta: &AssetMeta| {
+            fs::write(sidecar_path(&map), sapphire_serialize::to_ron(meta).unwrap()).unwrap();
+        };
+        write_meta(&meta);
+
+        // A document that doesn't parse.
+        fs::write(&map, "not a map").unwrap();
+        let report = scratch.cook();
+        assert!(report.assets.is_empty());
+        assert_eq!(report.uncooked, std::slice::from_ref(&map));
+
+        // One naming a missing image and an image with a sidecar of its own: the images it names
+        // without sidecars stay out of the cook rather than become textures, and those with
+        // sidecars cook as the assets they are.
+        let bias = scratch.source().join("maps/bias.png");
+        add_mask(&bias);
+        let ids =
+            scratch.add_texture("maps/ids.png", ALBEDO, TextureClass::Color(ColorSettings::default()), 1);
+        let document = r#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (
+            specular_mask: Image(path: "missing.png"),
+            shadow_bias: Image(path: "bias.png"),
+            specular_threshold: Image(path: "ids.png"),
+        ))"#;
+        fs::write(&map, document).unwrap();
+        let report = scratch.cook();
+        assert_eq!(report.assets.iter().map(|asset| &asset.source).collect::<Vec<_>>(), [&ids]);
+        assert_eq!(report.uncooked, std::slice::from_ref(&map));
+        assert!(report.created_sidecars.is_empty() && !sidecar_path(&bias).exists());
+
+        // Cooked again, the map is checked again.
+        meta.cook = true;
+        write_meta(&meta);
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::Map { path, .. } if *path == map), "{error:?}");
+
+        // A locked cook still needs the map's sidecar.
+        fs::write(&map, ilm_document("bias.png")).unwrap();
+        assert!(asset(&scratch.cook(), &map).output.exists());
+        fs::remove_file(sidecar_path(&map)).unwrap();
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let error = cook_dir(&scratch.source(), &scratch.out(), &options).unwrap_err();
+        assert!(
+            matches!(&error, CookError::Meta(MetaError::Missing { sources }) if *sources == [map.clone()]),
+            "{error:?}"
+        );
     }
 }

@@ -1,12 +1,20 @@
 // The ambient pass's grid work (M1 W5, `sapphire_render::ambient`), compute, in the order a frame
 // runs it after the sky cube's face, each only when due:
 //
-// 1. `cs_sky_projection` (one workgroup): the sky cube's radiance projected to L2 SH, a face at a
-//    time (the faces the sky cube drew this frame, each face's sums kept), scaled per channel so
-//    a surface facing straight up under the open sky receives time of day's authored ambient sky
+// 1. The sky's projection: the sky cube's radiance projected to L2 SH, a face at a time (the
+//    faces the sky cube drew this frame, each face's sums kept), scaled per channel so a surface
+//    facing straight up under the open sky receives time of day's authored ambient sky
 //    (`frame.ambient_sky`), and the transfer that turns a probe's sky visibility into the
 //    irradiance it receives (exact on the icosahedron's twelve vertices,
 //    `sapphire_math::sh::SkyTransfer`, whose L2 × L2 → L1 products they integrate exactly).
+//    Three dispatches: `cs_sky_projection` sums each face's texels per thread,
+//    `cs_sky_projection_faces` adds up each face's threads, and `cs_sky_light` totals the six
+//    faces into the sky light. They share no workgroup memory: WARP, the Windows CI's CPU
+//    rasterizer, took 26–48 s to create the single-workgroup projection, whose threads added up
+//    their sums in workgroup memory behind barriers, and 3–7 minutes more to run it the first
+//    time (`sapphire_render::ambient`, "Cost"). The threads' sums go through a buffer of the
+//    pass's own instead, and each dispatch adds in the order the workgroup did, so the sky light
+//    is the same to the bit.
 // 2. `cs_prefilter`, once per mip of the reflection cube: the cube faces the sky drew this frame,
 //    filtered into roughness mips (GGX, importance sampled). Mip 0 is the sky cube at the same
 //    scale as the ambient; each rougher mip filters the one before it by the difference of their
@@ -75,6 +83,10 @@ struct PrefilterUniforms {
 @group(3) @binding(5) var<storage, read_write> sky_light_out: SkyLight;
 @group(3) @binding(6) var<uniform> prefilter: PrefilterUniforms;
 @group(3) @binding(7) var prefiltered: texture_storage_2d_array<rgba16float, write>;
+// Per projected face (the frame's first is 0), projection thread and L2 coefficient, at
+// (face * AMBIENT_WORKGROUP + thread) * 9 + k: the thread's share of the face's sum, rgb
+// (`ambient::PROJECTION_PARTIALS_BYTES`).
+@group(3) @binding(8) var<storage, read_write> projection_partials: array<vec4<f32>>;
 
 // Threads per workgroup of the projection, the relight and the character pass
 // (`ambient::WORKGROUP`).
@@ -167,71 +179,88 @@ fn cube_texel_direction(face: u32, s: f32, t: f32) -> vec3<f32> {
 // Samples along each edge of each face: 6144 in all, far finer than L2 needs.
 const PROJECTION_SIDE: u32 = 32u;
 
-var<workgroup> projection_sums: array<array<vec4<f32>, 9>, AMBIENT_WORKGROUP>;
-
-// Projects the faces `ambient.counts.zw` names (the first and how many: those the sky cube drew
-// this frame, all six when a grid arrives, none when only the authored ambient jumped), keeps
-// each face's sums, and lights the grid with the six faces' total.
+// One workgroup per face `ambient.counts.zw` names (the first and how many: those the sky cube
+// drew this frame, all six when a grid arrives, none when only the authored ambient jumped): each
+// thread sums every AMBIENT_WORKGROUP-th texel of the face, from its index on.
 @compute @workgroup_size(AMBIENT_WORKGROUP)
-fn cs_sky_projection(@builtin(local_invocation_index) thread: u32) {
+fn cs_sky_projection(
+    @builtin(workgroup_id) group: vec3<u32>,
+    @builtin(local_invocation_index) thread: u32,
+) {
+    let face = ambient.counts.z + group.x;
     let per_face = PROJECTION_SIDE * PROJECTION_SIDE;
     let step = 2.0 / f32(PROJECTION_SIDE);
-    for (var drawn = 0u; drawn < ambient.counts.w; drawn++) {
-        let face = ambient.counts.z + drawn;
-        var sum: array<vec3<f32>, 9>;
-        for (var texel = thread; texel < per_face; texel += AMBIENT_WORKGROUP) {
-            let s = (f32(texel % PROJECTION_SIDE) + 0.5) * step - 1.0;
-            let t = (f32(texel / PROJECTION_SIDE) + 0.5) * step - 1.0;
-            // A cube texel's solid angle: its area over its distance cubed.
-            let length_squared = 1.0 + s * s + t * t;
-            let solid_angle = step * step / (length_squared * sqrt(length_squared));
-            let d = cube_texel_direction(face, s, t);
-            let radiance = textureSampleLevel(source_cube, ambient_sampler, d, 0.0).rgb;
-            let y = sh_basis(d);
-            for (var k = 0u; k < 9u; k++) {
-                sum[k] += radiance * (y[k] * solid_angle);
-            }
-        }
+    var sum: array<vec3<f32>, 9>;
+    for (var texel = thread; texel < per_face; texel += AMBIENT_WORKGROUP) {
+        let s = (f32(texel % PROJECTION_SIDE) + 0.5) * step - 1.0;
+        let t = (f32(texel / PROJECTION_SIDE) + 0.5) * step - 1.0;
+        // A cube texel's solid angle: its area over its distance cubed.
+        let length_squared = 1.0 + s * s + t * t;
+        let solid_angle = step * step / (length_squared * sqrt(length_squared));
+        let d = cube_texel_direction(face, s, t);
+        let radiance = textureSampleLevel(source_cube, ambient_sampler, d, 0.0).rgb;
+        let y = sh_basis(d);
         for (var k = 0u; k < 9u; k++) {
-            projection_sums[thread][k] = vec4<f32>(sum[k], 0.0);
+            sum[k] += radiance * (y[k] * solid_angle);
         }
-        workgroupBarrier();
-        for (var stride = AMBIENT_WORKGROUP / 2u; stride > 0u; stride >>= 1u) {
-            if thread < stride {
-                for (var k = 0u; k < 9u; k++) {
-                    projection_sums[thread][k] += projection_sums[thread + stride][k];
-                }
+    }
+    let first = (group.x * AMBIENT_WORKGROUP + thread) * 9u;
+    for (var k = 0u; k < 9u; k++) {
+        projection_partials[first + k] = vec4<f32>(sum[k], 0.0);
+    }
+}
+
+// One thread per projected face and coefficient: the face's threads' sums added pairwise, half
+// the threads onto the other half until one remains (a tree, the order a workgroup reduction
+// adds in), kept in the sky light's faces.
+@compute @workgroup_size(AMBIENT_WORKGROUP)
+fn cs_sky_projection_faces(@builtin(global_invocation_id) id: vec3<u32>) {
+    let drawn = id.x / 9u;
+    let k = id.x % 9u;
+    if drawn < ambient.counts.w {
+        let first = drawn * AMBIENT_WORKGROUP * 9u + k;
+        // The first stride: thread t takes thread t + 32's sum.
+        let split = AMBIENT_WORKGROUP / 2u;
+        var sums: array<vec4<f32>, 32>;
+        for (var thread = 0u; thread < split; thread++) {
+            sums[thread] = projection_partials[first + thread * 9u]
+                + projection_partials[first + (thread + split) * 9u];
+        }
+        for (var stride = split / 2u; stride > 0u; stride >>= 1u) {
+            for (var thread = 0u; thread < stride; thread++) {
+                sums[thread] += sums[thread + stride];
             }
-            workgroupBarrier();
         }
-        // Thread k keeps the face's coefficient k, and reads it back below.
-        if thread < 9u {
-            sky_light_out.faces[face * 9u + thread] = projection_sums[0][thread];
-        }
-        workgroupBarrier();
+        sky_light_out.faces[(ambient.counts.z + drawn) * 9u + k] = sums[0];
     }
-    // The whole sky: the six faces' sums.
-    if thread < 9u {
-        var total = vec4<f32>(0.0);
-        for (var face = 0u; face < 6u; face++) {
-            total += sky_light_out.faces[face * 9u + thread];
-        }
-        projection_sums[0][thread] = total;
-    }
-    workgroupBarrier();
-    // The open sky's irradiance facing up as the grid holds it, L1 (the transfer below projects
-    // to L1, dropping the sky's L2 band, which convolving with the clamped cosine scales by 1/4),
-    // and the scale to the authored ambient: an open probe then gives exactly that facing up.
-    let up = sh_basis(vec3<f32>(0.0, 1.0, 0.0));
-    var open = projection_sums[0][0].rgb * up[0];
-    for (var k = 1u; k < 4u; k++) {
-        open += projection_sums[0][k].rgb * (up[k] * (2.0 / 3.0));
-    }
-    let authored = max(frame.ambient_sky.rgb, vec3<f32>(0.0));
-    let scale = select(vec3<f32>(0.0), authored / max(open, vec3<f32>(1e-12)), open > vec3<f32>(1e-6));
-    // Threads 0–26 each write one transfer column: the scaled sky radiance at each vertex, times
-    // basis function k there, projected to L1 irradiance.
+}
+
+// The whole sky, the six faces' sums, lights the grid: threads 0–26 each write a column of the
+// transfer, and thread 0 the scaled radiance and the scale.
+@compute @workgroup_size(AMBIENT_WORKGROUP)
+fn cs_sky_light(@builtin(local_invocation_index) thread: u32) {
     if thread < 27u {
+        var total: array<vec4<f32>, 9>;
+        for (var k = 0u; k < 9u; k++) {
+            var sum = vec4<f32>(0.0);
+            for (var face = 0u; face < 6u; face++) {
+                sum += sky_light_out.faces[face * 9u + k];
+            }
+            total[k] = sum;
+        }
+        // The open sky's irradiance facing up as the grid holds it, L1 (the transfer below
+        // projects to L1, dropping the sky's L2 band, which convolving with the clamped cosine
+        // scales by 1/4), and the scale to the authored ambient: an open probe then gives exactly
+        // that facing up.
+        let up = sh_basis(vec3<f32>(0.0, 1.0, 0.0));
+        var open = total[0].rgb * up[0];
+        for (var k = 1u; k < 4u; k++) {
+            open += total[k].rgb * (up[k] * (2.0 / 3.0));
+        }
+        let authored = max(frame.ambient_sky.rgb, vec3<f32>(0.0));
+        let scale = select(vec3<f32>(0.0), authored / max(open, vec3<f32>(1e-12)), open > vec3<f32>(1e-6));
+        // Thread `thread` writes one transfer column: the scaled sky radiance at each vertex,
+        // times basis function k there, projected to L1 irradiance.
         let channel = thread / 9u;
         let k = thread % 9u;
         var column = vec4<f32>(0.0);
@@ -239,18 +268,18 @@ fn cs_sky_projection(@builtin(local_invocation_index) thread: u32) {
             let y = sh_basis(icosahedron(v));
             var radiance = 0.0;
             for (var j = 0u; j < 9u; j++) {
-                radiance += projection_sums[0][j][channel] * y[j];
+                radiance += total[j][channel] * y[j];
             }
             let weight = radiance * scale[channel] * ICOSAHEDRON_WEIGHT * y[k];
             column += weight * vec4<f32>(y[0], y[1] * (2.0 / 3.0), y[2] * (2.0 / 3.0), y[3] * (2.0 / 3.0));
         }
         sky_light_out.transfer[thread] = column;
-    }
-    if thread == 0u {
-        for (var k = 0u; k < 9u; k++) {
-            sky_light_out.radiance[k] = vec4<f32>(projection_sums[0][k].rgb * scale, 0.0);
+        if thread == 0u {
+            for (var j = 0u; j < 9u; j++) {
+                sky_light_out.radiance[j] = vec4<f32>(total[j].rgb * scale, 0.0);
+            }
+            sky_light_out.scale = vec4<f32>(scale, 0.0);
         }
-        sky_light_out.scale = vec4<f32>(scale, 0.0);
     }
 }
 

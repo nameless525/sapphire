@@ -34,8 +34,11 @@
 //!    cube, lights with [`sky_radiance`], the same projection of the gradient alone. A face at a
 //!    time: the sky light keeps each face's sums, and a frame projects only the faces the sky
 //!    cube drew (one a frame on desktop, one every other frame on Mobile-Low; all six when a grid
-//!    arrives) and sums the six. One workgroup does it, so its cost is latency, which a sixth of
-//!    the samples cuts by about as much.
+//!    arrives) and sums the six. A workgroup a face sums its texels, one sum per thread; a second
+//!    dispatch adds up each face's threads and a third totals the faces into the sky light, so
+//!    its cost is latency, which a sixth of the samples cuts by about as much. The threads' sums
+//!    pass between dispatches through a buffer of the pass's own, not workgroup memory (below,
+//!    "Cost").
 //! 2. **The prefilter** of the same faces (below, "Reflections").
 //! 3. **The relight:** atlas texels relit as sky visibility × the sky plus the bounce of the keys
 //!    the frame blends ([`FramePacket::probe_keys`]: time of day resolves keys and weights from
@@ -153,11 +156,25 @@
 //! builds none of its pipelines (nor their module), makes no reflection cube, and stages its
 //! uniforms only when they change, which is once: content and tiers without them pay nothing they
 //! can measure. Pipelines are built when their work can first run ([`AmbientPipelines`]): GTAO's
-//! three with a renderer whose tier has it, the grid's light (the projection, the relight and the
-//! characters', and the prefilter with the reflection cube) with the first grid, a load-time cost,
-//! and kept after it. Built with every renderer, the seven had cost each process about 0.75 s on
-//! the M5 with Metal's shader cache cold (10 ms warm), and far more on CI's software backends,
-//! which compile them again for every golden scene: WARP's scenes took 60–75 s instead of 9.
+//! three with a renderer whose tier has it, the grid's light (the projection's three, the relight
+//! and the characters', and the prefilter with the reflection cube) with the first grid, a
+//! load-time cost, and kept after it. Built with every renderer, W5's seven had cost each process
+//! about 0.75 s on the M5 with Metal's shader cache cold (10 ms warm), and far more on CI's
+//! software backends, which compile them again for every golden scene: WARP's scenes took 60–75 s
+//! instead of 9.
+//!
+//! **No workgroup memory in the projection.** W5 projected the sky in one workgroup whose threads
+//! added up their sums in workgroup memory behind `workgroupBarrier`s, in a loop over the faces.
+//! WARP, the Windows CI's CPU rasterizer, took 26–48 s to create that pipeline and 170–432 s more
+//! to run it the first time: 3–8 minutes of every golden scene with a grid, which took 4–17
+//! minutes each (timed per pipeline and dispatch on a throwaway CI branch). The threads' sums now
+//! go through a buffer of the pass's own between three dispatches ([`PROJECTION_PARTIALS_BYTES`]),
+//! added up in the order the workgroup added them, so the sky light is the same to the bit. On
+//! the M5 the projection takes about 54 µs a frame instead of 197 (one face, 1080p, timed as a
+//! pass of its own). GTAO's depth prefilter (a reduction behind barriers in a loop of three) and
+//! temporal AA's resolve (one barrier) keep their workgroup memory: WARP creates and first runs
+//! each in well under a second, and barrier-free versions of the prefilter cost the M5 47–120 µs
+//! more at 1080p.
 //!
 //! # Later milestones
 //!
@@ -438,6 +455,9 @@ const STORAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// WGSL `SkyLight`: the transfer's 27 columns, 9 radiance coefficients, the scale, and each cube
 /// face's 9 coefficients.
 pub(crate) const SKY_LIGHT_BYTES: u64 = (27 + 9 + 1 + 6 * 9) * 16;
+/// WGSL `projection_partials`: per cube face, projection thread and L2 coefficient, a thread's
+/// share of the face's sum (`vec4<f32>`), which the next dispatch adds up.
+pub(crate) const PROJECTION_PARTIALS_BYTES: u64 = 6 * WORKGROUP as u64 * 9 * 16;
 /// The probe data bit the renderer sets at upload on a probe some brick around it lacks: an
 /// empty brick, or one past the grid's extent (WGSL `PROBE_EDGE_BIT`). The lookup fades the grid
 /// out toward such probes. Cooked grids leave it clear (`ProbeData::UNUSED_BITS`).
@@ -615,7 +635,7 @@ pub struct AmbientStats {
     /// after a small change, none while nothing changes.
     pub relit_bricks: u32,
     /// The ambient pass's pipelines built: none without a grid or GTAO; GTAO's three with the
-    /// renderer, and the grid's light's three (four with the prefilter) when a grid first arrives.
+    /// renderer, and the grid's light's five (six with the prefilter) when a grid first arrives.
     pub pipelines: u32,
     /// Compute dispatches the last recorded frame's ambient pass made: none without a grid or
     /// GTAO, when the pass doesn't run.
@@ -860,7 +880,8 @@ struct AmbientLayouts {
     depths: wgpu::BindGroupLayout,
     search: wgpu::BindGroupLayout,
     denoise: wgpu::BindGroupLayout,
-    /// Per pipeline, in [`AmbientPipelines`]' order.
+    /// Per kind of pipeline: the projection's three, the prefilter, the relight, the characters',
+    /// and GTAO's depth prefilter, search and blur.
     pipelines: [wgpu::PipelineLayout; 7],
 }
 
@@ -874,14 +895,22 @@ pub(crate) struct AmbientPipelines {
     occlusion: Option<OcclusionPipelines>,
 }
 
-/// The grid's light work's pipelines: the sky's projection, the relight and the characters', and
-/// the reflection cube's prefilter where there is one.
+/// The grid's light work's pipelines: the sky's projection (each face's threads' sums, a face's
+/// sum and the sky light), the relight and the characters', and the reflection cube's prefilter
+/// where there is one.
 #[derive(Debug)]
 struct LightPipelines {
     projection: wgpu::ComputePipeline,
+    projection_faces: wgpu::ComputePipeline,
+    sky_light: wgpu::ComputePipeline,
     relight: wgpu::ComputePipeline,
     character: wgpu::ComputePipeline,
     prefilter: Option<wgpu::ComputePipeline>,
+}
+
+impl LightPipelines {
+    /// Pipelines but the prefilter.
+    const COUNT: u32 = 5;
 }
 
 /// GTAO's pipelines: the depth prefilter, the search and the blur.
@@ -928,6 +957,8 @@ impl AmbientPipelines {
         Self {
             light: set.light.then(|| LightPipelines {
                 projection: build(0, "cs_sky_projection"),
+                projection_faces: build(0, "cs_sky_projection_faces"),
+                sky_light: build(0, "cs_sky_light"),
                 prefilter: set.prefilter.then(|| build(1, "cs_prefilter")),
                 relight: build(2, "cs_relight"),
                 character: build(3, "cs_character_ambient"),
@@ -952,7 +983,7 @@ impl AmbientPipelines {
     /// Pipelines built.
     pub(crate) fn count(&self) -> u32 {
         let set = self.set();
-        3 * u32::from(set.light) + u32::from(set.prefilter) + 3 * u32::from(set.occlusion)
+        LightPipelines::COUNT * u32::from(set.light) + u32::from(set.prefilter) + 3 * u32::from(set.occlusion)
     }
 }
 
@@ -1066,7 +1097,11 @@ impl AmbientLayouts {
         );
         let projection = layout(
             "sky projection",
-            &[texture_entry(4, Dimension::Cube, float), storage_entry(5, false, SKY_LIGHT_BYTES)],
+            &[
+                texture_entry(4, Dimension::Cube, float),
+                storage_entry(5, false, SKY_LIGHT_BYTES),
+                storage_entry(8, false, PROJECTION_PARTIALS_BYTES),
+            ],
         );
         let prefilter = layout(
             "reflection prefilter",
@@ -1415,6 +1450,14 @@ impl Ambient {
         let set = PipelineSet { light: true, prefilter: reflection.is_some(), occlusion: false };
         let built = AmbientPipelines::new(&self.device, &self.layouts, self.cache.as_ref(), sources, set);
         self.pipelines.light = built.light;
+        // The projection threads' sums, which the next dispatch adds up: the pass's own, kept
+        // alive by the group.
+        let partials = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sky projection sums"),
+            size: PROJECTION_PARTIALS_BYTES,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         self.projection_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("sky projection"),
             layout: &self.layouts.projection,
@@ -1424,6 +1467,7 @@ impl Ambient {
                     resource: wgpu::BindingResource::TextureView(&self.sky_cube),
                 },
                 wgpu::BindGroupEntry { binding: 5, resource: self.sky_light.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: partials.as_entire_binding() },
             ],
         }));
         let mips = reflection.as_ref().map_or(0, |reflection| reflection.mips);
@@ -1552,6 +1596,7 @@ impl Ambient {
             block.ambient.counts[2..].copy_from_slice(&[work.faces.start, work.faces.len() as u32]);
             // The prefilter, for the faces the projection projects (whose scale mip 0 reads).
             let faces = work.faces;
+            let projected = faces.len() as u32;
             let mut prefilter = None;
             if let (Some(reflection), Some(pipeline)) =
                 (reflection.as_ref().filter(|_| !faces.is_empty()), &light_pipelines.prefilter)
@@ -1568,7 +1613,10 @@ impl Ambient {
             light = Some(LightWork {
                 pipelines: light_pipelines,
                 compute_frame,
-                projection: projection_group.as_ref().filter(|_| work.project),
+                projection: projection_group
+                    .as_ref()
+                    .filter(|_| work.project)
+                    .map(|group| (group, projected)),
                 prefilter,
                 relight: (texels[1] > texels[0]).then_some((&grid.relight_group, texels[1] - texels[0])),
                 characters: character_group
@@ -2087,22 +2135,23 @@ struct PrefilterWork<'a> {
     faces: Range<u32>,
 }
 
-/// A frame's grid work: the sky's projection (its group), the prefilter, the relight (its group
-/// and the texels it relights) and the characters (their group and the entries past the
-/// fallback), each only when due.
+/// A frame's grid work: the sky's projection (its group and the faces it projects), the
+/// prefilter, the relight (its group and the texels it relights) and the characters (their group
+/// and the entries past the fallback), each only when due.
 struct LightWork<'a> {
     pipelines: &'a LightPipelines,
     compute_frame: &'a wgpu::BindGroup,
-    projection: Option<&'a wgpu::BindGroup>,
+    projection: Option<(&'a wgpu::BindGroup, u32)>,
     prefilter: Option<PrefilterWork<'a>>,
     relight: Option<(&'a wgpu::BindGroup, u32)>,
     characters: Option<(&'a wgpu::BindGroup, u32)>,
 }
 
 impl LightWork<'_> {
-    /// The dispatches it makes: one per mip for the prefilter, one for each other part due.
+    /// The dispatches it makes: the projection's three (the sky light's alone when it projects
+    /// no face), one per mip for the prefilter, and one for each other part due.
     fn dispatches(&self) -> u32 {
-        u32::from(self.projection.is_some())
+        self.projection.map_or(0, |(_, faces)| if faces > 0 { 3 } else { 1 })
             + self.prefilter.as_ref().map_or(0, |prefilter| prefilter.reflection.mips)
             + u32::from(self.relight.is_some())
             + u32::from(self.characters.is_some())
@@ -2110,10 +2159,18 @@ impl LightWork<'_> {
 
     fn dispatch(self, pass: &mut wgpu::ComputePass<'_>) {
         let Self { pipelines, compute_frame, projection, prefilter, relight, characters } = self;
-        if let Some(group) = projection {
-            pass.set_pipeline(&pipelines.projection);
+        if let Some((group, faces)) = projection {
+            // The three share a layout, so the groups stay bound; wgpu orders each dispatch's
+            // writes before the next one's reads.
             pass.set_bind_group(0, compute_frame, &[]);
             pass.set_bind_group(3, group, &[]);
+            if faces > 0 {
+                pass.set_pipeline(&pipelines.projection);
+                pass.dispatch_workgroups(faces, 1, 1);
+                pass.set_pipeline(&pipelines.projection_faces);
+                pass.dispatch_workgroups((faces * 9).div_ceil(WORKGROUP), 1, 1);
+            }
+            pass.set_pipeline(&pipelines.sky_light);
             pass.dispatch_workgroups(1, 1, 1);
         }
         if let Some(PrefilterWork { pipeline, reflection, faces }) = prefilter {

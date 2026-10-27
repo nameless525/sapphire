@@ -688,17 +688,18 @@ fn nothing_is_built_or_run_for_work_nothing_reads() {
     let before = compute_pipelines(&harness);
     harness.set_grid(Some(&grid(&[12.0], 0.0, |_, _| Vec3::splat(0.5), open)));
     let arrived = harness.render().stats.ambient;
-    // The sky's projection, the prefilter, the relight and the characters'.
-    assert_eq!(arrived.pipelines, 4);
-    assert_eq!(compute_pipelines(&harness) - before, 4, "the stats count what was built");
+    // The sky's projection's three (each face's threads' sums, a face's sum and the sky light),
+    // the prefilter, the relight and the characters'.
+    assert_eq!(arrived.pipelines, 6);
+    assert_eq!(compute_pipelines(&harness) - before, 6, "the stats count what was built");
     assert!(arrived.reflection_size > 0 && arrived.reflection_mips > 1);
-    // The arrival projects and prefilters every face and relights every brick; no character
-    // entries.
-    assert_eq!(arrived.dispatches, 1 + arrived.reflection_mips + 1);
+    // The arrival projects (three dispatches) and prefilters every face and relights every
+    // brick; no character entries.
+    assert_eq!(arrived.dispatches, 3 + arrived.reflection_mips + 1);
     harness.set_grid(None);
     let left = harness.render().stats.ambient;
-    assert_eq!((left.pipelines, left.dispatches), (4, 0));
-    assert_eq!(compute_pipelines(&harness) - before, 4);
+    assert_eq!((left.pipelines, left.dispatches), (6, 0));
+    assert_eq!(compute_pipelines(&harness) - before, 6);
     // GTAO's three are built with a renderer that has it, and run every frame.
     let occlusion = AmbientOcclusion { capsules: true, gtao: Some(GtaoSettings::DESKTOP) };
     let mut harness = Harness::new(settings(occlusion));

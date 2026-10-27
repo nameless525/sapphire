@@ -455,6 +455,8 @@ mod tests {
             Program::Ambient,
             &[
                 "cs_sky_projection",
+                "cs_sky_projection_faces",
+                "cs_sky_light",
                 "cs_prefilter",
                 "cs_relight",
                 "cs_character_ambient",

@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use sapphire_hot_reload::{DEBOUNCE, FileWatcher, WatchId, sources};
 use sapphire_livelink::protocol::{DeviceStatus, PackOutcome, SourceFile};
-use sapphire_livelink::{Client, DEFAULT_PORT, LinkError};
+use sapphire_livelink::{Client, DEFAULT_PORT};
 use sapphire_time::Stopwatch;
 
 const USAGE: &str = "\
@@ -37,7 +37,10 @@ Commands:
       day's timeline, the character light rig presets, the screen effect presets and the RON
       documents named (a scene's own timeline, say).
 
-Each command says how long the device took to answer, from the request to its reply.
+Each command says how long the device took to answer, from the request to its reply. A device
+has 10 s to answer (60 s for packs, shaders and captures), and must keep taking what is sent to
+it; a request that fails so closes the connection, and may still apply on the device. push and
+watch connect again for what comes after it.
 
 Options:
   --addr <host:port>    The device to connect to.
@@ -137,9 +140,9 @@ impl Target {
         }
     }
 
-    /// Connects again after the connection broke, until it works.
+    /// Connects again after the connection closed, until it works.
     fn reconnect(&mut self) -> Client {
-        eprintln!("the device is gone; waiting for it");
+        eprintln!("the connection closed; waiting for the device");
         loop {
             match self.connect() {
                 Ok(client) => {
@@ -276,6 +279,11 @@ fn push(target: &mut Target, content: Option<&Path>, files: &[String]) -> anyhow
     };
     let mut failed = 0;
     for item in Item::from_files(files)? {
+        // A push that failed on the connection closed it: the next one connects again.
+        if client.is_closed() {
+            eprintln!("connecting again");
+            client = target.connect()?;
+        }
         if let Err(error) = item.push(&mut client) {
             eprintln!("error: {error:#}");
             failed += 1;
@@ -379,16 +387,15 @@ fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> an
         }
         for item in items {
             if let Err(error) = item.push(&mut client) {
-                let broken = error.downcast_ref::<LinkError>().is_some_and(|error| {
-                    matches!(error, LinkError::Io(_) | LinkError::Closed | LinkError::TimedOut(_))
-                });
-                if !broken {
-                    eprintln!("error: {error:#}");
-                    continue;
-                }
-                client = target.reconnect();
-                if let Err(error) = item.push(&mut client) {
-                    eprintln!("error: {error:#}");
+                eprintln!("error: {error:#}");
+                // A push that failed on the connection (the device gone, stalled or slow to
+                // answer, a broken stream) closed it: connect again and push it once more. One
+                // that timed out may have applied meanwhile, and pushing it again is harmless.
+                if client.is_closed() {
+                    client = target.reconnect();
+                    if let Err(error) = item.push(&mut client) {
+                        eprintln!("error: {error:#}");
+                    }
                 }
             }
         }

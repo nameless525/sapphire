@@ -24,7 +24,9 @@
 //!   which `cargo xtask link` builds and runs: `status`, `cvar`, `push` (packs, documents,
 //!   shaders), `capture` (the device's next frame, as a PNG) and `watch`, which pushes what
 //!   changes: packs after `cargo xtask content`, edited documents and WGSL sources. Each command
-//!   says how long the device took to answer.
+//!   says how long the device took to answer. A request waits for its reply until a deadline,
+//!   and sends as long as the device keeps reading; one that fails on the connection closes it
+//!   (see [`Client`]'s deadlines), and `push` and `watch` connect again.
 //!
 //! # Does not own
 //!

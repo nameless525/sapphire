@@ -119,8 +119,14 @@ pub enum LinkError {
     /// The device refused a request, and kept what it had.
     #[error("{0}")]
     Refused(String),
-    #[error("the device didn't answer within {} s", .0.as_secs())]
+    /// The device didn't answer in time. The connection is closed (`Client::is_closed`), and
+    /// the request may still apply on the device.
+    #[error("the device didn't answer within {} s (the request may still apply there)", .0.as_secs_f32())]
     TimedOut(Duration),
+    /// The device took none of the bytes sent to it for this long: it stopped reading. The
+    /// connection is closed.
+    #[error("the device took none of the bytes sent to it for {} s", .0.as_secs_f32())]
+    Stalled(Duration),
     #[error("the device answered {found} where {expected} was expected")]
     Unexpected { expected: &'static str, found: &'static str },
     #[error("the device asked for bytes past the end of pack {0:?}")]

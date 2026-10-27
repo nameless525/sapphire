@@ -5,7 +5,7 @@ What M2 inherits from M1, for whoever starts M2. It is a map, not a copy. Each i
 - the M1 plan, [m1-plan.md](m1-plan.md), by package ID (each package's row carries its "As built" notes);
 - or the code, where its crate docs keep a "Later milestones" section.
 
-Written at M1's close (X2, 2026-10-27), on `main` at dd8ffa7 plus the A8 follow-up 2 (PR #77).
+Written at M1's close (X2, 2026-10-27), on `main` at 9f4fce5 (the A8 follow-up 2, PR #77, its last package).
 
 ## Where M1 stands
 

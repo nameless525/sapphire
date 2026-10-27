@@ -45,7 +45,7 @@ use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
-use sapphire_render::{LightKind, LocalLight, MeshHandle, Renderer};
+use sapphire_render::{FaceExpression, LightKind, LocalLight, MeshHandle, Renderer};
 use sapphire_rhi::GpuContext;
 use sapphire_world::tod::TodTimeline;
 
@@ -253,10 +253,14 @@ pub(crate) enum Shot {
     /// The street out of the square, the character standing in it and the street running away
     /// behind her: its houses, lanterns, gateway and the tower at its end.
     Street,
+    /// A close-up of her face, nearly frontal from a little to her right, head and shoulders on
+    /// a long lens (X1 part 2c): her face's SDF shadow, eyes, brows and lash line, the bangs and
+    /// their shadow, as the reference games' dialogue close-ups frame them.
+    Face,
 }
 
 impl Shot {
-    pub const ALL: [Self; 4] = [Self::Wide, Self::Hero, Self::Sky, Self::Street];
+    pub const ALL: [Self; 5] = [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -264,6 +268,7 @@ impl Shot {
             Self::Hero => "hero",
             Self::Sky => "sky",
             Self::Street => "street",
+            Self::Face => "face",
         }
     }
 
@@ -271,7 +276,7 @@ impl Shot {
     /// lamps and cards) moved by the opposite, so she stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
-            Self::Wide | Self::Hero | Self::Sky => Vec3::ZERO,
+            Self::Wide | Self::Hero | Self::Sky | Self::Face => Vec3::ZERO,
             Self::Street => STREET,
         }
     }
@@ -288,6 +293,7 @@ impl Shot {
             Self::Hero => (Vec3::new(0.0, 1.2, 0.0), 18.0, -4.0, 3.0, 32.0),
             Self::Sky => (Vec3::new(0.0, 1.45, 0.0), -28.0, -18.0, 3.2, 58.0),
             Self::Street => (Vec3::new(0.2, 2.4, -6.0), 6.0, -4.0, 10.0, 55.0),
+            Self::Face => (Vec3::new(0.0, 1.43, 0.0), -16.0, 2.0, 0.8, 28.0),
         };
         OrbitCamera::shot(target, yaw.to_radians(), pitch.to_radians(), distance, fov.to_radians())
     }
@@ -366,6 +372,10 @@ fn turns() -> [(HumanBone, Quat); 7] {
 /// The expression the character holds, and its weight: a soft, relaxed face.
 const EXPRESSION: (&str, f32) = ("relaxed", 0.35);
 
+/// The weights of her face material's expression map (M1 C3; X1 part 2c): a faint blush over
+/// the cheeks and nose it paints, as the reference games' characters wear at rest, and no gloom.
+const FACE_EXPRESSION: FaceExpression = FaceExpression { blush: 0.3, gloom: 0.0 };
+
 /// The radius of the character's body capsule (M1 R4), from her feet to her head.
 const BODY_RADIUS: f32 = 0.16;
 /// From the head joint (the top of the neck) to the middle of the head, in meters.
@@ -401,7 +411,13 @@ pub(crate) fn held_pose(mesh: &Mesh, rig: &ArchivedCharacterRig) -> Result<(Rend
     let rest_head = pose::rest_rotation(&skeleton, head_joint);
     let face = (head_rotation * rest_head.inverse()).normalize();
     let feet = Vec3::new(head_position.x, mesh.streams.bounds.min[1].max(0.0), head_position.z);
-    let figure = Figure { head: head_position + face * HEAD_CENTER, feet, body_radius: BODY_RADIUS, face };
+    let figure = Figure {
+        head: head_position + face * HEAD_CENTER,
+        feet,
+        body_radius: BODY_RADIUS,
+        face,
+        expression: FACE_EXPRESSION,
+    };
     let mut morph_weights = vec![0.0; mesh.morph_targets.len()];
     let (name, weight) = EXPRESSION;
     if let Some(expression) = rig.expressions.iter().find(|expression| expression.name.as_str() == name) {
@@ -532,6 +548,8 @@ mod tests {
         }
         assert!(Shot::Sky.camera().eye().y < 1.45, "below her chest, looking up");
         assert!(Shot::Wide.camera().eye().distance(Vec3::ZERO) > 10.0, "from across the square");
+        let face = Shot::Face.camera().eye();
+        assert!((1.3..1.6).contains(&face.y) && face.x.hypot(face.z) < 1.0, "close to her face: {face}");
     }
 
     #[test]

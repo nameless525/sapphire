@@ -9,7 +9,7 @@
             iris: None,
             through_hair: None,
         )),
-        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color: (1.0, 0.97, 0.95, 1.0),
         base_color_map: Some("d64f7303-e46a-4bb4-8ce5-a7f3f94ff854"),
         alpha: Opaque,
         control_map: None,

@@ -89,8 +89,8 @@ use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, Fog, FramePacket, HeadBasis, LightKind, LocalLight,
-    MaterialHandle, MeshHandle, PostVariants, SkyLayers, ViewData, Wind,
+    CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
+    LocalLight, MaterialHandle, MeshHandle, PostVariants, SkyLayers, ViewData, Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
 use sapphire_world::fade::ProximityFade;
@@ -158,6 +158,8 @@ pub(crate) struct Figure {
     pub body_radius: f32,
     /// How its head is turned from facing +Z upright: its face's basis (M1 C3).
     pub face: Quat,
+    /// The expression its face holds: its blush and gloom weights (M1 C3).
+    pub expression: FaceExpression,
 }
 
 impl Figure {
@@ -168,6 +170,7 @@ impl Figure {
         feet: Vec3::new(0.0, 0.2, 0.0),
         body_radius: 0.24,
         face: Quat::IDENTITY,
+        expression: FaceExpression { blush: 0.0, gloom: 0.0 },
     };
 }
 
@@ -1035,7 +1038,7 @@ impl Scene {
                     forward: transform.0.transform_vector3(figure.face * Vec3::Z),
                     up: transform.0.transform_vector3(figure.face * Vec3::Y),
                 };
-                let face = CharacterFace { head: pose, ..CharacterFace::default() };
+                let face = CharacterFace { head: pose, expression: figure.expression };
                 let body = CharacterBody::capsule(
                     figure.feet + Vec3::new(0.0, figure.body_radius, 0.0),
                     figure.head,
@@ -1316,6 +1319,7 @@ mod tests {
             feet: Vec3::ZERO,
             body_radius: 0.16,
             face: Quat::IDENTITY,
+            expression: FaceExpression::default(),
         };
         let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
         let look = LookDev { town, fog_cards: None, pose: pose.clone(), figure };
@@ -1348,7 +1352,13 @@ mod tests {
         let look = || {
             let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
             let pose = RenderPose { palette: Vec::new(), morph_weights: Vec::new() };
-            let figure = Figure { head: Vec3::Y, feet: Vec3::ZERO, body_radius: 0.16, face: Quat::IDENTITY };
+            let figure = Figure {
+                head: Vec3::Y,
+                feet: Vec3::ZERO,
+                body_radius: 0.16,
+                face: Quat::IDENTITY,
+                expression: FaceExpression::default(),
+            };
             LookDev { town, fog_cards: None, pose, figure }
         };
         // Two complete timelines that differ, standing for an edit of either file.

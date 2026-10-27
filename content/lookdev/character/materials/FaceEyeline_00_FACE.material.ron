@@ -14,7 +14,7 @@
                 distance: 0.15,
             )),
         )),
-        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color: (0.5, 0.42, 0.42, 1.0),
         base_color_map: Some("d0053ac1-e144-46ab-a229-4004b3d39a1e"),
         alpha: Opaque,
         control_map: None,

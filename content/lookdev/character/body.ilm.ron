@@ -1,0 +1,17 @@
+// The look-dev character's body control map (M1 X1 part 2c): the shadow under her chin, which
+// `gen-lookdev` measures from the model (`neck_shadow.png`, `lookdev::neck_shadow_png`), and
+// otherwise what the body shades with no map: no highlight, a middling highlight size and
+// material ID 0.
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Constant(0.0),
+        shadow_bias: Image(
+            path: "neck_shadow.png",
+            channel: R,
+        ),
+        specular_threshold: Constant(0.5),
+        material_id: Constant(0),
+    ),
+)

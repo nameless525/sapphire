@@ -79,7 +79,7 @@ pub struct Scene {
 /// and pin 4× MSAA, no shadows, no fog and no AO, so they show the layers alone; the fade scenes
 /// fade the character (`--fade`; no earlier scene fades one) in the courtyard under plain post,
 /// AO off, through temporal AA and through MSAA.
-pub fn scenes() -> [Scene; 86] {
+pub fn scenes() -> [Scene; 87] {
     [
         Scene {
             name: "turntable-start",
@@ -2090,6 +2090,29 @@ pub fn scenes() -> [Scene; 86] {
                 "mobile-low",
                 "--ao",
                 "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The look-dev character's face close-up (X1 part 2c) at midday, pinned as the other
+        // look-dev scenes are: her face's SDF shadow in its peach ramp with a light blush, the
+        // bangs' warm shadow on her forehead, the irises' gradient and sparkles under the
+        // glowing highlights, the darkened lash line, the hair's crisp band and thin brown
+        // outlines, the square behind her.
+        Scene {
+            name: "lookdev-face",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "face",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

@@ -38,14 +38,21 @@
 //! (`foliage/kit_tree*.assembly.ron`), authored, not generated.
 //!
 //! The character (pixiv's VRM sample, A6) brings its own textures, extracted byte for byte under
-//! `content/third_party/`; its look-dev materials, face map and masks are in `character/`. One
-//! of its maps is derived here: **`character/hair_mask.png`** ([`hair_mask_png`]), the hair
-//! mask C5's hair shading reads, from the model's painted highlight.
+//! `content/third_party/`; its look-dev materials, ramps, face map and masks are in `character/`.
+//! Five of its maps are made here:
+//!
+//! | File (in `character/`) | What |
+//! |---|---|
+//! | `hair_mask.png` | The hair mask C5's hair shading reads ([`hair_mask_png`]), derived from the model's painted highlight |
+//! | `eye_iris.png` | The irises the iris layer draws ([`eye_iris_png`]), derived from the model's: a deep-to-amber vertical gradient, a dark ring and one painted highlight (X1 part 2c) |
+//! | `face/face_mask.png` | C3's face mask ([`face_mask_png`]): a nose line and a highlight on the nose's tip, painted in code on the model's face UVs (X1 part 2c) |
+//! | `face/face_expression.png` | C3's expression map ([`face_expression_png`]): a blush over each cheek and the nose's bridge (X1 part 2c) |
+//! | `neck_shadow.png` | The shadow under the chin ([`neck_shadow_png`]), the shadow bias of the body's ILM map (`body.ilm.ron`), measured from the model's face and body meshes (X1 part 2c) |
 
 use std::io;
 
 use glam::{Vec2, Vec3};
-use sapphire_assets::character_maps::hair_mask;
+use sapphire_assets::character_maps::{face_expression, face_mask, hair_mask};
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
@@ -111,6 +118,28 @@ pub const HAIR_HIGHLIGHT: &str = "../third_party/vrm1_constraint_twist_sample/ex
 /// The character's hair mask, relative to the look-dev directory.
 pub const HAIR_MASK: &str = "character/hair_mask.png";
 
+/// The look-dev character's irises (VRoid's `EyeIris_00`, extracted byte for byte from the
+/// model), relative to the look-dev directory: [`eye_iris_png`]'s input.
+pub const IRIS_SOURCE: &str = "../third_party/vrm1_constraint_twist_sample/extracted/EyeIris_00.png";
+
+/// The character's irises as the look-dev iris layer draws them, relative to the look-dev
+/// directory.
+pub const IRIS: &str = "character/eye_iris.png";
+
+/// The character's face mask, relative to the look-dev directory: [`face_mask_png`].
+pub const FACE_MASK: &str = "character/face/face_mask.png";
+
+/// The character's expression map, relative to the look-dev directory: [`face_expression_png`].
+pub const FACE_EXPRESSION: &str = "character/face/face_expression.png";
+
+/// The look-dev character's model (pixiv's VRM, byte for byte), relative to the look-dev
+/// directory: [`neck_shadow_png`]'s input.
+pub const MODEL: &str = "../third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm";
+
+/// The shadow under the character's chin, relative to the look-dev directory: the shadow bias
+/// her body's ILM map (`character/body.ilm.ron`) reads.
+pub const NECK_SHADOW: &str = "character/neck_shadow.png";
+
 /// Every generated file, relative to the look-dev directory, with its bytes.
 pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let path = |name: &str| format!("{TOWN_DIR}/textures/{name}");
@@ -131,23 +160,30 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     ])
 }
 
-/// The generated plants and the sky's Milky Way, relative to the look-dev directory, with their
-/// bytes: the sources [`files`]'s maps don't cover.
+/// The generated plants, the sky's Milky Way and the character's face masks, relative to the
+/// look-dev directory, with their bytes: the sources [`files`]'s maps don't cover.
 pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut generated: Vec<(String, Vec<u8>)> =
         PLANTS.iter().map(|&(name, plant)| (format!("{FOLIAGE_DIR}/{name}"), plant.glb())).collect();
     generated.push((format!("{SKY_DIR}/milky_way.png"), sky::milky_way_png_in(&MILKY_WAY)?));
+    generated.push((FACE_MASK.to_owned(), face_mask_png()?));
+    generated.push((FACE_EXPRESSION.to_owned(), face_expression_png()?));
     Ok(generated)
 }
 
 /// Writes every generated file into the look-dev directory `dir` (creating the directories they
-/// sit in): the town's maps and the character's hair mask, which [`HAIR_HIGHLIGHT`] under `dir`
-/// is read for. Returns their paths.
+/// sit in): the town's maps and the character's hair mask, irises and neck shadow, which
+/// [`HAIR_HIGHLIGHT`], [`IRIS_SOURCE`] and [`MODEL`] under `dir` are read for. Returns their
+/// paths.
 pub fn write_all(dir: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
     let highlight = std::fs::read(dir.join(HAIR_HIGHLIGHT))?;
+    let iris = std::fs::read(dir.join(IRIS_SOURCE))?;
+    let model = std::fs::read(dir.join(MODEL))?;
     let mut generated = files()?;
     generated.extend(content_files()?);
     generated.push((HAIR_MASK.to_owned(), hair_mask_png(&highlight)?));
+    generated.push((IRIS.to_owned(), eye_iris_png(&iris)?));
+    generated.push((NECK_SHADOW.to_owned(), neck_shadow_png(&model)?));
     let mut paths = Vec::new();
     for (name, bytes) in generated {
         let path = dir.join(name);
@@ -540,18 +576,277 @@ pub fn band_png() -> io::Result<Vec<u8>> {
 
 /// The look-dev character's hair mask (`character_maps::hair_mask`, M1 C5) from the model's
 /// painted highlight `highlight` (a PNG, [`HAIR_HIGHLIGHT`]), on the same strand UVs: R the
-/// painted band as the model's author drew it (each texel's brightest channel), G no shift, B no
-/// occlusion, since the albedo already darkens the roots.
+/// painted band as the model's author drew it, evened into one sheen ([`hair_highlight`]), G
+/// no shift, B no occlusion, since the albedo already darkens the roots.
 pub fn hair_mask_png(highlight: &[u8]) -> io::Result<Vec<u8>> {
     let highlight = image::load_from_memory(highlight).map_err(io::Error::other)?.to_rgb8();
     let mask = image::RgbImage::from_fn(highlight.width(), highlight.height(), |x, y| {
         let mut texel = [0; 3];
-        texel[hair_mask::HIGHLIGHT] = highlight.get_pixel(x, y).0.into_iter().max().unwrap_or(0);
+        let painted = highlight.get_pixel(x, y).0.into_iter().max().unwrap_or(0);
+        texel[hair_mask::HIGHLIGHT] = unorm8(hair_highlight(f32::from(painted) / 255.0));
         texel[hair_mask::SHIFT] = unorm8(hair_mask::NO_SHIFT);
         texel[hair_mask::OCCLUSION] = u8::MAX;
         image::Rgb(texel)
     });
     png(mask)
+}
+
+/// The hair mask's highlight from the model's painted one (each texel's brightest channel, 0
+/// to 1): its airbrushed strands evened into one broad, soft-edged sheen, as Wuthering Waves'
+/// in-game hair wears it across the crown and bangs (X1 part 2c). The painted strands peak at
+/// about 0.8 between dark gaps; the ramp lifts their faint feathering and fills the gaps
+/// between them, so the band reads as one gloss rather than separate streaks.
+pub fn hair_highlight(painted: f32) -> f32 {
+    smoothstep(0.08, 0.45, painted)
+}
+
+/// The look-dev character's irises from the model's `iris` (a PNG, [`IRIS_SOURCE`]), on the same
+/// UVs (X1 part 2c): each iris graded from a deep top under the lid to a muted amber bottom, as
+/// the reference games paint their irises' vertical gradient, darkened toward a ring at its
+/// rim, and lit by one small painted highlight, so with the model's own highlight mesh over it
+/// the eye holds two. Texels outside both irises are the model's.
+pub fn eye_iris_png(iris: &[u8]) -> io::Result<Vec<u8>> {
+    let iris = image::load_from_memory(iris).map_err(io::Error::other)?.to_rgb8();
+    let size = Vec2::new(iris.width() as f32, iris.height() as f32);
+    let image = image::RgbImage::from_fn(iris.width(), iris.height(), |x, y| {
+        let texel = Vec3::from(iris.get_pixel(x, y).0.map(|c| srgb_to_linear(f32::from(c) / 255.0)));
+        let p = (Vec2::new(x as f32, y as f32) + Vec2::splat(0.5)) / size;
+        let color =
+            IRISES.iter().fold(texel, |color, &(center, radii)| iris_texel(color, (p - center) / radii));
+        image::Rgb(color.to_array().map(|c| unorm8(linear_to_srgb(c.clamp(0.0, 1.0)))))
+    });
+    png(image)
+}
+
+/// The model's two irises on its iris texture: centers and half-extents in UV units.
+const IRISES: [(Vec2, Vec2); 2] =
+    [(Vec2::new(0.252, 0.511), Vec2::new(0.102, 0.241)), (Vec2::new(0.747, 0.513), Vec2::new(0.102, 0.241))];
+
+/// The painted highlight in an iris, where its coordinates run from -1 to 1 across it (y down):
+/// its center and radius, high on the iris, under the lid's edge.
+const SPARKLE: (Vec2, f32) = (Vec2::new(0.4, -0.4), 0.085);
+
+/// One iris texel at `q`, its coordinates in the iris from -1 to 1 (y down), from the model's
+/// linear `color`: unchanged outside the iris.
+fn iris_texel(color: Vec3, q: Vec2) -> Vec3 {
+    let inside = 1.0 - smoothstep(0.95, 1.05, q.length());
+    if inside == 0.0 {
+        return color;
+    }
+    // A deep top under the lid, a muted amber bottom, a quarter of the way to gray, and a
+    // darker ring at the rim.
+    let lower = smoothstep(-0.9, 0.8, q.y);
+    let graded = color * Vec3::new(0.5, 0.48, 0.5).lerp(Vec3::new(1.08, 1.0, 0.94), lower);
+    let gray = Vec3::splat(graded.dot(Vec3::new(0.2126, 0.7152, 0.0722)));
+    let ringed = graded.lerp(gray, 0.25) * (1.0 - 0.5 * smoothstep(0.72, 0.95, q.length()));
+    let (center, radius) = SPARKLE;
+    let light = 1.0 - smoothstep(0.5 * radius, radius, q.distance(center));
+    let sparkled = ringed.lerp(Vec3::new(1.0, 0.97, 0.92), light);
+    color.lerp(sparkled, inside)
+}
+
+/// The look-dev character's face mask (`character_maps::face_mask`, M1 C3), painted in code on
+/// the model's face UVs (`Face_00_SKIN`'s, mirror-symmetric about u = 0.5, the character's left
+/// at u above 0.5; v runs down):
+/// - R, the nose line: a short stroke down the nose's left side, the far side from a camera on
+///   the head's right, as the shader expects (it mirrors the mask for a camera on her left);
+/// - G, the face highlight: a small soft spot on the nose's tip, over the model's painted nose;
+/// - B, always lit: nothing, since her eyes, brows and lash line are meshes of their own.
+pub fn face_mask_png() -> io::Result<Vec<u8>> {
+    mask(512, |p| {
+        let mut texel = [0.0; 3];
+        texel[face_mask::NOSE_LINE] = stroke(p, NOSE_LINE, 0.0028);
+        texel[face_mask::HIGHLIGHT] = spot(p, NOSE_TIP, Vec2::new(0.009, 0.012), 0.6);
+        texel
+    })
+}
+
+/// The nose line's stroke on the face UVs: from the bridge's side down to beside the tip.
+const NOSE_LINE: [Vec2; 2] = [Vec2::new(0.511, 0.618), Vec2::new(0.509, 0.664)];
+/// The nose's tip on the face UVs, just above the model's painted nose.
+const NOSE_TIP: Vec2 = Vec2::new(0.5, 0.652);
+/// The cheeks' centers on the face UVs, where the model's texture paints its faint blush.
+const CHEEKS: [Vec2; 2] = [Vec2::new(0.337, 0.645), Vec2::new(0.663, 0.645)];
+/// The nose's bridge on the face UVs, between the cheeks, where a fainter blush joins them.
+const BRIDGE: Vec2 = Vec2::new(0.5, 0.632);
+
+/// The look-dev character's expression map (`character_maps::face_expression`, M1 C3), painted
+/// in code on the model's face UVs: R a soft blush over each cheek, wider than it is tall,
+/// fading from its center with no edge, and a fainter one across the nose's bridge, at most
+/// `BLUSH` (0.6) so the character's blush weight keeps it a tint; G no gloom.
+pub fn face_expression_png() -> io::Result<Vec<u8>> {
+    mask(512, |p| {
+        let mut texel = [0.0; 3];
+        let cheeks =
+            CHEEKS.iter().map(|&cheek| spot(p, cheek, Vec2::new(0.1, 0.075), 0.0)).fold(0.0, f32::max);
+        let blush = cheeks.max(0.5 * spot(p, BRIDGE, Vec2::new(0.06, 0.022), 0.0));
+        texel[face_expression::BLUSH] = BLUSH * blush;
+        texel
+    })
+}
+
+/// The expression map's blush at the middle of a cheek.
+const BLUSH: f32 = 0.6;
+
+/// The look-dev character's neck shadow (X1 part 2c): the shadow bias (`character_maps::ilm`'s
+/// G, which her body's ILM map, `character/body.ilm.ron`, reads from this map's gray) on the
+/// model's body UVs. The reference games paint a shadow under a character's chin, since
+/// characters never self-shadow (R4) and the jaw would otherwise leave the neck as lit as the
+/// face. Measured on the model `vrm` (a VRM, [`MODEL`]) in its mesh space, standing at the
+/// origin facing +Z: the face's lowest point in each column across the head traces the jaw,
+/// and each body texel on the neck (within `NECK_HALF_WIDTH` of the middle) from that line
+/// less `NECK_SHADOW_DROP` up to it plus `NECK_SHADOW_RISE` is held in shadow (0), fading to
+/// neutral (0.5) over `NECK_SHADOW_EDGE` either side, so the edge falls as a V under the chin
+/// and climbs toward the ears. Texels outside the body's UV islands take their neighbors'
+/// values, so filtering at a seam never brings neutral in.
+pub fn neck_shadow_png(vrm: &[u8]) -> io::Result<Vec<u8>> {
+    let gltf::Gltf { document, blob } = gltf::Gltf::from_slice(vrm).map_err(io::Error::other)?;
+    let blob = blob.ok_or_else(|| io::Error::other("the model has no binary chunk"))?;
+    let triangles = |material: &str| -> io::Result<Vec<[(Vec3, Vec2); 3]>> {
+        let missing = |what: &str| io::Error::other(format!("{material} has no {what}"));
+        let mut triangles = Vec::new();
+        for primitive in document.meshes().flat_map(|mesh| mesh.primitives()) {
+            if primitive.material().name() != Some(material) {
+                continue;
+            }
+            let reader = primitive.reader(|buffer| (buffer.index() == 0).then_some(blob.as_slice()));
+            let positions: Vec<Vec3> =
+                reader.read_positions().ok_or_else(|| missing("positions"))?.map(Vec3::from).collect();
+            let uvs: Vec<Vec2> =
+                reader.read_tex_coords(0).ok_or_else(|| missing("UVs"))?.into_f32().map(Vec2::from).collect();
+            let indices: Vec<u32> =
+                reader.read_indices().ok_or_else(|| missing("indices"))?.into_u32().collect();
+            let vertex = |i: u32| (positions[i as usize], uvs[i as usize]);
+            triangles.extend(
+                indices.as_chunks::<3>().0.iter().map(|&[a, b, c]| [vertex(a), vertex(b), vertex(c)]),
+            );
+        }
+        if triangles.is_empty() {
+            return Err(missing("triangles"));
+        }
+        Ok(triangles)
+    };
+
+    // The jaw: the face's lowest point in each column, by distance from the head's middle.
+    let mut jaw = [f32::INFINITY; JAW_COLUMNS];
+    for &(p, _) in triangles(FACE_MATERIAL)?.iter().flatten() {
+        let column = ((p.x.abs() / JAW_COLUMN) as usize).min(JAW_COLUMNS - 1);
+        jaw[column] = jaw[column].min(p.y);
+    }
+    for column in 1..JAW_COLUMNS {
+        if jaw[column].is_infinite() {
+            jaw[column] = jaw[column - 1];
+        }
+    }
+    let jaw_at = |x: f32| {
+        let at = (x.abs() / JAW_COLUMN - 0.5).clamp(0.0, (JAW_COLUMNS - 1) as f32);
+        let below = at as usize;
+        let above = (below + 1).min(JAW_COLUMNS - 1);
+        jaw[below] + (jaw[above] - jaw[below]) * at.fract()
+    };
+    let bias = |p: Vec3| {
+        if p.x.abs() > NECK_HALF_WIDTH {
+            return 0.5;
+        }
+        let jaw = jaw_at(p.x);
+        let (bottom, top) = (jaw - NECK_SHADOW_DROP, jaw + NECK_SHADOW_RISE);
+        let below_top = 1.0 - smoothstep(top - NECK_SHADOW_EDGE, top + NECK_SHADOW_EDGE, p.y);
+        0.5 * (1.0 - smoothstep(bottom - NECK_SHADOW_EDGE, bottom + NECK_SHADOW_EDGE, p.y) * below_top)
+    };
+
+    // The body's triangles rasterized in UV space, each texel center taking the bias of its
+    // point on the body; where islands overlap (mirrored halves), the deeper shadow.
+    let size = NECK_SHADOW_SIZE as usize;
+    let mut texels: Vec<Option<f32>> = vec![None; size * size];
+    for [(pa, ta), (pb, tb), (pc, tc)] in triangles(BODY_MATERIAL)? {
+        let (a, b, c) = (ta * size as f32, tb * size as f32, tc * size as f32);
+        let area = (b - a).perp_dot(c - a);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let low = a.min(b).min(c).floor().max(Vec2::ZERO);
+        let high = a.max(b).max(c).ceil().min(Vec2::splat(size as f32));
+        for y in low.y as usize..high.y as usize {
+            for x in low.x as usize..high.x as usize {
+                let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let wa = (b - p).perp_dot(c - p) / area;
+                let wb = (c - p).perp_dot(a - p) / area;
+                let wc = 1.0 - wa - wb;
+                if wa < -1e-4 || wb < -1e-4 || wc < -1e-4 {
+                    continue;
+                }
+                let value = bias(pa * wa + pb * wb + pc * wc);
+                let texel = &mut texels[y * size + x];
+                *texel = Some(texel.map_or(value, |old: f32| old.min(value)));
+            }
+        }
+    }
+    // Grow the islands a few texels into the gaps around them.
+    for _ in 0..NECK_SHADOW_DILATION {
+        let grown = texels.clone();
+        for y in 0..size {
+            for x in 0..size {
+                if grown[y * size + x].is_some() {
+                    continue;
+                }
+                let neighbors = [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)];
+                let near = neighbors
+                    .iter()
+                    .filter(|&&(nx, ny)| nx < size && ny < size)
+                    .filter_map(|&(nx, ny)| grown[ny * size + nx]);
+                texels[y * size + x] = near.reduce(f32::min);
+            }
+        }
+    }
+    let image = image::GrayImage::from_fn(NECK_SHADOW_SIZE, NECK_SHADOW_SIZE, |x, y| {
+        image::Luma([unorm8(texels[y as usize * size + x as usize].unwrap_or(0.5))])
+    });
+    png(image)
+}
+
+/// The model's face and body materials, by name.
+const FACE_MATERIAL: &str = "Face_00_SKIN";
+const BODY_MATERIAL: &str = "Body_00_SKIN";
+/// The jaw's columns: 5 mm each, from the head's middle out to 10 cm.
+const JAW_COLUMN: f32 = 0.005;
+const JAW_COLUMNS: usize = 20;
+/// How far either side of the middle the neck shadow reaches, in meters: past the neck (about
+/// 4 cm), short of the shoulders.
+const NECK_HALF_WIDTH: f32 = 0.09;
+/// How far below the jaw the shadow's edge falls, in meters: the jaw's shadow under the
+/// look-dev day's high sun, about 2.8 cm under the chin's 3.5 cm overhang.
+const NECK_SHADOW_DROP: f32 = 0.028;
+/// How far above the jaw the shadow reaches, in meters: the neck's sides and back up behind the
+/// jaw, short of the scalp and ears under the hair, which the body's mesh also holds.
+const NECK_SHADOW_RISE: f32 = 0.02;
+/// The shadow edge's half width, in meters.
+const NECK_SHADOW_EDGE: f32 = 0.006;
+/// The neck shadow's size in texels, and how many texels its islands grow.
+const NECK_SHADOW_SIZE: u32 = 512;
+const NECK_SHADOW_DILATION: usize = 4;
+
+/// A soft elliptical spot: 1 within `core` of its radii of `center`, fading to 0 at them.
+fn spot(p: Vec2, center: Vec2, radii: Vec2, core: f32) -> f32 {
+    1.0 - smoothstep(core, 1.0, ((p - center) / radii).length())
+}
+
+/// A stroke along the segment `ends`, `half_width` across, its edge antialiased over half its
+/// width and its ends tapered over their last fifth.
+fn stroke(p: Vec2, ends: [Vec2; 2], half_width: f32) -> f32 {
+    let [a, b] = ends;
+    let along = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+    let distance = p.distance(a + (b - a) * along);
+    let taper = smoothstep(0.0, 0.2, along) * smoothstep(0.0, 0.2, 1.0 - along);
+    (1.0 - smoothstep(0.5 * half_width, half_width, distance)) * taper
+}
+
+/// A square linear mask of `size` texels from a function of the texel's center in `0..1`.
+fn mask(size: u32, texel: impl Fn(Vec2) -> [f32; 3]) -> io::Result<Vec<u8>> {
+    let image = image::RgbImage::from_fn(size, size, |x, y| {
+        let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5) / size as f32;
+        image::Rgb(texel(p).map(|c| unorm8(c.clamp(0.0, 1.0))))
+    });
+    png(image)
 }
 
 #[cfg(test)]
@@ -563,8 +858,8 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev")
     }
 
-    /// The hair mask keeps the model's painted band in R, and neither shifts the band nor
-    /// occludes; the committed mask is what the generator makes of the committed highlight.
+    /// The hair mask keeps the model's painted band in R, crisper, and neither shifts the band
+    /// nor occludes; the committed mask is what the generator makes of the committed highlight.
     #[test]
     fn the_hair_mask_keeps_the_painted_band() {
         let highlight_bytes = std::fs::read(lookdev_dir().join(HAIR_HIGHLIGHT)).unwrap();
@@ -576,12 +871,151 @@ mod tests {
         assert_eq!(mask.dimensions(), highlight.dimensions());
         let mut painted = 0;
         for (texel, painted_texel) in mask.pixels().zip(highlight.pixels()) {
-            assert_eq!(texel.0[hair_mask::HIGHLIGHT], *painted_texel.0.iter().max().unwrap());
+            let drawn = f32::from(*painted_texel.0.iter().max().unwrap()) / 255.0;
+            assert_eq!(texel.0[hair_mask::HIGHLIGHT], unorm8(hair_highlight(drawn)));
             assert_eq!(texel.0[hair_mask::SHIFT], 128, "0.5 within 8 bits: no shift");
             assert_eq!(texel.0[hair_mask::OCCLUSION], 255);
             painted += usize::from(texel.0[hair_mask::HIGHLIGHT] > 128);
         }
         assert!(painted > 1000, "the band is there: {painted} bright texels");
+        // The strands' faint feathering is cut, and the band filled whole between them.
+        assert_eq!(hair_highlight(0.05), 0.0);
+        assert_eq!(hair_highlight(0.5), 1.0);
+        assert!((0..=100).map(|i| hair_highlight(i as f32 / 100.0)).is_sorted(), "it never reverses");
+    }
+
+    /// The look-dev irises are the model's, graded, ringed and lit inside each iris and untouched
+    /// outside it, and the committed map is what the generator makes of the committed source.
+    #[test]
+    fn the_irises_keep_the_model_s_texels_outside_them() {
+        let source = std::fs::read(lookdev_dir().join(IRIS_SOURCE)).unwrap();
+        let bytes = eye_iris_png(&source).unwrap();
+        assert_eq!(bytes, eye_iris_png(&source).unwrap(), "byte for byte");
+        assert_png_matches(IRIS, &std::fs::read(lookdev_dir().join(IRIS)).unwrap(), &bytes);
+        let (model, iris) = (
+            image::load_from_memory(&source).unwrap().to_rgb8(),
+            image::load_from_memory(&bytes).unwrap().to_rgb8(),
+        );
+        assert_eq!(model.dimensions(), iris.dimensions());
+        let size = Vec2::new(model.width() as f32, model.height() as f32);
+        let at = |image: &image::RgbImage, uv: Vec2| {
+            let p = uv * size;
+            image.get_pixel(p.x as u32, p.y as u32).0
+        };
+        let sum = |texel: [u8; 3]| texel.iter().map(|&c| u32::from(c)).sum::<u32>() as f32;
+        // How much the generator kept of the model's texel at `q` in the iris at `center`, in sRGB
+        // code values: the ring's half of the light keeps about three quarters of them.
+        let kept = |center: Vec2, radii: Vec2, q: Vec2| {
+            let uv = center + q * radii;
+            sum(at(&iris, uv)) / sum(at(&model, uv))
+        };
+        for (center, radii) in IRISES {
+            let outside = center + Vec2::new(1.3 * radii.x, 0.0);
+            assert_eq!(at(&iris, outside), at(&model, outside), "{center}: outside the iris");
+            let top = kept(center, radii, Vec2::new(0.0, -0.6));
+            assert!(top < 0.75, "{center}: a deep top, {top} of the model's");
+            let bottom = kept(center, radii, Vec2::new(0.0, 0.6));
+            assert!(bottom > 1.25 * top, "{center}: a lighter bottom, {bottom} of the model's against {top}");
+            let rim = kept(center, radii, Vec2::new(0.0, 0.92));
+            assert!(rim < 0.85 * bottom, "{center}: a darker ring, {rim} of the model's");
+            let (sparkle, _) = SPARKLE;
+            let texel = at(&iris, center + sparkle * radii);
+            assert!(texel.iter().all(|&c| c > 220), "{center}: a highlight at {sparkle}: {texel:?}");
+        }
+    }
+
+    /// The character's skin, hair and clothes shade by the look-dev ramp (X1 part 2c), each on its
+    /// own day and night rows, which the ramp document holds; eyes and the mouth keep their
+    /// bands.
+    #[test]
+    fn the_character_shades_by_its_ramps() {
+        use sapphire_assets::character_maps::ramp::{Half, row};
+        use sapphire_assets::material::{AnyMaterialDocument, DiffuseMode};
+
+        let ramp_path = lookdev_dir().join("character/character.ramp.ron");
+        let ramp_id = crate::meta::read(&ramp_path.with_extension("ron.meta")).unwrap().id;
+        let ramp: crate::character_maps::RampMap =
+            sapphire_serialize::from_ron(&std::fs::read_to_string(&ramp_path).unwrap()).unwrap();
+        let names: Vec<&str> = ramp.materials.iter().map(|material| material.name.as_str()).collect();
+        assert_eq!(names, ["skin", "hair", "cloth light", "cloth dark"]);
+        let expected = |name: &str| match name {
+            "Face_00_SKIN" | "Body_00_SKIN" => Some(0),
+            "Hair_00_HAIR" | "HairBack_00_HAIR" => Some(1),
+            "Tops_01_CLOTH" => Some(2),
+            "Bottoms_01_CLOTH" | "Shoes_01_CLOTH" => Some(3),
+            _ => None,
+        };
+        for entry in std::fs::read_dir(lookdev_dir().join("character/materials")).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_str().unwrap().to_owned();
+            let Some(name) = file.strip_suffix(".material.ron") else { continue };
+            let AnyMaterialDocument::AnimeCharacter(material) =
+                crate::material::read(&std::fs::read(&path).unwrap()).unwrap()
+            else {
+                panic!("{name} isn't an anime character material");
+            };
+            match (expected(name), &material.diffuse) {
+                (Some(id), DiffuseMode::Ramp(diffuse)) => {
+                    assert_eq!(diffuse.map, ramp_id, "{name}");
+                    let id = sapphire_assets::character_maps::MaterialId::new(id).unwrap();
+                    for region in &material.regions {
+                        assert_eq!(region.ramp_row.map(u32::from), Some(row(id, Half::Day)), "{name}");
+                        assert_eq!(
+                            region.night_ramp_row.map(u32::from),
+                            Some(row(id, Half::Night)),
+                            "{name}"
+                        );
+                    }
+                }
+                (None, DiffuseMode::Bands(_)) => {}
+                (_, diffuse) => panic!("{name}: {diffuse:?}"),
+            }
+        }
+    }
+
+    /// The face masks hold what the look-dev face material reads: the nose line on the nose's
+    /// left (u above 0.5), a highlight on its tip and nothing always lit; the blush over both
+    /// cheeks, a tint at most, half of it over the nose's bridge, and no gloom.
+    #[test]
+    fn the_face_masks_paint_the_nose_and_cheeks() {
+        let decode = |bytes: Vec<u8>| image::load_from_memory(&bytes).unwrap().to_rgb8();
+        let at = |image: &image::RgbImage, uv: Vec2| {
+            let size = image.width() as f32;
+            image.get_pixel((uv.x * size) as u32, (uv.y * size) as u32).0
+        };
+        let face = decode(face_mask_png().unwrap());
+        let line = NOSE_LINE[0].lerp(NOSE_LINE[1], 0.5);
+        assert_eq!(at(&face, line)[face_mask::NOSE_LINE], 255, "the nose line");
+        assert_eq!(at(&face, Vec2::new(1.0 - line.x, line.y))[face_mask::NOSE_LINE], 0, "on one side");
+        assert_eq!(at(&face, NOSE_TIP)[face_mask::HIGHLIGHT], 255, "the nose's tip");
+        assert!(face.pixels().all(|texel| texel.0[face_mask::ALWAYS_LIT] == 0), "nothing always lit");
+        let expression = decode(face_expression_png().unwrap());
+        for cheek in CHEEKS {
+            assert_eq!(at(&expression, cheek)[face_expression::BLUSH], unorm8(BLUSH), "{cheek}");
+        }
+        let bridge = at(&expression, BRIDGE)[face_expression::BLUSH];
+        assert!(bridge.abs_diff(unorm8(0.5 * BLUSH)) <= 1, "the bridge: {bridge}");
+        assert_eq!(at(&expression, Vec2::new(0.5, 0.7))[face_expression::BLUSH], 0, "none on the mouth");
+        assert!(expression.pixels().all(|texel| texel.0[face_expression::GLOOM] == 0), "no gloom");
+    }
+
+    /// The neck shadow is the committed map, made from the committed model: a shadow (0) on
+    /// the neck under the chin, neutral (0.5) on most of the body, and between the two only
+    /// along the shadow's soft edge.
+    #[test]
+    fn the_neck_shadow_falls_under_the_chin() {
+        let model = std::fs::read(lookdev_dir().join(MODEL)).unwrap();
+        let bytes = neck_shadow_png(&model).unwrap();
+        assert_eq!(bytes, neck_shadow_png(&model).unwrap(), "byte for byte");
+        assert_png_matches(NECK_SHADOW, &std::fs::read(lookdev_dir().join(NECK_SHADOW)).unwrap(), &bytes);
+        let map = image::load_from_memory(&bytes).unwrap().to_luma8();
+        assert_eq!(map.dimensions(), (NECK_SHADOW_SIZE, NECK_SHADOW_SIZE));
+        let count = |keep: fn(u8) -> bool| map.pixels().filter(|texel| keep(texel.0[0])).count();
+        let (shadow, neutral, edge) = (count(|v| v == 0), count(|v| v == 128), count(|v| v != 0 && v != 128));
+        assert!(shadow > 1000, "a shadow: {shadow} texels");
+        assert!(neutral > 20 * shadow, "most of the body neutral: {neutral} texels");
+        assert!(edge < shadow, "a narrow edge: {edge} texels");
+        assert!(map.pixels().all(|texel| texel.0[0] <= 128), "nothing lit beyond neutral");
     }
 
     /// The character's look-dev materials name its parts, which MToon doesn't, so the character
@@ -621,9 +1055,10 @@ mod tests {
                 }
                 CharacterSurface::Eye(eye) => {
                     assert_eq!(eye.through_hair.is_some(), name != "EyeWhite_00_EYE", "{name}");
-                    // The layer the VRM import maps VRoid's name onto (M1 C6).
+                    // The layer the VRM import maps VRoid's name onto (M1 C6); a highlight's
+                    // motion is the look's to tune (X1 part 2c).
                     let layer = crate::import::vrm::vroid_eye_layer(name);
-                    assert_eq!(Some(eye.layer), layer, "{name}");
+                    assert_eq!(Some(eye.layer.index()), layer.map(|layer| layer.index()), "{name}");
                     "eye"
                 }
             };

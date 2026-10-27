@@ -1,19 +1,24 @@
 // Written by tools/blender/bake_character_masks.py from the shading normals of
 // 'FaceSkin'. Paint over the masks, keeping each inside the one before it, then cook.
+//
+// X1 part 2c moved the masks baked for 10° to 80° to a + 16°·sin(2a) (the file names keep the
+// baked angles), so the face holds its light longer as the key turns from the front, as the
+// reference games' faces do: a light 45° to the side shades only the far cheek's edge, and
+// the shadow sweeps to the nose as the light comes side-on at 90°. Re-baking resets them.
 (
     type: "sapphire::pipeline::FaceSdfMap",
     version: 1,
     data: (
         horizontal: [
             (angle: 0.0, path: "masks/h_000.00.png"),
-            (angle: 10.0, path: "masks/h_010.00.png"),
-            (angle: 20.0, path: "masks/h_020.00.png"),
-            (angle: 30.0, path: "masks/h_030.00.png"),
-            (angle: 40.0, path: "masks/h_040.00.png"),
-            (angle: 50.0, path: "masks/h_050.00.png"),
-            (angle: 60.0, path: "masks/h_060.00.png"),
-            (angle: 70.0, path: "masks/h_070.00.png"),
-            (angle: 80.0, path: "masks/h_080.00.png"),
+            (angle: 15.47, path: "masks/h_010.00.png"),
+            (angle: 30.28, path: "masks/h_020.00.png"),
+            (angle: 43.86, path: "masks/h_030.00.png"),
+            (angle: 55.76, path: "masks/h_040.00.png"),
+            (angle: 65.76, path: "masks/h_050.00.png"),
+            (angle: 73.86, path: "masks/h_060.00.png"),
+            (angle: 80.28, path: "masks/h_070.00.png"),
+            (angle: 85.47, path: "masks/h_080.00.png"),
             (angle: 90.0, path: "masks/h_090.00.png"),
             (angle: 100.0, path: "masks/h_100.00.png"),
             (angle: 110.0, path: "masks/h_110.00.png"),

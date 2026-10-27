@@ -1,0 +1,81 @@
+// The look-dev character's shadow ramps (M1 X1 part 2c), toward Wuthering Waves' characters:
+// every row multiplies the albedo on the shadow side, from the deepest shadow (0) to the
+// terminator (1). Day rows are nearly neutral on skin, so its shade stays the albedo's own pale
+// peach, as in-game Wuthering Waves keeps it, cool on hair and cooler on clothes; night rows,
+// which time of day blends in from dusk, lean lavender, as moonlit cloth does in the reference
+// night frames, and skin's toward a rose beige, so it stays warm against the blue hour. The
+// materials pick their rows by ID.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                // ID 0: skin. About 0.55 of the light, faintly warm, a touch richer toward the terminator.
+                name: "skin",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#c0b8bc"),
+                        (at: 0.7, color: "#c8c0c0"),
+                        (at: 1.0, color: "#d0c6c4"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#c0a8a8"),
+                        (at: 1.0, color: "#ccb4b0"),
+                    ],
+                )),
+            ),
+            (
+                // ID 1: hair. A cool gray-violet, so shaded hair turns a darker, cooler chestnut.
+                name: "hair",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#b0b0c8"),
+                        (at: 1.0, color: "#c4c4d2"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#a4a2c0"),
+                        (at: 1.0, color: "#b8b6cc"),
+                    ],
+                )),
+            ),
+            (
+                // ID 2: light cloth (the white shirt). Cool blue-lavender, clearly darker.
+                name: "cloth light",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#979ec4"),
+                        (at: 1.0, color: "#acb2d6"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6e74a2"),
+                        (at: 1.0, color: "#878dba"),
+                    ],
+                )),
+            ),
+            (
+                // ID 3: dark cloth (the shorts, the shoes). Cool navy.
+                name: "cloth dark",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#5c6488"),
+                        (at: 1.0, color: "#727aa0"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#4c5280"),
+                        (at: 1.0, color: "#646a98"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

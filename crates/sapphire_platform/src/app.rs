@@ -28,7 +28,7 @@ use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::init::{SDL_APP_CONTINUE, SDL_APP_FAILURE, SDL_APP_SUCCESS, SDL_AppResult};
@@ -159,6 +159,35 @@ pub(crate) fn background_requested() -> bool {
 
 pub(crate) fn headless_requested() -> bool {
     HEADLESS.load(Ordering::Relaxed)
+}
+
+/// Counts the app runs that have ended. Each ends as its app quits, just before SDL shuts down
+/// and destroys every window, view and display connection with it (review PA-005).
+static ENDED_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// The app run a window was made in. Windows and the surface handles taken from them remember
+/// theirs and lend no native object once it has ended: SDL destroyed those objects as it shut
+/// down, and a later run, which starts SDL again, doesn't bring them back.
+///
+/// Runs, windows and handles all stay on the main thread, so relaxed ordering is enough.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RunId(u64);
+
+impl RunId {
+    /// The run in progress.
+    pub(crate) fn current() -> Self {
+        Self(ENDED_RUNS.load(Ordering::Relaxed))
+    }
+
+    /// Whether this run is still in progress.
+    pub(crate) fn is_current(self) -> bool {
+        self == Self::current()
+    }
+}
+
+/// Ends the run in progress, before SDL shuts down.
+pub(crate) fn end_run() {
+    ENDED_RUNS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Runs `A` on SDL's main callbacks and returns the process exit code.
@@ -368,6 +397,9 @@ unsafe extern "C" fn app_quit<A: App>(appstate: *mut c_void, _result: SDL_AppRes
             shut_down(runtime.state.into_inner());
         }
     }
+    // SDL shuts down right after this callback, so whatever the app kept past its run (in a
+    // thread-local, say) must stop lending native handles now.
+    end_run();
     if cfg!(target_os = "ios") && has_panicked() {
         // The process exits right after this; see the module docs.
         abort_after_panic();

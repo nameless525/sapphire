@@ -34,6 +34,7 @@ use sdl3_sys::video::{
     SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_METAL, SDL_WINDOW_RESIZABLE, SDL_Window,
 };
 
+use crate::app::RunId;
 use crate::{LOG_TARGET, PlatformError, sdl};
 
 /// Identifies a window in [`Event::Window`](crate::Event::Window) and input events.
@@ -106,7 +107,10 @@ impl Default for WindowDesc {
 /// [`Platform`](crate::Platform) it stays on the main thread. The renderer draws into
 /// it through a [`SurfaceHandle`] from [`surface_handle`](Self::surface_handle). The
 /// native window is destroyed when the `Window` and every `SurfaceHandle` taken from it
-/// have been dropped.
+/// have been dropped, or with SDL when the app's run ends, whichever comes first.
+///
+/// A window kept past the end of its run (in a thread-local, say) is gone: it reports zero sizes
+/// and scales, gives no surface handle, and ignores text input, also in a later run.
 #[derive(Debug)]
 pub struct Window {
     inner: Rc<WindowInner>,
@@ -121,6 +125,8 @@ struct WindowInner {
     /// The SDL Metal view (an `NSView` / `UIView`) on Apple targets.
     metal_view: Option<NonNull<c_void>>,
     metal_layer: Option<NonNull<c_void>>,
+    /// The app run the window was made in; SDL destroys it when that run ends (review PA-005).
+    run: RunId,
 }
 
 impl Window {
@@ -151,7 +157,7 @@ impl Window {
         // SAFETY: `raw` is the live window just created.
         let id = WindowId(unsafe { SDL_GetWindowID(raw.as_ptr()) }.0);
         // From here on, `Drop` cleans up if a later step fails.
-        let mut inner = WindowInner { raw, id, metal_view: None, metal_layer: None };
+        let mut inner = WindowInner { raw, id, metal_view: None, metal_layer: None, run: RunId::current() };
         // SDL's own display link for the window would hold a ProMotion panel at 120 Hz.
         #[cfg(target_os = "ios")]
         crate::ios_loop::stop_window_link(raw);
@@ -168,8 +174,10 @@ impl Window {
         Ok(Self { inner: Rc::new(inner) })
     }
 
-    fn raw(&self) -> *mut SDL_Window {
-        self.inner.raw.as_ptr()
+    /// The SDL window, while it exists: `None` once the run it was made in has ended, when SDL
+    /// destroyed it.
+    fn raw(&self) -> Option<*mut SDL_Window> {
+        self.inner.is_live().then(|| self.inner.raw.as_ptr())
     }
 
     pub fn id(&self) -> WindowId {
@@ -179,41 +187,45 @@ impl Window {
     /// The size in window coordinates (the space mouse positions and
     /// [`safe_area`](Self::safe_area) use).
     pub fn size(&self) -> Size {
+        let Some(raw) = self.raw() else { return Size::default() };
         let (mut w, mut h) = (0, 0);
         // SAFETY: the window is live and the out-pointers are valid; on failure SDL
         // leaves them at zero.
-        unsafe { SDL_GetWindowSize(self.raw(), &mut w, &mut h) };
+        unsafe { SDL_GetWindowSize(raw, &mut w, &mut h) };
         to_size(w, h)
     }
 
     /// The drawable size in pixels: the size to configure the swapchain with.
     pub fn pixel_size(&self) -> Size {
+        let Some(raw) = self.raw() else { return Size::default() };
         let (mut w, mut h) = (0, 0);
         // SAFETY: as in `size`.
-        unsafe { SDL_GetWindowSizeInPixels(self.raw(), &mut w, &mut h) };
+        unsafe { SDL_GetWindowSizeInPixels(raw, &mut w, &mut h) };
         to_size(w, h)
     }
 
-    /// Pixels per window coordinate (2.0 on a Retina display).
+    /// Pixels per window coordinate (2.0 on a Retina display); 0 once the window is gone, as SDL
+    /// reports a failure.
     pub fn pixel_density(&self) -> f32 {
         // SAFETY: the window is live.
-        unsafe { SDL_GetWindowPixelDensity(self.raw()) }
+        self.raw().map_or(0.0, |raw| unsafe { SDL_GetWindowPixelDensity(raw) })
     }
 
     /// The scale UI should be drawn at, combining pixel density with the user's display
-    /// scaling setting (for example 1.5 on a 150% Windows display).
+    /// scaling setting (for example 1.5 on a 150% Windows display); 0 once the window is gone.
     pub fn display_scale(&self) -> f32 {
         // SAFETY: the window is live.
-        unsafe { SDL_GetWindowDisplayScale(self.raw()) }
+        self.raw().map_or(0.0, |raw| unsafe { SDL_GetWindowDisplayScale(raw) })
     }
 
     /// The part of the window, in window coordinates, not covered by notches, rounded
     /// corners or system bars. Equals the whole window on desktop. Re-query after
     /// [`WindowEvent::SafeAreaChanged`](crate::WindowEvent::SafeAreaChanged).
     pub fn safe_area(&self) -> Rect {
+        let Some(raw) = self.raw() else { return Rect::default() };
         let mut rect = SDL_Rect::default();
         // SAFETY: the window is live and `rect` is a valid out-pointer.
-        let ok = unsafe { SDL_GetWindowSafeArea(self.raw(), &mut rect) };
+        let ok = unsafe { SDL_GetWindowSafeArea(raw, &mut rect) };
         if !ok {
             let Size { width, height } = self.size();
             return Rect { x: 0, y: 0, width, height };
@@ -230,11 +242,13 @@ impl Window {
     /// - [`HandleError::Unavailable`] on Android while the app is in the background,
     ///   when the window has no `ANativeWindow`. Try again after
     ///   [`LifecycleEvent::DidEnterForeground`](crate::LifecycleEvent::DidEnterForeground).
+    ///   Also once the run the window was made in has ended.
     /// - [`HandleError::NotSupported`] under SDL video drivers that have no
     ///   raw-window-handle equivalent (offscreen, KMSDRM).
     pub fn surface_handle(&self) -> Result<SurfaceHandle, HandleError> {
+        let raw = self.raw().ok_or(HandleError::Unavailable)?;
         // SAFETY: the window is live.
-        let props = unsafe { SDL_GetWindowProperties(self.raw()) };
+        let props = unsafe { SDL_GetWindowProperties(raw) };
         let android_window = AndroidWindowRef::acquire(props);
         let native =
             NativeHandles { android_window: android_window.get(), ..self.inner.native_handles(props) };
@@ -246,7 +260,7 @@ impl Window {
             display,
             metal_layer: self.inner.metal_layer,
             _android_window: android_window,
-            _owner: Rc::clone(&self.inner),
+            owner: Rc::clone(&self.inner),
         })
     }
 
@@ -255,6 +269,7 @@ impl Window {
     /// shows the on-screen keyboard, set up for `kind`. Off by default, so games get key
     /// events alone.
     pub fn start_text_input(&self, kind: TextInputKind) {
+        let Some(raw) = self.raw() else { return };
         let (capitalization, autocorrect) = match kind {
             TextInputKind::Verbatim => (SDL_CAPITALIZE_NONE, false),
             TextInputKind::Prose => (SDL_CAPITALIZE_SENTENCES, true),
@@ -263,7 +278,7 @@ impl Window {
         let props = unsafe { SDL_CreateProperties() };
         let started = if props.0 == 0 {
             // SAFETY: the window is live and this is the main thread.
-            unsafe { SDL_StartTextInput(self.raw()) }
+            unsafe { SDL_StartTextInput(raw) }
         } else {
             // SAFETY: `props` is live until destroyed below; the names are SDL's static
             // property constants; the window is live and this is the main thread.
@@ -279,7 +294,7 @@ impl Window {
                     capitalization.0.into(),
                 );
                 SDL_SetBooleanProperty(props, SDL_PROP_TEXTINPUT_AUTOCORRECT_BOOLEAN, autocorrect);
-                let started = SDL_StartTextInputWithProperties(self.raw(), props);
+                let started = SDL_StartTextInputWithProperties(raw, props);
                 SDL_DestroyProperties(props);
                 started
             }
@@ -291,21 +306,23 @@ impl Window {
 
     /// Stops text input and hides the on-screen keyboard.
     pub fn stop_text_input(&self) {
+        let Some(raw) = self.raw() else { return };
         // SAFETY: the window is live and this is the main thread.
-        if !unsafe { SDL_StopTextInput(self.raw()) } {
+        if !unsafe { SDL_StopTextInput(raw) } {
             tracing::warn!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_StopTextInput failed");
         }
     }
 
     pub fn is_text_input_active(&self) -> bool {
         // SAFETY: the window is live.
-        unsafe { SDL_TextInputActive(self.raw()) }
+        self.raw().is_some_and(|raw| unsafe { SDL_TextInputActive(raw) })
     }
 
     /// Tells the input method where the focused text field is, in window coordinates, and
     /// where in it the cursor is (horizontally, from its left edge), so candidate lists and
     /// the on-screen keyboard keep clear of it.
     pub fn set_text_input_area(&self, area: Rect, cursor_x: i32) {
+        let Some(raw) = self.raw() else { return };
         let rect = SDL_Rect {
             x: area.x,
             y: area.y,
@@ -313,13 +330,19 @@ impl Window {
             h: c_int::try_from(area.height).unwrap_or(c_int::MAX),
         };
         // SAFETY: the window is live and `rect` outlives the call, which copies it.
-        if !unsafe { SDL_SetTextInputArea(self.raw(), &rect, cursor_x) } {
+        if !unsafe { SDL_SetTextInputArea(raw, &rect, cursor_x) } {
             tracing::debug!(target: LOG_TARGET, error = %sdl::last_error(), "SDL_SetTextInputArea failed");
         }
     }
 }
 
 impl WindowInner {
+    /// Whether the window and the objects made with it still exist: the run it was made in is
+    /// still going. When a run ends, SDL shuts down and destroys them all.
+    fn is_live(&self) -> bool {
+        self.run.is_current()
+    }
+
     /// Reads the native objects SDL exposes for this window, except Android's native
     /// window, which [`AndroidWindowRef`] reads under the property lock.
     fn native_handles(&self, props: SDL_PropertiesID) -> NativeHandles {
@@ -350,9 +373,11 @@ impl Drop for WindowInner {
     fn drop(&mut self) {
         // SAFETY: SDL_WasInit has no preconditions.
         let video_alive = unsafe { SDL_WasInit(SDL_INIT_VIDEO) }.0 & SDL_INIT_VIDEO.0 != 0;
-        if !video_alive {
+        if !self.is_live() || !video_alive {
             // SDL_Quit already destroyed every window and view; touching them now would
-            // be a use-after-free. Only possible if the app leaked the window past quit.
+            // be a use-after-free. Only possible if the app kept the window past its run,
+            // and also when a later run has started SDL again, which is why the run is
+            // checked and not only SDL (review PA-005).
             return;
         }
         if let Some(view) = self.metal_view {
@@ -413,35 +438,49 @@ impl Drop for WindowInner {
 ///
 /// The handle also keeps the SDL window itself alive, so the native objects stay valid
 /// even if the [`Window`] is dropped first.
+///
+/// It can't keep them past the app's run: SDL destroys every window, view and display
+/// connection as it shuts down. A handle kept past its run (in a thread-local, say) reports
+/// [`HandleError::Unavailable`] and no layer from then on, also in a later run (review PA-005).
+/// A handle already borrowed from it ([`WindowHandle`], [`DisplayHandle`]) can't be called
+/// back, so never keep one past the run either.
 #[derive(Debug)]
 pub struct SurfaceHandle {
     window: RawWindowHandle,
     display: RawDisplayHandle,
     metal_layer: Option<NonNull<c_void>>,
     _android_window: AndroidWindowRef,
-    _owner: Rc<WindowInner>,
+    owner: Rc<WindowInner>,
 }
 
 impl SurfaceHandle {
-    /// The `CAMetalLayer` to render into on Apple platforms; `None` elsewhere.
+    /// The `CAMetalLayer` to render into on Apple platforms; `None` elsewhere, and once the run
+    /// the handle was taken in has ended.
     pub fn metal_layer(&self) -> Option<NonNull<c_void>> {
-        self.metal_layer
+        self.metal_layer.filter(|_| self.owner.is_live())
     }
 }
 
 impl HasWindowHandle for SurfaceHandle {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        // SAFETY: `self` keeps every object the handle names alive: the SDL window (and
-        // with it the Metal view, HWND or wl_surface) through `_owner`, and on Android the
-        // ANativeWindow through its own reference.
+        if !self.owner.is_live() {
+            return Err(HandleError::Unavailable);
+        }
+        // SAFETY: the run is still going, so SDL hasn't destroyed anything, and `self` keeps
+        // every object the handle names alive: the SDL window (and with it the Metal view,
+        // HWND or wl_surface) through `owner`, and on Android the ANativeWindow through its
+        // own reference.
         Ok(unsafe { WindowHandle::borrow_raw(self.window) })
     }
 }
 
 impl HasDisplayHandle for SurfaceHandle {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        // SAFETY: display connections belong to SDL's video subsystem, which shuts down
-        // only after the app (and so every handle it owns) has been dropped.
+        if !self.owner.is_live() {
+            return Err(HandleError::Unavailable);
+        }
+        // SAFETY: display connections belong to SDL's video subsystem, which shuts down only
+        // once the run has ended.
         Ok(unsafe { DisplayHandle::borrow_raw(self.display) })
     }
 }
@@ -680,6 +719,57 @@ mod tests {
 
         let headless = NativeHandles::default();
         assert!(matches!(headless.window_handle(WindowSystem::Unix), Err(HandleError::NotSupported)));
+    }
+
+    /// Review PA-005: a window and surface handle kept past the run they were made in lend no
+    /// native object, since SDL destroyed them all as it shut down. SDL's dummy video driver
+    /// makes no window on Apple targets (they all have Metal views), so the window here is
+    /// made up: its pointers are never dereferenced, and once its run has ended nothing calls
+    /// SDL with them, its drop included.
+    #[test]
+    fn handles_kept_past_their_run_are_unavailable() {
+        let inner = Rc::new(WindowInner {
+            raw: fake(0x60).expect("non-null").cast(),
+            id: WindowId(7),
+            metal_view: fake(0x70),
+            metal_layer: fake(0x80),
+            run: RunId::current(),
+        });
+        let native = NativeHandles {
+            metal_view: fake(0x70),
+            win32_hwnd: fake(0x90),
+            wayland_surface: fake(0xa0),
+            wayland_display: fake(0xb0),
+            android_window: fake(0xc0),
+            ..Default::default()
+        };
+        let handle = SurfaceHandle {
+            window: native.window_handle(WindowSystem::CURRENT).expect("a window handle"),
+            display: native.display_handle(WindowSystem::CURRENT).expect("a display handle"),
+            metal_layer: inner.metal_layer,
+            _android_window: AndroidWindowRef(None),
+            owner: Rc::clone(&inner),
+        };
+        let window = Window { inner };
+        assert!(handle.window_handle().is_ok() && handle.display_handle().is_ok(), "the run goes on");
+        assert_eq!(handle.metal_layer(), fake(0x80));
+
+        // The app quits: SDL is about to shut down.
+        crate::app::end_run();
+        assert!(matches!(handle.window_handle(), Err(HandleError::Unavailable)));
+        assert!(matches!(handle.display_handle(), Err(HandleError::Unavailable)));
+        assert_eq!(handle.metal_layer(), None);
+        assert!(matches!(window.surface_handle(), Err(HandleError::Unavailable)));
+        assert_eq!((window.size(), window.pixel_size()), (Size::default(), Size::default()));
+        assert_eq!((window.pixel_density(), window.display_scale()), (0.0, 0.0));
+        assert_eq!(window.safe_area(), Rect::default());
+        assert!(!window.is_text_input_active());
+        window.start_text_input(TextInputKind::Prose);
+        window.set_text_input_area(Rect::default(), 0);
+        window.stop_text_input();
+        assert_eq!(window.id(), WindowId(7), "the id stays, for matching events already queued");
+        // Dropping both last touches nothing either: SDL destroyed them.
+        drop((handle, window));
     }
 
     #[test]

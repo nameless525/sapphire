@@ -10,8 +10,10 @@ use std::num::NonZeroU32;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 
+use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, Event, LifecycleEvent, PacingSource, Platform, run,
+    App, AppControl, AppInitError, AppMetadata, Event, LifecycleEvent, PacingSource, Platform, Size,
+    SurfaceHandle, Window, WindowDesc, run,
 };
 use sdl3_sys::events::{
     SDL_EVENT_DID_ENTER_FOREGROUND, SDL_EVENT_LOW_MEMORY, SDL_EVENT_WILL_ENTER_BACKGROUND, SDL_Event,
@@ -190,9 +192,97 @@ impl App for PacedByPresentation {
     }
 }
 
+thread_local! {
+    /// What [`KeepsWindow`] keeps past its run (review PA-005): its window, and a surface handle
+    /// where the video driver gives one.
+    static KEPT: RefCell<Option<(Window, Result<SurfaceHandle, HandleError>)>> = const { RefCell::new(None) };
+}
+
+/// Creates a window, takes a surface handle from it and keeps both in a thread-local past the
+/// end of its run, as safe library code can. Exits after one frame.
+struct KeepsWindow;
+
+impl App for KeepsWindow {
+    const METADATA: AppMetadata = METADATA;
+
+    fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
+        match platform.create_window(&WindowDesc::default()) {
+            Ok(window) => {
+                let handle = window.surface_handle();
+                if let Ok(handle) = &handle {
+                    assert!(handle.window_handle().is_ok(), "a live handle borrows");
+                }
+                record(if handle.is_ok() { "kept window and handle" } else { "kept window" });
+                KEPT.with_borrow_mut(|kept| *kept = Some((window, handle)));
+            }
+            // The dummy driver has no Metal, which every Apple window is created with.
+            Err(_) => record("no window"),
+        }
+        Ok(Self)
+    }
+    fn event(&mut self, _: &mut Platform, _: &Event) -> AppControl {
+        AppControl::Continue
+    }
+    fn iterate(&mut self, _: &mut Platform) -> AppControl {
+        AppControl::Exit
+    }
+}
+
+/// Checks during a later run, once SDL has started again, that what [`KeepsWindow`] kept stays
+/// stale, then drops it: SDL destroyed it with the earlier run, so dropping it must not touch SDL.
+struct ChecksKeptWindow;
+
+impl App for ChecksKeptWindow {
+    const METADATA: AppMetadata = METADATA;
+
+    fn init(_: &mut Platform) -> Result<Self, AppInitError> {
+        Ok(Self)
+    }
+    fn event(&mut self, _: &mut Platform, _: &Event) -> AppControl {
+        AppControl::Continue
+    }
+    fn iterate(&mut self, _: &mut Platform) -> AppControl {
+        check_kept_window("during a later run");
+        KEPT.with_borrow_mut(Option::take);
+        AppControl::Exit
+    }
+}
+
+/// What [`KeepsWindow`] kept reports itself unavailable rather than lending SDL objects that are
+/// gone.
+fn check_kept_window(when: &str) {
+    KEPT.with_borrow(|kept| {
+        let Some((window, handle)) = kept else { return };
+        assert!(
+            matches!(window.surface_handle(), Err(HandleError::Unavailable)),
+            "{when}: a window from an ended run gives no surface handle"
+        );
+        assert_eq!(window.size(), Size::default(), "{when}");
+        assert_eq!(window.pixel_size(), Size::default(), "{when}");
+        if let Ok(handle) = handle {
+            assert!(matches!(handle.window_handle(), Err(HandleError::Unavailable)), "{when}");
+            assert!(matches!(handle.display_handle(), Err(HandleError::Unavailable)), "{when}");
+            assert_eq!(handle.metal_layer(), None, "{when}");
+        }
+    });
+}
+
 fn main() {
     // SAFETY: nothing else runs yet; this is the only thread.
     unsafe { std::env::set_var("SDL_VIDEO_DRIVER", "dummy") };
+
+    // Review PA-005: a window and surface handle kept past `run` are stale, also once a later
+    // run has started SDL again.
+    assert_eq!(run::<KeepsWindow>(), ExitCode::SUCCESS);
+    let kept = take_trace();
+    eprintln!("lifecycle: KeepsWindow {kept:?}");
+    // The dummy driver makes windows everywhere but on Apple targets, whose windows all have
+    // Metal views (the platform crate's unit tests cover those with a made-up window).
+    if !cfg!(target_vendor = "apple") {
+        assert!(kept.iter().any(|step| step.starts_with("kept window")), "{kept:?}");
+    }
+    check_kept_window("after its run");
+    assert_eq!(run::<ChecksKeptWindow>(), ExitCode::SUCCESS);
 
     assert_eq!(run::<ThreeFrames>(), ExitCode::SUCCESS);
     assert_eq!(take_trace(), ["init", "iterate", "iterate", "iterate", "quit", "drop"]);

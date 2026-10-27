@@ -242,8 +242,13 @@ pub(crate) fn window_acquired(window: NonNull<c_void>) {
 }
 
 /// The surface handle's reference to `window` is about to be released.
+///
+/// Runs in the handle's `Drop`, which may come during this thread's teardown, after the list is
+/// gone (a handle kept in another thread-local, say): there is nothing to remove from then, and
+/// panicking in a destructor would abort (review PA-005).
 pub(crate) fn window_released(window: NonNull<c_void>) {
-    WINDOWS.with_borrow_mut(|windows| {
+    let _ = WINDOWS.try_with(|windows| {
+        let mut windows = windows.borrow_mut();
         if let Some(index) = windows.iter().position(|&held| held == window) {
             windows.swap_remove(index);
         }

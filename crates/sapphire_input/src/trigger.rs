@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 /// double tap held too long cancels instead. Chords are the binding's `chord` field: an action
 /// that must be triggered for the binding to fire at all.
 ///
+/// A motion source (mouse motion, wheel, drag, pinch) is actuated in each update that gave its
+/// binding motion, so its edges are where runs of such updates begin and end: `Pressed` on
+/// `MouseWheel` fires once for a run of wheel notches in consecutive updates, not per notch.
+///
 /// Durations are in seconds, rounded to whole microseconds. One that rounds to less than a
 /// microsecond, or comes to 2^64 nanoseconds (about 584 years) or more, makes the binding
 /// invalid ([`MapError::InvalidBinding`](crate::MapError::InvalidBinding)).

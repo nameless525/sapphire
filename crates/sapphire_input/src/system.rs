@@ -134,6 +134,8 @@ struct EnabledContext {
 #[derive(Clone, Copy, Debug, Default)]
 struct Output {
     state: TriggerState,
+    /// Whether it fired an instantaneous trigger in the evaluation that produced it. A pulse is
+    /// an event of that instant, not state, so a replayed output never carries it.
     pulse: bool,
     value: Vec2,
 }
@@ -149,7 +151,8 @@ struct BindingState {
     blockers: (usize, usize),
 }
 
-/// Which motion bindings an evaluation reads afresh; the others keep their last output.
+/// Which motion bindings an evaluation reads afresh; the others keep their last state and
+/// value, without its pulse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MotionPass {
     Keep,
@@ -564,7 +567,9 @@ impl InputSystem {
                 let binding = &map.bindings()[index];
                 let state = &mut self.bindings[index];
                 if !pass.reads(binding.source) {
-                    combined.add(state.output);
+                    // The pulse fired in the evaluation that produced it; replaying it would fire
+                    // again for every unrelated input (review FI-006).
+                    combined.add(Output { pulse: false, ..state.output });
                     continue;
                 }
                 let raw = self.devices.value(binding.source, self.frame);

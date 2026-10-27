@@ -89,6 +89,10 @@ impl Rig {
         self.input.state(self.action(action)).value()
     }
 
+    fn wheel(&mut self, t: u64) {
+        self.push(t, RawInput::MouseWheel { delta: Vec2::new(0.0, 1.0) });
+    }
+
     /// A platform touch at the middle of the window, as SDL reports one: by finger id, which
     /// the system maps to a slot.
     fn platform_touch(&mut self, t: u64, id: u64, phase: TouchPhase) {
@@ -756,4 +760,70 @@ fn a_removed_gamepad_leaves_other_devices_sequences_alone() {
     assert_eq!(rig.update(50), [ev("guard", Completed, 40)]);
     rig.key(60, Scancode::K, true);
     assert_eq!(rig.update(70), [ev("dash", Triggered, 60), ev("dash", Completed, 60)]);
+}
+
+#[test]
+fn a_motion_pulse_fires_once_however_many_inputs_follow_it() {
+    // Review FI-006: evaluating the bindings for some other input must not replay a motion
+    // binding's pulse.
+    let map = map(
+        r#"(name: "next", kind: Button)"#,
+        r#"(name: "main", bindings: [(action: "next", source: MouseWheel, trigger: Pressed)])"#,
+    );
+    for others in [0, 1, 10] {
+        let mut rig = Rig::new(map.clone(), &["main"]);
+        rig.wheel(10);
+        for n in 0..others {
+            rig.key(11 + 2 * n, Scancode::H, true);
+            rig.key(12 + 2 * n, Scancode::H, false);
+        }
+        assert_eq!(
+            rig.update(100),
+            [ev("next", Started, 10), ev("next", Triggered, 10), ev("next", Completed, 10)],
+            "with {others} other inputs"
+        );
+        assert_eq!(rig.input.state(rig.action("next")).fire_count(), 1);
+    }
+}
+
+#[test]
+fn edge_triggers_on_motion_fire_once_per_run_of_updates_with_motion() {
+    // Review FI-006: motion is an impulse. A binding is actuated in the updates that gave it
+    // motion, so a pressed trigger fires as a run of such updates begins and a released one as
+    // it ends, whatever other input arrives, and nothing fires again until the next run.
+    let map = map(
+        r#"(name: "next", kind: Button), (name: "settle", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "next", source: MouseWheel, trigger: Pressed),
+            (action: "settle", source: MouseWheel, trigger: Released),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    let fired = |rig: &Rig| {
+        (rig.input.state(rig.action("next")).fire_count(), rig.input.state(rig.action("settle")).fire_count())
+    };
+    let other = |rig: &mut Rig, t| {
+        rig.key(t, Scancode::H, true);
+        rig.key(t + 1, Scancode::H, false);
+    };
+    rig.wheel(10);
+    other(&mut rig, 11);
+    rig.update(16);
+    assert_eq!(fired(&rig), (1, 0), "a run begins");
+    rig.wheel(20);
+    other(&mut rig, 21);
+    rig.update(32);
+    assert_eq!(fired(&rig), (0, 0), "the same run");
+    other(&mut rig, 40);
+    assert_eq!(
+        rig.update_for(48, "settle"),
+        [ev("settle", Triggered, 48), ev("settle", Completed, 48)],
+        "the run ends with the first update without motion"
+    );
+    other(&mut rig, 50);
+    rig.update(64);
+    assert_eq!(fired(&rig), (0, 0), "nothing replays the release");
+    rig.wheel(70);
+    rig.update(80);
+    assert_eq!(fired(&rig), (1, 0), "a new run");
 }

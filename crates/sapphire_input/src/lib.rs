@@ -53,6 +53,12 @@
 //! against real time. Motion sources (mouse motion, wheel, drag, pinch) are summed per update
 //! instead of judged per event, since their value is "how far this frame".
 //!
+//! Motion is an impulse. A motion binding is actuated in the updates that gave it motion, and
+//! stays actuated from one such update to the next, so an edge trigger on motion fires once
+//! per run of consecutive updates with motion, not once per event: `Pressed` as the run
+//! begins, `Released` and `Tap` with the first update after it. Evaluations for other input
+//! never fire it again.
+//!
 //! # Allocation
 //!
 //! Steady-state frames allocate nothing: device state is fixed-size, the queue and event lists

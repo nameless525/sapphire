@@ -179,6 +179,10 @@ const MIDDLE_GREY: f32 = 0.18;
 const D65_X: f32 = 0.3127;
 /// How far ±1 of temperature or tint moves the adapted-from white in CIE xy.
 const WHITE_BALANCE_SCALE: f32 = 0.05;
+/// The least any channel of the adapted-from white may be in linear sRGB, as a share of its
+/// luminance (1): toward the corners of the ±2 square the white leaves sRGB's gamut, and a
+/// channel at or under zero made a negative or unbounded gain.
+const WHITE_BALANCE_FLOOR: f32 = 0.05;
 
 impl Lut {
     pub(crate) fn new(key: &LutKey) -> Self {
@@ -268,6 +272,12 @@ impl Lut {
 /// which the LUT follows to within its one-dimensional interpolation error; a matrix mixes
 /// channels where the table is coarsest (near black and in the shoulder). The gains keep a
 /// grey's luminance.
+///
+/// The adapted-from white's channels are floored at [`WHITE_BALANCE_FLOOR`], so the gains stay
+/// finite, positive and continuous over every temperature and tint the key accepts (review
+/// PW-003: (2, 2) adapted from a white with negative red, and gave negative green and blue
+/// gains). The floor reaches only the square's corners, past about 1.7 of temperature and 1.5
+/// of tint; within ±1 of both the white's least channel is about 0.39.
 fn white_balance(temperature: f32, tint: f32) -> Vec3 {
     // Both whites are taken on the locus (D65 lies within 0.0002 of it), so zero is exactly
     // neutral.
@@ -282,7 +292,7 @@ fn white_balance(temperature: f32, tint: f32) -> Vec3 {
             Vec3::new(0.055_643_4, -0.204_025_9, 1.057_225_2).dot(xyz),
         )
     };
-    let gains = white(0.0, 0.0) / white(temperature, tint);
+    let gains = white(0.0, 0.0) / white(temperature, tint).max(Vec3::splat(WHITE_BALANCE_FLOOR));
     gains / gains.dot(LUMA)
 }
 
@@ -553,6 +563,31 @@ mod tests {
         assert!(cool.x < cool.y && cool.y < cool.z, "cooler: {cool}");
         let magenta = white_balance(0.0, 0.5);
         assert!(magenta.y < magenta.x && magenta.y < magenta.z, "magenta: {magenta}");
+    }
+
+    #[test]
+    fn white_balance_gains_stay_positive_and_finite_over_the_whole_range() {
+        // Every temperature and tint the key accepts (±2 each), on an 81 × 81 grid: gains are
+        // finite and positive and keep a grey's luminance (review PW-003: (2, 2) adapted from a
+        // white with negative red, giving gains of about (5.47, −0.21, −0.17)).
+        for i in 0..=80 {
+            for j in 0..=80 {
+                let (temperature, tint) = ((i - 40) as f32 / 20.0, (j - 40) as f32 / 20.0);
+                let gains = white_balance(temperature, tint);
+                assert!(gains.is_finite() && gains.min_element() > 0.0, "({temperature}, {tint}): {gains}");
+                assert!((gains.dot(LUMA) - 1.0).abs() < 1e-4, "({temperature}, {tint}): {gains}");
+            }
+        }
+        // At that corner, with grade contrast or without, a grey ramp keeps every channel lit.
+        for contrast in [1.0, 1.05] {
+            let grade = ColorGrade { temperature: 2.0, tint: 2.0, contrast, ..ColorGrade::NEUTRAL };
+            let lut = lut(ToneCurve::default(), grade, 1.0);
+            for step in 1..=400 {
+                let x = step as f32 * 0.01;
+                let value = lut.evaluate(Vec3::splat(x));
+                assert!(value.is_finite() && value.min_element() > 0.0, "contrast {contrast}, {x}: {value}");
+            }
+        }
     }
 
     /// The GPU's trilinear lookup, emulated on the CPU from the packed texels.

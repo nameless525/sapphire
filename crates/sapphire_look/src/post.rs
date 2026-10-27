@@ -182,9 +182,11 @@ impl Default for ToneCurve {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColorGrade {
     /// White balance, about -1 to 1: positive warms the picture toward amber, negative cools it
-    /// toward blue.
+    /// toward blue. The renderer takes -2 to 2 of it and of `tint`; in that square's corners, past
+    /// about 1.7 of temperature and 1.5 of tint together, the white it adapts from would leave
+    /// sRGB's gamut, and is held just inside it, so every channel keeps a positive gain.
     pub temperature: f32,
-    /// Green–magenta balance, about -1 to 1: positive toward magenta.
+    /// Green–magenta balance, about -1 to 1: positive toward magenta. -2 to 2, as `temperature`.
     pub tint: f32,
     /// Multiplies the scene color: a colored filter in linear RGB.
     pub filter: Vec3,

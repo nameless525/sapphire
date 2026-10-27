@@ -83,6 +83,15 @@ The app dials the desktop through `adb reverse`, once a second until a tool list
 
 `cargo xtask run --platform android` uses the connected device, so a phone needs only USB debugging on (Developer options) and the computer accepted on it; `adb devices` lists it. With an emulator running too, set `ANDROID_SERIAL` to the phone's serial.
 
+**Frame pacing on a phone (M1 F8).** The sandbox now starts frames on the choreographer's vsyncs at the tier's rate, and its window asks the display for that rate. In logcat, look for:
+
+- `refresh rate hinted rate=Some(30)` (or 60) once the tier is known, and again after every return from the home screen;
+- `display refresh reported hz=…`: the rate the choreographer gives the app. On a 120 Hz phone at 30 fps expect 30 or 60 (the panel dropped, or the app's vsyncs were throttled to it), not 120;
+- the `frame stats` line's `pacing=Choreographer at 30 fps: … on time, 0 missed, 0 doubled, N ticks held`, with `fps=30.0` and `best_ms` = `worst_ms` = 33.33 in steady windows, and `ticks held` near 0 when the reported refresh is the target. Mobile-High: `at 60 fps`, 16.67 ms;
+- pacing back within one 2-second window after a trip to the home screen.
+
+Spec §6.2's phone check has the full procedure (frames on glass with `dumpsys SurfaceFlinger --latency`, battery saver, a live tier change) and what a failure means. On the emulator (2026-10-27) Mobile-Low held 30.0 fps at exactly 33.33 ms; its display is 60 Hz only, so the 90 and 120 Hz cadences are covered by unit tests alone.
+
 ## iPhone
 
 What the user provides, once:
@@ -122,7 +131,7 @@ For each target and each of the six kinds, edit and undo:
 - **Edit → visible:** for content, the cook's time plus the push's. On the desktop with hot reload, the app logs `pack changed`, `asset swapped in`, `shaders reloaded` and `look-dev day reloaded` (or `default day reloaded`) with timestamps.
 - **That it shows, and goes:** a capture before, after the edit and after the undo. The undo's capture must match the first (the rehearsal compared 640-pixel-wide reductions: the share of pixels more than 6 code values apart, against a frame-to-frame noise of 0.01% to 1.4%).
 - **The cost of a shader push:** the app logs `live link rebuilt shaders … elapsed=`. Pipelines are rebuilt on the frame's thread, so a push holds the frame that long: 2.1 to 2.6 s for a cold compile on the simulator and 2.6 to 3.5 s on the emulator, which the frame stats show as one long frame. Record it on the phones; it is the one push that hitches.
-- **Frame pacing and budgets** (spec §3): the tier the device gets (the `quality tier` log line); the `frame stats` log line every two seconds (fps, best and worst frame, on-time and missed display-link ticks on iOS); and the overlay's stats panel for CPU stages and GPU passes against §3.2 and §3.3 (`--debug-overlay=stats`, then `cargo xtask link capture`). Mobile-Low holds 30 fps with a GPU frame of at most 26 ms; Mobile-High 60 fps and 13 ms. Measure again after 15 minutes, throttled (spec §3).
+- **Frame pacing and budgets** (spec §3): the tier the device gets (the `quality tier` log line); the `frame stats` log line every two seconds (fps, best and worst frame, frames on time, missed intervals and ticks held back by iOS's display link or Android's vsync limiter); and the overlay's stats panel for CPU stages and GPU passes against §3.2 and §3.3 (`--debug-overlay=stats`, then `cargo xtask link capture`). Mobile-Low holds 30 fps with a GPU frame of at most 26 ms; Mobile-High 60 fps and 13 ms. Measure again after 15 minutes, throttled (spec §3).
 - **Pushed bytes:** `sent N of M` per pack; a material edit sends a few hundred bytes, a ramp edit about 3.4 KB.
 
 Record per device: model, OS, the tier, the build's commit, and for each kind the push → reply time (edit and undo), the cook time, the before / edit / undo captures and anything refused.
@@ -130,7 +139,7 @@ Record per device: model, OS, the tier, the build's commit, and for each kind th
 ## Only a device can prove
 
 - **iPhone:** signing with a real identity and profile; `devicectl` installing and launching, the app receiving its arguments after `--` and its console reaching the terminal; `iproxy` reaching the app's loopback listener; a capture from an A-series GPU's surface (BGRA, as on the simulator); Wi-Fi's local network prompt, if any.
-- **Android phone:** a real Vulkan driver's (Adreno, Mali) pipeline compile times for a pushed shader; the surface's format, which captures convert from; `adb reverse` on a USB-connected phone rather than the emulator.
+- **Android phone:** a real Vulkan driver's (Adreno, Mali) pipeline compile times for a pushed shader; the surface's format, which captures convert from; `adb reverse` on a USB-connected phone rather than the emulator; a 90 or 120 Hz panel taking the refresh-rate hint, and the frame limiter's cadence on its vsyncs.
 - **Both:** real frame times and GPU pass timings against the Mobile tiers' budgets, the tier a real device's memory selects, and how long a pushed shader holds a frame.
 
 ## Rehearsal (2026-10-26, main at dd118d1 with the rehearsal's changes)

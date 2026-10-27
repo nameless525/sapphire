@@ -84,11 +84,11 @@
 //!
 //! # Later milestones
 //!
-//! - **The renderer's debug views** (spec §5.12): wireframe and overdraw, the light-cluster
-//!   heatmap (R5), material ID and ramp-row views, the outline-width view. They wait for R5's
-//!   lights and A5's vertex inputs to settle in the shaders. They plug in as a choice cvar the
-//!   renderer declares and reads in `prepare` (`r.debug_view`, a [`sapphire_core::cvar::CvarType`]
-//!   enum), which the cvar panel already edits with a list; this crate needs no change.
+//! - **The renderer's material debug views** (spec §5.12, F5 part 2's second phase): material
+//!   ID and ramp-row views and the outline-width view, as further choices of `r.debug_view`. The
+//!   wireframe, overdraw and light-list views are built (`sapphire_render::debug_view`): the cvar
+//!   panel switches them as a list, and the stats panel's "Debug view" row names the one shown
+//!   with its legend's values.
 //! - The rest of spec §5.20: the debug-draw API (lines, shapes and text from any thread, merged
 //!   at extract into the packet's `DebugDrawList`, with `sapphire_core` no-ops when no overlay is
 //!   linked), the entity inspector over `sapphire_reflect`, hitbox and hurtbox views and the

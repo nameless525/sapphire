@@ -233,8 +233,9 @@ impl Stage {
         let packet = self.scene.frame_packet(alpha, Some((width, height)));
         #[cfg(feature = "dev")]
         let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
-        // Before `prepare`, which culls hulls by it.
+        // Before `prepare`, which culls hulls by it, and readies the debug view.
         self.renderer.set_outline_distance(self.quality.outline_distance());
+        self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
         self.renderer.prepare(&self.gpu, packet);
         let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));

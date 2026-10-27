@@ -24,8 +24,8 @@
 //! (`--skinned`), the sky cube's face pass, the shadow passes (the cascades drawn, the character
 //! maps and the face pass, against spec §3.3's 2 ms on desktop and 3 ms on phones), the light
 //! clusters, the ambient pass (the probe grid's sky, prefilter, relight and characters, and GTAO;
-//! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low) and the whole
-//! frame.
+//! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low), a debug
+//! view's passes (`--debug-view`, M1 F5) and the whole frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 
@@ -33,7 +33,9 @@ use std::time::Duration;
 
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
-use sapphire_render::{CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
+use sapphire_render::{
+    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, debug_view, post, shadows, temporal,
+};
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
@@ -167,7 +169,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     let zero: Sums = (Duration::ZERO, Duration::ZERO, 0);
     let (mut skinning, mut sky_cube, mut main, mut prepasses, mut taa, mut shadow) =
         (zero, zero, zero, zero, zero, zero);
-    let (mut character_prepass, mut clusters, mut ambient_pass) = (zero, zero, zero);
+    let (mut character_prepass, mut clusters, mut ambient_pass, mut views) = (zero, zero, zero, zero);
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -187,8 +189,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // Temporal AA's cost is its two passes, against spec §3.3's 0.8 ms; the prepasses it
         // runs are its inputs, timed apart; post's composite runs at the output's size either way,
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
-        // The ambient pass (M1 W5): the grid's work and GTAO.
-        let groups: [(&[&str], &mut Sums); 9] = [
+        // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
+        // over the frame (M1 F5): what showing it costs.
+        let groups: [(&[&str], &mut Sums); 10] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -198,6 +201,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
             (&shadows::PASSES, &mut shadow),
             (&["light clusters"], &mut clusters),
             (&ambient::PASSES, &mut ambient_pass),
+            (&debug_view::PASSES, &mut views),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -259,6 +263,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         ambient_frames = ambient_pass.2,
         gpu_clustering_ao_us =
             format_args!("{:.1}", micros(clusters.0, clusters.2) + micros(ambient_pass.0, ambient_pass.2)),
+        gpu_debug_view_us = format_args!("{:.1}", micros(views.0, views.2)),
+        gpu_debug_view_duration_us = format_args!("{:.1}", micros(views.1, views.2)),
+        debug_view_frames = views.2,
         "bench gpu",
     );
     Ok(())

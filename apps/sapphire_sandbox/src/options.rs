@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
-use sapphire_render::{LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
+use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, RenderSettings, Wind};
 
 use crate::faces::FaceLayout;
 use crate::foliage::{DEFAULT_WIND, FoliageView};
@@ -127,6 +127,8 @@ pub(crate) struct Options {
     /// `--outline-distance <scale>`: the scale on outlines' LOD cutoffs (`r.outline_distance`)
     /// instead of 1; 0 draws none, for profiling.
     pub outline_distance: Option<f32>,
+    /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
+    pub debug_view: Option<DebugView>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
@@ -264,6 +266,11 @@ impl Options {
             && let Err(error) = sapphire_render::quality::OUTLINE_DISTANCE.set(scale)
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--outline-distance");
+        }
+        if let Some(view) = self.debug_view
+            && let Err(error) = sapphire_render::debug_view::DEBUG_VIEW.set(view)
+        {
+            tracing::warn!(target: crate::LOG_TARGET, %error, "--debug-view");
         }
         for (preset, at) in &self.post_effects {
             scene.push_effect(preset, *at)?;
@@ -485,6 +492,14 @@ impl Options {
                         return Err(format!("--outline-distance expects 0 to 4, got {scale}"));
                     }
                     options.outline_distance = Some(scale);
+                }
+                "--debug-view" => {
+                    let name = value("--debug-view")?;
+                    let view = DebugView::from_name(&name).ok_or_else(|| {
+                        let names: Vec<&str> = DebugView::ALL.iter().map(|view| view.name()).collect();
+                        format!("--debug-view expects one of {}, got {name:?}", names.join(", "))
+                    })?;
+                    options.debug_view = Some(view);
                 }
                 "--plain-sky" => options.plain_sky = true,
                 "--fog" => {
@@ -817,6 +832,18 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().0.sharpening, None);
         assert!(parse(&["--sharpening", "1.5"]).is_err());
         assert!(parse(&["--sharpening", "NaN"]).is_err());
+    }
+
+    #[test]
+    fn the_debug_view_is_named_on_the_command_line() {
+        let (options, unknown) = parse(&["--debug-view", "overdraw"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.debug_view, Some(DebugView::Overdraw));
+        assert_eq!(parse(&["--debug-view=Wireframe"]).unwrap().0.debug_view, Some(DebugView::Wireframe));
+        assert_eq!(parse(&["--debug-view", "off"]).unwrap().0.debug_view, Some(DebugView::Off));
+        assert_eq!(Options::default().debug_view, None);
+        let error = parse(&["--debug-view", "normals"]).unwrap_err();
+        assert!(error.contains("off, wireframe, overdraw, lights"), "{error}");
     }
 
     #[test]

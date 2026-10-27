@@ -27,8 +27,9 @@
 //! R8), all of it behind `dev.rs`: the debug overlay, which sees platform events before the
 //! game's input, applies its time and time-of-day controls before each fixed step and draws after
 //! post; the cvar registry it edits, holding the sandbox's cvars (`cvars.rs`, compiled in every
-//! build so they read their defaults) and the renderer's quality cvars (`r.tier`,
-//! `r.render_scale`, `r.dynamic_resolution`, `r.outline_distance`); hot reload (`reload.rs`, M1
+//! build so they read their defaults), the renderer's quality cvars (`r.tier`,
+//! `r.render_scale`, `r.dynamic_resolution`, `r.outline_distance`) and its debug view
+//! (`r.debug_view`, M1 F5); hot reload (`reload.rs`, M1
 //! A8), on by default on desktop: rewritten packs in the content root are remounted and their
 //! changed assets replaced in place, edited WGSL rebuilds the renderer's pipelines, an edited
 //! `default_day.ron` replaces time of day's timeline and an edited `default_light_rigs.ron` the
@@ -109,6 +110,10 @@
 //!   shapes whose cooked outline normals keep every corner's hull closed (M1 C4).
 //! - `--outline-distance <0..4>`: the scale on every material's outline LOD cutoff
 //!   (`r.outline_distance`, 1 by default); 0 draws no outlines, for profiling.
+//! - `--debug-view off|wireframe|overdraw|lights`: draw the frame as one of the renderer's debug
+//!   views (`r.debug_view`, M1 F5): its triangles' edges, the fragments it shades per pixel, or
+//!   the local lights each pixel walks, over the frame after post. In every build, so captures and
+//!   golden scenes show them; the overlay's cvar panel switches them in `dev` builds.
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.

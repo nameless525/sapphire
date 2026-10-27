@@ -9,9 +9,12 @@ use sapphire_assets::AssetKind;
 use sapphire_core::cvar::{AnyCvar, CvarRegistry, CvarValue};
 use sapphire_input::{DeviceKind, GamepadFamily};
 use sapphire_platform::PacingSource;
+use sapphire_render::debug_view::{
+    self, NO_LIGHTS, OVERDRAW_SCALE, WIREFRAME_TONES, heat, light_position, overdraw_position,
+};
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
+use sapphire_render::{DebugView, DebugViewStats, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -320,6 +323,12 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                         None => unbudgeted_row(ui, "  Light clustering, AO", used),
                     }
                 }
+                // A debug view's replay and its pass over the frame (M1 F5): what showing it
+                // adds, which the frame without it doesn't have.
+                let mut views = debug_view::PASSES.iter().filter_map(|name| timings.get(name)).peekable();
+                if views.peek().is_some() {
+                    unbudgeted_row(ui, "  Debug view", views.map(|pass| pass.exclusive).sum());
+                }
             }
             None => {
                 ui.label("GPU frame");
@@ -438,7 +447,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 ),
             );
         }
-        // The cluster counts here are what the light-cluster heatmap view will show per pixel.
+        // The light lists' debug view (`r.debug_view lights`) shows these lists' counts per pixel.
         let lights = &render.lights;
         row(
             ui,
@@ -453,6 +462,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             format!("per object, up to {} each, {} chosen again", lights.list_capacity, lights.object_lists)
         };
         row(ui, "Light lists", lists);
+        debug_view(ui, &render.debug_view);
         row(
             ui,
             "Character rigs",
@@ -705,7 +715,8 @@ fn shadow_text(shadows: &sapphire_render::ShadowStats) -> String {
 }
 
 /// The ambient probe grid, ambient occlusion and the reflection cube (M1 W5). The grid itself
-/// is a readout here; drawing its probes waits for the debug view modes (F5's second part).
+/// is a readout here; drawing its probes waits for a probe debug view (`r.debug_view`'s later
+/// views).
 fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
     let grid = if ambient.grid {
         format!(
@@ -830,6 +841,66 @@ fn effects_text(
         Some((stack, _)) => format!("{drawn_text}; {} layers playing", stack.stats().depth),
         None => drawn_text,
     }
+}
+
+/// The renderer's debug view (`r.debug_view`, M1 F5): the one shown with its legend's values
+/// (the bar the view draws in the frame's corner has no numbers), or none, with the pipelines
+/// the views built.
+fn debug_view(ui: &mut Ui, stats: &DebugViewStats) {
+    // A display (sRGB-encoded) color, as egui takes it.
+    let swatch = |ui: &mut Ui, color: [f32; 3]| {
+        let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+        let [r, g, b] = color.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+        ui.painter().rect_filled(rect, 1.0, Color32::from_rgb(r, g, b));
+    };
+    ui.label("Debug view");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        match stats.view {
+            DebugView::Off if stats.unsupported => {
+                ui.label(
+                    RichText::new("wireframe unsupported: its line indices pass one storage binding")
+                        .monospace()
+                        .color(WARN),
+                );
+            }
+            DebugView::Off if stats.pipelines == 0 => {
+                ui.monospace("off");
+            }
+            DebugView::Off => {
+                ui.monospace(format!("off ({} pipelines kept)", stats.pipelines));
+            }
+            DebugView::Wireframe => {
+                ui.monospace("wireframe:");
+                for (family, tone) in WIREFRAME_TONES {
+                    swatch(ui, tone);
+                    ui.monospace(family);
+                }
+            }
+            DebugView::Overdraw => {
+                ui.monospace("fragments per pixel:");
+                for fragments in [1, 2, 4, 8, OVERDRAW_SCALE] {
+                    swatch(ui, heat(overdraw_position(fragments)));
+                    ui.monospace(fragments.to_string());
+                }
+                swatch(ui, [1.0; 3]);
+                ui.monospace("more");
+            }
+            DebugView::Lights => {
+                ui.monospace("lights per pixel:");
+                // None (grey, as the view's legend starts), then powers of two up to a full list.
+                swatch(ui, NO_LIGHTS);
+                ui.monospace("0");
+                let counts = std::iter::successors(Some(1), |count| Some(count * 2))
+                    .take_while(|&count| count < stats.scale);
+                for count in counts.chain([stats.scale]).filter(|&count| count > 0) {
+                    swatch(ui, heat(light_position(count, stats.scale)));
+                    ui.monospace(count.to_string());
+                }
+            }
+        }
+    });
+    ui.end_row();
 }
 
 /// A row whose budget spec §3 leaves without a figure on this tier ("—"): measured, never

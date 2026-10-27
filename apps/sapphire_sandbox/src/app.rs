@@ -384,8 +384,9 @@ impl SandboxApp {
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             let packet = self.scene.frame_packet(alpha, frame.as_ref().map(SurfaceFrame::size));
             self.stages.extract = presentation + stopwatch.lap();
-            // Before `prepare`, which culls hulls by it.
+            // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
+            self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
             self.renderer.prepare(&self.gpu, packet);
             if let Some(frame) = frame {
                 let timing = FrameTiming::new(&self.graph, self.frame_time);

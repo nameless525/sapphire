@@ -89,6 +89,7 @@ impl DevTools {
         cvars
             .register_all(&crate::cvars::CVARS)
             .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
+            .and_then(|()| cvars.register_all(&sapphire_render::debug_view::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());

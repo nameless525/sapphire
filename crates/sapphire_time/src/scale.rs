@@ -169,12 +169,28 @@ fn apply_per_mille(factor: u128, per_mille: u32) -> u128 {
 /// Multiplies two fixed-point factors exactly (rounding down), saturating at [`FACTOR_MAX`] only
 /// when the true product exceeds it.
 ///
+/// Normal speed and a stopped clock, the factors almost every clock has, return at once (review
+/// FI-102): `1 × b` is `b` and `0 × b` is 0, saturated as [`combine_exact`] saturates them.
+pub(crate) fn combine(a: u128, b: u128) -> u128 {
+    if a == FACTOR_ONE {
+        b.min(FACTOR_MAX)
+    } else if b == FACTOR_ONE {
+        a.min(FACTOR_MAX)
+    } else if a == 0 || b == 0 {
+        0
+    } else {
+        combine_exact(a, b)
+    }
+}
+
+/// [`combine`] for any factors, the reference its shortcuts must match.
+///
 /// `a × b` needs up to 180 bits, so instead of a 256-bit multiply both factors are split at
 /// `FACTOR_ONE`: with `a = a₁·ONE + a₀` and `b = b₁·ONE + b₀`,
 /// `a·b / ONE = a₁·b₁·ONE + a₁·b₀ + a₀·b₁ + ⌊a₀·b₀ / ONE⌋`. Only the last term divides, so the
 /// sum is exactly `⌊a·b / ONE⌋`, and for factors up to `FACTOR_MAX` (a₁, b₁ ≤ 10⁹; a₀, b₀ < 10¹⁸)
 /// every term fits in `u128`.
-pub(crate) fn combine(a: u128, b: u128) -> u128 {
+fn combine_exact(a: u128, b: u128) -> u128 {
     let (a_whole, a_frac) = (a / FACTOR_ONE, a % FACTOR_ONE);
     let (b_whole, b_frac) = (b / FACTOR_ONE, b % FACTOR_ONE);
     // Saturating so out-of-range inputs clamp to FACTOR_MAX instead of wrapping.
@@ -187,7 +203,21 @@ pub(crate) fn combine(a: u128, b: u128) -> u128 {
 
 /// Sub-ticks to advance for one tick at `factor`, carrying the fractional sub-tick in
 /// `remainder` (units of 1 / [`FACTOR_ONE`] sub-tick) so slow motion never loses time.
+///
+/// At normal speed a tick is exactly [`SUBTICKS_PER_TICK`] and at 0 nothing, and neither touches
+/// the carry, which stays below one sub-tick (`FACTOR_ONE`): both return at once (review FI-102),
+/// as [`advance_exact`] would.
 pub(crate) fn advance(factor: u128, remainder: &mut u64) -> u64 {
+    debug_assert!(u128::from(*remainder) < FACTOR_ONE, "the carry is below one sub-tick");
+    match factor {
+        FACTOR_ONE => u64::from(SUBTICKS_PER_TICK),
+        0 => 0,
+        _ => advance_exact(factor, remainder),
+    }
+}
+
+/// [`advance`] for any factor, the reference its shortcuts must match.
+fn advance_exact(factor: u128, remainder: &mut u64) -> u64 {
     // At most 1000 × 1e27 + 1e18, far inside `u128`.
     let total = u128::from(SUBTICKS_PER_TICK) * factor + u128::from(*remainder);
     // The remainder is below FACTOR_ONE (1e18), which fits in `u64`.
@@ -284,6 +314,110 @@ mod tests {
         assert_eq!(combine(hundred_thousand, hundred_thousand), FACTOR_MAX);
         let mut remainder = 0;
         assert_eq!(advance(FACTOR_MAX, &mut remainder), 1_000_000_000_000);
+    }
+
+    /// A fixed xorshift sequence, so the property tests check the same values on every run.
+    fn sequence(mut state: u64) -> impl FnMut() -> u64 {
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        }
+    }
+
+    /// Review FI-102: the normal-speed and stopped shortcuts give exactly what the general
+    /// arithmetic gives, for every factor (out-of-range ones included) and every carry.
+    #[test]
+    fn shortcuts_match_the_exact_arithmetic() {
+        let mut next = sequence(0x2545_f491_4f6c_dd1d);
+        let mut factors = vec![
+            0,
+            1,
+            FACTOR_ONE - 1,
+            FACTOR_ONE,
+            FACTOR_ONE + 1,
+            FACTOR_ONE / 5,
+            FACTOR_ONE * 5,
+            FACTOR_MAX - 1,
+            FACTOR_MAX,
+            FACTOR_MAX + 1,
+            u128::MAX,
+        ];
+        factors.extend((0..200).map(|i| {
+            let wide = u128::from(next()) << 64 | u128::from(next());
+            // Spread over every magnitude, up to past the cap.
+            wide >> (i % 128)
+        }));
+        let carries = [0, 1, FACTOR_ONE as u64 - 1, FACTOR_ONE as u64 / 3, next() % FACTOR_ONE as u64];
+        for &a in &factors {
+            for &b in &factors {
+                assert_eq!(combine(a, b), combine_exact(a, b), "{a} × {b}");
+            }
+            // Clocks only advance by factors their stacks and `combine` saturated.
+            for carry in carries.into_iter().filter(|_| a <= FACTOR_MAX) {
+                let (mut fast, mut exact) = (carry, carry);
+                assert_eq!(advance(a, &mut fast), advance_exact(a, &mut exact), "{a} from {carry}");
+                assert_eq!(fast, exact, "{a} from {carry}: the carry");
+            }
+        }
+    }
+
+    /// Review FI-102: a world and 64 entity clocks through 2000 steps of changing scales (stops,
+    /// normal speed, slow motion with a carry, products of exactly 1×, extremes), hitstop and
+    /// clocks with no scales of their own tick exactly as the general arithmetic alone does.
+    #[test]
+    fn mixed_scale_clocks_tick_as_the_exact_arithmetic_does() {
+        const WORLD: [u32; 6] = [0, 1, 333, 1000, 5000, 1_000_000];
+        // 200 under a world at 5000 makes exactly 1× from two factors that aren't.
+        const LOCAL: [u32; 7] = [0, 1, 200, 250, 1000, 3000, 100_000];
+        let mut world = crate::ScaledClock::new();
+        let mut clocks: Vec<_> = (0..64).map(|_| world.new_local_clock()).collect();
+        // The reference: the same stacks, ticked with the exact arithmetic only.
+        let mut world_reference = (ScaleStack::<8>::new(ClockId::WORLD), 0_u64);
+        let mut references = vec![(ScaleStack::<4>::new(ClockId(1)), 0_u64, 0_u16); clocks.len()];
+        let (mut fast_paths, mut carried) = (0, 0);
+        for step in 0..2000_usize {
+            if step % 37 == 0 {
+                let per_mille = WORLD[step / 37 % WORLD.len()];
+                world.remove_source(ScaleSource::Gameplay);
+                world.push_scale(ScaleSource::Gameplay, per_mille).expect("room");
+                world_reference.0.remove_source(ScaleSource::Gameplay);
+                world_reference.0.push(ScaleSource::Gameplay, per_mille).expect("room");
+            }
+            let delta = world.tick();
+            let expected = advance_exact(world_reference.0.factor(), &mut world_reference.1);
+            assert_eq!(delta.as_subticks(), expected, "world, step {step}");
+            for (index, (clock, reference)) in clocks.iter_mut().zip(&mut references).enumerate() {
+                // A quarter of the clocks never get a scale of their own.
+                if step % 31 == 0 && index % 4 != 0 {
+                    let per_mille = LOCAL[(index + step / 31) % LOCAL.len()];
+                    clock.remove_source(ScaleSource::Cinematic);
+                    clock.push_scale(ScaleSource::Cinematic, per_mille).expect("room");
+                    reference.0.remove_source(ScaleSource::Cinematic);
+                    reference.0.push(ScaleSource::Cinematic, per_mille).expect("room");
+                }
+                if (step + index) % 29 == 0 {
+                    clock.apply_hitstop(3);
+                    reference.2 = reference.2.max(3);
+                }
+                let expected = if reference.2 > 0 {
+                    if world_reference.0.factor() != 0 {
+                        reference.2 -= 1;
+                    }
+                    0
+                } else {
+                    let factor = combine_exact(world_reference.0.factor(), reference.0.factor());
+                    fast_paths += usize::from(factor == FACTOR_ONE || factor == 0);
+                    carried += usize::from(factor == FACTOR_ONE && reference.1 != 0);
+                    advance_exact(factor, &mut reference.1)
+                };
+                assert_eq!(clock.tick(&world).as_subticks(), expected, "clock {index}, step {step}");
+                assert_eq!(clock.hitstop_ticks(), reference.2, "clock {index}, step {step}");
+            }
+        }
+        // The trace exercises the shortcuts, normal speed with a carry from slow motion included.
+        assert!(fast_paths > 10_000 && carried > 1000, "{fast_paths} shortcuts, {carried} with a carry");
     }
 
     #[test]

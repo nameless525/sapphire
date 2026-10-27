@@ -47,7 +47,8 @@ pub(crate) struct OutlineCounts {
 /// Which draws' hulls a frame draws.
 #[derive(Debug, Default)]
 pub(crate) struct OutlineCull {
-    /// Per draw record (`DrawList::draws`): whether the frame draws its hull, if it has one.
+    /// Per draw record (`DrawList::draws`): whether the frame draws its hull; false for draws
+    /// without one.
     visible: Vec<bool>,
     counts: OutlineCounts,
 }
@@ -56,7 +57,10 @@ impl OutlineCull {
     /// Decides, for `camera`, which of `list`'s hulls draw: those whose instance's bounding
     /// sphere (from `meshes`, the pool's records) comes within its material's cutoff, read from
     /// the anime character block in `params(material slot)`, times `scale`
-    /// (`Renderer::set_outline_distance`). Allocates nothing once the draw list stops growing.
+    /// (`Renderer::set_outline_distance`). Only draws with a hull are visited, their blocks
+    /// read and their bounds placed (review RA-O03): most draws are the world's, without one,
+    /// their material slots another family's. Allocates nothing once the draw list stops
+    /// growing.
     pub(crate) fn prepare(
         &mut self,
         camera: &CameraData,
@@ -70,26 +74,37 @@ impl OutlineCull {
         // tan(fov_y / 2) is 1 / the projection's y focal length.
         let effective = 1.0 / (camera.proj.y_axis.y.abs().max(1e-6) * REFERENCE_TAN_HALF_FOV);
         self.visible.clear();
-        for draw in &list.draws {
-            let record = slots.mesh(draw.instance).and_then(|mesh| meshes.get(mesh.index()));
-            let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
-            let visible = record.zip(slots.transform(draw.instance)).is_some_and(|(record, transform)| {
-                let sphere = record.bounds.transformed(transform);
-                // The view is rigid, so no point of the sphere is nearer in depth than this.
-                let depth = -camera.view.transform_point3(sphere.center).z;
-                let gap = (depth - sphere.radius).max(0.0);
-                gap * effective < cutoff
-            });
-            self.visible.push(visible);
-        }
+        self.visible.resize(list.draws.len(), false);
         let hulls =
             list.commands.iter().flatten().flatten().filter(|command| command.outline).map(|c| c.draw_id);
         let deformed = list.deformed.iter().flatten().filter(|draw| draw.outline).map(|draw| draw.draw_id);
-        let drawn = hulls.chain(deformed).filter(|&draw| self.visible[draw as usize]).count() as u32;
-        self.counts = OutlineCounts { drawn, culled: list.outlines() as u32 - drawn };
+        let mut counts = OutlineCounts::default();
+        for draw_id in hulls.chain(deformed) {
+            let draw = &list.draws[draw_id as usize];
+            let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
+            // A cutoff of 0 (or one that isn't a number) draws nothing, wherever the hull is.
+            let visible = cutoff > 0.0
+                && slots
+                    .mesh(draw.instance)
+                    .and_then(|mesh| meshes.get(mesh.index()))
+                    .zip(slots.transform(draw.instance))
+                    .is_some_and(|(record, transform)| {
+                        let sphere = record.bounds.transformed(transform);
+                        // The view is rigid, so no point of the sphere is nearer in depth than this.
+                        let depth = -camera.view.transform_point3(sphere.center).z;
+                        let gap = (depth - sphere.radius).max(0.0);
+                        gap * effective < cutoff
+                    });
+            self.visible[draw_id as usize] = visible;
+            counts.drawn += u32::from(visible);
+            counts.culled += u32::from(!visible);
+        }
+        debug_assert_eq!((counts.drawn + counts.culled) as usize, list.outlines(), "every hull counted once");
+        self.counts = counts;
     }
 
-    /// Per draw record: whether the last prepared frame draws its hull.
+    /// Per draw record: whether the last prepared frame draws its hull (false for draws without
+    /// one).
     pub(crate) fn visible(&self) -> &[bool] {
         &self.visible
     }
@@ -101,6 +116,8 @@ impl OutlineCull {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use bytemuck::Zeroable;
     use glam::{Mat4, Quat, Vec3};
     use sapphire_assets::mesh::PositionFormat;
@@ -267,5 +284,50 @@ mod tests {
         let mut cull = OutlineCull::default();
         cull.prepare(&camera, 1.0, &list, &slots, &meshes, |_| Some(cutoff(10.0)));
         assert_eq!((cull.visible(), cull.counts()), (&[true][..], OutlineCounts { drawn: 1, culled: 0 }));
+    }
+
+    #[test]
+    fn only_hulls_are_tested_and_counted() {
+        let camera =
+            CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 45f32.to_radians(), 16.0 / 9.0, 0.05);
+        let meshes = [record(Sphere { center: Vec3::ZERO, radius: 1.0 })];
+        let at = |z: f32| Mat4::from_translation(Vec3::new(0.0, 0.0, -z));
+        // Material slots 0 and 1 reach 20 m, 2 has no hull (a cutoff of 0) and 3 no anime block.
+        let blocks = [Some(cutoff(20.0)), Some(cutoff(20.0)), Some(cutoff(0.0)), None];
+        let draws = [
+            (0, at(5.0), 0, None),         // environment, near: no hull to test
+            (0, at(5.0), 0, Some(false)),  // static hull, near
+            (0, at(50.0), 1, Some(false)), // static hull, past its cutoff
+            (0, at(5.0), 1, Some(true)),   // deformed hull, near
+            (0, at(50.0), 0, Some(true)),  // deformed hull, past its cutoff
+            (0, at(5.0), 2, Some(false)),  // a cutoff of 0: never drawn
+            (0, at(5.0), 3, Some(false)),  // no block: never drawn
+            (7, at(5.0), 0, Some(false)),  // no mesh record: never drawn
+            (0, at(50.0), 1, None),        // environment, far
+            (0, at(5.0), 1, None),         // environment, near
+        ];
+        let (list, slots) = scene(&draws);
+        let looked_up = RefCell::new(Vec::new());
+        let params = |slot: u32| {
+            looked_up.borrow_mut().push(slot);
+            blocks[slot as usize]
+        };
+        let mut cull = OutlineCull::default();
+        for _ in 0..2 {
+            looked_up.borrow_mut().clear();
+            cull.prepare(&camera, 1.0, &list, &slots, &meshes, params);
+            let visible = [false, true, false, true, false, false, false, false, false, false];
+            assert_eq!(cull.visible(), visible, "draws without a hull stay false");
+            assert_eq!(cull.counts(), OutlineCounts { drawn: 2, culled: 5 });
+            assert_eq!(cull.counts().drawn + cull.counts().culled, list.outlines() as u32);
+            // Each hull's block is read once, and no other draw's.
+            let mut read = looked_up.borrow().clone();
+            read.sort_unstable();
+            assert_eq!(read, [0, 0, 0, 1, 1, 2, 3]);
+        }
+        // The renderer's scale reaches every cutoff: at 0 nothing draws.
+        cull.prepare(&camera, 0.0, &list, &slots, &meshes, params);
+        assert_eq!(cull.counts(), OutlineCounts { drawn: 0, culled: 7 });
+        assert!(cull.visible().iter().all(|&visible| !visible));
     }
 }

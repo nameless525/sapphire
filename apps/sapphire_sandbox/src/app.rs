@@ -3,6 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use sapphire_assets::AssetStats;
 use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
@@ -543,10 +544,26 @@ impl SandboxApp {
                 }
             }
             LifecycleEvent::Terminating => self.save_pipeline_cache(),
+            LifecycleEvent::LowMemory if trims_for_memory_warnings(Os::CURRENT) => self.trim_memory(),
             LifecycleEvent::DidEnterBackground
             | LifecycleEvent::WillEnterForeground
             | LifecycleEvent::LowMemory => {}
         }
+    }
+
+    /// A system memory warning (iOS): drops the assets nothing uses, which hot reloads, live link
+    /// pushes and renderer rebuilds leave behind, and logs what that freed (review PA-004).
+    fn trim_memory(&mut self) {
+        let (before, after) = self.content.trim();
+        let resident = |stats: &AssetStats| stats.resident.iter().sum::<u64>();
+        tracing::info!(
+            target: LOG_TARGET,
+            unloaded = after.unloads - before.unloads,
+            assets = after.assets,
+            resident_before = resident(&before),
+            resident_after = resident(&after),
+            "memory warning: unused assets unloaded"
+        );
     }
 
     /// Recreates the surface from a freshly fetched native handle. On failure the app keeps
@@ -694,6 +711,13 @@ impl SandboxApp {
             tracing::warn!(target: LOG_TARGET, %error, "pipeline cache not saved");
         }
     }
+}
+
+/// Whether the sandbox trims its caches when `os` sends a memory warning
+/// ([`LifecycleEvent::LowMemory`]): only where that means real pressure, iOS (review PA-004).
+/// Android's SDL sends one on every trip to the background, which mustn't cost a reload each.
+const fn trims_for_memory_warnings(os: Os) -> bool {
+    os.memory_warnings_are_pressure()
 }
 
 /// When to try rebuilding a missing surface: at once after it was lost or the app returned to
@@ -1133,6 +1157,16 @@ mod tests {
         };
         assert_eq!(SandboxApp::METADATA.identifier, field("bundle-id"));
         assert_eq!(SandboxApp::METADATA.name, field("display-name"));
+    }
+
+    /// Review PA-004: memory warnings trim the asset cache on iOS, and nowhere else: Android
+    /// sends one on every trip to the background.
+    #[test]
+    fn memory_warnings_trim_on_ios_only() {
+        assert!(trims_for_memory_warnings(Os::Ios));
+        for os in [Os::Android, Os::MacOs, Os::Windows, Os::Linux] {
+            assert!(!trims_for_memory_warnings(os), "{os:?}");
+        }
     }
 
     #[test]

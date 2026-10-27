@@ -779,4 +779,19 @@ impl Content {
     pub fn stats(&self) -> AssetStats {
         self.server.stats()
     }
+
+    /// Unloads every asset nothing holds or pins and frees the textures uploaded for them at once,
+    /// rather than at the next [`Self::update`]: the response to a system memory warning (review
+    /// PA-004, spec §6.3). What the scene draws stays, since the sandbox holds a handle to all of
+    /// it; what goes is what reloads and rebuilds left behind. The renderer keeps mesh and
+    /// material slots for its lifetime (see `GpuAssets::unload`). Returns the server's counters
+    /// before and after.
+    pub fn trim(&mut self) -> (AssetStats, AssetStats) {
+        let before = self.server.stats();
+        self.server.unload_unused();
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        (before, self.server.stats())
+    }
 }

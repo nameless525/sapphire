@@ -42,6 +42,15 @@ impl Os {
     pub const fn keeps_surface_in_background(self) -> bool {
         !matches!(self, Self::Android)
     }
+
+    /// Whether [`LifecycleEvent::LowMemory`](crate::LifecycleEvent::LowMemory) means the system
+    /// is short of memory, so caches that can be rebuilt are worth dropping. True only on iOS,
+    /// where it is the system's memory warning. Android's SDL reports every `onTrimMemory` as
+    /// `LowMemory`, the one sent on every trip to the background included, so dropping caches
+    /// on it would make every return slower; desktops never send it.
+    pub const fn memory_warnings_are_pressure(self) -> bool {
+        matches!(self, Self::Ios)
+    }
 }
 
 /// Broad device class, which selects defaults such as input devices, texture cook and
@@ -107,6 +116,14 @@ fn is_emulator() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review PA-004: only iOS's memory warnings are worth trimming caches for.
+    #[test]
+    fn only_ios_memory_warnings_are_pressure() {
+        for os in [Os::Windows, Os::MacOs, Os::Linux, Os::Ios, Os::Android] {
+            assert_eq!(os.memory_warnings_are_pressure(), os == Os::Ios, "{os:?}");
+        }
+    }
 
     #[test]
     fn query_reports_this_machine() {

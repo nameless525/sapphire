@@ -400,12 +400,47 @@ pub fn stars_png() -> io::Result<Vec<u8>> {
 
 /// The Milky Way's glow (see the module docs), dim: the night sky's brightness scales it.
 pub fn milky_way_png() -> io::Result<Vec<u8>> {
-    let cool = Vec3::new(0.42, 0.52, 0.95);
-    let warm = Vec3::new(0.95, 0.76, 0.58);
+    milky_way_png_in(&MilkyWayPalette::SAMPLE)
+}
+
+/// The colors and brightness the Milky Way's glow is painted in ([`milky_way_png_in`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MilkyWayPalette {
+    /// Linear RGB of the band away from its core.
+    pub cool: Vec3,
+    /// Linear RGB toward its core.
+    pub warm: Vec3,
+    /// Linear RGB its bright clumps lean toward, by how far they rise over the band's glow: the
+    /// sample's leaves them in the band's own colors.
+    pub clumps: Vec3,
+    /// How far toward `clumps` the brightest clumps go, 0 to 1.
+    pub clump_tint: f32,
+    /// The glow's brightness: the night sky's brightness scales it again.
+    pub brightness: f32,
+}
+
+impl MilkyWayPalette {
+    /// The sandbox sky's: blue away from the core, warm toward it.
+    pub const SAMPLE: Self = Self {
+        cool: Vec3::new(0.42, 0.52, 0.95),
+        warm: Vec3::new(0.95, 0.76, 0.58),
+        clumps: Vec3::ZERO,
+        clump_tint: 0.0,
+        brightness: 0.12,
+    };
+}
+
+/// The Milky Way's glow in `palette`'s colors.
+pub fn milky_way_png_in(palette: &MilkyWayPalette) -> io::Result<Vec<u8>> {
     dome_png(MILKY_WAY_SIZE, |c| {
         let (glow, core, lanes) = milky_way(c);
         let light = (glow * (1.0 - 0.8 * lanes)).max(0.0);
-        cool.lerp(warm, core) * light * 0.12
+        let mut color = palette.cool.lerp(palette.warm, core);
+        if palette.clump_tint > 0.0 {
+            // The clumps rise over the band's broad glow (up to 1.5 against its 0.25 base).
+            color = color.lerp(palette.clumps, palette.clump_tint * smoothstep(0.5, 1.3, glow));
+        }
+        color * light * palette.brightness
     })
 }
 

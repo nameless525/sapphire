@@ -1,0 +1,25 @@
+// A kit tree (M1 X1 part 2): Kenney's `tree` as one plant in the foliage family, as
+// `kit_tree_round.assembly.ron` (which says why).
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {
+            "kenney": "../../third_party/kenney_fantasy_town_kit/glb",
+        },
+        palette: (columns: 16, rows: 4, gradient_columns: [1, 3, 5, 7, 9, 11, 13, 15]),
+        slots: [
+            (name: "Bark", tile: (1.0, 1.0), projection: Box),
+            (name: "Leaves", tile: (2.0, 2.0), projection: Box),
+        ],
+        surfaces: [
+            (cell: Some((9, 3)), slot: "Bark"),
+            (cell: Some((7, 3)), slot: "Leaves"),
+        ],
+        occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
+        groups: {},
+        place: [
+            (piece: "kenney/tree", scale: 3.6),
+        ],
+    ),
+)

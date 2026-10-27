@@ -1,0 +1,20 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "fde8ea98-378a-4ddb-aa2f-2a2cae49cbe4",
+        importer: Gltf((
+            lods: (
+                levels: [],
+            ),
+            materials: {
+                "Leaves": "8d47c2d1-ba57-42ea-9e59-5f396e5b457f",
+            },
+            foliage: (
+                normals: Sphere,
+                slots: ["Leaves"],
+                blend: 0.8,
+            ),
+        )),
+    ),
+)

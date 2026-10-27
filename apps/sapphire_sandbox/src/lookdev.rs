@@ -23,6 +23,14 @@
 //!   street out of the square.
 //! - **Lamps**: a warm point light at each lantern's glass, its intensity following time of day's
 //!   night ([`LAMPS`]), so the square lights up at dusk.
+//! - **Its own day** ([`day`]): `content/lookdev/lookdev_day.ron`, a time-of-day timeline aimed at
+//!   Wuthering Waves' light (X1 part 2), replaces the default day while the stage runs, so the
+//!   default day and every other scene stay as they are. Tests here hold it to the character light
+//!   contract and keep the square clear of haze.
+//! - **Its own sky** ([`SKY`]): the sandbox sky's maps with a teal Milky Way and a larger sun.
+//! - **Plants** ([`PLANTINGS`]): W6's foliage meshes, each its own mesh rooted at its origin so the
+//!   wind sways it about its root, set in the square's verges, in the town's planters and pots,
+//!   and beyond the rows; the stage blows a light breeze ([`WIND`]).
 //!
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
@@ -30,10 +38,11 @@
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
-use sapphire_math::{Quat, Vec3};
+use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
-use sapphire_render::{LightKind, LocalLight, Renderer};
+use sapphire_render::{LightKind, LocalLight, MeshHandle, Renderer};
 use sapphire_rhi::GpuContext;
+use sapphire_world::tod::TodTimeline;
 
 use crate::content::Content;
 use crate::environment::{CardPlace, HAZE, MIST};
@@ -50,6 +59,161 @@ pub(crate) const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b16
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
 pub(crate) const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
+/// The town's sky: the sandbox sky's maps with a teal Milky Way and a larger sun
+/// (`content/lookdev/sky/sky.material.ron`), by its sidecar's ID.
+pub(crate) const SKY: AssetId = AssetId::from_text("8c0e3b8e-9f2a-4d55-b7c1-2f6a4e1d9a73");
+
+/// A plant the stage places in the town (`content/lookdev/foliage/`): W6's foliage samples in the
+/// look-dev's own foliage materials, and two of the kit's trees as foliage meshes (single-piece
+/// assemblies, their roots at their origins, which the wind sways them about).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Plant {
+    /// The card tree, green: teal-green inside its clumps to a sunny yellow-green.
+    GreenTree,
+    /// The card tree in pink blossom.
+    BlossomTree,
+    /// The card tree in orange autumn leaves.
+    AutumnTree,
+    /// The card bush, green, and potted.
+    GreenBush,
+    /// The card bush in lavender.
+    Lavender,
+    /// A grass bed: the grass patch, 4 m across at scale 1, thinning toward its edge.
+    Grass,
+    /// Kenney's `tree-high-round` as foliage, 8.8 m tall at scale 1.
+    KitTreeRound,
+    /// Kenney's `tree` as foliage, 8.7 m tall at scale 1.
+    KitTree,
+}
+
+impl Plant {
+    pub const ALL: [Self; 8] = [
+        Self::GreenTree,
+        Self::BlossomTree,
+        Self::AutumnTree,
+        Self::GreenBush,
+        Self::Lavender,
+        Self::Grass,
+        Self::KitTreeRound,
+        Self::KitTree,
+    ];
+
+    /// The plant's mesh, by its sidecar's ID (`content/lookdev/foliage/*.meta`).
+    pub fn id(self) -> AssetId {
+        AssetId::from_text(match self {
+            Self::GreenTree => "0e0f2a4c-b0bb-4e0a-8688-79e9b18f7b69",
+            Self::BlossomTree => "33168a54-0264-4e4c-8de5-88666f3f307a",
+            Self::AutumnTree => "b25d6067-c5cb-48c1-bf33-a7bc047e4f57",
+            Self::GreenBush => "4d78be88-2b53-4709-bda0-27d4690b6b79",
+            Self::Lavender => "fde8ea98-378a-4ddb-aa2f-2a2cae49cbe4",
+            Self::Grass => "b9addce7-3eb0-4cad-9dbc-e3877e8a18fe",
+            Self::KitTreeRound => "6a687812-181f-48da-b548-aad1d91b8ccb",
+            Self::KitTree => "57d170c9-421c-423c-b9d1-560c05c32bad",
+        })
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// The town's meshes on a renderer: the town and each plant's, in [`Plant::ALL`] order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TownMeshes {
+    pub town: MeshHandle,
+    pub plants: [MeshHandle; Plant::ALL.len()],
+}
+
+impl TownMeshes {
+    pub fn plant(&self, plant: Plant) -> MeshHandle {
+        self.plants[plant.index()]
+    }
+}
+
+/// The breeze the town's plants sway in.
+pub(crate) const WIND: sapphire_render::Wind = crate::foliage::DEFAULT_WIND;
+
+/// A plant in the town: where its root stands, its scale (x, y, z) and its turn about +Y in
+/// degrees.
+type Planting = (Plant, [f32; 3], [f32; 3], f32);
+
+/// Uniform scale.
+const fn even(scale: f32) -> [f32; 3] {
+    [scale, scale, scale]
+}
+
+/// The top of the assembly's planters and pots, where their plants' roots stand.
+const PLANTER: f32 = 0.4;
+const POT: f32 = 0.555;
+
+/// The town's plants: the trees that were the assembly's kit trees, now foliage (a green and a
+/// blossom tree in the back corners, the wide shot's left and the hero shot's background; kit
+/// trees and two card trees in blossom and autumn over the rooftops); an autumn tree in a planter
+/// framing the wide shot's left, with lavender at its foot; the beds before the back row and
+/// beside the left row, grass with lavender and green bushes; and bushes in the pots between the
+/// back row's doors and by the stalls. Planters and pots are the assembly's (`@planter`, `@pot`).
+pub(crate) const PLANTINGS: [Planting; 32] = [
+    // The square's corners, and beyond.
+    (Plant::GreenTree, [-17.0, 0.0, -17.0], even(1.35), 20.0),
+    (Plant::BlossomTree, [16.8, 0.0, -16.8], even(1.45), 40.0),
+    (Plant::KitTree, [13.0, 0.0, 5.0], even(0.85), 15.0),
+    (Plant::KitTreeRound, [11.5, 0.0, 1.5], even(1.0), 70.0),
+    // Over the rooftops.
+    (Plant::KitTreeRound, [-17.0, 0.0, -29.0], even(1.25), 0.0),
+    (Plant::KitTree, [-20.0, 0.0, -34.0], even(1.22), 60.0),
+    (Plant::KitTreeRound, [16.0, 0.0, -31.0], even(1.31), 20.0),
+    (Plant::KitTree, [22.0, 0.0, -36.0], even(1.28), 0.0),
+    (Plant::AutumnTree, [-1.0, 0.0, -48.0], even(2.0), 0.0),
+    (Plant::BlossomTree, [12.0, 0.0, -50.0], even(2.0), 30.0),
+    // The planter framing the wide shot (3.4 m square).
+    (Plant::AutumnTree, [-3.0, PLANTER, 5.2], even(1.25), 200.0),
+    (Plant::Grass, [-3.0, PLANTER, 5.2], [0.75, 1.0, 0.75], 0.0),
+    (Plant::Lavender, [-4.1, PLANTER, 6.2], even(0.55), 0.0),
+    (Plant::Lavender, [-1.9, PLANTER, 4.2], even(0.5), 60.0),
+    // The bed before the back row, right of the gate (4.6 × 1.7 m).
+    (Plant::Grass, [10.2, PLANTER, -14.6], [1.05, 1.0, 0.38], 0.0),
+    (Plant::Lavender, [8.9, PLANTER, -14.6], even(0.6), 10.0),
+    (Plant::GreenBush, [10.2, PLANTER, -14.5], even(0.5), 80.0),
+    (Plant::Lavender, [11.5, PLANTER, -14.6], even(0.55), 140.0),
+    // The bed before the back row, left of the gate (5 × 1.9 m).
+    (Plant::Grass, [-8.0, PLANTER, -15.2], [1.15, 1.0, 0.42], 0.0),
+    (Plant::GreenBush, [-9.4, PLANTER, -15.2], even(0.55), 30.0),
+    (Plant::Lavender, [-8.0, PLANTER, -15.1], even(0.6), 200.0),
+    (Plant::GreenBush, [-6.6, PLANTER, -15.3], even(0.5), 110.0),
+    // The bed beside the left row (2.2 × 6 m).
+    (Plant::Grass, [-12.6, PLANTER, -4.0], [0.5, 1.0, 1.35], 0.0),
+    (Plant::Lavender, [-12.6, PLANTER, -6.0], even(0.6), 0.0),
+    (Plant::GreenBush, [-12.6, PLANTER, -4.0], even(0.5), 70.0),
+    (Plant::Lavender, [-12.6, PLANTER, -2.0], even(0.55), 150.0),
+    // Potted plants between the back row's doors and by the stalls.
+    (Plant::GreenBush, [-12.8, POT, -16.5], even(0.42), 0.0),
+    (Plant::GreenBush, [-3.2, POT, -16.5], even(0.42), 90.0),
+    (Plant::GreenBush, [9.6, POT, -16.5], even(0.42), 45.0),
+    (Plant::GreenBush, [12.8, POT, -16.9], even(0.42), 135.0),
+    (Plant::Lavender, [4.4, POT, -9.6], even(0.42), 20.0),
+    (Plant::GreenBush, [15.2, POT, -8.4], even(0.42), 160.0),
+];
+
+/// Every plant with its world transform, about its root.
+pub(crate) fn plantings() -> impl Iterator<Item = (Plant, Mat4)> {
+    PLANTINGS.into_iter().map(|(plant, at, scale, turn)| {
+        let place = Mat4::from_scale_rotation_translation(
+            Vec3::from(scale),
+            Quat::from_rotation_y(turn.to_radians()),
+            Vec3::from(at),
+        );
+        (plant, place)
+    })
+}
+
+/// The look-dev day (`content/lookdev/lookdev_day.ron`), compiled in as the default day is: the
+/// timeline `--look-dev` runs on instead of the default day, so every other scene keeps its look.
+const DAY: &str = include_str!("../../../content/lookdev/lookdev_day.ron");
+
+/// The look-dev day's timeline: time of day's base timeline while the look-dev stage runs.
+pub(crate) fn day() -> TodTimeline {
+    TodTimeline::from_ron(DAY).expect("the look-dev day is checked by this module's tests")
+}
 
 /// A look-dev camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,9 +262,9 @@ pub(crate) const LAMPS: [[f32; 2]; 7] =
 /// The glass's height: 1.39 of the lantern's 1.556 at its scale of 1.6.
 const LAMP_HEIGHT: f32 = 2.22;
 /// A lamp's light at full night: a warm candle color, its reach and intensity.
-const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.62, 0.3);
-const LAMP_RANGE: f32 = 7.0;
-pub(crate) const LAMP_INTENSITY: f32 = 2.5;
+const LAMP_COLOR: Vec3 = Vec3::new(1.0, 0.55, 0.24);
+const LAMP_RANGE: f32 = 6.0;
+pub(crate) const LAMP_INTENSITY: f32 = 0.9;
 
 /// The lamps' lights at full intensity, by night: scale them by time of day's `day_night`.
 pub(crate) fn lamps() -> impl Iterator<Item = LocalLight> {
@@ -215,6 +379,87 @@ fn check_counts(rig: &ArchivedCharacterRig, mesh: &Mesh) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The look-dev day is a complete base timeline with keys on the golden scenes' hours, so their
+    /// frames don't move when the keys around them are retuned.
+    #[test]
+    fn the_look_dev_day_is_complete_and_keyed_on_the_golden_hours() {
+        let day = day();
+        assert!(day.is_complete());
+        for hours in [13.0, 18.0] {
+            assert!(day.keys().iter().any(|key| key.time == hours), "a key at {hours}");
+        }
+        assert_ne!(day, TodTimeline::default_day(), "the stage's own");
+    }
+
+    #[test]
+    fn the_look_dev_day_never_lights_from_below() {
+        let day = day();
+        for minute in 0..24 * 60 {
+            let key = day.evaluate(minute as f32 / 60.0).key_light();
+            assert!(key.intensity == 0.0 || key.direction.y < 0.0, "{minute} min: {key:?} travels upward");
+        }
+    }
+
+    /// CLAUDE.md's night character light contract, held as the default day's test holds it, at
+    /// every quarter hour: the character key, as the screen shows it (luminance, exposed), is the
+    /// world's key light by day and never dimmer; at sunset and from the blue hour after it
+    /// through the night to the blue hour before dawn it is 1.2 to 1.6 times the key light, so
+    /// characters read, and at most 70% of their noon brightness, so they read as night.
+    #[test]
+    fn the_look_dev_days_characters_stay_a_little_brighter_than_the_world_at_night() {
+        use sapphire_math::color::luminance;
+        let day = day();
+        let shown = |look: &sapphire_world::tod::TodLook, color: Vec3, intensity: f32| {
+            luminance(color) * intensity * look.exposure.exp2()
+        };
+        let noon = day.evaluate(13.0);
+        let noon_character = shown(&noon, noon.character_light.color, noon.character_light.intensity);
+        for quarter in 0..24 * 4 {
+            let hours = quarter as f32 / 4.0;
+            let look = day.evaluate(hours);
+            let key = look.key_light();
+            let character = shown(&look, look.character_light.color, look.character_light.intensity);
+            let lift = character / shown(&look, key.color, key.intensity);
+            assert!(lift >= 0.999, "{hours}: characters are never lit below the world ({lift})");
+            if (9.0..=16.0).contains(&hours) {
+                assert!((lift - 1.0).abs() < 1e-4, "{hours}: by day the same light ({lift})");
+            }
+            if hours >= 19.75 || hours <= 4.75 || hours == 19.0 {
+                assert!((1.2..=1.6).contains(&lift), "{hours}: a little brighter than the world ({lift})");
+                let share = character / noon_character;
+                assert!(share <= 0.7, "{hours}: at night, at most 70% of noon's brightness ({share})");
+            }
+        }
+    }
+
+    /// Characters take part of the fog at every hour, so they read as figures where the world melts
+    /// into the haze, and the square stays clear: no distance layer of the haze starts within 25 m.
+    #[test]
+    fn the_look_dev_day_keeps_the_square_clear_of_haze() {
+        let day = day();
+        for quarter in 0..24 * 4 {
+            let hours = quarter as f32 / 4.0;
+            let fog = day.evaluate(hours).fog;
+            assert!((0.35..=0.5).contains(&fog.characters), "{hours}: characters take part of it");
+            assert!(
+                fog.near.start >= 25.0 && fog.far.start >= 45.0,
+                "{hours}: the haze starts out of the square"
+            );
+        }
+    }
+
+    #[test]
+    fn plantings_stand_on_the_ground_or_in_planters() {
+        for (plant, at, scale, _) in PLANTINGS {
+            assert!([0.0, PLANTER, POT].contains(&at[1]), "{plant:?} at {at:?}");
+            assert!(scale.iter().all(|&s| s > 0.0), "{plant:?}");
+        }
+        assert_eq!(plantings().count(), PLANTINGS.len());
+        for plant in Plant::ALL {
+            assert!(PLANTINGS.iter().any(|planting| planting.0 == plant), "{plant:?} is planted");
+        }
+    }
 
     #[test]
     fn shots_parse_by_name() {

@@ -21,6 +21,16 @@
 //! Colors are picked in 8-bit sRGB, as an artist would, and maps tile seamlessly: every pattern
 //! repeats on the map's own period.
 //!
+//! X1 part 2 adds two more sets of generated sources:
+//!
+//! | File | What |
+//! |---|---|
+//! | `foliage/{tree_green,tree_blossom,tree_autumn,bush_green,bush_lavender,grass}.glb` | W6's foliage samples' geometry ([`PLANTS`]), one file per plant so each sidecar binds the plant's own look-dev foliage material (`foliage/materials/`) |
+//! | `sky/milky_way.png` | The night's Milky Way in teal, blue-violet and cyan-white ([`MILKY_WAY`]), which the look-dev sky (`sky/sky.material.ron`) reads in place of the sandbox's |
+//!
+//! The kit's own trees become foliage through single-piece assemblies
+//! (`foliage/kit_tree*.assembly.ron`), authored, not generated.
+//!
 //! The character (pixiv's VRM sample, A6) brings its own textures, extracted byte for byte under
 //! `content/third_party/`; its look-dev materials, face map and masks are in `character/`. One
 //! of its maps is derived here: **`character/hair_mask.png`** ([`hair_mask_png`]), the hair
@@ -33,9 +43,60 @@ use sapphire_assets::character_maps::hair_mask;
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
+use crate::samples::{foliage, sky};
 
 /// The town's directory, under the look-dev directory.
 pub const TOWN_DIR: &str = "town";
+
+/// The look-dev plants' directory, under the look-dev directory.
+pub const FOLIAGE_DIR: &str = "foliage";
+
+/// The look-dev sky's directory, under the look-dev directory.
+pub const SKY_DIR: &str = "sky";
+
+/// The look-dev plants made from W6's foliage samples: each file the sample's geometry
+/// (`samples::foliage`), so its own sidecar can bind its slots to a look-dev material of its own
+/// (a sidecar binds materials per source file). `(file, sample)`.
+pub const PLANTS: [(&str, Plant); 6] = [
+    ("tree_green.glb", Plant::Tree),
+    ("tree_blossom.glb", Plant::Tree),
+    ("tree_autumn.glb", Plant::Tree),
+    ("bush_green.glb", Plant::Bush),
+    ("bush_lavender.glb", Plant::Bush),
+    ("grass.glb", Plant::Grass),
+];
+
+/// A foliage sample's geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plant {
+    /// A trunk and branches (`Bark`) carrying six clumps of leaf cards (`Leaves`).
+    Tree,
+    /// A dome of leaf cards (`Leaves`).
+    Bush,
+    /// A patch of grass cards 4 m across (`Blades`).
+    Grass,
+}
+
+impl Plant {
+    fn glb(self) -> Vec<u8> {
+        match self {
+            Self::Tree => foliage::tree_glb(),
+            Self::Bush => foliage::bush_glb(),
+            Self::Grass => foliage::grass_glb(),
+        }
+    }
+}
+
+/// The look-dev night's Milky Way: teal at the band's edges, a blue-violet core and cyan-white
+/// clumps, brighter than the sample's, toward the painted nebulae of Wuthering Waves' night skies
+/// within what the sky's Milky Way map can show (a glow under the stars, no shapes of its own).
+pub const MILKY_WAY: sky::MilkyWayPalette = sky::MilkyWayPalette {
+    cool: Vec3::new(0.08, 0.46, 0.62),
+    warm: Vec3::new(0.42, 0.46, 0.95),
+    clumps: Vec3::new(0.55, 0.95, 1.0),
+    clump_tint: 0.6,
+    brightness: 0.2,
+};
 
 /// The look-dev character's painted hair highlight (VRoid's `Hair_00_spe` layer, extracted byte
 /// for byte from the model), relative to the look-dev directory: [`hair_mask_png`]'s input.
@@ -60,12 +121,22 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     ])
 }
 
+/// The generated plants and the sky's Milky Way, relative to the look-dev directory, with their
+/// bytes: the sources [`files`]'s maps don't cover.
+pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
+    let mut generated: Vec<(String, Vec<u8>)> =
+        PLANTS.iter().map(|&(name, plant)| (format!("{FOLIAGE_DIR}/{name}"), plant.glb())).collect();
+    generated.push((format!("{SKY_DIR}/milky_way.png"), sky::milky_way_png_in(&MILKY_WAY)?));
+    Ok(generated)
+}
+
 /// Writes every generated file into the look-dev directory `dir` (creating the directories they
 /// sit in): the town's maps and the character's hair mask, which [`HAIR_HIGHLIGHT`] under `dir`
 /// is read for. Returns their paths.
 pub fn write_all(dir: &std::path::Path) -> io::Result<Vec<std::path::PathBuf>> {
     let highlight = std::fs::read(dir.join(HAIR_HIGHLIGHT))?;
     let mut generated = files()?;
+    generated.extend(content_files()?);
     generated.push((HAIR_MASK.to_owned(), hair_mask_png(&highlight)?));
     let mut paths = Vec::new();
     for (name, bytes) in generated {
@@ -379,7 +450,9 @@ mod tests {
     /// The character's look-dev materials name its parts, which MToon doesn't, so the character
     /// prepass's IDs tell its face, hair and eyes from its body (M1 C5); they are written as the
     /// anime character document's current version, the strands read the generated hair mask, and
-    /// the eye parts draw the layers the VRM import gives VRoid's names (M1 C6).
+    /// the eye parts draw the layers the VRM import gives VRoid's names (M1 C6), and every part
+    /// takes the stylized GI's region weights the import gives its name (M1 C2's follow-up; X1
+    /// part 2 set the face's and body's).
     #[test]
     fn the_character_materials_name_its_parts() {
         use sapphire_assets::material::{AnimeCharacterMaterial, AnyMaterialDocument, CharacterSurface};
@@ -397,6 +470,10 @@ mod tests {
             let AnyMaterialDocument::AnimeCharacter(material) = crate::material::read(&bytes).unwrap() else {
                 panic!("{name} isn't an anime character material");
             };
+            // The stylized GI's weights a fresh import gives VRoid's name (M1 C2 follow-up).
+            for region in &material.regions {
+                assert_eq!(region.gi, crate::import::vrm::vroid_region_gi(name), "{name}");
+            }
             let part = match &material.surface {
                 CharacterSurface::Body => "body",
                 CharacterSurface::Face(_) => "face",
@@ -465,6 +542,17 @@ mod tests {
     #[test]
     fn maps_regenerate_byte_for_byte() {
         assert_eq!(files().unwrap(), files().unwrap());
+        assert_eq!(content_files().unwrap(), content_files().unwrap());
+    }
+
+    /// The committed plants and Milky Way are what the generator makes, and each plant is its
+    /// foliage sample's geometry.
+    #[test]
+    fn the_committed_content_is_generated() {
+        for (name, bytes) in content_files().unwrap() {
+            assert_eq!(std::fs::read(lookdev_dir().join(&name)).unwrap(), bytes, "{name}");
+        }
+        assert_eq!(Plant::Tree.glb(), foliage::tree_glb());
     }
 
     #[test]

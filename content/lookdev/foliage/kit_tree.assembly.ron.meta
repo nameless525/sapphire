@@ -1,0 +1,24 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "57d170c9-421c-423c-b9d1-560c05c32bad",
+        importer: Assembly((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [],
+            ),
+            materials: {
+                "Bark": "27443ffe-8e32-4695-a4b7-d4fbd0df4a49",
+                "Leaves": "0f82792f-c454-4f1b-840e-82f1e13fdbb1",
+            },
+            foliage: (
+                normals: Sphere,
+                slots: ["Leaves"],
+                blend: 0.85,
+            ),
+        )),
+    ),
+)

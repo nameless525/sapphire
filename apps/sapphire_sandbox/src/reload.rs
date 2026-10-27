@@ -1,5 +1,6 @@
 //! Hot reload in `dev` builds (M1 A8, `sapphire_hot_reload`): the content root's packs, the
-//! renderer's WGSL sources, the default day's timeline, the character light rig presets and the
+//! renderer's WGSL sources, the day's timeline (the default day's, or with `--look-dev` the
+//! look-dev day's, `content/lookdev/lookdev_day.ron`), the character light rig presets and the
 //! screen effect presets are watched, and each frame, before loading runs, what changed is
 //! applied:
 //!
@@ -21,7 +22,7 @@
 //! Live link (`link.rs`) applies pushed documents and shader sources through the same
 //! [`Document`]s and [`Reload::remember_shaders`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sapphire_assets::AssetChange;
 use sapphire_debug::HotReloadStatus;
@@ -40,8 +41,8 @@ use crate::scene::Scene;
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Document {
-    /// The default day's timeline (`default_day.ron`): it replaces time of day's base timeline,
-    /// if it parses and is complete.
+    /// The day's timeline (`default_day.ron`, or the look-dev day with `--look-dev`): it replaces
+    /// time of day's base timeline, if it parses and is complete.
     DefaultDay,
     /// The character light rig presets (`default_light_rigs.ron`): they replace the scene's
     /// library, if they parse and are valid; characters keep their preset IDs.
@@ -98,6 +99,16 @@ impl Document {
     }
 }
 
+/// The timeline document the scene's day comes from: the default day's, or the look-dev day's
+/// with `--look-dev` (in the repository this build was compiled from, as `sources` finds the
+/// engine's own).
+pub(crate) fn day_source(options: &crate::options::Options) -> PathBuf {
+    match options.look_dev {
+        Some(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/lookdev_day.ron"),
+        None => sources::default_day(),
+    }
+}
+
 /// Hot reload's state in the app.
 pub(crate) struct Reload {
     hot: Option<HotReload>,
@@ -115,10 +126,10 @@ pub(crate) struct Reload {
 }
 
 impl Reload {
-    /// Watches the packs in `content_root`, the shaders, the default day, the light rig presets
-    /// and the screen effect presets, unless `enabled` is false. A source that can't be watched
-    /// is left out, with a warning.
-    pub fn start(enabled: bool, content_root: &Path) -> Self {
+    /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
+    /// ([`day_source`]), the light rig presets and the screen effect presets, unless `enabled` is
+    /// false. A source that can't be watched is left out, with a warning.
+    pub fn start(enabled: bool, content_root: &Path, day: &Path) -> Self {
         let mut reload = Self {
             hot: None,
             watching: String::new(),
@@ -153,7 +164,7 @@ impl Reload {
             Err(error) => warn("the shaders", &error),
         }
         for (document, path, what) in [
-            (Document::DefaultDay, sources::default_day(), "the default day"),
+            (Document::DefaultDay, day.to_owned(), "the day"),
             (Document::LightRigs, sources::default_light_rigs(), "the light rigs"),
             (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
         ] {

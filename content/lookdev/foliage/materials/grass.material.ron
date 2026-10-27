@@ -1,0 +1,32 @@
+// The look-dev grass beds (M1 X1 part 2): a saturated green from a dark root to a bright
+// yellow-green tip, the roots occluded, swaying lightly.
+(
+    type: "sapphire::render::FoliageMaterial",
+    version: 1,
+    data: (
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("e23a7846-ca32-4369-9832-661a15dd4efd"),
+        alpha_cutoff: 0.4,
+        mask_map: None,
+        wrap: 0.55,
+        terminator_width: 0.2,
+        terminator_growth: 0.006,
+        shadow_tint: (0.92, 0.96, 1.1),
+        canopy_occlusion: 0.45,
+        translucency: (
+            color: (0.6724, 0.8550, 0.1878),
+            strength: 0.45,
+            power: 3.0,
+        ),
+        gradient: (
+            root: (0.0130, 0.1070, 0.0296),
+            tip: (0.3050, 0.6724, 0.0976),
+        ),
+        wind: (sway: 0.05, bend: 0.06, flutter: 0.03, flutter_frequency: 1.7),
+        distance: (
+            start: 20.0,
+            end: 160.0,
+            desaturation: 0.4,
+        ),
+    ),
+)

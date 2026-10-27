@@ -18,8 +18,9 @@
 //! ([`Content::face_head`]). With `--hard-edges` it loads the hard-edged outline sample
 //! ([`outlines::HARD_EDGES`], [`Content::hard_edges`]).
 //!
-//! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), loaded with its cloud,
-//! cirrus, moon, star and Milky Way maps ([`Content::sky_material`]).
+//! The zone's sky is the sky material [`SKY`] (`samples/sky.material.ron`), or the one the scene
+//! asks for (`--look-dev`'s, [`lookdev::SKY`]), loaded with its cloud, cirrus, moon, star and
+//! Milky Way maps ([`Content::sky_material`]).
 //!
 //! With `--environment` it loads the courtyard ([`environment::COURTYARD`]), whose slots its sidecar
 //! binds to environment materials, which name a terminator band and a painted ground map
@@ -34,8 +35,9 @@
 //! [`Content::probe_hours`]).
 //!
 //! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
-//! binds to the town's environment materials ([`Content::town`]), the courtyard's fog cards, and
-//! the character's rig ([`lookdev::RIG`], [`Content::rig`]), which stays on the CPU.
+//! binds to the town's environment materials, and the town's plants ([`lookdev::Plant`]), whose
+//! sidecars bind theirs to the look-dev foliage materials ([`Content::town`]), the courtyard's fog
+//! cards, and the character's rig ([`lookdev::RIG`], [`Content::rig`]), which stays on the CPU.
 //!
 //! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
 //! derives the character without its pedestal and the look-dev stage its held pose
@@ -86,7 +88,7 @@ use crate::LOG_TARGET;
 use crate::environment;
 use crate::faces;
 use crate::foliage::{self, FoliageMeshes};
-use crate::lookdev;
+use crate::lookdev::{self, Plant, TownMeshes};
 use crate::outlines;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
@@ -291,10 +293,12 @@ pub(crate) struct Content {
     hard_edges: Option<Handle<Mesh>>,
     /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
-    /// The look-dev town, once asked for (`--look-dev`).
-    town: Option<Handle<Mesh>>,
+    /// The look-dev town and its plants, once asked for (`--look-dev`).
+    town: Vec<Handle<Mesh>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
+    /// The sky material the scene draws: [`SKY`] unless the scene wants another.
+    sky_id: AssetId,
     /// The sky material, once asked for.
     sky: Option<Handle<Material>>,
     server: AssetServer,
@@ -307,8 +311,9 @@ pub(crate) struct Content {
 impl Content {
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
-    /// within the budgets of the device's class.
-    pub fn new(platform: &Platform, character: AssetId) -> Result<Self, AppInitError> {
+    /// within the budgets of the device's class. The scene's sky is the sky material `sky`
+    /// ([`SKY`] unless the scene wants another), loaded when asked for.
+    pub fn new(platform: &Platform, character: AssetId, sky: AssetId) -> Result<Self, AppInitError> {
         let stopwatch = Stopwatch::start();
         let content = platform.content();
         let missing = |error: &dyn std::fmt::Display| {
@@ -341,8 +346,9 @@ impl Content {
             foliage: Vec::new(),
             hard_edges: None,
             probes: None,
-            town: None,
+            town: Vec::new(),
             rig: None,
+            sky_id: sky,
             sky: None,
             server,
             #[cfg(feature = "dev")]
@@ -587,17 +593,23 @@ impl Content {
     /// Loads until the look-dev town is on `renderer`, with its environment materials and the
     /// maps they name, and returns its mesh: the load screen of `--look-dev`. It stays loaded from
     /// then on.
-    pub fn town(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<MeshHandle, AppInitError> {
+    pub fn town(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<TownMeshes, AppInitError> {
         // Asking again tries a town that failed before, as the character does.
-        let town = self.server.load_with(lookdev::TOWN, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let ids = std::iter::once(lookdev::TOWN).chain(Plant::ALL.map(Plant::id));
+        let handles = ids
+            .map(|id| self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg))
+            .collect::<Result<Vec<_>, _>>()?;
         let assets = &mut self.gpu;
-        let loaded = self.server.finish(&town, |upload| assets.upload(upload, renderer, gpu));
-        self.town = Some(town);
+        let loaded: Result<(), _> = handles
+            .iter()
+            .try_for_each(|handle| self.server.finish(handle, |upload| assets.upload(upload, renderer, gpu)));
+        self.town = handles;
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the look-dev town didn't load: {error}")))?;
-        Ok(self.gpu.meshes.get(&lookdev::TOWN).expect("a ready mesh was uploaded here").object.handle)
+        let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
+        Ok(TownMeshes { town: mesh(lookdev::TOWN), plants: Plant::ALL.map(|plant| mesh(plant.id())) })
     }
 
     /// Loads the character rig `id` until it is resident: CPU data, which nothing uploads
@@ -632,7 +644,7 @@ impl Content {
         gpu: &GpuContext,
     ) -> Result<MaterialHandle, AppInitError> {
         // Asking again tries a material that failed before, as the character does.
-        let handle = self.server.load_with(SKY, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let handle = self.server.load_with(self.sky_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu));
         self.sky = Some(handle);
@@ -640,7 +652,7 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the sky material didn't load: {error}")))?;
-        Ok(self.gpu.materials.get(&SKY).expect("a ready material was uploaded here").object)
+        Ok(self.gpu.materials.get(&self.sky_id).expect("a ready material was uploaded here").object)
     }
 
     /// For a new renderer, which starts empty: sets the old one's objects aside and sends every

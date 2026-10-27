@@ -45,8 +45,8 @@
                 outline_color: (0.061245974, 0.0085681, 0.014443802),
                 outline_width: 1.0,
                 gi: (
-                    sphere: 0.0,
-                    skin: 0.0,
+                    sphere: 1.0,
+                    skin: 1.0,
                 ),
             ),
         ],

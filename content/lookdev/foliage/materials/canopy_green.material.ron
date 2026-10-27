@@ -1,0 +1,32 @@
+// The kit trees' canopies as foliage (M1 X1 part 2): the town's painted leaf clusters, opaque
+// over the kit's closed crowns, a soft cool shade inside to a warm light on the surface.
+(
+    type: "sapphire::render::FoliageMaterial",
+    version: 1,
+    data: (
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("981ecb07-365a-4cfb-813d-e6e65e3449d7"),
+        alpha_cutoff: 0.0,
+        mask_map: None,
+        wrap: 0.55,
+        terminator_width: 0.18,
+        terminator_growth: 0.006,
+        shadow_tint: (0.92, 0.96, 1.1),
+        canopy_occlusion: 0.5,
+        translucency: (
+            color: (0.6172, 0.8550, 0.1812),
+            strength: 0.4,
+            power: 4.0,
+        ),
+        gradient: (
+            root: (0.3050, 0.4452, 0.4020),
+            tip: (1.0000, 1.0000, 0.7758),
+        ),
+        wind: (sway: 0.09, bend: 0.12, flutter: 0.035, flutter_frequency: 2.2),
+        distance: (
+            start: 20.0,
+            end: 160.0,
+            desaturation: 0.35,
+        ),
+    ),
+)

@@ -25,6 +25,7 @@ use crate::dev::{DevTools, FrameState};
 use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::SandboxInput;
+use crate::lookdev::TownMeshes;
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
 use crate::scene::{LookDev, Scene};
@@ -120,7 +121,7 @@ impl App for SandboxApp {
         // Frames are paced to the tier's rate (spec §6.2): on iOS the platform's display link asks
         // the display for it.
         platform.set_frame_rate(quality.frame_rate());
-        let mut content = Content::new(platform, options.character())?;
+        let mut content = Content::new(platform, options.character(), options.sky())?;
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
@@ -680,8 +681,8 @@ struct SceneRenderer {
     arcade: Option<MeshHandle>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<MeshHandle>,
-    /// The look-dev town, with `--look-dev`.
-    town: Option<MeshHandle>,
+    /// The look-dev town and its plants, with `--look-dev`.
+    town: Option<TownMeshes>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StageMeshes>,
     /// The zone's sky material.
@@ -762,7 +763,7 @@ struct SceneMeshes {
     foliage: Option<FoliageMeshes>,
     arcade: Option<MeshHandle>,
     hard_edges: Option<MeshHandle>,
-    town: Option<MeshHandle>,
+    town: Option<TownMeshes>,
     stage: Option<StageMeshes>,
 }
 

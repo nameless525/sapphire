@@ -94,9 +94,17 @@ const SAMPLE_SOURCES: &[&str] = &[
     "samples/foliage/grass.png",
 ];
 
-/// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps and
+/// Generated look-dev sources (M1 X1), relative to [`SOURCE_DIR`]: the town's painted maps, its
+/// plants (W6's foliage samples, one file per look-dev material), the night sky's Milky Way and
 /// the character's hair mask. `gen-lookdev` writes all of them.
 const LOOKDEV_SOURCES: &[&str] = &[
+    "lookdev/foliage/tree_green.glb",
+    "lookdev/foliage/tree_blossom.glb",
+    "lookdev/foliage/tree_autumn.glb",
+    "lookdev/foliage/bush_green.glb",
+    "lookdev/foliage/bush_lavender.glb",
+    "lookdev/foliage/grass.glb",
+    "lookdev/sky/milky_way.png",
     "lookdev/town/textures/plaster.png",
     "lookdev/town/textures/stone.png",
     "lookdev/town/textures/cobbles.png",

@@ -24,7 +24,7 @@
             end: 220.0,
             desaturation: 0.4,
         ),
-        emission: (0.16, 0.1, 0.045),
+        emission: (0.36, 0.2, 0.07),
         emission_map: None,
     ),
 )

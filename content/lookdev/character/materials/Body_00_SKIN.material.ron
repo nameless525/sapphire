@@ -32,7 +32,7 @@
                 outline_width: 1.0,
                 gi: (
                     sphere: 0.0,
-                    skin: 0.0,
+                    skin: 1.0,
                 ),
             ),
         ],

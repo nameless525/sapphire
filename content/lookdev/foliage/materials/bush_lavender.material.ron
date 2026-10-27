@@ -1,0 +1,32 @@
+// The look-dev lavender (M1 X1 part 2): violet in its depth to a pale lilac on its surface, the
+// town's lavender accent.
+(
+    type: "sapphire::render::FoliageMaterial",
+    version: 1,
+    data: (
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("3b93f25e-0f01-488c-b5ba-691136d40542"),
+        alpha_cutoff: 0.45,
+        mask_map: None,
+        wrap: 0.5,
+        terminator_width: 0.16,
+        terminator_growth: 0.006,
+        shadow_tint: (0.92, 0.96, 1.1),
+        canopy_occlusion: 0.6,
+        translucency: (
+            color: (0.6724, 0.4910, 1.0000),
+            strength: 0.45,
+            power: 4.0,
+        ),
+        gradient: (
+            root: (0.0931, 0.0482, 0.3050),
+            tip: (0.5647, 0.3916, 0.8879),
+        ),
+        wind: (sway: 0.03, bend: 0.04, flutter: 0.025, flutter_frequency: 2.6),
+        distance: (
+            start: 20.0,
+            end: 160.0,
+            desaturation: 0.35,
+        ),
+    ),
+)

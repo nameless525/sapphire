@@ -1,0 +1,30 @@
+// A round kit tree (M1 X1 part 2): Kenney's `tree-high-round` as one plant in the foliage family,
+// its root at the origin, so W6's foliage bake rounds its crown's normals, gives it a canopy
+// gradient and lets the wind sway it about its root. The look-dev stage places it
+// (`apps/sapphire_sandbox/src/lookdev.rs`): the town's own assembly can't carry foliage, whose
+// wind sways a mesh about its own origin. The kit models trunk and crown in one material, so
+// palette cells split them into the sidecar's `Bark` and `Leaves` slots, bound to the look-dev
+// foliage materials.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {
+            "kenney": "../../third_party/kenney_fantasy_town_kit/glb",
+        },
+        palette: (columns: 16, rows: 4, gradient_columns: [1, 3, 5, 7, 9, 11, 13, 15]),
+        slots: [
+            (name: "Bark", tile: (1.0, 1.0), projection: Box),
+            (name: "Leaves", tile: (2.0, 2.0), projection: Box),
+        ],
+        surfaces: [
+            (cell: Some((9, 3)), slot: "Bark"),
+            (cell: Some((7, 3)), slot: "Leaves"),
+        ],
+        occlusion: (ground: 0.35, ground_height: 2.5, gradient: 0.3),
+        groups: {},
+        place: [
+            (piece: "kenney/tree-high-round", scale: 3.2),
+        ],
+    ),
+)

@@ -98,7 +98,7 @@ use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, R
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::input::SimActions;
-use crate::lookdev::{self, Shot};
+use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
@@ -177,7 +177,7 @@ type Lamps = QueryState<(&'static Lamp, &'static mut RenderLight)>;
 /// What the look-dev stage (`--look-dev`) draws: the town, its fog cards where frames draw fog,
 /// and the character's held pose and the figure it makes.
 pub(crate) struct LookDev {
-    pub town: MeshHandle,
+    pub town: TownMeshes,
     pub fog_cards: Option<[MeshHandle; environment::FOG_CARDS.len()]>,
     pub pose: RenderPose,
     pub figure: Figure,
@@ -216,8 +216,9 @@ pub(crate) struct Scene {
     hard_edges: Option<Entity>,
     /// The stage's pieces, with `--stage`.
     stage: Vec<(Entity, Piece)>,
-    /// The look-dev town, with `--look-dev`.
+    /// The look-dev town, with `--look-dev`, and its plants.
     town: Option<Entity>,
+    town_plants: Vec<(Entity, lookdev::Plant)>,
     /// Where the character's light rig finds its head and body.
     figure: Figure,
     /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
@@ -310,6 +311,7 @@ impl Scene {
             hard_edges: None,
             stage: Vec::new(),
             town: None,
+            town_plants: Vec::new(),
             figure,
             poses: skinned,
             bounds,
@@ -729,13 +731,17 @@ impl Scene {
         }
     }
 
-    /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town around the
-    /// character, its fog cards and lamps, the character held in `look.pose` (its turntable
-    /// stopped, its light rig finding its head and body by `look.figure`) and the `shot`'s
-    /// camera. The town and its cards never move, so they are extracted once.
+    /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town and its plants
+    /// around the character, its fog cards and lamps, the character held in `look.pose` (its
+    /// turntable stopped, its light rig finding its head and body by `look.figure`) and the
+    /// `shot`'s camera. Time of day runs on the stage's own day ([`lookdev::day`]) and the wind
+    /// blows the stage's breeze. The town, its plants and its cards never move, so they are
+    /// extracted once.
     pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
         self.figure = look.figure;
         self.extract_poses();
+        self.time_of_day_mut().set_timeline(lookdev::day()).expect("the look-dev day sets every group");
+        self.wind = lookdev::WIND;
         let world = self.ecs.world_mut();
         world.insert_resource(shot.camera());
         let mut character = world.entity_mut(self.character);
@@ -746,7 +752,12 @@ impl Scene {
         if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
             rig.head = look.figure.head;
         }
-        self.town = Some(world.spawn((RenderMesh(look.town), RenderTransform(Mat4::IDENTITY))).id());
+        self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(Mat4::IDENTITY))).id());
+        self.town_plants = lookdev::plantings()
+            .map(|(plant, place)| {
+                (world.spawn((RenderMesh(look.town.plant(plant)), RenderTransform(place))).id(), plant)
+            })
+            .collect();
         for light in lookdev::lamps() {
             world.spawn((Lamp { intensity: light.intensity }, RenderLight(light)));
         }
@@ -759,10 +770,13 @@ impl Scene {
         }
     }
 
-    /// Sets the mesh the look-dev town draws again: after GPU device loss.
-    pub fn set_town_mesh(&mut self, mesh: MeshHandle) {
+    /// Sets the meshes the look-dev town and its plants draw again: after GPU device loss.
+    pub fn set_town_mesh(&mut self, meshes: TownMeshes) {
         if let Some(town) = self.town {
-            self.ecs.world_mut().entity_mut(town).insert(RenderMesh(mesh));
+            self.ecs.world_mut().entity_mut(town).insert(RenderMesh(meshes.town));
+        }
+        for &(entity, plant) in &self.town_plants {
+            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.plant(plant)));
         }
     }
 
@@ -1152,8 +1166,11 @@ mod tests {
             body_radius: 0.16,
             face: Quat::IDENTITY,
         };
-        let look = LookDev { town: MeshHandle::from_raw(1), fog_cards: None, pose: pose.clone(), figure };
+        let town = TownMeshes { town: MeshHandle::from_raw(1), plants: [MeshHandle::from_raw(2); 8] };
+        let look = LookDev { town, fog_cards: None, pose: pose.clone(), figure };
         scene.spawn_look_dev(Shot::Hero, look);
+        assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the stage runs on its own day");
+        assert_eq!(scene.town_plants.len(), lookdev::PLANTINGS.len());
         let character = InstanceId(scene.character.to_bits());
         let frame = |scene: &mut Scene, hours: f32| {
             scene.set_day(hours, None);

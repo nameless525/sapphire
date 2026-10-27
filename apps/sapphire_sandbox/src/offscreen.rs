@@ -89,7 +89,7 @@ impl Stage {
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let mut renderer = Renderer::new(&gpu, FORMAT, options.render_settings(quality.render_settings()))?;
-        let mut content = Content::new(platform, options.character())?;
+        let mut content = Content::new(platform, options.character(), options.sky())?;
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }

@@ -1,0 +1,454 @@
+// The look-dev day (M1 X1 part 2): the time of day `--look-dev` runs on instead of the default
+// day, so the default day and every scene that isn't the look-dev town stay as they are. The
+// sandbox compiles it in (`apps/sapphire_sandbox/src/lookdev.rs`); it is a `TodTimeline` document
+// (`sapphire_world::tod`, whose module docs say how keys blend), and hot reload watches it in dev
+// builds while `--look-dev` runs. The cooker leaves it alone: no importer reads a bare `.ron`.
+//
+// The target is Wuthering Waves' light (the user's reference set, described in docs/m1-plan.md's
+// X1 row): a strong warm sun with clearly cool, lifted shadows by day; a huge warm sun glow, warm
+// cloud sides over purple undersides and a peach-to-violet sky at golden hour; a cyan-blue blue
+// hour with the windows coming on; and a blue night, not a black one, with a navy sky, a teal
+// Milky Way and moonlit lavender clouds, mid-tones kept readable by exposure.
+//
+// - Ten keys: midnight, the blue hour before dawn (4:45), sunrise (6:00), morning (9:00), midday
+//   (13:00, `lookdev-town-day`), afternoon (16:00), golden hour (18:00, `lookdev-town-hero`;
+//   `lookdev-town-golden` runs at 18:30), sunset (19:00), the blue hour after it (19:45,
+//   `lookdev-town-blue`) and nightfall (21:00; `lookdev-town-night` runs at 23:00). Each sets
+//   every group.
+// - The sun, as the stage's cameras see it (they look toward -Z from the square's open side):
+//   it rises on the right behind the cameras, stands on the right at about 37 degrees at midday
+//   (side light: the facades facing the cameras half lit, long shadows across the square), swings
+//   round behind them to the left in the afternoon, and sets in front of them on the left. At
+//   golden hour it is a low sun at the wide shot's top left, about 27 degrees up: its glow fills
+//   that corner and long warm light crosses the square between blue-violet shadows; by 18:30 only
+//   warm streaks through the gaps at the left row's end remain. The moon rises on the right
+//   behind the cameras at dusk, stands high behind them at midnight (moonlit facades) and sets on
+//   the left before dawn. Directions are the way light travels, from the body into the scene.
+// - Aerial perspective in layers: near haze starts 25–45 m out, so the square and the character
+//   stay clear; far haze from 45–70 m takes the sky's horizon color (white tint), so the hills
+//   lift and the mountains' feet melt into it; the height layer is thin and deep (falloff 0.01–
+//   0.015 a meter), light blue-grey by day, blue-violet at golden hour, cyan-blue at the blue
+//   hour and navy at night, and is the valley's haze that fades the mountains whole, their peaks
+//   least. The sky takes the same fog at infinite distance, so the zeniths are authored a little
+//   deeper than they show. The key light's forward scatter warms the haze around the sun,
+//   strongly at golden hour.
+// - Shadow tints multiply the key light's color, so the warm keys' tints lean further toward blue
+//   than they look: (0.12, 0.2, 0.7) under the golden sun reads as a clear blue-violet shadow,
+//   where a lavender tint would turn the shadows pink.
+// - Characters get a key of their own that follows the world's (CLAUDE.md's night character
+//   light contract, held by a test in `lookdev.rs` at every quarter hour): the sun's own light
+//   from morning to afternoon; a little warmer at golden hour; between 1.2 and 1.6 times the key
+//   light's luminance from sunset through the night, warm enough that skin stays warm against the
+//   blue world. Exposed, that keeps them a step above the world at night and under 70% of their
+//   noon brightness.
+// - Post, at every key: wide soft bloom (scatter 0.75–0.8) that opens up at night for the
+//   lanterns and windows; the grade lifts the shadows toward blue and keeps a slight warm gain
+//   on the highlights (a split tone), with saturation a little up; a mild vignette, tinted at
+//   golden hour and night; the diffusion glow clean by day, gold at golden hour, cool at night;
+//   the three gradient layers keep their shapes and modes all day, so they blend smoothly. The
+//   lens flare is off from golden hour on: its ghosts cut across the hero shot.
+// - Every number is a starting point for art direction, not a measurement.
+(
+    type: "sapphire::world::TodTimeline",
+    version: 1,
+    data: (
+        keys: [
+            (
+                // Midnight: a blue night under a high moon behind the cameras, lifted by exposure; a navy
+                // sky, the teal Milky Way, lavender moonlit clouds, amber windows and lanterns.
+                time: 0.0,
+                sun: (direction: (0.0, 0.85, 0.5), color: (1.0, 0.5, 0.3), intensity: 0.0),
+                moon: (direction: (-0.2, -0.82, -0.54), color: (0.62, 0.72, 1.0), intensity: 0.33),
+                sky: (zenith: (0.004, 0.009, 0.048), horizon: (0.03, 0.05, 0.145), ground: (0.02, 0.025, 0.05)),
+                ambient: (sky: (0.2, 0.3, 0.68), ground: (0.05, 0.06, 0.12), intensity: 0.24),
+                fog: (
+                    near: (color: (0.05, 0.08, 0.2), density: 0.0005, start: 30.0),
+                    far: (color: (0.85, 0.9, 1.0), density: 0.0012, start: 60.0),
+                    height: (color: (0.06, 0.1, 0.24), density: 0.0016, falloff: 0.01),
+                    sun_inscatter: (0.03, 0.035, 0.06),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.2, 0.26, 0.55),
+                character: (color: (0.68, 0.76, 1.0), intensity: 0.39),
+                day_night: 1.0,
+                exposure: 0.85,
+                grade: (temperature: -0.15, contrast: 1.03, saturation: 1.12, lift: (0.0, 0.015, 0.05)),
+                bloom: (threshold: 0.75, knee: 0.5, intensity: 0.4, scatter: 0.8),
+                vignette: (intensity: 0.3, start: 0.4, color: (0.02, 0.03, 0.12)),
+                discs: (
+                    sun: (color: (1.0, 0.55, 0.35), intensity: 0.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 2.0, glow: (0.06, 0.08, 0.16), glow_size: 16.0),
+                ),
+                stars: 1.0,
+                clouds: (
+                    lit: (0.15, 0.14, 0.27), shade: (0.04, 0.045, 0.11), rim: (0.3, 0.27, 0.44),
+                    coverage: 0.6, cirrus: 0.3,
+                ),
+                diffusion: (intensity: 0.9, threshold: 0.05, color: (0.75, 0.8, 1.0)),
+                character_bloom: (threshold: 1.3, strength: 0.6),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.55, 0.6, 0.92), opacity: 0.3, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.55, 0.58, 0.85), opacity: 0.25, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.68, 0.76, 1.0), opacity: 0.1, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+            ),
+            (
+                // The blue hour before dawn: the moon setting low on the left, the sky paling.
+                time: 4.75,
+                sun: (direction: (-0.78, 0.12, -0.62), color: (1.0, 0.55, 0.4), intensity: 0.0),
+                moon: (direction: (0.8, -0.22, -0.56), color: (0.62, 0.72, 1.0), intensity: 0.16),
+                sky: (zenith: (0.025, 0.045, 0.18), horizon: (0.3, 0.3, 0.52), ground: (0.06, 0.06, 0.11)),
+                ambient: (sky: (0.38, 0.4, 0.72), ground: (0.09, 0.09, 0.16), intensity: 0.2),
+                fog: (
+                    near: (color: (0.3, 0.3, 0.52), density: 0.0008, start: 30.0),
+                    far: (color: (0.95, 0.95, 1.0), density: 0.0016, start: 50.0),
+                    height: (color: (0.32, 0.32, 0.56), density: 0.0022, falloff: 0.01),
+                    sun_inscatter: (0.04, 0.04, 0.07),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.26, 0.28, 0.58),
+                character: (color: (0.8, 0.78, 1.0), intensity: 0.216),
+                day_night: 0.9,
+                exposure: 0.9,
+                grade: (temperature: -0.12, tint: 0.05, saturation: 1.1, lift: (0.01, 0.015, 0.045), gain: (1.0, 1.0, 1.02)),
+                bloom: (threshold: 0.8, knee: 0.5, intensity: 0.35, scatter: 0.78),
+                vignette: (intensity: 0.26, start: 0.42, color: (0.05, 0.05, 0.16)),
+                discs: (
+                    sun: (color: (1.0, 0.6, 0.4), intensity: 0.0, glow: (0.25, 0.14, 0.18), glow_size: 55.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.5, glow: (0.05, 0.06, 0.12), glow_size: 12.0),
+                ),
+                stars: 0.55,
+                clouds: (
+                    lit: (0.36, 0.33, 0.58), shade: (0.13, 0.13, 0.3), rim: (0.5, 0.42, 0.62),
+                    coverage: 0.7, cirrus: 0.5,
+                ),
+                diffusion: (intensity: 1.0, threshold: 0.06, color: (0.75, 0.72, 1.0)),
+                character_bloom: (threshold: 1.3, strength: 0.6),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.62, 0.62, 0.92), opacity: 0.28, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.6, 0.55, 0.82), opacity: 0.25, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.8, 0.78, 1.0), opacity: 0.12, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+            ),
+            (
+                // Sunrise: a low peach sun on the right behind the cameras, morning mist.
+                time: 6.0,
+                sun: (direction: (-0.75, -0.04, -0.66), color: (1.0, 0.62, 0.42), intensity: 0.75),
+                moon: (direction: (0.85, 0.03, -0.52), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.08, 0.17, 0.5), horizon: (1.0, 0.68, 0.52), ground: (0.14, 0.12, 0.2)),
+                ambient: (sky: (0.95, 0.72, 0.68), ground: (0.14, 0.12, 0.2), intensity: 0.15),
+                fog: (
+                    near: (color: (0.85, 0.68, 0.62), density: 0.001, start: 30.0),
+                    far: (color: (1.0, 0.96, 0.92), density: 0.0016, start: 50.0),
+                    height: (color: (0.8, 0.66, 0.7), density: 0.0022, falloff: 0.01),
+                    sun_inscatter: (0.6, 0.34, 0.18),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.24, 0.34, 0.85),
+                character: (color: (1.0, 0.7, 0.55), intensity: 0.79),
+                day_night: 0.35,
+                exposure: 0.25,
+                grade: (temperature: 0.05, tint: 0.04, contrast: 1.04, saturation: 1.18, lift: (0.01, 0.005, 0.03), gain: (1.02, 0.99, 0.96)),
+                bloom: (threshold: 0.9, knee: 0.5, intensity: 0.33, scatter: 0.76),
+                vignette: (intensity: 0.2, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.68, 0.45), intensity: 24.0, glow: (0.95, 0.52, 0.28), glow_size: 50.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.5),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.15, 0.75, 0.62), shade: (0.4, 0.34, 0.56), rim: (1.5, 0.9, 0.55),
+                    coverage: 0.75, cirrus: 0.7,
+                ),
+                diffusion: (intensity: 1.2, threshold: 0.08, color: (1.0, 0.82, 0.7)),
+                character_bloom: (threshold: 1.5, strength: 0.45),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.74, 0.76, 0.96), opacity: 0.22, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.78, 0.68, 0.8), opacity: 0.2, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.86, 0.76), opacity: 0.14, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.8, color: (1.0, 0.75, 0.5)),
+            ),
+            (
+                // Morning: the sun climbing behind the cameras' right shoulder, the air clearing.
+                time: 9.0,
+                sun: (direction: (-0.8, -0.42, -0.43), color: (1.0, 0.9, 0.78), intensity: 1.05),
+                moon: (direction: (0.4, 0.7, -0.6), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.035, 0.15, 0.56), horizon: (0.56, 0.72, 0.9), ground: (0.3, 0.3, 0.36)),
+                ambient: (sky: (0.62, 0.75, 1.0), ground: (0.38, 0.35, 0.4), intensity: 0.16),
+                fog: (
+                    near: (color: (0.7, 0.78, 0.9), density: 0.0008, start: 35.0),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.0013, start: 65.0),
+                    height: (color: (0.7, 0.78, 0.9), density: 0.0009, falloff: 0.015),
+                    sun_inscatter: (0.16, 0.13, 0.1),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.36, 0.44, 0.72),
+                character: (color: (1.0, 0.9, 0.78), intensity: 1.05),
+                day_night: 0.0,
+                exposure: -0.2,
+                grade: (contrast: 1.04, saturation: 1.18, lift: (0.0, 0.012, 0.03), gain: (1.02, 1.0, 0.97)),
+                bloom: (threshold: 1.0, knee: 0.5, intensity: 0.28, scatter: 0.75),
+                vignette: (intensity: 0.18, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.95, 0.85), intensity: 40.0, glow: (0.32, 0.28, 0.2), glow_size: 26.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.1, 1.07, 1.02), shade: (0.44, 0.53, 0.76), rim: (1.0, 0.97, 0.9),
+                    coverage: 0.8, cirrus: 0.45,
+                ),
+                diffusion: (intensity: 0.8, threshold: 0.15, color: (1.0, 0.97, 0.92)),
+                character_bloom: (threshold: 1.4, strength: 0.5),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.82, 0.88, 1.0), opacity: 0.22, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.82, 0.8, 0.9), opacity: 0.16, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.96, 0.88), opacity: 0.1, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
+            ),
+            (
+                // Midday: a strong warm sun on the right at about 37 degrees, clearly cool shadows,
+                // a deep blue zenith over white cumulus, the mountains in blue-grey haze.
+                time: 13.0,
+                sun: (direction: (-0.72, -0.6, -0.3), color: (1.0, 0.93, 0.82), intensity: 1.15),
+                moon: (direction: (-0.3, 0.9, -0.3), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.014, 0.085, 0.5), horizon: (0.4, 0.6, 0.86), ground: (0.3, 0.3, 0.36)),
+                ambient: (sky: (0.6, 0.75, 1.0), ground: (0.4, 0.37, 0.4), intensity: 0.16),
+                fog: (
+                    near: (color: (0.66, 0.76, 0.9), density: 0.0008, start: 35.0),
+                    far: (color: (1.0, 1.0, 1.0), density: 0.0012, start: 70.0),
+                    height: (color: (0.68, 0.77, 0.9), density: 0.0008, falloff: 0.015),
+                    sun_inscatter: (0.14, 0.12, 0.09),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.3, 0.42, 0.78),
+                character: (color: (1.0, 0.93, 0.82), intensity: 1.15),
+                day_night: 0.0,
+                exposure: -0.2,
+                grade: (contrast: 1.04, saturation: 1.18, lift: (0.0, 0.012, 0.03), gain: (1.02, 1.0, 0.97)),
+                bloom: (threshold: 1.0, knee: 0.5, intensity: 0.28, scatter: 0.75),
+                vignette: (intensity: 0.18, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.96, 0.88), intensity: 40.0, glow: (0.3, 0.27, 0.2), glow_size: 24.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.1, 1.08, 1.03), shade: (0.42, 0.52, 0.74), rim: (1.0, 0.98, 0.9),
+                    coverage: 0.85, cirrus: 0.4,
+                ),
+                diffusion: (intensity: 0.8, threshold: 0.15, color: (1.0, 0.97, 0.92)),
+                character_bloom: (threshold: 1.4, strength: 0.5),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.82, 0.88, 1.0), opacity: 0.22, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.82, 0.8, 0.9), opacity: 0.16, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.96, 0.88), opacity: 0.1, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.5, color: (1.0, 0.95, 0.85)),
+            ),
+            (
+                // Afternoon: the sun round behind the cameras on the left, lower and a touch warmer.
+                time: 16.0,
+                sun: (direction: (0.55, -0.55, -0.62), color: (1.0, 0.88, 0.72), intensity: 1.1),
+                moon: (direction: (-0.7, 0.5, -0.5), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.035, 0.13, 0.5), horizon: (0.62, 0.7, 0.82), ground: (0.28, 0.26, 0.32)),
+                ambient: (sky: (0.66, 0.74, 0.95), ground: (0.38, 0.33, 0.38), intensity: 0.16),
+                fog: (
+                    near: (color: (0.72, 0.74, 0.86), density: 0.0008, start: 35.0),
+                    far: (color: (1.0, 0.98, 0.98), density: 0.0013, start: 65.0),
+                    height: (color: (0.66, 0.7, 0.86), density: 0.0009, falloff: 0.015),
+                    sun_inscatter: (0.3, 0.22, 0.13),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.3, 0.42, 0.85),
+                character: (color: (1.0, 0.88, 0.72), intensity: 1.1),
+                day_night: 0.0,
+                exposure: -0.15,
+                grade: (temperature: 0.02, contrast: 1.03, saturation: 1.16, lift: (0.0, 0.01, 0.032), gain: (1.03, 1.0, 0.96)),
+                bloom: (threshold: 0.95, knee: 0.5, intensity: 0.3, scatter: 0.76),
+                vignette: (intensity: 0.2, start: 0.45),
+                discs: (
+                    sun: (color: (1.0, 0.9, 0.72), intensity: 36.0, glow: (0.5, 0.38, 0.22), glow_size: 32.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.0),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.12, 1.02, 0.88), shade: (0.44, 0.48, 0.7), rim: (1.2, 1.0, 0.75),
+                    coverage: 0.85, cirrus: 0.55,
+                ),
+                diffusion: (intensity: 0.95, threshold: 0.12, color: (1.0, 0.92, 0.8)),
+                character_bloom: (threshold: 1.45, strength: 0.48),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.8, 0.8, 0.96), opacity: 0.23, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.78, 0.72, 0.86), opacity: 0.2, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.9, 0.76), opacity: 0.12, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.7, color: (1.0, 0.88, 0.7)),
+            ),
+            (
+                // Golden hour: a low golden sun in front of the cameras on the left; a huge warm glow,
+                // warm cloud sides over purple undersides, blue-violet shadows and haze away from
+                // the sun. Characters a little warmer.
+                time: 18.0,
+                sun: (direction: (0.55, -0.46, 0.7), color: (1.0, 0.72, 0.45), intensity: 1.0),
+                moon: (direction: (-0.85, 0.2, -0.5), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.03, 0.06, 0.28), horizon: (0.95, 0.58, 0.46), ground: (0.12, 0.1, 0.16)),
+                ambient: (sky: (0.56, 0.56, 0.86), ground: (0.26, 0.19, 0.22), intensity: 0.14),
+                fog: (
+                    near: (color: (0.55, 0.5, 0.68), density: 0.0005, start: 45.0),
+                    far: (color: (1.0, 0.95, 0.95), density: 0.0014, start: 60.0),
+                    height: (color: (0.42, 0.42, 0.7), density: 0.0012, falloff: 0.012),
+                    sun_inscatter: (1.0, 0.55, 0.2),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.12, 0.2, 0.7),
+                character: (color: (1.0, 0.78, 0.55), intensity: 1.0),
+                day_night: 0.05,
+                exposure: -0.05,
+                grade: (temperature: 0.04, contrast: 1.05, saturation: 1.18, lift: (0.0, 0.005, 0.035), gain: (1.04, 0.99, 0.92)),
+                bloom: (threshold: 0.9, knee: 0.5, intensity: 0.35, scatter: 0.78),
+                vignette: (intensity: 0.22, start: 0.42, color: (0.1, 0.05, 0.12)),
+                discs: (
+                    sun: (color: (1.0, 0.8, 0.5), intensity: 30.0, glow: (3.0, 1.3, 0.35), glow_size: 70.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.3),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.6, 0.85, 0.4), shade: (0.3, 0.22, 0.48), rim: (2.2, 1.2, 0.5),
+                    coverage: 0.85, cirrus: 0.75,
+                ),
+                diffusion: (intensity: 1.3, threshold: 0.07, color: (1.0, 0.8, 0.55)),
+                character_bloom: (threshold: 1.5, strength: 0.45),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.82, 0.78, 0.96), opacity: 0.22, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.7, 0.66, 0.86), opacity: 0.24, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.82, 0.6), opacity: 0.16, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 0.8, 0.5)),
+            ),
+            (
+                // Sunset: the sun on the horizon front left, orange-red; a pink-orange horizon under
+                // a violet zenith, blue-violet shadows.
+                time: 19.0,
+                sun: (direction: (0.62, -0.035, 0.78), color: (1.0, 0.45, 0.25), intensity: 0.6),
+                moon: (direction: (-0.85, 0.02, -0.52), color: (0.62, 0.72, 1.0), intensity: 0.0),
+                sky: (zenith: (0.03, 0.045, 0.22), horizon: (0.9, 0.42, 0.42), ground: (0.08, 0.06, 0.12)),
+                ambient: (sky: (0.56, 0.46, 0.8), ground: (0.16, 0.11, 0.18), intensity: 0.18),
+                fog: (
+                    near: (color: (0.5, 0.4, 0.62), density: 0.0006, start: 40.0),
+                    far: (color: (1.0, 0.92, 0.95), density: 0.0016, start: 55.0),
+                    height: (color: (0.36, 0.32, 0.62), density: 0.0014, falloff: 0.012),
+                    sun_inscatter: (0.8, 0.32, 0.15),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.16, 0.3, 0.95),
+                character: (color: (1.0, 0.62, 0.48), intensity: 0.72),
+                day_night: 0.4,
+                exposure: 0.35,
+                grade: (temperature: 0.03, tint: 0.03, contrast: 1.05, saturation: 1.18, lift: (0.005, 0.0, 0.04), gain: (1.04, 0.98, 0.93)),
+                bloom: (threshold: 0.85, knee: 0.5, intensity: 0.35, scatter: 0.78),
+                vignette: (intensity: 0.24, start: 0.42, color: (0.12, 0.04, 0.12)),
+                discs: (
+                    sun: (color: (1.0, 0.56, 0.3), intensity: 20.0, glow: (2.8, 0.95, 0.3), glow_size: 75.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 0.6),
+                ),
+                stars: 0.0,
+                clouds: (
+                    lit: (1.5, 0.6, 0.42), shade: (0.26, 0.18, 0.42), rim: (2.1, 0.9, 0.45),
+                    coverage: 0.8, cirrus: 0.85,
+                ),
+                diffusion: (intensity: 1.3, threshold: 0.06, color: (1.0, 0.7, 0.6)),
+                character_bloom: (threshold: 1.5, strength: 0.42),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.72, 0.6, 0.88), opacity: 0.26, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.64, 0.52, 0.76), opacity: 0.28, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (1.0, 0.75, 0.62), opacity: 0.15, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 0.6, 0.4)),
+            ),
+            (
+                // The blue hour: the sun gone, the moon rising low on the right behind the cameras,
+                // a cyan-blue world in layered blue haze, the windows and lanterns coming on.
+                time: 19.75,
+                sun: (direction: (0.58, 0.12, 0.8), color: (1.0, 0.42, 0.3), intensity: 0.0),
+                moon: (direction: (-0.82, -0.18, -0.55), color: (0.62, 0.72, 1.0), intensity: 0.14),
+                sky: (zenith: (0.025, 0.07, 0.26), horizon: (0.22, 0.38, 0.62), ground: (0.04, 0.06, 0.1)),
+                ambient: (sky: (0.24, 0.42, 0.82), ground: (0.06, 0.1, 0.16), intensity: 0.22),
+                fog: (
+                    near: (color: (0.2, 0.36, 0.62), density: 0.003, start: 25.0),
+                    far: (color: (0.95, 1.0, 1.0), density: 0.002, start: 45.0),
+                    height: (color: (0.22, 0.38, 0.64), density: 0.003, falloff: 0.012),
+                    sun_inscatter: (0.04, 0.04, 0.07),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.2, 0.32, 0.62),
+                character: (color: (0.85, 0.8, 1.0), intensity: 0.18),
+                day_night: 0.7,
+                exposure: 0.7,
+                grade: (temperature: -0.1, saturation: 1.12, lift: (0.0, 0.015, 0.045), gain: (1.0, 1.0, 1.02)),
+                bloom: (threshold: 0.8, knee: 0.5, intensity: 0.35, scatter: 0.78),
+                vignette: (intensity: 0.26, start: 0.42, color: (0.05, 0.05, 0.16)),
+                discs: (
+                    sun: (color: (1.0, 0.45, 0.3), intensity: 0.0, glow: (0.3, 0.12, 0.18), glow_size: 55.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.4, glow: (0.05, 0.06, 0.12), glow_size: 12.0),
+                ),
+                stars: 0.35,
+                clouds: (
+                    lit: (0.3, 0.36, 0.6), shade: (0.1, 0.14, 0.3), rim: (0.45, 0.42, 0.62),
+                    coverage: 0.7, cirrus: 0.5,
+                ),
+                diffusion: (intensity: 1.0, threshold: 0.06, color: (0.7, 0.8, 1.0)),
+                character_bloom: (threshold: 1.3, strength: 0.6),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.6, 0.68, 0.94), opacity: 0.28, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.55, 0.6, 0.85), opacity: 0.25, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.78, 0.84, 1.0), opacity: 0.12, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+            ),
+            (
+                // Nightfall: the moon climbing behind the cameras on the right, the stars out.
+                time: 21.0,
+                sun: (direction: (0.3, 0.6, 0.74), color: (1.0, 0.5, 0.3), intensity: 0.0),
+                moon: (direction: (-0.62, -0.48, -0.62), color: (0.62, 0.72, 1.0), intensity: 0.3),
+                sky: (zenith: (0.005, 0.011, 0.056), horizon: (0.035, 0.058, 0.16), ground: (0.02, 0.025, 0.05)),
+                ambient: (sky: (0.2, 0.3, 0.68), ground: (0.05, 0.06, 0.12), intensity: 0.24),
+                fog: (
+                    near: (color: (0.05, 0.08, 0.2), density: 0.0005, start: 30.0),
+                    far: (color: (0.85, 0.9, 1.0), density: 0.0012, start: 60.0),
+                    height: (color: (0.06, 0.1, 0.24), density: 0.0016, falloff: 0.01),
+                    sun_inscatter: (0.03, 0.035, 0.06),
+                    characters: 0.4,
+                ),
+                shadow_tint: (0.2, 0.26, 0.55),
+                character: (color: (0.7, 0.76, 1.0), intensity: 0.39),
+                day_night: 1.0,
+                exposure: 0.8,
+                grade: (temperature: -0.15, contrast: 1.03, saturation: 1.12, lift: (0.0, 0.015, 0.05)),
+                bloom: (threshold: 0.75, knee: 0.5, intensity: 0.4, scatter: 0.8),
+                vignette: (intensity: 0.3, start: 0.4, color: (0.02, 0.03, 0.12)),
+                discs: (
+                    sun: (color: (1.0, 0.55, 0.35), intensity: 0.0),
+                    moon: (color: (1.0, 0.96, 0.86), intensity: 1.8, glow: (0.06, 0.08, 0.15), glow_size: 15.0),
+                ),
+                stars: 0.9,
+                clouds: (
+                    lit: (0.15, 0.14, 0.27), shade: (0.04, 0.045, 0.11), rim: (0.3, 0.27, 0.44),
+                    coverage: 0.6, cirrus: 0.3,
+                ),
+                diffusion: (intensity: 0.9, threshold: 0.05, color: (0.75, 0.8, 1.0)),
+                character_bloom: (threshold: 1.3, strength: 0.6),
+                gradients: [
+                    (shape: Linear(edge: 0.0), blend: Multiply, color: (0.55, 0.6, 0.92), opacity: 0.3, end: 0.55),
+                    (shape: Linear(edge: 180.0), blend: Multiply, color: (0.55, 0.58, 0.85), opacity: 0.25, end: 0.45),
+                    (shape: Radial(center: (0.5, 0.42)), blend: SoftLight, color: (0.68, 0.76, 1.0), opacity: 0.1, end: 0.9),
+                ],
+                lens_flare: (intensity: 0.0, color: (1.0, 1.0, 1.0)),
+            ),
+        ],
+    ),
+)

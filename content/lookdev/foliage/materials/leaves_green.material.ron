@@ -1,0 +1,33 @@
+// The look-dev card trees' green leaves (M1 X1 part 2): deep teal-green inside the canopy to a
+// sunny yellow-green on its surface, as Wuthering Waves' clumpy canopies are, glowing against
+// the low sun.
+(
+    type: "sapphire::render::FoliageMaterial",
+    version: 1,
+    data: (
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("3b93f25e-0f01-488c-b5ba-691136d40542"),
+        alpha_cutoff: 0.45,
+        mask_map: None,
+        wrap: 0.5,
+        terminator_width: 0.16,
+        terminator_growth: 0.006,
+        shadow_tint: (0.92, 0.96, 1.1),
+        canopy_occlusion: 0.55,
+        translucency: (
+            color: (0.6172, 0.8550, 0.1812),
+            strength: 0.65,
+            power: 4.0,
+        ),
+        gradient: (
+            root: (0.0130, 0.0976, 0.0723),
+            tip: (0.3325, 0.6445, 0.1070),
+        ),
+        wind: (sway: 0.09, bend: 0.12, flutter: 0.035, flutter_frequency: 2.2),
+        distance: (
+            start: 20.0,
+            end: 160.0,
+            desaturation: 0.35,
+        ),
+    ),
+)

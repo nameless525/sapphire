@@ -1,0 +1,21 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "0e0f2a4c-b0bb-4e0a-8688-79e9b18f7b69",
+        importer: Gltf((
+            lods: (
+                levels: [],
+            ),
+            materials: {
+                "Bark": "27443ffe-8e32-4695-a4b7-d4fbd0df4a49",
+                "Leaves": "21e1fa19-5dda-4a46-953c-cd6b54edab67",
+            },
+            foliage: (
+                normals: Hull(count: 6),
+                slots: ["Leaves"],
+                blend: 0.8,
+            ),
+        )),
+    ),
+)

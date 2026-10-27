@@ -293,6 +293,15 @@ impl Options {
         }
     }
 
+    /// The sky material the scene draws: the look-dev town's with `--look-dev`, the sandbox's
+    /// otherwise.
+    pub fn sky(&self) -> sapphire_assets::AssetId {
+        match self.look_dev {
+            Some(_) => lookdev::SKY,
+            None => crate::content::SKY,
+        }
+    }
+
     /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
     /// the character from it without its pedestal, and the look-dev stage derives its held pose
     /// from it.

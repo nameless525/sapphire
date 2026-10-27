@@ -1,0 +1,38 @@
+// The look-dev town's sky (M1 X1 part 2): the sandbox sky's maps (`content/samples/sky_*.png`)
+// but for the Milky Way, which `gen-lookdev` paints teal and brighter (`milky_way.png`), and a
+// larger sun disc, so the night reads closer to Wuthering Waves' nebula skies and golden hour's
+// sun is a presence. The look-dev stage draws it in place of the sandbox's sky.
+(
+    type: "sapphire::render::SkyMaterial",
+    version: 1,
+    data: (
+        sun: (
+            size: 2.8,
+            softness: 0.08,
+        ),
+        moon: (
+            disc: (
+                size: 3.4,
+                softness: 0.04,
+            ),
+            map: Some("c5d7e99b-310c-4cec-8026-9fa89a7f84d1"),
+        ),
+        stars: (
+            map: Some("3e53d7a8-5f8d-4889-a649-bc2e818cc17b"),
+            milky_way: Some("bc6b01d2-c6dc-448d-91be-740ac379f49a"),
+            twinkle: 0.35,
+        ),
+        clouds: (
+            map: Some("096e0ddb-5a8a-4fe2-9328-55c315e45ccd"),
+            scale: 1.0,
+            scroll: (0.00025, 0.0),
+            dissolve_softness: 0.006,
+        ),
+        cirrus: (
+            map: Some("81b5e21b-ec48-4b86-a352-9d24e5fe3491"),
+            scale: 1.2,
+            scroll: (0.004, 0.0015),
+            dissolve_softness: 0.06,
+        ),
+    ),
+)

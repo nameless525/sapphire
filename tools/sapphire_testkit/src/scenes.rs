@@ -62,7 +62,8 @@ pub struct Scene {
 /// no scene did before, with ambient occlusion off and no probe grid like every scene but W5's.
 /// The look-dev scenes (M1 X1) pin Desktop-High, the tier whose look they judge, and ambient
 /// occlusion off, as every scene but W5's: every other landed feature draws in them, as a game
-/// would. The stylized GI scenes (M1 C2's follow-up) light the face rig by the character light
+/// would. They run on the stage's own day (`content/lookdev/lookdev_day.ron`, X1 part 2), which
+/// only `--look-dev` loads, and plant its foliage, so no other scene sees either. The stylized GI scenes (M1 C2's follow-up) light the face rig by the character light
 /// rig's GI alone, its key light off (`--face-layout gi` and `gi-clamped`), at hours whose keys the
 /// night character light fix leaves as they were (17:30 and 10:00), and pin what the face scenes
 /// pin, so they show the GI alone: each of its steps (the sphere and the camera bias on the GI's
@@ -73,7 +74,7 @@ pub struct Scene {
 /// every other scene's, builds and draws nothing, so nothing earlier needs pinning) and pin plain
 /// post, no shadows and AO off, so the frame they draw over changes only with what they show;
 /// the wireframe and overdraw keep fog for its cards.
-pub fn scenes() -> [Scene; 75] {
+pub fn scenes() -> [Scene; 78] {
     [
         Scene {
             name: "turntable-start",
@@ -1505,8 +1506,9 @@ pub fn scenes() -> [Scene; 75] {
             thresholds: Thresholds::default(),
         },
         // The look-dev town (M1 X1) at midday, the wide shot across the square: the town in its
-        // environment materials under the whole sky, fog and fog cards, shadows, post's layers
-        // and the character's outlines, the VRM character standing in the square.
+        // environment materials and its plants under the whole sky, fog and fog cards, shadows,
+        // post's layers and the character's outlines, the VRM character standing in the square;
+        // the stage's own day's side-lit noon, cool shadows and blue-grey distance (X1 part 2).
         Scene {
             name: "lookdev-town-day",
             args: &[
@@ -1526,7 +1528,7 @@ pub fn scenes() -> [Scene; 75] {
             thresholds: Thresholds::default(),
         },
         // The hero shot at golden hour: the character in three-quarter view with her SDF face map
-        // and outlines, the market behind her in the warm haze.
+        // and outlines, the market behind her in the low sun's warm light and blue-violet shade.
         Scene {
             name: "lookdev-town-hero",
             args: &[
@@ -1536,6 +1538,68 @@ pub fn scenes() -> [Scene; 75] {
                 "hero",
                 "--time-of-day",
                 "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The wide shot at golden hour (X1 part 2): the low sun's huge glow over the rooftops on
+        // the left, warm cloud sides over purple undersides, warm streaks across the square
+        // between blue-violet shadows, the mountains in violet haze.
+        Scene {
+            name: "lookdev-town-golden",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "18.5",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The wide shot at the blue hour (X1 part 2): the sun gone, a cyan-blue sky and haze over
+        // a blue town, the windows and lanterns coming on in amber, the character's skin warm.
+        Scene {
+            name: "lookdev-town-blue",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "19.75",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The sky shot at night (X1 part 2): up past the character to a navy sky with stars, the
+        // teal Milky Way and moonlit lavender clouds over the rooftops, the windows and lanterns
+        // amber and blooming, the mid-tones kept readable.
+        Scene {
+            name: "lookdev-town-night",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "sky",
+                "--time-of-day",
+                "23",
                 "--tier",
                 "desktop-high",
                 "--ao",

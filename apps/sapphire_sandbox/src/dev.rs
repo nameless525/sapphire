@@ -96,7 +96,7 @@ impl DevTools {
         Ok(Self {
             overlay: DebugOverlay::new(gpu, format, config),
             cvars,
-            reload: Reload::start(!options.no_hot_reload, content_root),
+            reload: Reload::start(!options.no_hot_reload, content_root, &crate::reload::day_source(options)),
             link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
             frames: 0,
             frame_time: Duration::ZERO,

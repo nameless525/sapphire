@@ -88,14 +88,30 @@ cargo xtask run --platform desktop --features dev -- --capture overlay.png --siz
 
 While the overlay shows, input over its windows is its own and the game gets the rest. In the console, `list` shows every cvar, `<name> <value>` sets one and Tab completes names.
 
+### Hot reload and live link
+
+Development builds swap edits in while they run. On a desktop, hot reload watches the cooked packs, the renderer's WGSL sources and the time-of-day, light rig and screen effect documents: save a shader or document and it shows within a few tenths of a second; edit content and run `cargo xtask content`, and the assets that changed are swapped in behind their handles. On any platform, live link takes the same edits from the desktop over TCP (127.0.0.1:7811 by default; `iproxy` for an iPhone, `adb reverse` or `adb forward` for Android):
+
+```bash
+cargo xtask link status                                   # what the app runs, its assets and their generations
+cargo xtask link push target/content/mobile/shared.spack  # sends only the assets that changed
+cargo xtask link push crates/sapphire_world/default_day.ron crates/sapphire_render/shaders/post.wgsl
+cargo xtask link cvar post.filter_strength 0.5
+cargo xtask link capture frame.png                        # the next frame the app draws
+cargo xtask link watch                                    # push whatever changes, until stopped
+```
+
+[docs/m1-exit-run.md](docs/m1-exit-run.md) walks through all of it on the desktop, the simulators and phones.
+
 ## Checking visuals and performance without a window
 
-On a desktop, the sandbox has two offscreen modes. Neither opens a window, starts the display stack or takes focus, so they're safe to run while someone is using the machine:
+On a desktop, the sandbox has three offscreen modes. None opens a window, starts the display stack or takes focus, so they're safe to run while someone is using the machine:
 
 - `--capture <png> [--capture-ticks N]` renders the scene after N fixed ticks and writes a PNG. It's the hook for golden-image tests later.
 - `--bench <frames>` runs the per-frame CPU path (fixed step, `Renderer::prepare`, encoding, submit) that many times and logs CPU time and allocations per frame.
+- `--offscreen` (`dev` builds) keeps drawing at 60 frames a second until stopped (Ctrl-C), with hot reload and live link on: what a phone runs, without a window. `cargo xtask link capture <png>` shows what it draws.
 
-Both render at `--size WxH` (default 1920x1080). `--time-of-day <hours>` sets the hour (default 10, the default day's key that matches the look from before time of day) and `--day-length <seconds>` runs the day cycle, in these modes and in the window alike. `xtask run --platform desktop` cooks the content and points the app at it:
+They render at `--size WxH` (default 1920x1080). `--time-of-day <hours>` sets the hour (default 10, the default day's key that matches the look from before time of day) and `--day-length <seconds>` runs the day cycle, in these modes and in the window alike. `xtask run --platform desktop` cooks the content and points the app at it:
 
 ```bash
 cargo xtask run --platform desktop --release -- --bench 600
@@ -105,7 +121,7 @@ cargo xtask run --platform desktop --release -- --bench 600
 cargo xtask run --platform desktop -- --capture out.png --capture-ticks 120 --size 1600x900
 ```
 
-On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb exec-out screencap -p > <png>` (Android) while the app runs.
+On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb exec-out screencap -p > <png>` (Android) while the app runs, or `cargo xtask link capture <png>` with a `dev` build on any device.
 
 ### Golden images
 

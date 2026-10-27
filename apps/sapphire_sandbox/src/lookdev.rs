@@ -557,10 +557,11 @@ mod tests {
     }
 
     /// CLAUDE.md's night character light contract, held as the default day's test holds it, at
-    /// every quarter hour: the character key, as the screen shows it (luminance, exposed), is the
-    /// world's key light by day and never dimmer; at sunset and from the blue hour after it
-    /// through the night to the blue hour before dawn it is 1.2 to 1.6 times the key light, so
-    /// characters read, and at most 70% of their noon brightness, so they read as night.
+    /// every quarter hour: the character key as it reaches characters, as the screen shows it
+    /// (luminance, exposed), is the world's key light by day and never dimmer; at sunset and from
+    /// the blue hour after it through the night to the blue hour before dawn it is 1.2 to 1.6
+    /// times the key light, so characters read, and at most 70% of their noon brightness, so they
+    /// read as night.
     #[test]
     fn the_look_dev_days_characters_stay_a_little_brighter_than_the_world_at_night() {
         use sapphire_math::color::luminance;
@@ -569,12 +570,14 @@ mod tests {
             luminance(color) * intensity * look.exposure.exp2()
         };
         let noon = day.evaluate(13.0);
-        let noon_character = shown(&noon, noon.character_light.color, noon.character_light.intensity);
+        let noon_key = noon.character_key();
+        let noon_character = shown(&noon, noon_key.color, noon_key.intensity);
         for quarter in 0..24 * 4 {
             let hours = quarter as f32 / 4.0;
             let look = day.evaluate(hours);
             let key = look.key_light();
-            let character = shown(&look, look.character_light.color, look.character_light.intensity);
+            let character_key = look.character_key();
+            let character = shown(&look, character_key.color, character_key.intensity);
             let lift = character / shown(&look, key.color, key.intensity);
             assert!(lift >= 0.999, "{hours}: characters are never lit below the world ({lift})");
             if (9.0..=16.0).contains(&hours) {

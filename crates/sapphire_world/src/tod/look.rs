@@ -41,6 +41,7 @@ pub struct TodLook {
     pub ambient: AmbientLight,
     pub fog: Fog,
     pub shadow_tint: Vec3,
+    /// The character key as keyed; see [`Self::character_key`] for the light characters take.
     pub character_light: CharacterLight,
     pub day_night: f32,
     pub exposure: f32,
@@ -104,7 +105,6 @@ impl TodLook {
     /// terminator glides across characters rather than jumping when the sun sets.
     pub fn key_light(&self) -> DirectionalLight {
         let (sun, moon) = (above_horizon(&self.sun), above_horizon(&self.moon));
-        let strength = |light: &DirectionalLight| light.intensity.max(0.0) * luminance(light.color).max(0.0);
         let (sun_strength, moon_strength) = (strength(&sun), strength(&moon));
         // Written so a NaN strength counts as no light.
         match (sun_strength > 0.0, moon_strength > 0.0) {
@@ -122,6 +122,26 @@ impl TodLook {
             ),
             color: radiance / intensity,
             intensity,
+        }
+    }
+
+    /// The character key as it reaches characters: the keyed light, dimmed where the horizon
+    /// dims the world's key light ([`Self::key_light`]), by the share of the sun's and moon's
+    /// keyed light (in luminance) that still reaches the scene. Keys can't follow that fade, a
+    /// smooth step over a body's last degree that the straight line between two keys runs
+    /// through, so the character key fades with the world itself: characters keep the ratio to
+    /// the world's light their keys set while the sun sets and the moon rises, rather than
+    /// flashing brighter for the minutes the world dims. With neither body fading it is exactly
+    /// as keyed.
+    pub fn character_key(&self) -> CharacterLight {
+        let keyed = strength(&self.sun) + strength(&self.moon);
+        let reaching = strength(&above_horizon(&self.sun)) + strength(&above_horizon(&self.moon));
+        // Written so a NaN, or no keyed light at all, leaves the key as keyed.
+        if reaching < keyed {
+            let intensity = self.character_light.intensity * (reaching / keyed);
+            CharacterLight { intensity, ..self.character_light }
+        } else {
+            self.character_light
         }
     }
 
@@ -146,8 +166,8 @@ impl TodLook {
     }
 
     /// Writes the look into `packet`'s scene constants: the key light, the sun, moon and
-    /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character light,
-    /// day/night factor, emission scale and post-processing.
+    /// celestial sphere, the sky and its layers, ambient, fog, shadow tint, character key (as it
+    /// reaches characters), day/night factor, emission scale and post-processing.
     pub fn write(&self, packet: &mut FramePacket) {
         packet.sun = self.key_light();
         packet.celestial = Celestial { sun: self.sun, moon: self.moon, sphere: self.sphere };
@@ -162,7 +182,7 @@ impl TodLook {
         packet.ambient = self.ambient;
         packet.fog = self.fog;
         packet.shadow_tint = self.shadow_tint;
-        packet.character_light = self.character_light;
+        packet.character_light = self.character_key();
         packet.day_night = self.day_night;
         packet.emission_scale = self.emission;
         packet.post = self.post();
@@ -231,6 +251,12 @@ pub fn celestial_sphere(hours: f32) -> Quat {
 /// The height above the horizon, as the sine of the elevation (about 1°), over which a body's
 /// light fades out as it sets.
 const HORIZON_FADE: f32 = 0.0175;
+
+/// How strong `light` is, as its luminance times its intensity: what [`TodLook::key_light`]
+/// shares the direction by and [`TodLook::character_key`] fades by.
+fn strength(light: &DirectionalLight) -> f32 {
+    light.intensity.max(0.0) * luminance(light.color).max(0.0)
+}
 
 /// `light` as it reaches the scene: unchanged while its body is more than [`HORIZON_FADE`]
 /// above the horizon, fading to nothing as it reaches it, and dark below.
@@ -846,6 +872,46 @@ mod tests {
         assert_eq!(up.key_light(), up.sun, "higher up, exactly as keyed");
         let night = TodLook { moon: DirectionalLight { intensity: 0.3, ..moon }, ..look };
         assert_eq!(night.key_light(), night.moon, "the moon alone, while the sun is down");
+    }
+
+    #[test]
+    fn the_character_key_fades_with_the_world_at_the_horizon() {
+        let toward = |elevation_degrees: f32| {
+            let (sin, cos) = elevation_degrees.to_radians().sin_cos();
+            -Vec3::new(cos, sin, 0.0)
+        };
+        let character = CharacterLight { color: Vec3::new(1.0, 0.7, 0.55), intensity: 0.9 };
+        let sun =
+            DirectionalLight { direction: toward(10.0), color: Vec3::new(1.0, 0.5, 0.3), intensity: 0.6 };
+        let moon =
+            DirectionalLight { direction: toward(140.0), color: Vec3::new(0.4, 0.53, 1.0), intensity: 0.0 };
+        let look = TodLook { sun, moon, character_light: character, ..TodLook::default() };
+        assert_eq!(look.character_key(), character, "neither body fading: exactly as keyed");
+
+        // The sun half a degree up: characters keep the share of its light the world keeps.
+        let setting = TodLook { sun: DirectionalLight { direction: toward(0.5), ..sun }, ..look };
+        let share = setting.key_light().intensity / sun.intensity;
+        assert!(share > 0.0 && share < 1.0, "fading: {share}");
+        let key = setting.character_key();
+        assert_eq!(key.color, character.color);
+        assert!((key.intensity - character.intensity * share).abs() < 1e-6, "{key:?} at {share}");
+
+        // With the moon up as well, the share of both bodies' light (in luminance) that reaches
+        // the scene.
+        let twilight = TodLook { moon: DirectionalLight { intensity: 0.2, ..moon }, ..setting };
+        let strength = |light: &DirectionalLight| luminance(light.color) * light.intensity;
+        let world = twilight.key_light();
+        let share = strength(&world) / (strength(&sun) + strength(&twilight.moon));
+        let key = twilight.character_key();
+        assert!((key.intensity - character.intensity * share).abs() < 1e-6, "{key:?} at {share}");
+        assert!(key.intensity > setting.character_key().intensity, "the moon's light counts");
+
+        // The world's only light set: the character key goes with it. With no keyed light at
+        // all, the key is as keyed.
+        let set = TodLook { sun: DirectionalLight { direction: toward(-3.0), ..sun }, ..look };
+        assert_eq!(set.character_key().intensity, 0.0);
+        let unlit = TodLook { sun: DirectionalLight { intensity: 0.0, ..sun }, ..look };
+        assert_eq!(unlit.character_key(), character);
     }
 
     #[test]

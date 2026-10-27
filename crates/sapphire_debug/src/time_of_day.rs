@@ -291,7 +291,7 @@ fn render_preview(look: &TodLook, lighting: Option<&CharacterLighting>) -> egui:
     let (key, rim_scale, gi) = match lighting {
         Some(lighting) => (lighting.key, lighting.rim, lighting.gi),
         None => {
-            let character = &look.character_light;
+            let character = look.character_key();
             let key =
                 DirectionalLight { color: character.color, intensity: character.intensity, ..unstyled.key };
             (key, unstyled.rim, CharacterGi::default())
@@ -467,7 +467,7 @@ fn values(ui: &mut Ui, tod: &TimeOfDay, characters: &[CharacterInstance]) {
         ui.end_row();
         ui.label("Character key");
         ui.horizontal(|ui| {
-            let light = &look.character_light;
+            let light = look.character_key();
             swatch(ui, light.color * light.intensity, exposure);
             ui.monospace(format!("{:.2}", light.intensity));
         });

@@ -291,7 +291,9 @@ pub struct HeightFogKey {
 /// apart from the world's light but fitted to it, as Wuthering Waves fits character brightness
 /// to its environment (the default day keeps it the key light's own by day and a little
 /// brighter at night). Exposure lifts it with the world's light, so a night key set well above
-/// the moon's brings characters back to their noon brightness.
+/// the moon's brings characters back to their noon brightness. Where the horizon dims the sun or
+/// moon, characters take it dimmed with the world's light
+/// ([`TodLook::character_key`](super::TodLook::character_key)).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::world"]
 #[serde(deny_unknown_fields)]

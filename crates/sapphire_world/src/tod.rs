@@ -44,7 +44,9 @@
 //! ([`TodLook::key_light`]): whichever shines, and through twilight both, its direction turning
 //! from one to the other with the moon's share of the light. A body gives light only from above
 //! the horizon, its intensity fading out over its last degree, so the scene is never lit from
-//! below whatever the keys say.
+//! below whatever the keys say. The character key fades with it ([`TodLook::character_key`]):
+//! characters keep the ratio to the world's light their keys set while a body sets or rises,
+//! where keys, blending in straight lines, can't follow the fade.
 //!
 //! # Clock and frame
 //!

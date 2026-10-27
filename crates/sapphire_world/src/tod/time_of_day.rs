@@ -74,15 +74,16 @@ impl TodFrame {
 
     /// The lighting of a character lit by `rig`, seen by `camera`, with its head at `head`
     /// (world space): the preset resolved under this frame's key light and character key
-    /// ([`LightRig::resolve`]), with a playing cutscene's rig over it by the track's weight
-    /// (the key's direction along the great circle, colors in OkLab). Allocates nothing.
+    /// ([`TodLook::key_light`], [`TodLook::character_key`], [`LightRig::resolve`]), with a
+    /// playing cutscene's rig over it by the track's weight (the key's direction along the great
+    /// circle, colors in OkLab). Allocates nothing.
     pub fn character_lighting(&self, rig: &LightRig, camera: &CameraData, head: Vec3) -> CharacterLighting {
         let key_light = self.look.key_light();
-        let character_light = &self.look.character_light;
-        let own = rig.resolve(&key_light, character_light, camera, head);
+        let character_light = self.look.character_key();
+        let own = rig.resolve(&key_light, &character_light, camera, head);
         match &self.shot_rig {
             Some(shot) => {
-                let shot_lighting = shot.rig.resolve(&key_light, character_light, camera, head);
+                let shot_lighting = shot.rig.resolve(&key_light, &character_light, camera, head);
                 mix(&own, &shot_lighting, shot.weight)
             }
             None => own,

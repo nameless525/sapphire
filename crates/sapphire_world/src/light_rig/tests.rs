@@ -223,10 +223,11 @@ fn the_key_takes_time_of_days_character_curve() {
         ..gameplay()
     };
     let camera = front_camera();
-    for hours in [0.0, 6.5, 10.0, 18.5, 21.0] {
+    // 19:45 as the sun sets, where the curve fades with the world's key light.
+    for hours in [0.0, 6.5, 10.0, 18.5, 19.75, 21.0] {
         tod.clock_mut().set_hours(hours);
         let frame = *tod.resolve(Vec3::ZERO, 0.0);
-        let curve = frame.look.character_light;
+        let curve = frame.look.character_key();
         let key = frame.character_lighting(&rig, &camera, Vec3::Y).key;
         assert_eq!(key.color, curve.color * Vec3::new(1.0, 0.5, 0.25), "{hours}");
         assert_eq!(key.intensity, curve.intensity * 2.0, "{hours}");
@@ -254,7 +255,7 @@ fn a_shot_rig_blends_in_and_out_with_its_cutscene() {
     let before = own.character_lighting(&gameplay, &camera, head);
     let shot_rig = portrait();
     let shot = TodCutscene::new(2.0, 0.5, 0.5, None, Vec::new(), Some(shot_rig)).expect("a rig alone");
-    let in_shot = shot_rig.resolve(&own.look.key_light(), &own.look.character_light, &camera, head);
+    let in_shot = shot_rig.resolve(&own.look.key_light(), &own.look.character_key(), &camera, head);
     tod.play_cutscene(Arc::new(shot));
     let angle = |a: Vec3, b: Vec3| toward(a).dot(toward(b)).clamp(-1.0, 1.0).acos();
     let total = angle(before.key.direction, in_shot.key.direction);

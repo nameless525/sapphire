@@ -189,31 +189,45 @@ fn the_default_day_never_lights_from_below() {
     }
 }
 
-/// The default day's character key against the world's key light, as the screen shows them
-/// (luminance, exposed): the same light by day, never dimmer, and at night a little brighter,
-/// so characters read, yet well below their noon brightness, so they read as night. A night key
-/// set apart from the world's light kept characters at 80–100% of noon once exposure lifted the
-/// night, while the world dropped to a quarter to a half.
+/// The default day's character key, as it reaches characters, against the world's key light, as
+/// the screen shows them (luminance, exposed): the same light by day, never dimmer, and from
+/// sunset to sunrise a little brighter, so characters read, yet well below their noon brightness
+/// at night, so they read as night. A night key set apart from the world's light kept
+/// characters at 80–100% of noon once exposure lifted the night, while the world dropped to a
+/// quarter to a half.
+///
+/// Every quarter hour, and every 5 minutes through dusk and dawn, where the sun sets and rises
+/// and the moon rises: the world's light fades over a body's last degree above the horizon,
+/// and a character key that didn't fade with it flashed to twice the world's for the minutes
+/// in between.
 #[test]
 fn the_default_days_characters_stay_a_little_brighter_than_the_world_at_night() {
     let day = TodTimeline::default_day();
     let shown =
         |look: &TodLook, color: Vec3, intensity: f32| luminance(color) * intensity * look.exposure.exp2();
     let noon = day.evaluate(13.0);
-    let noon_character = shown(&noon, noon.character_light.color, noon.character_light.intensity);
-    for quarter in 0..24 * 4 {
-        let hours = quarter as f32 / 4.0;
+    let noon_key = noon.character_key();
+    let noon_character = shown(&noon, noon_key.color, noon_key.intensity);
+    let quarters = (0..24 * 4).map(|quarter| quarter as f32 / 4.0);
+    // 17:00 to 21:00 and 4:00 to 7:00, every 5 minutes.
+    let crossings = (17 * 12..=21 * 12).chain(4 * 12..=7 * 12).map(|step| step as f32 / 12.0);
+    for hours in quarters.chain(crossings) {
         let look = day.evaluate(hours);
         let key = look.key_light();
-        let character = shown(&look, look.character_light.color, look.character_light.intensity);
+        let character_key = look.character_key();
+        let character = shown(&look, character_key.color, character_key.intensity);
         let lift = character / shown(&look, key.color, key.intensity);
         assert!(lift >= 0.999, "{hours}: characters are never lit below the world ({lift})");
+        assert!(lift <= 1.6, "{hours}: never more than a little brighter than the world ({lift})");
         if (10.0..=14.0).contains(&hours) {
             assert!((lift - 1.0).abs() < 1e-4, "{hours}: by day the same light ({lift})");
         }
+        // From sunset (18:45) through the night to sunrise (6:30).
+        if hours >= 18.75 || hours <= 6.5 {
+            assert!((1.2..=1.6).contains(&lift), "{hours}: a little brighter than the world ({lift})");
+        }
         // From dusk (20:00) through the blue hour (5:00).
         if hours >= 20.0 || hours <= 5.0 {
-            assert!((1.2..=1.6).contains(&lift), "{hours}: a little brighter than the world ({lift})");
             let share = character / noon_character;
             assert!(share <= 0.7, "{hours}: at night, at most 70% of noon's brightness ({share})");
         }

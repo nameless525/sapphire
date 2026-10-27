@@ -386,7 +386,7 @@ fn the_key_takes_time_of_days_character_light_not_the_worlds() {
         let frame = *tod.resolve(Vec3::ZERO, 0.0);
         let drawn = stage.render(&frame, &[gameplay]);
         drawn.check(0, Vec3::ZERO, &format!("{hours}:00"));
-        let curve = frame.look.character_light;
+        let curve = frame.look.character_key();
         assert_eq!(
             drawn.lighting[0].key.color * drawn.lighting[0].key.intensity,
             curve.color * curve.intensity

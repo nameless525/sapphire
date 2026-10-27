@@ -10,9 +10,10 @@
 //!   free personal team.
 //!
 //! The profile is embedded as `embedded.mobileprovision` and its entitlements signed into the
-//! app, its wildcards expanded to the app's own identifier as Xcode does (no device has run a
-//! wildcard profile's build yet). Without either, `bundle` signs ad hoc: everything is built
-//! and checked, but no device installs it. `run` needs both, and `--device <name or UDID>`,
+//! app: an exact App ID's as they are, a wildcard App ID's with the application identifier
+//! and keychain group expanded to the app's own as Xcode does (no device has run a wildcard
+//! profile's build yet). Without either, `bundle` signs ad hoc: everything is built and
+//! checked, but no device installs it. `run` needs both, and `--device <name or UDID>`,
 //! which `xcrun devicectl list devices` lists. The M1 exit run's runbook
 //! (`docs/m1-exit-run.md`) has the steps.
 //!
@@ -124,11 +125,12 @@ fn sign(bundle: &Path, app: &App, identity: &str, profile: &Path) -> anyhow::Res
 /// Writes to `out` the entitlements to sign the app with, from a decoded profile, after
 /// checking that the profile's App ID covers `bundle_id`.
 ///
-/// A profile's entitlements are what it allows, not what an app is signed with: a wildcard
-/// profile allows `PREFIX.*`, while a signature names the app itself. So, as Xcode does,
-/// `application-identifier` and a keychain access group that are wildcards covering the app
-/// become `PREFIX.<bundle id>` (see [`concrete_app_id`] and [`concrete_keychain_groups`]);
-/// every other entitlement is signed as the profile has it. Not yet checked on a device.
+/// A profile for an exact App ID is signed with its entitlements as they are. A wildcard
+/// profile's are what it allows, not what an app is signed with: it allows `PREFIX.*`, while a
+/// signature names the app itself. So, as Xcode does, its `application-identifier` and a
+/// keychain access group that is a wildcard covering the app become `PREFIX.<bundle id>` (see
+/// [`concrete_app_id`] and [`concrete_keychain_groups`]); every other entitlement is signed as
+/// the profile has it. Not yet checked on a device.
 fn write_entitlements(decoded: &Path, out: &Path, bundle_id: &str) -> anyhow::Result<()> {
     workspace::run(
         Command::new("plutil").args(["-extract", "Entitlements", "xml1", "-o"]).arg(out).arg(decoded),
@@ -143,13 +145,13 @@ fn write_entitlements(decoded: &Path, out: &Path, bundle_id: &str) -> anyhow::Re
              change bundle-id in the app's [package.metadata.sapphire] if Apple gave it to another team)"
         )
     })?;
-    if concrete != app_id {
-        workspace::run(
-            Command::new("plutil")
-                .args(["-replace", "application-identifier", "-string", &concrete])
-                .arg(out),
-        )?;
+    // An exact App ID: nothing to expand, so the profile's entitlements are signed unchanged.
+    if concrete == app_id {
+        return Ok(());
     }
+    workspace::run(
+        Command::new("plutil").args(["-replace", "application-identifier", "-string", &concrete]).arg(out),
+    )?;
 
     // Absent from some profiles: `plutil` then fails, saying so.
     let groups = Command::new("plutil")
@@ -186,10 +188,10 @@ fn concrete_app_id(application_id: &str, bundle_id: &str) -> Option<String> {
     covers.then(|| format!("{prefix}.{bundle_id}"))
 }
 
-/// The keychain access groups an app with `bundle_id` is signed with, from a profile's for
-/// `application_id`: a wildcard group with the App ID's prefix that covers the app
-/// (`ABCDE12345.*`) becomes the app's own, `ABCDE12345.<bundle id>`, Xcode's default. Other
-/// groups (`com.apple.token`, exact ones) stay, in order, without duplicates.
+/// The keychain access groups an app with `bundle_id` is signed with, from those of a profile
+/// for the wildcard App ID `application_id`: a wildcard group with the App ID's prefix that
+/// covers the app (`ABCDE12345.*`) becomes the app's own, `ABCDE12345.<bundle id>`, Xcode's
+/// default. Other groups (`com.apple.token`, exact ones) stay, in order, without duplicates.
 fn concrete_keychain_groups(groups: &[String], application_id: &str, bundle_id: &str) -> Vec<String> {
     let prefix = application_id.split_once('.').map_or(application_id, |(prefix, _)| prefix);
     let mut concrete: Vec<String> = Vec::with_capacity(groups.len());
@@ -238,19 +240,19 @@ mod tests {
             concrete_keychain_groups(&groups, application_id, BUNDLE)
         };
         let own = "ABCDE12345.dev.sapphire.sandbox";
-        // Wildcard and exact profiles both carry the prefix's wildcard group; Xcode signs the app's own.
-        for app_id in ["ABCDE12345.*", own] {
+        // Under a wildcard App ID, plain or with a start: Xcode signs the app's own group.
+        for app_id in ["ABCDE12345.*", "ABCDE12345.dev.*"] {
             assert_eq!(groups(&["ABCDE12345.*", "com.apple.token"], app_id), [own, "com.apple.token"]);
         }
         assert_eq!(groups(&["ABCDE12345.dev.*"], "ABCDE12345.*"), [own]);
         // Already the app's own, or both: once.
-        assert_eq!(groups(&[own, "ABCDE12345.*"], own), [own]);
+        assert_eq!(groups(&[own, "ABCDE12345.*"], "ABCDE12345.*"), [own]);
         // Another prefix's groups, groups that don't cover the app and exact ones stay as the profile has them.
         assert_eq!(
-            groups(&["OTHERTEAM1.*", "ABCDE12345.com.*", "ABCDE12345.shared"], own),
+            groups(&["OTHERTEAM1.*", "ABCDE12345.com.*", "ABCDE12345.shared"], "ABCDE12345.*"),
             ["OTHERTEAM1.*", "ABCDE12345.com.*", "ABCDE12345.shared"]
         );
-        assert!(groups(&[], own).is_empty());
+        assert!(groups(&[], "ABCDE12345.*").is_empty());
     }
 
     /// The decoded profile of a wildcard App ID, with the entitlements such profiles carry.
@@ -290,23 +292,14 @@ mod tests {
             workspace::output(Command::new("plutil").args(["-extract", key, format, "-o", "-"]).arg(file))
                 .unwrap()
         };
-        let cases = [
-            ("wildcard", WILDCARD_PROFILE.to_owned()),
-            (
-                "prefix",
-                WILDCARD_PROFILE.replace(
-                    "<string>ABCDE12345.*</string>\n\t\t<key>",
-                    "<string>ABCDE12345.dev.*</string>\n\t\t<key>",
-                ),
-            ),
-            (
-                "exact",
-                WILDCARD_PROFILE.replace(
-                    "<string>ABCDE12345.*</string>\n\t\t<key>",
-                    "<string>ABCDE12345.dev.sapphire.sandbox</string>\n\t\t<key>",
-                ),
-            ),
-        ];
+        // The profile with another application identifier.
+        let for_app_id = |application_id: &str| {
+            WILDCARD_PROFILE.replace(
+                "<string>ABCDE12345.*</string>\n\t\t<key>",
+                &format!("<string>{application_id}</string>\n\t\t<key>"),
+            )
+        };
+        let cases = [("wildcard", WILDCARD_PROFILE.to_owned()), ("prefix", for_app_id("ABCDE12345.dev.*"))];
         for (name, profile) in cases {
             let decoded = scratch.join(format!("{name}.plist"));
             let out = scratch.join(format!("{name}.entitlements"));
@@ -331,16 +324,26 @@ mod tests {
             );
         }
 
-        // A profile for another App ID is refused, naming it.
-        let decoded = scratch.join("other.plist");
-        fs::write(
-            &decoded,
-            WILDCARD_PROFILE.replace(
-                "<string>ABCDE12345.*</string>\n\t\t<key>",
-                "<string>ABCDE12345.com.*</string>\n\t\t<key>",
-            ),
+        // An exact App ID's profile is signed with its entitlements byte for byte as a plain
+        // extract gives them, its wildcard keychain group included.
+        let decoded = scratch.join("exact.plist");
+        fs::write(&decoded, for_app_id("ABCDE12345.dev.sapphire.sandbox")).unwrap();
+        let out = scratch.join("exact.entitlements");
+        write_entitlements(&decoded, &out, BUNDLE).unwrap();
+        let plain = scratch.join("exact.plain");
+        workspace::run(
+            Command::new("plutil").args(["-extract", "Entitlements", "xml1", "-o"]).arg(&plain).arg(&decoded),
         )
         .unwrap();
+        assert_eq!(fs::read(&out).unwrap(), fs::read(&plain).unwrap());
+        assert_eq!(
+            extract(&out, "keychain-access-groups", "json").trim(),
+            r#"["ABCDE12345.*","com.apple.token"]"#
+        );
+
+        // A profile for another App ID is refused, naming it.
+        let decoded = scratch.join("other.plist");
+        fs::write(&decoded, for_app_id("ABCDE12345.com.*")).unwrap();
         let error = write_entitlements(&decoded, &scratch.join("other.entitlements"), BUNDLE).unwrap_err();
         assert!(
             error

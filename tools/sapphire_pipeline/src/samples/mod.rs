@@ -116,6 +116,12 @@ pub fn write_files(
 /// Writes every sample source asset into `dir` (creating it and the subdirectories they sit
 /// in) as [`write_files`] does, and returns what it did with each.
 pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
+    write_files(dir, files()?, existing)
+}
+
+/// Every sample source asset, relative to the samples directory, with its bytes: what
+/// [`write_all`] writes.
+pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
     let files = [
         (MANNEQUIN_FILE_NAME, mannequin_glb()),
         (swatch::RAMP_FILE_NAME, swatch::ramp_document().into_bytes()),
@@ -139,7 +145,7 @@ pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
         .chain(environment::files()?)
         .chain(foliage::files()?)
         .chain(materials::files()?);
-    write_files(dir, files.into_iter().chain(nested), existing)
+    Ok(files.into_iter().chain(nested).collect())
 }
 
 /// A character material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
@@ -342,6 +348,7 @@ mod tests {
 
     use super::*;
     use crate::import;
+    use crate::test_util::{assert_glb_matches, assert_png_matches, assert_text_matches};
 
     #[test]
     fn is_a_valid_glb() {
@@ -499,6 +506,27 @@ mod tests {
         assert_eq!(written[first + foliage.len()..], materials, "then the material samples'");
         assert!(written.iter().all(|path| path.is_file()));
         assert_eq!(fs::read(&written[0]).unwrap(), mannequin_glb(), "generation is deterministic");
+    }
+
+    /// The committed samples (`content/samples/`) are what the generator makes, but for float
+    /// rounding between platforms' libm (`test_util::floats_agree`), so a generator change that
+    /// isn't regenerated, or a committed file edited by hand, fails here rather than drifting
+    /// until a regeneration rewrites it.
+    #[test]
+    fn the_committed_samples_are_generated() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
+        let files = files().unwrap();
+        for (name, generated) in &files {
+            let committed = fs::read(dir.join(name)).unwrap_or_else(|error| panic!("{name}: {error}"));
+            if name.ends_with(".glb") {
+                assert_glb_matches(name, &committed, generated);
+            } else if name.ends_with(".png") {
+                assert_png_matches(name, &committed, generated);
+            } else {
+                assert_text_matches(name, &committed, generated);
+            }
+        }
+        assert_eq!(files.len(), 91, "every sample is compared");
     }
 
     #[test]

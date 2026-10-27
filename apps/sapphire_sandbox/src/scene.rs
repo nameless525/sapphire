@@ -220,7 +220,8 @@ pub(crate) struct Scene {
     town: Option<Entity>,
     /// Where the character's light rig finds its head and body.
     figure: Figure,
-    /// Whether `Extract` writes poses: with `--skinned` or a posed character.
+    /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
+    /// heads' lids and gaze are poses (M1 C6).
     poses: bool,
     /// The character's object-space bounds, which demo lights, swatches and the face rig are
     /// placed around.
@@ -274,21 +275,14 @@ impl Scene {
         });
         ecs.add_systems(FixedFirst, (tick_time_of_day, tick_screen_effects).after(SimSet::Clocks))
             .add_systems(FixedCombat, turntable::spin)
-            // Poses: the stalk's, and the face rig's heads' lids and gaze (M1 C6).
             .add_systems(
                 Extract,
-                (
-                    turntable::pose,
-                    extract::extract_instances,
-                    extract::extract_lights,
-                    extract::extract_poses,
-                )
-                    .chain(),
+                (turntable::pose, extract::extract_instances, extract::extract_lights).chain(),
             );
         if skinned {
             ecs.add_systems(FixedCombat, skinned::sway).add_systems(
                 Extract,
-                skinned::pose.after(extract::extract_lights).before(extract::extract_poses),
+                (skinned::pose, extract::extract_poses).chain().after(extract::extract_lights),
             );
         }
         ecs.startup();
@@ -528,6 +522,7 @@ impl Scene {
     /// instead of the character. The heads never move, so they and their poses are extracted
     /// once.
     pub fn spawn_face_rig(&mut self, mesh: MeshHandle, layout: FaceLayout) {
+        self.extract_poses();
         let camera = faces::camera(self.bounds, layout);
         let heads = faces::heads(self.bounds, layout, &camera);
         let world = self.ecs.world_mut();
@@ -726,16 +721,21 @@ impl Scene {
         }
     }
 
+    /// Makes `Extract` write poses from now on, once: scenes without any pose don't run it.
+    fn extract_poses(&mut self) {
+        if !self.poses {
+            self.ecs.add_systems(Extract, extract::extract_poses.after(extract::extract_lights));
+            self.poses = true;
+        }
+    }
+
     /// Builds the look-dev stage (`--look-dev`, [`crate::lookdev`]): the town around the
     /// character, its fog cards and lamps, the character held in `look.pose` (its turntable
     /// stopped, its light rig finding its head and body by `look.figure`) and the `shot`'s
     /// camera. The town and its cards never move, so they are extracted once.
     pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
         self.figure = look.figure;
-        if !self.poses {
-            self.ecs.add_systems(Extract, extract::extract_poses.after(extract::extract_lights));
-            self.poses = true;
-        }
+        self.extract_poses();
         let world = self.ecs.world_mut();
         world.insert_resource(shot.camera());
         let mut character = world.entity_mut(self.character);

@@ -58,7 +58,7 @@ use std::collections::hash_map::Entry;
 use gltf::image::Source;
 use gltf::texture::WrappingMode;
 use gltf::{Document, Gltf};
-use sapphire_assets::material::{EyeLayer, EyeShading, HighlightMotion, IrisShape, ThroughHair};
+use sapphire_assets::material::{EyeLayer, EyeShading, HighlightMotion, IrisShape, RegionGi, ThroughHair};
 use sapphire_assets::mesh::VERTEX_COLOR_NEUTRAL;
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION};
 use sapphire_reflect::Versioned;
@@ -79,10 +79,11 @@ use crate::meta::MeshSettings;
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// the mesh is that importer's, so a bump there must recook VRM files too. Bump the high bits
-/// whenever the VRM part of the output changes for the same file. 3: VRoid Studio's eye
-/// materials map onto anime eyes' layers (M1 C6). 2: MToon's rim maps onto the depth-offset
-/// rim's Fresnel gate and light gate (M1 C5).
-pub const IMPORTER: Stage = Stage { name: "vrm", version: (3 << 16) | gltf_import::IMPORTER.version };
+/// whenever the VRM part of the output changes for the same file. 4: VRoid Studio's face, skin
+/// and hair materials take the stylized GI's region weights (M1 C2 follow-up). 3: VRoid
+/// Studio's eye materials map onto anime eyes' layers (M1 C6). 2: MToon's rim maps onto the
+/// depth-offset rim's Fresnel gate and light gate (M1 C5).
+pub const IMPORTER: Stage = Stage { name: "vrm", version: (4 << 16) | gltf_import::IMPORTER.version };
 
 /// An iris's parallax depth (M1 C6): this share of its height, in meters.
 const IRIS_PARALLAX: f32 = 0.1;
@@ -248,6 +249,7 @@ pub fn import(bytes: &[u8], version: Option<VrmVersion>) -> Result<VrmImport, Vr
     for (material, slot) in slot_of_material {
         if let Some(mut mtoon) = material.and_then(|material| materials[material].clone()) {
             mtoon.eye = vroid_eye(&mesh, slot);
+            mtoon.gi = vroid_region_gi(&mesh.materials[slot as usize].name);
             mesh.materials[slot as usize].generated = mtoon.to_material(|_| None);
             slots[slot as usize] = Some(mtoon);
         }
@@ -271,6 +273,33 @@ pub fn vroid_eye_layer(name: &str) -> Option<EyeLayer> {
         "EyeHighlight" => Some(EyeLayer::Highlight(HighlightMotion::default())),
         _ => None,
     })
+}
+
+/// The stylized GI's weights (M1 C2, [`RegionGi`]) for a material by VRoid Studio's name for
+/// it, from the group the name ends in (`<model>_<Part>_<nn>_<GROUP>`; hair may number its
+/// materials after it, as `N00_000_Hair_00_HAIR_01 (Instance)`):
+///
+/// - `HAIR`, the strands (the bangs among them) and `HairBack`, the cap under them: the head's
+///   sphere, `(sphere 1, skin 0)`.
+/// - `SKIN` on the `Face` part (`Face_00_SKIN`), the face's skin: the sphere and the skin
+///   tint, `(1, 1)`.
+/// - `SKIN` on any other part (`Body_00_SKIN`), the body's skin: the skin tint, `(0, 1)`.
+/// - Anything else keeps `(0, 0)`, the GI its normals give it: clothes (`CLOTH`), the eyes
+///   (`EYE`), and the `FACE` group, which holds what VRoid draws on or inside the face rather
+///   than its skin (brows, lash line, lashes, the mouth's inside).
+///
+/// Neither VRM 1.0 nor MToon has a field saying which material is a face, skin or hair, so the
+/// names are the only signal, and a name VRoid Studio didn't write (or an artist renamed) keeps
+/// `(0, 0)` until the weights are set on its extracted document.
+pub fn vroid_region_gi(name: &str) -> RegionGi {
+    let parts = || name.split(|c: char| c == '_' || c.is_whitespace());
+    let (sphere, skin) = match parts().find(|&part| part == "HAIR" || part == "SKIN") {
+        Some("HAIR") => (1.0, 0.0),
+        Some(_) if parts().any(|part| part == "Face") => (1.0, 1.0),
+        Some(_) => (0.0, 1.0),
+        None => (0.0, 0.0),
+    };
+    RegionGi { sphere, skin }
 }
 
 /// The eye settings of `mesh`'s slot `slot` (M1 C6), if VRoid Studio's name for it says it draws

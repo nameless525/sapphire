@@ -225,6 +225,38 @@ fn names_do_not_depend_on_what_a_run_extracts() {
 }
 
 #[test]
+fn extraction_writes_the_gi_weights_vroid_names_give() {
+    use sapphire_assets::material::RegionGi;
+    let scratch = TempDir::new("extract_gi");
+    let mut sample = samples::vrm1();
+    let materials = sample.document["materials"].as_array_mut().unwrap();
+    for (material, name) in [
+        (samples::material::SKIN, "Face_00_SKIN"),
+        (samples::material::HAIR, "Hair_00_HAIR"),
+        (samples::material::LASHES, "Body_00_SKIN"),
+    ] {
+        materials[material]["name"] = serde_json::json!(name);
+    }
+    let source = tree(&scratch, &sample);
+    let extraction = extract_materials(&source, &ExtractOptions { all: true }).unwrap();
+    assert_eq!(extraction.bound.len(), 4, "{:?}", extraction.bound);
+    for (slot, sphere, skin) in [
+        ("Face_00_SKIN", 1.0, 1.0),
+        ("Hair_00_HAIR", 1.0, 0.0),
+        ("Body_00_SKIN", 0.0, 1.0),
+        ("Plain", 0.0, 0.0),
+    ] {
+        let path = extracted(&scratch, &format!("materials/{slot}.material.ron"));
+        let [region] = &document(&path).regions[..] else { panic!("{slot}: one region") };
+        assert_eq!(region.gi, RegionGi { sphere, skin }, "{slot}");
+        // Written out, for the artist to see and change.
+        let text: String = fs::read_to_string(&path).unwrap().split_whitespace().collect();
+        assert!(text.contains(&format!("gi:(sphere:{sphere:?},skin:{skin:?},)")), "{slot}: {text}");
+    }
+    cook(&scratch);
+}
+
+#[test]
 fn sources_sharing_a_stem_cannot_both_extract() {
     let scratch = TempDir::new("extract_shared");
     let source = tree(&scratch, &samples::vrm1());

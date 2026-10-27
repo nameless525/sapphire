@@ -62,6 +62,17 @@
 //! the ellipse its texture coordinates span, the highlights drifting and glinting at the
 //! defaults. All draw through the bangs at half, and without an outline.
 //!
+//! The character rig's stylized GI (M1 C2) takes its region weights (`regions[0].gi`,
+//! [`RegionGi`]) from VRoid Studio's names too ([`Mtoon::gi`], by [`super::vroid_region_gi`],
+//! from the group a name ends in): hair (`HAIR`) turns its GI toward the head's sphere
+//! (`sphere 1, skin 0`), the face's skin (`Face_00_SKIN`) takes the sphere and the skin tint
+//! (`1, 1`), the body's skin (other `SKIN` parts) the skin tint (`0, 1`). Everything else keeps
+//! `(0, 0)`, the GI its normals give it: clothes, eyes, the brows, lash line and the mouth's
+//! inside (VRoid's `FACE` group), and every material a VRoid name doesn't place. VRM 1.0 has no material-role
+//! field, so the name is the only signal; the weights are the extracted document's to change.
+//! The face and hair still draw as bodies (`surface` above), but their GI is already a face's
+//! and hair's.
+//!
 //! A material with `KHR_materials_unlit` (or a VRM 0.x unlit shader) maps as an MToon whose
 //! shade side is its lit side, without rim or outline ([`Mtoon::unlit`]).
 
@@ -69,7 +80,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::character_maps::ilm;
 use sapphire_assets::material::{
     AlphaMode, AnimeCharacterMaterial, BandDiffuse, CharacterRegion, CharacterSurface, DiffuseMode,
-    EyeShading, LightSplit, Matcap, Outline, OutlineCurve, Rim,
+    EyeShading, LightSplit, Matcap, Outline, OutlineCurve, RegionGi, Rim,
 };
 use vrm_spec::vrm_0_0::VRMMaterial;
 use vrm_spec::vrmc_materials_mtoon_1_0::{OutlineWidthMode, VrmcMaterialsMtoonSchema};
@@ -201,6 +212,10 @@ pub struct Mtoon {
     /// The eye layer the material draws (M1 C6): set on import from VRoid Studio's name for it
     /// ([`super::vroid_eye_layer`]), none for anything else.
     pub eye: Option<EyeShading>,
+    /// The region's share of the character rig's stylized GI (M1 C2): set on import from VRoid
+    /// Studio's name for the material ([`super::vroid_region_gi`]), none (0, 0) for anything
+    /// else.
+    pub gi: RegionGi,
 }
 
 /// Where a material's textures are checked against the document, and its shading shift
@@ -290,6 +305,7 @@ impl Mtoon {
         emissive_texture: None,
         uv_animation_mask_texture: None,
         eye: None,
+        gi: RegionGi { sphere: 0.0, skin: 0.0 },
     };
 
     /// A VRM 1.0 MToon material: the glTF material's core properties and its
@@ -467,6 +483,7 @@ impl Mtoon {
             emissive_texture: texture("_EmissionMap", Channel::Rgba)?,
             uv_animation_mask_texture: texture("_UvAnimMaskTexture", Channel::R)?,
             eye: None,
+            gi: Self::UNSHADED.gi,
         })
     }
 
@@ -560,6 +577,7 @@ impl Mtoon {
                 rim_color,
                 outline_color: self.outline_color,
                 outline_width: 1.0,
+                gi: self.gi,
                 ..CharacterRegion::default()
             }],
             rim: Rim {

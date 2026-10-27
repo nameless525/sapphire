@@ -928,3 +928,111 @@ fn vroid_eye_materials_map_onto_eye_layers() {
     let mtoon = import.slots[slot(&import, IRIS) as usize].as_ref().expect("MToon");
     assert_eq!(mtoon.to_material(|_| None), *iris);
 }
+
+#[test]
+fn vroid_names_give_the_stylized_gis_region_weights() {
+    use sapphire_assets::material::RegionGi;
+    const FACE: RegionGi = RegionGi { sphere: 1.0, skin: 1.0 };
+    const HAIR: RegionGi = RegionGi { sphere: 1.0, skin: 0.0 };
+    const SKIN: RegionGi = RegionGi { sphere: 0.0, skin: 1.0 };
+    const NONE: RegionGi = RegionGi { sphere: 0.0, skin: 0.0 };
+    // X1's look-dev model names its 13 materials as VRoid Studio does without the model's
+    // prefix and Unity's suffix; VRoid Studio's own exports carry both.
+    let names = [
+        ("Face_00_SKIN", FACE),
+        ("N00_000_00_Face_00_SKIN (Instance)", FACE),
+        ("Body_00_SKIN", SKIN),
+        ("N00_000_00_Body_00_SKIN (Instance)", SKIN),
+        ("Hair_00_HAIR", HAIR),
+        ("HairBack_00_HAIR", HAIR),
+        ("N00_000_Hair_00_HAIR_01 (Instance)", HAIR),
+        ("N00_000_00_HairBack_00_HAIR (Instance)", HAIR),
+        // Clothes, eyes, and what VRoid draws on or inside the face (its `FACE` group).
+        ("Tops_01_CLOTH", NONE),
+        ("Bottoms_01_CLOTH", NONE),
+        ("Shoes_01_CLOTH", NONE),
+        ("N00_010_01_Onepiece_00_CLOTH (Instance)", NONE),
+        ("EyeWhite_00_EYE", NONE),
+        ("EyeIris_00_EYE", NONE),
+        ("EyeHighlight_00_EYE", NONE),
+        ("FaceBrow_00_FACE", NONE),
+        ("FaceEyeline_00_FACE", NONE),
+        ("N00_000_00_FaceEyelash_00_FACE (Instance)", NONE),
+        ("FaceMouth_00_FACE", NONE),
+        // Names VRoid Studio didn't write place nothing.
+        ("Skin", NONE),
+        ("Hair", NONE),
+        ("Face", NONE),
+        ("Body_00_skin", NONE),
+        ("FaceSKIN", NONE),
+        ("HAIRCLIP_00_CLOTH", NONE),
+        ("", NONE),
+    ];
+    for (name, gi) in names {
+        assert_eq!(vroid_region_gi(name), gi, "{name:?}");
+    }
+
+    // The 1.0 sample's MToon and unlit materials renamed as VRoid names a body, hair and a face;
+    // Plain isn't MToon, so its glTF material stays as the glTF importer generates it.
+    const BODY_NAME: &str = "N00_000_00_Body_00_SKIN (Instance)";
+    const HAIR_NAME: &str = "N00_000_Hair_00_HAIR_01 (Instance)";
+    const FACE_NAME: &str = "N00_000_00_Face_00_SKIN (Instance)";
+    const PLAIN_NAME: &str = "N00_000_00_HairBack_00_HAIR (Instance)";
+    let mut sample = samples::vrm1();
+    let materials = sample.document["materials"].as_array_mut().expect("materials");
+    for (material, name) in [
+        (material::SKIN, BODY_NAME),
+        (material::HAIR, HAIR_NAME),
+        (material::LASHES, FACE_NAME),
+        (material::PLAIN, PLAIN_NAME),
+    ] {
+        materials[material]["name"] = json!(name);
+    }
+    let renamed = import(&sample.to_glb(), Some(VrmVersion::V1)).expect("the renamed sample imports");
+    let gi_of = |import: &VrmImport, name: &str| {
+        let slot = slot(import, name) as usize;
+        let [region] = &import.mesh.materials[slot].generated.regions[..] else { panic!("one region") };
+        (region.gi, import.slots[slot].as_ref().map(|mtoon| mtoon.gi))
+    };
+    assert_eq!(gi_of(&renamed, BODY_NAME), (SKIN, Some(SKIN)));
+    assert_eq!(gi_of(&renamed, HAIR_NAME), (HAIR, Some(HAIR)));
+    assert_eq!(gi_of(&renamed, FACE_NAME), (FACE, Some(FACE)), "unlit materials take it too");
+    assert_eq!(gi_of(&renamed, PLAIN_NAME), (NONE, None), "only MToon and unlit materials map");
+    // Nothing else about a material changes with its name (but for eyes, M1 C6).
+    let original = import1();
+    for (name, renamed_name) in [("Skin", BODY_NAME), ("Hair", HAIR_NAME), ("Lashes", FACE_NAME)] {
+        let generated = |import: &VrmImport, name: &str| {
+            import.mesh.materials[slot(import, name) as usize].generated.clone()
+        };
+        let mut material = generated(&renamed, renamed_name);
+        assert_eq!(generated(&original, name).regions[0].gi, NONE, "{name} isn't a VRoid name");
+        material.regions[0].gi = NONE;
+        assert_eq!(material, generated(&original, name), "{renamed_name}");
+        // Extraction writes the same weights out (`Mtoon::to_material` with textures bound).
+        let mtoon = renamed.slots[slot(&renamed, renamed_name) as usize].as_ref().expect("MToon");
+        let bound = mtoon.to_material(|usage| Some(use_id(usage)));
+        assert_eq!(bound.regions[0].gi, generated(&renamed, renamed_name).regions[0].gi);
+        bound.validate().expect("a valid material");
+    }
+
+    // VRM 0.x files map the same names the same way (renamed in the expression that sets them
+    // too).
+    let mut sample = samples::vrm0();
+    let renames = [("Skin", FACE_NAME), ("Hair", HAIR_NAME)];
+    let materials = sample.document["materials"].as_array_mut().expect("materials");
+    materials[material::SKIN]["name"] = json!(FACE_NAME);
+    materials[material::HAIR]["name"] = json!(HAIR_NAME);
+    let groups = &mut sample.document["extensions"]["VRM"]["blendShapeMaster"]["blendShapeGroups"];
+    for group in groups.as_array_mut().expect("expressions") {
+        for value in group["materialValues"].as_array_mut().into_iter().flatten() {
+            let name = value["materialName"].as_str().expect("a material name");
+            if let Some(&(_, renamed)) = renames.iter().find(|&&(old, _)| old == name) {
+                value["materialName"] = json!(renamed);
+            }
+        }
+    }
+    let migrated = import(&sample.to_glb(), Some(VrmVersion::V0)).expect("the renamed 0.x sample imports");
+    assert_eq!(gi_of(&migrated, FACE_NAME), (FACE, Some(FACE)));
+    assert_eq!(gi_of(&migrated, HAIR_NAME), (HAIR, Some(HAIR)));
+    assert_eq!(gi_of(&migrated, "Lashes"), (NONE, Some(NONE)));
+}

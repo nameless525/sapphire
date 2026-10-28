@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import statistics
 import subprocess
+import threading
 import time
 
 from golden_bundle import digest, verify_checkout
@@ -52,6 +53,36 @@ def capture_env(content: Path, cache: Path, pipeline: str, history: str) -> dict
 def cache_inventory(directory: Path) -> list[dict]:
     return [{"name": str(path.relative_to(directory)), "bytes": path.stat().st_size}
             for path in sorted(directory.rglob("*")) if path.is_file()]
+
+
+def timed_capture(command: list[str], env: dict, log: Path, timeout: float) -> tuple[int, float]:
+    """Time blocking waitpid, avoiding subprocess.run(timeout)'s 50 ms polling tail."""
+    with log.open("wb") as stream:
+        started = time.perf_counter()
+        process = subprocess.Popen(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
+        expired = threading.Event()
+
+        def stop() -> None:
+            expired.set()
+            process.kill()
+
+        watchdog = threading.Timer(timeout, stop)
+        watchdog.daemon = True
+        try:
+            watchdog.start()
+            returncode = process.wait()
+            elapsed = time.perf_counter() - started
+        finally:
+            watchdog.cancel()
+            if watchdog.ident is not None:
+                watchdog.join()
+            # Also terminate/reap if wait was interrupted, or starting the watchdog failed.
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+        if expired.is_set():
+            raise subprocess.TimeoutExpired(command, timeout)
+    return returncode, elapsed
 
 
 def verify_inputs(inputs: Path, commit: str) -> dict:
@@ -118,13 +149,9 @@ def experiment(inputs: Path, output: Path, commit: str, rounds: int = 3, timeout
                     png = folder / f"{scene['name']}.png"
                     log = folder / f"{scene['name']}.log"
                     command = [str(binary), "--capture", str(png), "--size", "640x360", *scene["args"]]
-                    started = time.perf_counter()
-                    with log.open("wb") as stream:
-                        result = subprocess.run(command, env=env, stdout=stream,
-                                                stderr=subprocess.STDOUT, timeout=timeout)
-                    elapsed = time.perf_counter() - started
-                    if result.returncode != 0 or not png.is_file():
-                        raise RuntimeError(f"Capture failed ({result.returncode}): {log}")
+                    returncode, elapsed = timed_capture(command, env, log, timeout)
+                    if returncode != 0 or not png.is_file():
+                        raise RuntimeError(f"Capture failed ({returncode}): {log}")
                     checksum = digest(png)
                     references.setdefault(scene["name"], checksum)
                     item = {"name": scene["name"], "seconds": elapsed, "png_sha256": checksum,

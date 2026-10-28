@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -44,16 +47,16 @@ class CaptureExperimentTests(unittest.TestCase):
             (inputs / "manifest.json").write_text(json.dumps(manifest))
             calls = []
 
-            def fake_capture(command, *, env, **kwargs):
+            def fake_capture(command, env, log, timeout):
                 calls.append((command, env))
                 Path(command[2]).write_bytes(b"identical PNG bytes")
                 if cache := env.get("SAPPHIRE_CAPTURE_PIPELINE_CACHE"):
                     path = Path(cache)
                     path.mkdir(exist_ok=True)
                     (path / "pipeline.bin").write_bytes(b"cache")
-                return type("Result", (), {"returncode": 0})()
+                return 0, 0.125
 
-            with patch.object(experiment.subprocess, "run", fake_capture):
+            with patch.object(experiment, "timed_capture", fake_capture):
                 report = experiment.experiment(inputs, root / "output", "a" * 40)
             self.assertTrue(report["complete"])
             self.assertEqual(len(calls), 6 * 4 * 4)
@@ -65,18 +68,50 @@ class CaptureExperimentTests(unittest.TestCase):
             self.assertEqual([row["mode"] for row in report["sequences"][:4]], list(report["summary"]))
             self.assertEqual([row["mode"] for row in report["sequences"][4:8]], list(reversed(report["summary"])))
 
-            def mismatch(command, *, env, **kwargs):
-                result = fake_capture(command, env=env, **kwargs)
+            def mismatch(command, env, log, timeout):
+                result = fake_capture(command, env, log, timeout)
                 if env["SAPPHIRE_CAPTURE_HISTORY_ONLY"] == "on":
                     Path(command[2]).write_bytes(b"regressed PNG bytes")
                 return result
 
-            with patch.object(experiment.subprocess, "run", mismatch):
+            with patch.object(experiment, "timed_capture", mismatch):
                 with self.assertRaisesRegex(RuntimeError, "PNG byte parity"):
                     experiment.experiment(inputs, root / "mismatch", "a" * 40, rounds=1)
             partial = json.loads((root / "mismatch/results.json").read_text())
             self.assertFalse(partial["complete"])
             self.assertFalse(partial["summary"]["cache-on_history-on"]["all_png_bytes_identical"])
+
+    def test_blocking_capture_keeps_both_output_streams_and_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "capture.log"
+            code = 'import sys; print("stdout", flush=True); print("stderr", file=sys.stderr, flush=True); sys.exit(7)'
+            status, elapsed = experiment.timed_capture([sys.executable, "-c", code], dict(os.environ), log, 5)
+            self.assertEqual(status, 7)
+            self.assertGreater(elapsed, 0)
+            self.assertEqual(log.read_text(), "stdout\nstderr\n")
+
+    def test_watchdog_kills_and_reaps_child_and_preserves_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "capture.log"
+            children = []
+            popen = subprocess.Popen
+
+            def start(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                children.append(child)
+                return child
+
+            before = time.perf_counter()
+            with patch.object(experiment.subprocess, "Popen", start):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    experiment.timed_capture(
+                        [sys.executable, "-c", 'import time; print("started", flush=True); time.sleep(30)'],
+                        dict(os.environ), log, 2,
+                    )
+            self.assertLess(time.perf_counter() - before, 10)
+            self.assertIsNotNone(children[0].returncode)
+            self.assertNotEqual(children[0].returncode, 0)
+            self.assertEqual(log.read_text(), "started\n")
 
 
 if __name__ == "__main__":

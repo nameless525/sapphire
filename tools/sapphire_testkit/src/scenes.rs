@@ -2438,6 +2438,34 @@ fn costs(scenes: &[Scene], family: Option<Family>) -> Vec<u32> {
     scenes.iter().map(|scene| family.map_or(1, |family| family.cost(scene.name))).collect()
 }
 
+/// Explicit control for before/after measurements and cache-related driver triage. This
+/// optimizes pipeline compilation only; every scene still starts a separate sandbox process.
+const PIPELINE_CACHE_ENV: &str = "SAPPHIRE_GOLDEN_PIPELINE_CACHE";
+const CAPTURE_PIPELINE_CACHE_ENV: &str = "SAPPHIRE_CAPTURE_PIPELINE_CACHE";
+
+fn pipeline_cache_enabled(value: Option<&str>) -> Result<bool, String> {
+    match value {
+        None | Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        Some(value) => Err(format!("{PIPELINE_CACHE_ENV} expects on or off, got {value:?}")),
+    }
+}
+
+/// The cache lives under the output directory that `run_scenes` empties before starting its
+/// serial children. Sharing the application's user cache, or running these children in parallel
+/// against one cache, would race its crash sentinel and atomic temporary file. Metal and DX12
+/// ignore this optional cache in the RHI and never create its directory.
+fn sandbox_command(paths: &Paths, pipeline_cache: bool) -> Command {
+    let mut command = Command::new(&paths.sandbox);
+    command.env(CONTENT_DIR_ENV, &paths.content);
+    // Off must override an inherited capture cache as well, for a real uncached control.
+    command.env_remove(CAPTURE_PIPELINE_CACHE_ENV);
+    if pipeline_cache {
+        command.env(CAPTURE_PIPELINE_CACHE_ENV, paths.out.join("pipeline-cache"));
+    }
+    command
+}
+
 /// Runs the selected scenes and returns one message per failure (empty: all passed). Each scene
 /// gets `timeout` (`--scene-timeout`; [`DEFAULT_SCENE_TIMEOUT`]).
 pub fn run(
@@ -2449,11 +2477,13 @@ pub fn run(
     let scenes = scenes();
     let family = std::env::var(BACKEND_ENV).ok().and_then(|backend| Family::from_backend(&backend));
     let selected = select(&scenes, selection, family)?;
-    let sandbox = |_: &Scene| {
-        let mut command = Command::new(&paths.sandbox);
-        command.env(CONTENT_DIR_ENV, &paths.content);
-        command
+    let setting = match std::env::var(PIPELINE_CACHE_ENV) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(format!("{PIPELINE_CACHE_ENV}: {error}")),
     };
+    let pipeline_cache = pipeline_cache_enabled(setting.as_deref())?;
+    let sandbox = |_: &Scene| sandbox_command(paths, pipeline_cache);
     run_scenes(&selected, paths, mode, timeout, &sandbox)
 }
 
@@ -2819,6 +2849,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_pipeline_cache_is_private_to_the_run_and_can_be_disabled() {
+        let paths = Paths {
+            sandbox: "sandbox".into(),
+            content: "cooked".into(),
+            goldens: "references".into(),
+            out: "test-run".into(),
+        };
+        let command = sandbox_command(&paths, true);
+        let cache = command.get_envs().find(|(key, _)| *key == CAPTURE_PIPELINE_CACHE_ENV);
+        assert_eq!(cache.unwrap().1, Some(paths.out.join("pipeline-cache").as_os_str()));
+        let command = sandbox_command(&paths, false);
+        let cache = command.get_envs().find(|(key, _)| *key == CAPTURE_PIPELINE_CACHE_ENV);
+        assert_eq!(cache.unwrap().1, None, "disabled also removes an inherited directory");
+        assert_eq!(pipeline_cache_enabled(None), Ok(true));
+        assert_eq!(pipeline_cache_enabled(Some("on")), Ok(true));
+        assert_eq!(pipeline_cache_enabled(Some("off")), Ok(false));
+        assert!(pipeline_cache_enabled(Some("true")).is_err());
+    }
+
+    #[test]
     fn scene_names_are_unique_file_stems() {
         let scenes = scenes();
         let mut names: Vec<&str> = scenes.iter().map(|scene| scene.name).collect();
@@ -3043,6 +3093,12 @@ mod tests {
                 chatter(1000);
                 eprintln!("stalling now");
             }
+            "fail-one" | "fail-two" => {
+                eprintln!("failing now");
+                drop(lifeline);
+                monitor.wait().expect("the fake monitor's exit");
+                std::process::exit(42);
+            }
             "chatty" => {
                 chatter(2000);
                 fs::write(&capture, "unread by --update").expect("the capture");
@@ -3062,44 +3118,76 @@ mod tests {
 
     #[test]
     fn a_scene_past_its_deadline_is_stopped_and_the_run_goes_on() {
-        let dir = std::env::temp_dir().join(format!("sapphire_testkit_deadline_{}", std::process::id()));
+        // Both deadlines are real and unchanged. Independent output directories let these
+        // process-lifecycle cases wait concurrently; each must continue to a successful capture.
+        std::thread::scope(|scope| {
+            let hang = scope.spawn(|| {
+                check_fake_run("deadline-hang", &[("fake-hang", "timed-out"), ("fake-chatty", "updated")]);
+            });
+            let stall = scope.spawn(|| {
+                check_fake_run("deadline-stall", &[("fake-stall", "timed-out"), ("fake-chatty", "updated")]);
+            });
+            hang.join().unwrap();
+            stall.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn consecutive_failures_are_collected_before_the_next_success() {
+        // Failure accumulation still covers consecutive errors in one runner, without paying
+        // two deadlines serially. Each child really exits unsuccessfully and reaps its monitor.
+        check_fake_run(
+            "failures",
+            &[("fake-fail-one", "error"), ("fake-fail-two", "error"), ("fake-chatty", "updated")],
+        );
+    }
+
+    fn check_fake_run(group: &str, expected: &[(&'static str, &'static str)]) {
+        let dir = std::env::temp_dir().join(format!("sapphire_testkit_{group}_{}", std::process::id()));
         let paths = Paths {
             sandbox: PathBuf::from("unused"),
             content: PathBuf::from("unused"),
             goldens: dir.join("goldens"),
             out: dir.join("out"),
         };
-        let scene = |name| Scene { name, args: &["--plain-post"], thresholds: Thresholds::default() };
-        let scenes = [scene("fake-hang"), scene("fake-stall"), scene("fake-chatty")];
+        let scenes: Vec<Scene> = expected
+            .iter()
+            .map(|&(name, _)| Scene { name, args: &["--plain-post"], thresholds: Thresholds::default() })
+            .collect();
         let selected: Vec<&Scene> = scenes.iter().collect();
         let timeout = Duration::from_secs(3);
         let sandbox = |scene: &Scene| fake(scene.name.strip_prefix("fake-").expect("a fake"));
         let failures = run_scenes(&selected, &paths, Mode::Update, timeout, &sandbox).unwrap();
-
-        // Each hung scene fails as timed out, quoting the end of what it wrote.
-        assert_eq!(failures.len(), 2, "{failures:#?}");
-        assert!(failures[0].starts_with("fake-hang: timed out after 3 s"), "{}", failures[0]);
-        assert!(failures[1].starts_with("fake-stall: timed out after 3 s"), "{}", failures[1]);
-        assert!(failures[1].contains("stalling now"), "{}", failures[1]);
-        // Its log is kept, all of it.
-        let log = fs::read_to_string(paths.out.join("fake-stall.log")).unwrap();
-        assert!(
-            log.contains("stdout line 999")
-                && log.contains("stderr line 999")
-                && log.contains("stalling now")
-        );
-        // The run went on: the next scene wrote far more than a pipe holds, and finished.
+        let expected_failures: Vec<_> = expected.iter().filter(|(_, status)| *status != "updated").collect();
+        assert_eq!(failures.len(), expected_failures.len(), "{failures:#?}");
+        for (failure, &&(name, status)) in failures.iter().zip(&expected_failures) {
+            if status == "timed-out" {
+                assert!(failure.starts_with(&format!("{name}: timed out after 3 s")), "{failure}");
+            } else {
+                assert!(failure.starts_with(&format!("{name}: the sandbox failed")), "{failure}");
+                assert!(failure.contains("failing now"), "{failure}");
+            }
+            if name == "fake-stall" {
+                assert!(failure.contains("stalling now"), "{failure}");
+                // Its log is kept, all of it, including more output than a pipe holds.
+                let log = fs::read_to_string(paths.out.join("fake-stall.log")).unwrap();
+                assert!(
+                    log.contains("stdout line 999")
+                        && log.contains("stderr line 999")
+                        && log.contains("stalling now")
+                );
+            }
+        }
+        // Every run goes on to a scene that writes far more than a pipe holds and finishes.
         assert!(paths.goldens.join("fake-chatty.vulkan-lavapipe.png").is_file());
         let log = fs::read_to_string(paths.out.join("fake-chatty.log")).unwrap();
         assert!(log.contains("stdout line 1999") && log.contains("stderr line 1999"));
 
-        // `timings.json` has every scene, the hung ones stopped at their deadline (with slack for a
-        // busy machine) and named by the run's family.
+        // Timings cover every scene in order, with the original real-time deadline and slack.
         let timings = fs::read_to_string(paths.out.join("timings.json")).unwrap();
         let entries: Vec<&str> = timings.lines().filter(|line| line.contains("\"scene\"")).collect();
-        let expected = [("fake-hang", "timed-out"), ("fake-stall", "timed-out"), ("fake-chatty", "updated")];
         assert_eq!(entries.len(), expected.len(), "{timings}");
-        for (entry, (scene, status)) in entries.iter().zip(expected) {
+        for (entry, &(scene, status)) in entries.iter().zip(expected) {
             assert!(entry.contains(&format!("\"scene\": \"{scene}\"")), "{entry}");
             assert!(entry.contains(&format!("\"status\": \"{status}\"")), "{entry}");
             assert!(entry.contains("\"family\": \"vulkan-lavapipe\""), "{entry}");
@@ -3115,7 +3203,7 @@ mod tests {
             }
         }
 
-        // No crash monitor outlives its sandbox: each saw its lifeline close and left its marker.
+        // No crash monitor outlives its sandbox: each observed its lifeline closing.
         let clock = Stopwatch::start();
         for scene in &scenes {
             let marker = paths.out.join(format!("{}.monitor-exited", scene.name));

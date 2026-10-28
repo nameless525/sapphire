@@ -31,7 +31,7 @@ pub struct WatchEvents<'a> {
 #[derive(Debug, thiserror::Error)]
 pub enum WatchError {
     #[error(
-        "this build has no file-watching backend (sapphire_hot_reload's `notify` feature, which apps \
+        "this build has no file-watching backend (sapphire_watch's `notify` feature, which apps \
          turn on for desktop targets)"
     )]
     Unsupported,

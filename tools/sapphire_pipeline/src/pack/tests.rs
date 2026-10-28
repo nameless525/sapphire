@@ -192,6 +192,63 @@ fn packing_is_deterministic_and_cached() {
 }
 
 #[test]
+fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
+    let scratch = Scratch::new("pack_parallel");
+    let mut report = scratch.cook(Cook::Desktop);
+    let mut duplicate = report.assets.iter().find(|asset| asset.id == id(ALBEDO)).unwrap().clone();
+    duplicate.id = AssetId::from_bytes([7; 16]);
+    report.assets.push(duplicate);
+    let assets: Vec<_> = report.assets.iter().collect();
+    let ids = report.assets.iter().map(|asset| asset.id).collect();
+    let mut expected = None;
+    for workers in [1, 2, 4] {
+        let out = scratch.dir.path().join(format!("workers-{workers}"));
+        let cache = Cache::new(scratch.dir.path().join(format!("cache-{workers}")));
+        let packed = pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap();
+        assert_eq!((packed.assets, packed.encoded), (4, 3), "one encoding for identical content");
+        let bytes = fs::read(&packed.path).unwrap();
+        if let Some(expected) = &expected {
+            assert_eq!(&bytes, expected, "worker count changes no pack byte");
+        } else {
+            expected = Some(bytes.clone());
+        }
+        fs::remove_file(&packed.path).unwrap();
+        assert_eq!(pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 0);
+        assert_eq!(fs::read(&packed.path).unwrap(), bytes);
+
+        // A damaged shared encoding is regenerated exactly once, not once per duplicate asset.
+        let texture = report.assets.iter().find(|asset| asset.id == id(ALBEDO)).unwrap();
+        let key = CacheKey::packed(&texture.output_hash, PACKER, Codec::Zstd, ZSTD_LEVEL);
+        fs::write(cache.entry_path(&key), b"damaged entry").unwrap();
+        fs::remove_file(&packed.path).unwrap();
+        assert_eq!(pack_group(SHARED, &assets, &ids, &out, Some(&cache), workers).unwrap().encoded, 1);
+        assert_eq!(fs::read(&packed.path).unwrap(), bytes);
+
+        let uncached = out.join("uncached");
+        assert_eq!(pack_group(SHARED, &assets, &ids, &uncached, None, workers).unwrap().encoded, 4);
+        assert_eq!(fs::read(uncached.join(format::file_name(SHARED))).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn parallel_encoding_reports_the_first_error_in_asset_order() {
+    let scratch = Scratch::new("pack_parallel_errors");
+    let report = scratch.cook(Cook::Desktop);
+    let assets: Vec<_> = report.assets.iter().collect();
+    let ids = report.assets.iter().map(|asset| asset.id).collect();
+    for asset in &report.assets {
+        fs::write(&asset.output, b"changed after cooking").unwrap();
+    }
+    let first = report.assets.iter().min_by_key(|asset| asset.id).unwrap();
+    for workers in [1, 2, 4] {
+        let out = scratch.dir.path().join(format!("workers-{workers}"));
+        let error = pack_group(SHARED, &assets, &ids, &out, None, workers).unwrap_err();
+        assert!(matches!(error, PackError::Changed { path } if path == first.output));
+        assert!(!out.join(format::file_name(SHARED)).exists(), "an unsuccessful pack is never published");
+    }
+}
+
+#[test]
 fn files_no_pack_claims_are_removed() {
     let scratch = Scratch::new("pack_prune");
     let packs = scratch.packs(Cook::Desktop);

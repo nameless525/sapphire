@@ -331,6 +331,66 @@ fn unused_dependencies_go_with_their_parent() {
 }
 
 #[test]
+fn budget_collection_rescans_dependencies_released_by_an_earlier_kind() {
+    let (mut server, _) = serve(character(), unlimited());
+    let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
+    server.finish(&mesh, |_| Ok(())).unwrap();
+    drop(mesh);
+    server.set_budgets(AssetBudgets { resident: [0; AssetKind::ALL.len()], ..unlimited() });
+
+    server.update();
+    let gone: Vec<_> = server.take_unloaded().iter().map(|event| event.id).collect();
+    assert_eq!(gone, [id(MESH), id(MATERIAL)], "mesh releases material before its kind is scanned");
+    assert_eq!(server.stats().assets, 1, "texture's kind was scanned before material was removed");
+    server.update();
+    let gone: Vec<_> = server.take_unloaded().iter().map(|event| event.id).collect();
+    assert_eq!(gone, [id(TEXTURE)]);
+    assert_eq!(server.stats().assets, 0);
+}
+
+#[test]
+fn budget_collection_rescans_dependencies_released_by_failed_assets() {
+    let assets = vec![
+        packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7)),
+        packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE)))),
+    ];
+    let (mut server, _) = serve(assets, unlimited());
+    let material: Handle<Material> = server.load(id(MATERIAL)).unwrap();
+    let refuse_material = |upload: Upload<'_>| match upload.kind() {
+        AssetKind::Material => Err("the device is busy".into()),
+        _ => Ok(()),
+    };
+    assert!(matches!(server.finish(&material, refuse_material), Err(LoadError::Upload { .. })));
+    drop(material);
+    server.set_budgets(AssetBudgets { resident: [0; AssetKind::ALL.len()], ..unlimited() });
+
+    server.update();
+    let gone: Vec<_> = server.take_unloaded().iter().map(|event| event.id).collect();
+    assert_eq!(gone, [id(MATERIAL), id(TEXTURE)], "failed removal releases a formerly held texture");
+    assert_eq!(server.stats().assets, 0);
+}
+
+#[test]
+fn low_memory_releases_eviction_scratch_without_unloading_held_assets() {
+    let (mut server, _) = serve(textures(2), unlimited());
+    let held: Handle<TextureAsset> = server.load(id(1)).unwrap();
+    let unused: Handle<TextureAsset> = server.load(id(2)).unwrap();
+    server.finish(&held, |_| Ok(())).unwrap();
+    server.finish(&unused, |_| Ok(())).unwrap();
+    drop(unused);
+    server.set_budgets(AssetBudgets { resident: [0; AssetKind::ALL.len()], ..unlimited() });
+    server.update();
+    assert!(server.eviction_scratch.capacity() > 0, "an ordinary eviction retains reusable storage");
+    server.unload_unused();
+    assert_eq!(server.eviction_scratch.capacity(), 0, "low memory releases that storage");
+    assert_eq!(server.state(&held), LoadState::Ready);
+    assert_eq!(server.stats().assets, 1);
+    drop(held);
+    server.unload_unused();
+    assert_eq!(server.stats().assets, 0);
+}
+
+#[test]
 fn failures_reach_every_asset_waiting_on_them() {
     // A corrupt texture block.
     let mut bytes = write_pack(character()).unwrap();

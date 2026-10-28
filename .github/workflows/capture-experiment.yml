@@ -1,0 +1,81 @@
+# Independent diagnostic experiment. Normal CI gates always run in ci.yml.
+name: Capture experiment
+on:
+  # A lightweight first run registers this workflow for API dispatch before it is merged.
+  pull_request:
+    paths:
+      - .github/workflows/capture-experiment.yml
+      - .github/scripts/capture_experiment.py
+      - .github/scripts/test_capture_experiment.py
+  workflow_dispatch:
+    inputs:
+      producer_run_id:
+        description: CI run whose Linux golden producer has uploaded its verified inputs
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character producer checkout SHA (PR merge SHA for a PR run)
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  register:
+    name: Validate capture experiment helper
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 -m unittest discover -s .github/scripts -p 'test_capture_experiment.py' -v
+  experiment:
+    name: Same-binary Vulkan capture experiment
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Download producer inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: golden-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/golden-download
+          run-id: ${{ inputs.producer_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify exact producer checkout and bundle
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 .github/scripts/golden_bundle.py unpack \
+            --archive "$RUNNER_TEMP/golden-download/golden-bundle.tar.gz" \
+            --destination target/golden-input --commit "$SOURCE_SHA" --family vulkan-lavapipe
+      - name: Install the Vulkan runtime loader
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1
+      - name: Install lavapipe (Mesa 26.1.3)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL --retry 5 -o mesa.tar.xz https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
+          echo "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  mesa.tar.xz" | sha256sum -c -
+          mkdir mesa && tar xpf mesa.tar.xz -C mesa
+          cat > lavapipe.json <<JSON
+          {"file_format_version": "1.0.1", "ICD": {"library_path": "$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so", "api_version": "1.4.348", "library_arch": "64"}}
+          JSON
+          echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Four modes, discarded warmup and three alternating measured rounds
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 .github/scripts/capture_experiment.py --inputs target/golden-input \
+            --output target/capture-experiment --sha "$SOURCE_SHA"
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: capture-experiment-${{ github.run_id }}
+          path: target/capture-experiment/
+          if-no-files-found: ignore
+          retention-days: 7

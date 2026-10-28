@@ -50,6 +50,8 @@ sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
 # desktop targets; `default` turns it on for the crate's own tests.
 sapphire_hot_reload = { kind = "dev_only", features = ["default", "notify"] }
+# Renderer-independent watcher shared by hot reload and the standalone live-link tool.
+sapphire_watch = { kind = "dev_only", features = ["default", "notify"] }
 # Live link (M1 A9): the device half apps link through `dev`, and the desktop tool, a binary of
 # the same crate that `cargo xtask link` runs.
 sapphire_livelink = { kind = "dev_only" }

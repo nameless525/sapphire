@@ -154,6 +154,27 @@ const CRASH_MARKERS: [&str; 2] = ["Fatal signal", "FATAL EXCEPTION"];
 /// process itself lives on, cached), the process dies, logcat stops or the device drops
 /// (`logcat --pid` would outlive the first two), then judges the run by [`AppLog::outcome`].
 fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
+    follow_logcat_with_timing(
+        adb,
+        package,
+        pid,
+        LogcatTiming { process_poll: Duration::from_secs(1), drain: Duration::from_secs(1) },
+    )
+}
+
+/// Real devices need time for their final log lines to arrive. Synthetic process fixtures can
+/// acknowledge that their output is already in the pipe instead of waiting out those intervals.
+struct LogcatTiming {
+    process_poll: Duration,
+    drain: Duration,
+}
+
+fn follow_logcat_with_timing(
+    adb: &Adb,
+    package: &str,
+    pid: &str,
+    timing: LogcatTiming,
+) -> anyhow::Result<()> {
     let mut command = adb.command();
     command.arg("logcat").arg(format!("--pid={pid}")).stdout(Stdio::piped());
     eprintln!("$ adb -s {} logcat --pid={pid}", adb.serial);
@@ -175,7 +196,7 @@ fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
     });
 
     let stop = loop {
-        let stop = match finished_rx.recv_timeout(Duration::from_secs(1)) {
+        let stop = match finished_rx.recv_timeout(timing.process_poll) {
             Ok(()) => break None,
             Err(mpsc::RecvTimeoutError::Disconnected) => match adb.process(package, pid) {
                 Process::Running => Stop::LogcatEnded,
@@ -190,7 +211,7 @@ fn follow_logcat(adb: &Adb, package: &str, pid: &str) -> anyhow::Result<()> {
         };
         break Some(stop);
     };
-    thread::sleep(Duration::from_secs(1)); // Let logcat print the last lines.
+    thread::sleep(timing.drain); // Let logcat print the last lines.
     // Ok if it exited already: then `wait` returns its own status, which `Stop::LogcatEnded` reports.
     let _ = logcat.kill();
     let status = logcat.wait()?;
@@ -922,13 +943,30 @@ mod tests {
 scenario=$2
 shift 2
 line() { printf '10-27 12:00:00.000  4242  4260 %s\n' "$1"; }
+if [ "$1" = logcat ]; then echo "$$" > "$0.pid"; fi
+before_death() {
+    # Force a process probe before the log line, to exercise startup/forwarding races.
+    attempt=0
+    while [ ! -f "$0.probed" ] && [ "$attempt" -lt 300 ]; do
+        sleep 0.01
+        attempt=$((attempt + 1))
+    done
+    if [ ! -f "$0.probed" ]; then echo 'fake adb was never probed' >&2; exit 2; fi
+    line "$1"
+    # Only now may pidof report the process gone: the log bytes are already in the pipe.
+    : > "$0.ready"
+    exec sleep 30
+}
 case "$1 $scenario" in
     "logcat offline") echo 'error: device offline' >&2; exit 7 ;;
     "logcat finished") line 'V SDL     : Running main function SDL_main'; line 'V SDL     : Finished main function'; exec sleep 30 ;;
-    "logcat killed") line 'I sapphire::sandbox: frame stats fps=30.0'; exec sleep 30 ;;
-    "logcat crashed") line 'F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 4260 (SDLThread), pid 4242'; exec sleep 30 ;;
+    "logcat killed") before_death 'I sapphire::sandbox: frame stats fps=30.0' ;;
+    "logcat crashed") before_death 'F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 4260 (SDLThread), pid 4242' ;;
     "logcat stopped") line 'I sapphire::sandbox: frame stats fps=30.0'; exit 0 ;;
     "shell finished"|"shell stopped") echo 4242 ;;
+    "shell killed"|"shell crashed")
+        : > "$0.probed"
+        if [ -f "$0.ready" ]; then exit 1; else echo 4242; fi ;;
     "shell "*) exit 1 ;;
     "get-state offline") echo 'error: device offline' >&2; exit 1 ;;
     "get-state "*) echo device ;;
@@ -965,9 +1003,26 @@ esac
     fn follow(scenario: &str) -> anyhow::Result<()> {
         let turn = FakeAdb::turn();
         let fake = FakeAdb::new(&turn, scenario);
-        let result = follow_logcat(&fake.adb, "dev.sapphire.sandbox", "4242");
+        let result = follow_logcat_with_timing(
+            &fake.adb,
+            "dev.sapphire.sandbox",
+            "4242",
+            LogcatTiming { process_poll: Duration::from_millis(5), drain: Duration::ZERO },
+        );
         let dir = fake.dir.clone();
         assert!(fake.adb.program.is_file());
+        if matches!(scenario, "killed" | "crashed") {
+            assert!(dir.join("adb.probed").is_file(), "the process was probed before its log arrived");
+            assert!(dir.join("adb.ready").is_file(), "the death marker followed the log write");
+        }
+        let pid = fs::read_to_string(dir.join("adb.pid")).unwrap();
+        let alive = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("the Unix kill command");
+        assert!(!alive.success(), "the fake logcat process outlived follow_logcat");
         drop(fake);
         // Checked within the turn, before another test makes it again.
         assert!(!dir.exists(), "the fake adb's directory outlived it");

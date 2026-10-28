@@ -40,7 +40,7 @@
 //!   validate or compile.
 //! - Reloading assets: the asset server's remount (`sapphire_assets::AssetServer::remount`) and
 //!   the app's uploader, which replaces each new version in place by its generation.
-//! - Watching files: A8's `sapphire_hot_reload::FileWatcher`, which the tool's `watch` uses, with
+//! - Watching files: the renderer-independent `sapphire_watch::FileWatcher`, which the tool's `watch` uses, with
 //!   that crate's paths to the engine's sources.
 //! - Cooking: `cargo xtask content --cook <cook>` writes the packs the tool pushes.
 //!

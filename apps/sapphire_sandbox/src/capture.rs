@@ -27,6 +27,18 @@ use crate::options::CaptureFrames;
 /// first frames, and the frame graph's report and GPU timings come back a frame or two late.
 const OVERLAY_WARMUP_FRAMES: u32 = 8;
 
+/// A same-executable reference path for validating capture warmup dead-pass elimination.
+const HISTORY_ONLY_ENV: &str = "SAPPHIRE_CAPTURE_HISTORY_ONLY";
+
+fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppInitError> {
+    match value.and_then(std::ffi::OsStr::to_str) {
+        None if value.is_none() => Ok(true),
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        _ => Err(AppInitError::msg(format!("{HISTORY_ONLY_ENV} must be on or off"))),
+    }
+}
+
 pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
@@ -35,6 +47,8 @@ pub(crate) fn run(
     width: u32,
     height: u32,
 ) -> Result<(), AppInitError> {
+    let history_only = history_only_requested(std::env::var_os(HISTORY_ONLY_ENV).as_deref())?;
+    let mut history_only_frames = 0_u32;
     let first =
         frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
     for _ in 0..first {
@@ -47,7 +61,7 @@ pub(crate) fn run(
         let target = stage.target(width, height, wgpu::TextureUsages::empty());
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         for frame in 0..earlier {
-            stage.render(&view, 1.0, |_, _| {})?;
+            history_only_frames += u32::from(stage.render_capture_warmup(&view, history_only)?);
             stage.scene.end_frame();
             stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
             // The frames still to come, the captured one included, each this many ticks later.
@@ -69,6 +83,7 @@ pub(crate) fn run(
         ticks,
         frames = frames.count,
         step = frames.step,
+        history_only_frames,
         "captured frame"
     );
     Ok(())
@@ -232,6 +247,17 @@ fn halve(width: u32, height: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_only_switch_is_explicit_and_rejects_mistakes() {
+        use std::ffi::OsStr;
+        assert!(history_only_requested(None).unwrap());
+        assert!(history_only_requested(Some(OsStr::new("on"))).unwrap());
+        assert!(!history_only_requested(Some(OsStr::new("off"))).unwrap());
+        for value in ["", "ON", "false", "1"] {
+            assert!(history_only_requested(Some(OsStr::new(value))).is_err());
+        }
+    }
 
     #[test]
     fn halving_averages_each_block_and_drops_an_odd_edge() {

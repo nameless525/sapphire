@@ -1248,6 +1248,65 @@ impl Placeholders {
     }
 }
 
+/// Select the exact baseline nearest prefix. A seventeenth entry witnesses any
+/// tie crossing the cutoff. Equal distances fall back to the baseline's complete
+/// unstable sort so even its implementation-defined tie order stays unchanged.
+#[inline]
+fn select_capsules(
+    bodies: impl Iterator<Item = CharacterBody> + Clone,
+    eye: Vec3,
+    candidates: &mut Vec<(f32, CharacterBody)>,
+) {
+    if bodies.size_hint().1.is_some_and(|n| n <= 64) {
+        select_capsules_full(bodies, eye, candidates);
+        return;
+    }
+    candidates.clear();
+    for body in bodies.clone().filter(CharacterBody::casts) {
+        let center = 0.5 * (body.base + body.top);
+        let distance = center.distance_squared(eye);
+        if candidates.len() == MAX_CAPSULES + 1 && distance.total_cmp(&candidates[MAX_CAPSULES].0).is_gt() {
+            continue;
+        }
+        // A duplicate outside the prefix cannot later enter it: its distance is
+        // identical and the cutoff only decreases. Deduplication needs 17 slots.
+        if candidates.iter().any(|(_, other)| *other == body) {
+            continue;
+        }
+        let index = candidates.partition_point(|(d, _)| d.total_cmp(&distance).is_le());
+        candidates.insert(index, (distance, body));
+        candidates.truncate(MAX_CAPSULES + 1);
+        // Common symmetric crowds: once the entire retained prefix ties, the
+        // exact-order fallback is inevitable unless later nearer bodies replace
+        // it. Taking it early is always correct and avoids an extra whole scan.
+        if candidates.len() == MAX_CAPSULES + 1
+            && candidates[0].0.total_cmp(&candidates[MAX_CAPSULES].0).is_eq()
+        {
+            select_capsules_full(bodies, eye, candidates);
+            return;
+        }
+    }
+    if candidates.windows(2).any(|pair| pair[0].0.total_cmp(&pair[1].0).is_eq()) {
+        select_capsules_full(bodies, eye, candidates);
+    }
+}
+
+#[inline]
+fn select_capsules_full(
+    bodies: impl Iterator<Item = CharacterBody>,
+    eye: Vec3,
+    candidates: &mut Vec<(f32, CharacterBody)>,
+) {
+    candidates.clear();
+    for body in bodies {
+        if body.casts() && !candidates.iter().any(|(_, other)| *other == body) {
+            let center = 0.5 * (body.base + body.top);
+            candidates.push((center.distance_squared(eye), body));
+        }
+    }
+    candidates.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+}
+
 impl Ambient {
     /// The ambient light and occlusion of a renderer with `occlusion`, a grid read per `lookup`,
     /// temporal AA or not, and a reflection cube of `reflections`, which the environment reads
@@ -1586,15 +1645,11 @@ impl Ambient {
             && let Some(view) = packet.main_view()
         {
             let eye = view.camera.position;
-            self.candidates.clear();
-            for character in packet.characters.iter().filter(|character| character.is_valid()) {
-                let body = character.body;
-                if body.casts() && !self.candidates.iter().any(|(_, other)| *other == body) {
-                    let center = 0.5 * (body.base + body.top);
-                    self.candidates.push((center.distance_squared(eye), body));
-                }
-            }
-            self.candidates.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            select_capsules(
+                packet.characters.iter().filter(|character| character.is_valid()).map(|c| c.body),
+                eye,
+                &mut self.candidates,
+            );
             for (gpu, (_, body)) in self.block.ambient.capsules.iter_mut().zip(&self.candidates) {
                 *gpu = GpuAmbientCapsule {
                     base: body.base.extend(body.radius).to_array(),
@@ -2592,5 +2647,100 @@ mod tests {
         let mut expected = expected;
         expected.sort_unstable();
         assert_eq!(inside, expected, "7 × 3 × 3 probes off the outer faces");
+    }
+
+    #[test]
+    fn bounded_capsules_preserve_the_exact_ordered_gpu_prefix() {
+        // Compare the bytes sent to the GPU, including signed zero, rather than
+        // float equality. Equal-distance entries must keep the full sort's order.
+        let prefix = |candidates: &[(f32, CharacterBody)]| -> Vec<[u32; 8]> {
+            candidates
+                .iter()
+                .take(MAX_CAPSULES)
+                .map(|(_, body)| {
+                    let base = body.base.extend(body.radius).to_array();
+                    let top = body.top.extend(0.0).to_array();
+                    [base[0], base[1], base[2], base[3], top[0], top[1], top[2], top[3]].map(f32::to_bits)
+                })
+                .collect()
+        };
+        for seed in 0..32u64 {
+            let mut random = seed + 1;
+            for count in [0, 1, 8, 16, 17, 18, 32, 63, 64, 65, 129, 256, 512] {
+                for kind in 0..4 {
+                    let mut bodies = Vec::new();
+                    for i in 0..count {
+                        random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let center = if kind == 1 {
+                            Vec3::ZERO
+                        } else if kind == 2 && i % 3 == 0 {
+                            Vec3::splat(f32::MAX)
+                        } else {
+                            Vec3::new((random >> 32) as u32 as f32 * 0.0001, i as f32, 2.0)
+                        };
+                        let body = CharacterBody {
+                            base: center - Vec3::Y,
+                            top: center + Vec3::Y,
+                            radius: if kind == 3 && i % 7 == 0 { 0.0 } else { 0.1 + i as f32 * 0.001 },
+                        };
+                        bodies.push(body);
+                        if i % 4 == 0 {
+                            bodies.push(body);
+                        }
+                    }
+                    if bodies.len() >= 2 {
+                        bodies[0] = CharacterBody { base: Vec3::ZERO, top: Vec3::Y, radius: 0.5 };
+                        bodies[1] = bodies[0];
+                        bodies[1].base.x = -0.0;
+                    }
+                    for eye in [Vec3::ZERO, Vec3::new(12.0, -3.0, 9.0), Vec3::splat(f32::MAX)] {
+                        let mut expected = Vec::new();
+                        let mut actual = Vec::new();
+                        select_capsules_full(bodies.iter().copied(), eye, &mut expected);
+                        select_capsules(bodies.iter().copied(), eye, &mut actual);
+                        assert_eq!(
+                            prefix(&actual),
+                            prefix(&expected),
+                            "seed={seed} count={count} kind={kind}"
+                        );
+                        // Iterators without an upper bound must also use the exact prefix.
+                        let mut index = 0;
+                        let input = &bodies;
+                        let unknown_length = std::iter::from_fn(move || {
+                            let body = input.get(index).copied();
+                            index += 1;
+                            body
+                        });
+                        select_capsules(unknown_length, eye, &mut actual);
+                        assert_eq!(prefix(&actual), prefix(&expected));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_capsules_keep_seventeen_unless_ties_require_the_full_sort() {
+        let mut bodies: Vec<_> = (0..100)
+            .map(|i| CharacterBody {
+                base: Vec3::new(i as f32, -1.0, 0.0),
+                top: Vec3::new(i as f32, 1.0, 0.0),
+                radius: 0.5,
+            })
+            .collect();
+        let mut candidates = Vec::new();
+        select_capsules(bodies.iter().copied(), Vec3::ZERO, &mut candidates);
+        assert_eq!(candidates.len(), MAX_CAPSULES + 1);
+
+        // A tie just beyond the selected sixteen must still trigger the fallback:
+        // the full unstable sort can put either tied body in its last GPU slot.
+        bodies[16].base.x = bodies[15].base.x;
+        bodies[16].top.x = bodies[15].top.x;
+        bodies[16].radius = 0.75;
+        select_capsules(bodies.iter().copied(), Vec3::ZERO, &mut candidates);
+        assert_eq!(candidates.len(), bodies.len());
+        let mut expected = Vec::new();
+        select_capsules_full(bodies.iter().copied(), Vec3::ZERO, &mut expected);
+        assert_eq!(candidates, expected);
     }
 }

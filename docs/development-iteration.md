@@ -1,5 +1,8 @@
 # Development iteration
 
+See [Optimization pass two](optimization-pass-two.md) for the subsequent watcher, packing, test,
+capture, runtime and CI fanout changes and their separate measurements.
+
 Keep each checkout's Cargo target directory separate. Copying a source tree while reusing another
 checkout's target directory can retain path-dependent artifacts; never point two worktrees at the
 same `CARGO_TARGET_DIR`.

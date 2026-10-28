@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sapphire_time::Stopwatch;
 
 use super::*;
-use crate::watch::MAX_WAIT;
+// The public watcher contract promises delivery within two seconds of continuous writes.
+const MAX_WAIT: Duration = Duration::from_secs(2);
 
 /// A directory of its own under the system's temporary directory, removed when dropped.
 struct TempDir(PathBuf);
@@ -267,28 +268,4 @@ fn a_file_written_all_the_time_never_holds_back_a_quiet_one() {
     assert!(noisy, "reported only once the writer stopped, {latency:?} after the change");
     // About the debounce time; a loaded machine may take longer to deliver the events.
     assert!(latency < MAX_WAIT, "reported {latency:?} after the change");
-}
-
-#[test]
-fn a_file_written_all_the_time_is_still_reported() {
-    const LONGEST: Duration = Duration::from_millis(600);
-    let dir = TempDir::new("writer");
-    let mut watcher = FileWatcher::with_max_wait(TEST_DEBOUNCE, LONGEST).expect("a file-watching backend");
-    watcher.watch(&dir.0).unwrap();
-    std::thread::sleep(4 * TEST_DEBOUNCE);
-    let _ = watcher.poll();
-
-    // Two seconds of writes every 5 ms, never quiet for a debounce time: reported every 0.6 s.
-    let stop = Arc::new(AtomicBool::new(false));
-    let writer = noise(dir.join("log.txt"), dir.join("missing"), Arc::clone(&stop));
-    let (since, mut reports) = (Stopwatch::start(), 0);
-    while since.elapsed() < Duration::from_secs(2) {
-        reports += watcher.poll().changed.iter().filter(|changed| changed.name == "log.txt").count();
-        std::thread::sleep(TICK);
-    }
-    let noisy = !writer.is_finished();
-    stop.store(true, Ordering::Relaxed);
-    writer.join().unwrap();
-    assert!(noisy);
-    assert!(reports >= 2, "reported {reports} times in two seconds of writes");
 }

@@ -39,13 +39,16 @@
 //! file edited after its cook is refused, and so is a pack directory that holds cooked files,
 //! which pruning would delete.
 //!
-//! Packing runs asset after asset, like cooking; compressing blocks in parallel waits for content
-//! large enough to need it.
+//! Missing encodings run on at most four workers, with one job per content key. Each encoder
+//! still runs serially, so neither the compressed bytes nor the pack layout depends on the
+//! worker count. Results and errors are consumed in asset-ID order. The worker limit bounds
+//! zstd's compression contexts and source buffers while leaving the host usable during a cook.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
@@ -171,8 +174,9 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
         groups.entry(SHARED).or_default().push(asset);
     }
     let mut packs = Vec::with_capacity(groups.len());
+    let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);
     for (name, assets) in groups {
-        packs.push(pack_group(name, &assets, &ids, out, cache.as_ref())?);
+        packs.push(pack_group(name, &assets, &ids, out, cache.as_ref(), workers)?);
     }
     let paths: HashSet<&Path> = packs.iter().map(|pack| pack.path.as_path()).collect();
     let mut extensions = vec![PACK_EXTENSION];
@@ -196,6 +200,7 @@ fn pack_group(
     ids: &HashSet<AssetId>,
     out: &Path,
     cache: Option<&Cache>,
+    workers: usize,
 ) -> Result<PackedPack, PackError> {
     let path = out.join(format::file_name(name));
     let mut packing = assets
@@ -231,25 +236,39 @@ fn pack_group(
         return Ok(done(0, len, PackStatus::UpToDate));
     }
 
+    // A cache miss for duplicated content must encode once, just as the serial cache did.
+    // The first asset in ID order supplies the cached value; each occurrence gets its own ID.
+    let mut by_key = HashMap::new();
+    let mut jobs = Vec::new();
+    let mut job_for_asset = Vec::with_capacity(packing.len());
+    let mut remaining = Vec::new();
+    for (index, item) in packing.iter().enumerate() {
+        let job = cache.and_then(|_| by_key.get(&item.key).copied()).unwrap_or_else(|| {
+            let job = jobs.len();
+            jobs.push(index);
+            remaining.push(0usize);
+            by_key.insert(item.key, job);
+            job
+        });
+        job_for_asset.push(job);
+        remaining[job] += 1;
+    }
+    let mut results = encode_jobs(&packing, &jobs, cache, workers);
     let mut encoded = 0;
     let mut packed = Vec::with_capacity(packing.len());
-    for Packing { asset, kind, codec, key } in &packing {
-        let cached = match cache {
-            Some(cache) => cache.get(key)?.and_then(|bytes| postcard::from_bytes::<PackAsset>(&bytes).ok()),
-            None => None,
-        };
-        let mut pack_asset = match cached {
-            Some(pack_asset) => pack_asset,
-            None => {
-                encoded += 1;
-                let pack_asset = encode(asset, *kind, *codec)?;
-                if let Some(cache) = cache {
-                    cache
-                        .put(key, &postcard::to_allocvec(&pack_asset).expect("pack assets always encode"))?;
-                }
-                pack_asset
+    for (index, item) in packing.iter().enumerate() {
+        let asset = item.asset;
+        let job = job_for_asset[index];
+        remaining[job] -= 1;
+        let (mut pack_asset, fresh) = if remaining[job] == 0 {
+            results[job].take().expect("every encoding job finished")?
+        } else {
+            match results[job].as_ref().expect("shared encoding remains until its last asset") {
+                Ok((asset, fresh)) => (asset.clone(), *fresh),
+                Err(_) => return Err(results[job].take().expect("the failed job is present").unwrap_err()),
             }
         };
+        encoded += usize::from(fresh && jobs[job] == index);
         // Identical cooks share an encoding; each asset keeps its own ID.
         pack_asset.id = asset.id;
         if let Some(&missing) = pack_asset.dependencies.iter().find(|id| !ids.contains(id)) {
@@ -267,6 +286,67 @@ fn pack_group(
         cache.put(&pack_key, hash.as_bytes())?;
     }
     Ok(done(encoded, bytes.len() as u64, PackStatus::Packed))
+}
+
+/// An encoding and whether this run compressed it rather than reading its cache entry.
+type Encoded = Result<(PackAsset, bool), PackError>;
+
+/// Complete each independent encoding, retaining stable result order despite varied asset sizes.
+fn encode_jobs(
+    packing: &[Packing<'_>],
+    jobs: &[usize],
+    cache: Option<&Cache>,
+    workers: usize,
+) -> Vec<Option<Encoded>> {
+    let encode_job = |job: usize| {
+        let Packing { asset, kind, codec, key } = &packing[jobs[job]];
+        if let Some(cache) = cache
+            && let Some(cached) = cache.get(key)?
+            && let Ok(packed) = postcard::from_bytes::<PackAsset>(&cached)
+        {
+            return Ok((packed, false));
+        }
+        let packed = encode(asset, *kind, *codec)?;
+        if let Some(cache) = cache {
+            cache.put(key, &postcard::to_allocvec(&packed).expect("pack assets always encode"))?;
+        }
+        Ok((packed, true))
+    };
+    let workers = workers.max(1).min(jobs.len());
+    if workers <= 1 {
+        return (0..jobs.len()).map(|job| Some(encode_job(job))).collect();
+    }
+    // Start larger files first to avoid leaving the longest compression to the last worker.
+    // Metadata failure is not an error here: encode reads the file and reports errors in ID order.
+    let mut schedule: Vec<usize> = (0..jobs.len()).collect();
+    schedule.sort_by_cached_key(|&job| {
+        std::cmp::Reverse(fs::metadata(&packing[jobs[job]].asset.output).map_or(0, |meta| meta.len()))
+    });
+    let next = AtomicUsize::new(0);
+    let batches = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut completed = Vec::new();
+                    while let Some(&job) = schedule.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        completed.push((job, encode_job(job)));
+                    }
+                    completed
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("pack encoding worker panicked"))
+            .collect::<Vec<_>>()
+    });
+    let mut results: Vec<_> = (0..jobs.len()).map(|_| None).collect();
+    for batch in batches {
+        for (job, result) in batch {
+            results[job] = Some(result);
+        }
+    }
+    results
 }
 
 /// The blake3 hash and length of the file at `path`, streamed, or `None` if there is none.

@@ -8,10 +8,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use sapphire_hot_reload::{DEBOUNCE, FileWatcher, WatchId, sources};
 use sapphire_livelink::protocol::{DeviceStatus, PackOutcome, SourceFile};
 use sapphire_livelink::{Client, DEFAULT_PORT};
 use sapphire_time::Stopwatch;
+use sapphire_watch::{DEBOUNCE, FileWatcher, WatchId, sources};
 
 const USAGE: &str = "\
 Usage: sapphire_livelink [--addr <host:port> | --listen <host:port>] [--content <dir>] <command>

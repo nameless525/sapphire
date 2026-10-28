@@ -2486,13 +2486,11 @@ dependencies = [
 name = "sapphire_hot_reload"
 version = "0.1.0"
 dependencies = [
- "notify",
  "sapphire_assets",
  "sapphire_render",
  "sapphire_time",
+ "sapphire_watch",
  "sapphire_world",
- "thiserror",
- "tracing",
 ]
 
 [[package]]
@@ -2529,10 +2527,10 @@ dependencies = [
  "postcard",
  "sapphire_assets",
  "sapphire_core",
- "sapphire_hot_reload",
  "sapphire_jobs",
  "sapphire_serialize",
  "sapphire_time",
+ "sapphire_watch",
  "sapphire_world",
  "serde",
  "thiserror",
@@ -2716,6 +2714,16 @@ dependencies = [
  "sapphire_serialize",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "sapphire_watch"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "sapphire_time",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

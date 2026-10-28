@@ -27,14 +27,14 @@ postcard.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# The tool's: error reporting, and A8's file watcher and the engine's source paths for `watch`.
+# The tool's: error reporting, and the renderer-independent file watcher and the engine's source paths for `watch`.
 anyhow.workspace = true
-sapphire_hot_reload.workspace = true
+sapphire_watch.workspace = true
 
 # The tool watches files on desktops, through the watcher's `notify` backend (rule R8: the feature
 # selects the backend). Device builds, which link only the library, build no file watching.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-sapphire_hot_reload = { workspace = true, features = ["notify"] }
+sapphire_watch = { workspace = true, features = ["notify"] }
 
 [dev-dependencies]
 # Loopback tests push a time-of-day timeline, as the sandbox does.

@@ -24,6 +24,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      golden_pipeline_cache:
+        description: Per-run Vulkan pipeline cache (same-binary comparison control)
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
+      capture_history_only:
+        description: Warm only persistent capture history (off renders full warmup frames)
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
 
 permissions:
   contents: read
@@ -40,6 +51,8 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TOOLS_DEBUG: "0"
   RUST_BACKTRACE: short
+  SAPPHIRE_GOLDEN_PIPELINE_CACHE: ${{ inputs.golden_pipeline_cache || 'on' }}
+  SAPPHIRE_CAPTURE_HISTORY_ONLY: ${{ inputs.capture_history_only || 'on' }}
   # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
   # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.
   SDL3_LINUX_DEPS: >-
@@ -72,7 +85,7 @@ jobs:
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           cache-on-failure: true
-      - name: Test CI toolchain setup
+      - name: Test CI setup and artifact verification
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Format
         run: cargo fmt --all --check
@@ -129,53 +142,111 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 
-  # Golden images (spec §9 gate 3, M1 plan Q6): sandbox captures compared with per-backend
-  # references in tests/golden by `cargo xtask golden`. Each runner renders with a pinned CPU or
-  # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
-  #
-  # The CPU rasterizers split scenes across runners (`--shard <index>/<count>`), each building
-  # the sandbox on its own. The testkit uses per-scene costs trained on four main runs at 95
-  # scenes (`sapphire_testkit`'s cost table, review BC-107). Evaluating those weights against
-  # main run 40628572200 gives about 8.7 minutes for the slowest of two lavapipe shards and
-  # projects 6.1 minutes for the slowest of six WARP shards (versus 8.7 with four WARP shards).
-  # Including that run's cache-restoring setup/build/cook overhead, WARP 4→6 projects about
-  # 2m35s less full-workflow critical path for 13.6 extra runner-minutes, before the cooker
-  # changes. This is a scheduling model, not a measured six-shard speedup; validate it on
-  # hosted runs after the caches warm. Extra lavapipe shards did not improve that model's
-  # critical path, so lavapipe stays at two. Refresh the costs from the jobs' timings.json.
-  golden:
-    name: Golden images (${{ matrix.family }} ${{ matrix.shard }}/${{ matrix.shards }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 1, shards: 2 }
-          - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 2, shards: 2 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 1, shards: 6 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 2, shards: 6 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 3, shards: 6 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 4, shards: 6 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 5, shards: 6 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 6, shards: 6 }
-          - { os: macos-26, family: metal, backend: metal, shard: 1, shards: 1 }
-    runs-on: ${{ matrix.os }}
-    # Metal on the hosted runner's paravirtual GPU is informational until it has run clean
-    # for two weeks; wgpu itself still tests on macos-14 (M1 plan §3).
-    continue-on-error: ${{ matrix.family == 'metal' }}
-    timeout-minutes: 45
-    env:
-      SAPPHIRE_GPU_BACKEND: ${{ matrix.backend }}
-      # Validation slows CPU rasterizers, and Metal's is broken on the paravirtual device.
-      SAPPHIRE_GPU_DEBUG: none
+  # Golden scenes retain their existing counts and check names. Linux and Windows build/cook
+  # once per OS, then fan out immutable exact-commit inputs; no Cargo target crosses runners.
+  # Separate producer dependencies avoid making Linux wait for a Windows or Metal build.
+  # Captures still run in separate sandbox processes, with all deadlines and diagnostics.
+  # This graph targets repeated compiler/cooker work; measure its artifact barrier separately
+  # from render time before claiming a critical-path speedup.
+  golden-build-linux:
+    name: Prepare golden inputs (vulkan-lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS libvulkan1
-      # Mesa's lavapipe, pinned to the build wgpu's CI uses rather than apt's, whose updates
-      # would change the goldens. The checksum guards the third-party release asset.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Preserve the first pass's cache namespace after splitting the job graph.
+          shared-key: golden
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      - name: Build capture executables
+        run: cargo build --package sapphire_sandbox --package sapphire_testkit --locked
+      - name: Cook the desktop content
+        run: cargo --locked xtask --locked content
+      - name: Package exact-commit golden inputs
+        shell: bash
+        env:
+          GOLDEN_FAMILY: vulkan-lavapipe
+        run: |
+          ci_python=python3
+          if [ "$RUNNER_OS" = Windows ]; then ci_python=python; fi
+          "$ci_python" .github/scripts/golden_bundle.py create --archive "$RUNNER_TEMP/golden-bundle.tar.gz" \
+            --commit "$GITHUB_SHA" --family "$GOLDEN_FAMILY"
+      - name: Upload golden inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-inputs-vulkan-lavapipe
+          path: ${{ runner.temp }}/golden-bundle.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  golden-build-windows:
+    name: Prepare golden inputs (dx12-warp)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # Preserve the first pass's cache namespace after splitting the job graph.
+          shared-key: golden
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      - name: Build capture executables
+        run: cargo build --package sapphire_sandbox --package sapphire_testkit --locked
+      - name: Cook the desktop content
+        run: cargo --locked xtask --locked content
+      - name: Install WARP 1.0.21
+        shell: pwsh
+        run: |
+          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
+          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
+          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
+          Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
+      - name: Package exact-commit golden inputs
+        shell: bash
+        env:
+          GOLDEN_FAMILY: dx12-warp
+        run: |
+          ci_python=python3
+          if [ "$RUNNER_OS" = Windows ]; then ci_python=python; fi
+          "$ci_python" .github/scripts/golden_bundle.py create --archive "$RUNNER_TEMP/golden-bundle.tar.gz" \
+            --commit "$GITHUB_SHA" --family "$GOLDEN_FAMILY"
+      - name: Upload golden inputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-inputs-dx12-warp
+          path: ${{ runner.temp }}/golden-bundle.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  golden-linux:
+    name: Golden images (vulkan-lavapipe ${{ matrix.shard }}/2)
+    needs: golden-build-linux
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SAPPHIRE_GPU_BACKEND: vulkan
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No compiler/SDK/header install is needed to execute the verified binaries.
+      - name: Install the Vulkan runtime loader
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1
       - name: Install lavapipe (Mesa 26.1.3)
-        if: runner.os == 'Linux'
         run: |
           cd "$RUNNER_TEMP"
           curl -sSfL --retry 5 -o mesa.tar.xz https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
@@ -186,83 +257,128 @@ jobs:
           JSON
           echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Golden images
+        uses: ./.github/actions/golden-capture
+        with:
+          family: vulkan-lavapipe
+          shard: ${{ matrix.shard }}
+          shards: '2'
+          artifact: golden-inputs-vulkan-lavapipe
+      - name: Gather crash diagnostics
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        shell: bash
+        env:
+          GOLDEN_PREBUILT: 'true'
+        run: bash .github/scripts/golden_diagnostics.sh gather
+      - name: Replay the first scene with serial passes
+        if: failure()
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GOLDEN_PREBUILT: 'true'
+        run: bash .github/scripts/golden_diagnostics.sh replay
+      - name: Upload captures and diffs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-vulkan-lavapipe-${{ matrix.shard }}of2
+          path: target/golden/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  golden-windows:
+    name: Golden images (dx12-warp ${{ matrix.shard }}/6)
+    needs: golden-build-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      SAPPHIRE_GPU_BACKEND: dx12
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Golden images
+        uses: ./.github/actions/golden-capture
+        with:
+          family: dx12-warp
+          shard: ${{ matrix.shard }}
+          shards: '6'
+          artifact: golden-inputs-dx12-warp
+      - name: Gather crash diagnostics
+        if: failure() || cancelled()
+        timeout-minutes: 2
+        shell: bash
+        env:
+          GOLDEN_PREBUILT: 'true'
+        run: bash .github/scripts/golden_diagnostics.sh gather
+      - name: Replay the first scene with serial passes
+        if: failure()
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GOLDEN_PREBUILT: 'true'
+        run: bash .github/scripts/golden_diagnostics.sh replay
+      - name: Upload captures and diffs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: golden-dx12-warp-${{ matrix.shard }}of6
+          path: target/golden/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  golden-metal:
+    name: Golden images (metal 1/1)
+    runs-on: macos-26
+    # Keep Metal's existing informational gate; one shard needs no artifact fanout.
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      SAPPHIRE_GPU_BACKEND: metal
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select the macOS SDK
-        if: runner.os == 'macOS'
         run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
       - name: Install Rust (job targets)
         uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+          # Preserve the first pass's cache namespace after splitting the job graph.
+          shared-key: golden
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           cache-on-failure: true
       - name: Build the sandbox
         run: cargo build --package sapphire_sandbox --locked
-      # WARP from NuGet, pinned and placed next to the executable so D3D12 loads it instead
-      # of the runner's system copy. Its license allows testing only, so it's downloaded here
-      # and never committed.
-      - name: Install WARP 1.0.21
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
-          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
-          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
-          Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/
-      # Each scene has a deadline (the testkit's --scene-timeout, 900 s by default): a hung scene
-      # fails with the end of its log and the rest still run. The sandbox's output for each scene
-      # is in target/golden/<scene>.log, and every scene's time in target/golden/timings.json.
       - name: Golden images
-        run: cargo --locked xtask --locked golden --shard ${{ matrix.shard }}/${{ matrix.shards }}
-      # When a scene fails, what explains a crash goes up with the captures: the sandbox's
-      # minidumps (its crash capture writes them under the platform's cache directory) with the
-      # Windows executable's debug info, gathered also when the job is cancelled (as one past its
-      # time limit is), and the first scene re-run with the backend's validation on and every
-      # frame graph pass submitted on its own (`--serial-passes`), whose debug log names the pass a
-      # GPU crash or device loss comes from. The replay runs on failure only: a new push cancels a
-      # PR's run in progress, where replaying would cost every golden job minutes, and a hung scene
-      # now fails at its deadline rather than running the job out of time. Each step has its own
-      # time limit, so a replay that hangs as well still leaves time for the upload.
+        uses: ./.github/actions/golden-capture
+        with:
+          family: metal
+          shard: '1'
+          shards: '1'
       - name: Gather crash diagnostics
         if: failure() || cancelled()
         timeout-minutes: 2
         shell: bash
-        run: |
-          out=target/golden/crashes
-          mkdir -p "$out"
-          case "$RUNNER_OS" in
-            Windows) cache="$(cygpath -u "$LOCALAPPDATA")" ;;
-            macOS) cache="$HOME/Library/Caches" ;;
-            *) cache="${XDG_CACHE_HOME:-$HOME/.cache}" ;;
-          esac
-          cp -R "$cache/Sapphire/Sapphire Sandbox/crashes/." "$out/" 2>/dev/null || echo "no crash reports"
-          cp target/debug/sapphire_sandbox.pdb "$out/" 2>/dev/null || true
+        env:
+          GOLDEN_PREBUILT: 'false'
+        run: bash .github/scripts/golden_diagnostics.sh gather
       - name: Replay the first scene with serial passes
         if: failure()
         timeout-minutes: 5
         shell: bash
-        run: |
-          out=target/golden/crashes
-          mkdir -p "$out"
-          # Metal's validation is broken on the paravirtual device (above).
-          debug=validation
-          content="$PWD/target/content/desktop"
-          case "$RUNNER_OS" in
-            Windows) content="$(cygpath -w "$content")" ;;
-            macOS) debug=none ;;
-          esac
-          SAPPHIRE_GPU_DEBUG=$debug SAPPHIRE_CONTENT_DIR="$content" target/debug/sapphire_sandbox \
-            --capture "$out/serial-passes.png" --size 640x360 --capture-ticks 0 --plain-post --plain-sky \
-            --aa msaa --serial-passes > "$out/serial-passes.log" 2>&1 \
-            || echo "the serial-passes run failed with exit code $?"
-          tail -n 30 "$out/serial-passes.log"
-      # Every run keeps its captures briefly, not just failing ones, so drift within the gates
-      # (shader codegen rounding on llvmpipe, say) can be re-baselined from a passing run. The
-      # scenes' logs and times go up with them.
+        env:
+          GOLDEN_PREBUILT: 'false'
+        run: bash .github/scripts/golden_diagnostics.sh replay
       - name: Upload captures and diffs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: golden-${{ matrix.family }}-${{ matrix.shard }}of${{ matrix.shards }}
+          name: golden-metal-1of1
           path: target/golden/
           if-no-files-found: ignore
           retention-days: 7

@@ -433,6 +433,8 @@ pub struct AssetServer {
     /// Counts updates: the clock LRU eviction runs on.
     frame: u64,
     unloaded: Vec<Unloaded>,
+    /// Reused only while sorting an over-budget kind's unused assets.
+    eviction_scratch: Vec<(u64, SlotKey)>,
     /// Hot reload's changes since the last [`Self::take_changes`].
     changes: Vec<AssetChange>,
     last_upload: UploadReport,
@@ -470,6 +472,7 @@ impl AssetServer {
             reads_in_flight: 0,
             frame: 0,
             unloaded: Vec::new(),
+            eviction_scratch: Vec::new(),
             changes: Vec::new(),
             last_upload: UploadReport::default(),
             loads: 0,
@@ -908,6 +911,8 @@ impl AssetServer {
     /// Unloads every asset nothing uses or pins, dependencies freed by that included: the
     /// response to `LowMemory` (spec §6.3).
     pub fn unload_unused(&mut self) {
+        // A low-memory response must also release the high-water mark of LRU scratch.
+        self.eviction_scratch = Vec::new();
         loop {
             let unused: Vec<SlotKey> =
                 self.slots.iter().filter(|(_, slot)| Self::evictable(slot)).map(|(key, _)| key).collect();
@@ -1111,44 +1116,62 @@ impl AssetServer {
     fn collect(&mut self) {
         let mut resident = [0u64; AssetKind::ALL.len()];
         let mut failed = Vec::new();
+        let mut has_candidates = [false; AssetKind::ALL.len()];
         for (key, slot) in &mut self.slots {
-            if slot.users() > 0 {
+            let users = slot.users();
+            if users > 0 {
                 slot.last_used = self.frame;
             }
+            let evictable =
+                users == 0 && slot.pins == 0 && matches!(slot.state, SlotState::Ready | SlotState::Failed(_));
+            if evictable {
+                has_candidates[slot.handle.kind().index()] = true;
+            }
             match slot.state {
-                SlotState::Failed(_) if Self::evictable(slot) => failed.push(key),
+                SlotState::Failed(_) if evictable => failed.push(key),
                 SlotState::Failed(_) => {}
                 _ => resident[slot.handle.kind().index()] += slot.size,
             }
         }
+        // Removal can drop the last dependency handle, invalidating the initial
+        // candidate flags. Preserve the original per-kind rescan after any removal.
+        // A handle dropped concurrently after the snapshot may instead be collected
+        // on the next update, just as one dropped after a kind's scan always was.
+        let mut removed = !failed.is_empty();
         for key in failed {
             self.remove(key);
         }
         for kind in AssetKind::ALL {
             let excess = resident[kind.index()].saturating_sub(self.budgets.resident(kind));
-            if excess > 0 {
-                self.evict(kind, excess);
+            if excess > 0 && (removed || has_candidates[kind.index()]) {
+                removed |= self.evict(kind, excess);
             }
         }
     }
 
-    /// Unloads unused assets of `kind`, least recently used first, until `excess` bytes are gone
-    /// or none are left.
-    fn evict(&mut self, kind: AssetKind, mut excess: u64) {
-        let mut candidates: Vec<(u64, SlotKey)> = self
-            .slots
-            .iter()
-            .filter(|(_, slot)| slot.handle.kind() == kind && Self::evictable(slot))
-            .map(|(key, slot)| (slot.last_used, key))
-            .collect();
+    /// Unloads unused assets of `kind`, least recently used first, until `excess` bytes are
+    /// gone or none are left. Reports whether removing one could have released dependencies.
+    fn evict(&mut self, kind: AssetKind, mut excess: u64) -> bool {
+        let mut candidates = std::mem::take(&mut self.eviction_scratch);
+        candidates.clear();
+        candidates.extend(
+            self.slots
+                .iter()
+                .filter(|(_, slot)| slot.handle.kind() == kind && Self::evictable(slot))
+                .map(|(key, slot)| (slot.last_used, key)),
+        );
         candidates.sort_unstable();
-        for (_, key) in candidates {
+        let mut removed = false;
+        for &(_, key) in &candidates {
             if excess == 0 {
                 break;
             }
             excess = excess.saturating_sub(self.slots[key].size);
             self.remove(key);
+            removed = true;
         }
+        self.eviction_scratch = candidates;
+        removed
     }
 
     /// Unloads an asset nothing uses. Its dependencies lose a user, and go in a later collection

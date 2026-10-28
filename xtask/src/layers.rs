@@ -649,6 +649,42 @@ mod tests {
     }
     use Dep::*;
 
+    /// This is a build-iteration contract, not a runtime-layer restriction: a tool used to
+    /// push shader edits must not rebuild the renderer or compile its GPU backends first.
+    #[test]
+    fn live_link_and_its_watcher_do_not_link_the_renderer() {
+        let json = workspace::output(workspace::cargo("metadata").args([
+            "--format-version",
+            "1",
+            "--all-features",
+            "--locked",
+            "--offline",
+        ]))
+        .expect("workspace metadata is available without compiling");
+        let metadata: Metadata = serde_json::from_str(&json).expect("Cargo metadata");
+        let resolve = metadata.resolve.as_ref().expect("resolved dependency graph");
+        let graph = Graph {
+            packages: metadata.packages.iter().map(|p| (p.id.as_str(), p)).collect(),
+            nodes: resolve.nodes.iter().map(|n| (n.id.as_str(), n)).collect(),
+        };
+        for name in ["sapphire_livelink", "sapphire_watch"] {
+            let root = metadata.packages.iter().find(|p| p.name == name).expect("workspace crate");
+            graph.search(
+                &root.id,
+                |dep| !dep.is_normal(),
+                |id, path| {
+                    let dependency = graph.name(id);
+                    assert!(
+                        !["sapphire_render", "sapphire_rhi", "wgpu"].contains(&dependency.as_str()),
+                        "{name} must stay renderer-independent: {}",
+                        path.iter().map(|id| graph.name(id)).collect::<Vec<_>>().join(" -> ")
+                    );
+                    true
+                },
+            );
+        }
+    }
+
     /// Vendored crates in the fixtures: local, but not workspace members.
     const VENDORED: &[&str] = &["shim", "shim2", "editor_hooks", "ozz-animation-rs"];
     /// Git dependencies in the fixtures: third-party, like registry crates.

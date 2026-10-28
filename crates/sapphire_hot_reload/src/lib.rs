@@ -10,7 +10,8 @@
 //!
 //! # Owns
 //!
-//! - [`FileWatcher`]: directories watched for changed files, debounced on a thread of its own.
+//! - The renderer-independent [`FileWatcher`], re-exported from `sapphire_watch`: directories
+//!   watched for changed files, debounced on a thread of its own.
 //!   The debounce is trailing-edge, per file: a file is reported once it has been quiet for the
 //!   debounce time, and changes to other files, in any watched directory, never hold it back. A
 //!   file written without pause is reported every two seconds all the same (review DT-006: one
@@ -69,8 +70,6 @@
 //!   `sapphire_render::quality::Quality` must keep its device profile to select a tier from a
 //!   new table, and a changed tier makes a new renderer, as an `r.tier` change does.
 
-mod watch;
-
 pub mod sources;
 
 use std::ffi::OsString;
@@ -80,15 +79,7 @@ use std::time::Duration;
 use sapphire_assets::pack::PACK_EXTENSION;
 use sapphire_render::{ShaderFile, ShaderSources};
 
-pub use watch::{Changed, FileWatcher, WatchError, WatchEvents, WatchId};
-
-/// Log target for this crate.
-pub(crate) const LOG_TARGET: &str = "sapphire::hot_reload";
-
-/// How long a file must be quiet before its change is reported: long enough to take an editor's
-/// save or a cook's write and rename as one change, short enough to feel immediate. A file
-/// written without pause waits two seconds at most ([`FileWatcher`]).
-pub const DEBOUNCE: Duration = Duration::from_millis(100);
+pub use sapphire_watch::{Changed, DEBOUNCE, FileWatcher, WatchError, WatchEvents, WatchId};
 
 /// A document watched with [`HotReload::watch_document`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -42,6 +42,9 @@ PERSONAL_DOMAINS = {b"gmail.com", b"icloud.com", b"outlook.com", b"hotmail.com",
                     b"protonmail.com", b"proton.me", b"me.com", b"live.com"}
 EXAMPLE_DOMAINS = {b"example.com", b"example.org", b"example.net"}
 BOT_EMAILS = {b"noreply@github.com", b"noreply@anthropic.com"}
+# Verified public GitHub profile alias used on GitHub's synthetic PR merge commits.
+# Scope this to the exact public identity; do not allow arbitrary real-name headers.
+PUBLIC_NAME_ALIASES = {b"342860605+nameless525@users.noreply.github.com": {b"nameless"}}
 
 
 def public_email(address):
@@ -120,7 +123,8 @@ class Guard:
             self.findings.add((label, "non-noreply-identity", 0))
         elif NOREPLY.fullmatch(match.group(1)):
             handle = match.group(1).split(b"@", 1)[0].split(b"+", 1)[-1]
-            if value[:match.start()].strip().lower() != handle.lower():
+            names = {handle.lower()} | PUBLIC_NAME_ALIASES.get(match.group(1).lower(), set())
+            if value[:match.start()].strip().lower() not in names:
                 self.findings.add((label, "identity-name-must-use-public-handle", 0))
         self.add_content(label, value, metadata=True)
 

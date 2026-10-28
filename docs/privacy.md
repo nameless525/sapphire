@@ -50,7 +50,9 @@ locally with Git; do not paste its contents into public CI, PRs or issues.
 ## What is checked
 
 - Author and committer use GitHub noreply addresses and public handles matching
-  those addresses; GitHub and Anthropic's noreply bot addresses are accepted.
+  those addresses; the owner's verified public profile alias is scoped to its
+  exact noreply identity for synthetic GitHub PR merges. GitHub and Anthropic's
+  noreply bot addresses are accepted.
 - Text files, commit messages and filenames reject non-public emails, except
   explicit example domains and `.invalid` fixtures. Binary email scanning is
   limited to common personal-email providers to avoid accidental byte matches.

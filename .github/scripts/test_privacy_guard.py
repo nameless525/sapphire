@@ -61,6 +61,13 @@ class ContentTests(unittest.TestCase):
         for path in (b".env.example", b".env.sample", b"crates/sapphire_tod/src/key.rs"):
             self.assertFalse(pg.forbidden_path(path), path)
 
+    def test_github_public_profile_alias_is_identity_scoped(self):
+        guard = pg.Guard()
+        guard.identity("merge author", b"nameless <342860605+nameless525@users.noreply.github.com> 123 +0000")
+        self.assertFalse(guard.findings)
+        guard.identity("unrelated author", ("nameless <" + PUBLIC + "> 123 +0000").encode())
+        self.assertTrue(guard.findings)
+
 
 class RepositoryTests(unittest.TestCase):
     def setUp(self):

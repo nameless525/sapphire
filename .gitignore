@@ -11,3 +11,26 @@
 
 # Claude Code agent worktrees: separate checkouts of this repo, each with its own target/.
 /.claude/worktrees/
+
+# Private agent configuration must stay private in fresh clones too.
+/CLAUDE.md
+/.claude/settings.local.json
+/.claude/tools/
+/.claude/hooks/
+
+# Local credentials and signing material. The privacy guard also rejects force-adds.
+.env
+.env.*
+!.env.example
+!.env.sample
+.ssh/
+.aws/
+.gnupg/
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision

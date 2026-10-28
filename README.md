@@ -25,6 +25,7 @@ It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator 
 - [M2 handoff notes](docs/m2-handoff.md): what M2 inherits from M1.
 - [Research report](reports/Rust%20anime%20action%20game%20engine.md): why Rust, and why these libraries.
 - [Conventions](docs/conventions.md): how the code should read.
+- [Privacy safeguards](docs/privacy.md): safe commit identities, local hooks and the CI guard.
 - [Architecture decisions](docs/adr/).
 
 ## Requirements

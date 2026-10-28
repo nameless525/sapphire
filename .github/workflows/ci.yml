@@ -133,14 +133,16 @@ jobs:
   # references in tests/golden by `cargo xtask golden`. Each runner renders with a pinned CPU or
   # paravirtual GPU, so a backend family's images don't drift with runner-image updates.
   #
-  # The CPU rasterizers split their scenes across runners (`--shard <index>/<count>`), each shard
-  # building the sandbox on its own. The testkit splits them by each scene's CI time on the
-  # family SAPPHIRE_GPU_BACKEND picks (`sapphire_testkit`'s cost table, review BC-107), since a
-  # scene takes from under a second to two minutes there: from the same four `main` runs at 95
-  # scenes, the slowest shard's scenes take about 8.2 minutes on lavapipe and 7.9 on WARP, where
-  # dealing them out in turn took 10.4 and 9.3. Each job adds its build and cook, 3–5 minutes.
-  # The slowest job sets how soon a change can land, so add shards as scenes are added, keeping
-  # each job well inside its time limit, and refresh the cost table from the jobs' timings.json.
+  # The CPU rasterizers split scenes across runners (`--shard <index>/<count>`), each building
+  # the sandbox on its own. The testkit uses per-scene costs trained on four main runs at 95
+  # scenes (`sapphire_testkit`'s cost table, review BC-107). Evaluating those weights against
+  # main run 40628572200 gives about 8.7 minutes for the slowest of two lavapipe shards and
+  # projects 6.1 minutes for the slowest of six WARP shards (versus 8.7 with four WARP shards).
+  # Including that run's cache-restoring setup/build/cook overhead, WARP 4→6 projects about
+  # 2m35s less full-workflow critical path for 13.6 extra runner-minutes, before the cooker
+  # changes. This is a scheduling model, not a measured six-shard speedup; validate it on
+  # hosted runs after the caches warm. Extra lavapipe shards did not improve that model's
+  # critical path, so lavapipe stays at two. Refresh the costs from the jobs' timings.json.
   golden:
     name: Golden images (${{ matrix.family }} ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
@@ -149,10 +151,12 @@ jobs:
         include:
           - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 1, shards: 2 }
           - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan, shard: 2, shards: 2 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 1, shards: 4 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 2, shards: 4 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 3, shards: 4 }
-          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 4, shards: 4 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 1, shards: 6 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 2, shards: 6 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 3, shards: 6 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 4, shards: 6 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 5, shards: 6 }
+          - { os: windows-2025, family: dx12-warp, backend: dx12, shard: 6, shards: 6 }
           - { os: macos-26, family: metal, backend: metal, shard: 1, shards: 1 }
     runs-on: ${{ matrix.os }}
     # Metal on the hosted runner's paravirtual GPU is informational until it has run clean

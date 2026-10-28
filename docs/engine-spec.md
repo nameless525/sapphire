@@ -2433,9 +2433,10 @@ opt-level = 3                 # deps fast, your code debuggable
 lto = "thin"
 debug = "line-tables-only"
 
-[profile.tools]               # offline cooker: optimize code without cross-crate LTO
+[profile.tools]               # optimized offline cooker; fast local iteration
 inherits = "release"
 lto = false
+incremental = true           # CI overrides with CARGO_INCREMENTAL=0
 
 [profile.shipping]
 inherits = "release"

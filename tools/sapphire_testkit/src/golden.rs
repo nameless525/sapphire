@@ -184,7 +184,13 @@ fn same_rgb(golden: &Image, actual: &Image) -> bool {
         return false;
     }
     golden.rgba == actual.rgba
-        || golden.rgba.chunks_exact(4).zip(actual.rgba.chunks_exact(4)).all(|(a, b)| a[..3] == b[..3])
+        || golden
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(actual.rgba.as_chunks::<4>().0)
+            .all(|(a, b)| a[..3] == b[..3])
 }
 
 #[cfg(test)]
@@ -219,7 +225,7 @@ mod tests {
             let golden = checker(width, height, 2, 0);
             let mut actual = golden.clone();
             for alpha in [255, 0, 127] {
-                for pixel in actual.rgba.chunks_exact_mut(4) {
+                for pixel in actual.rgba.as_chunks_mut::<4>().0 {
                     pixel[3] = alpha;
                 }
                 let errors = nv_flip::flip(

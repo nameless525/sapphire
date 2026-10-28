@@ -249,6 +249,8 @@ debug = "line-tables-only"
 [profile.tools]
 inherits = "release"
 lto = false
+# Local importer edits reuse optimized code; CI keeps CARGO_INCREMENTAL=0.
+incremental = true
 
 # Store builds: symbols are split out, uploaded, then stripped.
 [profile.shipping]

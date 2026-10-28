@@ -1,7 +1,7 @@
 [alias]
 xtask = "run --quiet --package xtask --"
-# The inner test loop: unit and integration tests without doctests, which cargo recompiles on
-# every run (they were 2.3 s of the 2.7 s `cargo test --workspace`). CI runs everything.
+# The inner test loop: unit and integration tests without doctests, which Cargo recompiles on
+# every run. CI also runs the doctests through `cargo test --workspace`.
 test-fast = "test --workspace --lib --bins --tests"
 
 # Minimum OS versions (spec §2), for rustc and for the C/C++ dependencies cc-rs and CMake

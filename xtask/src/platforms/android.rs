@@ -30,7 +30,7 @@ use serde::Deserialize;
 
 use super::{App, Options, Platform};
 use crate::content::{self, Cook};
-use crate::workspace::{self, CargoBuild};
+use crate::workspace::{self, BuildProfile, CargoBuild};
 
 const TARGET: &str = "aarch64-linux-android";
 const ABI: &str = "arm64-v8a";
@@ -449,7 +449,7 @@ fn build_library(app: &App, ndk: &Ndk, options: &Options) -> anyhow::Result<Path
     let build = CargoBuild {
         package: &app.package,
         target: Some(TARGET),
-        release: options.release,
+        profile: BuildProfile::app(options.release),
         features: &options.features,
         env: &env,
     };

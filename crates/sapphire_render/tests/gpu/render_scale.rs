@@ -1,5 +1,5 @@
 //! Render-scale tests that need a GPU (M1 R6). Run with
-//! `cargo test -p sapphire_render --test render_scale -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu render_scale:: -- --ignored`.
 
 use std::f32::consts::{PI, TAU};
 

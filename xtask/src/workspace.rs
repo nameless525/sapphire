@@ -64,12 +64,36 @@ pub fn output(command: &mut Command) -> anyhow::Result<String> {
         .with_context(|| format!("`{}` printed non-UTF-8 output", describe(command)))
 }
 
+/// Cargo profiles selected by xtask. Tool builds do not change app release or shipping policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildProfile {
+    Dev,
+    Release,
+    /// Optimized offline tools without cross-crate LTO, in Cargo's separate `tools` directory.
+    Tools,
+}
+
+impl BuildProfile {
+    /// The app profile requested by the existing `--release` switch.
+    pub fn app(release: bool) -> Self {
+        if release { Self::Release } else { Self::Dev }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Release => "release",
+            Self::Tools => "tools",
+        }
+    }
+}
+
 /// A package to build with cargo.
 pub struct CargoBuild<'a> {
     pub package: &'a str,
     /// Rust target triple; `None` builds for the host.
     pub target: Option<&'a str>,
-    pub release: bool,
+    pub profile: BuildProfile,
     /// Cargo features to enable on the package, such as an app's `dev`.
     pub features: &'a [String],
     /// Extra environment for cargo and everything it runs: build scripts, CMake, the linker.
@@ -86,9 +110,7 @@ impl CargoBuild<'_> {
         if let Some(target) = self.target {
             command.args(["--target", target]);
         }
-        if self.release {
-            command.arg("--release");
-        }
+        command.args(["--profile", self.profile.name()]);
         if !self.features.is_empty() {
             command.args(["--features", &self.features.join(",")]);
         }
@@ -245,6 +267,46 @@ mod tests {
         assert_eq!(artifact.filenames, [PathBuf::from("/t/libapp.so")]);
         let finished = serde_json::from_str(r#"{"reason":"build-finished","success":true}"#);
         assert!(matches!(finished, Ok(CargoMessage::Other)));
+
+        // The binary path is Cargo's, not a guessed `target/release` path: custom profiles and
+        // CARGO_TARGET_DIR can move it independently of the checkout's cooked-content directory.
+        let executable = r#"{"reason":"compiler-artifact","target":{"name":"sapphire_pipeline",
+            "kind":["bin"]},"filenames":["/separate cache/tools/sapphire_pipeline.exe"],
+            "executable":"/separate cache/tools/sapphire_pipeline.exe","fresh":true}"#;
+        let Ok(CargoMessage::CompilerArtifact(artifact)) = serde_json::from_str(executable) else {
+            panic!("not read as a binary artifact");
+        };
+        assert_eq!(artifact.executable, Some(PathBuf::from("/separate cache/tools/sapphire_pipeline.exe")));
+    }
+
+    #[test]
+    fn tool_profiles_do_not_change_app_targets_or_features() {
+        let features = ["dev".to_owned()];
+        let env = [("SDKROOT", OsString::from("/sdk with spaces"))];
+        for (profile, expected) in [
+            (BuildProfile::app(false), "dev"),
+            (BuildProfile::app(true), "release"),
+            (BuildProfile::Tools, "tools"),
+        ] {
+            let command = CargoBuild {
+                package: "test_app",
+                target: Some("aarch64-apple-ios-sim"),
+                profile,
+                features: &features,
+                env: &env,
+            }
+            .command("rustc");
+            let args: Vec<_> = command.get_args().map(|arg| arg.to_str().unwrap()).collect();
+            assert!(args.windows(2).any(|pair| pair == ["--profile", expected]));
+            assert!(!args.contains(&"--release"));
+            assert!(args.windows(2).any(|pair| pair == ["--target", "aarch64-apple-ios-sim"]));
+            assert!(args.windows(2).any(|pair| pair == ["--features", "dev"]));
+            assert_eq!(command.get_current_dir(), Some(root().as_path()));
+            assert_eq!(
+                command.get_envs().collect::<Vec<_>>(),
+                [(OsStr::new("SDKROOT"), Some(OsStr::new("/sdk with spaces")))]
+            );
+        }
     }
 
     #[test]

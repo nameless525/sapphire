@@ -1,7 +1,7 @@
 //! Main-view culling (review RA-O01): the main pass, the scene prepass and the debug views skip
 //! static environment and foliage instances wholly outside the main view's frustum, which must
 //! change no pixel. Each test draws its frames with culling on and off and compares them byte for
-//! byte. Run with `cargo test -p sapphire_render --test view_culling -- --ignored`.
+//! byte. Run with `cargo test -p sapphire_render --test gpu view_culling:: -- --ignored`.
 
 use glam::{Mat4, Vec3};
 use sapphire_assets::material::{

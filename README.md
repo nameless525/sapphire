@@ -176,7 +176,9 @@ cargo xtask content --cook desktop
 cargo xtask bundle --platform android --release
 ```
 
-`cargo test-fast` is the inner loop: unit and integration tests without doctests, which cargo recompiles on every run and which make up most of a full `cargo test --workspace` (CI runs everything). `cargo xtask check-layers` enforces [xtask/layers.toml](xtask/layers.toml): where each crate sits, and which features it may declare. `cargo xtask content` cooks `content/` into `target/content/` through a content cache, so only assets whose source, `.meta` sidecar settings or importer and cooker versions changed are cooked again. The first cook of a new source asset creates its sidecar, which holds the asset's ID: commit it with the source. `cargo xtask bundle` builds the installable package for a platform under `target/<platform>/` without launching it. CI runs xtask as `cargo --locked xtask --locked …`, so neither xtask's build nor the builds it runs may change `Cargo.lock`, and a source without a committed sidecar fails the cook.
+See [Development iteration](docs/development-iteration.md) for focused test commands, build profiles and measured costs.
+
+`cargo test-fast` is the inner loop: unit and integration tests without doctests, which Cargo recompiles on every run (CI runs everything). `cargo xtask check-layers` enforces [xtask/layers.toml](xtask/layers.toml): where each crate sits, and which features it may declare. `cargo xtask content` cooks `content/` into `target/content/` with the optimized `tools` profile through a content cache, so only assets whose source, `.meta` sidecar settings or importer and cooker versions changed are cooked again. The first cook of a new source asset creates its sidecar, which holds the asset's ID: commit it with the source. `cargo xtask bundle` builds the installable package for a platform under `target/<platform>/` without launching it. CI runs xtask as `cargo --locked xtask --locked …`, so neither xtask's build nor the builds it runs may change `Cargo.lock`, and a source without a committed sidecar fails the cook.
 
 ## Layout
 

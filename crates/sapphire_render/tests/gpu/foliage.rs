@@ -3,7 +3,7 @@
 //! MSAA where the tiers ask for it and a sharp alpha test elsewhere; shadow casters that cut cards
 //! out; the scene prepass cutting cards out exactly as the main pass does; the frame's fog over
 //! foliage as over the world (M1 W3); the meshes foliage refuses; and the counters. Run with
-//! `cargo test -p sapphire_render --test foliage -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu foliage:: -- --ignored`.
 //!
 //! Scenes have a black sky, no ambient light and post that shows linear values as they are, so a
 //! drawn pixel is lit and the sky stays black.

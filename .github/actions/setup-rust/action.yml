@@ -1,0 +1,21 @@
+name: Set up the pinned Rust toolchain
+description: Install only this job's targets and normalize the hosted runner's cache identity.
+inputs:
+  group:
+    description: Target group (host, ios, or android).
+    default: host
+  lint:
+    description: Install the manifest's lint components as well.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SAPPHIRE_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        SAPPHIRE_RUST_GROUP: ${{ inputs.group }}
+        SAPPHIRE_RUST_LINT: ${{ inputs.lint }}
+      run: |
+        ci_python=python3
+        if [ "$RUNNER_OS" = Windows ]; then ci_python=python; fi
+        "$ci_python" "$GITHUB_ACTION_PATH/../../scripts/setup_rust.py"

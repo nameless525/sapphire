@@ -2,7 +2,7 @@
 //! feature should draw: two-sided surfaces shade their back faces as the side the camera sees,
 //! and the character prepass holds them; the shadow side takes its hue by its share; thin hair
 //! lets a back light through. Run with
-//! `cargo test -p sapphire_render --test character_shading -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu character_shading:: -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky and no outline unless a test says otherwise.
 //! Characters are listed with white key lights; flat materials light to their albedo and shade

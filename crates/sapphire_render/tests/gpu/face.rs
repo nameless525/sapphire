@@ -1,7 +1,7 @@
 //! Face tests that need a GPU (M1 C3): the face permutation of the anime character shader, its
 //! SDF light split in head space with both channels and the mirror, its masks, and the heads and
 //! expressions characters carry beside their light rigs. Run with
-//! `cargo test -p sapphire_render --test face -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu face:: -- --ignored`.
 //!
 //! Scenes are lit by white key lights and no ambient light, with no rim and no outline, so every
 //! pixel is the lit albedo or the authored shadow tone. Instances not listed as characters take

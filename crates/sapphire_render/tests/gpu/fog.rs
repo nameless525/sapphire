@@ -1,6 +1,6 @@
 //! Fog tests that need a GPU (M1 W3): the world and the sky against the CPU model (`Fog::ray`),
 //! frames without density drawing as without fog, characters' share, and fog cards' fades,
-//! facings and order. Run with `cargo test -p sapphire_render --test fog -- --ignored`.
+//! facings and order. Run with `cargo test -p sapphire_render --test gpu fog:: -- --ignored`.
 //!
 //! Scenes have no MSAA (temporal AA where a test is about it) and post that shows linear values
 //! as they are, so each pixel can be predicted: surfaces are emissive or black, and each pixel's

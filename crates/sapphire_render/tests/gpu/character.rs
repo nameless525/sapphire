@@ -1,7 +1,7 @@
 //! Anime character shader tests that need a GPU (M1 C1): both diffuse modes, the control map,
 //! the normal map, the static permutations and the vertex contract; and the character light
 //! rig's per-character key light and stylized GI (M1 C2). Run with
-//! `cargo test -p sapphire_render --test character -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu character:: -- --ignored`.
 //!
 //! Most scenes use no ambient light (and a black sky), no rim and no outline, so every pixel is
 //! the sun's light on the lit or the shadow side, and colors can be predicted exactly.

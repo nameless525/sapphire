@@ -2,7 +2,7 @@
 //! mask that clips them, a lid closing over them, the parallax refraction fake's shift, the
 //! highlights' drift and sparkle on the frame's clock, eyes through hair under a closed lid, the
 //! fog over the layers, and the proximity fade's dither over them (M1 C7). Run with
-//! `cargo test -p sapphire_render --test eyes -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu eyes:: -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky and no outline; characters are listed with white key
 //! lights from the camera's side, so an eye (always lit) shows its albedo.

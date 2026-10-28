@@ -1,5 +1,5 @@
 //! Temporal AA tests that need a GPU (M1 R7). Run with
-//! `cargo test -p sapphire_render --test temporal -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu temporal:: -- --ignored`.
 //!
 //! Set `SAPPHIRE_TAA_DUMP=<dir>` to write the frames the tests compare there as PNGs.
 

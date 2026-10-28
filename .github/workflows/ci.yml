@@ -1,10 +1,11 @@
 # Per-PR checks (spec §8, quality gate 1 in §9). Nightly cooks, golden images, replays
 # and device runs join as those systems land.
 #
-# The toolchain, its components and its targets come from rust-toolchain.toml via
-# `rustup toolchain install`, so the pinned version lives in one place. That file can't
-# name a per-job subset of targets, so every job installs all seven standard libraries
-# (a few seconds each). Actions are pinned to commit SHAs, with the release in a comment;
+# The pinned version comes from rust-toolchain.toml. The local setup action installs
+# only the job's targets and exports RUSTUP_TOOLCHAIN so Cargo keeps that subset. It
+# removes unused toolchains on disposable hosted runners: rust-cache hashes all installed
+# versions, and image rollouts otherwise split identical jobs into cold cache keys.
+# Actions are pinned to commit SHAs, with the release in a comment;
 # Dependabot (.github/dependabot.yml) keeps them current. Runner images are pinned too, so
 # an image migration is a deliberate change here, not a surprise.
 #
@@ -37,6 +38,7 @@ env:
   # No debug info in CI builds: nothing debugs them, and it is a large share of compile and link
   # time (PDB generation on Windows above all) and of the cache. Panics still name functions.
   CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TOOLS_DEBUG: "0"
   RUST_BACKTRACE: short
   # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
   # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.
@@ -62,12 +64,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL3 build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+        with:
+          lint: 'true'
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           cache-on-failure: true
+      - name: Test CI toolchain setup
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -113,8 +119,8 @@ jobs:
       - name: Select the macOS SDK
         if: runner.os == 'macOS'
         run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
@@ -179,8 +185,8 @@ jobs:
       - name: Select the macOS SDK
         if: runner.os == 'macOS'
         run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
@@ -301,8 +307,8 @@ jobs:
           JSON
           echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
@@ -321,11 +327,12 @@ jobs:
       - name: Cook the desktop content
         if: runner.os == 'Linux'
         run: cargo --locked xtask --locked content
+      # One feature graph reuses the dev sandbox's dependencies for the CLI too; building
+      # the CLI separately compiled another renderer/hot-reload variant in this job.
       - name: Build the dev sandbox and the live-link tool
         if: runner.os == 'Linux'
         run: |
-          cargo build --package sapphire_sandbox --features dev --locked
-          cargo build --package sapphire_livelink --locked
+          cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
       # The dev sandbox offscreen on a private port: the tool reads its status, sets a cvar,
       # captures a frame and pushes a document that doesn't parse, which the app must refuse and
       # count while it goes on drawing; then it must quit cleanly on SIGTERM. `--frames` bounds a
@@ -391,8 +398,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+        with:
+          group: ios
       # No SDKROOT here: these builds target the iOS SDKs, which cargo and CMake pick.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -414,8 +423,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust (rust-toolchain.toml)
-        run: rustup toolchain install
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+        with:
+          group: android
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}

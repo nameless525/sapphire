@@ -143,6 +143,9 @@ impl Comparison {
 }
 
 /// Compares `actual` with `golden` at `thresholds.percentile`.
+///
+/// Identical RGB pixels have zero perceptual error, so they skip FLIP's filtering. The same
+/// pooling and color map still produce the comparison; alpha is ignored on both paths.
 pub fn compare(golden: &Image, actual: &Image, thresholds: &Thresholds) -> Result<Comparison, GoldenError> {
     if (golden.width, golden.height) != (actual.width, actual.height) {
         return Err(GoldenError::SizeMismatch {
@@ -151,9 +154,13 @@ pub fn compare(golden: &Image, actual: &Image, thresholds: &Thresholds) -> Resul
         });
     }
     let (width, height) = (golden.width, golden.height);
-    let reference = nv_flip::FlipImageRgb8::with_data(width, height, &golden.rgb());
-    let test = nv_flip::FlipImageRgb8::with_data(width, height, &actual.rgb());
-    let errors = nv_flip::flip(reference, test, nv_flip::DEFAULT_PIXELS_PER_DEGREE);
+    let errors = if same_rgb(golden, actual) {
+        nv_flip::FlipImageFloat::new(width, height)
+    } else {
+        let reference = nv_flip::FlipImageRgb8::with_data(width, height, &golden.rgb());
+        let test = nv_flip::FlipImageRgb8::with_data(width, height, &actual.rgb());
+        nv_flip::flip(reference, test, nv_flip::DEFAULT_PIXELS_PER_DEGREE)
+    };
     let mut pool = nv_flip::FlipPool::from_image(&errors);
     let colored = errors.apply_color_lut(&nv_flip::magma_lut()).to_vec();
     Ok(Comparison {
@@ -167,6 +174,17 @@ pub fn compare(golden: &Image, actual: &Image, thresholds: &Thresholds) -> Resul
             rgba: colored.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
         },
     })
+}
+
+/// Compare only complete, nonempty images: public `Image` fields can also describe malformed
+/// buffers, which must not bypass the ordinary comparison's checks just because they are equal.
+fn same_rgb(golden: &Image, actual: &Image) -> bool {
+    let bytes = (golden.width as usize).checked_mul(golden.height as usize).and_then(|n| n.checked_mul(4));
+    if bytes == Some(0) || bytes != Some(golden.rgba.len()) || bytes != Some(actual.rgba.len()) {
+        return false;
+    }
+    golden.rgba == actual.rgba
+        || golden.rgba.chunks_exact(4).zip(actual.rgba.chunks_exact(4)).all(|(a, b)| a[..3] == b[..3])
 }
 
 #[cfg(test)]
@@ -193,6 +211,70 @@ mod tests {
         let shifted = compare(&golden, &checker(64, 48, 8, 4), &Thresholds::default()).unwrap();
         assert!(shifted.mean > 0.05, "half of every cell changed: mean {}", shifted.mean);
         assert!(!shifted.passes(&Thresholds::default()));
+    }
+
+    #[test]
+    fn identical_and_alpha_only_images_match_full_flip() {
+        for (width, height) in [(1, 1), (7, 5), (64, 48)] {
+            let golden = checker(width, height, 2, 0);
+            let mut actual = golden.clone();
+            for alpha in [255, 0, 127] {
+                for pixel in actual.rgba.chunks_exact_mut(4) {
+                    pixel[3] = alpha;
+                }
+                let errors = nv_flip::flip(
+                    nv_flip::FlipImageRgb8::with_data(width, height, &golden.rgb()),
+                    nv_flip::FlipImageRgb8::with_data(width, height, &actual.rgb()),
+                    nv_flip::DEFAULT_PIXELS_PER_DEGREE,
+                );
+                let mut pool = nv_flip::FlipPool::from_image(&errors);
+                let expected: Vec<u8> = errors
+                    .apply_color_lut(&nv_flip::magma_lut())
+                    .to_vec()
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .flat_map(|&[r, g, b]| [r, g, b, 255])
+                    .collect();
+                for percentile in [1.0, 50.0, 99.0, 100.0] {
+                    let thresholds = Thresholds { percentile, ..Thresholds::default() };
+                    let comparison = compare(&golden, &actual, &thresholds).unwrap();
+                    assert_eq!(comparison.mean.to_bits(), pool.mean().to_bits());
+                    assert_eq!(comparison.max.to_bits(), pool.max_value().to_bits());
+                    assert_eq!(
+                        comparison.percentile_value.to_bits(),
+                        pool.get_percentile(percentile / 100.0, false).to_bits(),
+                    );
+                    assert_eq!(comparison.error_map.rgba, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_comparison_keeps_single_channel_changes_and_rejects_incomplete_buffers() {
+        let golden = checker(7, 5, 2, 0);
+        for channel in 0..3 {
+            let mut changed = golden.clone();
+            let index = changed.rgba.len() - 4 + channel;
+            changed.rgba[index] ^= 1;
+            assert!(!same_rgb(&golden, &changed));
+            let errors = nv_flip::flip(
+                nv_flip::FlipImageRgb8::with_data(golden.width, golden.height, &golden.rgb()),
+                nv_flip::FlipImageRgb8::with_data(changed.width, changed.height, &changed.rgb()),
+                nv_flip::DEFAULT_PIXELS_PER_DEGREE,
+            );
+            let mut pool = nv_flip::FlipPool::from_image(&errors);
+            let comparison = compare(&golden, &changed, &Thresholds::default()).unwrap();
+            assert_eq!(comparison.mean.to_bits(), pool.mean().to_bits());
+            assert_eq!(comparison.max.to_bits(), pool.max_value().to_bits());
+            assert_eq!(comparison.percentile_value.to_bits(), pool.get_percentile(0.99, false).to_bits());
+        }
+        let mut truncated = golden.clone();
+        truncated.rgba.pop();
+        assert!(!same_rgb(&truncated, &truncated));
+        let empty = Image { width: 0, height: 0, rgba: Vec::new() };
+        assert!(!same_rgb(&empty, &empty));
     }
 
     #[test]

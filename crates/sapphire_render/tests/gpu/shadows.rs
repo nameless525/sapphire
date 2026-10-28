@@ -2,7 +2,7 @@
 //! and who receives what, faces taking the environment's shadow whole, the characters' own maps
 //! and capsules, the environment shader's tinted shadows, stability under temporal AA, and the
 //! cascades of frames lost before their passes run (M1 review RA-001). Run with
-//! `cargo test -p sapphire_render --test shadows -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu shadows:: -- --ignored`.
 //!
 //! Scenes use no ambient light, a black sky and no rim or outline, so every surface pixel is its
 //! material's lit tone (albedo × the key light) or its shade tone (albedo × [`SHADE`]), and a

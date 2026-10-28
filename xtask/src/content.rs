@@ -33,7 +33,7 @@ use std::str::FromStr;
 
 use anyhow::{Context as _, anyhow, bail};
 
-use crate::workspace::{self, CargoBuild};
+use crate::workspace::{self, BuildProfile, CargoBuild};
 
 /// Source assets live here, relative to the workspace root.
 pub const SOURCE_DIR: &str = "content";
@@ -270,9 +270,16 @@ pub struct Cooked {
 /// Generates missing sample and look-dev sources, then cooks all of `content/` for `cook`. Keep the
 /// result alive while copying from or running against its directory.
 pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
-    // Release: cooking is the slow part, and the pipeline itself rarely changes.
+    // Keep cooking optimized without paying for cross-crate LTO after each cooker edit.
+    // Cargo reports the executable path, including custom target directories and suffixes.
     let pipeline = workspace::build_binary(
-        &CargoBuild { package: "sapphire_pipeline", target: None, release: true, features: &[], env: &[] },
+        &CargoBuild {
+            package: "sapphire_pipeline",
+            target: None,
+            profile: BuildProfile::Tools,
+            features: &[],
+            env: &[],
+        },
         "sapphire_pipeline",
     )?;
 

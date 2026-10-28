@@ -9,14 +9,14 @@
 use std::process::Command;
 
 use crate::platforms;
-use crate::workspace::{self, CargoBuild};
+use crate::workspace::{self, BuildProfile, CargoBuild};
 
 const TOOL: &str = "sapphire_livelink";
 
 pub fn run(args: Vec<String>) -> anyhow::Result<()> {
     let env = platforms::host_build_env()?;
     let tool = workspace::build_binary(
-        &CargoBuild { package: TOOL, target: None, release: false, features: &[], env: &env },
+        &CargoBuild { package: TOOL, target: None, profile: BuildProfile::Dev, features: &[], env: &env },
         TOOL,
     )?;
     let mut command = Command::new(tool);

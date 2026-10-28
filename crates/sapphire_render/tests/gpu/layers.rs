@@ -5,7 +5,7 @@
 //! its breath and its bloom; the layer mask; and the fade's dither, whole or none at the ends,
 //! its share of pixels, its outlines, rim and draw list, under MSAA and temporal AA; and
 //! alpha-tested surfaces cut out of the character prepass as the main pass cuts them. Run with
-//! `cargo test -p sapphire_render --test layers -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu layers:: -- --ignored`.
 //!
 //! Scenes have no ambient light and a black sky unless a test says otherwise, so a material's
 //! layers are all that lights what its flat albedo doesn't. Characters are listed with white key

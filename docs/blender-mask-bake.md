@@ -90,7 +90,7 @@ For the ILM inputs, paint a specular mask (white where highlights may appear) an
 
 ```bash
 # The generated map as a 16-bit PNG, before compression:
-cargo run -p sapphire_pipeline --release -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/face.png
+cargo run -p sapphire_pipeline --profile tools -- bake-map content/characters/heroine/face/face.facesdf.ron /tmp/face.png
 
 # Cook the content tree:
 cargo xtask content

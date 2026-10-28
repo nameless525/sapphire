@@ -665,10 +665,12 @@ fn a_dialing_link_closes_mid_handshake_and_while_idle() {
 /// push waits in it as long as the test likes.
 struct Gated {
     gate: Mutex<mpsc::Receiver<()>>,
+    entered: mpsc::Sender<()>,
 }
 
 impl PackSource for Gated {
     fn open(&self, _: &str) -> std::io::Result<(PackFile, u64)> {
+        self.entered.send(()).unwrap();
         // Until the test drops the sender.
         let _ = self.gate.lock().unwrap().recv();
         Err(std::io::ErrorKind::NotFound.into())
@@ -685,7 +687,8 @@ fn a_dialing_link_closes_whatever_its_connection_waits_on() {
     // the socket down doesn't end (Windows doesn't end a pending `recv` so), or, here on every
     // OS, the app's pack source, which a connection planning a push reads.
     let (release, gate) = mpsc::channel::<()>();
-    let packs = Arc::new(LivePacks::new(Gated { gate: Mutex::new(gate) }));
+    let (entered, arrived) = mpsc::channel();
+    let packs = Arc::new(LivePacks::new(Gated { gate: Mutex::new(gate), entered }));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let link = LiveLink::start(LinkMode::Connect(listener.local_addr().unwrap()), packs).unwrap();
     let mut tool = RawTool::accept(&listener);
@@ -693,7 +696,7 @@ fn a_dialing_link_closes_whatever_its_connection_waits_on() {
         write_pack(vec![packed(ZONE_TEXTURE, AssetKind::Texture, &texture(8, 3), Vec::new())]).unwrap();
     let head = zone[..PackHeader::read(&zone).unwrap().data_offset as usize].to_vec();
     tool.send(1, RequestBody::PackBegin { name: "zone".into(), len: zone.len() as u64, head });
-    std::thread::sleep(Duration::from_millis(200));
+    arrived.recv_timeout(Duration::from_secs(10)).expect("the connection entered the gated pack source");
     assert!(closes_in_time(link), "the link closes while its connection waits");
     // Let go, the connection ends unanswered: the link closed it.
     drop(release);

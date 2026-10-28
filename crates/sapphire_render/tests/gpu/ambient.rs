@@ -5,7 +5,7 @@
 //! stillness and symmetry, and the characters and lines it leaves out; nothing built or run for
 //! work nothing reads; and foliage (M1 W6) lit by all of it as the environment is, with GTAO
 //! seeing its cards as the prepass cuts them. Run with
-//! `cargo test -p sapphire_render --test ambient -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu ambient:: -- --ignored`.
 //!
 //! Scenes have no key light and no environment specular, so an environment pixel is its albedo
 //! times the ambient irradiance it receives (after ambient occlusion), and post shows linear

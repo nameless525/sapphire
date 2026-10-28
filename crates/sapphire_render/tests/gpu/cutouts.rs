@@ -4,7 +4,7 @@
 //! miscompiled a fragment stage's per-pixel `discard`, writing the pixels it cut black, with their
 //! depth (docs/conventions.md, "Fragment stages that cut pixels out"); the other GPU tests draw
 //! their cutouts over a black sky, where such a hole passes. Run with
-//! `cargo test -p sapphire_render --test cutouts -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu cutouts:: -- --ignored`.
 //!
 //! The scene: a red card speckled with holes (its map's alpha 0 or 1 per texel, under two pixels
 //! a texel, so the holes' edges split 2 × 2 quads) before a green wall on the left and the blue

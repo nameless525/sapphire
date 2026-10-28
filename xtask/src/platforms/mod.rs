@@ -26,7 +26,7 @@ use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
 use crate::content;
-use crate::workspace::{self, CargoBuild};
+use crate::workspace::{self, BuildProfile, CargoBuild};
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,7 +254,7 @@ fn executable(
             &CargoBuild {
                 package: &app.package,
                 target,
-                release: options.release,
+                profile: BuildProfile::app(options.release),
                 features: &options.features,
                 env,
             },

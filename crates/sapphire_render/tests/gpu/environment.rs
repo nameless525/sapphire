@@ -3,7 +3,7 @@
 //! default, distance desaturation, the tiers' specular, emission and time of day's scale on it,
 //! local lights, both families on
 //! one mesh, the prepasses and temporal AA over the world, and hot reload. Run with
-//! `cargo test -p sapphire_render --test environment -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu environment:: -- --ignored`.
 //!
 //! Scenes have a black sky, no MSAA and post that shows linear values as they are, so each pixel
 //! can be predicted: a CPU model of the shader ([`Model`]) shades the exact point a pixel's ray

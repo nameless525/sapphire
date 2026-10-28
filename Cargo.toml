@@ -244,6 +244,12 @@ opt-level = 3
 lto = "thin"
 debug = "line-tables-only"
 
+# Offline tools need optimized cooking without repeating whole-program optimization on every
+# edit. A separate output directory keeps tool iteration from invalidating app release builds.
+[profile.tools]
+inherits = "release"
+lto = false
+
 # Store builds: symbols are split out, uploaded, then stripped.
 [profile.shipping]
 inherits = "release"

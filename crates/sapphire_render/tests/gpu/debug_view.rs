@@ -1,7 +1,7 @@
 //! The renderer's debug views (M1 F5 part 2, the `debug_view` module): what each draws, that
 //! they hold under every antialiasing mode, that with the view off nothing of them is built or
 //! drawn, and that a view builds its own pipelines alone. They need a GPU: run with `cargo test
-//! -p sapphire_render --test debug_view -- --ignored`.
+//! -p sapphire_render --test gpu debug_view:: -- --ignored`.
 
 use std::f32::consts::{PI, TAU};
 

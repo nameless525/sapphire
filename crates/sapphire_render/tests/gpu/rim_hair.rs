@@ -3,7 +3,7 @@
 //! faces, and its soft edge (M1 C8); eyes through hair, its fade with the view, the IDs it keys
 //! on and the fog over it; and the prepass's counters.
 //! Run with
-//! `cargo test -p sapphire_render --test rim_hair -- --ignored`.
+//! `cargo test -p sapphire_render --test gpu rim_hair:: -- --ignored`.
 //!
 //! Scenes have no ambient light, a black sky, no outline and, for the rim, black albedo, so every
 //! lit pixel of a rim test is rim. Characters are listed with white key lights.

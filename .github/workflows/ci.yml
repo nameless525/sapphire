@@ -265,8 +265,12 @@ jobs:
   # rasterizer can't run skips itself, naming the adapter and why (spec §9 lists them); none is
   # skipped for failing. `--tests` leaves the doctests to the Test job.
   #
-  # The lavapipe job then runs a development build headless and drives it over live link (review
-  # BC-002), as the M1 exit run's desktop leg does: no other job starts a `dev` app.
+  # The job then runs a development build headless and drives it over live link (review BC-002),
+  # as the M1 exit run's desktop leg does: no other job starts a `dev` app.
+  #
+  # WARP isn't run here: its trial on #93 took 29 minutes of tests after a 10-minute build, and
+  # four temporal AA tests failed there (outline.rs's turning body; temporal.rs's convergence to
+  # MSAA, upsampling and jitter-free velocity), which wants its own look before WARP joins.
   gpu-tests:
     name: GPU tests (${{ matrix.family }})
     strategy:
@@ -274,7 +278,6 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-24.04, family: vulkan-lavapipe, backend: vulkan }
-          - { os: windows-2025, family: dx12-warp, backend: dx12 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -311,15 +314,6 @@ jobs:
         run: |
           cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-run
           cargo test --package sapphire_sandbox --features dev --locked --lib --no-run
-      # As the golden job installs it, but beside the test executables, which run from deps/.
-      - name: Install WARP 1.0.21
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
-          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
-          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
-          Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/deps/
       - name: GPU tests (render, RHI, world)
         run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (sandbox, dev)

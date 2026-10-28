@@ -17,7 +17,7 @@ SCENES = (
     "turntable-taa", "turntable-taa-motion", "environment-day",
     "ambient-gtao", "hair-highlights", "effects-blur-lines",
 )
-MODES = (("off", "off"), ("on", "off"), ("off", "on"), ("on", "on"))
+MODES = ("off", "on")
 
 
 def fixtures(source: Path) -> list[dict]:
@@ -40,19 +40,12 @@ def fixtures(source: Path) -> list[dict]:
     return [{"name": name, "args": found[name]} for name in SCENES]
 
 
-def capture_env(content: Path, cache: Path, pipeline: str, history: str) -> dict:
+def capture_env(content: Path, history: str) -> dict:
     env = dict(os.environ)
     env.update(SAPPHIRE_CONTENT_DIR=str(content), SAPPHIRE_GPU_BACKEND="vulkan",
                SAPPHIRE_GPU_DEBUG="none", SAPPHIRE_CAPTURE_HISTORY_ONLY=history)
     env.pop("SAPPHIRE_CAPTURE_PIPELINE_CACHE", None)
-    if pipeline == "on":
-        env["SAPPHIRE_CAPTURE_PIPELINE_CACHE"] = str(cache)
     return env
-
-
-def cache_inventory(directory: Path) -> list[dict]:
-    return [{"name": str(path.relative_to(directory)), "bytes": path.stat().st_size}
-            for path in sorted(directory.rglob("*")) if path.is_file()]
 
 
 def timed_capture(command: list[str], env: dict, log: Path, timeout: float) -> tuple[int, float]:
@@ -99,8 +92,8 @@ def verify_inputs(inputs: Path, commit: str) -> dict:
 def summarize(records: list[dict]) -> dict:
     measured = [record for record in records if not record["discarded_warmup"]]
     modes = {}
-    for pipeline, history in MODES:
-        key = f"cache-{pipeline}_history-{history}"
+    for history in MODES:
+        key = f"history-{history}"
         runs = [record for record in measured if record["mode"] == key]
         durations = [record["capture_seconds"] for record in runs]
         modes[key] = {
@@ -109,9 +102,8 @@ def summarize(records: list[dict]) -> dict:
             "min_seconds": min(durations) if durations else None,
             "max_seconds": max(durations) if durations else None,
             "all_png_bytes_identical": all(scene["matches_reference"] for run in runs for scene in run["scenes"]),
-            "cache_bytes_by_round": [sum(item["bytes"] for item in run["cache_files"]) for run in runs],
         }
-    baseline = modes["cache-off_history-off"]["median_seconds"]
+    baseline = modes["history-off"]["median_seconds"]
     for mode in modes.values():
         value = mode["median_seconds"]
         mode["median_reduction_percent"] = 100 * (1 - value / baseline) if baseline and value else None
@@ -130,20 +122,19 @@ def experiment(inputs: Path, output: Path, commit: str, rounds: int = 3, timeout
         "manifest_sha256": digest(inputs / "manifest.json"),
         "source_fixtures_sha256": digest(Path("tools/sapphire_testkit/src/scenes.rs")),
         "fixtures": cohort, "measured_rounds": rounds, "sequences": [],
-        "method": "One physical runner and executable; fresh process per scene; one discarded 4-mode warmup round; alternating mode order; fresh explicit cache per mode/round shared only within its serial scene cohort; normal Mesa disk cache untouched. PNG byte parity across every warmup and measured capture. No full-suite gain extrapolation.",
+        "method": "One physical runner and executable; fresh process per scene; one discarded 2-mode warmup round; alternating history-mode order; blocking child wait with an independent timeout watchdog; normal Mesa disk cache untouched; inherited experimental pipeline-cache path removed. PNG byte parity across every warmup and measured capture. No full-suite gain extrapolation.",
     }
     references = {}
     try:
         for round_index in range(rounds + 1):
             order = MODES if round_index % 2 == 0 else tuple(reversed(MODES))
-            for pipeline, history in order:
-                key = f"cache-{pipeline}_history-{history}"
+            for history in order:
+                key = f"history-{history}"
                 folder = output / f"round-{round_index}" / key
                 folder.mkdir(parents=True)
-                cache = folder / "pipeline-cache"
-                env = capture_env(inputs / "content", cache, pipeline, history)
+                env = capture_env(inputs / "content", history)
                 sequence = {"round": round_index, "discarded_warmup": round_index == 0,
-                            "mode": key, "scenes": [], "capture_seconds": 0.0, "cache_files": []}
+                            "mode": key, "scenes": [], "capture_seconds": 0.0}
                 report["sequences"].append(sequence)
                 for scene in cohort:
                     png = folder / f"{scene['name']}.png"
@@ -155,12 +146,10 @@ def experiment(inputs: Path, output: Path, commit: str, rounds: int = 3, timeout
                     checksum = digest(png)
                     references.setdefault(scene["name"], checksum)
                     item = {"name": scene["name"], "seconds": elapsed, "png_sha256": checksum,
-                            "matches_reference": checksum == references[scene["name"]],
-                            "cache_bytes_after": sum(x["bytes"] for x in cache_inventory(cache))}
+                            "matches_reference": checksum == references[scene["name"]]}
                     sequence["scenes"].append(item)
                     sequence["capture_seconds"] += elapsed
                     print(f"round={round_index} {key} {scene['name']}: {elapsed:.3f}s parity={item['matches_reference']}", flush=True)
-                sequence["cache_files"] = cache_inventory(cache)
                 report["summary"] = summarize(report["sequences"])
                 (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         if any(not scene["matches_reference"] for run in report["sequences"] for scene in run["scenes"]):

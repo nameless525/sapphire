@@ -65,7 +65,7 @@ jobs:
           JSON
           echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-      - name: Four modes, discarded warmup and three alternating measured rounds
+      - name: Two history modes, discarded warmup and three alternating measured rounds
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |

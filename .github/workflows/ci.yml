@@ -25,11 +25,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      golden_pipeline_cache:
-        description: Per-run Vulkan pipeline cache (same-binary comparison control)
-        type: choice
-        options: ['on', 'off']
-        default: 'on'
       capture_history_only:
         description: Warm only persistent capture history (off renders full warmup frames)
         type: choice
@@ -51,7 +46,6 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TOOLS_DEBUG: "0"
   RUST_BACKTRACE: short
-  SAPPHIRE_GOLDEN_PIPELINE_CACHE: ${{ inputs.golden_pipeline_cache || 'on' }}
   SAPPHIRE_CAPTURE_HISTORY_ONLY: ${{ inputs.capture_history_only || 'on' }}
   # SDL 3 is built from source (sapphire_platform). Ubuntu build dependencies from SDL's
   # docs/README-linux.md: the "all features" list plus its Ubuntu 22.04+ additions.

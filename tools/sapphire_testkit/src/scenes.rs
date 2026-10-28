@@ -2438,34 +2438,6 @@ fn costs(scenes: &[Scene], family: Option<Family>) -> Vec<u32> {
     scenes.iter().map(|scene| family.map_or(1, |family| family.cost(scene.name))).collect()
 }
 
-/// Explicit control for before/after measurements and cache-related driver triage. This
-/// optimizes pipeline compilation only; every scene still starts a separate sandbox process.
-const PIPELINE_CACHE_ENV: &str = "SAPPHIRE_GOLDEN_PIPELINE_CACHE";
-const CAPTURE_PIPELINE_CACHE_ENV: &str = "SAPPHIRE_CAPTURE_PIPELINE_CACHE";
-
-fn pipeline_cache_enabled(value: Option<&str>) -> Result<bool, String> {
-    match value {
-        None | Some("on") => Ok(true),
-        Some("off") => Ok(false),
-        Some(value) => Err(format!("{PIPELINE_CACHE_ENV} expects on or off, got {value:?}")),
-    }
-}
-
-/// The cache lives under the output directory that `run_scenes` empties before starting its
-/// serial children. Sharing the application's user cache, or running these children in parallel
-/// against one cache, would race its crash sentinel and atomic temporary file. Metal and DX12
-/// ignore this optional cache in the RHI and never create its directory.
-fn sandbox_command(paths: &Paths, pipeline_cache: bool) -> Command {
-    let mut command = Command::new(&paths.sandbox);
-    command.env(CONTENT_DIR_ENV, &paths.content);
-    // Off must override an inherited capture cache as well, for a real uncached control.
-    command.env_remove(CAPTURE_PIPELINE_CACHE_ENV);
-    if pipeline_cache {
-        command.env(CAPTURE_PIPELINE_CACHE_ENV, paths.out.join("pipeline-cache"));
-    }
-    command
-}
-
 /// Runs the selected scenes and returns one message per failure (empty: all passed). Each scene
 /// gets `timeout` (`--scene-timeout`; [`DEFAULT_SCENE_TIMEOUT`]).
 pub fn run(
@@ -2477,13 +2449,11 @@ pub fn run(
     let scenes = scenes();
     let family = std::env::var(BACKEND_ENV).ok().and_then(|backend| Family::from_backend(&backend));
     let selected = select(&scenes, selection, family)?;
-    let setting = match std::env::var(PIPELINE_CACHE_ENV) {
-        Ok(value) => Some(value),
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => return Err(format!("{PIPELINE_CACHE_ENV}: {error}")),
+    let sandbox = |_: &Scene| {
+        let mut command = Command::new(&paths.sandbox);
+        command.env(CONTENT_DIR_ENV, &paths.content);
+        command
     };
-    let pipeline_cache = pipeline_cache_enabled(setting.as_deref())?;
-    let sandbox = |_: &Scene| sandbox_command(paths, pipeline_cache);
     run_scenes(&selected, paths, mode, timeout, &sandbox)
 }
 
@@ -2847,26 +2817,6 @@ mod tests {
     use std::io::Write as _;
 
     use super::*;
-
-    #[test]
-    fn capture_pipeline_cache_is_private_to_the_run_and_can_be_disabled() {
-        let paths = Paths {
-            sandbox: "sandbox".into(),
-            content: "cooked".into(),
-            goldens: "references".into(),
-            out: "test-run".into(),
-        };
-        let command = sandbox_command(&paths, true);
-        let cache = command.get_envs().find(|(key, _)| *key == CAPTURE_PIPELINE_CACHE_ENV);
-        assert_eq!(cache.unwrap().1, Some(paths.out.join("pipeline-cache").as_os_str()));
-        let command = sandbox_command(&paths, false);
-        let cache = command.get_envs().find(|(key, _)| *key == CAPTURE_PIPELINE_CACHE_ENV);
-        assert_eq!(cache.unwrap().1, None, "disabled also removes an inherited directory");
-        assert_eq!(pipeline_cache_enabled(None), Ok(true));
-        assert_eq!(pipeline_cache_enabled(Some("on")), Ok(true));
-        assert_eq!(pipeline_cache_enabled(Some("off")), Ok(false));
-        assert!(pipeline_cache_enabled(Some("true")).is_err());
-    }
 
     #[test]
     fn scene_names_are_unique_file_stems() {

@@ -8,6 +8,7 @@ and application release/shipping profiles.
 
 | Workload | First-pass baseline | Second pass | Measurement |
 | --- | ---: | ---: | --- |
+| Complete warm workspace CPU tests | 34.415 s | 27.585 s | Five alternating pairs; every Cargo artifact fresh |
 | Live-link CLI build after a semantic shader edit | 1.589 s | 0.088 s | Five alternating pairs; candidate rebuilds zero targets |
 | Desktop cold cook and pack | 14.750 s | 10.623 s | Five alternating pairs, byte-identical output |
 | Mobile cold cook and pack | 10.358 s | 6.688 s | Five alternating pairs, byte-identical output |
@@ -15,6 +16,11 @@ and application release/shipping profiles.
 | Real child-timeout regression | 6.089 s | 3.085 s | Five alternating pairs; both three-second deadlines retained |
 | Post-day capture, Metal | 148.27 ms | 129.38 ms | Five paired repetitions after warmup; identical PNGs |
 
+The measured complete warm test command is 19.8% faster on this host, including added regression
+coverage (measurement candidate `9222b1e`, before the later cache-prototype removal and CI-test fix).
+Its 6.83-second saving is smaller than the sum of isolated test-group savings because separating
+the watcher adds a sequential Cargo test harness. Both warmups are excluded, and all measured
+Cargo compiler artifacts are fresh; normal doctest compilation remains included.
 These are distinct workloads, not additive whole-project speedups. Other sampled Metal captures
 (foliage-ground and lookdev-town-day) showed no meaningful timing change. All 95 native off/on
 capture pairs were byte-identical, and all 95 committed Metal references passed without rebaselining.
@@ -48,13 +54,7 @@ Production polling and final log drain remain one second each. The testkit runs 
 three-second timeout cases concurrently, each followed by a successful scene; a separate quick case
 checks accumulation of consecutive failures. No deadline was shortened or test removed.
 
-### Capture reuse without shared scene state
-
-Testkit gives serial scene processes a fresh private pipeline-cache directory per run. Existing RHI
-checksums, adapter/driver identity, atomic saves and crash sentinels protect reuse; a successful,
-non-lost capture confirms/saves the cache. Unsupported backends do not write a cache. Benchmark
-and serving modes do not use this capture cache. `SAPPHIRE_GOLDEN_PIPELINE_CACHE=on|off` controls
-it for comparison, and disabling it removes inherited child cache configuration.
+### Temporal capture warmup
 
 Eligible TAA warmup frames use an unconsumed transient display target. The existing graph compiler
 keeps imported temporal history/depth and other persistent writes while removing unused bloom and
@@ -92,13 +92,24 @@ build/cook/upload, consumer download/verification and rendering separately. Keep
 dependencies independent so Linux does not wait for Windows. Artifacts expire after one day; rerun
 producers if retrying consumers after expiry.
 
-`Capture experiment` is a manual same-runner comparison of cache/history switches using one verified
+`Capture experiment` is a manual same-runner comparison of full/history-only warmups using one verified
 producer artifact. Its lightweight PR registration check runs only when the workflow/helper changes;
 it never substitutes for normal CI. Supply the producer run ID and its exact checkout SHA (a PR merge
 SHA can differ from the branch head). A discarded warmup and three alternating measured rounds
-retain per-process logs, PNG parity, binary/content hashes, timings and cache sizes.
+retain per-process logs, PNG parity, binary/content hashes and timings. It uses blocking child
+completion timing with an independent deadline watchdog, avoiding timeout-polling bias.
 
-## Experiment not adopted
+## Experiments not adopted
+
+A per-run explicit Vulkan pipeline-cache prototype was removed after a same-runner, same-binary
+four-mode experiment. All 96 captures were byte-identical, but cache-only cohort time was 17.211 s
+versus 17.204 s with both switches off: no demonstrated gain. Each sequence produced only a
+120-byte header-only blob (24 Sapphire + 64 wgpu + 32 Vulkan header bytes), with no compiled
+pipeline payload. Normal Mesa disk caching remained enabled. This is evidence about this driver
+and workload, not a claim that explicit pipeline caching can never help. The original general RHI
+cache remains unchanged. The prototype and raw results are retained in the external evidence
+package. The preliminary timing method had up to roughly 50 ms polling bias per process; the
+retained warmup optimization gets a separate precise-timer comparison.
 
 A test opt0 prototype with the pipeline retained at opt1 cut a single dependencies-warm workspace
 compilation from 83.99 to 41.49 seconds, but CPU execution rose from 45.23 to 49.62 seconds and the

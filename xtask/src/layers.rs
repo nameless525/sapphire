@@ -649,39 +649,76 @@ mod tests {
     }
     use Dep::*;
 
-    /// This is a build-iteration contract, not a runtime-layer restriction: a tool used to
-    /// push shader edits must not rebuild the renderer or compile its GPU backends first.
+    /// This is a build-iteration contract: a tool used to push shader edits must not
+    /// reach the renderer through the workspace's declared normal dependency graph.
     #[test]
     fn live_link_and_its_watcher_do_not_link_the_renderer() {
         let json = workspace::output(workspace::cargo("metadata").args([
             "--format-version",
             "1",
-            "--all-features",
+            "--no-deps",
             "--locked",
             "--offline",
         ]))
-        .expect("workspace metadata is available without compiling");
+        .expect("workspace declarations are available without fetching optional dependencies");
         let metadata: Metadata = serde_json::from_str(&json).expect("Cargo metadata");
-        let resolve = metadata.resolve.as_ref().expect("resolved dependency graph");
-        let graph = Graph {
-            packages: metadata.packages.iter().map(|p| (p.id.as_str(), p)).collect(),
-            nodes: resolve.nodes.iter().map(|n| (n.id.as_str(), n)).collect(),
-        };
         for name in ["sapphire_livelink", "sapphire_watch"] {
-            let root = metadata.packages.iter().find(|p| p.name == name).expect("workspace crate");
-            graph.search(
-                &root.id,
-                |dep| !dep.is_normal(),
-                |id, path| {
-                    let dependency = graph.name(id);
-                    assert!(
-                        !["sapphire_render", "sapphire_rhi", "wgpu"].contains(&dependency.as_str()),
-                        "{name} must stay renderer-independent: {}",
-                        path.iter().map(|id| graph.name(id)).collect::<Vec<_>>().join(" -> ")
-                    );
-                    true
-                },
-            );
+            let path = declared_renderer_path(&metadata, name);
+            assert!(path.is_none(), "{name} must stay renderer-independent: {path:?}");
+        }
+    }
+
+    /// Follow workspace declarations, including inactive optional and target-specific edges.
+    /// Registry dependency internals are outside this check; the layer checker separately
+    /// resolves the full all-features graph. External forbidden names are checked at each edge.
+    fn declared_renderer_path(metadata: &Metadata, root: &str) -> Option<Vec<String>> {
+        let packages: HashMap<_, _> = metadata.packages.iter().map(|p| (p.name.as_str(), p)).collect();
+        assert!(packages.contains_key(root), "missing workspace crate {root}");
+        let mut seen = BTreeSet::new();
+        let mut queue = VecDeque::from([vec![root.to_owned()]]);
+        while let Some(path) = queue.pop_front() {
+            let name = path.last().expect("a dependency path starts at its root");
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some(package) = packages.get(name.as_str()) else {
+                continue;
+            };
+            for dep in package.dependencies.iter().filter(|dep| dep.kind.is_none()) {
+                let mut next = path.clone();
+                next.push(dep.name.clone());
+                if ["sapphire_render", "sapphire_rhi", "wgpu"].contains(&dep.name.as_str()) {
+                    return Some(next);
+                }
+                queue.push_back(next);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn live_link_dependency_contract_covers_optional_target_and_renamed_edges() {
+        for forbidden in ["sapphire_render", "sapphire_rhi", "wgpu"] {
+            for kind in [Value::Null, json!("dev"), json!("build")] {
+                // Cargo's name is the real package, not the alias. --no-deps retains these
+                // declarations even when the optional Windows edge is inactive on this host.
+                let metadata: Metadata = serde_json::from_value(json!({
+                    "packages": [
+                        {"id": "link", "name": "sapphire_livelink", "source": null,
+                         "dependencies": [{"name": "sapphire_watch", "rename": "file_events",
+                            "kind": null, "optional": true, "target": "cfg(windows)"}]},
+                        {"id": "watch", "name": "sapphire_watch", "source": null,
+                         "dependencies": [{"name": forbidden, "rename": "graphics",
+                            "kind": kind, "optional": true, "target": "cfg(windows)"}]}
+                    ],
+                    "workspace_members": ["link", "watch"], "resolve": null
+                }))
+                .unwrap();
+                let expected = kind
+                    .is_null()
+                    .then(|| ["sapphire_livelink", "sapphire_watch", forbidden].map(str::to_owned).to_vec());
+                assert_eq!(declared_renderer_path(&metadata, "sapphire_livelink"), expected);
+            }
         }
     }
 

@@ -7,17 +7,12 @@
 //! [`bench`](crate::bench) measures the per-frame CPU path, then each exits; `--offscreen`
 //! (`serve.rs`) keeps drawing for hot reload and live link until stopped.
 
-use std::ffi::OsString;
-use std::path::PathBuf;
-
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
 use sapphire_render::{RenderSettings, Renderer};
-use sapphire_rhi::{
-    GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, PipelineCacheDesc, TransientDesc, wgpu,
-};
+use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
@@ -29,29 +24,6 @@ use crate::stats::Stages;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-/// The testkit gives serial capture children a fresh, private cache directory for one run.
-/// Standalone captures have no cache unless their caller explicitly provides this directory.
-const CAPTURE_PIPELINE_CACHE_ENV: &str = "SAPPHIRE_CAPTURE_PIPELINE_CACHE";
-
-/// Keep the test-run cache out of benchmarks, the live-link server and windowed applications.
-/// A fresh directory per run makes the package version sufficient as the build identity: no
-/// cache from a different executable survives into that run. The RHI also guards the driver,
-/// device, payload checksum and a previous capture that failed before confirming the cache.
-fn capture_pipeline_cache(options: &Options, directory: Option<OsString>) -> Option<PipelineCacheDesc> {
-    if !options
-        .offscreen
-        .as_ref()
-        .is_some_and(|offscreen| matches!(offscreen.mode, OffscreenMode::Capture { .. }))
-    {
-        return None;
-    }
-    let directory = directory.filter(|directory| !directory.is_empty())?;
-    Some(PipelineCacheDesc {
-        dir: PathBuf::from(directory),
-        build_id: SandboxApp::METADATA.version.to_owned(),
-    })
-}
 
 /// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
 /// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
@@ -76,15 +48,6 @@ impl App for OffscreenApp {
             OffscreenMode::Capture { path, ticks, frames } => {
                 let mut stage = Stage::new(platform, &options)?;
                 crate::capture::run(&mut stage, path, *ticks, *frames, width, height)?;
-                // Successful readback proves that this cache produced a complete GPU frame.
-                // A failed/killed capture leaves the RHI's sentinel, so the next child discards
-                // the suspect blob. Cache I/O is optional and must not fail a correct image.
-                if !stage.gpu.is_lost() {
-                    stage.gpu.confirm_pipeline_cache();
-                    if let Err(error) = stage.gpu.save_pipeline_cache() {
-                        tracing::warn!(target: LOG_TARGET, %error, "can't save capture pipeline cache");
-                    }
-                }
             }
             OffscreenMode::Bench { frames } => crate::bench::run(platform, &options, *frames, width, height)?,
             #[cfg(feature = "dev")]
@@ -152,8 +115,7 @@ impl Stage {
     /// The scene and renderer `options` ask for. Offscreen modes run on desktops only.
     pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
-        let pipeline_cache = capture_pipeline_cache(options, std::env::var_os(CAPTURE_PIPELINE_CACHE_ENV));
-        let gpu = GpuContext::new(&instance, &GpuContextDesc { pipeline_cache }, None)?;
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let settings = options.render_settings(quality.render_settings());
@@ -417,7 +379,7 @@ fn history_only_capture_allowed(options: &Options, settings: RenderSettings) -> 
 const OFFSCREEN_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
 
 #[cfg(test)]
-mod cache_tests {
+mod tests {
     use super::*;
 
     fn options(args: &[&str]) -> Options {
@@ -450,19 +412,5 @@ mod cache_tests {
             assert!(!allowed(args, taa), "{args:?} must observe full frames");
         }
         assert!(allowed(&["--debug-view", "off"], taa));
-    }
-
-    #[test]
-    fn only_captures_use_an_explicit_private_pipeline_cache() {
-        let capture = options(&["--capture", "frame.png"]);
-        assert!(capture_pipeline_cache(&capture, None).is_none());
-        assert!(capture_pipeline_cache(&capture, Some(OsString::new())).is_none());
-        let directory = OsString::from("private-test-run/pipeline-cache");
-        let cache = capture_pipeline_cache(&capture, Some(directory.clone())).unwrap();
-        assert_eq!(cache.dir, PathBuf::from(&directory));
-        assert_eq!(cache.build_id, SandboxApp::METADATA.version);
-        for other in [Options::default(), options(&["--bench", "1"]), options(&["--offscreen"])] {
-            assert!(capture_pipeline_cache(&other, Some(directory.clone())).is_none());
-        }
     }
 }

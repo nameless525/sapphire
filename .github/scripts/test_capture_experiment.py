@@ -25,12 +25,12 @@ class CaptureExperimentTests(unittest.TestCase):
 
     def test_off_control_removes_inherited_cache_and_does_not_disable_mesa(self):
         with patch.dict(os.environ, {"SAPPHIRE_CAPTURE_PIPELINE_CACHE": "/inherited", "MESA_SHADER_CACHE_DIR": "/normal-mesa"}):
-            env = experiment.capture_env(Path("content"), Path("private"), "off", "off")
+            env = experiment.capture_env(Path("content"), "off")
         self.assertNotIn("SAPPHIRE_CAPTURE_PIPELINE_CACHE", env)
         self.assertEqual(env["MESA_SHADER_CACHE_DIR"], "/normal-mesa")
         self.assertEqual(env["SAPPHIRE_CAPTURE_HISTORY_ONLY"], "off")
 
-    def test_four_modes_share_binary_but_not_sequence_caches_and_detect_byte_mismatch(self):
+    def test_two_modes_share_binary_and_detect_byte_mismatch(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
             root = Path(directory)
             inputs = root / "inputs"
@@ -50,23 +50,20 @@ class CaptureExperimentTests(unittest.TestCase):
             def fake_capture(command, env, log, timeout):
                 calls.append((command, env))
                 Path(command[2]).write_bytes(b"identical PNG bytes")
-                if cache := env.get("SAPPHIRE_CAPTURE_PIPELINE_CACHE"):
-                    path = Path(cache)
-                    path.mkdir(exist_ok=True)
-                    (path / "pipeline.bin").write_bytes(b"cache")
                 return 0, 0.125
 
             with patch.object(experiment, "timed_capture", fake_capture):
                 report = experiment.experiment(inputs, root / "output", "a" * 40)
             self.assertTrue(report["complete"])
-            self.assertEqual(len(calls), 6 * 4 * 4)
+            self.assertEqual(len(calls), 6 * 2 * 4)
             self.assertEqual({command[0] for command, _ in calls}, {str(binary)})
-            self.assertEqual(len({env["SAPPHIRE_CAPTURE_PIPELINE_CACHE"] for _, env in calls if "SAPPHIRE_CAPTURE_PIPELINE_CACHE" in env}), 8)
+            self.assertTrue(all("SAPPHIRE_CAPTURE_PIPELINE_CACHE" not in env for _, env in calls))
+            self.assertEqual({env["SAPPHIRE_CAPTURE_HISTORY_ONLY"] for _, env in calls}, {"off", "on"})
             for summary in report["summary"].values():
                 self.assertEqual(len(summary["round_seconds"]), 3)
                 self.assertTrue(summary["all_png_bytes_identical"])
-            self.assertEqual([row["mode"] for row in report["sequences"][:4]], list(report["summary"]))
-            self.assertEqual([row["mode"] for row in report["sequences"][4:8]], list(reversed(report["summary"])))
+            self.assertEqual([row["mode"] for row in report["sequences"][:2]], list(report["summary"]))
+            self.assertEqual([row["mode"] for row in report["sequences"]][2:4], list(reversed(report["summary"])))
 
             def mismatch(command, env, log, timeout):
                 result = fake_capture(command, env, log, timeout)
@@ -79,7 +76,7 @@ class CaptureExperimentTests(unittest.TestCase):
                     experiment.experiment(inputs, root / "mismatch", "a" * 40, rounds=1)
             partial = json.loads((root / "mismatch/results.json").read_text())
             self.assertFalse(partial["complete"])
-            self.assertFalse(partial["summary"]["cache-on_history-on"]["all_png_bytes_identical"])
+            self.assertFalse(partial["summary"]["history-on"]["all_png_bytes_identical"])
 
     def test_blocking_capture_keeps_both_output_streams_and_exit_status(self):
         with tempfile.TemporaryDirectory() as directory:

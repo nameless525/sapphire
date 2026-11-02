@@ -49,7 +49,7 @@ impl App for OffscreenApp {
         // Before any GPU work, so a bad replay file costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            crate::arena::check_scenario(combat).map_err(AppInitError::msg)?;
+            crate::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
@@ -160,6 +160,9 @@ impl Stage {
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
+        if options.party {
+            content.keep_party_looks();
+        }
         content.override_materials(options.material_overrides());
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
         let mut scene = Scene::with_character(character, bounds, options.skinned);
@@ -259,6 +262,9 @@ impl Stage {
             let look = LookDev { town, fog_cards, pose, figure };
             let enemy = content.enemy(&mut renderer, &gpu)?;
             scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
+            if let Some(meshes) = content.party_meshes(character) {
+                scene.set_party_meshes(meshes);
+            }
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer, &gpu)?;
                 let mut player = crate::lookdev::player(&content)

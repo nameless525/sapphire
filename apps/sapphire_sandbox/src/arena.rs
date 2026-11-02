@@ -59,6 +59,9 @@
 //! - **The enemy (O4 and G6, in):** `crate::enemy`'s model and blade, in `spawn_arena`, and its brain in
 //!   the `arena-fight` scenario. The `arena` scenario's opponent draws as the same warrior and has no
 //!   brain: it just stands there.
+//! - **The party (G7, in):** `--party` with the `party` scenario. [`ArenaActors::follow`] takes the player
+//!   from whoever's on the field, cutting its graph at a swap, and `crate::party_looks` draws that
+//!   member's recolor.
 //! - **Effects and cues (E2, E3, in):** `--cues` fires a fight's cues where the simulation has its
 //!   actors (`crate::cues::CueStage::Actors`), and `--vfx` draws over whatever scene is up.
 //! - **The HUD (I2, in):** `--hud live` shows what [`ArenaActors::hud_values`] reads of the fighters.
@@ -96,6 +99,9 @@ pub(crate) const SCENARIO: &str = "arena";
 
 /// The scenario of a fight with the enemy (M2 G6): `--fight`, and the replays made from it.
 pub(crate) const FIGHT_SCENARIO: &str = "arena-fight";
+
+/// The scenario of a party's fight with the enemy (M2 G7): `--fight --party`, and the replays made from it.
+pub(crate) const PARTY_SCENARIO: &str = "party";
 
 /// Who a soft lock can find before a simulation says: the second actor a scenario spawns.
 const ENEMY_ID: ActorId = ActorId::from_raw(2).expect("not zero");
@@ -166,15 +172,25 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
     player + Vec3::new(0.0, FOLLOW_AIM_HEIGHT, 0.0)
 }
 
-/// Refuses a fight that doesn't start from the arena's scenario: its actors aren't standing here.
-pub(crate) fn check_scenario(combat: &crate::combat::Combat) -> Result<(), String> {
-    if [SCENARIO, FIGHT_SCENARIO].contains(&combat.scenario()) {
+/// Refuses a fight that doesn't start from the arena's scenarios, or with `party` the party's: its actors
+/// aren't standing here, or there aren't three looks to draw them in.
+pub(crate) fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
+    let scenario = combat.scenario();
+    if party {
+        if scenario == PARTY_SCENARIO {
+            return Ok(());
+        }
+        return Err(format!(
+            "--arena --party plays a fight of the `{PARTY_SCENARIO}` scenario, and this one starts from \
+             `{scenario}`"
+        ));
+    }
+    if [SCENARIO, FIGHT_SCENARIO].contains(&scenario) {
         return Ok(());
     }
     Err(format!(
         "--arena plays a fight of the `{SCENARIO}` scenario or of `{FIGHT_SCENARIO}`, and this one starts \
-         from `{}`",
-        combat.scenario(),
+         from `{scenario}`",
     ))
 }
 
@@ -536,11 +552,15 @@ impl ArenaActors {
         let started_over = tick < self.tick;
         self.tick = tick;
         for (index, (id, (_, root))) in cast.iter().zip([&mut self.player, &mut self.enemy]).enumerate() {
-            let actor = simulation.actor(*id);
+            // A cast names a party by its first member: the player is whoever's on the field.
+            let actor = simulation.actor(simulation.party().on_field(*id));
+            // Someone else came in: what's drawn starts on them, with no blend from who left.
+            let swapped = self.seen[index].zip(actor).is_some_and(|(seen, actor)| seen.id != actor.id);
             self.seen[index] = actor;
             let Some(actor) = actor else { continue };
             let signals = &mut self.signals[index];
             signals.landed |= actor.controller.state.events.landed;
+            signals.cut |= swapped;
             if started_over {
                 *signals = FighterSignals { landed: false, cut: true };
             }

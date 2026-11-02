@@ -133,8 +133,15 @@ impl LiveFight {
         asks
     }
 
+    /// A party falls with its last member: until then, a fall only brings in the next.
     fn someone_fell(&self) -> bool {
-        self.cast.iter().any(|id| self.sim.actor(*id).is_some_and(|actor| actor.fighter.is_defeated()))
+        let party = self.sim.party();
+        self.cast.iter().any(|id| {
+            if party.input_actor() == Some(*id) {
+                return party.is_down();
+            }
+            self.sim.actor(*id).is_some_and(|actor| actor.fighter.is_defeated())
+        })
     }
 
     /// Reports this fight and makes the next. If it can't, which a scenario that started once has no
@@ -164,7 +171,8 @@ impl LiveFight {
     /// Says how this fight went.
     fn report(&self) {
         let health = |index: usize| {
-            self.cast.get(index).and_then(|id| self.sim.actor(*id)).map_or(0, |actor| actor.fighter.health())
+            let id = self.cast.get(index).map(|id| self.sim.party().on_field(*id));
+            id.and_then(|id| self.sim.actor(id)).map_or(0, |actor| actor.fighter.health())
         };
         tracing::info!(
             target: LOG_TARGET,
@@ -198,13 +206,14 @@ impl Combat {
             CombatOption::Record { path, scenario, script } => {
                 Self::recording(path, scenario, script.as_deref(), &LiveMoves::default())
             }
-            CombatOption::Fight { script } => Self::fighting(script.as_deref()),
+            CombatOption::Fight { script, party } => Self::fighting(script.as_deref(), *party),
         }
     }
 
-    fn fighting(script: Option<&str>) -> Result<Self, String> {
-        let scenario = find_scenario(SCENARIOS, crate::arena::FIGHT_SCENARIO)
-            .ok_or_else(|| format!("--fight: no scenario `{}`", crate::arena::FIGHT_SCENARIO))?;
+    fn fighting(script: Option<&str>, party: bool) -> Result<Self, String> {
+        let name = if party { crate::arena::PARTY_SCENARIO } else { crate::arena::FIGHT_SCENARIO };
+        let scenario =
+            find_scenario(SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
         let fight = LiveFight::new(scenario, script.map(script_actions).transpose()?, LiveMoves::default())?;
         Ok(Self { path: PathBuf::new(), mode: Mode::Fighting(fight), steps_past_end: 0 })
     }
@@ -772,7 +781,8 @@ mod tests {
     }
 
     fn fighting(script: Option<&str>) -> Combat {
-        Combat::new(&CombatOption::Fight { script: script.map(str::to_owned) }).expect("sets up")
+        Combat::new(&CombatOption::Fight { script: script.map(str::to_owned), party: false })
+            .expect("sets up")
     }
 
     /// What `--arena --fight` does in a window, short of the window: the keys go through the sandbox's
@@ -782,7 +792,8 @@ mod tests {
     fn a_fight_is_played_through_the_bindings_and_starts_over_on_its_key() {
         let mut combat = fighting(None);
         assert_eq!(combat.scenario(), crate::arena::FIGHT_SCENARIO);
-        crate::arena::check_scenario(&combat).expect("it's the arena's");
+        crate::arena::check_scenario(&combat, false).expect("it's the arena's");
+        assert!(crate::arena::check_scenario(&combat, true).is_err(), "it isn't a party's");
         let cast = combat.cast().to_vec();
         let at_start = combat.simulation().checksum();
         let enemy = |combat: &Combat| combat.simulation().actor(cast[1]).expect("alive");
@@ -862,9 +873,37 @@ mod tests {
         assert_eq!(combat.simulation().stats().allocations, 0, "rule R6");
     }
 
+    /// `--fight --party`: the swap button works, through the same bindings' path, and the fight goes on past
+    /// a member's fall, until the last one's, and then starts over as a party.
+    #[test]
+    fn a_partys_fight_goes_on_until_its_last_member_falls() {
+        let option = CombatOption::Fight { script: Some("party-swap".to_owned()), party: true };
+        let mut combat = Combat::new(&option).expect("sets up");
+        assert_eq!(combat.scenario(), crate::arena::PARTY_SCENARIO);
+        crate::arena::check_scenario(&combat, true).expect("it's the party's");
+        assert!(crate::arena::check_scenario(&combat, false).is_err(), "it takes three looks");
+
+        let mut member_fell = false;
+        while !combat.simulation().party().is_down() {
+            combat.step(&mut no_bindings);
+            let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+            assert_eq!(fights, 1, "a member's fall doesn't end it");
+            member_fell |= combat.simulation().stats().forced_swaps > 0;
+            assert!(combat.simulation().tick() < 20_000, "it never fell");
+        }
+        assert!(member_fell && combat.simulation().stats().swaps > 3);
+        for _ in 0..RESTART_AFTER {
+            combat.step(&mut no_bindings);
+        }
+        let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+        assert_eq!(fights, 2);
+        let party = combat.simulation().party();
+        assert_eq!((party.active_slot(), party.is_down()), (Some(0), false), "as a party again");
+    }
+
     #[test]
     fn a_fight_has_no_bad_scripts_and_only_it_starts_over() {
-        let error = Combat::new(&CombatOption::Fight { script: Some("no-such".to_owned()) });
+        let error = Combat::new(&CombatOption::Fight { script: Some("no-such".to_owned()), party: false });
         assert!(error.err().expect("refused").contains("no-such"));
 
         let scratch = Scratch::new("no-restart");

@@ -154,8 +154,9 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage. `arena-replay` plays a replay on it,
 /// and `arena-fight-telegraph`, `arena-fight-hit` and `arena-fight-cut` a fight with the enemy (M2 G6),
-/// side on, so the character isn't in front of what they're there to show.
-pub fn scenes() -> [Scene; 140] {
+/// side on, so the character isn't in front of what they're there to show. `arena-party-second` and
+/// `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
+pub fn scenes() -> [Scene; 142] {
     [
         Scene {
             name: "turntable-start",
@@ -2276,6 +2277,58 @@ pub fn scenes() -> [Scene; 140] {
                 "75,8",
                 "--replay",
                 "tests/replays/arena-fight-won.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A party's fight in the arena (M2 G7), by day: the second member on the field, in its recolor, in
+        // the recorded `party-swap`, against the warrior. The app checks the replay reaches its checksums
+        // before this frame is written.
+        Scene {
+            name: "arena-party-second",
+            args: &[
+                "--capture-ticks",
+                "110",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--party",
+                "--replay",
+                "tests/replays/party-swap.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same fight later on: the third member, in its own.
+        Scene {
+            name: "arena-party-third",
+            args: &[
+                "--capture-ticks",
+                "225",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--party",
+                "--replay",
+                "tests/replays/party-swap.sreplay",
                 "--time-of-day",
                 "10",
                 "--tier",

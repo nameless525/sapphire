@@ -140,6 +140,9 @@ impl App for SandboxApp {
         if options.keeps_character_mesh() {
             content.keep_character_mesh();
         }
+        if options.party {
+            content.keep_party_looks();
+        }
         content.override_materials(options.material_overrides());
         // A device lost while the renderer is made gets a new device and another try, under
         // `CreationLosses`' policy, rather than a renderer of dead objects.
@@ -169,7 +172,7 @@ impl App for SandboxApp {
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            crate::arena::check_scenario(combat).map_err(AppInitError::msg)?;
+            crate::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
@@ -257,6 +260,9 @@ impl App for SandboxApp {
             let world = ground.share();
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
             scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
+            if let Some(meshes) = renderer.party {
+                scene.set_party_meshes(meshes);
+            }
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
                 let mut player = lookdev::player(&content)
@@ -1094,6 +1100,8 @@ pub(crate) struct SceneRenderer {
     pub(crate) renderer: Renderer,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
+    /// Each party member's mesh, with `--party`.
+    party: Option<[MeshHandle; sapphire_gameplay::PARTY_SLOTS]>,
     /// The skinned stalk, with `--skinned`.
     stalk: Option<MeshHandle>,
     /// The shader swatches, with `--swatches`.
@@ -1134,6 +1142,9 @@ impl Scene {
     /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
     pub(crate) fn set_meshes(&mut self, renderer: &SceneRenderer) {
         self.set_character_mesh(renderer.character);
+        if let Some(meshes) = renderer.party {
+            self.set_party_meshes(meshes);
+        }
         self.set_sky_material(renderer.sky);
         if let Some(stalk) = renderer.stalk {
             self.set_stalk_mesh(stalk);
@@ -1342,6 +1353,7 @@ pub(crate) fn create_renderer(
                 renderer,
                 character,
                 character_bounds,
+                party: content.party_meshes(character),
                 stalk,
                 swatches,
                 layer_samples,

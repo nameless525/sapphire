@@ -93,7 +93,11 @@ fn actor_of(sim: &Simulation, actor: &ActorView) -> ActorSnapshot {
         id: actor.id.raw(),
         clock_ticks: actor.clock_now.as_subticks() as f32 / SUBTICKS_PER_TICK as f32,
         hitstop_ticks: u32::from(actor.hitstop_ticks),
-        body: (body_text(state), state.color()),
+        body: if actor.off_field {
+            ("off the field", palette::OFF)
+        } else {
+            (body_text(state), state.color())
+        },
         windows: windows_of(actor.moves.windows),
         intents,
         held,
@@ -240,6 +244,18 @@ mod tests {
             }
             actions
         }
+    }
+
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_party_member_off_the_field_says_so() {
+        let path =
+            std::env::temp_dir().join(format!("sapphire-sandbox-panel-party-{}.sreplay", std::process::id()));
+        let option = CombatOption::Record { path, scenario: "party".to_owned(), script: None };
+        let combat = Combat::new(&option).expect("sets up");
+        let snapshot = snapshot(Some(&combat), &recorder(), true);
+        let bodies: Vec<_> = snapshot.actors.iter().map(|actor| actor.body.0).collect();
+        assert_eq!(bodies, ["can be hit", "can be hit", "off the field", "off the field"], "by ID");
     }
 
     /// A dodge 3 ticks in: `invulnerable: 1..14`, `perfect_dodge: 1..7`, its hurtbox off for the same.

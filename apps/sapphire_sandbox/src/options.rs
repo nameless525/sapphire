@@ -146,6 +146,9 @@ pub(crate) struct Options {
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
     pub arena: Option<ArenaShot>,
+    /// `--party`: the arena's fight is a party's (M2 G7), so the player draws whoever's on the field, in
+    /// that member's recolor (`crate::party_looks`). Needs the `party` scenario, which `--fight` then plays.
+    pub party: bool,
     /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
     pub graph: Option<GraphScript>,
     /// `--ik on|off` (off by default), `--ik-ground flat|step|slope`, `--ik-look x,y,z|orbit`: solves IK
@@ -240,7 +243,7 @@ pub(crate) enum CombatOption {
     /// `--arena --fight`: player against brain, with no file, starting over when someone falls. In the
     /// windowed app, on the actions of whoever's playing, so it's `None` there. With `--script <name>`
     /// and `--capture`, `--bench` or `--offscreen`, on the script's.
-    Fight { script: Option<String> },
+    Fight { script: Option<String>, party: bool },
 }
 
 /// How live link takes connections (`--live-link`), in `dev` builds.
@@ -692,6 +695,7 @@ impl Options {
                 "--clip" => options.clip = Some(clip_name(&value("--clip")?, "--clip")?),
                 "--clip-in-place" => options.clip_in_place = true,
                 "--arena" => arena_flag = true,
+                "--party" => options.party = true,
                 "--arena-shot" => {
                     let raw = value("--arena-shot")?;
                     arena_shot = Some(ArenaShot::from_name(&raw).ok_or_else(|| {
@@ -982,6 +986,9 @@ impl Options {
                  --foliage, --outline-row, --faces, --rim-rig and --hard-edges"
                 .to_owned());
         }
+        if options.party && options.arena.is_none() {
+            return Err("--party needs --arena: it's who stands in the square".to_owned());
+        }
         if options.blade.is_some() && !options.in_town() {
             return Err("--blade goes in the character's hand: it needs --look-dev or --arena".to_owned());
         }
@@ -1040,7 +1047,7 @@ impl Options {
             return Err("--fight is a fight of its own: drop --replay, --record and --scenario".to_owned());
         }
         options.combat = match (replay, record, scenario, script) {
-            (None, None, None, script) if fight => Some(CombatOption::Fight { script }),
+            (None, None, None, script) if fight => Some(CombatOption::Fight { script, party: options.party }),
             (None, None, None, None) => None,
             (Some(path), None, None, None) => {
                 Some(CombatOption::Replay { path, to_end: capture_ticks.is_none() })
@@ -1060,6 +1067,9 @@ impl Options {
             && !arena_colliders
         {
             return Err("--debug-draw's views of a fight need --replay or --record".to_owned());
+        }
+        if options.party && options.combat.is_none() {
+            return Err("--party needs --replay, --record or --fight: it draws a fight's party".to_owned());
         }
         if options.cues && options.combat.is_none() {
             return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
@@ -1087,18 +1097,18 @@ impl Options {
                         .to_owned(),
                 );
             }
-            Some(CombatOption::Fight { script: Some(_) }) if mode.is_none() => {
+            Some(CombatOption::Fight { script: Some(_), .. }) if mode.is_none() => {
                 return Err(format!(
                     "--script needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}: the windowed app's \
                      fight is whoever's playing"
                 ));
             }
-            Some(CombatOption::Fight { script: None }) if mode.is_some() => {
+            Some(CombatOption::Fight { script: None, .. }) if mode.is_some() => {
                 return Err("--fight needs --script without a window: no one's there to play".to_owned());
             }
             // The sandbox's own bindings would take the dodge and the heavy off a pad.
             // Someone's there to play it, so it's all on: the bars, the sparks and the sound.
-            Some(CombatOption::Fight { script: None }) => {
+            Some(CombatOption::Fight { script: None, .. }) => {
                 options.combat_input = true;
                 options.cues = options.vfx.is_none() && options.cue.is_none();
                 let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
@@ -1710,14 +1720,14 @@ mod tests {
     fn a_fight_is_played_in_a_window_or_scripted_anywhere_else() {
         let (windowed, unknown) = parse(&["--arena", "--fight"]).unwrap();
         assert!(unknown.is_empty());
-        assert_eq!(windowed.combat, Some(CombatOption::Fight { script: None }));
+        assert_eq!(windowed.combat, Some(CombatOption::Fight { script: None, party: false }));
         assert!(windowed.cues, "whoever's there gets the sparks and the sound");
         assert_eq!(windowed.hud.map(|hud| hud.mode), Some(HudMode::Live), "and the bars");
         assert!(windowed.offscreen.is_none());
         assert!(windowed.combat_input, "the sandbox's bindings would take the dodge off a pad");
         windowed.refuse_offscreen().expect("Android's windowed app can fight too");
 
-        let scripted = Some(CombatOption::Fight { script: Some("idle".to_owned()) });
+        let scripted = Some(CombatOption::Fight { script: Some("idle".to_owned()), party: false });
         for offscreen in [&["--offscreen"][..], &["--capture", "x"], &["--bench", "10"]] {
             let args = [offscreen, &["--arena", "--fight", "--script", "idle"]].concat();
             let (options, _) = parse(&args).unwrap();
@@ -1775,6 +1785,20 @@ mod tests {
             assert!(error.contains("--arena is a scene of its own"), "{args:?}: {error}");
             assert!(error.contains(excluded[0]), "{args:?}: {error}");
         }
+    }
+
+    #[test]
+    fn a_party_needs_the_arena_and_a_fight() {
+        assert!(!Options::default().party);
+        let fight = ["--record", "fight.sreplay", "--scenario", "party"];
+        let (options, _) = parse(&["--arena", "--party", fight[0], fight[1], fight[2], fight[3]]).unwrap();
+        assert!(options.party);
+        let error = parse(&["--party", fight[0], fight[1], fight[2], fight[3]]).expect_err("no arena");
+        assert!(error.contains("needs --arena"), "{error}");
+        let error = parse(&["--arena", "--party"]).expect_err("no fight");
+        assert!(error.contains("needs --replay, --record or --fight"), "{error}");
+        let (fighting, _) = parse(&["--arena", "--fight", "--party"]).unwrap();
+        assert_eq!(fighting.combat, Some(CombatOption::Fight { script: None, party: true }));
     }
 
     #[test]

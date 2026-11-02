@@ -148,6 +148,7 @@ use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
+use crate::party_looks::Drawn;
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 use crate::skinned::{self, Sway};
 use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
@@ -395,6 +396,8 @@ pub(crate) struct Scene {
     /// What poses them.
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
+    /// Which party member the character draws as, with `--party`.
+    party_looks: Option<Drawn>,
     /// Where the character's light rig finds its head and body, for a character without a
     /// [`Figure`] of its own.
     figure: Figure,
@@ -535,6 +538,7 @@ impl Scene {
             blade: None,
             arena: None,
             fighters_posed: false,
+            party_looks: None,
             figure,
             animating: false,
             players,
@@ -1612,6 +1616,18 @@ impl Scene {
         if let Some(arena) = &mut self.arena {
             arena.follow(simulation, cast);
         }
+        if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
+            self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Gives the character each party member's mesh (`--party`): at startup, and after GPU device loss or
+    /// a tier change, when whoever's on the field stays there.
+    pub fn set_party_meshes(&mut self, meshes: [MeshHandle; sapphire_gameplay::PARTY_SLOTS]) {
+        let drawn =
+            self.party_looks.map_or_else(|| Drawn::new(meshes), |drawn| drawn.on_new_renderer(meshes));
+        self.party_looks = Some(drawn);
+        self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(drawn.mesh()));
     }
 
     /// Gives the arena's camera director this much real time and input for its next frame, if one's

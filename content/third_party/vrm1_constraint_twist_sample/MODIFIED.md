@@ -3,6 +3,10 @@
 - `VRM1_Constraint_Twist_Sample.vrm` is unmodified: byte for byte the downloaded file (see the SHA-256 in [SOURCE.md](SOURCE.md)).
 - `VRM1_Constraint_Twist_Sample.vrm.meta` is Sapphire's import sidecar (asset ID and import settings), not part of the model. Since M1 X1 it binds the model's 13 material slots to the material documents below.
 
+## Made at load
+
+The sandbox's `--party` (M2 G7, `apps/sapphire_sandbox/src/party_looks.rs`) draws the model in two more palettes by multiplying the `base_color` of five materials as they load. It writes no file and changes nothing here: the maps stay the model's and are shared.
+
 ## Extracted files
 
 `extracted/*.png` (18 images) are extracted, byte-identical, from the `.vrm`'s embedded images: `sapphire_pipeline extract-materials` (A6) writes each glTF image's bytes out unchanged as a texture source, and nothing has touched them since. Checked on 2026-10-26 against a fresh extraction of the model above: all 18 identical. They are the model's, under its license, and stay byte for byte. Their `.meta` sidecars are Sapphire's (asset IDs and texture settings), which the look-dev materials reference.

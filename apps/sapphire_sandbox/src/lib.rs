@@ -171,6 +171,9 @@
 //!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
 //!   and `--size <cell>` set the grid, `--sheet-ticks <a,b,..>` and `--sheet-views <yaw,yaw,..>` name
 //!   what it draws, and `--zoom <factor>` pulls back for a clip that travels.
+//! - `--party` (with `--arena` and a fight of the `party` scenario, or `--fight`): the player is whoever of
+//!   the party is on the field, in that member's recolor (M2 G7, `party_looks.rs`). The golden scenes
+//!   `arena-party-second` and `arena-party-third` show it.
 //! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
 //!   as a place to fight: the character at the player's spawn point and the enemy at the enemy's,
 //!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s
@@ -348,6 +351,7 @@ mod offscreen;
 mod options;
 mod orbit;
 mod outlines;
+mod party_looks;
 mod pose;
 #[cfg(feature = "dev")]
 mod reload;

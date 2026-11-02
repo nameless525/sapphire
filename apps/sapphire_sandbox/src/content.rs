@@ -92,6 +92,7 @@ use sapphire_assets::{
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
 use sapphire_colliders::ColliderSet;
+use sapphire_gameplay::PARTY_SLOTS;
 #[cfg(feature = "dev")]
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
@@ -114,6 +115,7 @@ use crate::foliage::{self, FoliageMeshes};
 use crate::layers;
 use crate::lookdev::{self, Plant, TownMeshes};
 use crate::outlines;
+use crate::party_looks::PartyLooks;
 use crate::scene;
 use crate::swatches::{self, SWATCHES};
 
@@ -197,6 +199,8 @@ struct GpuAssets {
     meshes_replaced: bool,
     /// What the materials it uploads change (`--hair-shadow-softness`, `--hair-transmission`).
     overrides: MaterialOverrides,
+    /// The party's recolors of what it uploads, with `--party`.
+    party: Option<PartyLooks>,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
 }
@@ -214,6 +218,7 @@ impl GpuAssets {
             warrior_mesh: None,
             meshes_replaced: false,
             overrides: MaterialOverrides::default(),
+            party: None,
             probe_grid: None,
         }
     }
@@ -262,6 +267,9 @@ impl GpuAssets {
                     self.materials.insert(id, Held { slot, generation, object });
                 }
             }
+            if let Some(party) = &mut self.party {
+                party.take_material(id, generation, material, resolve, renderer)?;
+            }
         } else if let Some(mesh) = upload.get::<Mesh>() {
             let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
             if id == enemy::WARRIOR {
@@ -282,6 +290,9 @@ impl GpuAssets {
                     let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
                     self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
                 }
+            }
+            if let Some(party) = self.party.as_mut().filter(|_| id == self.character) {
+                party.take_character(generation, mesh, resolve, renderer)?;
             }
             // Only what the renderer took: the held pose is derived from it.
             if copy.is_some() {
@@ -534,6 +545,17 @@ impl Content {
     /// (the stage's figure and pedestal). Call before [`Self::character`].
     pub fn keep_character_mesh(&mut self) {
         self.gpu.keep_character = true;
+    }
+
+    /// Makes the party's recolors from the character's next upload on (`--party`). Call before
+    /// [`Self::character`].
+    pub fn keep_party_looks(&mut self) {
+        self.gpu.party = Some(PartyLooks::default());
+    }
+
+    /// Each party member's mesh, given the character's, with `--party` and once the character has loaded.
+    pub fn party_meshes(&self, character: MeshHandle) -> Option<[MeshHandle; PARTY_SLOTS]> {
+        self.gpu.party.as_ref().and_then(|party| party.meshes(character))
     }
 
     /// Changes the anime character materials it uploads from now on by `overrides`
@@ -1209,7 +1231,8 @@ impl Content {
     /// if the new renderer is given up.
     pub fn renderer_rebuilt(&mut self) -> RendererAssets {
         self.server.reupload_all();
-        let fresh = GpuAssets::new(self.gpu.character, self.gpu.keep_character);
+        let mut fresh = GpuAssets::new(self.gpu.character, self.gpu.keep_character);
+        fresh.party = self.gpu.party.as_ref().map(|_| PartyLooks::default());
         let previous = std::mem::replace(&mut self.gpu, fresh);
         RendererAssets(previous)
     }

@@ -352,6 +352,7 @@ impl LiveTuning {
         self.waiting.retain(|waiting| {
             let playing = [combat, show].into_iter().flatten().find_map(|(sim, cast)| {
                 cast.iter().find_map(|actor| {
+                    let actor = &sim.party().on_field(*actor);
                     let current = sim.actor(*actor)?.moves.current?;
                     // The newest, which a fight started over from an edit has as its revision 0.
                     let newest = sim.move_library().current_revision(waiting.set);
@@ -414,7 +415,8 @@ pub(crate) fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
     let window = |span: &Span| TickWindow { from: span.from, to: span.to };
     cast.iter()
         .filter_map(|actor| {
-            let view = sim.actor(*actor)?;
+            let actor = sim.party().on_field(*actor);
+            let view = sim.actor(actor)?;
             let current = view.moves.current?;
             let mv = library.get(current.at)?;
             Some(MoveAttempt {
@@ -755,7 +757,7 @@ mod tests {
     }
 
     fn a_fight() -> Combat {
-        let option = CombatOption::Fight { script: Some("attempts".to_owned()) };
+        let option = CombatOption::Fight { script: Some("attempts".to_owned()), party: false };
         Combat::new(&option).expect("it starts")
     }
 
@@ -779,6 +781,25 @@ mod tests {
         assert_eq!(library.current_revision(id), Some(0));
         assert!(library.is_current(id, &edited));
         assert_eq!(combat.simulation().tick(), 0);
+    }
+
+    /// All of a party plays one document, so an edit of it reaches a party's fight as it does anyone's, and
+    /// the next fight starts from it as a party.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_partys_fight_takes_an_edit_and_starts_over_from_it() {
+        const PLAYER: &str = "player.moves.ron";
+        let option = CombatOption::Fight { script: Some("attempts".to_owned()), party: true };
+        let mut combat = Combat::new(&option).expect("it starts");
+        let id = combat.plays(PLAYER).expect("it plays this document");
+        let edited = later_light(combat.simulation().move_library().current(id).expect("it runs"));
+        let tuned = combat.tune(PLAYER, edited.clone()).expect("no refusal");
+        assert_eq!(tuned, Some((id, Tuned::Replaced { revision: 1 })));
+
+        combat.restart();
+        let simulation = combat.simulation();
+        assert!(simulation.move_library().is_current(id, &edited));
+        assert_eq!(simulation.party().slots().count(), sapphire_gameplay::PARTY_SLOTS);
     }
 
     /// A fight that hasn't stepped starts from a cook that differs from the build's copy, and goes on

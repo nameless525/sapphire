@@ -191,7 +191,8 @@ pub(crate) fn draw(
         bodies(views, sim, canvas);
     }
     if views.volumes {
-        for actor in sim.actors() {
+        // Off the field a party member isn't in the fight, whatever `hurtbox` would stand in for it.
+        for actor in sim.actors().filter(|actor| !actor.off_field) {
             for (index, volume) in actor.moves.volumes.iter().enumerate() {
                 hit_volume(&actor, index, &volume, sim, visible, canvas);
             }
@@ -419,7 +420,7 @@ fn hurtbox(actor: &ActorView, sim: &Simulation, canvas: &mut impl Canvas) {
 fn bodies(views: CombatViews, sim: &Simulation, canvas: &mut impl Canvas) {
     let world = sim.physics();
     let capsule = Style::new(palette::CAPSULE).on_top();
-    for actor in sim.actors() {
+    for actor in sim.actors().filter(|actor| !actor.off_field) {
         if world.body_shape(actor_body(actor.id)).is_none() {
             let (shape, pose) = nominal_capsule(&actor);
             body_shape(shape, pose, capsule, canvas);
@@ -582,6 +583,17 @@ mod tests {
     /// Worked by hand. At tick 3 the path has gone 0.3 m along the root's +X and the root 3 cm along its
     /// +Z, each a tenth and a hundredth of a metre a tick. Facing +X, the root's +X is the world's −Z,
     /// and its +Z the world's +X.
+    /// Off the field a party member has no capsule, and none should stand in for it: what's left to draw
+    /// is who's in the fight.
+    #[test]
+    fn off_the_field_draws_nothing() {
+        let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+        let (sim, _) = scenario.start(scenario.config).expect("sets up");
+        let sketch = sketch(CombatViews::COLLIDERS, &sim);
+        let capsules = drawn_in(&sketch, palette::CAPSULE);
+        assert_eq!(capsules.len(), 2, "the one on the field and the opponent: {capsules:?}");
+    }
+
     #[test]
     fn a_sphere_sweeps_a_capsule_from_where_it_was_to_where_it_is() {
         let sim = swinging(3);

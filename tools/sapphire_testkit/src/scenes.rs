@@ -149,7 +149,12 @@ pub struct Scene {
 /// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier
 /// scene plays one, and a character without a clip is never sampled) and pin what the look-dev
 /// scenes pin.
-pub fn scenes() -> [Scene; 114] {
+///
+/// The arena scenes (M2 O5) pin what the look-dev scenes pin: Desktop-High and ambient occlusion off,
+/// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
+/// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
+/// replay on it.
+pub fn scenes() -> [Scene; 117] {
     [
         Scene {
             name: "turntable-start",
@@ -2127,6 +2132,73 @@ pub fn scenes() -> [Scene; 114] {
                 "off",
                 "--debug-draw",
                 "volumes",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The arena (M2 O5) at midday, by the plain camera behind the player: the fight's clear floor, the
+        // enemy's stand-in past the player's shoulder, the pavilion on the left and the market on the
+        // right, the street's moon gate between them. The frame the combat slice is judged in.
+        Scene {
+            name: "arena-day",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same frame at golden hour, the low sun behind the pavilion's roof.
+        Scene {
+            name: "arena-golden",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The arena part way through a recorded walk, at the morning hour benches use: the character's
+        // root and the camera both come from the replay's actor, on its run back from the lantern's
+        // post at tick 280 of `arena-walk`, and the app
+        // checks the replay reaches its checksums before this frame is written.
+        Scene {
+            name: "arena-replay",
+            args: &[
+                "--capture-ticks",
+                "280",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--replay",
+                "tests/replays/arena-walk.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

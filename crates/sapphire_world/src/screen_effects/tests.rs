@@ -64,6 +64,7 @@ fn the_sample_presets_load_and_round_trip() {
             "poise_break",
             "finish",
             "perfect_dodge",
+            "skill_flash",
         ]
     );
     let kinds = |name: &str| -> Vec<EffectKind> {

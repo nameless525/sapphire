@@ -125,7 +125,7 @@ impl EffectLibrary {
     /// compiled in: one per effect (`radial_blur`, `chromatic_aberration`, `inversion`,
     /// `duotone`, `speed_lines`) and `impact_frame`, all of them at once as a heavy hit lands;
     /// then combat's own (M2 E3), which `sapphire_cues`' table pushes: `light_hit`, `medium_hit`,
-    /// `heavy_hit`, `poise_break`, `finish` and `perfect_dodge`.
+    /// `heavy_hit`, `poise_break`, `finish`, `perfect_dodge` and `skill_flash`.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped presets are checked by this module's tests")
     }

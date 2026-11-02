@@ -1,11 +1,11 @@
 //! `--cues`: the cues of a `--replay` or a `--record`ed fight fired as a game fires them, through
 //! `sapphire_cues` (M2 E3): effects, the scene's screen effects, a shake on its camera, sound and rumble.
 //!
-//! - **On this stage.** The simulation's actors draw nothing here until N3 and O5 put them on stage, and
-//!   the look-dev stage's character stands at the origin in a held pose. So [`on_stage`] carries a fight
-//!   to it: what lands on an actor lands on the scene's character, wherever the fight has walked to, at
-//!   that place on its own surface. A fight with its actors drawn takes the simulation's places as they
-//!   are, and needs none of this.
+//! - **On this stage.** The look-dev stage draws none of the simulation's actors, and its character
+//!   stands at the origin in a held pose. So [`on_stage`] carries a fight to it: what lands on an actor
+//!   lands on the scene's character, wherever the fight has walked to, at that place on its own surface.
+//!   A fight with its actors drawn takes the simulation's places as they are and needs none of this, so
+//!   `--arena` refuses `--cues` until G6 moves it there.
 //! - **A camera that isn't the director's.** The scene frames its stage with `OrbitCamera`, so a
 //!   [`ShakeStack`] plays shakes on it, from the director's own tuning. A stage with a
 //!   `sapphire_camera::CameraDirector` hands that to the dispatcher instead, with no other change.

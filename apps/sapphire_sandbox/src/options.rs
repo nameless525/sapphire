@@ -966,6 +966,11 @@ impl Options {
         if options.cues && options.combat.is_none() {
             return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
         }
+        if options.cues && options.arena.is_some() {
+            return Err(
+                "--cues lands a fight's hits on the look-dev character, so not with --arena yet".to_owned()
+            );
+        }
         if options.cues && options.vfx.is_some() {
             return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
         }
@@ -1877,6 +1882,7 @@ mod tests {
             assert!(error.contains(with), "{args:?}: {error}");
         };
         refused(&["--capture", "x", "--cues"], "--replay or --record");
+        refused(&["--capture", "x", "--replay", "a", "--cues", "--arena"], "--arena");
         refused(&["--capture", "x", "--replay", "a", "--cues", "--vfx", "arc"], "exclusive");
         refused(&["--cues", "--record", "a", "--scenario", "s", "--cue", "hit"], "exclusive");
     }

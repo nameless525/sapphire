@@ -1349,11 +1349,7 @@ impl Scene {
 
     /// Takes the arena's actors from `simulation`, after a step of it: nothing without `--arena`.
     /// `cast` is its scenario's, the player first.
-    pub fn follow_simulation(
-        &mut self,
-        simulation: &sapphire_gameplay::Simulation,
-        cast: &[sapphire_gameplay::ActorId],
-    ) {
+    pub fn follow_simulation(&mut self, simulation: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
         if let Some(arena) = &mut self.arena {
             arena.follow(simulation, cast);
         }

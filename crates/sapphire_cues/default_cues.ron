@@ -126,13 +126,26 @@
                 effects: [(effect: "dust_puff", at: Feet)],
                 sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
             ),
+            // A foot taking the weight, and braking at the end of a dash.
+            (cue: "step", sounds: ["c1d7a6f4-3b52-4e0e-9a61-7f2b8d90a1c3"]), // step
+            (
+                cue: "skid",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
+            ),
+            // A skill starting, and its blade coming through. What that blade lands on fires a hit's own
+            // row, so these say nothing of a hit, and a miss doesn't shake anything.
+            (
+                cue: "skill_flash",
+                screen: Some((preset: "skill_flash", center: Preset)),
+                rumble: Some((low: 0.0, high: 0.25, seconds: 0.05)),
+            ),
+            (cue: "skill_hit", sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"]), // swing
             // On purpose, nothing yet: their moves' animation will say enough, or T2 will add to them.
             (cue: "swing_windup"),
             (cue: "reaction"),
             (cue: "falls"),
             (cue: "dodge_start"),
-            (cue: "skill_flash"),
-            (cue: "skill_hit"),
             (cue: "telegraph"),
             (cue: "stagger"),
             (cue: "stagger_heavy"),

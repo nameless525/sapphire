@@ -329,6 +329,34 @@
                     ),
                 ],
             ),
+            (
+                // A skill beginning, before anything lands: a quick pull inward and thin lines, gone
+                // before the blow, so the ink stays the hit's own.
+                name: "skill_flash",
+                layers: [
+                    (
+                        speed_lines: (
+                            opacity: 0.3,
+                            count: 70,
+                            width: 0.2,
+                            inner_radius: 0.5,
+                            spread: 0.3,
+                            color: (1.0, 0.95, 0.85),
+                            rate: 14.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.017, hold: 0.05, release: 0.12),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.012),
+                        envelope: Pulse(hold: 0.02, release: 0.12),
+                    ),
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.005),
+                        envelope: Pulse(hold: 0.033, release: 0.1),
+                    ),
+                ],
+            ),
         ],
     ),
 )

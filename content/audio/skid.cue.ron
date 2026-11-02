@@ -1,0 +1,20 @@
+// A foot braking at the end of a dash: the same steps, heavier and pitched down, since Kenney's packs have
+// no scrape.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "b6dd6b1f-1eb7-43e3-8ed9-49ded116db1c", // kenney_impact_sounds: footstep_concrete_000
+            "2335d401-1961-4411-8190-59a1d4e3ebe9", // footstep_concrete_001
+            "9b379deb-aa7d-4b2f-8159-b39a982efe2b", // footstep_concrete_002
+            "4b4b02d9-d31e-4477-aa2e-1cee335c363d", // footstep_concrete_003
+            "3cd19ff2-fcc7-443a-a86e-ce99ce7ca406", // footstep_concrete_004
+        ],
+        volume_db: (-10.0, -7.0),
+        pitch: (0.7, 0.85),
+        attenuation: Some((near: 1.0, far: 25.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Freeze,
+    ),
+)

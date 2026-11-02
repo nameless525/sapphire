@@ -149,6 +149,23 @@ impl<'a> Painter<'a> {
         quad.clip = [if from <= 0.0 { 0.0 } else { share(from) }, if to >= 1.0 { 1.0 } else { share(to) }];
     }
 
+    /// The bar shape `length` long and `width` across, centered on `center` and running along `along`,
+    /// a unit vector in UI space (+y down). Its corners keep their shape at any length. Nothing draws
+    /// for an empty one.
+    pub fn bar_along(&mut self, center: Vec2, along: Vec2, length: f32, width: f32, paint: Paint) {
+        if length <= 0.0 || width <= 0.0 {
+            return;
+        }
+        let sprite = self.sprites.bar;
+        let per_texel = width / sprite.size[1];
+        let cell = Vec2::new(length, width) + Vec2::splat(SPREAD * per_texel * 2.0);
+        let cap = (sprite.size[0] * 0.5 + SPREAD) * per_texel;
+        let across = Vec2::new(-along.y, along.x);
+        let index = self.quads.len();
+        self.push(sprite, center, along * cell.x, across * cell.y, per_texel, paint);
+        self.quads[index].slice = (cap / cell.x).min(0.5);
+    }
+
     /// `value` in digits `height` points tall, leaning `slant`, with `at` the row's left, middle or
     /// right on its vertical middle. Returns the row's width. Writes no text: `u32`'s ten digits at
     /// most, from the last.
@@ -282,6 +299,26 @@ mod tests {
         assert_eq!(quads[2].clip, [share(0.25), share(0.75)]);
         // Each end's half a cell (14 texels) at that scale.
         assert!((quads[0].slice - 10.5 / 209.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_bar_along_a_direction_stands_on_its_center_with_its_ends_kept() {
+        let center = Vec2::new(100.0, 50.0);
+        let quads = painted(|painter| {
+            let up = Vec2::new(0.0, -1.0);
+            painter.bar_along(center, up, 60.0, 16.0, Paint::fill([255; 4]));
+            painter.bar_along(center, up, 0.0, 16.0, Paint::fill([255; 4]));
+            painter.bar_along(center, up, 60.0, 0.0, Paint::fill([255; 4]));
+        });
+        assert_eq!(quads.len(), 1, "an empty one draws nothing");
+        // 16 points from 16 texels: a point a texel, so a 6-point margin all round.
+        assert_eq!(quads[0].axis_x, [0.0, -72.0]);
+        assert_eq!(quads[0].axis_y, [28.0, 0.0]);
+        let [first, _, _, last] = corners(&quads[0]);
+        assert_eq!((first + last) * 0.5, center);
+        // Each end's half a cell of 14 texels, out of 72 points.
+        assert_eq!(quads[0].slice, 14.0 / 72.0);
+        assert_eq!(quads[0].clip, [0.0, 1.0], "uncut");
     }
 
     #[test]

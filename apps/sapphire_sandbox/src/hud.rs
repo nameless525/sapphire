@@ -49,11 +49,13 @@ pub(crate) struct HudOptions {
     /// `--hud-scale`: pixels per point in an offscreen frame, or the player's UI scale on top of
     /// the display's in a window.
     pub scale: f32,
+    /// `--hud-paused`: draws a pause whatever the input says, since a capture has no input to pause it.
+    pub paused: bool,
 }
 
 impl Default for HudOptions {
     fn default() -> Self {
-        Self { mode: HudMode::default(), insets: None, scale: 1.0 }
+        Self { mode: HudMode::default(), insets: None, scale: 1.0, paused: false }
     }
 }
 
@@ -168,6 +170,11 @@ impl SandboxHud {
         if self.options.mode == HudMode::Live {
             self.hud.clear_damage();
         }
+    }
+
+    /// Whether the frame says the fight is waiting.
+    pub fn show_pause(&mut self, shown: bool) {
+        self.hud.show_pause(shown);
     }
 
     /// A platform event: whether the touch zones took it, which the rest of the input then never
@@ -285,6 +292,9 @@ impl SandboxHud {
             self.controls.actions()
         };
         self.hud.update(self.now, &self.values, actions);
+        if self.options.paused {
+            self.hud.show_pause(true);
+        }
         self.last_stats = self.hud.draw(&self.layout, actions, list);
         self.last_cost = stopwatch.elapsed();
     }

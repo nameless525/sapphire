@@ -36,7 +36,7 @@ const DISC: f32 = 52.0;
 const WEDGE: f32 = 32.0;
 const BAR: f32 = 16.0;
 /// The bar's corner radius, in texels.
-const BAR_CORNER: f32 = 3.0;
+pub(crate) const BAR_CORNER: f32 = 3.0;
 
 /// The digits' stroke width and grid, on which `0` is 5 wide and 9 tall along its center lines.
 const STROKE: f32 = 1.7;

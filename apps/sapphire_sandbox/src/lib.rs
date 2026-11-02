@@ -156,6 +156,8 @@
 //!   the window's safe area: to try a notch on a frame that has none.
 //! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
 //!   player's UI scale on top of the display's in a window. 1 without it.
+//! - `--hud-paused`: draws the pause's veil and mark, to look at them in a capture, which has no input
+//!   to pause it.
 //! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). A name is a clip `lookdev::ClipName` lists (M2 O2), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.

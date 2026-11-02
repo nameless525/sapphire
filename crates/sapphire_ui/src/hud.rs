@@ -41,6 +41,14 @@ const EMBER: [u8; 4] = [255, 112, 58, 255];
 const SHADOW: [u8; 4] = [0, 0, 0, 170];
 const OUTLINE: [u8; 4] = [8, 10, 18, 255];
 
+/// What a pause lays over the frame. Blending is in linear light, so it takes this much to read as
+/// waiting at a glance, with what's held still there underneath.
+const VEIL: [u8; 4] = [6, 8, 14, 190];
+/// The pause mark's bars, in points: how long, how wide, and how far each stands from the middle.
+const PAUSE_BAR_LENGTH: f32 = 76.0;
+const PAUSE_BAR_WIDTH: f32 = 24.0;
+const PAUSE_BAR_APART: f32 = 24.0;
+
 /// A phone's short side in points, below which the whole HUD shrinks to fit (a small window).
 const FULL_HEIGHT: f32 = 330.0;
 const FULL_WIDTH: f32 = 470.0;
@@ -301,6 +309,7 @@ pub struct CombatHud {
     press: [f32; Button::ALL.len()],
     /// The stick and buttons draw. A finger still works where they're hidden.
     controls_shown: bool,
+    pause_shown: bool,
     /// When the skill last came off cooldown.
     ready_at: Option<Timestamp>,
     damage: [Option<DamageNumber>; MAX_DAMAGE_NUMBERS],
@@ -331,6 +340,7 @@ impl CombatHud {
             enemy_trail: Trail::default(),
             press: [0.0; Button::ALL.len()],
             controls_shown: true,
+            pause_shown: false,
             ready_at: None,
             damage: [None; MAX_DAMAGE_NUMBERS],
             next_damage: 0,
@@ -341,6 +351,12 @@ impl CombatHud {
     /// (spec §6.6). They draw until told otherwise. The bars and numbers always do.
     pub fn show_controls(&mut self, shown: bool) {
         self.controls_shown = shown;
+    }
+
+    /// Whether the frame says the fight is waiting: a veil over all of it and a pause mark in the safe
+    /// area's middle, or a held picture would read as a hung one. Off until told otherwise.
+    pub fn show_pause(&mut self, shown: bool) {
+        self.pause_shown = shown;
     }
 
     /// The atlas the HUD draws from.
@@ -446,6 +462,9 @@ impl CombatHud {
         for number in self.damage.iter().flatten() {
             numbers += u32::from(self.draw_damage(&mut painter, number, scale));
         }
+        if self.pause_shown {
+            draw_pause(&mut painter, layout);
+        }
         HudStats { quads: (list.quads.len() - before) as u32, damage_numbers: numbers }
     }
 
@@ -541,6 +560,23 @@ fn share(value: f32) -> f32 {
 
 fn seconds_since(now: Timestamp, then: Timestamp) -> f32 {
     now.saturating_duration_since(then).as_secs_f32()
+}
+
+/// The veil and the pause mark. The veil is the bar shape over more than the frame, its rounded corners
+/// off it: half the frame's height all round is more than their radius, 3/16 of the shape's height.
+fn draw_pause(painter: &mut Painter<'_>, layout: &HudLayout) {
+    let size = layout.metrics.size;
+    let margin = Vec2::splat(size.y * 0.5);
+    painter.bar(Rect::new(-margin, size + margin), 0.0, (0.0, 1.0), Paint::fill(VEIL));
+    let scale = layout.scale;
+    let middle = layout.metrics.safe().center();
+    // Leaning as everything else does: its top to the right.
+    let along = Vec2::new(SLANT, -1.0).normalize();
+    let paint = Paint::outlined(PALE, OUTLINE, 2.0 * scale);
+    for side in [-1.0, 1.0] {
+        let center = middle + Vec2::new(side * PAUSE_BAR_APART * scale, 0.0);
+        painter.bar_along(center, along, PAUSE_BAR_LENGTH * scale, PAUSE_BAR_WIDTH * scale, paint);
+    }
 }
 
 fn draw_button(

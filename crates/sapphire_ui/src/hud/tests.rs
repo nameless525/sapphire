@@ -230,6 +230,59 @@ fn a_fighter_with_no_enemy_draws_fewer_bars() {
     assert!(alone < with);
 }
 
+/// A pause adds a veil over all of the frame and two bars in its middle, on top of what was there and
+/// nothing else, and off again draws what it drew. No scene pauses, so no golden moves.
+#[test]
+fn a_pause_lays_a_veil_over_the_frame_and_a_mark_in_its_middle() {
+    let mut frames = frames();
+    frames.push(("portrait", UiMetrics::new(Vec2::new(360.0, 800.0), Insets::default())));
+    let bar = Atlas::paint().sprites.bar;
+    for (name, metrics) in frames {
+        let layout = HudLayout::new(metrics);
+        let mut controls = TouchControls::new(layout);
+        let mut hud = CombatHud::new();
+        let actions = controls.update(ms(0));
+        hud.update(ms(0), &values(), actions);
+        let draw = |hud: &CombatHud| {
+            let mut list = UiDrawList::default();
+            hud.draw(&layout, actions, &mut list);
+            list.quads
+        };
+        let plain = draw(&hud);
+        hud.show_pause(true);
+        let paused = draw(&hud);
+        assert_eq!(paused[..plain.len()], plain[..], "{name}: what was there stays");
+        let [veil, first, second] = paused[plain.len()..] else {
+            panic!("{name}: {} quads over the HUD", paused.len() - plain.len());
+        };
+
+        // The shape inside its cell's margin, less its corners' radius, covers the frame.
+        let corners = quad_corners(&veil);
+        let per_texel = veil.axis_y[1] / (bar.size[1] + 2.0 * crate::atlas::SPREAD);
+        let inset = (crate::atlas::SPREAD + crate::atlas::BAR_CORNER) * per_texel;
+        assert!(corners[0].x + inset <= 0.0 && corners[0].y + inset <= 0.0, "{name}: {corners:?}");
+        assert!(
+            corners[3].x - inset >= metrics.size.x && corners[3].y - inset >= metrics.size.y,
+            "{name}: {corners:?}"
+        );
+
+        // The mark stands in the safe area's middle, a bar to each side, longer than wide and upright.
+        let middle = metrics.safe().center();
+        let center = |quad: &UiQuad| (quad_corners(quad)[0] + quad_corners(quad)[3]) * 0.5;
+        assert!(center(&first).x < middle.x && middle.x < center(&second).x, "{name}");
+        assert!(((center(&first) + center(&second)) * 0.5 - middle).length() < 1e-3, "{name}");
+        assert_eq!(first.uv, bar.uv);
+        assert!(
+            first.axis_x[1] < 0.0 && first.axis_x[1].abs() > first.axis_y[0].abs(),
+            "{name}: it stands up"
+        );
+        assert!(first.axis_x[0] > 0.0, "{name}: it leans as the rest do");
+
+        hud.show_pause(false);
+        assert_eq!(draw(&hud), plain, "{name}: off again");
+    }
+}
+
 #[test]
 fn the_trailing_segment_holds_then_catches_up_on_the_real_clock() {
     let mut trail = Trail::default();

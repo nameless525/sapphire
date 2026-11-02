@@ -1700,9 +1700,13 @@ impl Scene {
     /// The view's share of a windowed frame, `dt` real seconds after the last: `input`'s orbit and zoom,
     /// on the real clock so the view stays responsive in slow motion. A pause holds a fight's view, as the
     /// director's frame asks, shakes and all: only the sandbox's own orbit still moves, for looking
-    /// around at what's held. Returns the seconds the view moved by, for [`Self::end_cue_frame`].
+    /// around at what's held, and the HUD says it's waiting. Returns the seconds the view moved by, for
+    /// [`Self::end_cue_frame`].
     pub fn drive_view(&mut self, input: &SandboxInput, dt: f32) -> f32 {
         let view_dt = if input.is_paused() { 0.0 } else { dt };
+        if let Some(hud) = &mut self.hud {
+            hud.show_pause(input.is_paused());
+        }
         let mut camera = self.camera_mut();
         input.drive_camera(&mut camera);
         camera.update(dt);
@@ -2726,6 +2730,56 @@ mod tests {
 
     /// A pause holds what's on screen, a shake mid-swing and the director's springs among it, however
     /// long it lasts, and the shake plays on from there when it ends.
+    /// The HUD says a fight is waiting for as long as it is, on a phone as on a desktop, and a capture
+    /// can ask for the same.
+    #[test]
+    fn a_pause_shows_on_the_hud() {
+        use crate::hud::{HudMode, HudOptions};
+
+        let quads = |scene: &mut Scene| {
+            let mut list = sapphire_ui::UiDrawList::default();
+            scene.hud.as_mut().expect("set").draw((1000, 500), &mut list);
+            list.quads.len()
+        };
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), [[-1.0; 3], [1.0; 3]], false);
+        scene.set_hud(SandboxHud::for_fight(live));
+        let size = sapphire_platform::Size { width: 1000, height: 500 };
+        let mut input = SandboxInput::new(false, true, size).expect("the default bindings");
+        let time = |ms: u64| sapphire_platform::Timestamp::from_nanos(ms * 1_000_000);
+        input.update(time(1));
+        scene.drive_view(&input, 1.0 / 60.0);
+        let running = quads(&mut scene);
+
+        input.pause();
+        input.update(time(2));
+        scene.drive_view(&input, 1.0 / 60.0);
+        assert_eq!(quads(&mut scene), running + 3, "a veil and two bars");
+
+        let key = |ms: u64, down| {
+            sapphire_platform::Event::Key(sapphire_platform::KeyEvent {
+                timestamp: time(ms),
+                window: sapphire_platform::WindowId::from_raw(1),
+                scancode: sapphire_platform::Scancode::P,
+                keycode: sapphire_platform::Keycode(0),
+                modifiers: sapphire_platform::Modifiers::default(),
+                down,
+                repeat: false,
+            })
+        };
+        input.handle_event(&key(3, true));
+        input.handle_event(&key(4, false));
+        input.update(time(5));
+        input.update(time(6));
+        assert!(!input.is_paused());
+        scene.drive_view(&input, 1.0 / 60.0);
+        assert_eq!(quads(&mut scene), running, "gone with the pause");
+
+        let asked = HudOptions { paused: true, ..live };
+        scene.set_hud(SandboxHud::for_fight(asked));
+        assert_eq!(quads(&mut scene), running + 3, "with no input at all");
+    }
+
     #[test]
     fn a_pause_holds_the_directors_view_and_its_shake() {
         let (mut scene, _) = arena_stage(ArenaShot::Director);

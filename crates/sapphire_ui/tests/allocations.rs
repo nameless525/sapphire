@@ -74,6 +74,8 @@ fn frame(frame: u64, controls: &mut TouchControls, hud: &mut CombatHud, list: &m
     if frame.is_multiple_of(3) {
         hud.spawn_damage(frame as u32, Vec2::new(320.0, 180.0), DamageKind::Normal);
     }
+    // A pause's frames draw more than the others, and it comes back.
+    hud.show_pause(frame % 50 < 25);
     list.reset();
     hud.draw(&layout, actions, list);
 }

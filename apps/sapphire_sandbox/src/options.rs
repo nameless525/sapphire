@@ -127,7 +127,8 @@ pub(crate) struct Options {
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
     /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
     pub look_dev: Option<Shot>,
-    /// `--hud fixed|live`, `--hud-insets` and `--hud-scale`: the combat HUD over the scene (M2 I2).
+    /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
+    /// (M2 I2).
     pub hud: Option<HudOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
@@ -520,6 +521,7 @@ impl Options {
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
         let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
+        let mut hud_paused = false;
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
         let (mut sheet_ticks, mut sheet_views): (Vec<u32>, Vec<i32>) = (Vec::new(), Vec::new());
@@ -685,6 +687,7 @@ impl Options {
                     hud_mode = Some(mode);
                 }
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
+                "--hud-paused" => hud_paused = true,
                 "--hud-scale" => {
                     let scale: f32 = number(&value("--hud-scale")?, "--hud-scale")?;
                     if !(scale.is_finite() && scale > 0.0) {
@@ -904,10 +907,12 @@ impl Options {
                 _ => unknown.push(arg.clone()),
             }
         }
-        options.hud = match (hud_mode, hud_insets, hud_scale) {
-            (None, None, None) => None,
-            (None, ..) => return Err("--hud-insets and --hud-scale need --hud".to_owned()),
-            (Some(mode), insets, scale) => Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0) }),
+        options.hud = match (hud_mode, hud_insets, hud_scale, hud_paused) {
+            (None, None, None, false) => None,
+            (None, ..) => return Err("--hud-insets, --hud-scale and --hud-paused need --hud".to_owned()),
+            (Some(mode), insets, scale, paused) => {
+                Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0), paused })
+            }
         };
         options.faces = match (faces, face_layout) {
             (true, layout) => Some(layout.unwrap_or_default()),
@@ -1692,11 +1697,15 @@ mod tests {
         assert_eq!(options.hud, Some(HudOptions::default()));
         let (options, _) = parse(&["--hud-scale", "3", "--hud=live", "--hud-insets", "62, 0,62,21"]).unwrap();
         let insets = Insets { left: 62.0, top: 0.0, right: 62.0, bottom: 21.0 };
-        assert_eq!(options.hud, Some(HudOptions { mode: HudMode::Live, insets: Some(insets), scale: 3.0 }));
+        let live = HudOptions { mode: HudMode::Live, insets: Some(insets), scale: 3.0, paused: false };
+        assert_eq!(options.hud, Some(live));
+        let (options, _) = parse(&["--hud", "live", "--hud-paused"]).unwrap();
+        assert!(options.hud.is_some_and(|hud| hud.paused));
         for wrong in [
             &["--hud", "maybe"][..],
             &["--hud-insets", "1,2,3,4"],
             &["--hud-scale", "2"],
+            &["--hud-paused"],
             &["--hud", "fixed", "--hud-insets", "1,2,3"],
             &["--hud", "fixed", "--hud-insets", "1,2,3,-4"],
             &["--hud", "fixed", "--hud-scale", "0"],

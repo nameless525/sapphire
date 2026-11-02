@@ -54,6 +54,9 @@ sapphire_tod = { kind = "runtime", layer = 3 }
 # The collision world (spec §5.14). Reaches no renderer, world, platform or GPU: gameplay depends
 # on it, and replays run with none of those in the tree.
 sapphire_physics = { kind = "runtime", layer = 3 }
+# Audio backends, cue playback and clock-aware mixing (spec §5.15). Plain data in, no ECS or
+# renderer. Its cooked formats are `sapphire_assets`', so the cooker links no mixer.
+sapphire_audio = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 sapphire_gameplay = { kind = "runtime", layer = 4 }
@@ -128,10 +131,11 @@ forbidden = [
 # The content tool, and what it must never link through normal dependencies. The renderer and the
 # world compile in the shaders and documents edited during look-dev, which made the first cook after
 # such an edit take a minute (M1 A8's follow-up). A collision library has no place in a cook either:
-# a cooked collider set is plain data, and the world builds from it at load (M2 D3).
+# a cooked collider set is plain data, and the world builds from it at load (M2 D3). Nor has a mixer:
+# cooked sounds and cues are plain data in `sapphire_assets` (M2 E1).
 [cooker]
 crates = ["sapphire_pipeline"]
-forbidden = ["parry3d", "rapier3d", "sapphire_physics", "sapphire_render", "sapphire_world"]
+forbidden = ["cpal", "kira", "parry3d", "rapier3d", "sapphire_physics", "sapphire_render", "sapphire_world"]
 
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.

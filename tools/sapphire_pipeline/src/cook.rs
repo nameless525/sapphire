@@ -60,6 +60,9 @@
 //!   every other asset but materials and probe grids; their keys depend on those assets' keys.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
+//! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
+//!   [`audio`]). A cue holds its sounds' IDs, so it reads none of their contents, but they must be
+//!   sounds of the tree.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -81,16 +84,19 @@ use std::str::FromStr;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
+use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::skeleton::{SKELETON_EXTENSION, Skeleton};
+use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_reflect::Versioned;
 
 use crate::assembly::{self, AssemblyError};
+use crate::audio::{self, AudioCookError};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
@@ -176,6 +182,8 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     SKELETON_EXTENSION,
     CLIP_EXTENSION,
     COLLIDERS_EXTENSION,
+    SOUND_EXTENSION,
+    CUE_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -258,6 +266,18 @@ impl Recipe {
                 format: ColliderSet::VERSION,
                 extension: COLLIDERS_EXTENSION,
             },
+            ImportSettings::Sound(_) => Self {
+                importer: audio::SOUND_IMPORTER,
+                cooker: audio::SOUND_COOKER,
+                format: Sound::VERSION,
+                extension: SOUND_EXTENSION,
+            },
+            ImportSettings::Cue(_) => Self {
+                importer: audio::CUE_IMPORTER,
+                cooker: audio::CUE_COOKER,
+                format: Cue::VERSION,
+                extension: CUE_EXTENSION,
+            },
         }
     }
 
@@ -296,6 +316,8 @@ impl Recipe {
             keypose::output_path(relative, self.extension)
         } else if colliders::is_source(relative) {
             colliders::output_path(relative, self.extension)
+        } else if audio::is_cue_source(relative) {
+            audio::cue_output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -396,6 +418,15 @@ pub enum CookError {
         #[source]
         source: Box<ColliderCookError>,
     },
+    #[error("failed to cook sound or cue {}", path.display())]
+    Audio {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<AudioCookError>,
+    },
+    #[error("cue {} names {id}, which is not a sound of this content tree that cooks", path.display())]
+    NotASound { path: PathBuf, id: AssetId },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
         path: PathBuf,
@@ -696,7 +727,9 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
-        | ImportSettings::Colliders(_) => Ok(Vec::new()),
+        | ImportSettings::Colliders(_)
+        | ImportSettings::Sound(_)
+        | ImportSettings::Cue(_) => Ok(Vec::new()),
     }
 }
 
@@ -753,6 +786,10 @@ impl Planned {
 
     fn is_key_pose(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::KeyPose(_))
+    }
+
+    fn is_sound(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::Sound(_))
     }
 }
 
@@ -982,6 +1019,8 @@ fn cook_source(
         }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
+        ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
     }
 }
 
@@ -1008,6 +1047,11 @@ fn cook_gltf_clip(
     let defaults: Vec<f32> = scene.mesh.morph_targets.iter().map(|target| target.default_weight).collect();
     let target = ClipTarget { skeleton: skeleton.zip(joints.as_ref()), morph_defaults: &defaults };
     written_clip(&clip::cook(&sampled, &target, &settings.error))
+}
+
+/// Wraps a sound or cue error as the cook error for the source at `path`.
+fn audio_error(path: &Path) -> impl Fn(AudioCookError) -> CookError + '_ {
+    move |source| CookError::Audio { path: path.to_owned(), source: Box::new(source) }
 }
 
 /// Wraps a probe grid error as the cook error for the document at `path`.
@@ -1161,6 +1205,17 @@ fn dependencies(
             })?;
             Ok([rig, skeleton].map(|asset| Dependency::Asset { id: asset.id, key: asset.key }).to_vec())
         }
+        // A sound is the one file it reads.
+        ImportSettings::Sound(_) => Ok(Vec::new()),
+        // A cue holds only its sounds' IDs, so their contents aren't inputs.
+        ImportSettings::Cue(_) => {
+            for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds {
+                if !assets.get(id).is_some_and(Planned::is_sound) {
+                    return Err(CookError::NotASound { path: path.to_owned(), id });
+                }
+            }
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -1249,7 +1304,9 @@ fn imported_mesh(
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
-        | ImportSettings::Colliders(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Colliders(_)
+        | ImportSettings::Sound(_)
+        | ImportSettings::Cue(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 

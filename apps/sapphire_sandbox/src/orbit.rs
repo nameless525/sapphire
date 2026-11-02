@@ -153,6 +153,12 @@ impl OrbitCamera {
         CameraData::look_at(self.eye(), self.target, Vec3::Y, self.fov_y, aspect, NEAR)
     }
 
+    /// Where sound is heard from: the camera, facing what it looks at.
+    pub fn listener(&self) -> sapphire_audio::Listener {
+        let eye = self.eye();
+        sapphire_audio::Listener { position: eye, forward: self.target - eye, up: Vec3::Y }
+    }
+
     /// Where the camera is, in world space.
     pub fn eye(&self) -> Vec3 {
         let (yaw, pitch) = (self.yaw.value, self.pitch.value);

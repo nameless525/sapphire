@@ -9,11 +9,13 @@ use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_serialize::cooked::access_unchecked;
 
 use crate::clip::{ArchivedClip, Clip};
+use crate::cue::{ArchivedCue, Cue};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
 use crate::skeleton::{ArchivedSkeleton, Skeleton};
+use crate::sound::{ArchivedSound, Sound};
 use crate::texture::Texture;
 use crate::{AssetId, AssetKind};
 
@@ -24,7 +26,7 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`].
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Sound`], [`Cue`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -50,6 +52,8 @@ mod sealed {
     impl Sealed for crate::skeleton::Skeleton {}
     impl Sealed for crate::clip::Clip {}
     impl Sealed for sapphire_colliders::ColliderSet {}
+    impl Sealed for crate::sound::Sound {}
+    impl Sealed for crate::cue::Cue {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -105,6 +109,27 @@ impl Asset for ColliderSet {
         // SAFETY: as for meshes: `ColliderSet::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<ColliderSet>(bytes) }
             .expect("the envelope was checked when the collider set was decoded")
+    }
+}
+
+impl Asset for Sound {
+    const KIND: AssetKind = AssetKind::Sound;
+    type View<'a> = &'a ArchivedSound;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedSound {
+        // SAFETY: as for meshes: `Sound::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Sound>(bytes) }
+            .expect("the envelope was checked when the sound was decoded")
+    }
+}
+
+impl Asset for Cue {
+    const KIND: AssetKind = AssetKind::Cue;
+    type View<'a> = &'a ArchivedCue;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedCue {
+        // SAFETY: as for meshes: `Cue::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Cue>(bytes) }.expect("the envelope was checked when the cue was decoded")
     }
 }
 

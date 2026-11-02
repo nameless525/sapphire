@@ -1,8 +1,8 @@
 # Modifications
 
 - No file is modified.
-- There are no sidecars yet: the cooker has no audio importer, so it ignores `.ogg` files. M2 E1 adds that importer and the sidecars. Nothing here reaches a pack until then.
+- Each `.ogg` has a `.meta` sidecar, Sapphire's own, from M2 E1's first cook. Each cooks byte for byte into `audio.spack`, the pack only an app that plays sound mounts.
 
 ## Derived files
 
-None yet. M2 E1 and E3 use these for: the hud and party swap.
+None. M2 E1 and E3 use these for: the hud and party swap.

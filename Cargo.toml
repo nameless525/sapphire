@@ -29,6 +29,7 @@ members = [
     "crates/sapphire_render",
     "crates/sapphire_tod",
     "crates/sapphire_physics",
+    "crates/sapphire_audio",
     # L4 framework
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
@@ -74,6 +75,7 @@ sapphire_render = { path = "crates/sapphire_render" }
 sapphire_tod = { path = "crates/sapphire_tod" }
 sapphire_colliders = { path = "crates/sapphire_colliders" }
 sapphire_physics = { path = "crates/sapphire_physics" }
+sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
 sapphire_debug = { path = "crates/sapphire_debug" }
@@ -188,6 +190,26 @@ png = "0.18"
 # Dev-only in sapphire_rhi: a detached CAMetalLayer lets it test surfaces without a window. On iOS,
 # sapphire_platform's display link (M1 F7) adds the features it needs.
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
+
+# --- Audio (spec §5.15, m2-plan §3, Q8) ---
+# The mixer. No default features: its `cpal` backend can't pause a stream and unwraps a restart that
+# fails, so `sapphire_audio` connects kira's public renderer to cpal itself; its symphonia decoders
+# (MPL-2.0) stay out too, since `lewton` decodes Vorbis.
+kira = { version = "0.12.6", default-features = false }
+# The audio device layer: CoreAudio, WASAPI, ALSA, AAudio. `realtime` asks Android for AAudio's
+# low-latency path and raises the audio thread's priority on Windows; it brings
+# `audio_thread_priority` (MPL-2.0, excepted in deny.toml).
+cpal = { version = "0.18.2", features = ["realtime"] }
+# Pure Rust Ogg Vorbis decoding, no unsafe code, MIT or Apache-2.0: the cooker's check and the
+# runtime's decode are the same code (`sapphire_assets::sound`).
+lewton = { version = "0.10.2", default-features = false, features = ["ogg"] }
+# iOS's audio session and its interruptions (`sapphire_platform`). In the tree through cpal.
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
+block2 = "0.6"
+# What cpal's Android host reads the activity through, which SDL's entry never sets, and the JNI
+# calls that fill it in (`sapphire_platform`). In the tree through cpal.
+ndk-context = "0.1.1"
+jni-sys = "0.4.1"
 
 # --- Dev tooling (dev-only crates: never in a shipping build) ---
 # The debug overlay (spec §5.20). `default_fonts` embeds egui's fonts, the overlay's only font

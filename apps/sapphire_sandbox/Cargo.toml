@@ -31,6 +31,7 @@ path = "src/main.rs"
 [dependencies]
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
+sapphire_audio.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
 # `--replay` and `--record`: the simulation beside the renderer (M2 D2).

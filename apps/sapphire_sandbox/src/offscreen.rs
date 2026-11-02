@@ -76,6 +76,9 @@ impl App for OffscreenApp {
                 ));
             }
         }
+        // Every golden scene passes through here: CI's runners have no sound, and a run that draws
+        // has no business opening a device.
+        crate::audio::stayed_shut(sapphire_audio::device_opens()).map_err(AppInitError::msg)?;
         Ok(Self {
             #[cfg(feature = "dev")]
             serving: None,
@@ -374,6 +377,7 @@ impl Stage {
                 input: None,
                 scene: &self.scene,
                 assets: self.content.stats(),
+                audio: None,
             };
             self.dev.update(state, &mut self.graph);
             started.elapsed()

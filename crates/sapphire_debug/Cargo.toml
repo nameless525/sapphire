@@ -12,6 +12,8 @@ egui.workspace = true
 egui-wgpu.workspace = true
 profiling.workspace = true
 sapphire_assets.workspace = true
+# The stats panel's audio row (M2 E1).
+sapphire_audio.workspace = true
 sapphire_core.workspace = true
 sapphire_input.workspace = true
 sapphire_math.workspace = true

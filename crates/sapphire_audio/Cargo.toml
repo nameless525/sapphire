@@ -1,0 +1,26 @@
+[package]
+name = "sapphire_audio"
+description = "Audio: the backend trait, kira on cpal, a mock for tests, cue playback, 3D voices and clock-aware mixing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+cpal.workspace = true
+kira.workspace = true
+profiling.workspace = true
+# Cooked sounds, cues and their IDs: plain data the cooker reads too.
+sapphire_assets.workspace = true
+sapphire_math.workspace = true
+# The budget's counter, and the mix's time on the audio callback (rule R2).
+sapphire_time.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The allocation test's counting allocator.
+sapphire_core = { workspace = true, features = ["mimalloc"] }
+
+[lints]
+workspace = true

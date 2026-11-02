@@ -95,6 +95,7 @@
 //! [`AssetId`]: sapphire_assets::AssetId
 
 pub mod assembly;
+pub mod audio;
 pub mod bake;
 pub mod cache;
 pub mod character_maps;

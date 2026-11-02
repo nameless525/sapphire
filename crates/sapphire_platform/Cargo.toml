@@ -26,8 +26,8 @@ tracing.workspace = true
 #            backs the gamepad API), hidapi (direct drivers for Xbox, PlayStation,
 #            Switch and Steam controllers), haptic (rumble), sensor (gamepad and
 #            device motion).
-# - dropped: render and gpu (wgpu owns the GPU through sapphire_rhi), audio (FMOD owns
-#            audio from M2; nothing in SDL needs its audio subsystem), camera, dialog
+# - dropped: render and gpu (wgpu owns the GPU through sapphire_rhi), audio (kira on cpal
+#            owns audio from M2; nothing in SDL needs its audio subsystem), camera, dialog
 #            and tray (no use in a game; the dialog and tray backends would also pull
 #            in portal / GTK dependencies on Linux), power (battery state isn't exposed
 #            until the thermal and power work in M4).
@@ -45,13 +45,19 @@ sdl3-sys = { workspace = true, features = [
 # callbacks at the target frame rate, and the Objective-C class it calls.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2.workspace = true
-objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString"] }
+objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString", "NSNotification", "NSDictionary", "NSValue", "NSOperation", "NSError", "block2"] }
+# The audio session (M2 E1, `audio_session.rs`), which cpal's iOS host expects an app to set up.
+objc2-avf-audio.workspace = true
+block2.workspace = true
 objc2-quartz-core = { workspace = true, features = ["objc2-core-foundation", "CADisplayLink", "CAFrameRateRange"] }
 
 # Android frame pacing (M1 F8, ADR 0004): `CLOCK_MONOTONIC`, the choreographer's clock, and
 # resolving the NDK functions newer than the app's minimum API level at run time.
 [target.'cfg(target_os = "android")'.dependencies]
 libc.workspace = true
+# What cpal's AAudio host reads the app's VM and activity through (M2 E1, `audio_session.rs`).
+jni-sys.workspace = true
+ndk-context.workspace = true
 
 [dev-dependencies]
 # The lifecycle test injects raw SDL events to exercise re-entrant dispatch.

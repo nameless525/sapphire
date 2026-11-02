@@ -35,6 +35,18 @@ fn a_capture_with_an_unknown_argument_fails_and_writes_nothing() {
     assert!(!capture.exists(), "no capture from a run it refused");
 }
 
+/// Spec §5.15: capture and bench never open an audio device, and say so rather than draw silently.
+#[test]
+fn a_capture_or_bench_asked_to_play_a_cue_fails() {
+    let capture = std::env::temp_dir().join(format!("sapphire_sandbox_cue_{}.png", std::process::id()));
+    let path = capture.to_str().expect("a UTF-8 temp path");
+    let output = sandbox(&["--capture", path, "--size", "16x16", "--cue", "hit"]);
+    assert_refused(&output, &["--cue"]);
+    assert!(!capture.exists(), "no capture from a run it refused");
+    let output = sandbox(&["--bench", "1", "--size", "16x16", "--cue", "hit"]);
+    assert_refused(&output, &["--cue"]);
+}
+
 #[test]
 fn a_bench_with_an_unknown_argument_fails() {
     let output = sandbox(&["--bench", "1", "--size", "16x16", "--plain-psot"]);

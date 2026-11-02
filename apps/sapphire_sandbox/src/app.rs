@@ -1,4 +1,4 @@
-//! The sandbox [`App`]: window, GPU, renderer, clocks and the frame loop.
+//! The sandbox [`App`]: window, GPU, renderer, clocks, sound and the frame loop.
 
 use std::fmt;
 use std::time::Duration;
@@ -21,6 +21,7 @@ use sapphire_time::{
 };
 
 use crate::LOG_TARGET;
+use crate::audio::SandboxAudio;
 use crate::content::Content;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
@@ -72,6 +73,8 @@ pub struct SandboxApp {
 
     scene: Scene,
     input: SandboxInput,
+    /// The audio system, with `--cue`: nothing audio exists without it.
+    audio: Option<SandboxAudio>,
 
     real: RealClock,
     driver: FixedStepDriver,
@@ -209,6 +212,10 @@ impl App for SandboxApp {
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_stage(layout, meshes);
         }
+        let audio = match &options.cue {
+            Some(cue) => SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?,
+            None => None,
+        };
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &content)?;
         #[cfg(not(feature = "dev"))]
@@ -233,6 +240,7 @@ impl App for SandboxApp {
             options,
             scene,
             input,
+            audio,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
             background_pause: None,
@@ -245,7 +253,7 @@ impl App for SandboxApp {
         })
     }
 
-    fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
+    fn event(&mut self, platform: &mut Platform, event: &Event) -> AppControl {
         // Input queues for the next frame. Losing focus or the foreground releases everything
         // held, since the releases may never arrive. With the debug overlay, it sees each event
         // first and passes on what it doesn't use.
@@ -266,7 +274,7 @@ impl App for SandboxApp {
                 }
                 _ => {}
             },
-            Event::Lifecycle { event, .. } => self.lifecycle(*event),
+            Event::Lifecycle { event, .. } => self.lifecycle(*event, platform),
             _ => {}
         }
         AppControl::Continue
@@ -328,6 +336,10 @@ impl App for SandboxApp {
         self.input.drive_camera(&mut camera);
         camera.update(dt);
         let presentation = stopwatch.lap();
+        if let Some(audio) = &mut self.audio {
+            audio.update(dt, platform, self.scene.sound());
+        }
+        self.stages.audio = stopwatch.lap();
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
             Err(error) => {
@@ -459,6 +471,7 @@ impl SandboxApp {
                         input: Some(&self.input),
                         scene: &self.scene,
                         assets: self.content.stats(),
+                        audio: self.audio.as_ref().map(SandboxAudio::stats),
                     };
                     // It also keeps GPU timing on while dynamic resolution reads it.
                     let output = self.dev.update(state, &mut self.graph);
@@ -513,11 +526,14 @@ impl SandboxApp {
 
     /// Spec §6.5: no GPU work in the background. Android also destroys the native window, so
     /// the surface is dropped going down and rebuilt coming back; elsewhere it is kept.
-    fn lifecycle(&mut self, event: LifecycleEvent) {
+    fn lifecycle(&mut self, event: LifecycleEvent, platform: &mut Platform) {
         tracing::info!(target: LOG_TARGET, ?event, "lifecycle");
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
+                if let Some(audio) = &mut self.audio {
+                    audio.set_background(true, platform);
+                }
                 if !Os::CURRENT.keeps_surface_in_background() {
                     self.surface = None;
                 }
@@ -533,6 +549,9 @@ impl SandboxApp {
                 // frame: drop that gap before anything steps.
                 self.real.update();
                 self.suspended = false;
+                if let Some(audio) = &mut self.audio {
+                    audio.set_background(false, platform);
+                }
                 if let Some(handle) = self.background_pause.take() {
                     self.scene.world_clock_mut().0.pop_scale(handle);
                 }

@@ -37,6 +37,9 @@ pub enum PlatformError {
     /// An SDL call failed; `message` is SDL's error string.
     #[error("{call} failed: {message}")]
     Sdl { call: &'static str, message: String },
+    /// The OS wouldn't set up the app's audio; it can run on without sound.
+    #[error("the audio session: {0}")]
+    AudioSession(String),
     /// A platform directory couldn't be created.
     #[error("cannot create {}", path.display())]
     Io {
@@ -192,6 +195,27 @@ impl Platform {
     /// Runs before each [`App::iterate`](crate::App::iterate): whether this tick becomes a frame.
     pub(crate) fn begin_frame(&mut self) -> bool {
         self.frame_clock.begin_frame()
+    }
+
+    /// Tells the OS the app plays sound, before its first audio stream, once or more: iOS's audio
+    /// session takes its category (`Ambient`: the player's music plays on under the game, and the
+    /// silent switch is obeyed) and goes active, and on Android cpal is given the app's VM and
+    /// activity, which it needs to open a stream and which SDL's entry doesn't set. An app that
+    /// plays no sound never calls this, and pays nothing.
+    pub fn prepare_audio(&mut self) -> Result<(), PlatformError> {
+        crate::audio_session::prepare().map_err(PlatformError::AudioSession)
+    }
+
+    /// Whether the OS has taken audio away (iOS: a call, Siri, an alarm). The mixer should stop
+    /// until this is false. Always false elsewhere.
+    pub fn audio_interrupted(&self) -> bool {
+        crate::audio_session::interrupted()
+    }
+
+    /// Asks for audio again, coming back to the foreground: an interruption that ended while the
+    /// app was away may never have said so. Returns whether the OS gave it.
+    pub fn activate_audio(&mut self) -> bool {
+        crate::audio_session::activate()
     }
 
     /// A human-readable name for a key under the current layout (for rebinding UI and

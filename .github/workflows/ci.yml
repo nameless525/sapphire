@@ -135,6 +135,9 @@ jobs:
       # --no-fail-fast: one failing crate shouldn't hide the results of the rest.
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
+      # Runners have no sound hardware, or whatever passes for it: the mixer must run on, not fail.
+      - name: Audio with whatever device there is
+        run: cargo test --package sapphire_audio --locked --test device -- --ignored --test-threads=1
 
   # Spec §9's gates 2 and 4: every recorded combat replay reaches its checksums for the runner's
   # architecture, with no heap allocation in the fixed step. Linux and Windows compare against one
@@ -274,9 +277,10 @@ jobs:
       SAPPHIRE_GPU_DEBUG: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # No compiler/SDK/header install is needed to execute the verified binaries.
-      - name: Install the Vulkan runtime loader
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1
+      # No compiler/SDK/header install is needed to execute the verified binaries. The app links
+      # ALSA's library, though no golden run opens a device.
+      - name: Install the Vulkan runtime loader and ALSA's library
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 libasound2t64
       - name: Install lavapipe (Mesa 26.1.3)
         run: |
           cd "$RUNNER_TEMP"

@@ -106,6 +106,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_eff
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
+use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::debug_shapes::DebugDrawDemo;
 use crate::environment;
@@ -1233,6 +1234,21 @@ impl Scene {
 
     pub fn camera_mut(&mut self) -> Mut<'_, OrbitCamera> {
         self.ecs.world_mut().resource_mut()
+    }
+
+    /// What the audio system hears of the scene this frame (M2 E1): the camera, the world's clock,
+    /// and where the character stands and whether hitstop holds it.
+    pub fn sound(&self) -> SceneSound {
+        let world = self.ecs.world();
+        let place = world.get::<RenderTransform>(self.character);
+        SceneSound {
+            listener: world.resource::<OrbitCamera>().listener(),
+            world_time_scale: world.resource::<WorldClock>().0.effective_scale(),
+            character: place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate()),
+            hitstop: world
+                .get::<EntityClock>(self.character)
+                .is_some_and(|clock| clock.0.hitstop_ticks() > 0),
+        }
     }
 
     /// The world clock, for lifecycle pauses and time controls.

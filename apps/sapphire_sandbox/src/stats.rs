@@ -19,6 +19,8 @@ pub(crate) struct Stages {
     /// The frame's fixed steps.
     pub simulation: Duration,
     pub fixed_steps: u32,
+    /// The audio update, with `--cue`; the mix itself runs on the audio callback.
+    pub audio: Duration,
     /// Presentation (the camera) and extraction into the frame packet.
     pub extract: Duration,
     /// `Renderer::prepare`, recording the frame graph and its submit.
@@ -30,6 +32,7 @@ impl Stages {
         self.input += other.input;
         self.simulation += other.simulation;
         self.fixed_steps += other.fixed_steps;
+        self.audio += other.audio;
         self.extract += other.extract;
         self.render += other.render;
     }
@@ -116,6 +119,7 @@ impl FrameStats {
             ),
             input_ms = stage_ms(self.stages.input),
             sim_ms = stage_ms(self.stages.simulation),
+            audio_ms = stage_ms(self.stages.audio),
             extract_ms = stage_ms(self.stages.extract),
             render_ms = stage_ms(self.stages.render),
             skipped = self.skipped,

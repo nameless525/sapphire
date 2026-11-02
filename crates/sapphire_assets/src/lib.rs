@@ -30,6 +30,10 @@
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their
 //!   format and checks are `sapphire_colliders`', which has no reason to know about packs.
+//! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
+//!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
+//!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
+//!   linking a mixer (`sapphire_audio`, which plays them).
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
 //!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
 //!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it
@@ -87,6 +91,7 @@
 
 pub mod character_maps;
 pub mod clip;
+pub mod cue;
 mod id;
 mod kind;
 pub mod material;
@@ -96,6 +101,7 @@ pub mod probes;
 pub mod rig;
 mod server;
 pub mod skeleton;
+pub mod sound;
 pub mod texture;
 
 pub use id::{AssetId, ParseAssetIdError};

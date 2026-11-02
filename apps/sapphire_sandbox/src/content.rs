@@ -74,11 +74,13 @@ use std::io;
 use std::sync::Arc;
 
 use sapphire_anim::{ArchivedSkeleton, Skeleton};
+use sapphire_assets::cue::Cue;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack;
 use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
+use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadPriority, PackFile, PackSource,
     ReadDone, TextureAsset, Unloaded, Upload, UploadError,
@@ -755,6 +757,41 @@ impl Content {
         loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))?;
         skeleton_loaded
             .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))
+    }
+
+    /// Mounts the audio pack, which nothing else reads, and loads the cue `id` with its sounds until
+    /// they are resident, then hands back the cue and each sound decoded. Neither stays loaded: a
+    /// mixer holds the decoded sound from then on.
+    pub fn load_cue(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(Cue, Vec<(AssetId, DecodedSound)>), AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the cue {id}: {error}"));
+        if !self.server.is_mounted(AUDIO_PACK) {
+            self.server.mount(AUDIO_PACK).map_err(|error| failed(&error))?;
+        }
+        let assets = &mut self.gpu;
+        let handle =
+            self.server.load_with::<Cue>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        self.server
+            .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        let cue = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?.to_owned_cue();
+        let mut sounds = Vec::with_capacity(cue.sounds.len());
+        for &sound in &cue.sounds {
+            let handle = self
+                .server
+                .load_with::<Sound>(sound, LoadPriority::Critical)
+                .map_err(|error| failed(&error))?;
+            self.server
+                .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+                .map_err(|error| failed(&error))?;
+            let cooked = self.server.get(&handle).ok_or_else(|| failed(&"a sound isn't loaded"))?;
+            sounds.push((sound, cooked.decode().map_err(|error| failed(&error))?));
+        }
+        Ok((cue, sounds))
     }
 
     /// The rig [`Self::load_rig`] loaded.

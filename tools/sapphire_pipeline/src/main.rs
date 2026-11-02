@@ -48,7 +48,7 @@ Usage:
       Cook every source asset under --source (skipping hidden entries, and sources whose
       sidecars say `cook: false`) into mirrored paths under --out, creating missing .meta
       sidecars next to the sources, then pack the cooked
-      assets into --packs (shared.spack). Outputs are written only when they change, and
+      assets into --packs (shared.spack, audio.spack). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
 
 Options:

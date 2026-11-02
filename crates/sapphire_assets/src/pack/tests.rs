@@ -214,7 +214,7 @@ fn bad_tables_of_contents_are_rejected() {
     let second = entries + ENTRY_LEN;
     assert!(edit(second, &[0; 16]).contains("sorted"), "unsorted IDs");
     assert!(edit(second, &good[entries..entries + 16]).contains("sorted"), "a repeated ID");
-    assert!(edit(entries + 16, &[9]).contains("kind"));
+    assert!(edit(entries + 16, &[AssetKind::ALL.len() as u8 + 1]).contains("kind"));
     assert!(edit(entries + 17, &[7]).contains("codec"));
     assert!(edit(entries + 18, &[1]).contains("reserved"));
     assert!(edit(entries + 40, &(5 * BLOCK_SIZE as u64).to_le_bytes()).contains("block count"));

@@ -517,6 +517,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
 
     ui.separator();
     assets(ui, frame);
+    if let Some(stats) = frame.audio {
+        ui.separator();
+        audio(ui, &stats);
+    }
     if let Some(status) = frame.hot_reload {
         ui.separator();
         hot_reload(ui, frame, &status);
@@ -568,6 +572,39 @@ fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_
     for error in status.errors {
         ui.label(RichText::new(error).monospace().color(OVER));
     }
+}
+
+/// The audio system's counters (M2 E1). The update's time against its budget is a CPU stage's row.
+fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
+    egui::Grid::new("audio").num_columns(2).show(ui, |ui| {
+        let row = |ui: &mut Ui, name: &str, value: String| {
+            ui.label(name);
+            ui.monospace(value);
+            ui.end_row();
+        };
+        let device = &stats.device;
+        row(
+            ui,
+            "Audio",
+            format!(
+                "{}, {} Hz, {} voices, {} cues played",
+                device.state, device.sample_rate, stats.voices, stats.cues_played
+            ),
+        );
+        let dropped = stats.dropped_no_output + stats.dropped_voice_limit + stats.dropped_unknown;
+        row(ui, "  Dropped", format!("{dropped} cues"));
+        row(
+            ui,
+            "  Mix",
+            format!(
+                "{:.1}% of real time, longest {}, {} callbacks, {} underruns",
+                device.mix_load() * 100.0,
+                format_ms(Duration::from_nanos(device.mix_nanos_max)),
+                device.callbacks,
+                device.xruns
+            ),
+        );
+    });
 }
 
 /// The asset server's counters and budgets (M1 A4).

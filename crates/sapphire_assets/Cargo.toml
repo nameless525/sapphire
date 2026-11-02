@@ -14,6 +14,8 @@ blake3.workspace = true
 bytemuck.workspace = true
 half.workspace = true
 ktx2.workspace = true
+# Ogg Vorbis, for cooked sounds (M2 E1): the cooker's check and the runtime's decode alike.
+lewton.workspace = true
 lz4_flex.workspace = true
 profiling.workspace = true
 rend.workspace = true

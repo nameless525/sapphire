@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
 use crate::clip::{Clip, ClipError};
+use crate::cue::{Cue, CueError};
 use crate::material::{Material, MaterialError};
 use crate::mesh::{Mesh, MeshError};
 use crate::probes::{ProbeGrid, ProbeGridError};
 use crate::rig::{CharacterRig, RigError};
 use crate::skeleton::{Skeleton, SkeletonError};
+use crate::sound::{Sound, SoundError};
 use crate::texture::{Texture, TextureFormatError};
 
 /// The kinds of cooked asset. Each is also a residency category with a budget of its own
@@ -37,11 +39,15 @@ pub enum AssetKind {
     Clip = 7,
     /// A zone's static colliders (`.scol`, M2 D3): [`ColliderSet`]. CPU data, never uploaded.
     Colliders = 8,
+    /// A cooked sound (`.ssound`, M2 E1): [`Sound`]. The mixer's CPU data, never uploaded.
+    Sound = 9,
+    /// A cue (`.scue`, M2 E1): [`Cue`], naming the sounds it picks from.
+    Cue = 10,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -50,6 +56,8 @@ impl AssetKind {
         Self::Skeleton,
         Self::Clip,
         Self::Colliders,
+        Self::Sound,
+        Self::Cue,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -68,21 +76,33 @@ impl AssetKind {
             Self::Skeleton => "skeleton",
             Self::Clip => "clip",
             Self::Colliders => "colliders",
+            Self::Sound => "sound",
+            Self::Cue => "cue",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
-    /// a skeleton, a clip or a collider set is ready once it and its dependencies are decoded.
+    /// a skeleton, a clip, a collider set, a sound or a cue is ready once it and its dependencies
+    /// are decoded.
     pub const fn uploads(self) -> bool {
-        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders)
+        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders | Self::Sound | Self::Cue)
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons, clips and collider sets are read on the CPU only, so they stay.
+    /// rigs, skeletons, clips, collider sets, sounds and cues are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
-        matches!(self, Self::Material | Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders)
+        matches!(
+            self,
+            Self::Material
+                | Self::Rig
+                | Self::Skeleton
+                | Self::Clip
+                | Self::Colliders
+                | Self::Sound
+                | Self::Cue
+        )
     }
 
     /// Whether uploading an asset of this kind binds its dependencies' GPU objects, so it must be
@@ -94,16 +114,17 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
-    /// skeletons, materials on textures, clips on skeletons, and textures, rigs, probe grids,
-    /// skeletons and collider sets on nothing. The allowed pairs form no loop, so chains are at most
-    /// three long and cycles can't exist, whatever a pack claims. A new kind takes its place in this
-    /// order.
+    /// skeletons, materials on textures, clips on skeletons, cues on sounds, and textures, rigs,
+    /// probe grids, skeletons, collider sets and sounds on nothing. The allowed pairs form no loop,
+    /// so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
+    /// takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
             (Self::Mesh, Self::Material | Self::Skeleton)
                 | (Self::Material, Self::Texture)
                 | (Self::Clip, Self::Skeleton)
+                | (Self::Cue, Self::Sound)
         )
     }
 
@@ -118,16 +139,19 @@ impl AssetKind {
             6 => Some(Self::Skeleton),
             7 => Some(Self::Clip),
             8 => Some(Self::Colliders),
+            9 => Some(Self::Sound),
+            10 => Some(Self::Cue),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
-    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`), and returns the assets they reference,
-    /// sorted and without repeats: a mesh's material slots bound to material assets and its skeleton,
-    /// a material's textures, a clip's skeleton. The packer records these as the asset's dependencies,
-    /// and decode jobs check that a decoded asset references exactly what its pack says it does.
+    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`), and returns
+    /// the assets they reference, sorted and without repeats: a mesh's material slots bound to
+    /// material assets and its skeleton, a material's textures, a clip's skeleton, a cue's sounds. The
+    /// packer records these as the asset's dependencies, and decode jobs check that a decoded asset
+    /// references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -168,6 +192,11 @@ impl AssetKind {
                 ColliderSet::read(bytes)?;
                 Vec::new()
             }
+            Self::Sound => {
+                Sound::read(bytes)?;
+                Vec::new()
+            }
+            Self::Cue => Cue::read(bytes)?.sounds.iter().copied().collect(),
         };
         references.sort_unstable();
         references.dedup();
@@ -210,4 +239,8 @@ pub enum AssetError {
     Clip(#[from] ClipError),
     #[error("invalid collider set")]
     Colliders(#[from] ColliderError),
+    #[error("invalid sound")]
+    Sound(#[from] SoundError),
+    #[error("invalid cue")]
+    Cue(#[from] CueError),
 }

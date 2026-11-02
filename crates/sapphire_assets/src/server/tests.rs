@@ -151,8 +151,12 @@ fn uploads_are_plain_cooked_data() {
                         crate::mesh::ArchivedSlotMaterial::Asset(_)
                     ));
                 }
-                AssetKind::Rig | AssetKind::Skeleton | AssetKind::Clip => {
-                    unreachable!("animation's data never goes to the uploader")
+                AssetKind::Rig
+                | AssetKind::Skeleton
+                | AssetKind::Clip
+                | AssetKind::Sound
+                | AssetKind::Cue => {
+                    unreachable!("animation's and sound's data never go to the uploader")
                 }
                 AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
                 AssetKind::Colliders => unreachable!("colliders never go to the uploader"),

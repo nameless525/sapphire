@@ -40,10 +40,9 @@ allow = [
     "Unlicense",
     "Zlib",
 ]
-# No MPL-2.0 crate is in the tree today, so MPL is not allowed globally. Vendored MPL crates
-# (ozz-animation-rs, Appendix A) get a per-crate entry in `exceptions` below. MPL-2.0 §3.2
-# then obliges us to offer the source of those files with every binary we ship, modified
-# or not; keep MPL code in its own files.
+# MPL is not allowed globally. An MPL crate gets a per-crate entry in `exceptions` below. MPL-2.0
+# §3.2 then obliges us to offer the source of those files with every binary we ship, modified or
+# not; keep MPL code in its own files.
 confidence-threshold = 0.93
 # The allow-list is policy, not an inventory of what is in the tree today.
 unused-allowed-license = "allow"
@@ -52,6 +51,13 @@ exceptions = [
     # (sapphire_debug), which never ships. Both font licenses allow bundling the fonts in any
     # software, commercial included; they only restrict selling or renaming the fonts themselves.
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    # The tree's only MPL code, both unmodified from crates.io, so shipped binaries owe a pointer to
+    # their sources (MPL-2.0 §3.2). kira's symphonia decoders are off: `lewton` decodes Vorbis.
+    # `triple_buffer`: how kira sends a voice's parameters to the audio thread, which it can't do
+    # without. `audio_thread_priority`: Mozilla's helper, through cpal's `realtime` feature, which
+    # asks Android for AAudio's low-latency path and raises the audio thread on Windows.
+    { crate = "triple_buffer", allow = ["MPL-2.0"] },
+    { crate = "audio_thread_priority", allow = ["MPL-2.0"] },
 ]
 
 [licenses.private]
@@ -74,8 +80,8 @@ deny = [
     { crate = "generational-arena", reason = "archived; use slotmap" },
     { crate = "oxidized_navigation", reason = "deprecated; use rerecast and landmass" },
     { crate = "laminar", reason = "dead networking crate" },
-    { crate = "rrise", reason = "Wwise binding unmaintained since 2022; audio is FMOD (kira fallback)" },
-    { crate = "oddio", reason = "dead end for audio; use FMOD or kira" },
+    { crate = "rrise", reason = "Wwise binding unmaintained since 2022; audio is kira (m2-plan Q8)" },
+    { crate = "oddio", reason = "dead end for audio; audio is kira (m2-plan Q8)" },
     { crate = "bincode", reason = "3.0.0 is a compile_error! tombstone; use rkyv or postcard" },
     { crate = "optick", reason = "abandoned profiler; use tracy-client through profiling" },
     { crate = "rustybuzz", reason = "archived; text shaping goes through parley" },

@@ -51,6 +51,9 @@
 //! Key-pose documents (`swing.keypose.ron`, M2 N1) have `importer: KeyPose((rig: "<id>"))`, naming
 //! the character source they cook for.
 //!
+//! Ogg Vorbis sounds (`.ogg`, M2 E1) have `importer: Sound(())` and cue documents (`hit.cue.ron`)
+//! `importer: Cue(())`.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -119,6 +122,7 @@ use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
 use crate::assembly;
+use crate::audio::{self, CueSettings, SoundSettings};
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
@@ -195,6 +199,10 @@ pub enum ImportSettings {
     KeyPose(KeyPoseSettings),
     /// A collider document (`.colliders.ron`): a zone's static collision (M2 D3).
     Colliders(ColliderSettings),
+    /// An Ogg Vorbis file (`.ogg`), copied as the target format once it decodes (M2 E1).
+    Sound(SoundSettings),
+    /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
+    Cue(CueSettings),
 }
 
 impl ImportSettings {
@@ -221,11 +229,15 @@ impl ImportSettings {
         if colliders::is_source(source) {
             return Some(Self::Colliders(ColliderSettings::default()));
         }
+        if audio::is_cue_source(source) {
+            return Some(Self::Cue(CueSettings::default()));
+        }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
             "fbx" => Some(Self::Fbx(MeshSettings::default())),
             "vrm" => Some(Self::Vrm(VrmSettings::default())),
+            "ogg" => Some(Self::Sound(SoundSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
             "exr" => {
@@ -256,7 +268,9 @@ impl ImportSettings {
             | Self::Material(_)
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
-            | Self::Colliders(_) => None,
+            | Self::Colliders(_)
+            | Self::Sound(_)
+            | Self::Cue(_) => None,
         }
     }
 
@@ -270,7 +284,9 @@ impl ImportSettings {
             | Self::Material(_)
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
-            | Self::Colliders(_) => None,
+            | Self::Colliders(_)
+            | Self::Sound(_)
+            | Self::Cue(_) => None,
         }
     }
 }

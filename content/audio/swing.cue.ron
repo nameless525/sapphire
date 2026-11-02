@@ -1,0 +1,16 @@
+// A blade through the air: the sandbox's `--cue swing`. It freezes with the arm in hitstop.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "66fe7f41-fcfd-43ac-9bc5-1c9ac00d21db", // kenney_rpg_audio: knifeSlice
+            "4c334802-41a9-4417-b9e4-86d2aa5cffe7", // knifeSlice2
+        ],
+        volume_db: (-8.0, -5.0),
+        pitch: (0.97, 1.08),
+        attenuation: Some((near: 1.0, far: 25.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Freeze,
+    ),
+)

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use sapphire_assets::AssetStats;
+use sapphire_audio::AudioStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_core::debug_draw::DebugLabel;
@@ -86,6 +87,8 @@ pub struct OverlayFrame<'a> {
     pub screen_effects: Option<(&'a EffectStack, &'a EffectLibrary)>,
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
+    /// The audio system's counters, if the app plays sound (M2 E1).
+    pub audio: Option<AudioStats>,
     /// Hot reload, if the app runs it.
     pub hot_reload: Option<HotReloadStatus<'a>>,
     /// Live link, if the app runs it.

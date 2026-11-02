@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "550f9f6a-6e38-4f49-bb2f-89c7aea0cef8",
+        importer: Sound(()),
+    ),
+)

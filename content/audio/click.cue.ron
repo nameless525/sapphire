@@ -1,0 +1,13 @@
+// An interface click: the sandbox's `--cue click`. Flat, and out of the world's clock.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "ad3e7ae5-c55b-4d88-ac49-7399a1bb8963", // kenney_interface_sounds: click_001
+            "a9d7b59e-e5cd-46bf-a451-82bc7393bfee", // click_002
+        ],
+        volume_db: (-6.0, -6.0),
+        bus: Ui,
+    ),
+)

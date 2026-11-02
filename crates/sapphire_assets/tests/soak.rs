@@ -131,6 +131,9 @@ fn round(
                     }
                     AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
                     AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
+                    AssetKind::Sound | AssetKind::Cue => {
+                        unreachable!("sounds and cues never go to the uploader")
+                    }
                 }
                 Ok(())
             })
@@ -154,7 +157,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
     // Tight budgets, so residency evicts all the time.
     let budgets = AssetBudgets {
         upload_per_frame: 64 << 10,
-        resident: [600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000],
+        resident: [600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
     };
     let mut server = AssetServer::new(source, budgets);
     server.mount("shared").unwrap();

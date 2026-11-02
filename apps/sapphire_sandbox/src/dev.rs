@@ -70,6 +70,8 @@ pub(crate) struct FrameState<'a> {
     pub input: Option<&'a SandboxInput>,
     pub scene: &'a Scene,
     pub assets: AssetStats,
+    /// The audio system's counters, with `--cue`.
+    pub audio: Option<sapphire_audio::AudioStats>,
 }
 
 impl DevTools {
@@ -214,6 +216,7 @@ impl DevTools {
             input: stages.input,
             simulation: stages.simulation,
             fixed_steps: stages.fixed_steps,
+            audio: stages.audio,
             extract: stages.extract,
             render: stages.render,
         });
@@ -253,6 +256,7 @@ impl DevTools {
             debug_labels: &frame.scene.packet().debug.labels,
             screen_effects: Some(frame.scene.screen_effects()),
             assets: Some(frame.assets),
+            audio: frame.audio,
             hot_reload: Some(self.reload.status()),
             live_link: Some(self.link.status()),
         })

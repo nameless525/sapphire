@@ -89,6 +89,7 @@ impl BudgetTier {
         match stage {
             CpuStage::Input => self.pick(0.3, 0.6),
             CpuStage::Simulation => self.pick(1.0, 1.5) * steps,
+            CpuStage::Audio => self.pick(0.2, 0.3),
             CpuStage::Extract => self.pick(0.7, 1.2),
             CpuStage::Render => self.pick(4.0, 8.0),
         }
@@ -115,6 +116,9 @@ pub enum CpuStage {
     Input,
     /// Fixed-step simulation, budgeted per 60 Hz step.
     Simulation,
+    /// The audio update: cues started and voices moved, on the frame's thread (M2 E1). The mix
+    /// itself runs on the audio callback.
+    Audio,
     /// Presentation and extraction into the frame packet.
     Extract,
     /// Render prepare and record, through the frame graph's submit.
@@ -122,12 +126,13 @@ pub enum CpuStage {
 }
 
 impl CpuStage {
-    pub const ALL: [Self; 4] = [Self::Input, Self::Simulation, Self::Extract, Self::Render];
+    pub const ALL: [Self; 5] = [Self::Input, Self::Simulation, Self::Audio, Self::Extract, Self::Render];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Input => "Events, input",
             Self::Simulation => "Fixed steps",
+            Self::Audio => "Audio update",
             Self::Extract => "Extract",
             Self::Render => "Render prepare + record",
         }
@@ -141,6 +146,8 @@ pub struct CpuStages {
     pub simulation: Duration,
     /// Fixed steps the simulation ran this frame.
     pub fixed_steps: u32,
+    /// The audio update: zero in an app that plays no sound.
+    pub audio: Duration,
     pub extract: Duration,
     pub render: Duration,
 }
@@ -150,6 +157,7 @@ impl CpuStages {
         match stage {
             CpuStage::Input => self.input,
             CpuStage::Simulation => self.simulation,
+            CpuStage::Audio => self.audio,
             CpuStage::Extract => self.extract,
             CpuStage::Render => self.render,
         }
@@ -157,7 +165,7 @@ impl CpuStages {
 
     /// Every stage the game side owns: all but render.
     pub fn game_side(&self) -> Duration {
-        self.input + self.simulation + self.extract
+        self.input + self.simulation + self.audio + self.extract
     }
 
     pub fn total(&self) -> Duration {
@@ -172,6 +180,7 @@ impl CpuStages {
             input: mix(self.input, next.input),
             simulation: mix(self.simulation, next.simulation),
             fixed_steps: next.fixed_steps,
+            audio: mix(self.audio, next.audio),
             extract: mix(self.extract, next.extract),
             render: mix(self.render, next.render),
         }
@@ -229,6 +238,7 @@ mod tests {
         let mobile = BudgetTier::MobileLow;
         assert_eq!(mobile.stage(CpuStage::Simulation, 2), ms(3.0), "1.5 ms × 2 steps at 30 fps");
         assert_eq!(mobile.stage(CpuStage::Extract, 2), ms(1.2));
+        assert_eq!((desktop.stage(CpuStage::Audio, 1), mobile.stage(CpuStage::Audio, 2)), (ms(0.2), ms(0.3)));
         assert_eq!((mobile.game_side(), mobile.gpu_frame()), (ms(13.6), ms(23.5)));
         assert_eq!((desktop.taa_upscaling(), mobile.taa_upscaling()), (ms(0.8), ms(1.0)));
         assert_eq!((desktop.forward_opaque(), mobile.forward_opaque()), (ms(3.5), ms(8.0)));
@@ -243,11 +253,17 @@ mod tests {
     #[test]
     fn stages_sum_and_smooth() {
         let us = Duration::from_micros;
-        let stages =
-            CpuStages { input: us(10), simulation: us(40), fixed_steps: 2, extract: us(20), render: us(100) };
-        assert_eq!(stages.game_side(), us(70));
-        assert_eq!(stages.total(), us(170));
-        assert_eq!(CpuStage::ALL.map(|stage| stages.get(stage)), [us(10), us(40), us(20), us(100)]);
+        let stages = CpuStages {
+            input: us(10),
+            simulation: us(40),
+            fixed_steps: 2,
+            audio: us(5),
+            extract: us(20),
+            render: us(100),
+        };
+        assert_eq!(stages.game_side(), us(75));
+        assert_eq!(stages.total(), us(175));
+        assert_eq!(CpuStage::ALL.map(|stage| stages.get(stage)), [us(10), us(40), us(5), us(20), us(100)]);
         let half = CpuStages::default().smoothed(&stages, 0.5);
         assert_eq!((half.render, half.fixed_steps), (us(50), 2));
     }

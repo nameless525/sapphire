@@ -9,6 +9,7 @@ use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants
 use crate::debug_shapes::DebugDrawDemo;
 use sapphire_world::tod::CharacterShadeKey;
 
+use crate::audio::CueOption;
 use crate::faces::{FaceLayout, MaterialOverrides};
 use crate::foliage::{DEFAULT_WIND, FoliageView};
 use crate::lookdev::{self, Shot};
@@ -161,6 +162,8 @@ pub(crate) struct Options {
     pub debug_view: Option<DebugView>,
     /// `--debug-draw <what>`: turn debug draw on and draw this (M2 T1).
     pub debug_draw: Option<DebugDrawDemo>,
+    /// `--cue <name> [--cue-repeat <seconds>]`: play this cue on the real audio device (M2 E1).
+    pub cue: Option<CueOption>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--replay` or `--record`: a combat simulation beside the scene (M2 D2).
@@ -432,6 +435,7 @@ impl Options {
         let mut unknown = Vec::new();
         let (mut capture, mut bench, mut capture_ticks, mut size) = (None, None, None, None);
         let mut serve = false;
+        let (mut cue, mut cue_repeat) = (None, None);
         let (mut capture_frames, mut capture_step) = (None, None);
         let (mut faces, mut face_layout) = (false, None);
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
@@ -661,6 +665,16 @@ impl Options {
                     options.sharpening = Some(amount);
                 }
                 "--post-effect" => options.post_effects.push(parse_post_effect(&value("--post-effect")?)?),
+                "--cue" => cue = Some(crate::audio::named_cue(&value("--cue")?)?),
+                "--cue-repeat" => {
+                    let seconds: f32 = number(&value("--cue-repeat")?, "--cue-repeat")?;
+                    if !(seconds.is_finite() && seconds > 0.0) {
+                        return Err(format!(
+                            "--cue-repeat expects a positive number of seconds, got {seconds}"
+                        ));
+                    }
+                    cue_repeat = Some(seconds);
+                }
                 "--no-hot-reload" => options.no_hot_reload = true,
                 "--serial-passes" => options.serial_passes = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
@@ -737,6 +751,15 @@ impl Options {
                     .to_owned(),
             );
         }
+        if cue_repeat.is_some() && cue.is_none() {
+            return Err("--cue-repeat needs --cue".to_owned());
+        }
+        if cue.is_some() && (capture.is_some() || bench.is_some() || serve) {
+            return Err(format!(
+                "--cue plays on the audio device, which {CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} never open"
+            ));
+        }
+        options.cue = cue.map(|id| CueOption { id, repeat: cue_repeat });
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
             return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
@@ -899,6 +922,33 @@ mod tests {
         let args: Vec<String> =
             std::iter::once("sandbox").chain(args.iter().copied()).map(String::from).collect();
         Options::parse(&args)
+    }
+
+    /// Spec §5.15: a capture or a bench can't be asked to open an audio device.
+    #[test]
+    fn no_offscreen_run_takes_a_cue() {
+        for mode in [&["--capture", "x.png"][..], &["--bench", "4"], &["--offscreen"]] {
+            let args: Vec<&str> = mode.iter().copied().chain(["--cue", "hit"]).collect();
+            let error = parse(&args).unwrap_err();
+            assert!(error.contains("--cue") && error.contains(mode[0]), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_cue_is_asked_for_by_name() {
+        let (options, unknown) = parse(&["--cue", "swing", "--cue-repeat", "1.5"]).unwrap();
+        assert!(unknown.is_empty());
+        let id = crate::audio::named_cue("swing").unwrap();
+        assert_eq!(options.cue, Some(CueOption { id, repeat: Some(1.5) }));
+        assert_eq!(parse(&["--cue", "hit"]).unwrap().0.cue.and_then(|cue| cue.repeat), None);
+        assert_eq!(parse(&[]).unwrap().0.cue, None, "no sound unless asked");
+
+        assert!(parse(&["--cue", "nope"]).unwrap_err().contains("click, hit, swing"));
+        assert!(parse(&["--cue-repeat", "1"]).unwrap_err().contains("needs --cue"));
+        for bad in ["0", "-1", "inf", "NaN"] {
+            let error = parse(&["--cue", "hit", "--cue-repeat", bad]).unwrap_err();
+            assert!(error.contains("--cue-repeat"), "{error}");
+        }
     }
 
     #[test]

@@ -78,6 +78,7 @@ impl App {
             characters: &[],
             screen_effects: None,
             assets: None,
+            audio: None,
             hot_reload: None,
             live_link: None,
         });

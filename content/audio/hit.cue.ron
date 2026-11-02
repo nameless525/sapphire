@@ -1,0 +1,20 @@
+// A blade landing on armor: the sandbox's `--cue hit`. Heard from where it happens, and it rings on
+// through the hitstop it starts.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "d42dee34-66b1-4881-9cdc-fae3c88401ae", // kenney_impact_sounds: impactMetal_heavy_000
+            "08ee89b5-53c9-4b0c-82ab-cd505aba4461", // impactMetal_heavy_001
+            "522e7afd-4878-4e5b-bae7-d47ec8a1eb77", // impactMetal_heavy_002
+            "123708e5-d958-4c3c-b95c-fa22e8dc847c", // impactMetal_heavy_003
+            "6735d0ec-8290-4ec1-8e2c-b458b810e8c2", // impactMetal_heavy_004
+        ],
+        volume_db: (-4.0, -1.0),
+        pitch: (0.94, 1.06),
+        attenuation: Some((near: 1.0, far: 40.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Ignore,
+    ),
+)

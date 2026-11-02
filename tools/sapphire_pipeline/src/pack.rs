@@ -14,7 +14,13 @@
 //! rule, for when zones, characters and encounters exist as documents (M2, M3): each is a root,
 //! and its pack holds what it reaches through dependencies; an asset two groups reach goes in the
 //! shared pack, which every app mounts first, so a group pack only ever depends on itself and the
-//! shared pack. Until there are roots, every asset goes in [`SHARED`].
+//! shared pack. Until there are roots, every asset goes in [`SHARED`], but for sound.
+//!
+//! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
+//! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
+//! leaves the shared pack byte for byte as it was, so a capture or a bench mounts and reads none of
+//! it: an app that plays no sound pays for none but the file's place in its bundle. When cues have
+//! roots, the sounds nothing reaches drop out.
 //!
 //! # Codecs
 //!
@@ -22,10 +28,10 @@
 //! meshes, the bulk of a pack, loaded at zone and character transitions where install and
 //! download size matter most (on the M5, level 19 stores a cooked mesh at 0.37 of its size and BC7
 //! or ASTC textures at 0.66–0.69, against lz4's 0.63 and 0.86–0.88); **lz4** for materials, small
-//! and decoded mid-play when live link or hot reload swaps one, and for rigs, skeletons and clips,
+//! and decoded mid-play when live link or hot reload swaps one, for rigs, skeletons and clips,
 //! animation's data, loaded with a character swapping in: zstd's 4–5× slower decoding buys little
-//! there. A block
-//! that doesn't shrink by 1/64 is stored raw either way.
+//! there, and for cues; **none** for sounds, whose Vorbis doesn't compress further. A block that
+//! doesn't shrink by 1/64 is stored raw either way.
 //!
 //! # Caching
 //!
@@ -52,12 +58,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sapphire_assets::clip::CLIP_EXTENSION;
+use sapphire_assets::cue::CUE_EXTENSION;
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
 use sapphire_assets::probes::PROBE_GRID_EXTENSION;
 use sapphire_assets::rig::RIG_EXTENSION;
 use sapphire_assets::skeleton::SKELETON_EXTENSION;
+use sapphire_assets::sound::SOUND_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
 use sapphire_colliders::COLLIDERS_EXTENSION;
@@ -79,6 +87,18 @@ pub const ZSTD_LEVEL: i32 = 19;
 /// The pack every asset goes in until groups have roots (see the [module docs](self)).
 pub const SHARED: &str = "shared";
 
+/// The pack sounds and cues go in (see the [module docs](self)).
+pub const AUDIO: &str = sapphire_assets::sound::AUDIO_PACK;
+
+/// The pack an asset of `kind` goes in (see the [module docs](self)). A file of no kind goes where
+/// the packer reports it.
+pub fn group(kind: Option<AssetKind>) -> &'static str {
+    match kind {
+        Some(AssetKind::Sound | AssetKind::Cue) => AUDIO,
+        _ => SHARED,
+    }
+}
+
 /// The codec a kind's blocks are compressed with (see the [module docs](self)).
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
@@ -87,7 +107,9 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Rig
         | AssetKind::Skeleton
         | AssetKind::Clip
-        | AssetKind::Colliders => Codec::Lz4,
+        | AssetKind::Colliders
+        | AssetKind::Cue => Codec::Lz4,
+        AssetKind::Sound => Codec::None,
     }
 }
 
@@ -102,6 +124,8 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         SKELETON_EXTENSION => Some(AssetKind::Skeleton),
         CLIP_EXTENSION => Some(AssetKind::Clip),
         COLLIDERS_EXTENSION => Some(AssetKind::Colliders),
+        SOUND_EXTENSION => Some(AssetKind::Sound),
+        CUE_EXTENSION => Some(AssetKind::Cue),
         _ => None,
     }
 }
@@ -182,7 +206,7 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     let ids: HashSet<AssetId> = report.assets.iter().map(|asset| asset.id).collect();
     let mut groups: BTreeMap<&str, Vec<&CookedAsset>> = BTreeMap::new();
     for asset in &report.assets {
-        groups.entry(SHARED).or_default().push(asset);
+        groups.entry(group(kind(&asset.output))).or_default().push(asset);
     }
     let mut packs = Vec::with_capacity(groups.len());
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);

@@ -198,6 +198,10 @@
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `effects`,
 //!   `console`, `cvars`, `all`). Offscreen captures draw it too.
+//! - `--cue click|hit|swing`: play this cue (`content/audio/`) at the character on the real audio
+//!   device (M2 E1, `audio.rs`); `--cue-repeat <seconds>` plays it again every so often. Slow motion
+//!   bends and darkens it, and hitstop freezes `swing`. Only these flags open a device: no device is
+//!   a logged state, and the offscreen modes refuse them.
 //! - Offscreen modes (desktop), which never open a window or take focus, at `--size WxH`
 //!   (default 1920x1080):
 //!   - `--capture <png> [--capture-ticks N]`: render the scene after N fixed ticks (default
@@ -233,6 +237,7 @@
 //! (spec §5.12, "Sky").
 
 mod app;
+mod audio;
 mod bench;
 mod capture;
 mod combat;

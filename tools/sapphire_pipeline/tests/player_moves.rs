@@ -599,6 +599,44 @@ fn a_dodge_leaves_on_time_and_leads_to_the_dash_attack() {
     assert!(arrived.z < 4.0, "and stops short of the target: {arrived}");
 }
 
+/// The string lands on a fighter it's aimed at: three hits, the damage and poise they say, with the
+/// document's numbers on the scale the warrior was tuned to.
+#[test]
+fn the_string_lands_on_a_fighter_in_reach() {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves =
+        sim.add_move_set(MoveSet::from_cooked(&player().set.to_cooked().expect("cooks")).expect("reads"));
+    let attacker = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
+    let target = ActorSpawn {
+        position: Vec3::new(0.0, 0.0, 1.5),
+        yaw: std::f32::consts::PI,
+        moves: Some(moves),
+        ..ActorSpawn::default()
+    };
+    let target = sim.spawn(target).expect("room");
+    step(&mut sim);
+    let whole = sim.actor(target).expect("alive").fighter.health();
+    assert!(whole > 0, "the character is a fighter");
+    let mut started = Vec::new();
+    for _ in 0..200 {
+        assert!(sim.press_intent(attacker, name("light")), "light is an intent");
+        // The target keeps pace, as a warped attack would hold it in reach.
+        step(&mut sim);
+        if let Some(running) = current(&sim, attacker)
+            && started.last() != Some(&running.name)
+        {
+            started.push(running.name);
+        }
+        if started.len() == 3 && current(&sim, attacker).is_some_and(|running| running.tick() >= 30) {
+            break;
+        }
+    }
+    assert_eq!(started, [name("light_1"), name("light_2"), name("light_3")]);
+    let view = sim.actor(target).expect("alive");
+    assert_eq!(whole - view.fighter.health(), 6 + 8 + 14, "every hit of the string landed once");
+    assert_eq!(view.fighter.max_poise() - view.fighter.poise(), 8 + 10 + 18);
+}
+
 /// Every move plays out from its first tick to its last, through its phases in order, and leaves the
 /// character free, standing where its root motion said.
 #[test]

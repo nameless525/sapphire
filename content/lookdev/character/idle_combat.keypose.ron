@@ -1,6 +1,7 @@
-// Ready to fight, in a two-second loop (M2 O2): left foot forward, knees bent, weight low and hands up
-// a little, what the character falls back to between moves. Nothing licensed has this, and a chibi's
-// square brace can't be retargeted into it. The legs bend with the bob, so the feet stay down. Ticks
+// Ready to fight, in a two-second loop (M2 O2): left foot forward, knees bent, weight low and a sword's
+// grip in the right fist, its blade held out in front and a little up (M2 O3), what the character falls
+// back to between moves. Nothing licensed has this, and a chibi's square brace can't be retargeted into
+// it. The legs bend with the bob, so the feet stay down. Ticks
 // are 60 a second. Turns are degrees in the character's rest space, about each bone's own joint, X then
 // Y then Z. The character faces +Z, with its left arm along +X at rest.
 (
@@ -27,9 +28,9 @@
                 LeftUpperArm: (y: -34, z: -62),
                 LeftLowerArm: (y: -62),
                 LeftHand: (x: 8, z: -6),
-                RightUpperArm: (y: 18, z: 66),
-                RightLowerArm: (y: 74),
-                RightHand: (x: 8, z: 6),
+                RightUpperArm: (x: 25, y: 17.4, z: 46.5),
+                RightLowerArm: (y: 72.6),
+                RightHand: (x: -81.3, y: -0.2, z: 1.9),
 
                 LeftThumbProximal: (y: -12, z: -6),
                 LeftThumbDistal: (y: -14),
@@ -45,20 +46,20 @@
                 LeftLittleProximal: (z: -44),
                 LeftLittleIntermediate: (z: -46),
                 LeftLittleDistal: (z: -22),
-                RightThumbProximal: (y: 12, z: 6),
-                RightThumbDistal: (y: 14),
-                RightIndexProximal: (z: 30),
-                RightIndexIntermediate: (z: 36),
-                RightIndexDistal: (z: 18),
-                RightMiddleProximal: (z: 36),
-                RightMiddleIntermediate: (z: 40),
-                RightMiddleDistal: (z: 20),
-                RightRingProximal: (z: 40),
-                RightRingIntermediate: (z: 44),
-                RightRingDistal: (z: 22),
-                RightLittleProximal: (z: 44),
-                RightLittleIntermediate: (z: 46),
-                RightLittleDistal: (z: 22),
+                RightThumbProximal: (y: 26, z: 14),
+                RightThumbDistal: (y: 30),
+                RightIndexProximal: (z: 58),
+                RightIndexIntermediate: (z: 66),
+                RightIndexDistal: (z: 36),
+                RightMiddleProximal: (z: 64),
+                RightMiddleIntermediate: (z: 70),
+                RightMiddleDistal: (z: 38),
+                RightRingProximal: (z: 68),
+                RightRingIntermediate: (z: 72),
+                RightRingDistal: (z: 38),
+                RightLittleProximal: (z: 72),
+                RightLittleIntermediate: (z: 74),
+                RightLittleDistal: (z: 38),
             }),
 
             // Sinking a touch, the chest closing and the hands dropping with it.
@@ -73,9 +74,9 @@
                 RightLowerLeg: (x: 42),
                 RightFoot: (x: -25.5, y: 22, z: 3),
                 LeftUpperArm: (y: -33, z: -64),
-                RightUpperArm: (y: 17, z: 68),
+                RightUpperArm: (x: 25, y: 16.4, z: 48.5),
                 LeftLowerArm: (y: -60),
-                RightLowerArm: (y: 71),
+                RightLowerArm: (y: 69.6),
             }),
 
             // Back up.
@@ -90,9 +91,9 @@
                 RightLowerLeg: (x: 38),
                 RightFoot: (x: -24, y: 22, z: 3),
                 LeftUpperArm: (y: -34, z: -62),
-                RightUpperArm: (y: 18, z: 66),
+                RightUpperArm: (x: 25, y: 17.4, z: 46.5),
                 LeftLowerArm: (y: -62),
-                RightLowerArm: (y: 74),
+                RightLowerArm: (y: 72.6),
             }),
         ],
     ),

@@ -11,7 +11,8 @@
 // 22 degrees toward the fingers, its +Y running grip to tip. A hit is a capsule along it.
 //
 // E3 hangs effects on the cues: `swing` is the blade starting to cut, and `step`, `skid` and
-// `finisher_land` a foot taking the weight.
+// `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on
+// the scale `warrior.moves.ron` was tuned to: the three-hit string does 28 damage and 36 poise.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -28,6 +29,16 @@
             (intent: "skill", move: "skill"),
             (intent: "dodge", move: "dodge"),
         ],
+        fighter: (
+            health: 300,
+            poise: 60,
+            // Four seconds without a hit that takes poise, and the meter is full again.
+            poise_refill: 240,
+            hurtboxes: [
+                // From the ground to the crown of the head at 1.62 m. A dodge turns it off.
+                (name: "body", offset: (0.0, 0.81, 0.0), shape: Capsule(radius: 0.3, length: 1.02)),
+            ],
+        ),
         moves: [
             (
                 // 567 ms. The first cut: 117 ms of wind-up, then a slash from high on the right to low
@@ -49,7 +60,14 @@
                     ),
                 ),
                 hitboxes: [
-                    (name: "light_1_hit", from: 7, to: 11, path: "blade", shape: Capsule(radius: 0.22, length: 0.9)),
+                    (
+                        name: "light_1_hit",
+                        from: 7,
+                        to: 11,
+                        path: "blade",
+                        shape: Capsule(radius: 0.22, length: 0.9),
+                        attack: (damage: 6, poise: 8, weight: Light, hitstop: 3, knockback: (distance: 0.25, ticks: 8)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 34, allow: [(intent: "dodge", move: "dodge")]),
@@ -87,7 +105,14 @@
                     ),
                 ),
                 hitboxes: [
-                    (name: "light_2_hit", from: 7, to: 11, path: "blade", shape: Capsule(radius: 0.22, length: 0.9)),
+                    (
+                        name: "light_2_hit",
+                        from: 7,
+                        to: 11,
+                        path: "blade",
+                        shape: Capsule(radius: 0.22, length: 0.9),
+                        attack: (damage: 8, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.3, ticks: 8)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 36, allow: [(intent: "dodge", move: "dodge")]),
@@ -124,7 +149,14 @@
                     ),
                 ),
                 hitboxes: [
-                    (name: "light_3_hit", from: 16, to: 20, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                    (
+                        name: "light_3_hit",
+                        from: 16,
+                        to: 20,
+                        path: "blade",
+                        shape: Capsule(radius: 0.28, length: 0.9),
+                        attack: (damage: 14, poise: 18, weight: Medium, hitstop: 7, finish_freeze: 16, knockback: (distance: 0.7, ticks: 12), cue: "hit_heavy"),
+                    ),
                 ],
                 cancels: [
                     (from: 4, to: 52, allow: [(intent: "dodge", move: "dodge")]),
@@ -187,7 +219,14 @@
                     ),
                 ),
                 hitboxes: [
-                    (name: "dash_hit", from: 5, to: 10, path: "blade", shape: Capsule(radius: 0.26, length: 0.9)),
+                    (
+                        name: "dash_hit",
+                        from: 5,
+                        to: 10,
+                        path: "blade",
+                        shape: Capsule(radius: 0.26, length: 0.9),
+                        attack: (damage: 10, poise: 12, weight: Medium, hitstop: 5, knockback: (distance: 0.5, ticks: 10)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 34, allow: [(intent: "dodge", move: "dodge")]),
@@ -221,8 +260,22 @@
                     ),
                 ),
                 hitboxes: [
-                    (name: "skill_hit_1", from: 12, to: 16, path: "blade", shape: Capsule(radius: 0.24, length: 0.9)),
-                    (name: "skill_hit_2", from: 21, to: 26, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                    (
+                        name: "skill_hit_1",
+                        from: 12,
+                        to: 16,
+                        path: "blade",
+                        shape: Capsule(radius: 0.24, length: 0.9),
+                        attack: (damage: 8, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.2, ticks: 6)),
+                    ),
+                    (
+                        name: "skill_hit_2",
+                        from: 21,
+                        to: 26,
+                        path: "blade",
+                        shape: Capsule(radius: 0.28, length: 0.9),
+                        attack: (damage: 16, poise: 24, weight: Medium, hitstop: 8, knockback: (distance: 0.6, ticks: 10)),
+                    ),
                 ],
                 invulnerable: [(from: 0, to: 12)],
                 parry: [(from: 2, to: 6)],

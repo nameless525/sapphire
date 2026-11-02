@@ -312,7 +312,7 @@ impl App for SandboxApp {
             self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
-            self.scene.set_probe_hours(self.content.probe_hours());
+            self.scene.follow_content(&mut self.content);
         }
         // Recovery, tier changes and loading are no stage of the frame.
         stopwatch.lap();

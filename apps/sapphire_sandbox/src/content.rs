@@ -59,7 +59,10 @@
 //! same slot at a higher generation: [`GpuAssets`] replaces what the renderer holds in place, so
 //! the handles the scene draws with stay valid. A texture is uploaded anew and the materials
 //! that bind it come again to be rebound; a material rewrites its slot; a mesh replaces its
-//! streams under its handle.
+//! streams under its handle, which starts its instances over in their bind pose, so the scene
+//! sends their poses again in the frame that happens ([`Content::take_meshes_replaced`],
+//! `Scene::follow_content`). A new version of the look-dev character's mesh or rig holds her
+//! anew ([`Content::take_character_changed`]).
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
@@ -174,6 +177,8 @@ struct GpuAssets {
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
+    /// A mesh was replaced in place since [`Content::take_meshes_replaced`] last asked.
+    meshes_replaced: bool,
     /// What the materials it uploads change (`--hair-shadow-softness`, `--hair-transmission`).
     overrides: MaterialOverrides,
     /// The probe grid the renderer holds (it holds one), as its key hours.
@@ -190,6 +195,7 @@ impl GpuAssets {
             character,
             character_mesh: None,
             keep_character,
+            meshes_replaced: false,
             overrides: MaterialOverrides::default(),
             probe_grid: None,
         }
@@ -240,9 +246,7 @@ impl GpuAssets {
                 }
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
-            if id == self.character && self.keep_character {
-                self.character_mesh = Some(mesh.to_mesh()?);
-            }
+            let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
             let materials = &self.materials;
             let resolve = |material| materials.get(&material).map(|held| held.object);
             let bounds = scene::mesh_bounds(mesh);
@@ -251,12 +255,17 @@ impl GpuAssets {
                 Some(held) => {
                     renderer.update_mesh(held.object.handle, mesh, resolve)?;
                     *held = Held { slot, generation, object: GpuMesh { handle: held.object.handle, bounds } };
+                    self.meshes_replaced = true;
                 }
                 None => {
                     // All or nothing, so a mesh the renderer rejects leaves no materials behind.
                     let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
                     self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
                 }
+            }
+            // Only what the renderer took: the held pose is derived from it.
+            if copy.is_some() {
+                self.character_mesh = copy;
             }
         } else if let Some(grid) = upload.get::<ProbeGrid>() {
             // The renderer holds one grid: a new version (hot reload) replaces it there.
@@ -322,6 +331,9 @@ pub(crate) struct Content {
     town: Vec<Handle<Mesh>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
+    /// The versions of the character's mesh and rig the scene last knew of
+    /// ([`Self::take_character_changed`]), once there is a rig.
+    character_versions: Option<(u32, u32)>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -374,6 +386,7 @@ impl Content {
             probes: None,
             town: Vec::new(),
             rig: None,
+            character_versions: None,
             sky_id: sky,
             sky: None,
             server,
@@ -441,6 +454,27 @@ impl Content {
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.
     pub fn character_mesh(&self) -> Option<&Mesh> {
         self.gpu.character_mesh.as_ref()
+    }
+
+    /// Whether a mesh was replaced in place since the last call (hot reload, live link, or a new
+    /// version sent to a renderer that was kept): the renderer starts its instances over in their
+    /// bind pose. A new renderer's meshes aren't: its scene is sent everything anyway.
+    pub fn take_meshes_replaced(&mut self) -> bool {
+        std::mem::take(&mut self.gpu.meshes_replaced)
+    }
+
+    /// Whether the character's mesh or rig has a new version since the last call or since
+    /// [`Self::load_rig`], whichever way it came; the two may land frames apart. Always false
+    /// without a rig.
+    pub fn take_character_changed(&mut self) -> bool {
+        let versions = self.current_character_versions();
+        std::mem::replace(&mut self.character_versions, versions) != versions
+    }
+
+    /// The versions the character's mesh and rig are at, if it has a rig.
+    fn current_character_versions(&self) -> Option<(u32, u32)> {
+        let rig = self.rig.as_ref()?;
+        Some((self.server.generation(&self.character), self.server.generation(rig)))
     }
 
     /// Loads the shader swatches' materials, with the textures they name, until they are on
@@ -699,6 +733,7 @@ impl Content {
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
+        self.character_versions = self.current_character_versions();
         loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))
     }
 
@@ -797,5 +832,253 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         (before, self.server.stats())
+    }
+}
+
+/// Review RC-1, through the asset server, the uploader and the scene: what a re-cook does to a
+/// posed character while the app runs. Hot reload and a live-link push land the same way, as a
+/// remount of the pack, and differ only in what tells the app to remount.
+#[cfg(all(test, feature = "dev"))]
+mod tests {
+    use sapphire_assets::material::AnimeCharacterMaterial;
+    use sapphire_assets::mesh::{
+        Influences, Joint, JointTransform, MaterialSlot, PositionFormat, Skin, SkinBind, Submesh,
+        VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, quantize_weights,
+    };
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+    use sapphire_assets::rig::{HumanBone, HumanoidJoint};
+    use sapphire_assets::texture::Swizzle;
+    use sapphire_assets::{AssetKind, MemoryPackSource};
+    use sapphire_math::{Mat4, Vec3};
+    use sapphire_render::graph::{FrameGraph, GraphExecutor};
+    use sapphire_render::{RenderSettings, SkinningStats};
+    use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+
+    use super::*;
+    use crate::lookdev::Shot;
+    use crate::scene::{LookDev, Scene};
+
+    const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+    const SIDE: u32 = 32;
+
+    fn triangle(x: f32) -> Mesh {
+        let vertex = |position: [f32; 3]| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            outline_normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        };
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let material =
+            Material::from_document(&AnimeCharacterMaterial::default(), &swizzles).expect("a valid material");
+        Mesh::from_vertices(
+            &[vertex([x, 0.0, 0.0]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 2.0, 0.0])],
+            vec![0, 1, 2],
+            vec![Submesh { first_index: 0, index_count: 3, material: 0 }],
+            vec![MaterialSlot::embedded("skin", material)],
+            PositionFormat::Unorm16,
+        )
+    }
+
+    /// `bytes` as a pack holds them.
+    fn packed(id: AssetId, kind: AssetKind, bytes: &[u8]) -> PackAsset {
+        PackAsset::encode(id, kind, Codec::Lz4, bytes, Vec::new(), 3).expect("encoded")
+    }
+
+    /// A pack with the look-dev character, its first vertex at `x`, and its rig: every required
+    /// humanoid bone a joint of its own under the root, and `extra` joints more.
+    fn pack(x: f32, extra: usize) -> Vec<u8> {
+        let count = HumanBone::REQUIRED.len() + extra;
+        let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
+        let joints = (0..count)
+            .map(|joint| Joint {
+                name: format!("joint {joint}"),
+                parent: (joint > 0).then_some(0),
+                rest: JointTransform {
+                    translation: if joint > 0 { [joint as f32 * 0.1, 0.0, 0.0] } else { at(0) },
+                    ..JointTransform::IDENTITY
+                },
+            })
+            .collect();
+        let binds = (0..count)
+            .map(|joint| SkinBind {
+                joint: joint as u16,
+                inverse_bind_matrix: Mat4::from_translation(-Vec3::from(at(joint))).to_cols_array_2d(),
+            })
+            .collect();
+        let held = VertexInfluence { binds: [0; 4], weights: quantize_weights([1.0, 0.0, 0.0, 0.0]) };
+        let mut mesh = triangle(x);
+        mesh.skin = Some(Skin { joints, binds, influences: Influences::pack(&[held; 3], count) });
+        let mut humanoid: Vec<_> = HumanBone::REQUIRED
+            .iter()
+            .enumerate()
+            .map(|(joint, &bone)| HumanoidJoint { bone, joint: joint as u16 })
+            .collect();
+        humanoid.sort_by_key(|entry| entry.bone);
+        let rig = CharacterRig {
+            joint_count: count as u32,
+            material_slot_count: 1,
+            humanoid,
+            ..CharacterRig::default()
+        };
+        write_pack(vec![
+            packed(lookdev::CHARACTER, AssetKind::Mesh, &mesh.to_cooked().expect("cooked")),
+            packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
+        ])
+        .expect("a pack")
+    }
+
+    /// The look-dev stage over a pack in memory, run frame by frame as the app runs it.
+    struct Stage {
+        // Drop order: what lives on the GPU before the device.
+        scene: Scene,
+        content: Content,
+        graph: GraphExecutor,
+        renderer: Renderer,
+        target: wgpu::Texture,
+        gpu: GpuContext,
+        source: Arc<MemoryPackSource>,
+    }
+
+    impl Stage {
+        fn new() -> Self {
+            let source = Arc::new(MemoryPackSource::new());
+            source.insert(PACK, pack(0.0, 0));
+            let live_packs = Arc::new(LivePacks::new(source.clone()));
+            let budgets =
+                AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+            let mut server = AssetServer::new(live_packs.clone(), budgets);
+            server.mount(PACK).expect("the pack");
+            let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
+            let mut content = Content {
+                gpu: GpuAssets::new(lookdev::CHARACTER, true),
+                character_id: lookdev::CHARACTER,
+                character,
+                swatches: Vec::new(),
+                layer_samples: Vec::new(),
+                face_head: None,
+                courtyard: None,
+                fog_cards: Vec::new(),
+                foliage: Vec::new(),
+                hard_edges: None,
+                probes: None,
+                town: Vec::new(),
+                rig: None,
+                character_versions: None,
+                sky_id: SKY,
+                sky: None,
+                server,
+                live_packs,
+            };
+            let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+            let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+            let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+            let (mesh, bounds) = content.character(&mut renderer, &gpu).expect("the character");
+            let (pose, figure) = lookdev::hold(&mut content, &mut renderer, &gpu).expect("her pose");
+            // What the town draws doesn't matter here.
+            let bytes = triangle(0.0).to_cooked().expect("cooked");
+            let plain = Mesh::read(&bytes).expect("a valid mesh");
+            let materials = renderer.upload_embedded_materials(plain).expect("materials");
+            let plain = renderer.upload_mesh(plain, &materials).expect("a mesh");
+            let town = TownMeshes {
+                town: plain,
+                plants: Plant::ALL.map(|_| plain),
+                mountains: lookdev::MOUNTAINS.map(|_| plain),
+            };
+            let mut scene = Scene::with_character(mesh, bounds, false);
+            scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose, figure });
+            let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            Self { scene, content, graph: GraphExecutor::new(), renderer, target, gpu, source }
+        }
+
+        /// One frame, as the app runs it: what the frame's loading uploaded, then extraction, and
+        /// what the frame skins.
+        fn frame(&mut self) -> SkinningStats {
+            self.content.update(&mut self.renderer, &self.gpu);
+            self.scene.follow_content(&mut self.content);
+            self.scene.step();
+            let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)));
+            self.renderer.prepare(&self.gpu, packet);
+            let stats = self.renderer.stats().skinning;
+            let view = self.target.create_view(&Default::default());
+            let mut graph = FrameGraph::new();
+            let target = graph.import_texture("target", &view);
+            self.renderer.record(&mut graph, target).expect("a view and a target");
+            self.graph.execute(&self.gpu, graph).expect("a valid graph");
+            self.scene.end_frame();
+            stats
+        }
+
+        /// The pack re-cooked, as a watched file or a push hands it over.
+        fn recook(&mut self, x: f32, extra: usize) {
+            self.source.insert(PACK, pack(x, extra));
+            self.content.remount(PACK).expect("the new pack");
+        }
+
+        /// The versions the character's mesh and rig are at.
+        fn versions(&self) -> (u32, u32) {
+            self.content.current_character_versions().expect("a rig")
+        }
+
+        /// Frames until the character's mesh and rig are at `versions`, and what the last skinned.
+        fn until(&mut self, versions: (u32, u32)) -> SkinningStats {
+            for _ in 0..10_000 {
+                let stats = self.frame();
+                if self.versions() == versions {
+                    return stats;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("still at {:?}", self.versions());
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_mesh_replaced_in_place_is_posed_in_the_frame_that_replaces_it() {
+        let mut stage = Stage::new();
+        let posed = stage.frame();
+        assert!(posed.palette_bytes > 0, "she starts posed: {posed:?}");
+        assert_eq!(stage.frame().palette_bytes, 0, "a held pose is sent once");
+        assert!(!stage.content.take_meshes_replaced(), "nothing replaced yet");
+
+        // Her mesh alone changes, as a sidecar's LOD edit changes it.
+        stage.recook(0.1, 0);
+        let replaced = stage.until((1, 0));
+        // No frame draws the new mesh in its bind pose: this frame's skin is her pose, not the
+        // bind pose a new instance would start from.
+        assert_eq!(replaced.ignored_poses, 0);
+        assert_eq!(replaced.palette_bytes, posed.palette_bytes, "posed: {replaced:?}");
+        let after = stage.frame();
+        assert_eq!((after.skinned, after.palette_bytes), (0, 0), "and sent once");
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_skeleton_holds_the_character_anew() {
+        let mut stage = Stage::new();
+        let joints = HumanBone::REQUIRED.len() as u32;
+        let per_joint = stage.frame().palette_bytes / joints;
+        assert!(per_joint > 0);
+        stage.frame();
+
+        // One joint more, in her mesh and her rig: the palette she was held with no longer fits,
+        // whichever of them lands first.
+        stage.recook(0.0, 1);
+        let settled = stage.until((1, 1));
+        assert_eq!(settled.ignored_poses, 0, "{settled:?}");
+        assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "her new palette: {settled:?}");
+        assert_eq!(stage.frame().palette_bytes, 0, "held again");
     }
 }

@@ -493,10 +493,15 @@ pub(crate) fn hold(
     gpu: &GpuContext,
 ) -> Result<(RenderPose, Figure), AppInitError> {
     content.load_rig(RIG, renderer, gpu)?;
-    let mesh =
-        content.character_mesh().ok_or_else(|| AppInitError::msg("the look-dev character isn't loaded"))?;
-    let rig = content.rig().ok_or_else(|| AppInitError::msg("the look-dev character's rig isn't loaded"))?;
-    held_pose(mesh, rig).map_err(AppInitError::msg)
+    held(content).map_err(AppInitError::msg)
+}
+
+/// [`held_pose`] for the character as `content` has it now: at the start, and again whenever its
+/// mesh or rig gets a new version ([`Content::take_character_changed`]), whose joints may be others.
+pub(crate) fn held(content: &Content) -> Result<(RenderPose, Figure), String> {
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    held_pose(mesh, rig)
 }
 
 /// The character's held pose and the figure it makes: the skinning palette and morph weights

@@ -53,7 +53,8 @@
 //!   day's night before extraction), around the VRM character held in a pose: a
 //!   [`RenderPose`] written once, which `Extract` sends while it is new, and the
 //!   [`Figure`] it makes, where the light rig finds the character's head, body and face
-//!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]).
+//!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of her mesh or rig under a
+//!   running app holds her anew ([`Scene::follow_content`]).
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
@@ -104,6 +105,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_eff
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
+use crate::content::Content;
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
@@ -896,6 +898,42 @@ impl Scene {
         }
     }
 
+    /// Takes in what this frame's loading changed, after [`Content::update`] and before the
+    /// frame's packet: the probe grid's key hours; a mesh replaced in place, whose instances the
+    /// renderer starts over in their bind pose, sends every pose again with this frame's packet,
+    /// so the frame that first draws the new mesh already draws it posed; and a new version of the
+    /// look-dev character's mesh or rig holds her anew, since her palette indexes their joints.
+    /// While only one of the two has landed she may not fit: she keeps the pose she has, which the
+    /// renderer ignores if the new mesh's palette is another length, until the other lands.
+    /// Allocates nothing while nothing changed.
+    pub fn follow_content(&mut self, content: &mut Content) {
+        self.set_probe_hours(content.probe_hours());
+        if content.take_meshes_replaced() {
+            self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        }
+        if content.take_character_changed() {
+            match lookdev::held(content) {
+                Ok((pose, figure)) => self.hold_character(pose, figure),
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps her pose");
+                }
+            }
+        }
+    }
+
+    /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
+    /// one she has.
+    fn hold_character(&mut self, pose: RenderPose, figure: Figure) {
+        self.figure = figure;
+        let mut character = self.ecs.world_mut().entity_mut(self.character);
+        if let Some(mut held) = character.get_mut::<RenderPose>() {
+            held.set_if_neq(pose);
+        }
+        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
+            rig.head = figure.head;
+        }
+    }
+
     /// Makes `Extract` write poses from now on, once: scenes without any pose don't run it.
     fn extract_poses(&mut self) {
         if !self.poses {
@@ -1448,6 +1486,54 @@ mod tests {
         let full = lookdev::LAMP_INTENSITY * lookdev::LAMPS.len() as f32;
         assert!((midnight - full).abs() < 1e-3, "lamps at full by night: {midnight}");
         assert!(posed.is_empty(), "a held pose isn't sent again");
+    }
+
+    /// Review RC-1: her palette indexes her mesh's joints, and her figure comes from them.
+    #[test]
+    fn a_character_held_anew_sends_a_new_pose_once_and_takes_its_figure() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let lifted = sapphire_math::Affine3A::from_translation(Vec3::Y);
+        let pose = RenderPose { palette: vec![lifted; 2], morph_weights: vec![0.5] };
+        let figure = Figure {
+            head: Vec3::new(0.0, 1.45, 0.0),
+            feet: Vec3::ZERO,
+            body_radius: 0.16,
+            face: Quat::IDENTITY,
+            expression: FaceExpression::default(),
+        };
+        let town = TownMeshes {
+            town: MeshHandle::from_raw(1),
+            plants: [MeshHandle::from_raw(2); 8],
+            mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+        };
+        scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose: pose.clone(), figure });
+        let frame = |scene: &mut Scene| {
+            scene.step();
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let palettes: Vec<usize> = packet
+                .skinned
+                .iter()
+                .map(|skinned| packet.palette(skinned).expect("in range").len())
+                .collect();
+            let head = packet.characters[0].lighting.gi.head;
+            scene.end_frame();
+            (palettes, head)
+        };
+        assert_eq!(frame(&mut scene), (vec![2], Some(figure.head)));
+        assert_eq!(frame(&mut scene), (vec![], Some(figure.head)), "a held pose is sent once");
+
+        // The same pose again sends nothing, only a replaced mesh does.
+        scene.hold_character(pose.clone(), figure);
+        assert_eq!(frame(&mut scene).0, Vec::<usize>::new());
+        scene.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        assert_eq!(frame(&mut scene).0, [2], "a replaced mesh's instance starts over");
+        assert_eq!(frame(&mut scene).0, Vec::<usize>::new());
+
+        // Another skeleton's pose and figure go out in the next frame, once.
+        let taller = Figure { head: Vec3::new(0.0, 1.6, 0.0), ..figure };
+        scene.hold_character(RenderPose { palette: vec![lifted; 3], morph_weights: vec![0.5] }, taller);
+        assert_eq!(frame(&mut scene), (vec![3], Some(taller.head)), "the rig finds her new head");
+        assert_eq!(frame(&mut scene).0, Vec::<usize>::new());
     }
 
     #[test]

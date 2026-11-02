@@ -7,7 +7,7 @@
 //!   entity drawing a skinned or morphed mesh also has a [`RenderPose`], its skinning palette and
 //!   morph weights, which animation writes only when they change.
 //! - **[`RenderExtract`]** holds the packet ring, and whether the next extraction resends
-//!   everything.
+//!   everything, or every pose.
 //! - **[`extract_instances`]** writes instance deltas with bevy change detection: `Changed`
 //!   (which includes additions) for added, re-meshed or moved instances, and
 //!   `RemovedComponents` for ones that stopped drawing. An entity that didn't change adds
@@ -15,9 +15,11 @@
 //! - **[`extract_lights`]** writes every light, every frame: a frame has a few dozen at most, and
 //!   the renderer culls and lists them per frame anyway, so deltas would buy nothing.
 //! - **[`extract_poses`]** writes the poses that changed, and those of entities that were added
-//!   or changed mesh (whose outputs the renderer starts over in the bind pose). Their palettes
-//!   and weights are copied into the packet's flat arrays, whose capacity the packet ring keeps,
-//!   so a warm frame allocates nothing for them.
+//!   or changed mesh (whose outputs the renderer starts over in the bind pose). A mesh replaced
+//!   in place under its handle starts its instances over too, with nothing here changing, so
+//!   whoever replaces one asks for every pose again ([`RenderExtract::resend_poses`]). Their
+//!   palettes and weights are copied into the packet's flat arrays, whose capacity the packet
+//!   ring keeps, so a warm frame allocates nothing for them.
 //!
 //! Extraction must run every frame, drawn or not: `RemovedComponents` keeps removals only until
 //! the second `Cleanup` after them, and the renderer must see every packet's deltas.
@@ -56,7 +58,7 @@ pub(crate) struct RenderPose {
     pub morph_weights: Vec<f32>,
 }
 
-/// The packets extraction fills, and whether the next one resends everything.
+/// The packets extraction fills, and whether the next one resends everything, or every pose.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct RenderExtract {
     packets: FramePacketRing,
@@ -64,12 +66,17 @@ pub(crate) struct RenderExtract {
     resend: bool,
     /// The packet being extracted resends everything.
     resending: bool,
+    /// Send every pose on the next extraction, changed or not.
+    resend_poses: bool,
+    /// The packet being extracted resends every pose.
+    resending_poses: bool,
 }
 
 impl RenderExtract {
     /// Starts the next frame's packet, empty.
     pub fn begin(&mut self) -> &mut FramePacket {
         self.resending = std::mem::take(&mut self.resend);
+        self.resending_poses = std::mem::take(&mut self.resend_poses) || self.resending;
         self.packets.begin()
     }
 
@@ -86,6 +93,13 @@ impl RenderExtract {
     /// as one rebuilt after GPU device loss.
     pub fn resend_all(&mut self) {
         self.resend = true;
+    }
+
+    /// Makes the next extraction send every pose, and no instance that didn't change: for a mesh
+    /// replaced in place, whose instances the renderer keeps and starts over in their bind pose
+    /// (`Renderer::update_mesh`).
+    pub fn resend_poses(&mut self) {
+        self.resend_poses = true;
     }
 }
 
@@ -150,7 +164,7 @@ pub(crate) fn extract_poses(
     changed: Query<'_, '_, Posed<'_>, Reposed>,
     all: Query<'_, '_, Posed<'_>, With<RenderMesh>>,
 ) {
-    let resend = extract.resending;
+    let resend = extract.resending_poses;
     let packet = extract.packet_mut();
     let mut push = |(entity, pose): Posed<'_>| {
         packet.push_skinned(
@@ -360,6 +374,35 @@ mod tests {
         assert!(poses(&mut ecs).is_empty());
         ecs.world_mut().entity_mut(posed).insert(RenderTransform::default());
         assert_eq!(poses(&mut ecs).len(), 1);
+    }
+
+    /// Review RC-1: a mesh replaced in place keeps its entity and handle, so nothing changes here,
+    /// yet the renderer starts its instances over in their bind pose.
+    #[test]
+    fn a_pose_resend_sends_each_pose_once_and_no_instance() {
+        let mut ecs = ecs();
+        let pose = RenderPose { palette: vec![Affine3A::IDENTITY], morph_weights: vec![0.25] };
+        let posed = instance_id(ecs.world_mut().spawn((mesh(0), at(1.0), pose.clone())).id());
+        let still = ecs.world_mut().spawn((mesh(1), at(2.0))).id();
+        // Not drawn: a pose alone is not a render proxy, whatever is resent.
+        ecs.world_mut().spawn(pose.clone());
+        assert_eq!(poses(&mut ecs).len(), 1);
+        assert!(poses(&mut ecs).is_empty(), "a pose that holds still is sent once");
+
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        ecs.world_mut().resource_mut::<RenderExtract>().begin();
+        ecs.extract();
+        let packet = ecs.world().resource::<RenderExtract>().packet();
+        let sent: Vec<_> = packet.skinned.iter().map(|skinned| skinned.id).collect();
+        assert_eq!(sent, [posed], "the pose is sent again");
+        assert!(packet.instances.is_empty(), "and no instance");
+        ecs.cleanup();
+        assert!(poses(&mut ecs).is_empty(), "then back to changes only");
+
+        // A resend takes in what changed in the frame it goes out in, once.
+        ecs.world_mut().get_mut::<RenderTransform>(still).expect("still").set_if_neq(at(3.0));
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        assert_eq!(ids(&frame(&mut ecs)), [instance_id(still)]);
     }
 
     #[test]

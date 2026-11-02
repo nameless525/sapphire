@@ -6,7 +6,8 @@
 //!
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
-//!   versions within the frame's upload budget, in place;
+//!   versions within the frame's upload budget, in place, and the scene poses what a replaced mesh
+//!   starts over ([`Scene::follow_content`]);
 //! - WGSL files whose text changed on disk replace those files in the newest sources the
 //!   renderer was asked for, so live link's pushes of other files keep their text, and build the
 //!   renderer's pipelines again off the frame thread, which swaps them in once they are all

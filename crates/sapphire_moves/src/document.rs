@@ -20,9 +20,9 @@ use crate::brain::{
 use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
     FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
-    MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS,
-    MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions, Shape, Span, WarpWindow, Weight,
-    WorldSlowMotion,
+    MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH, MAX_MOVE_TICKS,
+    MAX_SLOW_MOTION_STEPS, MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions, Shape, Span,
+    WarpWindow, Weight, WorldSlowMotion,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -581,6 +581,11 @@ impl Checker {
         let Knockback { distance, ticks } = attack.knockback;
         if !distance.is_finite() || distance < 0.0 {
             self.add("hitboxes", format!("`{name}` has a knockback that's negative or not finite"));
+        } else if distance > MAX_MOVE_REACH {
+            self.add(
+                "hitboxes",
+                format!("`{name}` has a knockback of {distance} m, past the limit of {MAX_MOVE_REACH}"),
+            );
         } else if distance > 0.0 && !(1..=MAX_MOVE_TICKS).contains(&ticks) {
             self.add(
                 "hitboxes",
@@ -888,6 +893,11 @@ impl Checker {
             previous = Some(key.at);
             if !key.offset.iter().all(|value| value.is_finite()) || !key.yaw.is_finite() {
                 self.add("motion", format!("root key at tick {} isn't finite", key.at));
+            } else if !key.offset.iter().chain([&key.yaw]).all(|value| value.abs() <= MAX_MOVE_REACH) {
+                self.add(
+                    "motion",
+                    format!("root key at tick {} goes past the limit of {MAX_MOVE_REACH}", key.at),
+                );
             }
             if key.at == 0 && (key.offset != [0.0; 3] || key.yaw != 0.0) {
                 self.add(
@@ -1701,6 +1711,11 @@ mod tests {
                 &["light_1", "hitboxes", "light_1_hit", "knockback", "not finite"],
             ),
             (
+                "a knockback out of the world",
+                |d| attack(d).knockback.distance = 1e30,
+                &["light_1", "hitboxes", "light_1_hit", "knockback", "limit of 1000"],
+            ),
+            (
                 "a knockback in no time",
                 |d| attack(d).knockback = Knockback { distance: 1.0, ticks: 0 },
                 &["light_1", "hitboxes", "light_1_hit", "knockback over 0 ticks"],
@@ -1825,6 +1840,16 @@ mod tests {
                 "a root key past the end",
                 |d| light(d).motion.root.last_mut().unwrap().at = 40,
                 &["light_1", "motion", "past the move's end"],
+            ),
+            (
+                "a root key out of the world",
+                |d| light(d).motion.root[0].offset[2] = 1e30,
+                &["light_1", "motion", "root key", "limit of 1000"],
+            ),
+            (
+                "a root key turning without end",
+                |d| light(d).motion.root[0].yaw = -1e30,
+                &["light_1", "motion", "root key", "limit of 1000"],
             ),
             (
                 "a perfect-dodge window past the move's end",

@@ -245,9 +245,9 @@ pub use document::{
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
     DodgeVolume, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,
-    Knockback, MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS,
-    MAX_SLOW_MOTION_STEPS, MOVE_SET_EXTENSION, Move, MoveSet, MoveSetError, PerfectDodgeWindow, Phase,
-    Reactions, Shape, Span, Stretch, WarpWindow, Weight, WorldSlowMotion,
+    Knockback, MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH,
+    MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS, MOVE_SET_EXTENSION, Move, MoveSet, MoveSetError,
+    PerfectDodgeWindow, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight, WorldSlowMotion,
 };
 
 use bevy_reflect::TypePath;

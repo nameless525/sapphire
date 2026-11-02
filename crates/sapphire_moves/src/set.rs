@@ -27,6 +27,10 @@ pub const MAX_BUFFER_TICKS: u32 = 15;
 /// samples would be its cost.
 pub const MAX_MOVE_TICKS: u32 = 3600;
 
+/// Farthest a move's root may go or a knockback push, in metres, and furthest a root may turn, in radians:
+/// past this it's a typo, and past about 1e19 the character controller's own arithmetic runs out.
+pub const MAX_MOVE_REACH: f32 = 1000.0;
+
 /// Most hurtboxes one fighter has: `sapphire_gameplay`'s hurtbox IDs hold four bits of index.
 pub const MAX_HURTBOXES: usize = 16;
 

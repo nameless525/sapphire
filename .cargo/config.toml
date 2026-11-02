@@ -20,6 +20,17 @@ IPHONEOS_DEPLOYMENT_TARGET = { value = "17.0", force = true }
 # dependency's feature off, so the define goes in through the flags tracy-client-sys reads.
 TRACY_CLIENT_SYS_CXXFLAGS = "-DTRACY_NO_CRASH_HANDLER"
 
+# Windows gives a main thread a 1 MiB stack, and d3dcompiler_47, which wgpu compiles HLSL with on
+# D3D12, needs more than that on the anime character shader once the app's own frames are counted.
+# Pipeline batches build on the job pool, so this crashed (0xc00000fd) only on the launches where the
+# main thread picked that build up while helping, about one in a hundred on CI. 8 MiB is what Linux
+# and macOS give a main thread. A test in `sapphire_platform` reads it back from a built program.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+
 # Google Play requires 16 KB page-aligned native libraries (spec §6.7). NDK r28+ already
 # links that way by default (open question Q2, verified with r29); the flag keeps the
 # guarantee explicit.

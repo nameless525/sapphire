@@ -135,9 +135,19 @@ impl JobSystem {
     }
 }
 
+/// Each worker's stack, twice Rust's default. Workers build pipelines, and a driver's shader compiler
+/// can recurse deep on a large shader: d3dcompiler_47 overflowed a 1 MiB main thread on the anime
+/// character shader, so 2 MiB leaves too little room for a shader that grows. It's address space
+/// until touched.
+const WORKER_STACK: usize = 4 * 1024 * 1024;
+
 /// Threads are named `<prefix> (<index>)` so they are recognizable in debuggers and profilers.
 fn build_pool(thread_prefix: &str, threads: usize) -> TaskPool {
-    TaskPoolBuilder::new().num_threads(threads).thread_name(thread_prefix.to_owned()).build()
+    TaskPoolBuilder::new()
+        .num_threads(threads)
+        .stack_size(WORKER_STACK)
+        .thread_name(thread_prefix.to_owned())
+        .build()
 }
 
 static SYSTEM: OnceLock<JobSystem> = OnceLock::new();

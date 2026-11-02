@@ -157,8 +157,9 @@ impl Editor {
         };
         if let Some(path) = options.file {
             editor.open(&path);
-        } else {
-            // With no file named, the list is the only way to one.
+        }
+        if editor.file.is_none() {
+            // With no file named, or none there, the list is the only way to one.
             editor.documents =
                 std::env::current_dir().map_or_else(|_| Vec::new(), |dir| documents_around(&dir));
         }

@@ -766,6 +766,24 @@ fn with_no_file_named_the_list_offers_the_repositorys_documents() {
     harness.get_by_label("warrior.moves.ron").click();
     harness.run_steps(3);
     assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+
+    // A name that's wrong leaves the same way out, with the notice saying why.
+    let options = Options {
+        file: Some(dir.0.join("no such.moves.ron")),
+        content: Some(dir.0.join("no cook here")),
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+    };
+    let mut harness = Harness::builder()
+        .with_size((1400.0, 900.0))
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options));
+    harness.run_steps(2);
+    assert!(harness.state().notice().is_some());
+    harness.get_by_value("no file").click();
+    harness.run_steps(2);
+    harness.get_by_label("warrior.moves.ron").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
 }
 
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real

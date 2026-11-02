@@ -2,7 +2,7 @@
 
 What M3 inherits from M2, for whoever starts M3. It's a map, as [m2-handoff.md](m2-handoff.md) was: each item gets a line or two and a pointer to where the detail lives, the spec ([engine-spec.md](engine-spec.md)) by section, the plan ([m2-plan.md](m2-plan.md)) by package ID, or the code.
 
-Written at M2's close (Z3, 2026-11-02), on the review line's top, f8fa8f3f, with Z1, WA-3 and five reviews under it. Counts are as of then, and the exit tests' numbers come from 410cf24b ([m2-exit-run.md](m2-exit-run.md), "Rehearsal"). **M3 has no go-ahead:** spec §10 makes M2 the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. If the answer is the off-ramp, "What M3 builds on" below is the list of Rust systems that stay.
+Written at M2's close (Z3, 2026-11-02), on the review line's top, 7a28c828, with Z1, WA-3 and five reviews under it. Counts are as of then, and the exit tests' numbers come from 410cf24b ([m2-exit-run.md](m2-exit-run.md), "Rehearsal"). **M3 has no go-ahead:** spec §10 makes M2 the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. If the answer is the off-ramp, "What M3 builds on" below is the list of Rust systems that stay.
 
 ## Where M2 stands
 

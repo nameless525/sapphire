@@ -16,7 +16,7 @@ All three reviews take 90 minutes in one sitting, and a phone takes about 45 min
 
 ## What's proven, and by what
 
-The exit tests' numbers were taken on 410cf24b, before the review's fixes, and not taken again. A spot check on f8fa8f3f, in [m2-exit-run.md](m2-exit-run.md), found the routes behaving and a script's fight on the same checksum.
+The exit tests' numbers were taken on 410cf24b, before the review's fixes, and not taken again. A spot check on 7a28c828, in [m2-exit-run.md](m2-exit-run.md), found the routes behaving and a script's fight on the same checksum.
 
 | Claim | Evidence | Conditions |
 |---|---|---|
@@ -102,5 +102,5 @@ One change is worth making if review 1 finds the movement wrong: move `Controlle
 ## Notes on the evidence
 
 - **CI during the macOS outage.** GitHub's macOS runners have been out since about 12:30 UTC on 2026-11-02. Every landing since was verified on Metal, tests, replays and iOS builds by a local stand-in running CI's four macOS jobs on this Mac, not by CI's own. Linux, Windows, Android and lint jobs ran in CI as usual.
-- **Which tree.** The exit tests' numbers come from 410cf24b. WA-3's clocks and the review's fixes came after. A row saying f8fa8f3f was taken there.
+- **Which tree.** The exit tests' numbers come from 410cf24b. WA-3's clocks and the review's fixes came after. A row saying 7a28c828 was taken there.
 - **Every number here** comes from one Apple M5 laptop on AC power, with other agents building beside it, which is why ranges and worst cases are quoted. It isn't one of the spec's reference devices. [m2-exit-run.md](m2-exit-run.md), "Rehearsal", has the exit tests' conditions, and spec §3.5 has the budgets'.

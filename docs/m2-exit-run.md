@@ -173,7 +173,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 | Rumble | The same rows' `rumble: (low, high, seconds)` | Save. Only a pad can judge |
 | A screen effect's look | [default_screen_effects.ron](../crates/sapphire_world/default_screen_effects.ron): `light_hit`, `medium_hit`, `heavy_hit`, `poise_break`, `finish`, `perfect_dodge`, `skill_flash` | Save |
 | The light and hour | [lookdev_day.ron](../content/lookdev/lookdev_day.ron), and `--time-of-day <hours>` on the command | Save |
-| A cut's blend, a reaction's blend, walk and run blending | [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron): `combat`'s `decay`, `exit`, each move's `decay`, `locomotion`'s `samples`, `smoothing`, `rate`, `transitions`. It takes effect at the next state's start | Save or push (134 ms and 7 ms, on f8fa8f3f) |
+| A cut's blend, a reaction's blend, walk and run blending | [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron): `combat`'s `decay`, `exit`, each move's `decay`, `locomotion`'s `samples`, `smoothing`, `rate`, `transitions`. It takes effect at the next state's start | Save or push (134 ms and 7 ms, on 7a28c828) |
 | The same on the enemy | [warrior.animgraph.ron](../content/combat/enemy/warrior.animgraph.ron), the same fields | Cook. A save isn't watched, and a push is refused by name |
 | A move's pose, and what's seen when | [moves.py](../tools/motion/moves.py), by [its README](../tools/motion/README.md): `--write`, read a sheet with `sheet.py`, then cook. A cook rebakes the move's tables | Cook |
 | Walk, run, strafe or a reaction's clip | The pack's sidecars under [kaykit_character_animations](../content/third_party/kaykit_character_animations/): a `retarget:` entry's `adjust`, `gain`, `follow` | Cook |
@@ -452,7 +452,7 @@ Phone model, OS, build commit, room temperature, on charge or not. A line every 
 
 ## Rehearsal
 
-Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on 410cf24b, which is before WA-3's clocks and the review's fixes. Those numbers weren't taken again. The second table says what ran on f8fa8f3f, the review's top. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
+Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on 410cf24b, which is before WA-3's clocks and the review's fixes. Those numbers weren't taken again. The second table says what ran on 7a28c828, the review's top. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
 
 ### What ran
 
@@ -484,9 +484,9 @@ Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other age
 | 1 | The dummy recipe under `--script fight-back` | After 75 s the player has 240 of 300 and the warrior 3,886 of 5,000 |
 | 1 | `sapphire_editor content/combat/player/player.moves.ron --capture <png>` | The timeline and the clay figure draw on the real moves. On the CPU, with no window |
 
-### What ran on the review's tree (f8fa8f3f)
+### What ran on the review's tree (7a28c828)
 
-Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5.
+Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5. These ran before a rebase, on a commit that differs from 7a28c828 by one test's calls and x86-64's checksums.
 
 | What | Saw |
 |---|---|
@@ -498,6 +498,8 @@ Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5.
 | `--capture … --arena --hud live --hud-paused --capture-ticks 30` | The veil and the two-bar mark in the frame's middle, read from the picture |
 | `--script fight-back`, one fight | The same checksum as on 410cf24b, `0dfb07dd0da45a9c` |
 | `cargo xtask replay` | 11 replays pass, on the `fight` and `party-swap` checksums the review moved |
+
+A last check of this page against the code ran the first command with `--dry-run` on a clean checkout, with 3 build jobs: it cooked, built and printed the launch in 4 min 23 s and changed no tracked file, and that's how `tee` was found to keep nothing while `target/` doesn't exist.
 
 ### What didn't run, and why
 

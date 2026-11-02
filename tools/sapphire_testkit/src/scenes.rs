@@ -2658,8 +2658,22 @@ fn run_scene(
     let golden_path = paths.goldens.join(format!("{}.{family}.png", scene.name));
     let kept = paths.out.join(format!("{}.{family}.actual.png", scene.name));
     let keep = || fs::copy(&capture, &kept).map(drop).map_err(|e| io_error("failed to write", &kept, e));
+    // This scene's failure, not the run's: a golden of another size, a capture cut short.
+    let unreadable = |why: golden::GoldenError| -> Result<Outcome, String> {
+        let what = if capture.is_file() {
+            keep()?;
+            format!("{why}; the capture is at {}", kept.display())
+        } else {
+            why.to_string()
+        };
+        Ok(error(Status::Error, Some(family.clone()), what))
+    };
 
     if mode == Mode::Update {
+        // Read first: a capture cut short would pass for a golden until a run compared against it.
+        if let Err(why) = Image::read_png(&capture) {
+            return unreadable(why);
+        }
         fs::create_dir_all(&paths.goldens).map_err(|e| io_error("failed to create", &paths.goldens, e))?;
         fs::copy(&capture, &golden_path).map_err(|e| io_error("failed to write", &golden_path, e))?;
         eprintln!("updated  {} {:.1} s", golden_path.display(), seconds());
@@ -2683,16 +2697,7 @@ fn run_scene(
     });
     let comparison = match compared {
         Ok(comparison) => comparison,
-        // This scene's failure, not the run's: a golden of another size, a capture cut short.
-        Err(why) => {
-            let what = if capture.is_file() {
-                keep()?;
-                format!("{why}; the capture is at {}", kept.display())
-            } else {
-                why.to_string()
-            };
-            return Ok(error(Status::Error, Some(family.clone()), what));
-        }
+        Err(why) => return unreadable(why),
     };
     let summary = format!(
         "{} [{family}] {:.1} s: mean {:.4} (≤ {}), p{} {:.4} (≤ {}), worst tile {:.4} (≤ {}), max {:.3}",
@@ -3236,6 +3241,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn update_keeps_a_capture_cut_short_out_of_the_goldens() {
+        // It would pass for a golden until the next run compared against it.
+        check_fake_run(
+            "update-truncated",
+            Mode::Update,
+            &[("fake-truncated", "error"), ("fake-chatty", "updated")],
+        );
+    }
+
     fn check_fake_run(group: &str, mode: Mode, expected: &[(&'static str, &'static str)]) {
         let dir = std::env::temp_dir().join(format!("sapphire_testkit_{group}_{}", std::process::id()));
         let paths = Paths {
@@ -3278,6 +3293,7 @@ mod tests {
             if status == "timed-out" {
                 assert!(failure.starts_with(&format!("{name}: timed out after 3 s")), "{failure}");
             } else if let Some(why) = unreadable {
+                assert!(mode == Mode::Compare || !golden_of(name).exists(), "{name} became a golden");
                 assert!(failure.starts_with(&format!("{name}: ")) && failure.contains(why), "{failure}");
                 // The capture is kept, bytes as the sandbox wrote them, and the failure says where.
                 let kept = paths.out.join(format!("{name}.vulkan-lavapipe.actual.png"));

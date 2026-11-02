@@ -1511,7 +1511,7 @@ impl Renderer {
         }
         self.materials.prepare();
         self.wind.prepare(packet);
-        self.skinning.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
+        self.skinning.prepare(device, queue, packet, self.scene.slots_mut(), self.meshes.records());
         let lists_replaced =
             self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());

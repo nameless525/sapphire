@@ -5,8 +5,9 @@
 //! depth × `tan(fov_y / 2) / tan(22.5°)`, where a model looks as large as through a 45° lens. Past
 //! its material's cutoff (`OutlineCurve::cutoff`) a hull would be all but invisible and still cost
 //! its vertices and its depth test, so the frame skips the draw. The test is per draw, on the
-//! instance's bounding sphere (its mesh record's, transformed): a hull is dropped once the
-//! sphere's nearest point is past the cutoff in view depth, the distance the shader fades by, so
+//! instance's bounding sphere (its pose's or its mesh record's, placed; `InstanceSlots::world_bounds`):
+//! a hull is dropped once the sphere's nearest point is past the cutoff in view depth, the distance
+//! the shader fades by, so
 //! a large instance straddling it keeps its hull, whose width the shader fades to nothing over
 //! the cutoff's last quarter anyway. Nothing pops.
 //!
@@ -22,8 +23,7 @@
 //!
 //! # Later milestones
 //!
-//! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop, and skinned
-//!   instances' bounds come from their joints rather than the bind pose.
+//! - With LOD selection (culling), the cutoff becomes the LOD past which hulls stop.
 
 use sapphire_assets::material::AnimeCharacterParams;
 
@@ -84,17 +84,12 @@ impl OutlineCull {
             let cutoff = params(draw.material).map_or(0.0, |params| params.outline_curve[3]) * scale;
             // A cutoff of 0 (or one that isn't a number) draws nothing, wherever the hull is.
             let visible = cutoff > 0.0
-                && slots
-                    .mesh(draw.instance)
-                    .and_then(|mesh| meshes.get(mesh.index()))
-                    .zip(slots.transform(draw.instance))
-                    .is_some_and(|(record, transform)| {
-                        let sphere = record.bounds.transformed(transform);
-                        // The view is rigid, so no point of the sphere is nearer in depth than this.
-                        let depth = -camera.view.transform_point3(sphere.center).z;
-                        let gap = (depth - sphere.radius).max(0.0);
-                        gap * effective < cutoff
-                    });
+                && slots.world_bounds(draw.instance, meshes).is_some_and(|sphere| {
+                    // The view is rigid, so no point of the sphere is nearer in depth than this.
+                    let depth = -camera.view.transform_point3(sphere.center).z;
+                    let gap = (depth - sphere.radius).max(0.0);
+                    gap * effective < cutoff
+                });
             self.visible[draw_id as usize] = visible;
             counts.drawn += u32::from(visible);
             counts.culled += u32::from(!visible);
@@ -139,6 +134,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds,
+            palette_reach: Vec::new(),
             foliage: None,
         }
     }
@@ -201,6 +197,25 @@ mod tests {
             let angle = i as f32 * 2.399_963;
             Vec3::new(ring * angle.cos(), y, ring * angle.sin())
         })
+    }
+
+    /// A pose reaching at the camera keeps its hull as far as the pose reaches, not the bind pose.
+    #[test]
+    fn hulls_follow_a_pose_past_their_bounds() {
+        let camera = CameraData::look_at(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y, 1.0, 1.0, 0.05);
+        // 10 m away with a radius of 1, through this lens: past a cutoff of 5 effective meters.
+        let meshes = [record(Sphere { center: Vec3::ZERO, radius: 1.0 })];
+        let (list, mut slots) = scene(&[(0, Mat4::IDENTITY, 0, Some(true))]);
+        let mut cull = OutlineCull::default();
+        let mut prepare = |slots: &InstanceSlots| {
+            cull.prepare(&camera, 1.0, &list, slots, &meshes, |_| Some(cutoff(5.0)));
+            cull.visible()[0]
+        };
+        assert!(!prepare(&slots), "the bind pose is past its cutoff");
+        slots.set_posed(0, Some(Sphere { center: Vec3::new(0.0, 0.0, 6.0), radius: 3.0 }));
+        assert!(prepare(&slots), "the pose reaches it");
+        slots.set_posed(0, None);
+        assert!(!prepare(&slots), "and comes back");
     }
 
     #[test]

@@ -60,7 +60,7 @@ use sapphire_assets::mesh::{
 use sapphire_rhi::wgpu;
 
 use crate::RenderError;
-use crate::bounds::Sphere;
+use crate::bounds::{PaletteReach, Sphere, palette_reach};
 use crate::buffer::{GrowableBuffer, RangeAllocator};
 use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
@@ -134,8 +134,11 @@ pub(crate) struct MeshRecord {
     pub slots: Vec<SlotRecord>,
     /// The sphere around its cooked bounds, in object space: per-object light lists and shadow
     /// casters' culling place it by each instance's transform. A skinned or morphed mesh's is
-    /// its bind pose's.
+    /// its bind pose's; [`Self::palette_reach`] finds a pose's.
     pub bounds: Sphere,
+    /// What each palette entry's vertices fill in the bind pose (the `bounds` module): empty without
+    /// a skin.
+    pub palette_reach: Vec<PaletteReach>,
     /// A static mesh's foliage stream (M1 W6): its first element in the pool's foliage buffer,
     /// if it has one.
     pub foliage: Option<u32>,
@@ -526,6 +529,7 @@ impl MeshPool {
                 let bounds = streams.bounds.to_native();
                 Sphere::around([bounds.min, bounds.max])
             },
+            palette_reach: palette_reach(mesh),
             foliage: (foliage_len > 0).then_some(first_foliage),
         };
         Ok((record, moves))

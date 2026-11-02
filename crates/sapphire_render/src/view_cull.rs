@@ -303,6 +303,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            palette_reach: Vec::new(),
             foliage: foliage.then_some(0),
         }
     }

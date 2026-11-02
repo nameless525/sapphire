@@ -212,11 +212,8 @@ impl ShadowPlan {
         }));
         for &slot in characters.listed {
             let group = characters.body(slot);
-            let instance = slots
-                .mesh(slot)
-                .and_then(|mesh| meshes.get(mesh.index()))
-                .zip(slots.transform(slot))
-                .map(|(record, transform)| record.bounds.transformed(transform));
+            // Its pose's bounds, where it has left its mesh's: a body lying down stays in its map.
+            let instance = slots.world_bounds(slot, meshes);
             if let Some((group, instance)) = group.zip(instance) {
                 let group = &mut self.groups[group as usize];
                 group.sphere = group.sphere.union(instance);
@@ -272,7 +269,8 @@ impl ShadowPlan {
                             sphere.radius += wind_margin(record);
                             Some(sphere)
                         }
-                        // Posed bounds aren't known yet: every cascade.
+                        // A skinned or morphed instance that isn't a character: every cascade, as
+                        // its morphs are in no bounds and nothing has needed more.
                         _ => None,
                     };
                     for (index, fit) in self.drawn.iter().enumerate() {
@@ -461,6 +459,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere::around([[-0.5; 3], [0.5; 3]]),
+            palette_reach: Vec::new(),
             foliage: None,
         };
         vec![
@@ -552,6 +551,28 @@ mod tests {
         for point in [body.base, body.top, Vec3::new(0.5, 1.5, 0.5)] {
             assert!(fit.holds(&Sphere { center: point, radius: 0.0 }), "{point}");
         }
+    }
+
+    /// A body lying down leaves the bind pose's sphere: its map follows the pose, and goes back to
+    /// the very fit it had when the pose comes back inside.
+    #[test]
+    fn a_characters_map_holds_the_pose_it_was_given() {
+        let body = CharacterBody::capsule(Vec3::new(0.0, 0.25, 0.0), Vec3::new(0.0, 1.6, 0.0), 0.25);
+        let mut slots = slots(&[instance(1, 1, Vec3::ZERO)]);
+        let packet = packet(vec![character(1, body)]);
+        let mut plan = ShadowPlan::default();
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        let held = plan.maps[0];
+
+        let head = Sphere { center: Vec3::new(0.0, 0.3, -2.4), radius: 0.0 };
+        assert!(!held.holds(&head), "the bind pose's fit cuts the head off");
+        slots.set_posed(0, Some(Sphere { center: Vec3::new(0.0, 0.3, -1.4), radius: 1.2 }));
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        assert!(plan.maps[0].holds(&head));
+
+        slots.set_posed(0, None);
+        update(&mut plan, &SETTINGS, &packet, &mut slots);
+        assert_eq!(plan.maps[0], held);
     }
 
     #[test]
@@ -671,7 +692,7 @@ mod tests {
         assert_eq!(plan.casters[0].cascades & 1, 1);
         assert_eq!(plan.casters[1].cascades & 1, 0, "past the first cascade");
         assert_ne!(plan.casters[1].cascades & 0b1000, 0, "in the last");
-        assert_eq!(plan.casters[2].cascades, 0b1111, "posed bounds aren't known: every cascade");
+        assert_eq!(plan.casters[2].cascades, 0b1111, "deformable and no character: every cascade");
     }
 
     #[test]

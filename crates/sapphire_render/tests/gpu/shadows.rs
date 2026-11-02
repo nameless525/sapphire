@@ -13,7 +13,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 use half::f16;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
@@ -21,7 +21,8 @@ use sapphire_assets::material::{
     EyeShading, FaceShading, LightSplit, Material, MaterialDocument, Outline, Rim, Terminator,
 };
 use sapphire_assets::mesh::{
-    MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+    Influences, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
+    VertexFlags, VertexInfluence,
 };
 use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
@@ -316,6 +317,8 @@ struct Harness {
     characters: Vec<CharacterInstance>,
     added: Vec<MeshInstance>,
     removed: Vec<InstanceId>,
+    /// Sent with the next packet only.
+    poses: Vec<(InstanceId, Vec<Affine3A>)>,
     next_id: u64,
     /// The next frame is a camera cut.
     cut: bool,
@@ -363,6 +366,7 @@ impl Harness {
             characters: Vec::new(),
             added: Vec::new(),
             removed: Vec::new(),
+            poses: Vec::new(),
             next_id: 0,
             cut: false,
         }
@@ -452,6 +456,9 @@ impl Harness {
         packet.characters.extend_from_slice(&self.characters);
         packet.instances.changed.append(&mut self.added);
         packet.instances.removed.append(&mut self.removed);
+        for (id, palette) in self.poses.drain(..) {
+            packet.push_skinned(id, palette, []);
+        }
         self.renderer.prepare(&self.gpu, self.packets.current());
     }
 
@@ -877,6 +884,53 @@ fn characters_cast_their_own_shadow_on_the_ground() {
             assert!(frame.lit_at(at + Vec3::new(0.3, 0.4, 0.0)), "{name}: never shadowed by itself");
         }
     }
+}
+
+/// A pose past its mesh's cooked bounds (M2 N4): a body lying down or thrown clear of them keeps its
+/// shadow, because the character's map follows the pose. It reads only the palette.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_pose_past_its_bounds_keeps_its_shadow() {
+    let mut mesh = sphere();
+    let influences = vec![VertexInfluence { binds: [0; 4], weights: [255, 0, 0, 0] }; mesh.streams.len()];
+    mesh.skin = Some(Skin {
+        skeleton: None,
+        joint_count: 1,
+        binds: vec![SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() }],
+        influences: Influences::pack(&influences, 1),
+    });
+    // Half-size at the origin. Its shadow falls 0.75 m toward −X per meter it rises, under a light
+    // from 53° above +X, and its capsule stays at the origin: only the pose says where it went.
+    let mut harness = Harness::new(desktop());
+    harness.ground();
+    let place =
+        Mat4::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, Vec3::new(0.0, 0.5, 0.0));
+    let body = CharacterBody::capsule(Vec3::new(0.0, 0.5, 0.0), Vec3::new(0.0, 0.5, 0.0), 0.5);
+    let id = harness.add(&mesh, &surface(0.0), place);
+    harness.character(id, body, None);
+    harness.sun_toward(Vec3::new(0.6, 0.8, 0.0));
+    harness.camera = top_down(Vec3::new(-2.0, 0.0, 0.0), 8.0);
+
+    let at_rest = harness.render();
+    assert_eq!(at_rest.stats.skinning.past_bounds, 0, "in its bind pose");
+    let under = Vec3::new(-0.375, 0.0, 0.0);
+    assert!(at_rest.shaded_at(under), "its shadow at rest: {:?}", at_rest.at(under));
+
+    // Six object-space units up: three meters above where it was.
+    let thrown = Affine3A::from_translation(Vec3::new(0.0, 6.0, 0.0));
+    harness.poses.push((id, vec![thrown]));
+    let frame = harness.render();
+    frame.dump("past-its-bounds");
+    let shadow = Vec3::new(-2.625, 0.0, 0.0);
+    assert!(frame.shaded_at(shadow), "its shadow where the pose put it: {:?}", frame.at(shadow));
+    assert!(frame.lit_at(under), "and none where it was: {:?}", frame.at(under));
+    assert_eq!(frame.stats.skinning.past_bounds, 1, "its pose left its bounds");
+
+    // A pose back inside hands the bounds back.
+    harness.poses.push((id, vec![Affine3A::IDENTITY]));
+    let back = harness.render();
+    assert_eq!(back.stats.skinning.past_bounds, 0);
+    assert!(back.shaded_at(under), "its shadow back at rest: {:?}", back.at(under));
 }
 
 #[test]

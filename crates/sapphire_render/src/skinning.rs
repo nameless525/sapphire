@@ -77,6 +77,7 @@ use glam::Affine3A;
 use sapphire_assets::mesh::PositionFormat;
 use sapphire_rhi::wgpu;
 
+use crate::bounds::posed_bounds;
 use crate::buffer::{self, GrowableBuffer, RangeAllocator};
 use crate::mesh_pool::{DeformSource, MeshPool, MeshRecord};
 use crate::scene::InstanceSlots;
@@ -133,6 +134,9 @@ pub struct SkinningStats {
     /// poses of 1 000 joints on the device floor). Their instances keep drawing their last pose,
     /// or nothing before their first.
     pub deferred_poses: u32,
+    /// Skinned instances whose last pose reaches past their mesh's cooked bounds, which then bound
+    /// them no longer (M2 N4; a character's shadow map, its hull's cutoff and its lights follow).
+    pub past_bounds: u32,
 }
 
 /// One instance's work in the frame's dispatch (WGSL `Job` in `shaders/skinning.wgsl`, read as
@@ -368,7 +372,7 @@ impl Skinning {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         packet: &FramePacket,
-        slots: &InstanceSlots,
+        slots: &mut InstanceSlots,
         meshes: &[MeshRecord],
     ) {
         profiling::scope!("Skinning::prepare");
@@ -413,8 +417,9 @@ impl Skinning {
             }
         }
 
-        let (mut skinned, mut vertices, mut palette_bytes) = (0, 0, 0);
+        let (mut skinned, mut vertices, mut palette_bytes, mut past_bounds) = (0, 0, 0, 0);
         for &slot in &self.live {
+            past_bounds += u32::from(slots.posed(slot).is_some());
             let state = self.instances[slot as usize].as_ref().expect("live slots are deformed");
             let Some(pending) = state.pending else { continue };
             let record = &meshes[state.mesh.index()];
@@ -434,6 +439,7 @@ impl Skinning {
             ignored_poses: ignored,
             unplaced: self.unplaced.len() as u32,
             deferred_poses: self.deferred,
+            past_bounds,
         };
     }
 
@@ -500,14 +506,15 @@ impl Skinning {
         &mut self,
         packet: &FramePacket,
         skinned: &crate::SkinnedInstance,
-        slots: &InstanceSlots,
+        slots: &mut InstanceSlots,
         meshes: &[MeshRecord],
     ) -> bool {
         let Some(slot) = slots.slot(skinned.id) else { return false };
         let Some(state) = self.instances.get_mut(slot as usize).and_then(Option::as_mut) else {
             return false;
         };
-        let source = meshes[state.mesh.index()].deform().expect("deformed instances have deformable meshes");
+        let record = &meshes[state.mesh.index()];
+        let source = record.deform().expect("deformed instances have deformable meshes");
         let (Some(palette), Some(weights)) = (packet.palette(skinned), packet.morph_weights(skinned)) else {
             return false;
         };
@@ -519,6 +526,7 @@ impl Skinning {
         {
             return false;
         }
+        slots.set_posed(slot, posed_bounds(record.bounds, &record.palette_reach, palette));
         let morphs = weights.iter().any(|&weight| weight != 0.0);
         // A pose already pending since the last record is overwritten in place: the mesh, and so
         // the sizes, are the same.

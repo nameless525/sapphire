@@ -398,7 +398,8 @@ impl InstanceDeltas {
 /// An instance that has never been posed draws in its bind pose with every weight at 0. The
 /// renderer ignores, and counts, a pose for an instance it doesn't draw with a skinned or
 /// morphed mesh, one whose palette length differs from the mesh's, and one with a non-finite
-/// matrix or weight.
+/// matrix or weight. A palette may take the mesh past its cooked bounds: the renderer sees that
+/// from the palette, and bounds the instance accordingly ([`SkinningStats::past_bounds`](crate::SkinningStats)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SkinnedInstance {
     pub id: InstanceId,

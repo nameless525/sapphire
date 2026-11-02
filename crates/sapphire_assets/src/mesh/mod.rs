@@ -478,6 +478,16 @@ impl ArchivedVertexStreams {
         }
     }
 
+    /// Vertex `index`'s position, decoded as the vertex shaders decode it.
+    pub fn position(&self, index: usize) -> Option<[f32; 3]> {
+        match &self.positions {
+            ArchivedPositions::Quantized(positions) => {
+                Some(positions.get(index)?.decode(&self.bounds.to_native()))
+            }
+            ArchivedPositions::Float(positions) => Some(positions.get(index)?.get()),
+        }
+    }
+
     /// The position stream as the GPU reads it, [`PositionFormat::stride`] bytes a vertex.
     pub fn position_bytes(&self) -> &[u8] {
         match &self.positions {

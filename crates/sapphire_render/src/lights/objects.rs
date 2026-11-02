@@ -9,14 +9,14 @@
 //!   the choice is deterministic. A list holds its lights in index order, as cluster lists do,
 //!   so both paths sum a pixel's lights in the same order.
 //! - **When:** an instance's list is chosen again when the instance is added, moved or
-//!   re-meshed, and every list when the frame's lights changed (or after a frame without a
-//!   view). Lists that come out the same aren't uploaded; the rest go up in runs of consecutive
-//!   slots.
+//!   re-meshed or its pose's bounds changed, and every list when the frame's lights changed (or
+//!   after a frame without a view). Lists that come out the same aren't uploaded; the rest go up in
+//!   runs of consecutive slots.
 //!
 //! The list buffer holds one list per instance slot in the cluster lists' layout at capacity 4:
 //! a count, then four 16-bit light indices in two words. Bounding spheres come from the meshes'
 //! cooked bounds, which their records in the mesh pool carry (M1 R4 moved them there, for
-//! shadow casters' culling too).
+//! shadow casters' culling too), or from a pose that left them (M2 N4; the `bounds` module).
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
@@ -159,9 +159,9 @@ impl ObjectLists {
 
     /// Chooses lists from `lights`: every live instance's if the lights changed since the last
     /// update (or it was invalidated), otherwise only the `changed` instances' (the packet's
-    /// additions and changes, already applied to `slots`). `bounds` gives each mesh's
-    /// object-space bounding sphere. Only slots below `limit`, the list buffer's, get lists
-    /// (review RA-004).
+    /// additions and changes, already applied to `slots`) and those whose pose's bounds changed.
+    /// `bounds` gives each mesh's object-space bounding sphere, which an instance's pose's replaces.
+    /// Only slots below `limit`, the list buffer's, get lists (review RA-004).
     pub(crate) fn update(
         &mut self,
         lights: &[GpuLight],
@@ -176,14 +176,20 @@ impl ObjectLists {
         self.lists.resize(listed, ObjectLightList::default());
         self.queued.resize(listed, false);
         self.chosen = 0;
+        let sphere = |slot: u32, mesh: MeshHandle| slots.posed(slot).or_else(|| bounds(mesh));
         if std::mem::take(&mut self.stale) || lights_changed {
             for (slot, mesh, transform) in slots.live_transforms().take_while(|&(slot, ..)| slot < limit) {
-                self.choose(lights, slot, bounds(mesh), transform);
+                self.choose(lights, slot, sphere(slot, mesh), transform);
             }
         } else {
             for instance in changed {
                 if let Some(slot) = slots.slot(instance.id).filter(|&slot| slot < limit) {
-                    self.choose(lights, slot, bounds(instance.mesh), instance.transform);
+                    self.choose(lights, slot, sphere(slot, instance.mesh), instance.transform);
+                }
+            }
+            for &slot in slots.reposed().iter().filter(|&&slot| slot < limit) {
+                if let Some((mesh, transform)) = slots.mesh(slot).zip(slots.transform(slot)) {
+                    self.choose(lights, slot, sphere(slot, mesh), transform);
                 }
             }
         }
@@ -523,6 +529,43 @@ mod tests {
         let mut runs = Vec::new();
         lists.flush(|first, written| runs.push((first, written.len())));
         runs
+    }
+
+    /// A pose past its mesh's bounds reaches lights the bind pose doesn't, with no instance change,
+    /// and only what moved is chosen again.
+    #[test]
+    fn a_pose_past_its_bounds_chooses_its_lights_again() {
+        let mut lists = ObjectLists::default();
+        let bounds = |_: MeshHandle| Some(Sphere::around([[-0.5; 3], [0.5; 3]]));
+        let mut slots = InstanceSlots::default();
+        let two = [instance(1, 0.0), instance(2, 10.0)];
+        apply(&mut slots, &two);
+        let lights = [point(Vec3::new(3.0, 0.0, 0.0), 1.0, 1.0)];
+        lists.update(&lights, true, &slots, &two, u32::MAX, bounds);
+        assert_eq!(lists.lists[0].lights(), Vec::<u32>::new(), "out of its reach");
+        flushed(&mut lists);
+
+        // The next frame: no instance changed, one's pose did.
+        apply(&mut slots, &[]);
+        lists.update(&lights, false, &slots, &[], u32::MAX, bounds);
+        assert_eq!(lists.chosen(), 0, "nothing moved");
+        apply(&mut slots, &[]);
+        slots.set_posed(0, Some(Sphere { center: Vec3::new(1.0, 0.0, 0.0), radius: 1.5 }));
+        lists.update(&lights, false, &slots, &[], u32::MAX, bounds);
+        assert_eq!(lists.chosen(), 1);
+        assert_eq!(lists.lists[0].lights(), [0], "the pose reaches it");
+        assert_eq!(flushed(&mut lists), [(0, 1)]);
+
+        // The same pose again costs nothing; going back inside chooses once more.
+        apply(&mut slots, &[]);
+        slots.set_posed(0, Some(Sphere { center: Vec3::new(1.0, 0.0, 0.0), radius: 1.5 }));
+        lists.update(&lights, false, &slots, &[], u32::MAX, bounds);
+        assert_eq!(lists.chosen(), 0);
+        apply(&mut slots, &[]);
+        slots.set_posed(0, None);
+        lists.update(&lights, false, &slots, &[], u32::MAX, bounds);
+        assert_eq!(lists.chosen(), 1);
+        assert_eq!(lists.lists[0].lights(), Vec::<u32>::new());
     }
 
     #[test]

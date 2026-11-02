@@ -49,6 +49,7 @@ use glam::Mat4;
 use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_rhi::wgpu;
 
+use crate::bounds::Sphere;
 use crate::buffer::{self, GrowableBuffer};
 use crate::gpu_types::{DrawData, InstanceData};
 use crate::materials::MaterialHandle;
@@ -335,6 +336,8 @@ pub(crate) struct InstanceSlots {
     meshed: Vec<u32>,
     /// Meshes replaced in place since the last `apply`.
     remeshed: Vec<MeshHandle>,
+    /// Slots whose [`Slot::posed`] changed since the last `apply`.
+    reposed: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -344,6 +347,9 @@ struct Slot {
     mesh: MeshHandle,
     /// Listed in `InstanceSlots::dirty`.
     dirty: bool,
+    /// Its pose's object-space bounds, where they aren't its mesh's cooked ones (M2 N4; the `bounds`
+    /// module).
+    posed: Option<Sphere>,
 }
 
 impl InstanceSlots {
@@ -354,6 +360,7 @@ impl InstanceSlots {
         let mut drawn_changed = false;
         self.freed.clear();
         self.meshed.clear();
+        self.reposed.clear();
         for id in &deltas.removed {
             if let Some(slot) = self.ids.remove(id) {
                 self.slots[slot as usize].id = None;
@@ -363,9 +370,10 @@ impl InstanceSlots {
             }
         }
         if !self.remeshed.is_empty() {
-            for (index, slot) in self.slots.iter().enumerate() {
+            for (index, slot) in self.slots.iter_mut().enumerate() {
                 if slot.id.is_some() && self.remeshed.contains(&slot.mesh) {
                     self.meshed.push(to_u32(index));
+                    slot.posed = None;
                 }
             }
             self.remeshed.clear();
@@ -374,9 +382,10 @@ impl InstanceSlots {
         for instance in &deltas.changed {
             let slot = match self.ids.get(&instance.id) {
                 Some(&slot) => {
-                    let mesh = &mut self.slots[slot as usize].mesh;
-                    if *mesh != instance.mesh {
-                        *mesh = instance.mesh;
+                    let entry = &mut self.slots[slot as usize];
+                    if entry.mesh != instance.mesh {
+                        entry.mesh = instance.mesh;
+                        entry.posed = None;
                         self.meshed.push(slot);
                         drawn_changed = true;
                     }
@@ -459,13 +468,14 @@ impl InstanceSlots {
 
     fn allocate(&mut self, id: InstanceId, mesh: MeshHandle) -> u32 {
         let slot = self.free.pop().unwrap_or_else(|| {
-            self.slots.push(Slot { id: None, mesh, dirty: false });
+            self.slots.push(Slot { id: None, mesh, dirty: false, posed: None });
             self.data.push(InstanceData::zeroed());
             to_u32(self.slots.len() - 1)
         });
         let entry = &mut self.slots[slot as usize];
         entry.id = Some(id);
         entry.mesh = mesh;
+        entry.posed = None;
         slot
     }
 
@@ -504,6 +514,40 @@ impl InstanceSlots {
     /// changed meshes.
     pub(crate) fn meshed(&self) -> &[u32] {
         &self.meshed
+    }
+
+    /// Gives the live instance in `slot` its pose's object-space bounds, `None` meaning its mesh's
+    /// cooked ones (the `bounds` module), listing it in [`Self::reposed`] if that changed. Free slots
+    /// are left alone.
+    pub(crate) fn set_posed(&mut self, slot: u32, posed: Option<Sphere>) {
+        let Some(entry) = self.slots.get_mut(slot as usize).filter(|entry| entry.id.is_some()) else {
+            return;
+        };
+        if entry.posed != posed {
+            entry.posed = posed;
+            self.reposed.push(slot);
+        }
+    }
+
+    /// The object-space bounds the live instance in `slot` was last posed with, where they aren't
+    /// its mesh's cooked ones.
+    pub(crate) fn posed(&self, slot: u32) -> Option<Sphere> {
+        self.slots.get(slot as usize).filter(|entry| entry.id.is_some()).and_then(|entry| entry.posed)
+    }
+
+    /// Slots whose posed bounds changed since the last [`Self::apply`]: what's chosen by those
+    /// bounds and only follows instance changes needs choosing again.
+    pub(crate) fn reposed(&self) -> &[u32] {
+        &self.reposed
+    }
+
+    /// The live instance in `slot`'s bounding sphere in the world: its pose's, or else its mesh's
+    /// cooked one, placed by its transform.
+    pub(crate) fn world_bounds(&self, slot: u32, meshes: &[MeshRecord]) -> Option<Sphere> {
+        let entry = self.slots.get(slot as usize).filter(|entry| entry.id.is_some())?;
+        let record = meshes.get(entry.mesh.index())?;
+        let transform = Mat4::from_cols_array_2d(&self.data[slot as usize].world_from_object);
+        Some(entry.posed.unwrap_or(record.bounds).transformed(transform))
     }
 
     /// The transform of the live instance in `slot`.
@@ -801,7 +845,6 @@ mod tests {
 
     use super::*;
     use crate::MeshInstance;
-    use crate::bounds::Sphere;
     use crate::gpu_types::Dequantize;
     use crate::mesh_pool::{DeformSource, Placement, SubmeshDraw, SubmeshMaterial};
     use crate::pipelines::{Coverage, Part};
@@ -840,6 +883,59 @@ mod tests {
         let mut runs = Vec::new();
         slots.flush(u32::MAX, |first, data| runs.push((first, data.len())));
         runs
+    }
+
+    /// A pose's bounds stay with the slot's pose and its mesh: a new mesh or a new instance in the
+    /// slot starts from cooked bounds, and only a change is listed.
+    #[test]
+    fn posed_bounds_last_as_long_as_the_pose() {
+        let cooked = Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let reaching = Sphere { center: Vec3::new(0.0, 0.0, 2.0), radius: 3.0 };
+        let record = MeshRecord {
+            streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 0 },
+            dequantize: Dequantize::default(),
+            lods: Vec::new(),
+            lod_vertices: Vec::new(),
+            placement: Placement::default(),
+            slots: Vec::new(),
+            bounds: cooked,
+            palette_reach: Vec::new(),
+            foliage: None,
+        };
+        let meshes = [record.clone(), record];
+        let mut slots = InstanceSlots::default();
+        slots.apply(&deltas(&[instance(10, 0, 2.0)], &[]));
+        let slot = slot_of(&slots, 10).expect("live");
+        assert_eq!(slots.world_bounds(slot, &meshes), Some(Sphere { center: Vec3::X * 2.0, radius: 1.0 }));
+
+        slots.set_posed(slot, Some(reaching));
+        assert_eq!(slots.reposed(), [slot]);
+        assert_eq!(slots.posed(slot), Some(reaching));
+        let placed = Sphere { center: Vec3::new(2.0, 0.0, 2.0), radius: 3.0 };
+        assert_eq!(slots.world_bounds(slot, &meshes), Some(placed), "placed by its transform");
+
+        // The next frame's the same pose: nothing to do.
+        slots.apply(&deltas(&[], &[]));
+        assert!(slots.reposed().is_empty());
+        slots.set_posed(slot, Some(reaching));
+        assert!(slots.reposed().is_empty());
+
+        // Moving keeps it, a new mesh doesn't.
+        slots.apply(&deltas(&[instance(10, 0, 3.0)], &[]));
+        assert_eq!(slots.posed(slot), Some(reaching));
+        slots.apply(&deltas(&[instance(10, 1, 3.0)], &[]));
+        assert_eq!(slots.posed(slot), None);
+
+        // Nor does whatever takes the slot next.
+        slots.set_posed(slot, Some(reaching));
+        slots.apply(&deltas(&[], &[10]));
+        assert_eq!(slots.posed(slot), None, "a free slot has none");
+        assert_eq!(slots.world_bounds(slot, &meshes), None);
+        slots.set_posed(slot, Some(reaching));
+        slots.apply(&deltas(&[instance(20, 0, 0.0)], &[]));
+        assert_eq!(slot_of(&slots, 20), Some(slot), "reused");
+        assert_eq!(slots.posed(slot), None);
+        assert_eq!(slots.world_bounds(slot, &meshes), Some(cooked));
     }
 
     #[test]
@@ -1041,6 +1137,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            palette_reach: Vec::new(),
             foliage: None,
         };
         // One draw, then two.
@@ -1090,6 +1187,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            palette_reach: Vec::new(),
             foliage: None,
         };
         let meshes = [
@@ -1238,6 +1336,7 @@ mod tests {
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+                palette_reach: Vec::new(),
                 foliage: None,
             },
             MeshRecord {
@@ -1248,6 +1347,7 @@ mod tests {
                 placement: Placement::default(),
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+                palette_reach: Vec::new(),
                 foliage: None,
             },
         ];
@@ -1329,6 +1429,7 @@ mod tests {
             placement: Placement::default(),
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
+            palette_reach: Vec::new(),
             foliage,
         };
         // A tree (opaque wood and alpha-tested leaves), a patch of grass, and a rock.

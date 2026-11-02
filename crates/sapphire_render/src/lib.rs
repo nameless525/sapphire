@@ -211,7 +211,9 @@
 //!   `model_from_joint(bind.joint) × bind.inverse_bind_matrix` per
 //!   [`SkinBind`](sapphire_assets::mesh::SkinBind), in the mesh's object space, and morph
 //!   weights. Instances that hold still send none and keep their last pose; one never posed
-//!   draws in its bind pose with every weight 0.
+//!   draws in its bind pose with every weight 0. A pose reaching past the mesh's cooked bounds
+//!   carries its own (the `bounds` module), found from the palette alone, for the character's shadow
+//!   map, its hulls' cutoff and its light list.
 //! - **The skinning pass** runs once a frame, before everything that draws, as one dispatch
 //!   over every instance posed since the last recorded frame: it decodes the bind pose to f32,
 //!   adds the morph deltas (regrouped by vertex at upload, so a vertex walks only its own),
@@ -777,7 +779,7 @@
 //!   feed it: VFX and UI, plus UI-inset views (shadow views are the renderer's own,
 //!   derived from the key light).
 //! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
-//!   selected LOD's prefix, with posed bounds from their joints; exact normals for
+//!   selected LOD's prefix; exact normals for
 //!   non-uniformly scaled joints; outline-normal deltas for morph targets that bend hard edges;
 //!   vertex pulling for multi-draw-indirect of skinned instances.
 //! - **Prepasses:** their other consumers (GTAO); and, now that TAA turns MSAA off on desktop,

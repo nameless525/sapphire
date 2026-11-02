@@ -63,10 +63,6 @@ pub enum MeshError {
     OutsideLodPrefix { lod: usize, position: usize, index: u32, vertex_count: u32 },
     #[error("the skin has {0} joints or binds; u16 indices address at most 65 536")]
     TooManyJoints(usize),
-    #[error("joint {joint}'s parent {parent} does not come before it")]
-    JointOrder { joint: usize, parent: u16 },
-    #[error("joint {joint} has a non-finite rest transform")]
-    NonFiniteJoint { joint: usize },
     #[error("skin bind {bind} follows missing joint {joint}")]
     MissingJoint { bind: usize, joint: u16 },
     #[error("skin bind {bind} has a non-finite inverse bind matrix")]
@@ -250,21 +246,9 @@ impl ArchivedVertexStreams {
 
 impl ArchivedSkin {
     fn validate(&self, vertex_count: usize) -> Result<(), MeshError> {
-        let (joints, binds) = (self.joints.len(), self.binds.len());
+        let (joints, binds) = (self.joint_count.to_native() as usize, self.binds.len());
         if joints > MAX_JOINTS || binds > MAX_JOINTS {
             return Err(MeshError::TooManyJoints(joints.max(binds)));
-        }
-        for (index, joint) in self.joints.iter().enumerate() {
-            if let Some(parent) = joint.parent.as_ref().map(|parent| parent.to_native())
-                && parent as usize >= index
-            {
-                return Err(MeshError::JointOrder { joint: index, parent });
-            }
-            let rest = &joint.rest;
-            let finite = rest.translation.iter().chain(&rest.rotation).chain(&rest.scale);
-            if !finite.map(|c| c.to_native()).all(f32::is_finite) {
-                return Err(MeshError::NonFiniteJoint { joint: index });
-            }
         }
         for (bind, entry) in self.binds.iter().enumerate() {
             let joint = entry.joint.to_native();

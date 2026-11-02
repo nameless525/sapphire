@@ -87,9 +87,8 @@ use std::path::{Path, PathBuf};
 
 use glam::{DMat3, DMat4, DQuat, DVec3, DVec4};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial};
-use sapphire_assets::mesh::{
-    Joint, JointTransform, Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
-};
+use sapphire_assets::mesh::{Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
+use sapphire_assets::skeleton::{Joint, JointTransform};
 
 use crate::cache::Stage;
 use crate::color::unorm8;
@@ -148,6 +147,17 @@ pub fn import(path: &Path) -> Result<ImportedMesh, FbxImportError> {
 pub fn import_slice(bytes: &[u8]) -> Result<ImportedMesh, FbxImportError> {
     let scene = load(bytes, false)?;
     import_scene(&scene).map(|import| import.mesh)
+}
+
+/// Whether the mesh of `bytes` is skinned, so its cook writes a skeleton too: the importer's
+/// skeleton exists exactly when a mesh instance has a skin with a cluster.
+pub fn has_skeleton(bytes: &[u8]) -> Result<bool, FbxImportError> {
+    let scene = load(bytes, false)?;
+    let nodes = flatten(&scene);
+    Ok(nodes
+        .iter()
+        .filter_map(|visit| visit.node.mesh.as_deref().and_then(skin_of))
+        .any(|skin| !skin.clusters.is_empty()))
 }
 
 /// An FBX file as imported, with the textures each material slot's source material references:

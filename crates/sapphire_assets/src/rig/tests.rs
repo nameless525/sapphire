@@ -1,8 +1,8 @@
 use super::*;
 use crate::material::{AnimeCharacterMaterial, Material};
 use crate::mesh::{
-    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphTarget, PositionFormat, Skin, SkinBind,
-    Submesh, Vertex, VertexInfluence,
+    Influences, MaterialSlot, Mesh, MorphTarget, PositionFormat, Skin, SkinBind, Submesh, Vertex,
+    VertexInfluence,
 };
 use crate::texture::Swizzle;
 
@@ -246,13 +246,8 @@ fn mesh(joints: usize, targets: usize, slots: usize) -> AlignedVec {
         let identity =
             [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         mesh.skin = Some(Skin {
-            joints: (0..joints)
-                .map(|joint| Joint {
-                    name: format!("j{joint}"),
-                    parent: joint.checked_sub(1).map(|parent| parent as u16),
-                    rest: JointTransform::IDENTITY,
-                })
-                .collect(),
+            skeleton: None,
+            joint_count: joints as u32,
             binds: vec![SkinBind { joint: 0, inverse_bind_matrix: identity }],
             influences: Influences::pack(&[VertexInfluence { binds: [0; 4], weights: [255, 0, 0, 0] }; 3], 1),
         });

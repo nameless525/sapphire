@@ -330,7 +330,7 @@ fn sub_assets_are_packed_and_load_by_their_own_ids() {
     server
         .finish(&mesh, |upload| {
             if let Some(mesh) = upload.get::<Mesh>() {
-                joints = mesh.skin.as_ref().map_or(0, |skin| skin.joints.len());
+                joints = mesh.skin.as_ref().map_or(0, |skin| skin.joint_count.to_native() as usize);
             }
             Ok(())
         })

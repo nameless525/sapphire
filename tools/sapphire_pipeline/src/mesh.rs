@@ -11,9 +11,10 @@ use std::collections::BTreeMap;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialDocument, MaterialError};
 use sapphire_assets::mesh::{
-    FoliageVertex, Influences, Joint, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget,
+    FoliageVertex, Influences, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget,
     PositionFormat, Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence, VertexStreams, quantize_weights,
 };
+use sapphire_assets::skeleton::Joint;
 use sapphire_assets::texture::Swizzle;
 
 /// An imported mesh. Every per-vertex vector has one entry per vertex.
@@ -63,7 +64,8 @@ pub enum MaterialSlotError {
     },
 }
 
-/// A skin before packing: the cooked skeleton and palette, and full-precision weights.
+/// A skin before packing: the joints of the skeleton the source cooks beside the mesh, the cooked
+/// palette, and full-precision weights.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ImportedSkin {
     pub joints: Vec<Joint>,
@@ -175,7 +177,9 @@ impl ImportedMesh {
                 .map(|w| VertexInfluence { binds: w.binds, weights: quantize_weights(w.weights) })
                 .collect();
             Skin {
-                joints: skin.joints.clone(),
+                // Named once the cook knows the source's ID: see `cook`.
+                skeleton: None,
+                joint_count: to_u32(skin.joints.len()),
                 binds: skin.binds.clone(),
                 influences: Influences::pack(&influences, skin.binds.len()),
             }

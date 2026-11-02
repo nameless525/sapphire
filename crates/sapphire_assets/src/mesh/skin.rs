@@ -1,9 +1,9 @@
-//! Skins: the skeleton a mesh deforms with, its skinning palette and each vertex's
-//! influences.
+//! Skins: which skeleton a mesh deforms with, its skinning palette and each vertex's influences.
 
 use bytemuck::{Pod, Zeroable};
 
 use super::encoding::{pack_u16, packed, unpack_u16};
+use crate::AssetId;
 
 /// Joint influences each vertex keeps.
 pub const MAX_INFLUENCES: usize = 4;
@@ -11,13 +11,14 @@ pub const MAX_INFLUENCES: usize = 4;
 /// Palettes up to this size use [`Influences::U8`].
 pub const MAX_U8_PALETTE: usize = 256;
 
-/// A skinned mesh's skeleton, skinning palette and per-vertex influences. The positions and
-/// normals of a skinned mesh are in bind space: what the palette multiplies.
+/// A skinned mesh's skeleton reference, skinning palette and per-vertex influences. The positions
+/// and normals of a skinned mesh are in bind space: what the palette multiplies.
 ///
-/// - **Skeleton** ([`Self::joints`]): every joint in depth-first order, so parents come
-///   before their children, with names and the rest pose as local transforms. That is the
-///   shape of ozz-animation's runtime skeleton (spec §5.13): the animation cook maps its
-///   tracks onto these joints by name.
+/// - **Skeleton** ([`Self::skeleton`]): the [`Skeleton`](crate::skeleton::Skeleton) asset it was
+///   cooked with, whose joints the palette names by index. A dependency, so it loads with the
+///   mesh. Only animation reads it: the renderer takes its palette as finished matrices. A mesh
+///   made in code names none, and its app poses it from what it knows ([`Self::joint_count`]
+///   still bounds the palette).
 /// - **Palette** ([`Self::binds`]): the matrices a skinning pass blends. Entry `i` is
 ///   `model_from_joint(binds[i].joint) × binds[i].inverse_bind_matrix`, with the joint's
 ///   model-space transform taken from the animated pose. In the rest pose every entry of a
@@ -28,36 +29,12 @@ pub const MAX_U8_PALETTE: usize = 256;
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct Skin {
-    pub joints: Vec<Joint>,
+    pub skeleton: Option<AssetId>,
+    /// Joints in the skeleton: what [`SkinBind::joint`] indexes, and what a pairing with a
+    /// skeleton or a rig is checked by.
+    pub joint_count: u32,
     pub binds: Vec<SkinBind>,
     pub influences: Influences,
-}
-
-/// One joint of a [`Skin`]'s skeleton.
-#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[rkyv(derive(Debug))]
-pub struct Joint {
-    /// The source node's name, which animation clips and attachments find the joint by.
-    pub name: String,
-    /// The parent's index, always lower than this joint's; `None` for a root.
-    pub parent: Option<u16>,
-    /// The rest pose, relative to the parent (to model space for a root).
-    pub rest: JointTransform,
-}
-
-/// A joint's local transform: scale, then rotation, then translation.
-#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-#[rkyv(derive(Debug))]
-pub struct JointTransform {
-    pub translation: [f32; 3],
-    /// A unit quaternion, `[x, y, z, w]`.
-    pub rotation: [f32; 4],
-    pub scale: [f32; 3],
-}
-
-impl JointTransform {
-    pub const IDENTITY: Self =
-        Self { translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3] };
 }
 
 /// One skinning-palette entry: the joint it follows, and the matrix that takes bind-space
@@ -65,7 +42,7 @@ impl JointTransform {
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct SkinBind {
-    /// An index into [`Skin::joints`].
+    /// An index into the skeleton's joints, below [`Skin::joint_count`].
     pub joint: u16,
     /// Column-major, as in glTF.
     pub inverse_bind_matrix: [[f32; 4]; 4],

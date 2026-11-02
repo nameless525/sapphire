@@ -44,7 +44,7 @@
 //! sidecars bind theirs to the look-dev foliage materials, and its far mountains
 //! ([`lookdev::MOUNTAINS`], whose sidecars bind them to the mountains' environment material;
 //! [`Content::town`]), the courtyard's fog cards, and the character's rig ([`lookdev::RIG`],
-//! [`Content::rig`]), which stays on the CPU.
+//! [`Content::rig`]) and skeleton ([`Content::skeleton`]), which stay on the CPU.
 //!
 //! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
 //! derives the character without its pedestal and the look-dev stage its held pose
@@ -61,8 +61,8 @@
 //! that bind it come again to be rebound; a material rewrites its slot; a mesh replaces its
 //! streams under its handle, which starts its instances over in their bind pose, so the scene
 //! sends their poses again in the frame that happens ([`Content::take_meshes_replaced`],
-//! `Scene::follow_content`). A new version of the look-dev character's mesh or rig holds her
-//! anew ([`Content::take_character_changed`]).
+//! `Scene::follow_content`). A new version of the look-dev character's mesh, rig or skeleton holds
+//! her anew ([`Content::take_character_changed`]).
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
@@ -73,6 +73,7 @@ use std::io;
 #[cfg(feature = "dev")]
 use std::sync::Arc;
 
+use sapphire_anim::{ArchivedSkeleton, Skeleton};
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack;
@@ -331,9 +332,11 @@ pub(crate) struct Content {
     town: Vec<Handle<Mesh>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
-    /// The versions of the character's mesh and rig the scene last knew of
+    /// The skeleton of the character's mesh, with the rig.
+    skeleton: Option<Handle<Skeleton>>,
+    /// The versions of the character's mesh, rig and skeleton the scene last knew of
     /// ([`Self::take_character_changed`]), once there is a rig.
-    character_versions: Option<(u32, u32)>,
+    character_versions: Option<(u32, u32, u32)>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -386,6 +389,7 @@ impl Content {
             probes: None,
             town: Vec::new(),
             rig: None,
+            skeleton: None,
             character_versions: None,
             sky_id: sky,
             sky: None,
@@ -463,18 +467,19 @@ impl Content {
         std::mem::take(&mut self.gpu.meshes_replaced)
     }
 
-    /// Whether the character's mesh or rig has a new version since the last call or since
-    /// [`Self::load_rig`], whichever way it came; the two may land frames apart. Always false
-    /// without a rig.
+    /// Whether the character's mesh, rig or skeleton has a new version since the last call or since
+    /// [`Self::load_rig`], whichever way it came; they may land frames apart. Always false without
+    /// a rig.
     pub fn take_character_changed(&mut self) -> bool {
         let versions = self.current_character_versions();
         std::mem::replace(&mut self.character_versions, versions) != versions
     }
 
-    /// The versions the character's mesh and rig are at, if it has a rig.
-    fn current_character_versions(&self) -> Option<(u32, u32)> {
+    /// The versions the character's mesh, rig and skeleton are at, if it has a rig.
+    fn current_character_versions(&self) -> Option<(u32, u32, u32)> {
         let rig = self.rig.as_ref()?;
-        Some((self.server.generation(&self.character), self.server.generation(rig)))
+        let skeleton = self.skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
+        Some((self.server.generation(&self.character), self.server.generation(rig), skeleton))
     }
 
     /// Loads the shader swatches' materials, with the textures they name, until they are on
@@ -717,8 +722,9 @@ impl Content {
         })
     }
 
-    /// Loads the character rig `id` until it is resident: CPU data, which nothing uploads
-    /// ([`Self::rig`] reads it). It stays loaded from then on.
+    /// Loads the character rig `id` until it is resident, and the skeleton the character's kept
+    /// mesh names ([`Self::keep_character_mesh`]): CPU data, which nothing uploads ([`Self::rig`]
+    /// and [`Self::skeleton`] read them). They stay loaded from then on.
     pub fn load_rig(
         &mut self,
         id: AssetId,
@@ -730,16 +736,35 @@ impl Content {
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&rig, |upload| assets.upload(upload, renderer, gpu));
         self.rig = Some(rig);
+        let skeleton = self.character_mesh().and_then(|mesh| mesh.skin.as_ref()?.skeleton);
+        let skeleton_loaded = match skeleton {
+            Some(id) => {
+                let skeleton =
+                    self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+                let assets = &mut self.gpu;
+                let loaded = self.server.finish(&skeleton, |upload| assets.upload(upload, renderer, gpu));
+                self.skeleton = Some(skeleton);
+                loaded
+            }
+            None => Ok(()),
+        };
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
         self.character_versions = self.current_character_versions();
-        loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))
+        loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))?;
+        skeleton_loaded
+            .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))
     }
 
     /// The rig [`Self::load_rig`] loaded.
     pub fn rig(&self) -> Option<&ArchivedCharacterRig> {
         self.rig.as_ref().and_then(|rig| self.server.get(rig))
+    }
+
+    /// The skeleton [`Self::load_rig`] loaded.
+    pub fn skeleton(&self) -> Option<&ArchivedSkeleton> {
+        self.skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton))
     }
 
     /// Loads the sky material, with the maps it names, until it is on `renderer`, and returns its
@@ -840,10 +865,11 @@ impl Content {
 /// remount of the pack, and differ only in what tells the app to remount.
 #[cfg(all(test, feature = "dev"))]
 mod tests {
+    use sapphire_anim::{Joint, JointTransform};
     use sapphire_assets::material::AnimeCharacterMaterial;
     use sapphire_assets::mesh::{
-        Influences, Joint, JointTransform, MaterialSlot, PositionFormat, Skin, SkinBind, Submesh,
-        VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, quantize_weights,
+        Influences, MaterialSlot, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
+        VertexFlags, VertexInfluence, quantize_weights,
     };
     use sapphire_assets::pack::{Codec, PackAsset, write_pack};
     use sapphire_assets::rig::{HumanBone, HumanoidJoint};
@@ -884,15 +910,23 @@ mod tests {
 
     /// `bytes` as a pack holds them.
     fn packed(id: AssetId, kind: AssetKind, bytes: &[u8]) -> PackAsset {
-        PackAsset::encode(id, kind, Codec::Lz4, bytes, Vec::new(), 3).expect("encoded")
+        packed_with(id, kind, bytes, Vec::new())
     }
 
-    /// A pack with the look-dev character, its first vertex at `x`, and its rig: every required
-    /// humanoid bone a joint of its own under the root, and `extra` joints more.
+    /// `bytes` as a pack holds them, naming `dependencies`.
+    fn packed_with(id: AssetId, kind: AssetKind, bytes: &[u8], dependencies: Vec<AssetId>) -> PackAsset {
+        PackAsset::encode(id, kind, Codec::Lz4, bytes, dependencies, 3).expect("encoded")
+    }
+
+    /// The test character's skeleton.
+    const SKELETON: AssetId = AssetId::from_bytes([0x5e; 16]);
+
+    /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
+    /// required humanoid bone a joint of its own under the root, and `extra` joints more.
     fn pack(x: f32, extra: usize) -> Vec<u8> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
-        let joints = (0..count)
+        let joints: Vec<Joint> = (0..count)
             .map(|joint| Joint {
                 name: format!("joint {joint}"),
                 parent: (joint > 0).then_some(0),
@@ -910,7 +944,12 @@ mod tests {
             .collect();
         let held = VertexInfluence { binds: [0; 4], weights: quantize_weights([1.0, 0.0, 0.0, 0.0]) };
         let mut mesh = triangle(x);
-        mesh.skin = Some(Skin { joints, binds, influences: Influences::pack(&[held; 3], count) });
+        mesh.skin = Some(Skin {
+            skeleton: Some(SKELETON),
+            joint_count: count as u32,
+            binds,
+            influences: Influences::pack(&[held; 3], count),
+        });
         let mut humanoid: Vec<_> = HumanBone::REQUIRED
             .iter()
             .enumerate()
@@ -924,8 +963,14 @@ mod tests {
             ..CharacterRig::default()
         };
         write_pack(vec![
-            packed(lookdev::CHARACTER, AssetKind::Mesh, &mesh.to_cooked().expect("cooked")),
+            packed_with(
+                lookdev::CHARACTER,
+                AssetKind::Mesh,
+                &mesh.to_cooked().expect("cooked"),
+                vec![SKELETON],
+            ),
             packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
+            packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
         ])
         .expect("a pack")
     }
@@ -966,6 +1011,7 @@ mod tests {
                 probes: None,
                 town: Vec::new(),
                 rig: None,
+                skeleton: None,
                 character_versions: None,
                 sky_id: SKY,
                 sky: None,
@@ -1026,13 +1072,14 @@ mod tests {
             self.content.remount(PACK).expect("the new pack");
         }
 
-        /// The versions the character's mesh and rig are at.
-        fn versions(&self) -> (u32, u32) {
+        /// The versions the character's mesh, rig and skeleton are at.
+        fn versions(&self) -> (u32, u32, u32) {
             self.content.current_character_versions().expect("a rig")
         }
 
-        /// Frames until the character's mesh and rig are at `versions`, and what the last skinned.
-        fn until(&mut self, versions: (u32, u32)) -> SkinningStats {
+        /// Frames until the character's mesh, rig and skeleton are at `versions`, and what the last
+        /// skinned.
+        fn until(&mut self, versions: (u32, u32, u32)) -> SkinningStats {
             for _ in 0..10_000 {
                 let stats = self.frame();
                 if self.versions() == versions {
@@ -1055,7 +1102,7 @@ mod tests {
 
         // Her mesh alone changes, as a sidecar's LOD edit changes it.
         stage.recook(0.1, 0);
-        let replaced = stage.until((1, 0));
+        let replaced = stage.until((1, 0, 0));
         // No frame draws the new mesh in its bind pose: this frame's skin is her pose, not the
         // bind pose a new instance would start from.
         assert_eq!(replaced.ignored_poses, 0);
@@ -1073,10 +1120,10 @@ mod tests {
         assert!(per_joint > 0);
         stage.frame();
 
-        // One joint more, in her mesh and her rig: the palette she was held with no longer fits,
-        // whichever of them lands first.
+        // One joint more, in her mesh, rig and skeleton: the palette she was held with no longer
+        // fits, whichever of them lands first.
         stage.recook(0.0, 1);
-        let settled = stage.until((1, 1));
+        let settled = stage.until((1, 1, 1));
         assert_eq!(settled.ignored_poses, 0, "{settled:?}");
         assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "her new palette: {settled:?}");
         assert_eq!(stage.frame().palette_bytes, 0, "held again");

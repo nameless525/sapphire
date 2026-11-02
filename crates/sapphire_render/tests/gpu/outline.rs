@@ -12,8 +12,8 @@ use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, OutlineCurve, Rim,
 };
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, Lod, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh,
-    VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence,
+    Influences, Lod, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL,
+    Vertex, VertexFlags, VertexInfluence,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_pipeline::bake::{self, OutlineSettings};
@@ -797,10 +797,10 @@ fn hard_edges_keep_their_hulls_closed_static_and_skinned() {
             _ => VertexInfluence { binds: [0, 1, 0, 0], weights: [128, 127, 0, 0] },
         })
         .collect();
-    let joint = |name: &str| Joint { name: name.into(), parent: None, rest: JointTransform::IDENTITY };
     let bind = |joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() };
     let skin = Skin {
-        joints: vec![joint("lower"), joint("upper")],
+        skeleton: None,
+        joint_count: 2,
         binds: vec![bind(0), bind(1)],
         influences: Influences::pack(&influences, 2),
     };

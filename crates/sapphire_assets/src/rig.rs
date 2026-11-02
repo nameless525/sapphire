@@ -17,21 +17,23 @@
 //!
 //! # Indices
 //!
-//! The rig is cooked from the same import as its mesh, and refers to that mesh's skeleton
-//! joints, morph targets and material slots by index. It records how many of each the mesh
-//! has; [`ArchivedCharacterRig::check_mesh`] confirms a pairing before anything indexes the
-//! mesh through it, and [`CharacterRig::read`] checks every index against the counts. Joint
-//! indices are `u16`, as a skin's are.
+//! The rig is cooked from the same import as its mesh and [skeleton](crate::skeleton), and refers
+//! to that mesh's morph targets and material slots and that skeleton's joints by index. It records
+//! how many of each there are; [`ArchivedCharacterRig::check_mesh`] and
+//! [`ArchivedCharacterRig::check_skeleton`] confirm a pairing before anything indexes through it,
+//! and [`CharacterRig::read`] checks every index against the counts. Joint indices are `u16`, as a
+//! skin's are.
 //!
 //! The pipeline cooks a rig as a sub-asset of its character source: its ID is derived from the
-//! source's, and its file sits beside the mesh's (`alicia.smesh`, `alicia.srig`). A character
-//! definition (M2) names the two by ID.
+//! source's, and its file sits beside the mesh's and the skeleton's (`alicia.smesh`,
+//! `alicia.sskel`, `alicia.srig`). A character definition (M2) names them by ID.
 
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 
 use crate::mesh::ArchivedMesh;
+use crate::skeleton::ArchivedSkeleton;
 
 /// Conventional file extension for cooked rigs.
 pub const RIG_EXTENSION: &str = "srig";
@@ -41,7 +43,7 @@ pub const RIG_EXTENSION: &str = "srig";
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::assets"]
 pub struct CharacterRig {
-    /// Joints in the mesh's skeleton (0 for an unskinned mesh).
+    /// Joints in the character's skeleton (0 for an unskinned mesh).
     pub joint_count: u32,
     /// Morph targets in the mesh.
     pub morph_target_count: u32,
@@ -67,7 +69,8 @@ impl Versioned for CharacterRig {
 /// Declares [`HumanBone`] with VRM 1.0's names, in the specification's order.
 macro_rules! human_bones {
     ($($bone:ident => $name:literal,)+) => {
-        /// A bone of the humanoid skeleton, as VRM 1.0 names them.
+        /// A bone of the humanoid skeleton, as VRM 1.0 names them. Key-pose documents name them by
+        /// their variants (`LeftUpperArm`).
         #[derive(
             Clone,
             Copy,
@@ -77,6 +80,8 @@ macro_rules! human_bones {
             PartialOrd,
             Ord,
             Hash,
+            serde::Serialize,
+            serde::Deserialize,
             rkyv::Archive,
             rkyv::Serialize,
             rkyv::Deserialize,
@@ -777,7 +782,7 @@ impl ArchivedCharacterRig {
     /// Checks that `mesh` is the mesh this rig was cooked with, as far as the rig's indices go:
     /// the same number of joints, morph targets and material slots.
     pub fn check_mesh(&self, mesh: &ArchivedMesh) -> Result<(), RigError> {
-        let joints = mesh.skin.as_ref().map_or(0, |skin| skin.joints.len());
+        let joints = mesh.skin.as_ref().map_or(0, |skin| skin.joint_count.to_native() as usize);
         let found = [joints, mesh.morph_targets.len(), mesh.materials.len()];
         let expected = [self.joint_count, self.morph_target_count, self.material_slot_count]
             .map(|count| count.to_native() as usize);
@@ -788,6 +793,16 @@ impl ArchivedCharacterRig {
             format!("{joints} joints, {targets} morph targets and {slots} material slots")
         };
         Err(RigError::MeshMismatch { expected: describe(expected), found: describe(found) })
+    }
+
+    /// Checks that `skeleton` is the one this rig was cooked with, as far as the rig's indices go:
+    /// the same number of joints.
+    pub fn check_skeleton(&self, skeleton: &ArchivedSkeleton) -> Result<(), RigError> {
+        let (expected, found) = (self.joint_count.to_native() as usize, skeleton.len());
+        if expected == found {
+            return Ok(());
+        }
+        Err(RigError::MeshMismatch { expected: format!("{expected} joints"), found: found.to_string() })
     }
 }
 

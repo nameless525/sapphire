@@ -39,6 +39,19 @@ pub(super) const OUTLINE_NORMAL: Kind =
     Kind { dimensions: &[Dimensions::Vec3], types: &[(F32, false), (I16, true), (I8, true)] };
 pub(super) const MATERIAL_ID: Kind =
     Kind { dimensions: &[Dimensions::Scalar], types: &[(F32, false), (U8, false), (U16, false)] };
+/// Float or normalized integers: what glTF allows a rotation's keys and a morph weight's.
+const FLOAT_OR_NORMALIZED: &[(DataType, bool)] =
+    &[(F32, false), (I8, true), (U8, true), (I16, true), (U16, true)];
+/// An animation sampler's `input`: key times.
+pub(super) const ANIMATION_TIME: Kind = Kind { dimensions: &[Dimensions::Scalar], types: &[(F32, false)] };
+/// An animation sampler's `output`, for translations and scales.
+pub(super) const ANIMATION_VEC3: Kind = FLOAT_VEC3;
+/// An animation sampler's `output`, for rotations.
+pub(super) const ANIMATION_ROTATION: Kind =
+    Kind { dimensions: &[Dimensions::Vec4], types: FLOAT_OR_NORMALIZED };
+/// An animation sampler's `output`, for morph weights.
+pub(super) const ANIMATION_WEIGHT: Kind =
+    Kind { dimensions: &[Dimensions::Scalar], types: FLOAT_OR_NORMALIZED };
 
 /// Why an accessor can't be read. The importer's errors say whose accessor it is.
 #[derive(Clone, Copy, Debug, thiserror::Error)]

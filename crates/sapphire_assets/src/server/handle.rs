@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use sapphire_serialize::cooked::access_unchecked;
 
+use crate::clip::{ArchivedClip, Clip};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
 use crate::rig::{ArchivedCharacterRig, CharacterRig};
+use crate::skeleton::{ArchivedSkeleton, Skeleton};
 use crate::texture::Texture;
 use crate::{AssetId, AssetKind};
 
@@ -21,7 +23,7 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`].
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -44,6 +46,8 @@ mod sealed {
     impl Sealed for crate::material::Material {}
     impl Sealed for crate::rig::CharacterRig {}
     impl Sealed for crate::probes::ProbeGrid {}
+    impl Sealed for crate::skeleton::Skeleton {}
+    impl Sealed for crate::clip::Clip {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -55,6 +59,28 @@ impl Asset for CharacterRig {
         // SAFETY: as for meshes: `CharacterRig::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<CharacterRig>(bytes) }
             .expect("the envelope was checked when the rig was decoded")
+    }
+}
+
+impl Asset for Skeleton {
+    const KIND: AssetKind = AssetKind::Skeleton;
+    type View<'a> = &'a ArchivedSkeleton;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedSkeleton {
+        // SAFETY: as for meshes: `Skeleton::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Skeleton>(bytes) }
+            .expect("the envelope was checked when the skeleton was decoded")
+    }
+}
+
+impl Asset for Clip {
+    const KIND: AssetKind = AssetKind::Clip;
+    type View<'a> = &'a ArchivedClip;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedClip {
+        // SAFETY: as for meshes: `Clip::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Clip>(bytes) }
+            .expect("the envelope was checked when the clip was decoded")
     }
 }
 

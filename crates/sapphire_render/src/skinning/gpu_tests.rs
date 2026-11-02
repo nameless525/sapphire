@@ -4,9 +4,8 @@
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_assets::material::{AnimeCharacterMaterial, Material, Outline, Rim};
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, VertexShading,
-    quantize_weights,
+    Influences, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind, Submesh,
+    VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, VertexShading, quantize_weights,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
@@ -104,7 +103,8 @@ fn random_mesh(rng: &mut Rng, vertices: usize, palette: usize, format: PositionF
         })
         .collect();
     mesh.skin = Some(Skin {
-        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        skeleton: None,
+        joint_count: 1,
         binds: (0..palette)
             .map(|_| SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
             .collect(),
@@ -342,7 +342,8 @@ fn outline_normals_stay_shared_by_split_vertices_and_turn_with_morphs() {
         PositionFormat::Unorm16,
     );
     mesh.skin = Some(Skin {
-        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        skeleton: None,
+        joint_count: 1,
         binds: (0..8)
             .map(|_| SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
             .collect(),
@@ -450,7 +451,8 @@ fn prepass_depth_equals_the_main_pass_depth() {
     let influences = vec![VertexInfluence { binds: [1, 0, 0, 0], weights: [255, 0, 0, 0] }; vertices.len()];
     let bind = SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() };
     character.skin = Some(Skin {
-        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        skeleton: None,
+        joint_count: 1,
         binds: vec![bind; 2],
         influences: Influences::pack(&influences, 2),
     });

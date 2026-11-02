@@ -6,10 +6,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
+use crate::clip::{Clip, ClipError};
 use crate::material::{Material, MaterialError};
 use crate::mesh::{Mesh, MeshError};
 use crate::probes::{ProbeGrid, ProbeGridError};
 use crate::rig::{CharacterRig, RigError};
+use crate::skeleton::{Skeleton, SkeletonError};
 use crate::texture::{Texture, TextureFormatError};
 
 /// The kinds of cooked asset. Each is also a residency category with a budget of its own
@@ -28,11 +30,16 @@ pub enum AssetKind {
     Rig = 4,
     /// An ambient probe grid (`.sprobe`, M1 W5): [`ProbeGrid`], uploaded to the renderer.
     ProbeGrid = 5,
+    /// A skeleton (`.sskel`, M2 N1): [`Skeleton`]. Animation's CPU data, never uploaded.
+    Skeleton = 6,
+    /// An animation clip (`.sclip`, M2 N1): [`Clip`]. Animation's CPU data, never uploaded.
+    Clip = 7,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 5] = [Self::Mesh, Self::Texture, Self::Material, Self::Rig, Self::ProbeGrid];
+    pub const ALL: [Self; 7] =
+        [Self::Mesh, Self::Texture, Self::Material, Self::Rig, Self::ProbeGrid, Self::Skeleton, Self::Clip];
 
     /// The kind's position in [`Self::ALL`].
     pub const fn index(self) -> usize {
@@ -47,21 +54,23 @@ impl AssetKind {
             Self::Material => "material",
             Self::Rig => "rig",
             Self::ProbeGrid => "probe grid",
+            Self::Skeleton => "skeleton",
+            Self::Clip => "clip",
         }
     }
 
-    /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig
-    /// is ready once it and its dependencies are decoded.
+    /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
+    /// a skeleton or a clip is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
-        !matches!(self, Self::Rig)
+        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip)
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
-    /// has them read again). Materials are small and CPU code reads them (live link, the editor), and rigs are
-    /// read on the CPU only, so they stay.
+    /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
+    /// rigs, skeletons and clips are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
-        matches!(self, Self::Material | Self::Rig)
+        matches!(self, Self::Material | Self::Rig | Self::Skeleton | Self::Clip)
     }
 
     /// Whether uploading an asset of this kind binds its dependencies' GPU objects, so it must be
@@ -72,12 +81,17 @@ impl AssetKind {
         matches!(self, Self::Material)
     }
 
-    /// Whether an asset of this kind may depend on one of `kind`: meshes on materials, materials
-    /// on textures, textures, rigs and probe grids on nothing. Every dependency is of a lower kind, so chains
-    /// are at most three long and cycles can't exist, whatever a pack claims. A new kind takes
-    /// its place in this order.
+    /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
+    /// skeletons, materials on textures, clips on skeletons, and textures, rigs, probe grids and
+    /// skeletons on nothing. The allowed pairs form no loop, so chains are at most three long and
+    /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
-        matches!((self, kind), (Self::Mesh, Self::Material) | (Self::Material, Self::Texture))
+        matches!(
+            (self, kind),
+            (Self::Mesh, Self::Material | Self::Skeleton)
+                | (Self::Material, Self::Texture)
+                | (Self::Clip, Self::Skeleton)
+        )
     }
 
     /// The kind a pack stores as `value`, if any.
@@ -88,28 +102,31 @@ impl AssetKind {
             3 => Some(Self::Material),
             4 => Some(Self::Rig),
             5 => Some(Self::ProbeGrid),
+            6 => Some(Self::Skeleton),
+            7 => Some(Self::Clip),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
-    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`), and
-    /// returns the assets they
-    /// reference, sorted and without repeats: a mesh's material slots bound to material assets, a
-    /// material's textures. The packer records these as the asset's dependencies, and decode jobs
-    /// check that a decoded asset references exactly what its pack says it does.
+    /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
+    /// `Skeleton::read`, `Clip::read`), and returns the assets they reference, sorted and without
+    /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's
+    /// textures, a clip's skeleton. The packer records these as the asset's dependencies, and
+    /// decode jobs check that a decoded asset references exactly what its pack says it does.
     ///
-    /// Meshes, materials and rigs must start 16-byte aligned, as decoded assets do.
+    /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
         let mut references: Vec<AssetId> = match self {
-            Self::Mesh => Mesh::read(bytes)?
-                .materials
-                .iter()
-                .filter_map(|slot| match &slot.material {
+            Self::Mesh => {
+                let mesh = Mesh::read(bytes)?;
+                let skeleton = mesh.skin.as_ref().and_then(|skin| skin.skeleton.as_ref().copied());
+                let materials = mesh.materials.iter().filter_map(|slot| match &slot.material {
                     crate::mesh::ArchivedSlotMaterial::Asset(id) => Some(*id),
                     crate::mesh::ArchivedSlotMaterial::Embedded(_) => None,
-                })
-                .collect(),
+                });
+                materials.chain(skeleton).collect()
+            }
             Self::Texture => {
                 Texture::from_ktx2(bytes)?;
                 Vec::new()
@@ -127,6 +144,11 @@ impl AssetKind {
                 ProbeGrid::read(bytes)?;
                 Vec::new()
             }
+            Self::Skeleton => {
+                Skeleton::read(bytes)?;
+                Vec::new()
+            }
+            Self::Clip => Clip::read(bytes)?.skeleton.as_ref().copied().into_iter().collect(),
         };
         references.sort_unstable();
         references.dedup();
@@ -163,4 +185,8 @@ pub enum AssetError {
     Rig(#[from] RigError),
     #[error("invalid probe grid")]
     ProbeGrid(#[from] ProbeGridError),
+    #[error("invalid skeleton")]
+    Skeleton(#[from] SkeletonError),
+    #[error("invalid clip")]
+    Clip(#[from] ClipError),
 }

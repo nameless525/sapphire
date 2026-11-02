@@ -126,7 +126,9 @@ fn round(
                     AssetKind::Mesh => assert!(upload.get::<Mesh>().is_some()),
                     AssetKind::Material => assert!(upload.get::<Material>().is_some()),
                     AssetKind::Texture => assert!(upload.get::<sapphire_assets::TextureAsset>().is_some()),
-                    AssetKind::Rig => unreachable!("rigs never go to the uploader"),
+                    AssetKind::Rig | AssetKind::Skeleton | AssetKind::Clip => {
+                        unreachable!("animation's data never goes to the uploader")
+                    }
                     AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
                 }
                 Ok(())
@@ -149,7 +151,10 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", pack());
     // Tight budgets, so residency evicts all the time.
-    let budgets = AssetBudgets { upload_per_frame: 64 << 10, resident: [600, 40_000, 3_000, 1_000, 1_000] };
+    let budgets = AssetBudgets {
+        upload_per_frame: 64 << 10,
+        resident: [600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000],
+    };
     let mut server = AssetServer::new(source, budgets);
     server.mount("shared").unwrap();
     let mut rng = Rng(0x5eed);
@@ -194,7 +199,11 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
     server.unload_unused();
     let _ = server.take_unloaded();
     let stats = server.stats();
-    assert_eq!((stats.assets, stats.resident, stats.reads_in_flight), (0, [0; 5], 0), "{stats:?}");
+    assert_eq!(
+        (stats.assets, stats.resident, stats.reads_in_flight),
+        (0, [0; AssetKind::ALL.len()], 0),
+        "{stats:?}"
+    );
     assert!(weak.iter().all(|&weak| server.upgrade(weak).is_none()), "a weak handle outlived its asset");
     weak.clear();
     weak.shrink_to_fit();

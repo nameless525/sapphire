@@ -22,8 +22,9 @@
 //! meshes, the bulk of a pack, loaded at zone and character transitions where install and
 //! download size matter most (on the M5, level 19 stores a cooked mesh at 0.37 of its size and BC7
 //! or ASTC textures at 0.66–0.69, against lz4's 0.63 and 0.86–0.88); **lz4** for materials, small
-//! and decoded mid-play when live link or hot reload swaps one, and for rigs, animation's data,
-//! loaded with a character swapping in: zstd's 4–5× slower decoding buys little there. A block
+//! and decoded mid-play when live link or hot reload swaps one, and for rigs, skeletons and clips,
+//! animation's data, loaded with a character swapping in: zstd's 4–5× slower decoding buys little
+//! there. A block
 //! that doesn't shrink by 1/64 is stored raw either way.
 //!
 //! # Caching
@@ -50,11 +51,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use sapphire_assets::clip::CLIP_EXTENSION;
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
 use sapphire_assets::probes::PROBE_GRID_EXTENSION;
 use sapphire_assets::rig::RIG_EXTENSION;
+use sapphire_assets::skeleton::SKELETON_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
 use sapphire_serialize::cooked::AlignedVec;
@@ -79,7 +82,7 @@ pub const SHARED: &str = "shared";
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
         AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid => Codec::Zstd,
-        AssetKind::Material | AssetKind::Rig => Codec::Lz4,
+        AssetKind::Material | AssetKind::Rig | AssetKind::Skeleton | AssetKind::Clip => Codec::Lz4,
     }
 }
 
@@ -91,6 +94,8 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         MATERIAL_EXTENSION => Some(AssetKind::Material),
         RIG_EXTENSION => Some(AssetKind::Rig),
         PROBE_GRID_EXTENSION => Some(AssetKind::ProbeGrid),
+        SKELETON_EXTENSION => Some(AssetKind::Skeleton),
+        CLIP_EXTENSION => Some(AssetKind::Clip),
         _ => None,
     }
 }

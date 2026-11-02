@@ -1026,7 +1026,7 @@ fn cook(scratch: &TempDir, cook: Cook, cache: bool) -> Result<crate::cook::CookR
 }
 
 #[test]
-fn vrm_sources_cook_to_a_mesh_and_a_rig() {
+fn vrm_sources_cook_to_a_mesh_a_rig_and_a_skeleton() {
     let scratch = TempDir::new("vrm_cook");
     let source = tree(&scratch, "characters/sample.vrm", &samples::vrm1());
     let old = tree(&scratch, "characters/old.vrm", &samples::vrm0());
@@ -1043,9 +1043,10 @@ fn vrm_sources_cook_to_a_mesh_and_a_rig() {
     assert!(text.contains("importer: Vrm((") && text.contains("version: Some(V0)"), "{text}");
 
     let assets: Vec<_> = report.assets.iter().filter(|asset| asset.source == source).collect();
-    let [mesh, rig] = &assets[..] else { panic!("a mesh and a rig: {assets:?}") };
+    let [mesh, rig, skeleton] = &assets[..] else { panic!("a mesh, a rig and a skeleton: {assets:?}") };
     assert_eq!(mesh.id, sidecar.id);
     assert_eq!(rig.id, meta::sub_asset_id(sidecar.id, "rig"));
+    assert_eq!(skeleton.id, meta::sub_asset_id(sidecar.id, crate::cook::SKELETON));
     let out = scratch.path().join("out/desktop/characters");
     assert_eq!(
         (mesh.output.clone(), rig.output.clone()),
@@ -1068,10 +1069,10 @@ fn vrm_sources_cook_to_a_mesh_and_a_rig() {
     let again = cook(&scratch, Cook::Desktop, true).unwrap();
     assert!(again.assets.iter().all(|asset| asset.status == CookStatus::UpToDate));
     let mobile = cook(&scratch, Cook::Mobile, true).unwrap();
-    let [mobile_mesh, mobile_rig] =
+    let [mobile_mesh, mobile_rig, _] =
         &mobile.assets.iter().filter(|a| a.source == source).collect::<Vec<_>>()[..]
     else {
-        panic!("two assets")
+        panic!("three assets")
     };
     let mobile_mesh = read_aligned(&mobile_mesh.output);
     CharacterRig::read(&read_aligned(&mobile_rig.output))
@@ -1098,12 +1099,12 @@ fn vrm_cache_keys_follow_the_file_and_its_settings() {
     let rig = CharacterRig::from_cooked(&read_aligned(&report.assets[1].output)).unwrap();
     assert_eq!(rig.springs[0].joints[0].stiffness, 2.0);
 
-    // Back to the first file: both keys hit the cache. The mesh's bytes never changed (the
-    // stiffness is the rig's), so only the rig is written.
+    // Back to the first file: every key hits the cache. The mesh's and skeleton's bytes never
+    // changed (the stiffness is the rig's), so only the rig is written.
     fs::write(&source, samples::vrm1().to_glb()).unwrap();
     let report = cook(&scratch, Cook::Desktop, true).unwrap();
     let statuses: Vec<CookStatus> = report.assets.iter().map(|asset| asset.status).collect();
-    assert_eq!(statuses, [CookStatus::UpToDate, CookStatus::Cached]);
+    assert_eq!(statuses, [CookStatus::UpToDate, CookStatus::Cached, CookStatus::UpToDate]);
 
     // A wrong note fails both, cached or not.
     let sidecar = meta::sidecar_path(&source);
@@ -1129,7 +1130,7 @@ fn vrm_cooks_are_deterministic() {
     let first = outputs(&cook(&scratch, Cook::Desktop, false).unwrap());
     fs::remove_dir_all(scratch.path().join("out")).unwrap();
     let second = outputs(&cook(&scratch, Cook::Desktop, false).unwrap());
-    assert_eq!(first.len(), 4);
+    assert_eq!(first.len(), 6, "a mesh, a rig and a skeleton from each");
     assert!(first == second, "two cooks of one source write the same bytes");
 }
 

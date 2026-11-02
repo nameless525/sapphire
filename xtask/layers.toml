@@ -40,6 +40,9 @@ sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 sapphire_serialize = { kind = "runtime", layer = 2 }
 # L3 subsystems.
+# Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
+# which checks every kind's bytes; it has no edge to the renderer or the world.
+sapphire_anim = { kind = "runtime", layer = 3 }
 sapphire_input = { kind = "runtime", layer = 3 }
 sapphire_render = { kind = "runtime", layer = 3 }
 # Time of day's model (keys, timelines, looks), beside the renderer rather than above it: the

@@ -22,6 +22,10 @@
 //! - Character rigs ([`rig`], `.srig`, M1 A6): a character's humanoid bone map, expressions
 //!   as morph-target weights, look-at, spring bones and constraints, cooked from VRM files
 //!   for animation (M2) to read.
+//! - Skeletons and animation clips ([`skeleton`], `.sskel`, and [`clip`], `.sclip`, M2 N1): a
+//!   character's joints as an asset that meshes and clips name, and motion as sparse tracks of
+//!   quantized keys, read in place. Their formats sit here with every other cooked format's,
+//!   because [`AssetKind::references`] checks each kind's bytes; `sapphire_anim` samples them.
 //! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
@@ -59,7 +63,8 @@
 //!   the renderer, which never sees handles or the server (rule R4).
 //! - Watching files, or any other reason to remount: the app decides when a pack changed.
 //! - Skinning and morphing: the renderer (M1 R2) and animation (`sapphire_anim`, M2), which
-//!   also simulates spring bones and evaluates constraints and expressions from a rig.
+//!   also samples clips, simulates spring bones and evaluates constraints and expressions from a
+//!   rig.
 //! - Checking that a material's textures exist and suit their slots: the pipeline, which knows
 //!   texture classes. Binding textures and drawing materials: the renderer.
 //!
@@ -79,6 +84,7 @@
 //!   smallest last in the list and first in the file.
 
 pub mod character_maps;
+pub mod clip;
 mod id;
 mod kind;
 pub mod material;
@@ -87,6 +93,7 @@ pub mod pack;
 pub mod probes;
 pub mod rig;
 mod server;
+pub mod skeleton;
 pub mod texture;
 
 pub use id::{AssetId, ParseAssetIdError};

@@ -7,8 +7,8 @@ use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, LightSplit, Material, Outline, Rim,
 };
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence,
+    Influences, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind, Submesh,
+    VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
@@ -611,10 +611,9 @@ fn with_skin(mut mesh: Mesh) -> Mesh {
             VertexInfluence { binds: [0, 1, 0, 0], weights }
         })
         .collect();
-    let mut tip = Joint { name: "tip".into(), parent: Some(0), rest: JointTransform::IDENTITY };
-    tip.rest.translation = [0.0, 1.0, 0.0];
     mesh.skin = Some(Skin {
-        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }, tip],
+        skeleton: None,
+        joint_count: 2,
         binds: vec![
             SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() },
             SkinBind {
@@ -795,7 +794,8 @@ fn velocity_follows_transforms_skins_and_the_camera() {
     let still = upload(&mut frames.renderer, &square(material.clone()));
     let mut skinned = square(material);
     skinned.skin = Some(Skin {
-        joints: vec![Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY }],
+        skeleton: None,
+        joint_count: 1,
         binds: vec![SkinBind { joint: 0, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() }],
         influences: Influences::pack(&[VertexInfluence { binds: [0; 4], weights: [255, 0, 0, 0] }; 4], 1),
     });

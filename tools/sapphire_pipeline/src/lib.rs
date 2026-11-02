@@ -78,15 +78,15 @@
 //!
 //! # Later milestones
 //!
-//! - FBX: animation clips with M2's animation; authored outline normals; in-between blend
+//! - FBX and VRMA clips, retargeting by humanoid map, and baked per-tick tables: N1's second part
+//!   (M2).
+//! - FBX: authored outline normals; in-between blend
 //!   shapes; second UV and color sets once a material reads them.
 //! - VRM: as the anime character family gains what MToon still has and it lacks (a rim mask, a
 //!   shade map, UV animation, a cull mode, a GI flattening per material), the MToon mapping
 //!   fills it, and extraction binds the textures it already writes.
 //!   `VRMC_springBone_extended_collider` and VRMA animations (`VRMC_vrm_animation`) with M2's
 //!   animation.
-//! - Skeletons as assets of their own, shared by meshes and animation clips (ozz archives,
-//!   M2); today each skinned mesh embeds its skeleton, and a VRM's rig indexes its mesh's.
 //! - Pack groups per zone, character and encounter once those exist as documents (see
 //!   [`pack`]), a shared cache, and the editor's daemon mode.
 //!
@@ -96,11 +96,13 @@ pub mod assembly;
 pub mod bake;
 pub mod cache;
 pub mod character_maps;
+pub mod clip;
 mod color;
 pub mod cook;
 pub mod extract;
 mod gltf_writer;
 pub mod import;
+pub mod keypose;
 pub mod lookdev;
 pub mod material;
 pub mod mesh;

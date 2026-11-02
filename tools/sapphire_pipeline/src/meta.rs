@@ -45,6 +45,12 @@
 //!
 //! FBX files (`.fbx`, M1 A10) have `importer: Fbx((…))`, the same mesh settings.
 //!
+//! glTF meshes whose animations should cook (M2 N1) add `clips: (root_motion: (bone: "Hips"))`
+//! ([`ClipSettings`]), written out only when set.
+//!
+//! Key-pose documents (`swing.keypose.ron`, M2 N1) have `importer: KeyPose((rig: "<id>"))`, naming
+//! the character source they cook for.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -116,7 +122,9 @@ use crate::assembly;
 use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
+use crate::clip::ClipSettings;
 use crate::import::vrm::{self, VrmSettings};
+use crate::keypose::{self, KeyPoseSettings};
 use crate::material::{self, MaterialSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
@@ -181,6 +189,9 @@ pub enum ImportSettings {
     /// An assembly document (`.assembly.ron`): kit pieces placed into one static mesh, in
     /// slots of its own, cooked as glTF's meshes are (M1 X1).
     Assembly(MeshSettings),
+    /// A key-pose document (`.keypose.ron`): motion authored as poses at ticks, cooked to a clip
+    /// for the character its sidecar names (M2 N1).
+    KeyPose(KeyPoseSettings),
 }
 
 impl ImportSettings {
@@ -200,6 +211,9 @@ impl ImportSettings {
         }
         if assembly::is_source(source) {
             return Some(Self::Assembly(MeshSettings::default()));
+        }
+        if keypose::is_source(source) {
+            return Some(Self::KeyPose(KeyPoseSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -231,7 +245,11 @@ impl ImportSettings {
         match self {
             Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&settings.mesh),
-            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
+            Self::Texture(_)
+            | Self::CharacterMap(_)
+            | Self::Material(_)
+            | Self::ProbeGrid(_)
+            | Self::KeyPose(_) => None,
         }
     }
 
@@ -240,7 +258,11 @@ impl ImportSettings {
         match self {
             Self::Gltf(settings) | Self::Fbx(settings) | Self::Assembly(settings) => Some(settings),
             Self::Vrm(settings) => Some(&mut settings.mesh),
-            Self::Texture(_) | Self::CharacterMap(_) | Self::Material(_) | Self::ProbeGrid(_) => None,
+            Self::Texture(_)
+            | Self::CharacterMap(_)
+            | Self::Material(_)
+            | Self::ProbeGrid(_)
+            | Self::KeyPose(_) => None,
         }
     }
 }
@@ -266,6 +288,11 @@ pub struct MeshSettings {
     /// they were.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foliage: Option<FoliageSettings>,
+    /// Animation clips (M2 N1), for glTF sources: every animation in the file cooks to a clip, a
+    /// sub-asset beside the mesh, and every node they move joins the skeleton. Sources without it
+    /// ignore their animations; written out only when set, so other sidecars stay as they were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clips: Option<ClipSettings>,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.

@@ -23,14 +23,15 @@
 //! - Animation (`sapphire_anim`, M2) poses characters from clips and evaluates constraints
 //!   every frame; this held pose then becomes a look-dev clip of one frame.
 
-use sapphire_assets::mesh::{JointTransform, Skin};
+use sapphire_anim::{ArchivedJointTransform, ArchivedSkeleton};
+use sapphire_assets::mesh::Skin;
 use sapphire_assets::rig::{
     AimAxis, ArchivedCharacterRig, ArchivedConstraintKind, Axis, Constraint, ConstraintKind, HumanBone,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 
-/// A skeleton as the pose needs it: each joint's parent and rest transform, and the skin's
-/// binds.
+/// A skeleton as the pose needs it: each joint's parent and rest transform, from the character's
+/// skeleton asset, and the binds of the skin drawn on it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Skeleton {
     parents: Vec<Option<usize>>,
@@ -40,8 +41,9 @@ pub(crate) struct Skeleton {
 }
 
 impl Skeleton {
-    pub fn new(skin: &Skin) -> Self {
-        let rest = |transform: &JointTransform| {
+    pub fn new(skeleton: &ArchivedSkeleton, skin: &Skin) -> Self {
+        let rest = |transform: &ArchivedJointTransform| {
+            let transform = transform.to_native();
             (
                 Vec3::from(transform.translation),
                 Quat::from_array(transform.rotation).normalize(),
@@ -49,8 +51,8 @@ impl Skeleton {
             )
         };
         Self {
-            parents: skin.joints.iter().map(|joint| joint.parent.map(usize::from)).collect(),
-            rest: skin.joints.iter().map(|joint| rest(&joint.rest)).collect(),
+            parents: (0..skeleton.len()).map(|joint| skeleton.parent(joint)).collect(),
+            rest: skeleton.rest.iter().map(rest).collect(),
             binds: skin
                 .binds
                 .iter()
@@ -240,9 +242,24 @@ fn aim_axis(axis: AimAxis) -> Vec3 {
 mod tests {
     use std::f32::consts::FRAC_PI_2;
 
-    use sapphire_assets::mesh::{Influences, Joint, SkinBind};
+    use sapphire_anim::{Joint, JointTransform};
+    use sapphire_assets::mesh::{Influences, SkinBind};
 
     use super::*;
+
+    /// `joints` through their cooked format, with `binds` as their skin's.
+    fn skeleton_of(joints: &[Joint], binds: Vec<SkinBind>) -> Skeleton {
+        let count = joints.len();
+        let bytes = sapphire_anim::Skeleton::new(joints).to_cooked().expect("cooked");
+        let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
+        let skin = Skin {
+            skeleton: None,
+            joint_count: count as u32,
+            binds,
+            influences: Influences::pack(&[], count),
+        };
+        Skeleton::new(skeleton, &skin)
+    }
 
     /// A shoulder at the origin with an upper arm along +X, a forearm 0.3 m on, and two helpers
     /// beside the upper arm: one aiming its +X at the forearm, one rolling with it about X.
@@ -269,7 +286,6 @@ mod tests {
                 inverse_bind_matrix: Mat4::from_translation(-Vec3::new(x, y, z)).to_cols_array_2d(),
             })
             .collect();
-        let skin = Skin { joints, binds, influences: Influences::pack(&[], 5) };
         let rig = RigJoints {
             humanoid: vec![(HumanBone::LeftUpperArm, 1), (HumanBone::LeftLowerArm, 2)],
             constraints: vec![
@@ -282,7 +298,7 @@ mod tests {
                 Constraint { joint: 4, source: 2, weight: 0.5, kind: ConstraintKind::Roll { axis: Axis::X } },
             ],
         };
-        (Skeleton::new(&skin), rig)
+        (skeleton_of(&joints, binds), rig)
     }
 
     #[test]
@@ -333,7 +349,6 @@ mod tests {
             joint(Some(0), [0.1, 0.0, 0.0]),
             joint(Some(0), [0.0, 0.1, 0.0]),
         ];
-        let skin = Skin { joints, binds: Vec::new(), influences: Influences::pack(&[], 5) };
         let rig = RigJoints {
             humanoid: vec![(HumanBone::Spine, 4)],
             constraints: vec![
@@ -346,8 +361,8 @@ mod tests {
                 Constraint { joint: 1, source: 4, weight: 1.0, kind: ConstraintKind::Rotation },
             ],
         };
-        let posed =
-            pose(&Skeleton::new(&skin), &rig, &[(HumanBone::Spine, Quat::from_rotation_z(FRAC_PI_2))]);
+        let skeleton = skeleton_of(&joints, Vec::new());
+        let posed = pose(&skeleton, &rig, &[(HumanBone::Spine, Quat::from_rotation_z(FRAC_PI_2))]);
         let end = Vec3::from(posed.model_from_joint[2].translation);
         assert!(end.abs_diff_eq(Vec3::new(0.1, 0.3, 0.0), 1e-5), "{end}");
         let aim = posed.model_from_joint[3].transform_vector3(Vec3::X).normalize();

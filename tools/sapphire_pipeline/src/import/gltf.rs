@@ -83,8 +83,9 @@
 //! Outline normals have no deltas of their own: the skinning pass turns each with its vertex's
 //! morphed normal (M1 C4).
 //!
-//! glTF textures and animation are ignored: textures are separate sources (M1 A2) that material
-//! documents reference, and VRM import (A6) extracts a file's embedded images as such sources.
+//! glTF textures are ignored: they are separate sources (M1 A2) that material documents reference,
+//! and VRM import (A6) extracts a file's embedded images as such sources. Animations are ignored
+//! here too: a sidecar's `clips` setting cooks them, through [`clips`].
 //! External buffers are part of the source: [`external_files`] lists them for the content
 //! cache key.
 //!
@@ -116,9 +117,8 @@ use ::gltf::{Accessor, Document, Gltf, Material, Mesh, Node, Primitive, Scene};
 use glam::{Mat3, Mat4, Vec3};
 use sapphire_assets::character_maps::{MATERIAL_IDS, MaterialId};
 use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, CharacterRegion};
-use sapphire_assets::mesh::{
-    Joint, JointTransform, Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
-};
+use sapphire_assets::mesh::{Lod, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
+use sapphire_assets::skeleton::{Joint, JointTransform};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
@@ -130,6 +130,8 @@ use crate::mesh::{
 };
 
 pub use self::accessors::AccessorFault;
+
+pub mod clips;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file. 9: instances of one mesh resting a morph target at different weights
@@ -280,9 +282,32 @@ pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMes
     import_scene(&document, &buffers, &[]).map(|scene| scene.mesh)
 }
 
+/// Whether the mesh of `bytes` is skinned, so its cook writes a skeleton too: any node of the scene
+/// with a mesh and a skin or, for a source that cooks clips, any node its animations move
+/// (`clips::animated_nodes`). The importer's skeleton exists exactly then.
+pub fn has_skeleton(bytes: &[u8], clips: bool) -> Result<bool, GltfImportError> {
+    let Gltf { document, .. } = parse(bytes).map_err(GltfImportError::Parse)?;
+    if document.skins().len() == 0 && !clips {
+        return Ok(false);
+    }
+    let scene =
+        document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
+    let nodes = flatten(&document, &scene)?;
+    let gltf_node =
+        |visit: &SceneNode| document.nodes().nth(visit.node).expect("flattened from this document");
+    let skinned = nodes.iter().map(gltf_node).any(|node| node.mesh().is_some() && node.skin().is_some());
+    let moved = || {
+        let animated = clips::animated_nodes(&document);
+        nodes.iter().any(|visit| animated.binary_search(&visit.node).is_ok())
+    };
+    Ok(skinned || (clips && moved()))
+}
+
 /// Parses and validates a document as [`Gltf::from_slice`] does: every importer's way in. The
 /// crate's validation panics on a primitive whose `POSITION` names no accessor (it indexes the
-/// accessors with it, unchecked, to read its bounds), so that is checked first.
+/// accessors with it, unchecked, to read its bounds), so that is checked first. It never visits an
+/// animation channel's target, whose node and property the crate's readers then unwrap, so those
+/// are checked here too.
 pub(crate) fn parse(bytes: &[u8]) -> Result<Gltf, ::gltf::Error> {
     let Gltf { document, blob } = Gltf::from_slice_without_validation(bytes)?;
     let json = document.into_json();
@@ -297,6 +322,20 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Gltf, ::gltf::Error> {
                     primitive.field("attributes").key("POSITION"),
                     validation::Error::IndexOutOfBounds,
                 ));
+            }
+        }
+    }
+    for (a, animation) in json.animations.iter().enumerate() {
+        for (c, channel) in animation.channels.iter().enumerate() {
+            let target = || {
+                let channel = ::gltf::json::Path::new().field("animations").index(a).field("channels");
+                channel.index(c).field("target")
+            };
+            if channel.target.node.value() >= json.nodes.len() {
+                faults.push((target().field("node"), validation::Error::IndexOutOfBounds));
+            }
+            if !matches!(channel.target.path, Checked::Valid(_)) {
+                faults.push((target().field("path"), validation::Error::Invalid));
             }
         }
     }

@@ -1,0 +1,15 @@
+[package]
+name = "sapphire_anim"
+description = "Character animation: skeletons and clips as the runtime sees them, and in time their sampling, blending, IK and secondary motion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The cooked `Skeleton` and `Clip` formats, which the asset server checks by kind.
+sapphire_assets.workspace = true
+
+[lints]
+workspace = true

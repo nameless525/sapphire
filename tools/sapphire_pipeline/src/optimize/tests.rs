@@ -3,9 +3,8 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use std::collections::BTreeMap;
 
-use sapphire_assets::mesh::{
-    Joint, JointTransform, Mesh, PositionFormat, SkinBind, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
-};
+use sapphire_assets::mesh::{Mesh, PositionFormat, SkinBind, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags};
+use sapphire_assets::skeleton::{Joint, JointTransform};
 
 use super::*;
 use crate::mesh::{ImportedDelta, ImportedMorphTarget, ImportedSkin, SkinWeights};

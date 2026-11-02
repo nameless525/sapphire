@@ -21,8 +21,8 @@ use std::f32::consts::{PI, TAU};
 
 use sapphire_assets::material::{AnimeCharacterMaterial, CharacterRegion, Material, Outline, Rim};
 use sapphire_assets::mesh::{
-    Influences, Joint, JointTransform, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin,
-    SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, quantize_weights,
+    Influences, MaterialSlot, Mesh, MorphDelta, MorphTarget, PositionFormat, Skin, SkinBind, Submesh,
+    VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags, VertexInfluence, quantize_weights,
 };
 use sapphire_assets::texture::Swizzle;
 use sapphire_ecs::prelude::*;
@@ -220,22 +220,19 @@ pub(crate) fn stalk_mesh() -> Mesh {
             }
         })
         .collect();
-    let joints = (0..BONES)
-        .map(|bone| {
-            let mut rest = JointTransform::IDENTITY;
-            if bone > 0 {
-                rest.translation = [0.0, BONE_LENGTH, 0.0];
-            }
-            Joint { name: format!("stalk_{bone}"), parent: bone.checked_sub(1).map(|p| p as u16), rest }
-        })
-        .collect();
     let binds = (0..BONES)
         .map(|bone| SkinBind {
             joint: bone as u16,
             inverse_bind_matrix: Mat4::from(inverse_bind(bone)).to_cols_array_2d(),
         })
         .collect();
-    mesh.skin = Some(Skin { joints, binds, influences: Influences::pack(&influences, BONES) });
+    // Its poses are computed here, so it names no skeleton asset.
+    mesh.skin = Some(Skin {
+        skeleton: None,
+        joint_count: BONES as u32,
+        binds,
+        influences: Influences::pack(&influences, BONES),
+    });
 
     for (name, center, half_width, change) in TARGETS {
         let first_delta = mesh.morph_deltas.len() as u32;
@@ -281,7 +278,7 @@ mod tests {
         let bytes = mesh.to_cooked().expect("cook");
         let read = Mesh::read(&bytes).expect("a valid mesh");
         let skin = read.skin.as_ref().expect("skinned");
-        assert_eq!((skin.joints.len(), skin.binds.len()), (BONES, BONES));
+        assert_eq!((skin.joint_count.to_native() as usize, skin.binds.len()), (BONES, BONES));
         let vertices = mesh.streams.len();
         assert_eq!(vertices, (2 * (CAP_RINGS + 1) + BODY_RINGS - 1) as usize * (SEGMENTS as usize + 1));
         for target in &mesh.morph_targets {

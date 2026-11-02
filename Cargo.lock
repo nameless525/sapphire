@@ -2410,6 +2410,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_anim"
+version = "0.1.0"
+dependencies = [
+ "sapphire_assets",
+]
+
+[[package]]
 name = "sapphire_assets"
 version = "0.1.0"
 dependencies = [
@@ -2690,6 +2697,7 @@ dependencies = [
  "bevy_ecs",
  "png",
  "profiling",
+ "sapphire_anim",
  "sapphire_assets",
  "sapphire_core",
  "sapphire_crash",

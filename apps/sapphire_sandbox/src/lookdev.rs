@@ -53,6 +53,7 @@
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
 
+use sapphire_anim::ArchivedSkeleton;
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -485,8 +486,8 @@ const BODY_RADIUS: f32 = 0.16;
 /// From the head joint (the top of the neck) to the middle of the head, in meters.
 const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.09, 0.01);
 
-/// Loads the character's rig and holds the character in its pose ([`held_pose`]), from the copy
-/// of its mesh `content` kept ([`Content::keep_character_mesh`]).
+/// Loads the character's rig and skeleton and holds the character in its pose ([`held_pose`]), from
+/// the copy of its mesh `content` kept ([`Content::keep_character_mesh`]).
 pub(crate) fn hold(
     content: &mut Content,
     renderer: &mut Renderer,
@@ -497,20 +498,26 @@ pub(crate) fn hold(
 }
 
 /// [`held_pose`] for the character as `content` has it now: at the start, and again whenever its
-/// mesh or rig gets a new version ([`Content::take_character_changed`]), whose joints may be others.
+/// mesh, rig or skeleton gets a new version ([`Content::take_character_changed`]), whose joints may
+/// be others.
 pub(crate) fn held(content: &Content) -> Result<(RenderPose, Figure), String> {
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
-    held_pose(mesh, rig)
+    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+    held_pose(mesh, rig, skeleton)
 }
 
 /// The character's held pose and the figure it makes: the skinning palette and morph weights
 /// for its mesh, and its head, feet, body and face basis in its own space. Fails if the mesh has
 /// no skin or the rig no head.
-pub(crate) fn held_pose(mesh: &Mesh, rig: &ArchivedCharacterRig) -> Result<(RenderPose, Figure), String> {
-    check_counts(rig, mesh)?;
+pub(crate) fn held_pose(
+    mesh: &Mesh,
+    rig: &ArchivedCharacterRig,
+    skeleton: &ArchivedSkeleton,
+) -> Result<(RenderPose, Figure), String> {
+    check_counts(rig, skeleton, mesh)?;
     let skin = mesh.skin.as_ref().ok_or("the look-dev character has no skin")?;
-    let skeleton = Skeleton::new(skin);
+    let skeleton = Skeleton::new(skeleton, skin);
     let joints = RigJoints::new(rig);
     let posed = pose::pose(&skeleton, &joints, &turns());
     let head_joint = joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
@@ -539,15 +546,17 @@ pub(crate) fn held_pose(mesh: &Mesh, rig: &ArchivedCharacterRig) -> Result<(Rend
     Ok((RenderPose { palette: posed.palette, morph_weights }, figure))
 }
 
-/// Whether `rig` was cooked with `mesh`: the same joints and morph targets, which the pose
-/// indexes one through the other.
-fn check_counts(rig: &ArchivedCharacterRig, mesh: &Mesh) -> Result<(), String> {
-    let joints = mesh.skin.as_ref().map_or(0, |skin| skin.joints.len());
+/// Whether `rig`, `skeleton` and `mesh` were cooked together: the same joints and morph targets,
+/// which the pose indexes one through the other.
+fn check_counts(rig: &ArchivedCharacterRig, skeleton: &ArchivedSkeleton, mesh: &Mesh) -> Result<(), String> {
+    let joints = mesh.skin.as_ref().map_or(0, |skin| skin.joint_count as usize);
     let counts = (rig.joint_count.to_native() as usize, rig.morph_target_count.to_native() as usize);
-    if counts != (joints, mesh.morph_targets.len()) {
+    if counts != (joints, mesh.morph_targets.len()) || skeleton.len() != joints {
         return Err(format!(
-            "the look-dev character's rig has {counts:?} joints and morph targets, its mesh {:?}",
-            (joints, mesh.morph_targets.len())
+            "the look-dev character's rig has {counts:?} joints and morph targets, its mesh {:?}, and its \
+             skeleton {} joints",
+            (joints, mesh.morph_targets.len()),
+            skeleton.len(),
         ));
     }
     Ok(())

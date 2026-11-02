@@ -35,9 +35,6 @@ fn quad(format: PositionFormat) -> Mesh {
         error: 0.25,
         submeshes: vec![Submesh { first_index: 6, index_count: 3, material: 0 }],
     });
-    let mut root = Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY };
-    root.rest.translation = [0.0, 1.0, 0.0];
-    let tip = Joint { name: "tip".into(), parent: Some(0), rest: JointTransform::IDENTITY };
     let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
     let influences = [
         VertexInfluence { binds: [0, 0, 0, 0], weights: [255, 0, 0, 0] },
@@ -46,7 +43,8 @@ fn quad(format: PositionFormat) -> Mesh {
         VertexInfluence { binds: [1, 0, 0, 0], weights: [255, 0, 0, 0] },
     ];
     mesh.skin = Some(Skin {
-        joints: vec![root, tip],
+        skeleton: None,
+        joint_count: 2,
         binds: vec![
             SkinBind { joint: 0, inverse_bind_matrix: identity },
             SkinBind { joint: 1, inverse_bind_matrix: identity },
@@ -210,15 +208,15 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 13 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 14 }))
     ));
-    // The previous format (M1 X1 part 2e's, before M1 C8's double-sided flag) is stale too:
-    // cooked meshes don't migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
+    // The previous format (M1 C8's, a skin holding its joints) is stale too: cooked meshes don't
+    // migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
     let mut previous = bytes.clone();
-    previous[16] = 12;
+    previous[16] = 13;
     assert!(matches!(
         Mesh::read(&previous),
-        Err(MeshError::Cooked(CookedError::Stale { found: 12, current: 13 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 13, current: 14 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;
@@ -289,14 +287,6 @@ fn rejects_meshes_the_gpu_cannot_use() {
     check(
         |m| m.lods[0].submeshes[0].material = 1,
         |e| matches!(e, MeshError::MissingMaterial { material: 1, .. }),
-    );
-    check(
-        |m| m.skin.as_mut().unwrap().joints[0].parent = Some(1),
-        |e| matches!(e, MeshError::JointOrder { .. }),
-    );
-    check(
-        |m| m.skin.as_mut().unwrap().joints[1].rest.rotation[3] = f32::NAN,
-        |e| matches!(e, MeshError::NonFiniteJoint { joint: 1 }),
     );
     check(
         |m| m.skin.as_mut().unwrap().binds[1].joint = 2,

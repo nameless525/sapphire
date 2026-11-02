@@ -72,8 +72,8 @@
 //!
 //! # Skins and morph targets
 //!
-//! A skinned mesh's positions and normals are in bind space; [`Skin`] has the skeleton, the
-//! skinning palette and per-vertex influences. Morph targets are sparse deltas per target
+//! A skinned mesh's positions and normals are in bind space; [`Skin`] names the skeleton asset
+//! and has the skinning palette and per-vertex influences. Morph targets are sparse deltas per target
 //! ([`MorphTarget`], [`MorphDelta`]), all applied before skinning.
 //!
 //! # Reading
@@ -85,7 +85,7 @@
 //! must start 16-byte aligned, as memory maps and
 //! [`AlignedVec`]s do.
 
-mod encoding;
+pub(crate) mod encoding;
 mod morph;
 mod skin;
 mod validate;
@@ -104,9 +104,8 @@ pub use encoding::{
 };
 pub use morph::{ArchivedMorphTarget, MorphDelta, MorphTarget};
 pub use skin::{
-    ArchivedInfluences, ArchivedJoint, ArchivedJointTransform, ArchivedSkin, ArchivedSkinBind, Influence8,
-    Influence16, Influences, Joint, JointTransform, MAX_INFLUENCES, MAX_U8_PALETTE, Skin, SkinBind,
-    VertexInfluence, quantize_weights,
+    ArchivedInfluences, ArchivedSkin, ArchivedSkinBind, Influence8, Influence16, Influences, MAX_INFLUENCES,
+    MAX_U8_PALETTE, Skin, SkinBind, VertexInfluence, quantize_weights,
 };
 pub use validate::MeshError;
 
@@ -135,7 +134,8 @@ pub struct Mesh {
 }
 
 impl Versioned for Mesh {
-    /// 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag) or 11, whose
+    /// 14: the skeleton left the mesh for an asset of its own (M2 N1): a [`Skin`] names it and
+    /// keeps only its joint count. 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag) or 11, whose
     /// whole-cycle rates (review RS-003) leave every block an importer generates as it was: their
     /// rates are the defaults or 0, which divide the hour already. 12: embedded
     /// materials of `Material::VERSION` 9 (M1 X1 part 2e's sky slots; the embedded anime
@@ -154,13 +154,13 @@ impl Versioned for Mesh {
     /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
     /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
     /// float vertices.
-    const VERSION: u32 = 13;
+    const VERSION: u32 = 14;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too, unless it can't change a block an importer generates (`Material::VERSION` 11).
 const _: () = assert!(
-    Mesh::VERSION == 13 && Material::VERSION == 11,
+    Mesh::VERSION == 14 && Material::VERSION == 11,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 

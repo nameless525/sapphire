@@ -171,7 +171,7 @@ pub(super) fn build(
 }
 
 /// Whether `joint` is a descendant of `ancestor` in `skeleton`.
-fn descends(skeleton: &[sapphire_assets::mesh::Joint], joint: u16, ancestor: u16) -> bool {
+fn descends(skeleton: &[sapphire_assets::skeleton::Joint], joint: u16, ancestor: u16) -> bool {
     let mut current = skeleton.get(usize::from(joint)).and_then(|joint| joint.parent);
     while let Some(parent) = current {
         if parent == ancestor {

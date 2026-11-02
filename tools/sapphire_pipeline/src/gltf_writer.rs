@@ -67,6 +67,7 @@ pub(crate) struct GltfWriter {
     meshes: Vec<Value>,
     nodes: Vec<Value>,
     skins: Vec<Value>,
+    animations: Vec<Value>,
     scene_roots: Vec<usize>,
     /// Root extensions, by name.
     extensions: serde_json::Map<String, Value>,
@@ -135,6 +136,45 @@ impl GltfWriter {
         self.skins.len() - 1
     }
 
+    /// Adds an animation (raw glTF JSON: channels, samplers, name) and returns its index.
+    #[cfg(test)]
+    pub fn add_animation(&mut self, animation: Value) -> usize {
+        self.animations.push(animation);
+        self.animations.len() - 1
+    }
+
+    /// Adds `values`, floats read as `kind` (`"SCALAR"`, `"VEC3"`, `"VEC4"`), with no buffer view
+    /// target, and returns the accessor's index. A scalar accessor carries its bounds, as glTF
+    /// requires of an animation sampler's input.
+    #[cfg(test)]
+    pub fn add_floats(&mut self, kind: &str, values: &[f32]) -> usize {
+        let per_element = match kind {
+            "SCALAR" => 1,
+            "VEC3" => 3,
+            "VEC4" => 4,
+            other => panic!("not an animation accessor's type: {other}"),
+        };
+        let mut accessor =
+            json!({ "componentType": FLOAT, "type": kind, "count": values.len() / per_element });
+        if kind == "SCALAR" && !values.is_empty() {
+            let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            accessor["min"] = json!([min]);
+            accessor["max"] = json!([max]);
+        }
+        self.add_accessor(bytemuck::cast_slice(values), None, accessor)
+    }
+
+    /// Adds `values`, normalized signed shorts read as `VEC4`, and returns the accessor's index: what
+    /// an exporter may write a rotation's keys as.
+    #[cfg(test)]
+    pub fn add_rotations_normalized(&mut self, values: &[i16]) -> usize {
+        const SHORT: u32 = 5122;
+        let accessor =
+            json!({ "componentType": SHORT, "normalized": true, "type": "VEC4", "count": values.len() / 4 });
+        self.add_accessor(bytemuck::cast_slice(values), None, accessor)
+    }
+
     /// Makes `node` a root of the default scene.
     pub fn add_root(&mut self, node: usize) {
         self.scene_roots.push(node);
@@ -194,6 +234,7 @@ impl GltfWriter {
             "nodes": self.nodes,
             "meshes": self.meshes,
             "skins": self.skins,
+            "animations": self.animations,
             "materials": self.materials,
             "textures": self.textures,
             "samplers": self.samplers,

@@ -1106,6 +1106,8 @@ mod tests {
         let vrm = sapphire_assets::AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
         let rig = crate::meta::sub_asset_id(vrm, crate::import::vrm::RIG.name);
         assert_eq!(rig, sapphire_assets::AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3"));
+        // Its mesh names its skeleton, a sub-asset beside the rig (M2 N1).
+        assert_ne!(crate::meta::sub_asset_id(vrm, crate::cook::SKELETON), rig);
     }
 
     #[test]

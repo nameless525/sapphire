@@ -902,9 +902,9 @@ impl Scene {
     /// frame's packet: the probe grid's key hours; a mesh replaced in place, whose instances the
     /// renderer starts over in their bind pose, sends every pose again with this frame's packet,
     /// so the frame that first draws the new mesh already draws it posed; and a new version of the
-    /// look-dev character's mesh or rig holds her anew, since her palette indexes their joints.
-    /// While only one of the two has landed she may not fit: she keeps the pose she has, which the
-    /// renderer ignores if the new mesh's palette is another length, until the other lands.
+    /// look-dev character's mesh, rig or skeleton holds her anew, since her palette indexes their
+    /// joints. While only some have landed she may not fit: she keeps the pose she has, which the
+    /// renderer ignores if the new mesh's palette is another length, until the others land.
     /// Allocates nothing while nothing changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());

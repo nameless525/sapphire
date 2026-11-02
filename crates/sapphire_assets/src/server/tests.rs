@@ -151,7 +151,9 @@ fn uploads_are_plain_cooked_data() {
                         crate::mesh::ArchivedSlotMaterial::Asset(_)
                     ));
                 }
-                AssetKind::Rig => unreachable!("rigs never go to the uploader"),
+                AssetKind::Rig | AssetKind::Skeleton | AssetKind::Clip => {
+                    unreachable!("animation's data never goes to the uploader")
+                }
                 AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
             }
             Ok(())
@@ -589,6 +591,82 @@ fn rigs_are_ready_without_the_gpu_and_keep_their_bytes() {
     // A new renderer gets nothing of it, and it stays ready.
     server.reupload_all();
     assert_eq!(server.state(&handle), LoadState::Ready);
+}
+
+/// A mesh brings the skeleton its skin names, and a clip the skeleton it was cooked for: both stay
+/// on the CPU, ready once decoded, with their bytes kept to read in place (M2 N1).
+#[test]
+fn skeletons_and_clips_load_with_what_names_them() {
+    use crate::clip::{Clip, DEFAULT_RATE, PackedRotation, RotationTrack};
+    use crate::mesh::{Influences, Skin, SkinBind, VertexInfluence};
+    use crate::skeleton::{Joint, JointTransform, Skeleton};
+
+    let (skeleton_id, clip_id, mesh_id) = (id(30), id(31), id(32));
+    let joint = Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY };
+    let skeleton = Skeleton::new(&[joint]).to_cooked().unwrap();
+    let clip = Clip {
+        name: "held".into(),
+        skeleton: Some(skeleton_id),
+        joint_count: 1,
+        rate: DEFAULT_RATE,
+        rotations: vec![RotationTrack { joint: 0, count: 1, first: 0 }],
+        rotation_ticks: vec![0],
+        rotation_keys: vec![PackedRotation::encode([0.0, 0.0, 0.0, 1.0])],
+        ..Clip::default()
+    }
+    .to_cooked()
+    .unwrap();
+    let mut mesh = Mesh::from_cooked(&{
+        let mut aligned = AlignedVec::<16>::new();
+        aligned.extend_from_slice(&mesh_bytes(id(MATERIAL)));
+        aligned
+    })
+    .unwrap();
+    let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    let held = VertexInfluence { binds: [0; 4], weights: [255, 0, 0, 0] };
+    mesh.skin = Some(Skin {
+        skeleton: Some(skeleton_id),
+        joint_count: 1,
+        binds: vec![SkinBind { joint: 0, inverse_bind_matrix: identity }],
+        influences: Influences::pack(&[held; 3], 1),
+    });
+    let mut assets = character();
+    assets.push(packed(skeleton_id, AssetKind::Skeleton, &skeleton));
+    assets.push(packed(clip_id, AssetKind::Clip, &clip));
+    assets.push(packed(mesh_id, AssetKind::Mesh, &mesh.to_cooked().unwrap()));
+    let (mut server, _) = serve(assets, unlimited());
+
+    let mesh: Handle<Mesh> = server.load(mesh_id).unwrap();
+    let mut order = Vec::new();
+    server.finish(&mesh, record(&mut order)).unwrap();
+    assert!(!order.iter().any(|&(kind, _)| kind == AssetKind::Skeleton), "{order:?}");
+    let skeleton: Handle<Skeleton> = server.load(skeleton_id).unwrap();
+    assert_eq!(server.state(&skeleton), LoadState::Ready, "it came with the mesh");
+    assert_eq!(server.get(&skeleton).expect("its bytes stay").len(), 1);
+
+    drop(skeleton);
+    let clip: Handle<Clip> = server.load(clip_id).unwrap();
+    let mut order = Vec::new();
+    server.finish(&clip, record(&mut order)).unwrap();
+    assert!(order.is_empty(), "nothing went to the uploader: {order:?}");
+    let view = server.get(&clip).expect("its bytes stay");
+    assert_eq!(view.skeleton.as_ref().copied(), Some(skeleton_id));
+    // A new renderer gets nothing of them, and they stay ready.
+    server.reupload_all();
+    assert_eq!(server.state(&clip), LoadState::Ready);
+}
+
+#[test]
+fn only_meshes_and_clips_may_depend_on_a_skeleton_and_a_skeleton_on_nothing() {
+    for kind in AssetKind::ALL {
+        assert_eq!(
+            kind.may_depend_on(AssetKind::Skeleton),
+            matches!(kind, AssetKind::Mesh | AssetKind::Clip),
+            "{kind}"
+        );
+        assert!(!AssetKind::Skeleton.may_depend_on(kind), "{kind}");
+        assert!(!kind.may_depend_on(AssetKind::Clip), "nothing cooked names a clip yet: {kind}");
+    }
 }
 
 #[test]

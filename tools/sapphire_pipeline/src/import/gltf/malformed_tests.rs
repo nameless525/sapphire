@@ -32,6 +32,11 @@ impl File {
     /// One skinned triangle with a morph target and every accessor the importer reads, plus a
     /// static triangle beside it. It imports cleanly, so a row's edit is what breaks it.
     fn figure() -> Self {
+        let writer = Self::figure_writer();
+        Self { doc: writer.document(None), bin: writer.bin().to_vec() }
+    }
+
+    fn figure_writer() -> GltfWriter {
         let triangle = || vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 1.0]];
         let skinned = Geometry {
             positions: triangle(),
@@ -61,7 +66,7 @@ impl File {
         for root in [joint, body, prop] {
             writer.add_root(root);
         }
-        Self { doc: writer.document(None), bin: writer.bin().to_vec() }
+        writer
     }
 
     /// A file of only `nodes`, with the scene's `roots`, and a triangle as mesh 0 for them to name.
@@ -699,4 +704,327 @@ fn a_cook_names_the_file_and_the_problem() {
             assert!(source.to_string().contains(says), "{cook:?}: {source}");
         }
     }
+}
+
+/// The channels of [`File::animated`].
+const TRANSLATION: usize = 0;
+const ROTATION: usize = 1;
+const SCALE: usize = 2;
+const WEIGHTS: usize = 3;
+
+impl File {
+    /// The figure with an animation of two keys in each kind of channel, in the order of the
+    /// constants above: translation, rotation and scale of its joint, and its body's morph weights.
+    /// It samples cleanly, so a row's edit is what breaks it.
+    fn animated() -> Self {
+        let mut writer = Self::figure_writer();
+        let times = |writer: &mut GltfWriter| writer.add_floats("SCALAR", &[0.0, 1.0]);
+        let moved = writer.add_floats("VEC3", &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let turned = writer.add_floats("VEC4", &[0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]);
+        let scaled = writer.add_floats("VEC3", &[1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+        let weighed = writer.add_floats("SCALAR", &[0.0, 1.0]);
+        let mut samplers = Vec::new();
+        for output in [moved, turned, scaled, weighed] {
+            samplers.push(json!({ "input": times(&mut writer), "output": output }));
+        }
+        writer.add_animation(json!({
+            "name": "Walk",
+            "samplers": samplers,
+            "channels": [
+                { "sampler": TRANSLATION, "target": { "node": 0, "path": "translation" } },
+                { "sampler": ROTATION, "target": { "node": 0, "path": "rotation" } },
+                { "sampler": SCALE, "target": { "node": 0, "path": "scale" } },
+                { "sampler": WEIGHTS, "target": { "node": 1, "path": "weights" } },
+            ],
+        }));
+        Self { doc: writer.document(None), bin: writer.bin().to_vec() }
+    }
+
+    fn channel(&mut self, channel: usize) -> &mut Value {
+        &mut self.doc["animations"][0]["channels"][channel]
+    }
+
+    fn sampler(&mut self, channel: usize) -> &mut Value {
+        &mut self.doc["animations"][0]["samplers"][channel]
+    }
+
+    /// The key times' accessor of `channel`.
+    fn input(&mut self, channel: usize) -> &mut Value {
+        let index = Self::index_of(&self.sampler(channel)["input"]);
+        self.accessor(index)
+    }
+
+    /// The values' accessor of `channel`.
+    fn output(&mut self, channel: usize) -> &mut Value {
+        let index = Self::index_of(&self.sampler(channel)["output"]);
+        self.accessor(index)
+    }
+
+    /// Writes `value` over float `at` of the accessor `accessor` picks.
+    fn poison(&mut self, accessor: fn(&mut Self) -> &mut Value, at: usize, value: f32) {
+        let view = Self::index_of(&accessor(self)["bufferView"]);
+        let offset = self.doc["bufferViews"][view]["byteOffset"].as_u64().unwrap_or(0) as usize;
+        self.bin[offset + 4 * at..][..4].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// Samples every animation of `file`, as a cook does.
+fn sample_clips(bytes: &[u8]) -> Result<usize, clips::ClipImportError> {
+    let (document, buffers, scene) = clips::import_scene(bytes, None)?;
+    let settings = crate::clip::ClipSettings::default();
+    for index in 0..document.animations().len() {
+        clips::sample(&document, &buffers, &scene, index, &settings)?;
+    }
+    Ok(document.animations().len())
+}
+
+/// Runs each case on a fresh [`File::animated`], and fails listing every one that didn't give a
+/// clean error, the error of every clip's cook: never a panic.
+fn assert_all_clips_fail(cases: &[Case]) {
+    let mut wrong = Vec::new();
+    for Case { name, craft, says } in cases {
+        let mut file = File::animated();
+        craft(&mut file);
+        let bytes = file.bytes();
+        match panic::catch_unwind(AssertUnwindSafe(|| sample_clips(&bytes))) {
+            Err(payload) => wrong.push(format!("{name}: panicked: {}", panic_text(&*payload))),
+            Ok(Ok(count)) => wrong.push(format!("{name}: sampled {count} clips")),
+            Ok(Err(error)) => {
+                let text = error.to_string();
+                if !text.contains(says) {
+                    wrong.push(format!("{name}: said {text:?}, which doesn't mention {says:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} cases:\n{}", wrong.len(), cases.len(), wrong.join("\n"));
+}
+
+#[test]
+fn the_animated_figure_samples_cleanly() {
+    assert_eq!(sample_clips(&File::animated().bytes()).expect("it samples"), 1);
+}
+
+/// Accessors whose types the `gltf` readers don't expect, or would panic on.
+#[test]
+fn off_spec_animation_accessors_are_errors() {
+    assert_all_clips_fail(&[
+        case("times_vec3", |f| f.input(TRANSLATION)["type"] = "VEC3".into(), "input accessor"),
+        case(
+            "times_u16",
+            |f| f.input(TRANSLATION)["componentType"] = UNSIGNED_SHORT.into(),
+            "input accessor",
+        ),
+        case("times_normalized", |f| f.input(TRANSLATION)["normalized"] = true.into(), "input accessor"),
+        case(
+            "translation_u8",
+            |f| f.output(TRANSLATION)["componentType"] = UNSIGNED_BYTE.into(),
+            "output accessor",
+        ),
+        case("translation_scalar", |f| f.output(TRANSLATION)["type"] = "SCALAR".into(), "output accessor"),
+        case("translation_vec4", |f| f.output(TRANSLATION)["type"] = "VEC4".into(), "output accessor"),
+        case("scale_normalized", |f| f.output(SCALE)["normalized"] = true.into(), "output accessor"),
+        case("rotation_vec3", |f| f.output(ROTATION)["type"] = "VEC3".into(), "output accessor"),
+        case(
+            "rotation_u32",
+            |f| f.output(ROTATION)["componentType"] = UNSIGNED_INT.into(),
+            "output accessor",
+        ),
+        case(
+            "rotation_integers_unnormalized",
+            |f| {
+                f.output(ROTATION)["componentType"] = SHORT.into();
+            },
+            "output accessor",
+        ),
+        case("weights_vec2", |f| f.output(WEIGHTS)["type"] = "VEC2".into(), "output accessor"),
+        case("weights_u32", |f| f.output(WEIGHTS)["componentType"] = UNSIGNED_INT.into(), "output accessor"),
+        case(
+            "weights_i8_unnormalized",
+            |f| f.output(WEIGHTS)["componentType"] = BYTE.into(),
+            "output accessor",
+        ),
+    ]);
+}
+
+/// Accessors that claim more than their files hold, where the readers' arithmetic overflows or
+/// their indexing would panic.
+#[test]
+fn animation_accessors_past_their_data_are_errors() {
+    assert_all_clips_fail(&[
+        case("times_no_elements", |f| f.input(TRANSLATION)["count"] = 0.into(), "no elements"),
+        case("times_past_the_view", |f| f.input(TRANSLATION)["count"] = 3.into(), "buffer view"),
+        case("times_huge_count", |f| f.input(TRANSLATION)["count"] = HUGE.into(), "budget"),
+        case("times_huge_offset", |f| f.input(TRANSLATION)["byteOffset"] = HUGE.into(), "buffer view"),
+        case("output_no_elements", |f| f.output(TRANSLATION)["count"] = 0.into(), "no elements"),
+        case("output_past_the_view", |f| f.output(TRANSLATION)["count"] = 3.into(), "buffer view"),
+        case("output_huge_count", |f| f.output(ROTATION)["count"] = HUGE.into(), "budget"),
+        case("output_huge_offset", |f| f.output(SCALE)["byteOffset"] = HUGE.into(), "buffer view"),
+        case(
+            "output_short_stride",
+            |f| {
+                let view = File::index_of(&f.output(TRANSLATION)["bufferView"]);
+                f.doc["bufferViews"][view]["byteStride"] = 4.into();
+            },
+            "stride",
+        ),
+        case(
+            "view_past_the_buffer",
+            |f| {
+                let view = File::index_of(&f.input(ROTATION)["bufferView"]);
+                f.doc["bufferViews"][view]["byteOffset"] = 1_000_000.into();
+            },
+            "past the end of buffer",
+        ),
+        // The trick that makes a few bytes claim millions: no view of its own, one sparse value.
+        case("sparse_times_claiming_much", |f| f.sparse_only(|f| f.input(TRANSLATION), 1 << 40), "budget"),
+        case("sparse_values_claiming_much", |f| f.sparse_only(|f| f.output(WEIGHTS), 1 << 40), "budget"),
+        case("sparse_over_its_count", |f| f.sparse(|f| f.output(TRANSLATION), 3), "sparse"),
+    ]);
+}
+
+/// Keys glTF rules out, which the sampler's walk would take on trust.
+#[test]
+fn bad_keys_are_errors() {
+    assert_all_clips_fail(&[
+        case("time_nan", |f| f.poison(|f| f.input(TRANSLATION), 1, f32::NAN), "key 1's time"),
+        case("time_infinite", |f| f.poison(|f| f.input(ROTATION), 1, f32::INFINITY), "key 1's time"),
+        case("time_negative", |f| f.poison(|f| f.input(SCALE), 0, -1.0), "key 0's time"),
+        case("time_backward", |f| f.poison(|f| f.input(WEIGHTS), 1, -0.0), "key 1's time"),
+        case("time_repeated", |f| f.poison(|f| f.input(TRANSLATION), 1, 0.0), "key 1's time"),
+        case("translation_nan", |f| f.poison(|f| f.output(TRANSLATION), 3, f32::NAN), "isn't finite"),
+        case("scale_infinite", |f| f.poison(|f| f.output(SCALE), 5, f32::NEG_INFINITY), "isn't finite"),
+        case("rotation_nan", |f| f.poison(|f| f.output(ROTATION), 7, f32::NAN), "isn't finite"),
+        case("weight_nan", |f| f.poison(|f| f.output(WEIGHTS), 1, f32::NAN), "isn't finite"),
+        case(
+            "rotation_with_no_length",
+            |f| {
+                for at in 4..8 {
+                    f.poison(|f| f.output(ROTATION), at, 0.0);
+                }
+            },
+            "key 1's rotation has no length",
+        ),
+    ]);
+}
+
+/// Samplers whose outputs don't fit their keys.
+#[test]
+fn output_counts_must_fit_keys() {
+    assert_all_clips_fail(&[
+        case(
+            "one_value_for_two_keys",
+            |f| f.output(TRANSLATION)["count"] = 1.into(),
+            "1 output values for 2 keys",
+        ),
+        case(
+            "one_key_for_two_values",
+            |f| f.input(ROTATION)["count"] = 1.into(),
+            "2 output values for 1 keys",
+        ),
+        case(
+            "cubic_without_its_tangents",
+            |f| f.sampler(TRANSLATION)["interpolation"] = "CUBICSPLINE".into(),
+            "where 6 are needed",
+        ),
+        case(
+            "weights_missing_a_target",
+            |f| {
+                let target = f.primitive()["targets"][0].clone();
+                f.primitive()["targets"] = json!([target, target]);
+            },
+            "where 4 are needed",
+        ),
+    ]);
+}
+
+/// What the document's validation refuses before the importer reads a channel: all of it would
+/// panic in the crate's accessors otherwise, and a channel's target only `parse` checks.
+#[test]
+fn animations_naming_what_isnt_there_are_errors() {
+    const INVALID: &str = "not a valid glTF";
+    assert_all_clips_fail(&[
+        case("channel_sampler_out_of_range", |f| f.channel(0)["sampler"] = 99.into(), INVALID),
+        case("channel_node_out_of_range", |f| f.channel(0)["target"]["node"] = 99.into(), INVALID),
+        case("channel_unknown_path", |f| f.channel(0)["target"]["path"] = "matrix".into(), INVALID),
+        case("sampler_input_out_of_range", |f| f.sampler(0)["input"] = 9999.into(), INVALID),
+        case("sampler_output_out_of_range", |f| f.sampler(0)["output"] = 9999.into(), INVALID),
+        case("sampler_unknown_interpolation", |f| f.sampler(0)["interpolation"] = "EASE".into(), INVALID),
+    ]);
+}
+
+/// What a valid document can still get wrong.
+#[test]
+fn channels_the_scene_cant_honor_are_errors() {
+    assert_all_clips_fail(&[
+        case("no_channels", |f| f.doc["animations"][0]["channels"] = json!([]), "no channels"),
+        case(
+            "two_channels_for_one_property",
+            |f| {
+                let channel = f.channel(TRANSLATION).clone();
+                *f.channel(ROTATION) = channel;
+            },
+            "second channel",
+        ),
+        case("weights_with_no_mesh", |f| f.channel(WEIGHTS)["target"]["node"] = 0.into(), "no morph targets"),
+        case(
+            "weights_with_no_morph_targets",
+            |f| f.channel(WEIGHTS)["target"]["node"] = 2.into(),
+            "no morph targets",
+        ),
+        // About a year of keys: the length is refused before anything is sampled.
+        case("longer_than_a_clip", |f| f.poison(|f| f.input(TRANSLATION), 1, 3.0e7), "a clip holds at most"),
+        // Over the samples' budget, though within a u16 of ticks? Only a smaller budget shows it:
+        // `budgets_hold_before_data_is_read` in the importer's own tests.
+    ]);
+}
+
+/// A channel's target is checked for a mesh's cook too, which never reads animations: the crate
+/// panics on it whichever way a file comes in, so a broken file says so at the door.
+#[test]
+fn a_target_that_isnt_there_fails_a_plain_mesh_import_too() {
+    let mut file = File::animated();
+    file.channel(0)["target"]["node"] = 99.into();
+    let error = import_slice(&file.bytes(), None).unwrap_err();
+    assert!(error.to_string().contains("not a valid glTF"), "{error}");
+}
+
+/// A bad channel is reported wherever it points: one the scene drops is still a bad file, and
+/// nothing about it reaches a reader unchecked.
+#[test]
+fn a_channel_outside_the_scene_is_still_checked() {
+    let mut file = File::animated();
+    let stray = file.doc["nodes"].as_array().expect("nodes").len();
+    file.doc["nodes"].as_array_mut().expect("nodes").push(json!({ "name": "Stray" }));
+    file.channel(TRANSLATION)["target"]["node"] = stray.into();
+    sample_clips(&file.bytes()).expect("a good channel on a stray node is dropped");
+    file.input(TRANSLATION)["count"] = HUGE.into();
+    let error = sample_clips(&file.bytes()).unwrap_err();
+    assert!(error.to_string().contains("budget"), "{error}");
+}
+
+/// Through the cook, the error names the file, as every failure must.
+#[test]
+fn a_clip_cook_names_the_file_and_the_problem() {
+    let dir = TempDir::new("malformed_clip_cook");
+    let source = dir.path().join("content/walk.gltf");
+    std::fs::create_dir_all(source.parent().expect("a folder")).expect("the folder");
+    let mut file = File::animated();
+    file.poison(|f| f.output(TRANSLATION), 3, f32::NAN);
+    std::fs::write(&source, file.bytes()).expect("write the file");
+    let sidecar = crate::meta::AssetMeta::new(
+        sapphire_assets::AssetId::from_bytes([0x51; 16]),
+        crate::meta::ImportSettings::Gltf(MeshSettings {
+            clips: Some(crate::clip::ClipSettings::default()),
+            ..MeshSettings::default()
+        }),
+    );
+    let text = sapphire_serialize::to_ron(&sidecar).expect("the sidecar");
+    std::fs::write(crate::meta::sidecar_path(&source), text).expect("write the sidecar");
+    let out = dir.path().join("out");
+    let options = crate::cook::CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+    let error = crate::cook::cook_dir(&dir.path().join("content"), &out, &options).unwrap_err();
+    assert!(error.to_string().contains("walk.gltf"), "{error}");
+    let CookError::Clip { source, .. } = &error else { panic!("{error:?}") };
+    assert!(source.to_string().contains("isn't finite"), "{source}");
 }

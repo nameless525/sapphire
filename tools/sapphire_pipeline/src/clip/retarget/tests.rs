@@ -845,3 +845,100 @@ fn every_clip_on_the_rig_retargets_but_the_two_that_start_at_no_size() {
     refused.sort();
     assert_eq!(refused, ["Spawn_Air", "Spawn_Ground"]);
 }
+
+// The enemy's derived warrior (M2 O4): this rig's joints and rest rotations, at other lengths.
+
+/// The enemy's model as its sidecar has it, with the sidecar's ID and map.
+fn warrior() -> (AssetId, Skeleton, HumanMap) {
+    let path = third_party().join("../combat/enemy/warrior.glb");
+    let meta = meta::read(&sidecar_path(&path)).unwrap();
+    let source = ClipSource::import(&path, &std::fs::read(&path).unwrap(), &meta.importer).unwrap();
+    let skeleton = Skeleton::new(&source.joints);
+    let map = HumanMap::from_names(&meta.importer.clips().unwrap().humanoid, &skeleton).unwrap();
+    (meta.id, skeleton, map)
+}
+
+/// Every clip the sidecars send to the warrior, with its source's own lengths left behind. Its legs
+/// are the rig's stretched 2.1 times, and so is the travel, so the lowest foot reaches the floor and
+/// lifts only as far as the clip does (the bound is the measured value and a little), and its rests
+/// are the rig's, so each mapped bone turns exactly as the source's. `hand.l`, `hand.r` and the hand
+/// slots under them have no bone, so they stay at rest under the wrists and a held blade doesn't
+/// follow the source's grip: `Melee_1H_Attack_*`'s is up to 90 degrees off, and only eyes can judge
+/// that. Nothing here holds the blade (M2 O2 or N3).
+#[test]
+fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
+    let (id, skeleton, map) = warrior();
+    let rows = [
+        ("General", "Hit_A", 0.005),
+        ("General", "Hit_B", 0.005),
+        ("MovementBasic", "Running_A", 0.26),
+        ("CombatMelee", "Melee_1H_Attack_Chop", 0.155),
+        ("CombatMelee", "Melee_1H_Attack_Slice_Diagonal", 0.025),
+        ("CombatMelee", "Melee_1H_Attack_Stab", 0.005),
+    ];
+    let mapped = [
+        Hips,
+        Spine,
+        Chest,
+        Head,
+        LeftUpperLeg,
+        LeftLowerLeg,
+        LeftFoot,
+        LeftToes,
+        RightUpperLeg,
+        RightLowerLeg,
+        RightFoot,
+        RightToes,
+        LeftUpperArm,
+        LeftLowerArm,
+        LeftHand,
+        RightUpperArm,
+        RightLowerArm,
+        RightHand,
+    ];
+    let rest = pose(&still(0), &skeleton, 0);
+    let target_rest = rotations(&still(0), &skeleton, 0);
+    let mut failures = Vec::new();
+    for file in FILES {
+        let kaykit = Kaykit::open(file);
+        let entries = kaykit.settings.retarget.iter().filter(|entry| entry.target == id);
+        let named: Vec<&str> = entries.flat_map(|entry| &entry.names).map(String::as_str).collect();
+        let expected: Vec<&str> = rows.iter().filter(|row| row.0 == file).map(|row| row.1).collect();
+        assert_eq!(named, expected, "{file}'s sidecar");
+        for &(_, name, flight) in rows.iter().filter(|row| row.0 == file) {
+            let sampled = kaykit.sampled(name);
+            let target = Rig { skeleton: &skeleton, map: &map };
+            let out = retarget(&sampled, kaykit.rig(), target, &RetargetOptions::default()).unwrap();
+            let source_rest = rotations(&still(0), &kaykit.skeleton, 0);
+            let (mut floor, mut lift, mut turned_apart) = (f32::MAX, f32::MIN, 0.0f32);
+            for tick in 0..=usize::from(out.ticks) {
+                let (lower, _) = feet(&pose(&out, &skeleton, tick), &map, &rest);
+                floor = floor.min(lower);
+                lift = lift.max(lower);
+                let (from, to) =
+                    (rotations(&sampled, &kaykit.skeleton, tick), rotations(&out, &skeleton, tick));
+                for bone in mapped {
+                    let (source, joint) = (kaykit.map.joint(bone).unwrap(), map.joint(bone).unwrap());
+                    let (source, joint) = (usize::from(source), usize::from(joint));
+                    let delta =
+                        |model: &[Quat], rest: &[Quat], joint: usize| model[joint] * rest[joint].inverse();
+                    let (a, b) = (delta(&from, &source_rest, source), delta(&to, &target_rest, joint));
+                    turned_apart = turned_apart.max(angle_between(a, b));
+                }
+            }
+            if floor.abs() > 0.001 {
+                failures.push(format!("{name}: the lowest foot only reaches {floor} from the floor"));
+            }
+            if lift > flight {
+                failures.push(format!("{name}: the lowest foot lifts {lift}, over {flight}"));
+            }
+            if turned_apart > 0.01 {
+                failures.push(format!("{name}: a mapped bone turns {turned_apart} rad from the source's"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+    let scale =
+        leg_length(Rig { skeleton: &skeleton, map: &map }) / leg_length(Kaykit::open("General").rig());
+    assert!((scale - 2.1).abs() < 1e-3, "the legs' stretch: {scale}");
+}

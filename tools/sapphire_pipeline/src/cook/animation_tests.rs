@@ -791,11 +791,13 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
     let character_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
     let character = meta::read(&sidecar_path(&character_path)).unwrap().id;
+    let warrior_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/enemy/warrior.glb");
+    let warrior = meta::read(&sidecar_path(&warrior_path)).unwrap().id;
     let rows = [
-        ("General", 1, 2, 8),
-        ("MovementBasic", 0, 1, 10),
+        ("General", 1, 2, 10),
+        ("MovementBasic", 0, 1, 11),
         ("MovementAdvanced", 0, 0, 7),
-        ("CombatMelee", 0, 3, 0),
+        ("CombatMelee", 0, 3, 3),
         ("Special", 0, 7, 0),
     ];
     let mut owner = None;
@@ -809,7 +811,10 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
         } else {
             assert_eq!(clips.rig, owner, "{file} shares the first file's rig");
         }
-        assert!(clips.retarget.iter().all(|retarget| retarget.target == character), "{file}");
+        assert!(
+            clips.retarget.iter().all(|retarget| [character, warrior].contains(&retarget.target)),
+            "{file}"
+        );
         let asset = SourceAsset { path, meta: meta.clone() };
         let parts = sub_assets(&asset).unwrap_or_else(|error| panic!("{file}: {error}"));
         let count = |what: fn(&Part) -> bool| parts.iter().filter(|planned| what(&planned.part)).count();

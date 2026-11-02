@@ -8,7 +8,8 @@
                 bone: "root",
             ),
             rig: "9a29e8c0-f131-4ea4-98b9-04879740413d",
-            // The enemy, on this rig as authored.
+            // On this rig as authored. The pack's Warrior, the mesh that would play it, doesn't cook
+            // (M2 O4): the enemy plays the retarget below.
             names: [
                 "Running_A",
             ],
@@ -27,6 +28,13 @@
                         "Jump_Land",
                         "Jump_Full_Short",
                         "Jump_Full_Long",
+                    ],
+                ),
+                // The enemy, on its own lengths.
+                (
+                    target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
+                    names: [
+                        "Running_A",
                     ],
                 ),
             ],

@@ -209,7 +209,10 @@ fn a_changed_move_hash_refuses_until_update_stamps_it() {
     fs::write(&path, replay.encode()).expect("writes");
     fs::write(suite.file(OTHER), "architecture another_architecture\n").expect("writes");
 
-    assert_fails_saying(&suite.check(&[]), &["duel", "move data changed", "re-record", "--update"]);
+    assert_fails_saying(
+        &suite.check(&[]),
+        &["duel", "changed since this replay was recorded", "re-record", "--update"],
+    );
     assert_ne!(fs::read(&path).expect("there"), good, "a check leaves the file as it was");
 
     let output = suite.check(&["--update"]);

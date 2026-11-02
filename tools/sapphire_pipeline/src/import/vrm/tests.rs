@@ -17,8 +17,8 @@ use super::mtoon::{Binding, Channel, LayerMask, Mtoon, OutlineWidth, ShadingShif
 use super::samples::{self, SampleVrm, image, material, node};
 use super::*;
 use crate::color::srgb_to_linear;
-use crate::cook::{Cook, CookError, CookOptions, CookStatus, cook_dir};
-use crate::meta::{self, AssetMeta, ImportSettings};
+use crate::cook::{Cook, CookError, CookOptions, CookStatus, cook_dir, cook_mesh};
+use crate::meta::{self, AssetMeta, ImportSettings, MeshSettings};
 use crate::test_util::{TempDir, read_aligned};
 
 const EPS: f32 = 1e-5;
@@ -1290,4 +1290,93 @@ fn vroid_names_give_the_stylized_gis_region_weights() {
     assert_eq!(gi_of(&migrated, FACE_NAME), (FACE, Some(FACE)));
     assert_eq!(gi_of(&migrated, HAIR_NAME), (HAIR, Some(HAIR)));
     assert_eq!(gi_of(&migrated, "Lashes"), (NONE, Some(NONE)));
+}
+
+/// The index of accessor `attribute` of the sample's first primitive.
+fn attribute_accessor(document: &Value, attribute: &str) -> usize {
+    document["meshes"][0]["primitives"][0]["attributes"][attribute].as_u64().expect("an accessor") as usize
+}
+
+/// A VRM's mesh goes through the glTF importer's checks, so a malformed one fails as a glTF does,
+/// on both versions of the format, in the mesh's import and the rig's.
+#[test]
+fn malformed_meshes_are_clean_errors() {
+    type Edit = fn(&mut Value);
+    for (version, sample) in [("1.0", samples::vrm1 as fn() -> SampleVrm), ("0.x", samples::vrm0)] {
+        let cases: [(&str, Edit); 5] = [
+            ("the indices accessor", |d| {
+                let indices = d["meshes"][0]["primitives"][0]["indices"].as_u64().expect("indices");
+                d["accessors"][indices as usize]["componentType"] = 5126.into();
+            }),
+            ("the POSITION accessor", |d| {
+                let accessor = attribute_accessor(d, "POSITION");
+                d["accessors"][accessor]["componentType"] = 5121.into();
+            }),
+            ("the NORMAL accessor", |d| {
+                let accessor = attribute_accessor(d, "NORMAL");
+                let view = d["accessors"][accessor]["bufferView"].as_u64().expect("a view") as usize;
+                d["bufferViews"][view]["byteStride"] = 4.into();
+            }),
+            ("reached twice", |d| {
+                let roots = d["scenes"][0]["nodes"].clone();
+                d["scenes"][0]["nodes"] = json!([roots[0], roots[0]]);
+            }),
+            ("has no joints", |d| d["skins"][0]["joints"] = json!([])),
+        ];
+        for (says, edit) in cases {
+            let mut file = sample();
+            edit(&mut file.document);
+            for error in [
+                import(&file.to_glb(), None).map(|_| ()).expect_err(says),
+                import_rig(&file.to_glb(), None).map(|_| ()).expect_err(says),
+            ] {
+                assert!(matches!(error, VrmImportError::Gltf(_)), "{version}, {says}: {error:?}");
+                assert!(error.to_string().contains(says), "{version}: {error}");
+            }
+        }
+
+        // A `POSITION` that names nothing, which the `gltf` crate's validation would panic on.
+        let mut file = sample();
+        file.document["meshes"][0]["primitives"][0]["attributes"]["POSITION"] = 9999.into();
+        let bytes = file.to_glb();
+        assert!(matches!(import(&bytes, None), Err(VrmImportError::Parse(_))), "{version}");
+        assert_eq!(detect_version(&bytes), None, "{version}");
+
+        // One NaN, on both cooks, with the file named.
+        let mut file = sample();
+        let accessor = attribute_accessor(&file.document, "POSITION");
+        let view = file.document["accessors"][accessor]["bufferView"].as_u64().expect("a view") as usize;
+        let offset = file.document["bufferViews"][view]["byteOffset"].as_u64().unwrap_or(0) as usize;
+        file.bin[offset + 4..offset + 8].copy_from_slice(&f32::NAN.to_le_bytes());
+        let dir = TempDir::new("vrm_non_finite");
+        let path = dir.path().join("nan.vrm");
+        fs::write(&path, file.to_glb()).unwrap();
+        for cook in [Cook::Desktop, Cook::Mobile] {
+            let error = cook_mesh(&path, &MeshSettings::default(), cook).map(|_| ()).unwrap_err();
+            let CookError::Vrm { source, .. } = &error else { panic!("{version}, {cook:?}: {error:?}") };
+            assert!(
+                matches!(
+                    **source,
+                    VrmImportError::Gltf(GltfImportError::NonFinitePosition { vertex: 0, .. })
+                ),
+                "{version}, {cook:?}: {source:?}"
+            );
+            assert!(error.to_string().contains("nan.vrm"), "{version}, {cook:?}: {error}");
+        }
+    }
+}
+
+/// An image's view whose numbers overflow lies outside its buffer, like one that merely doesn't fit.
+#[test]
+fn an_image_view_that_overflows_is_an_error() {
+    for field in ["byteLength", "byteOffset"] {
+        let error = error_after(samples::vrm1(), |d| {
+            let view = d["images"][image::OUTLINE]["bufferView"].as_u64().expect("a view") as usize;
+            d["bufferViews"][view][field] = u64::MAX.into();
+        });
+        assert!(
+            matches!(&error, VrmImportError::Image { index: 4, problem } if problem.contains("outside its buffer")),
+            "{field}: {error:?}"
+        );
+    }
 }

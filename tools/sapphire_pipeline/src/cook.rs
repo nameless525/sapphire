@@ -64,6 +64,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -352,6 +353,8 @@ pub enum CookError {
         outputs[1].display()
     )]
     CaseCollision { first: PathBuf, second: PathBuf, outputs: [PathBuf; 2] },
+    #[error("cooking {} panicked: {message}", path.display())]
+    Panicked { path: PathBuf, message: String },
     #[error("failed to read {}", path.display())]
     Read {
         path: PathBuf,
@@ -491,7 +494,9 @@ pub fn cook_dir(
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
     for index in others.into_iter().chain(materials).chain(probe_grids) {
         let assets = Assets { plan: &plan, by_id: &by_id, cooked: &cooked };
-        let asset = cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)?;
+        let asset = guarded(&plan[index].asset.path, || {
+            cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)
+        })?;
         cooked[index] = Some(asset);
     }
     let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
@@ -559,6 +564,17 @@ impl<'a> Assets<'a> {
             cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
         })
     }
+}
+
+/// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
+/// cookers report what they find wrong themselves; this is the last line of defence, for what
+/// slips past them or panics inside a crate they call, so that the file is named all the same.
+fn guarded<T>(path: &Path, cook: impl FnOnce() -> Result<T, CookError>) -> Result<T, CookError> {
+    panic::catch_unwind(AssertUnwindSafe(cook)).unwrap_or_else(|payload| {
+        let text = payload.downcast_ref::<&str>().map(|text| (*text).to_owned());
+        let message = text.or_else(|| payload.downcast_ref::<String>().cloned());
+        Err(CookError::Panicked { path: path.to_owned(), message: message.unwrap_or_default() })
+    })
 }
 
 /// Brings one asset's output up to date.
@@ -869,6 +885,14 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
             return Err(CookError::UnsupportedSource { path: path.to_owned() });
         }
     };
+    // Packing would quantize a NaN to a corner of the bounds. glTF's importer says which primitive;
+    // this holds for the others.
+    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
+        return Err(CookError::Invalid {
+            path: path.to_owned(),
+            source: MeshError::NonFinitePosition { vertex },
+        });
+    }
     bake::outline_normals(&mut mesh, &settings.outline);
     if let Some(foliage) = &settings.foliage {
         bake::foliage::bake(&mut mesh, foliage, settings.outline.weld_tolerance())
@@ -922,7 +946,7 @@ fn cook_mesh_with_bytes(
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = import_mesh(source, &bytes, &importer, cook)?;
+    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook))?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
 }
@@ -1086,6 +1110,20 @@ mod tests {
     /// The cooked mesh at `path`.
     fn read_mesh(path: &Path) -> Mesh {
         Mesh::from_cooked(&read_aligned(path)).unwrap()
+    }
+
+    #[test]
+    fn a_panic_cooking_a_source_is_an_error_naming_it() {
+        let path = Path::new("content/bad.glb");
+        let error = guarded::<()>(path, || panic!("a crate's assert")).unwrap_err();
+        assert!(
+            matches!(&error, CookError::Panicked { path: at, message } if at == path && message == "a crate's assert"),
+            "{error:?}"
+        );
+        assert_eq!(error.to_string(), "cooking content/bad.glb panicked: a crate's assert");
+        assert_eq!(guarded(path, || Ok(5)).unwrap(), 5);
+        let refused = guarded::<()>(path, || Err(CookError::UnsupportedSource { path: path.to_owned() }));
+        assert!(matches!(refused, Err(CookError::UnsupportedSource { .. })));
     }
 
     #[test]

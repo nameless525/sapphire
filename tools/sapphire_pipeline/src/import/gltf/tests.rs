@@ -170,9 +170,7 @@ fn material_ids_become_vertex_flags() {
     assert_eq!(ids, [5, 5, 5]);
     doc["accessors"][accessor]["normalized"] = true.into();
     let err = import_slice(&glb(&doc, &bin), None).unwrap_err();
-    assert!(
-        matches!(&err, GltfImportError::UnsupportedAccessor { semantic, .. } if semantic == "_MATERIAL_ID")
-    );
+    assert!(matches!(&err, GltfImportError::Accessor { semantic, .. } if semantic == "_MATERIAL_ID"));
 }
 
 #[test]
@@ -334,7 +332,10 @@ fn rejects_node_cycles() {
     let a = writer.add_node(json!({ "mesh": mesh, "children": [1] }));
     writer.add_node(json!({ "children": [0] }));
     writer.add_root(a);
-    assert!(matches!(import_slice(&writer.to_glb(), None), Err(GltfImportError::NodeCycle { node: 0 })));
+    assert!(matches!(
+        import_slice(&writer.to_glb(), None),
+        Err(GltfImportError::NodeReachedTwice { node: 0 })
+    ));
 }
 
 #[test]
@@ -424,9 +425,7 @@ fn authored_outline_normals_are_read_transformed_and_flagged() {
         doc["meshes"][0]["primitives"][0]["attributes"]["_OUTLINE_NORMAL"].as_u64().unwrap() as usize;
     doc["accessors"][accessor]["componentType"] = 5121.into(); // UNSIGNED_BYTE
     let err = import_slice(&glb(&doc, writer.bin()), None).unwrap_err();
-    assert!(
-        matches!(&err, GltfImportError::UnsupportedAccessor { semantic, .. } if semantic == "_OUTLINE_NORMAL")
-    );
+    assert!(matches!(&err, GltfImportError::Accessor { semantic, .. } if semantic == "_OUTLINE_NORMAL"));
 }
 
 /// The skin test's skeleton: `Armature → Hips → {Spine → Head, LegL}`, plus a skinned `Body`
@@ -610,7 +609,7 @@ fn rejects_broken_skins() {
     let joints = doc["meshes"][0]["primitives"][0]["attributes"]["JOINTS_0"].as_u64().unwrap() as usize;
     doc["accessors"][joints]["type"] = "VEC3".into();
     let err = import_slice(&glb(&doc, writer.bin()), None).unwrap_err();
-    assert!(matches!(&err, GltfImportError::UnsupportedAccessor { semantic, .. } if semantic == "JOINTS_0"));
+    assert!(matches!(&err, GltfImportError::Accessor { semantic, .. } if semantic == "JOINTS_0"));
 }
 
 #[test]

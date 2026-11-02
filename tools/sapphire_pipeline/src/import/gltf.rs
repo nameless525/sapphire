@@ -87,13 +87,30 @@
 //! documents reference, and VRM import (A6) extracts a file's embedded images as such sources.
 //! External buffers are part of the source: [`external_files`] lists them for the content
 //! cache key.
+//!
+//! # Malformed files
+//!
+//! A bad file is an error saying what's wrong, and the cook's error names the file: never a panic,
+//! a stack overflow or exhausted memory, so one bad model doesn't take a cook down with it. This
+//! isn't a security boundary, only a promise to whoever adds a model.
+//!
+//! - **Accessors** are checked before a reader touches them, every one the importer reads: their
+//!   types, counts, strides and byte ranges, sparse blocks included (`accessors`).
+//! - **Nodes** form strict trees, as glTF requires (§3.5.3): a node reached twice is an error,
+//!   since a small file could otherwise double its mesh at each level. The walk keeps its own
+//!   stack, so a deep hierarchy can't overflow the thread's.
+//! - **Counts** stay within [`SOURCE_BUDGET`], read from the accessors before their data is: a
+//!   sparse accessor can claim any number of elements in a few hundred bytes.
+//! - **Positions** are finite, in the mesh's space: a NaN would otherwise cook silently, to a
+//!   corner of the mesh's bounds.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use ::gltf::accessor::{DataType, Dimensions};
+use ::gltf::accessor::DataType;
 use ::gltf::buffer::Source;
+use ::gltf::json::validation::{self, Checked};
 use ::gltf::mesh::{Mode, Semantic};
 use ::gltf::{Accessor, Document, Gltf, Material, Mesh, Node, Primitive, Scene};
 use glam::{Mat3, Mat4, Vec3};
@@ -111,6 +128,8 @@ use crate::import::{self, DEFAULT_SLOT};
 use crate::mesh::{
     ImportedDelta, ImportedMaterial, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights,
 };
+
+pub use self::accessors::AccessorFault;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
 /// for the same file. 9: instances of one mesh resting a morph target at different weights
@@ -131,6 +150,28 @@ pub const MORPH_NORMAL_EPSILON: f32 = 1e-4;
 
 /// Joints and palette entries are addressed by u16.
 const MAX_JOINTS: usize = 1 << 16;
+
+/// How much of a mesh one source may bring into a cook, checked from accessors' counts before
+/// their data is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshBudget {
+    /// Vertices, every primitive and node instance of the scene together.
+    pub vertices: usize,
+    /// Indices, likewise.
+    pub indices: usize,
+    /// Morph target deltas, likewise.
+    pub morph_deltas: usize,
+    /// In one primitive, vertices × `JOINTS_n` sets. Sets may share accessors, and each holds four
+    /// influences per vertex in memory until the heaviest are picked.
+    pub influence_sets: usize,
+}
+
+/// The budget of every glTF and VRM source. At the limit its vertices alone take 768 MiB, about
+/// what an image at `image::SOURCE_BUDGET` does. The largest committed sources are hundreds of
+/// times under it: a town piece's 37,888 vertices and the VRM character's 109,410 indices and
+/// 44,537 morph deltas.
+pub const SOURCE_BUDGET: MeshBudget =
+    MeshBudget { vertices: 16 << 20, indices: 48 << 20, morph_deltas: 16 << 20, influence_sets: 64 << 20 };
 
 /// Identifies a mesh primitive in error messages.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,8 +208,8 @@ pub enum GltfImportError {
     Buffer { index: usize, problem: String },
     #[error("the document has no scene to import")]
     NoScene,
-    #[error("node {node} is its own ancestor; glTF node hierarchies must be trees")]
-    NodeCycle { node: usize },
+    #[error("node {node} is reached twice; glTF node hierarchies must be strict trees")]
+    NodeReachedTwice { node: usize },
     #[error("{at}: primitive mode {mode:?} is not supported; export triangles")]
     UnsupportedMode { at: PrimitiveRef, mode: Mode },
     #[error("{at}: has no POSITION attribute")]
@@ -177,8 +218,12 @@ pub enum GltfImportError {
     UnreadableAccessor { at: PrimitiveRef, semantic: String },
     #[error("{at}: {semantic} has {found} elements but POSITION has {expected}")]
     AttributeCount { at: PrimitiveRef, semantic: String, found: usize, expected: usize },
-    #[error("{at}: {semantic} as {dimensions:?} of {data_type:?} is not supported")]
-    UnsupportedAccessor { at: PrimitiveRef, semantic: String, data_type: DataType, dimensions: Dimensions },
+    #[error("{at}: the {semantic} accessor {fault}")]
+    Accessor { at: PrimitiveRef, semantic: String, fault: AccessorFault },
+    #[error("{at}: vertex {vertex}'s position {position:?} is not finite")]
+    NonFinitePosition { at: PrimitiveRef, vertex: usize, position: [f32; 3] },
+    #[error("{at}: {found} {what} is over the budget of {budget} for one source")]
+    OverBudget { at: PrimitiveRef, what: &'static str, found: usize, budget: usize },
     #[error(
         "{at}: vertex {vertex} has _MATERIAL_ID {value}; material IDs are whole numbers below {MATERIAL_IDS}"
     )]
@@ -200,6 +245,10 @@ pub enum GltfImportError {
     },
     #[error("skin {skin}: joint node {node} is not in the imported scene")]
     JointNotInScene { skin: usize, node: usize },
+    #[error("skin {skin} has no joints")]
+    SkinWithoutJoints { skin: usize },
+    #[error("skin {skin}: the inverseBindMatrices accessor {fault}")]
+    InverseBindAccessor { skin: usize, fault: AccessorFault },
     #[error("skin {skin}: {found} inverse bind matrices for {expected} joints")]
     InverseBindMatrices { skin: usize, found: usize, expected: usize },
     #[error("the skeleton has more than {MAX_JOINTS} joints or palette entries")]
@@ -226,9 +275,35 @@ pub fn import(path: &Path) -> Result<ImportedMesh, GltfImportError> {
 /// Imports glTF or GLB bytes. `base_dir` resolves relative buffer URIs; with `None`, only
 /// self-contained files (GLB, or `data:` URIs) load.
 pub fn import_slice(bytes: &[u8], base_dir: Option<&Path>) -> Result<ImportedMesh, GltfImportError> {
-    let Gltf { document, blob } = Gltf::from_slice(bytes).map_err(GltfImportError::Parse)?;
+    let Gltf { document, blob } = parse(bytes).map_err(GltfImportError::Parse)?;
     let buffers = load_buffers(&document, base_dir, blob)?;
     import_scene(&document, &buffers, &[]).map(|scene| scene.mesh)
+}
+
+/// Parses and validates a document as [`Gltf::from_slice`] does: every importer's way in. The
+/// crate's validation panics on a primitive whose `POSITION` names no accessor (it indexes the
+/// accessors with it, unchecked, to read its bounds), so that is checked first.
+pub(crate) fn parse(bytes: &[u8]) -> Result<Gltf, ::gltf::Error> {
+    let Gltf { document, blob } = Gltf::from_slice_without_validation(bytes)?;
+    let json = document.into_json();
+    let mut faults = Vec::new();
+    for (m, mesh) in json.meshes.iter().enumerate() {
+        for (p, primitive) in mesh.primitives.iter().enumerate() {
+            let position = primitive.attributes.get(&Checked::Valid(Semantic::Positions));
+            if position.is_some_and(|accessor| accessor.value() >= json.accessors.len()) {
+                let primitive =
+                    ::gltf::json::Path::new().field("meshes").index(m).field("primitives").index(p);
+                faults.push((
+                    primitive.field("attributes").key("POSITION"),
+                    validation::Error::IndexOutOfBounds,
+                ));
+            }
+        }
+    }
+    if !faults.is_empty() {
+        return Err(::gltf::Error::Validation(faults));
+    }
+    Ok(Gltf { document: Document::from_json(json)?, blob })
 }
 
 /// A scene as imported, with where the importer put the document's nodes and materials: what
@@ -254,13 +329,23 @@ pub(crate) fn import_scene(
     buffers: &[Vec<u8>],
     extra_joints: &[usize],
 ) -> Result<SceneImport, GltfImportError> {
+    import_scene_within(document, buffers, extra_joints, SOURCE_BUDGET)
+}
+
+/// [`import_scene`], within `budget`.
+fn import_scene_within(
+    document: &Document,
+    buffers: &[Vec<u8>],
+    extra_joints: &[usize],
+    budget: MeshBudget,
+) -> Result<SceneImport, GltfImportError> {
     // Blender always writes `scene`; fall back to the first scene for files that don't.
     let scene =
         document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
     // No axis conversion, deliberately: glTF 2.0 (§3.4) is +Y up, meters, with assets
     // facing +Z, and so is engine object space (as is VRM 1.0). Blender's exporter already
     // converts from its +Z-up space, so source coordinates pass through unchanged.
-    let nodes = flatten(&scene)?;
+    let nodes = flatten(document, &scene)?;
     let skeleton = Skeleton::build(document, &nodes, buffers, extra_joints)?;
     let mut builder = Builder {
         buffers,
@@ -270,6 +355,8 @@ pub(crate) fn import_scene(
         skeleton,
         targets: HashMap::new(),
         instances: HashMap::new(),
+        budget,
+        morph_deltas: 0,
     };
     for (instance, scene_node) in nodes.iter().enumerate() {
         let node = document.nodes().nth(scene_node.node).expect("flattened from this document");
@@ -295,8 +382,7 @@ pub(crate) fn import_scene(
     Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material, targets_of_morph })
 }
 
-/// One visit of a node in the scene's depth-first walk. A node reached through two parents
-/// (not valid glTF, but tolerated) is visited, and its mesh instanced, twice.
+/// One visit of a node in the scene's depth-first walk: its only one, since the nodes are trees.
 struct SceneNode {
     node: usize,
     /// The visit of the parent node.
@@ -304,32 +390,36 @@ struct SceneNode {
     world: Mat4,
 }
 
-/// The scene's nodes in depth-first order, children in glTF order, with world transforms.
-fn flatten(scene: &Scene<'_>) -> Result<Vec<SceneNode>, GltfImportError> {
-    fn visit(
-        node: &Node<'_>,
-        parent: Option<usize>,
-        parent_world: Mat4,
-        ancestors: &mut Vec<usize>,
-        out: &mut Vec<SceneNode>,
-    ) -> Result<(), GltfImportError> {
-        if ancestors.contains(&node.index()) {
-            return Err(GltfImportError::NodeCycle { node: node.index() });
+/// The scene's nodes in depth-first order, children in glTF order, with world transforms. The
+/// walk keeps its own stack, on which a node goes at most once: a hierarchy may be as deep as its
+/// file is long.
+fn flatten(document: &Document, scene: &Scene<'_>) -> Result<Vec<SceneNode>, GltfImportError> {
+    let mut reached = vec![false; document.nodes().len()];
+    let mut reach = |node: &Node<'_>| {
+        if std::mem::replace(&mut reached[node.index()], true) {
+            return Err(GltfImportError::NodeReachedTwice { node: node.index() });
         }
+        Ok(())
+    };
+    let mut out: Vec<SceneNode> = Vec::new();
+    // Each node's children go on in reverse, so its first child comes off next.
+    let mut stack: Vec<(Node<'_>, Option<usize>)> = Vec::new();
+    for node in scene.nodes() {
+        reach(&node)?;
+        stack.push((node, None));
+    }
+    stack.reverse();
+    while let Some((node, parent)) = stack.pop() {
+        let parent_world = parent.map_or(Mat4::IDENTITY, |parent| out[parent].world);
         let world = parent_world * Mat4::from_cols_array_2d(&node.transform().matrix());
         let visit_index = out.len();
         out.push(SceneNode { node: node.index(), parent, world });
-        ancestors.push(node.index());
+        let first_child = stack.len();
         for child in node.children() {
-            visit(&child, Some(visit_index), world, ancestors, out)?;
+            reach(&child)?;
+            stack.push((child, Some(visit_index)));
         }
-        ancestors.pop();
-        Ok(())
-    }
-
-    let mut out = Vec::new();
-    for node in scene.nodes() {
-        visit(&node, None, Mat4::IDENTITY, &mut Vec::new(), &mut out)?;
+        stack[first_child..].reverse();
     }
     Ok(out)
 }
@@ -369,27 +459,29 @@ impl Skeleton {
                 skins.push(skin);
             }
         }
-        let mut first_visit: HashMap<usize, usize> = HashMap::new();
-        for (visit, scene_node) in nodes.iter().enumerate() {
-            first_visit.entry(scene_node.node).or_insert(visit);
-        }
+        let visit_of: HashMap<usize, usize> =
+            nodes.iter().enumerate().map(|(visit, scene_node)| (scene_node.node, visit)).collect();
         let extra_visits: Vec<usize> =
-            extra_joints.iter().filter_map(|node| first_visit.get(node).copied()).collect();
+            extra_joints.iter().filter_map(|node| visit_of.get(node).copied()).collect();
         if skins.is_empty() && extra_visits.is_empty() {
             return Ok(None);
         }
-        // Every joint and its ancestors.
+        // Every joint and its ancestors, stopping at the first already in: otherwise many joints
+        // deep in a hierarchy would each walk it.
         let mut included = vec![false; nodes.len()];
         let mut include = |mut visit: Option<usize>| {
-            while let Some(current) = visit {
+            while let Some(current) = visit.filter(|&current| !included[current]) {
                 included[current] = true;
                 visit = nodes[current].parent;
             }
         };
         for skin in &skins {
+            if skin.joints().next().is_none() {
+                return Err(GltfImportError::SkinWithoutJoints { skin: skin.index() });
+            }
             for joint in skin.joints() {
                 include(Some(
-                    *first_visit.get(&joint.index()).ok_or(GltfImportError::JointNotInScene {
+                    *visit_of.get(&joint.index()).ok_or(GltfImportError::JointNotInScene {
                         skin: skin.index(),
                         node: joint.index(),
                     })?,
@@ -409,7 +501,7 @@ impl Skeleton {
             weights: Vec::new(),
         };
         for (visit, scene_node) in nodes.iter().enumerate() {
-            if !included[visit] || first_visit[&scene_node.node] != visit {
+            if !included[visit] {
                 continue;
             }
             let index = u16::try_from(skeleton.joints.len()).map_err(|_| GltfImportError::TooManyJoints)?;
@@ -425,19 +517,8 @@ impl Skeleton {
             skeleton.joint_of.insert(scene_node.node, index);
         }
         for skin in &skins {
-            let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
             let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
-            let matrices: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
-                Some(matrices) => matrices.collect(),
-                None => vec![Mat4::IDENTITY.to_cols_array_2d(); joints.len()],
-            };
-            if matrices.len() != joints.len() {
-                return Err(GltfImportError::InverseBindMatrices {
-                    skin: skin.index(),
-                    found: matrices.len(),
-                    expected: joints.len(),
-                });
-            }
+            let matrices = inverse_bind_matrices(skin, joints.len(), buffers)?;
             let binds = joints
                 .iter()
                 .zip(matrices)
@@ -480,6 +561,28 @@ impl Skeleton {
         }
         self.bind(joint, inverse.to_cols_array_2d())
     }
+}
+
+/// The inverse bind matrix of each of `skin`'s `joints`: identities if it names none.
+fn inverse_bind_matrices(
+    skin: &::gltf::Skin<'_>,
+    joints: usize,
+    buffers: &[Vec<u8>],
+) -> Result<Vec<[[f32; 4]; 4]>, GltfImportError> {
+    let Some(accessor) = skin.inverse_bind_matrices() else {
+        return Ok(vec![Mat4::IDENTITY.to_cols_array_2d(); joints]);
+    };
+    accessors::check(&accessor, &accessors::INVERSE_BIND_MATRICES, buffers)
+        .map_err(|fault| GltfImportError::InverseBindAccessor { skin: skin.index(), fault })?;
+    if accessor.count() != joints {
+        return Err(GltfImportError::InverseBindMatrices {
+            skin: skin.index(),
+            found: accessor.count(),
+            expected: joints,
+        });
+    }
+    let reader = skin.reader(|buffer| buffers.get(buffer.index()).map(Vec::as_slice));
+    Ok(reader.read_inverse_bind_matrices().expect("a checked accessor reads").collect())
 }
 
 /// Loads every buffer of `document`: the GLB binary chunk, base64 `data:` URIs, or files
@@ -530,7 +633,7 @@ pub(crate) fn load_buffers(
 /// The files a glTF or GLB document reads besides itself (its external buffers), as paths
 /// relative to its directory, sorted and without duplicates.
 pub fn external_files(bytes: &[u8]) -> Result<Vec<String>, GltfImportError> {
-    let Gltf { document, .. } = Gltf::from_slice(bytes).map_err(GltfImportError::Parse)?;
+    let Gltf { document, .. } = parse(bytes).map_err(GltfImportError::Parse)?;
     let mut files = document
         .buffers()
         .filter_map(|buffer| match buffer.source() {
@@ -673,6 +776,9 @@ struct Builder<'a> {
     /// Per glTF mesh and morph target index: each default weight (its bits) the mesh's instances
     /// give the target, and the merged target that takes it.
     instances: HashMap<(usize, usize), Vec<(u32, usize)>>,
+    budget: MeshBudget,
+    /// In `mesh.morph_targets`, all together.
+    morph_deltas: usize,
 }
 
 /// A primitive's attributes, read and transformed into the mesh's space.
@@ -705,23 +811,29 @@ impl Builder<'_> {
         let buffers = self.buffers;
         let get_buffer = |buffer: ::gltf::Buffer<'_>| buffers.get(buffer.index()).map(Vec::as_slice);
         let reader = primitive.reader(get_buffer);
-        let declared = |semantic: Semantic| primitive.get(&semantic).is_some();
         let skin = node.skin().filter(|_| self.skeleton.is_some());
         // Skinned vertices stay in bind space (glTF ignores the skinned node's transform).
         let transform = if skin.is_some() { Mat4::IDENTITY } else { nodes[visit].world };
         let normal_matrix = Mat3::from_mat4(transform).inverse().transpose();
 
-        let positions: Vec<Vec3> = match reader.read_positions() {
-            Some(iter) => iter.map(|p| transform.transform_point3(Vec3::from(p))).collect(),
-            None if declared(Semantic::Positions) => {
-                return Err(GltfImportError::UnreadableAccessor { at, semantic: "POSITION".into() });
-            }
-            None => return Err(GltfImportError::MissingPositions { at }),
+        let Some(position_accessor) = primitive.get(&Semantic::Positions) else {
+            return Err(GltfImportError::MissingPositions { at });
         };
-        let vertex_count = positions.len();
+        check_accessor(&at, "POSITION", &position_accessor, &accessors::FLOAT_VEC3, buffers)?;
+        let vertex_count = position_accessor.count();
+        within_budget(&at, "vertices", vertex_count, self.budget.vertices)?;
+        let Some(positions) = reader.read_positions() else {
+            return Err(GltfImportError::UnreadableAccessor { at, semantic: "POSITION".into() });
+        };
+        let positions: Vec<Vec3> = positions.map(|p| transform.transform_point3(Vec3::from(p))).collect();
+        if let Some(vertex) = positions.iter().position(|position| !position.is_finite()) {
+            let position = positions[vertex].to_array();
+            return Err(GltfImportError::NonFinitePosition { at, vertex, position });
+        }
+        let attributes = Attributes { at: &at, buffers, vertex_count };
         let transform_normal = |n: Vec3| (normal_matrix * n).normalize_or(Vec3::Y);
         let source_normals =
-            read_attribute(&at, "NORMAL", declared(Semantic::Normals), vertex_count, || {
+            attributes.read("NORMAL", primitive.get(&Semantic::Normals), &accessors::FLOAT_VEC3, |_| {
                 reader.read_normals().map(|iter| iter.map(Vec3::from).collect::<Vec<_>>())
             })?;
         let data = PrimitiveData {
@@ -729,36 +841,54 @@ impl Builder<'_> {
                 .as_ref()
                 .map(|normals| normals.iter().copied().map(transform_normal).collect()),
             source_normals,
-            uvs: read_attribute(&at, "TEXCOORD_0", declared(Semantic::TexCoords(0)), vertex_count, || {
-                reader.read_tex_coords(0).map(|iter| iter.into_f32().collect())
-            })?,
-            colors: read_attribute(&at, "COLOR_0", declared(Semantic::Colors(0)), vertex_count, || {
-                reader.read_colors(0).map(|iter| iter.into_rgba_f32().map(vertex_color).collect())
-            })?,
-            material_ids: read_material_ids(&at, primitive, &get_buffer, vertex_count)?,
-            outline_normals: read_outline_normals(&at, primitive, &get_buffer, vertex_count)?
+            uvs: attributes.read(
+                "TEXCOORD_0",
+                primitive.get(&Semantic::TexCoords(0)),
+                &accessors::TEX_COORD,
+                |_| reader.read_tex_coords(0).map(|iter| iter.into_f32().collect()),
+            )?,
+            colors: attributes.read(
+                "COLOR_0",
+                primitive.get(&Semantic::Colors(0)),
+                &accessors::COLOR,
+                |_| reader.read_colors(0).map(|iter| iter.into_rgba_f32().map(vertex_color).collect()),
+            )?,
+            material_ids: read_material_ids(&attributes, primitive, &get_buffer)?,
+            outline_normals: read_outline_normals(&attributes, primitive, &get_buffer)?
                 .map(|normals| normals.into_iter().map(transform_normal).collect()),
             positions,
         };
 
+        let index_count = match primitive.indices() {
+            Some(accessor) => {
+                check_accessor(&at, "indices", &accessor, &accessors::INDICES, buffers)?;
+                accessor.count()
+            }
+            None => vertex_count,
+        };
+        let total_indices = self.mesh.indices.len().saturating_add(index_count);
+        within_budget(&at, "indices", total_indices, self.budget.indices)?;
         let indices: Vec<u32> = match (primitive.indices(), reader.read_indices()) {
             (_, Some(iter)) => iter.into_u32().collect(),
             (Some(_), None) => {
-                return Err(GltfImportError::UnreadableAccessor { at, semantic: "indices".into() });
+                return Err(GltfImportError::UnreadableAccessor {
+                    at: at.clone(),
+                    semantic: "indices".into(),
+                });
             }
             (None, None) => {
                 (0..u32::try_from(vertex_count).map_err(|_| GltfImportError::TooLarge)?).collect()
             }
         };
         if !indices.len().is_multiple_of(3) {
-            return Err(GltfImportError::NotTriangles { at, count: indices.len() });
+            return Err(GltfImportError::NotTriangles { at: at.clone(), count: indices.len() });
         }
         if let Some(&index) = indices.iter().find(|&&i| i as usize >= vertex_count) {
-            return Err(GltfImportError::IndexOutOfRange { at, index, vertex_count });
+            return Err(GltfImportError::IndexOutOfRange { at: at.clone(), index, vertex_count });
         }
-        if indices.is_empty() {
-            return Ok(());
-        }
+        // Flat shading needs a vertex per face corner.
+        let new_vertices = if data.normals.is_some() { vertex_count } else { indices.len() };
+        within_budget(&at, "vertices", self.mesh.vertices.len() + new_vertices, self.budget.vertices)?;
 
         // A negative determinant mirrors the geometry, which turns counter-clockwise front
         // faces clockwise; swap two corners to restore the winding (glTF 2.0 §3.7.4).
@@ -774,7 +904,7 @@ impl Builder<'_> {
             if let Some((triangle, corners)) =
                 triangles.iter().map(corner_ids).enumerate().find(|(_, [a, b, c])| a != b || b != c)
             {
-                return Err(GltfImportError::MixedMaterialIds { at, triangle, ids: corners });
+                return Err(GltfImportError::MixedMaterialIds { at: at.clone(), triangle, ids: corners });
             }
         }
 
@@ -821,14 +951,28 @@ impl Builder<'_> {
 
         if let Some(skeleton) = self.skeleton.as_mut() {
             let weights = match &skin {
-                Some(skin) => {
-                    read_weights(&at, primitive, &reader, &skeleton.skin_binds[&skin.index()], vertex_count)?
-                }
+                Some(skin) => read_weights(
+                    &attributes,
+                    primitive,
+                    &reader,
+                    &skeleton.skin_binds[&skin.index()],
+                    self.budget.influence_sets,
+                )?,
                 None => vec![SkinWeights::rigid(skeleton.rigid_bind(nodes, visit)?); vertex_count],
             };
             skeleton.weights.extend(sources.iter().map(|&s| weights[s as usize]));
         }
-        self.add_morph_targets(node, mesh, &reader, &data, transform, &sources, base, vertex_count, &at)?;
+        self.add_morph_targets(
+            node,
+            mesh,
+            primitive,
+            &get_buffer,
+            &data,
+            transform,
+            &sources,
+            base,
+            &attributes,
+        )?;
 
         let index_count = u32::try_from(self.mesh.indices.len()).map_err(|_| GltfImportError::TooLarge)?;
         let material = self.material_slot(&primitive.material())?;
@@ -847,18 +991,19 @@ impl Builder<'_> {
         &mut self,
         node: &Node<'_>,
         mesh: &Mesh<'_>,
-        reader: &::gltf::mesh::Reader<'a, 's, F>,
+        primitive: &Primitive<'a>,
+        get_buffer: &F,
         data: &PrimitiveData,
         transform: Mat4,
         sources: &[u32],
         base: u32,
-        vertex_count: usize,
-        at: &PrimitiveRef,
+        attributes: &Attributes<'_>,
     ) -> Result<(), GltfImportError>
     where
         F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
     {
-        let targets: Vec<_> = reader.read_morph_targets().collect();
+        let at = attributes.at;
+        let targets: Vec<_> = primitive.morph_targets().collect();
         if targets.is_empty() {
             return Ok(());
         }
@@ -868,23 +1013,20 @@ impl Builder<'_> {
         let normal_matrix = linear.inverse().transpose();
         // The names of the targets this primitive has written to.
         let mut used = Vec::with_capacity(targets.len());
-        for (k, (positions, normals, _tangents)) in targets.into_iter().enumerate() {
-            let semantic = |what: &str| format!("morph target {k} {what}");
-            let positions: Option<Vec<[f32; 3]>> = positions.map(Iterator::collect);
-            let normal_deltas: Option<Vec<[f32; 3]>> = normals.map(Iterator::collect);
-            for (what, values) in [("POSITION", &positions), ("NORMAL", &normal_deltas)] {
-                if let Some(values) = values
-                    && values.len() != vertex_count
-                {
-                    let (found, expected) = (values.len(), vertex_count);
-                    return Err(GltfImportError::AttributeCount {
-                        at: at.clone(),
-                        semantic: semantic(what),
-                        found,
-                        expected,
-                    });
-                }
-            }
+        for (k, target) in targets.into_iter().enumerate() {
+            let read = |what: &str, accessor: Option<Accessor<'a>>| {
+                attributes.read(
+                    &format!("morph target {k} {what}"),
+                    accessor,
+                    &accessors::FLOAT_VEC3,
+                    |accessor| {
+                        ::gltf::accessor::Iter::<[f32; 3]>::new(accessor, get_buffer.clone())
+                            .map(|iter| iter.collect::<Vec<_>>())
+                    },
+                )
+            };
+            let positions = read("POSITION", target.positions())?;
+            let normal_deltas = read("NORMAL", target.normals())?;
             let name = morph_target_name(mesh, &names, k);
             // Two of one primitive's targets under one name would move the same vertices twice.
             if used.contains(&name) {
@@ -910,6 +1052,8 @@ impl Builder<'_> {
                 {
                     continue;
                 }
+                self.morph_deltas += 1;
+                within_budget(at, "morph deltas", self.morph_deltas, self.budget.morph_deltas)?;
                 self.mesh.morph_targets[target].deltas.push(ImportedDelta {
                     vertex: base + offset as u32,
                     position: position.to_array(),
@@ -1004,107 +1148,119 @@ const OUTLINE_NORMAL: &str = "OUTLINE_NORMAL";
 /// The custom attribute holding per-vertex material IDs, likewise.
 const MATERIAL_ID: &str = "MATERIAL_ID";
 
-/// Reads an optional per-vertex attribute, distinguishing "absent" from "declared but
-/// unreadable" and checking its length against `POSITION`.
-fn read_attribute<T>(
+/// Fails if `found` of `what` is over `budget`.
+fn within_budget(
     at: &PrimitiveRef,
-    semantic: &str,
-    declared: bool,
-    expected: usize,
-    read: impl FnOnce() -> Option<Vec<T>>,
-) -> Result<Option<Vec<T>>, GltfImportError> {
-    match read() {
-        Some(values) if values.len() != expected => Err(GltfImportError::AttributeCount {
-            at: at.clone(),
-            semantic: semantic.to_owned(),
-            found: values.len(),
-            expected,
-        }),
-        Some(values) => Ok(Some(values)),
-        None if declared => {
-            Err(GltfImportError::UnreadableAccessor { at: at.clone(), semantic: semantic.to_owned() })
-        }
-        None => Ok(None),
+    what: &'static str,
+    found: usize,
+    budget: usize,
+) -> Result<(), GltfImportError> {
+    if found > budget {
+        return Err(GltfImportError::OverBudget { at: at.clone(), what, found, budget });
     }
+    Ok(())
 }
 
-/// Fails unless `accessor` is one of the `allowed` (component type, normalized) pairs with
-/// `dimensions`. The `gltf` readers panic on component types the specification rules out, so
-/// every accessor they read with a choice of types is checked first.
+/// [`accessors::check`], naming the primitive and semantic the accessor belongs to.
 fn check_accessor(
     at: &PrimitiveRef,
     semantic: &str,
     accessor: &Accessor<'_>,
-    dimensions: Dimensions,
-    allowed: &[(DataType, bool)],
+    kind: &accessors::Kind,
+    buffers: &[Vec<u8>],
 ) -> Result<(), GltfImportError> {
-    let kind = (accessor.data_type(), accessor.normalized());
-    if accessor.dimensions() == dimensions && allowed.contains(&kind) {
-        return Ok(());
-    }
-    Err(GltfImportError::UnsupportedAccessor {
+    accessors::check(accessor, kind, buffers).map_err(|fault| GltfImportError::Accessor {
         at: at.clone(),
         semantic: semantic.to_owned(),
-        data_type: accessor.data_type(),
-        dimensions: accessor.dimensions(),
+        fault,
     })
+}
+
+/// One primitive's per-vertex accessors, which nothing reads until they pass these checks.
+struct Attributes<'p> {
+    at: &'p PrimitiveRef,
+    buffers: &'p [Vec<u8>],
+    /// `POSITION`'s count.
+    vertex_count: usize,
+}
+
+impl Attributes<'_> {
+    /// Reads a per-vertex attribute, if the primitive has it (`accessor`), once it can be read as
+    /// `kind`, with an element per vertex.
+    fn read<'a, T>(
+        &self,
+        semantic: &str,
+        accessor: Option<Accessor<'a>>,
+        kind: &accessors::Kind,
+        read: impl FnOnce(Accessor<'a>) -> Option<Vec<T>>,
+    ) -> Result<Option<Vec<T>>, GltfImportError> {
+        let Some(accessor) = accessor else {
+            return Ok(None);
+        };
+        check_accessor(self.at, semantic, &accessor, kind, self.buffers)?;
+        if accessor.count() != self.vertex_count {
+            return Err(GltfImportError::AttributeCount {
+                at: self.at.clone(),
+                semantic: semantic.to_owned(),
+                found: accessor.count(),
+                expected: self.vertex_count,
+            });
+        }
+        read(accessor).map(Some).ok_or_else(|| GltfImportError::UnreadableAccessor {
+            at: self.at.clone(),
+            semantic: semantic.to_owned(),
+        })
+    }
 }
 
 /// The primitive's `_OUTLINE_NORMAL` attribute, untransformed, if it has one.
 fn read_outline_normals<'a, 's, F>(
-    at: &PrimitiveRef,
+    attributes: &Attributes<'_>,
     primitive: &Primitive<'a>,
     get_buffer: &F,
-    vertex_count: usize,
 ) -> Result<Option<Vec<Vec3>>, GltfImportError>
 where
     F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
 {
-    let Some(accessor) = primitive.get(&Semantic::Extras(OUTLINE_NORMAL.to_owned())) else {
-        return Ok(None);
-    };
-    let semantic = "_OUTLINE_NORMAL";
-    let allowed = [(DataType::F32, false), (DataType::I16, true), (DataType::I8, true)];
-    check_accessor(at, semantic, &accessor, Dimensions::Vec3, &allowed)?;
     // Normalized signed integers decode as max(q / max, -1) (glTF 2.0 §3.11).
     fn snorm<T: Into<f32>>(values: [T; 3], max: f32) -> Vec3 {
         Vec3::from(values.map(|c| (c.into() / max).max(-1.0)))
     }
-    let normals: Option<Vec<Vec3>> = match accessor.data_type() {
-        DataType::I16 => ::gltf::accessor::Iter::<[i16; 3]>::new(accessor, get_buffer.clone())
-            .map(|iter| iter.map(|v| snorm(v, 32767.0)).collect()),
-        DataType::I8 => ::gltf::accessor::Iter::<[i8; 3]>::new(accessor, get_buffer.clone())
-            .map(|iter| iter.map(|v| snorm(v, 127.0)).collect()),
-        _ => ::gltf::accessor::Iter::<[f32; 3]>::new(accessor, get_buffer.clone())
-            .map(|iter| iter.map(Vec3::from).collect()),
-    };
-    read_attribute(at, semantic, true, vertex_count, || normals)
+    let accessor = primitive.get(&Semantic::Extras(OUTLINE_NORMAL.to_owned()));
+    attributes.read("_OUTLINE_NORMAL", accessor, &accessors::OUTLINE_NORMAL, |accessor| {
+        match accessor.data_type() {
+            DataType::I16 => ::gltf::accessor::Iter::<[i16; 3]>::new(accessor, get_buffer.clone())
+                .map(|iter| iter.map(|v| snorm(v, 32767.0)).collect()),
+            DataType::I8 => ::gltf::accessor::Iter::<[i8; 3]>::new(accessor, get_buffer.clone())
+                .map(|iter| iter.map(|v| snorm(v, 127.0)).collect()),
+            _ => ::gltf::accessor::Iter::<[f32; 3]>::new(accessor, get_buffer.clone())
+                .map(|iter| iter.map(Vec3::from).collect()),
+        }
+    })
 }
 
 /// The primitive's `_MATERIAL_ID` attribute, if it has one.
 fn read_material_ids<'a, 's, F>(
-    at: &PrimitiveRef,
+    attributes: &Attributes<'_>,
     primitive: &Primitive<'a>,
     get_buffer: &F,
-    vertex_count: usize,
 ) -> Result<Option<Vec<MaterialId>>, GltfImportError>
 where
     F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
 {
-    let Some(accessor) = primitive.get(&Semantic::Extras(MATERIAL_ID.to_owned())) else {
-        return Ok(None);
-    };
-    let semantic = "_MATERIAL_ID";
-    let allowed = [(DataType::F32, false), (DataType::U8, false), (DataType::U16, false)];
-    check_accessor(at, semantic, &accessor, Dimensions::Scalar, &allowed)?;
-    let values: Option<Vec<f32>> = match accessor.data_type() {
-        DataType::U8 => ::gltf::accessor::Iter::<u8>::new(accessor, get_buffer.clone())
-            .map(|iter| iter.map(f32::from).collect()),
-        DataType::U16 => ::gltf::accessor::Iter::<u16>::new(accessor, get_buffer.clone())
-            .map(|iter| iter.map(f32::from).collect()),
-        _ => ::gltf::accessor::Iter::<f32>::new(accessor, get_buffer.clone()).map(Iterator::collect),
-    };
-    let Some(values) = read_attribute(at, semantic, true, vertex_count, || values)? else {
+    let at = attributes.at;
+    let accessor = primitive.get(&Semantic::Extras(MATERIAL_ID.to_owned()));
+    let values: Option<Vec<f32>> =
+        attributes.read("_MATERIAL_ID", accessor, &accessors::MATERIAL_ID, |accessor| {
+            match accessor.data_type() {
+                DataType::U8 => ::gltf::accessor::Iter::<u8>::new(accessor, get_buffer.clone())
+                    .map(|iter| iter.map(f32::from).collect()),
+                DataType::U16 => ::gltf::accessor::Iter::<u16>::new(accessor, get_buffer.clone())
+                    .map(|iter| iter.map(f32::from).collect()),
+                _ => ::gltf::accessor::Iter::<f32>::new(accessor, get_buffer.clone()).map(Iterator::collect),
+            }
+        })?;
+    let Some(values) = values else {
         return Ok(None);
     };
     values
@@ -1125,39 +1281,35 @@ where
 /// Every vertex's influences from all `JOINTS_n`/`WEIGHTS_n` sets, as palette entries through
 /// `binds` (the skin's joints' entries), reduced to the four heaviest.
 fn read_weights<'a, 's, F>(
-    at: &PrimitiveRef,
+    attributes: &Attributes<'_>,
     primitive: &Primitive<'a>,
     reader: &::gltf::mesh::Reader<'a, 's, F>,
     binds: &[u16],
-    vertex_count: usize,
+    influence_sets: usize,
 ) -> Result<Vec<SkinWeights>, GltfImportError>
 where
     F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
 {
+    let (at, vertex_count) = (attributes.at, attributes.vertex_count);
     let mut influences: Vec<Vec<(u16, f32)>> = vec![Vec::new(); vertex_count];
     for set in 0.. {
         let Some(joints) = primitive.get(&Semantic::Joints(set)) else { break };
+        let sets = (set as usize + 1).saturating_mul(vertex_count);
+        within_budget(at, "vertices × JOINTS sets", sets, influence_sets)?;
         let (joints_name, weights_name) = (format!("JOINTS_{set}"), format!("WEIGHTS_{set}"));
-        check_accessor(
-            at,
-            &joints_name,
-            &joints,
-            Dimensions::Vec4,
-            &[(DataType::U8, false), (DataType::U16, false)],
-        )?;
         let weights = primitive.get(&Semantic::Weights(set)).ok_or_else(|| {
             GltfImportError::UnreadableAccessor { at: at.clone(), semantic: weights_name.clone() }
         })?;
-        let allowed = [(DataType::F32, false), (DataType::U8, true), (DataType::U16, true)];
-        check_accessor(at, &weights_name, &weights, Dimensions::Vec4, &allowed)?;
-        let joints = read_attribute(at, &joints_name, true, vertex_count, || {
-            reader.read_joints(set).map(|iter| iter.into_u16().collect::<Vec<_>>())
-        })?
-        .expect("a declared attribute reads or fails");
-        let weights = read_attribute(at, &weights_name, true, vertex_count, || {
-            reader.read_weights(set).map(|iter| iter.into_f32().collect::<Vec<_>>())
-        })?
-        .expect("a declared attribute reads or fails");
+        let joints = attributes
+            .read(&joints_name, Some(joints), &accessors::JOINTS, |_| {
+                reader.read_joints(set).map(|iter| iter.into_u16().collect::<Vec<_>>())
+            })?
+            .expect("an accessor that's there reads or fails");
+        let weights = attributes
+            .read(&weights_name, Some(weights), &accessors::WEIGHTS, |_| {
+                reader.read_weights(set).map(|iter| iter.into_f32().collect::<Vec<_>>())
+            })?
+            .expect("an accessor that's there reads or fails");
         for (vertex, (joints, weights)) in joints.iter().zip(&weights).enumerate() {
             for (&joint, &weight) in joints.iter().zip(weights) {
                 // Exporters pad unused slots with weight 0 and any joint; only real ones count.
@@ -1171,7 +1323,8 @@ where
             }
         }
     }
-    // A skin has at least one joint (glTF 2.0 §5.27), whose entry takes unweighted vertices.
+    // A skin has at least one joint (`Skeleton::build` checks), whose entry takes unweighted
+    // vertices.
     let fallback = SkinWeights::rigid(binds.first().copied().unwrap_or(0));
     Ok(influences.into_iter().map(|list| SkinWeights::strongest(list).unwrap_or(fallback)).collect())
 }
@@ -1273,5 +1426,8 @@ fn describe(name: Option<&str>, index: Option<usize>) -> String {
     }
 }
 
+mod accessors;
+#[cfg(test)]
+mod malformed_tests;
 #[cfg(test)]
 mod tests;

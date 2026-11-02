@@ -223,7 +223,7 @@ pub enum ImageFormat {
 
 /// The VRM version of a file, or `None` if it isn't a VRM file (or not glTF at all).
 pub fn detect_version(bytes: &[u8]) -> Option<VrmVersion> {
-    Gltf::from_slice(bytes).ok().and_then(|gltf| version_of(&gltf.document))
+    gltf_import::parse(bytes).ok().and_then(|gltf| version_of(&gltf.document))
 }
 
 fn version_of(document: &Document) -> Option<VrmVersion> {
@@ -358,7 +358,7 @@ struct Read {
 }
 
 fn read(bytes: &[u8], expected: Option<VrmVersion>) -> Result<Read, VrmImportError> {
-    let Gltf { document, blob } = Gltf::from_slice(bytes).map_err(VrmImportError::Parse)?;
+    let Gltf { document, blob } = gltf_import::parse(bytes).map_err(VrmImportError::Parse)?;
     // VRM files are GLB, so everything is in the file: no base directory.
     let buffers = gltf_import::load_buffers(&document, None, blob)?;
     let version = version_of(&document).ok_or(VrmImportError::NotVrm)?;
@@ -470,8 +470,10 @@ impl<'a> Images<'a> {
         let (bytes, mime): (&[u8], &str) = match image.source() {
             Source::View { view, mime_type } => {
                 let buffer = &self.buffers[view.buffer().index()];
-                let bytes = buffer
-                    .get(view.offset()..view.offset() + view.length())
+                let bytes = view
+                    .offset()
+                    .checked_add(view.length())
+                    .and_then(|end| buffer.get(view.offset()..end))
                     .ok_or_else(|| problem("lies outside its buffer".into()))?;
                 (bytes, mime_type)
             }

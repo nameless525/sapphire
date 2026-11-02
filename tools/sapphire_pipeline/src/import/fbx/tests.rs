@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::path::PathBuf;
 
 use glam::{Mat4, Quat, Vec2, Vec3};
-use sapphire_assets::mesh::{Bounds, PositionFormat};
+use sapphire_assets::mesh::{Bounds, MeshError, PositionFormat};
 
 use super::*;
+use crate::cook::{Cook, CookError, cook_mesh};
 use crate::import::gltf;
+use crate::meta::MeshSettings;
+use crate::test_util::TempDir;
 
 /// A fixture `tools/blender/fbx_fixtures.py` made, by file name.
 fn fixture(name: &str) -> PathBuf {
@@ -414,4 +418,23 @@ fn files_that_are_not_fbx_or_hold_no_triangles_are_errors() {
         mesh_object(100, "Wire", &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[-1, 1, -3]);
     let wire = ascii_fbx(Y_UP, 100.0, &objects, &connections);
     assert!(matches!(import_slice(&wire), Err(FbxImportError::NoGeometry)));
+}
+
+/// A position that isn't a number would quantize to a corner of the bounds: the cook refuses it,
+/// on every cook, for FBX as for glTF.
+#[test]
+fn a_cook_refuses_non_finite_positions() {
+    let dir = TempDir::new("fbx_non_finite");
+    let vertices = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, f64::NAN, 1.0, 0.0];
+    let (objects, connections) = mesh_object(100, "Plate", &vertices, &[0, 1, -3]);
+    let path = dir.path().join("plate.fbx");
+    fs::write(&path, ascii_fbx(Y_UP, 100.0, &objects, &connections)).unwrap();
+    for cook in [Cook::Desktop, Cook::Mobile] {
+        let error = cook_mesh(&path, &MeshSettings::default(), cook).map(|_| ()).unwrap_err();
+        assert!(
+            matches!(&error, CookError::Invalid { source: MeshError::NonFinitePosition { vertex: 2 }, .. }),
+            "{cook:?}: {error:?}"
+        );
+        assert!(error.to_string().contains("plate.fbx"), "{cook:?}: {error}");
+    }
 }

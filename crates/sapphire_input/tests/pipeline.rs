@@ -9,8 +9,8 @@ use sapphire_input::{
 };
 use sapphire_math::Vec2;
 use sapphire_platform::{
-    Event, FingerId, GamepadType, LifecycleEvent, Scancode, TouchDeviceId, TouchEvent, TouchPhase,
-    WindowEvent, WindowId,
+    Event, FingerId, GamepadType, KeyEvent, Keycode, LifecycleEvent, Modifiers, MouseButtonEvent, Scancode,
+    TouchDeviceId, TouchEvent, TouchPhase, WindowEvent, WindowId,
 };
 
 fn ms(ms: u64) -> Timestamp {
@@ -128,6 +128,46 @@ impl Rig {
             window: WindowId::from_raw(1),
             event: WindowEvent::FocusLost,
         });
+    }
+
+    /// A key event as the platform reports one.
+    fn platform_key(&mut self, t: u64, scancode: Scancode, down: bool) {
+        self.input.handle_event(&Event::Key(KeyEvent {
+            timestamp: ms(t),
+            window: WindowId::from_raw(1),
+            scancode,
+            keycode: Keycode(0),
+            modifiers: Modifiers::default(),
+            down,
+            repeat: false,
+        }));
+    }
+
+    /// The left mouse button's event as the platform reports one.
+    fn platform_left(&mut self, t: u64, down: bool) {
+        self.input.handle_event(&Event::MouseButton(MouseButtonEvent {
+            timestamp: ms(t),
+            window: WindowId::from_raw(1),
+            button: sapphire_platform::MouseButton::Left,
+            down,
+            clicks: 1,
+            x: 0.0,
+            y: 0.0,
+        }));
+    }
+
+    /// The window loses focus at `t` as SDL 3.4.18 reports it (`SDL_SetKeyboardFocus(NULL)`): an
+    /// ordinary key-up for every key still held, then the loss, all before the next frame.
+    fn focus_lost_with_keys_held(&mut self, t: u64, held: &[Scancode]) {
+        for &scancode in held {
+            self.platform_key(t, scancode, false);
+        }
+        self.focus_lost(t);
+    }
+
+    /// Whether `action` fired in the latest update.
+    fn fired(&self, action: &str) -> bool {
+        self.input.state(self.action(action)).fired()
     }
 }
 
@@ -606,6 +646,137 @@ fn losing_focus_releases_everything_without_firing_releases() {
     assert_eq!(rig.update(50), []);
 }
 
+/// One binding per trigger that a release would fire or start, and one that reads the level.
+fn release_triggers_map() -> InputMap {
+    map(
+        r#"(name: "fire", kind: Button), (name: "light", kind: Button), (name: "dash", kind: Button),
+           (name: "walk", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "fire", source: Key(F), trigger: Released),
+            (action: "light", source: Key(L), trigger: Tap(seconds: 0.2)),
+            (action: "dash", source: Key(D), trigger: DoubleTap(seconds: 0.3)),
+            (action: "walk", source: Key(W)),
+        ])"#,
+    )
+}
+
+#[test]
+fn losing_focus_in_sdls_order_fires_no_release() {
+    // Review WA-1: SDL lets go of every held key with ordinary key-ups just before it reports the
+    // loss, so the ups must not count as the player releasing: an alt-tab fired charged and light
+    // attacks. Through `handle_event`, as the app sees it.
+    let mut rig = Rig::new(release_triggers_map(), &["main"]);
+    let held = [Scancode::D, Scancode::F, Scancode::L, Scancode::W];
+    for (at, &scancode) in held.iter().enumerate() {
+        rig.platform_key(10 + at as u64, scancode, true);
+    }
+    rig.update(20);
+    rig.focus_lost_with_keys_held(25, &held);
+    assert_eq!(
+        rig.update(30),
+        [
+            ev("fire", Canceled, 25),
+            ev("light", Canceled, 25),
+            ev("dash", Canceled, 25),
+            ev("walk", Completed, 25),
+        ]
+    );
+    for action in ["fire", "light", "dash"] {
+        assert!(!rig.fired(action), "{action}");
+    }
+
+    // The double tap didn't arm either: a press after the return starts a new one.
+    rig.platform_key(40, Scancode::D, true);
+    assert_eq!(rig.update(50), [ev("dash", Started, 40)]);
+    assert!(!rig.fired("dash"));
+
+    // Bindings work as ever after the return.
+    rig.platform_key(60, Scancode::F, true);
+    rig.platform_key(61, Scancode::F, false);
+    rig.platform_key(62, Scancode::L, true);
+    rig.platform_key(63, Scancode::L, false);
+    rig.update(70);
+    assert!(rig.fired("fire") && rig.fired("light"));
+}
+
+#[test]
+fn going_to_the_background_in_sdls_order_fires_no_release() {
+    // `SDL_OnApplicationWillEnterBackground` clears the keyboard focus too, so the same ups and
+    // the loss come first, and the lifecycle event after them.
+    let mut rig = Rig::new(release_triggers_map(), &["main"]);
+    rig.platform_key(10, Scancode::F, true);
+    rig.platform_key(11, Scancode::L, true);
+    rig.update(20);
+    rig.focus_lost_with_keys_held(25, &[Scancode::F, Scancode::L]);
+    rig.background(25);
+    assert_eq!(rig.update(30), [ev("fire", Canceled, 25), ev("light", Canceled, 25)]);
+}
+
+#[test]
+fn a_mouse_button_up_just_before_the_loss_fires_nothing() {
+    // SDL 3.4.18 posts no mouse-up for focus (`SDL_ResetMouse` is compiled out), so usually the
+    // loss comes alone and a later release finds nothing held. Wayland's pointer leave does raise
+    // held buttons, and the compositor may send it just before the keyboard's leave.
+    let map = map(
+        r#"(name: "aim", kind: Button), (name: "flick", kind: Button), (name: "walk", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "aim", source: Mouse(Left), trigger: Released),
+            (action: "flick", source: Mouse(Left), trigger: Tap(seconds: 0.2)),
+            (action: "walk", source: Key(W)),
+        ])"#,
+    );
+    let mut rig = Rig::new(map.clone(), &["main"]);
+    rig.platform_left(10, true);
+    rig.platform_key(11, Scancode::W, true);
+    rig.update(20);
+    rig.platform_left(25, false);
+    rig.focus_lost_with_keys_held(25, &[Scancode::W]);
+    assert_eq!(
+        rig.update(30),
+        [ev("aim", Canceled, 25), ev("flick", Canceled, 25), ev("walk", Completed, 25)]
+    );
+    assert!(!rig.fired("aim") && !rig.fired("flick"));
+
+    // The usual order: the loss alone, and the real release much later.
+    let mut rig = Rig::new(map, &["main"]);
+    rig.platform_left(10, true);
+    rig.update(20);
+    rig.focus_lost(25);
+    assert_eq!(rig.update(30), [ev("aim", Canceled, 25), ev("flick", Canceled, 25)]);
+    rig.platform_left(40, false);
+    assert_eq!(rig.update(50), []);
+}
+
+#[test]
+fn only_the_releases_right_before_the_loss_count_as_part_of_it() {
+    // A release with other input after it is the player's.
+    let mut rig = Rig::new(release_triggers_map(), &["main"]);
+    rig.platform_key(10, Scancode::F, true);
+    rig.platform_key(11, Scancode::L, true);
+    rig.platform_key(12, Scancode::W, true);
+    rig.update(20);
+    rig.platform_key(21, Scancode::F, false);
+    rig.platform_key(22, Scancode::H, true);
+    rig.focus_lost_with_keys_held(25, &[Scancode::H, Scancode::L, Scancode::W]);
+    assert_eq!(
+        rig.update(30),
+        [
+            ev("fire", Triggered, 21),
+            ev("fire", Completed, 21),
+            ev("light", Canceled, 25),
+            ev("walk", Completed, 25),
+        ]
+    );
+
+    // Raw input replays exactly as it was pushed: only `handle_event` knows SDL's order.
+    let mut rig = Rig::new(release_triggers_map(), &["main"]);
+    rig.key(10, Scancode::F, true);
+    rig.update(20);
+    rig.key(25, Scancode::F, false);
+    rig.push(25, RawInput::ReleaseAll);
+    assert_eq!(rig.update(30), [ev("fire", Triggered, 25), ev("fire", Completed, 25)]);
+}
+
 #[test]
 fn a_removed_gamepad_lets_go_of_its_buttons() {
     let map = map(
@@ -894,6 +1065,98 @@ fn losing_focus_judges_motion_bindings_on_what_they_took() {
     );
     assert_eq!(rig.value("look"), Vec2::new(4.0, 0.0), "the drag keeps the motion it took before the loss");
     assert_eq!(rig.update_for(48, "look"), [ev("look", Completed, 48)]);
+}
+
+#[test]
+fn losing_focus_fires_no_release_from_motion() {
+    // Review WA-4: the motion before the loss still reads actuated in the loss's own evaluation,
+    // so it used to fall in the next update, as a release. The loss ends the run instead.
+    let triggers = [
+        ("Released", true),
+        ("Tap(seconds: 0.2)", true),
+        ("DoubleTap(seconds: 0.2)", true),
+        ("Hold(seconds: 0.2)", true),
+        ("Pressed", false),
+    ];
+    type Moved = fn(&mut Rig, u64);
+    let sources: [(&str, Moved); 2] =
+        [("MouseMotion", |rig, t| rig.mouse(t, 3.0)), ("MouseWheel", |rig, t| rig.wheel(t))];
+    for (source, moved) in sources {
+        for (trigger, waits) in triggers {
+            let bindings = format!(
+                r#"(name: "main", bindings: [(action: "flick", source: {source}, trigger: {trigger})])"#
+            );
+            let mut rig = Rig::new(map(r#"(name: "flick", kind: Button)"#, &bindings), &["main"]);
+            let case = format!("{trigger} on {source}");
+            moved(&mut rig, 20);
+            rig.focus_lost(30);
+            let expected = if waits {
+                vec![ev("flick", Started, 20), ev("flick", Canceled, 30)]
+            } else {
+                vec![ev("flick", Started, 20), ev("flick", Triggered, 20), ev("flick", Completed, 20)]
+            };
+            assert_eq!(rig.update(40), expected, "{case}: the update of the loss");
+            assert_eq!(rig.update(50), [], "{case}: the update after");
+            assert_eq!(rig.update(60), [], "{case}: and later");
+            assert_eq!(rig.input.state(rig.action("flick")).phase(), sapphire_input::ActionPhase::Idle);
+        }
+    }
+
+    // A later run is a run like any other.
+    let bindings = r#"(name: "main", bindings: [(action: "flick", source: MouseMotion, trigger: Released)])"#;
+    let mut rig = Rig::new(map(r#"(name: "flick", kind: Button)"#, bindings), &["main"]);
+    rig.mouse(20, 3.0);
+    rig.focus_lost(30);
+    rig.update(40);
+    rig.update(50);
+    rig.mouse(60, 3.0);
+    assert_eq!(rig.update(70), [ev("flick", Started, 60)]);
+    assert_eq!(rig.update(80), [ev("flick", Triggered, 80), ev("flick", Completed, 80)]);
+}
+
+#[test]
+fn motion_after_the_loss_in_its_update_stays_part_of_the_lost_run() {
+    // Nothing fires for it, and the run has to end before the next can begin.
+    let bindings = r#"(name: "main", bindings: [
+        (action: "flick", source: MouseMotion, trigger: Released),
+        (action: "next", source: MouseMotion, trigger: Pressed),
+    ])"#;
+    let actions = r#"(name: "flick", kind: Button), (name: "next", kind: Button)"#;
+    let mut rig = Rig::new(map(actions, bindings), &["main"]);
+    let fired = |rig: &Rig, action: &str| rig.input.state(rig.action(action)).fire_count();
+    rig.mouse(20, 3.0);
+    rig.focus_lost(30);
+    rig.mouse(35, 3.0);
+    rig.update(40);
+    assert_eq!(fired(&rig, "next"), 1, "only as the run before the loss began");
+    rig.mouse(45, 3.0);
+    assert_eq!(rig.update(50), [], "still the same run");
+    assert_eq!(rig.update(60), [], "it ends without a release");
+    rig.mouse(65, 3.0);
+    rig.update(70);
+    assert_eq!(fired(&rig, "next"), 1, "a new run");
+}
+
+#[test]
+fn losing_focus_fires_no_release_from_a_chorded_drag() {
+    // The chord lets go in the loss's own evaluation, and the gate settles there as in any other
+    // (review FI-002): the binding keeps what it took while held, without a release later.
+    let map = map(
+        r#"(name: "grab", kind: Button), (name: "flick", kind: Button), (name: "look", kind: Axis2D)"#,
+        r#"(name: "main", bindings: [
+            (action: "grab", source: Mouse(Left)),
+            (action: "flick", source: MouseMotion, chord: "grab", trigger: Released),
+            (action: "look", source: MouseMotion, chord: "grab"),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.left(1, true);
+    rig.mouse(2, 3.0);
+    rig.focus_lost(4);
+    rig.mouse(5, 50.0);
+    assert_eq!(rig.update_for(16, "flick"), [ev("flick", Started, 2), ev("flick", Canceled, 4)]);
+    assert_eq!(rig.value("look"), Vec2::new(3.0, 0.0), "the motion while held, and only that");
+    assert_eq!(rig.update_for(32, "flick"), []);
 }
 
 #[test]

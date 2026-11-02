@@ -71,6 +71,12 @@ pub enum RawInput {
     /// release would: the window lost focus or the app left the foreground, so the real
     /// releases may never arrive. Sequences in progress are canceled too: a double tap waiting
     /// for its second press goes idle, so the first press after the return starts a new one.
+    /// A run of motion ends here as well: its action keeps what it took this update, and nothing
+    /// fires when it stops.
+    ///
+    /// [`InputSystem::handle_event`](crate::InputSystem::handle_event) also takes the key and
+    /// mouse button releases queued right before it as part of the loss. Pushed directly, it
+    /// lets go of what is held at that point in the queue, and earlier releases stand.
     ReleaseAll,
 }
 

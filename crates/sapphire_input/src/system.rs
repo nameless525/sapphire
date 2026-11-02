@@ -352,14 +352,30 @@ impl InputSystem {
     }
 
     /// Queues a platform event for the next update. Events that aren't input are ignored,
-    /// except that losing focus or the foreground releases everything held.
+    /// except that losing focus or the foreground releases everything held, firing nothing a
+    /// release would. Key and mouse button releases queued right before the loss count as part
+    /// of it, since the platform reports held keys that way, so a real release in that same
+    /// frame, with no other input after it, fires nothing either.
     ///
     /// Touches over on-screen controls belong to the UI: give them to the control (which
     /// [`inject`](Self::inject)s), not here, or they would also drag the camera.
     pub fn handle_event(&mut self, event: &Event) {
-        if let Some((timestamp, input)) = self.adapter.translate(event) {
-            self.push(timestamp, input);
+        let Some((timestamp, input)) = self.adapter.translate(event) else { return };
+        if input == RawInput::ReleaseAll {
+            // `SDL_SetKeyboardFocus(NULL)` posts an ordinary key-up for every held key, then the
+            // loss, all in one call, so they reach this queue with no update between them (review
+            // WA-1). Nothing marks those ups: their keyboard ID is also that of Windows' real key
+            // events, and their raw code of 0 is also Cocoa's A. Wayland's pointer leave raises
+            // held mouse buttons the same way, and may come just before the keyboard's leave.
+            while let Some((
+                _,
+                RawInput::Key { down: false, .. } | RawInput::MouseButton { down: false, .. },
+            )) = self.queue.last()
+            {
+                self.queue.pop();
+            }
         }
+        self.push(timestamp, input);
     }
 
     /// Queues raw input for the next update.
@@ -579,7 +595,7 @@ impl InputSystem {
                 self.devices.release_all();
                 self.gestures.reset();
                 // Motion bindings are judged too, on what they took so far, so the loss ends
-                // their sequences as well.
+                // their sequences and their runs as well (`Abort::All`).
                 self.evaluate(now, MotionPass::All, Abort::All);
             }
         }

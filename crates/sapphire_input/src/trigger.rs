@@ -125,7 +125,8 @@ impl Fire {
 pub(crate) struct Memory {
     actuated: bool,
     /// Actuated when the binding became active: edge triggers ignore it until it lets go, so a
-    /// key pressed under one context doesn't fire as a fresh press in the next.
+    /// key pressed under one context doesn't fire as a fresh press in the next. Also motion still
+    /// reading actuated when everything let go ([`Abort::All`]).
     suppressed: bool,
     /// When the current actuation started.
     pressed_at: Timestamp,
@@ -162,7 +163,9 @@ pub(crate) enum Abort {
     Release,
     /// Everything let go (focus or the foreground was lost): nothing a release would fire
     /// fires, and sequences in progress end. A double tap waiting for its second press goes
-    /// idle at once, so the first press after the player comes back starts a new one.
+    /// idle at once, so the first press after the player comes back starts a new one. Motion
+    /// can't let go: it reads what it took this update, so its run ends here instead, and its
+    /// edge triggers ignore it until it stops, when it falls with no abort to say so.
     All,
 }
 
@@ -184,6 +187,8 @@ pub(crate) fn evaluate(
     }
     if abort == Abort::All {
         memory.armed_at = None;
+        // Everything else has just let go, so only motion can read actuated here.
+        memory.suppressed |= actuated;
     }
     if memory.suppressed {
         if !actuated {
@@ -377,6 +382,43 @@ mod tests {
                 assert_eq!(evaluate(spec, &mut memory, false, ms(10), abort), I, "{trigger:?}, {abort:?}");
             }
         }
+    }
+
+    #[test]
+    fn what_still_reads_actuated_when_everything_lets_go_ends_without_a_release() {
+        // Review WA-4: only motion can read actuated in `Abort::All`'s evaluation. Its run ends
+        // there: it falls later, with no abort, and fires nothing, and the next run is fresh.
+        for trigger in [
+            Trigger::Released,
+            Trigger::Tap { seconds: 1.0 },
+            Trigger::DoubleTap { seconds: 1.0 },
+            Trigger::Hold { seconds: 1.0 },
+        ] {
+            let spec = TriggerSpec::compile(trigger).expect("valid");
+            let mut memory = Memory::default();
+            assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), O, "{trigger:?}");
+            assert_eq!(evaluate(spec, &mut memory, true, ms(10), Abort::All), I, "{trigger:?}: ended");
+            assert_eq!(deadline(spec, &memory), None, "{trigger:?}: nothing left to wait for");
+            assert_eq!(evaluate(spec, &mut memory, true, ms(20), Abort::No), I, "{trigger:?}: still ended");
+            assert_eq!(evaluate(spec, &mut memory, false, ms(30), Abort::No), I, "{trigger:?}: no release");
+            assert_eq!(evaluate(spec, &mut memory, true, ms(40), Abort::No), O, "{trigger:?}: a new run");
+        }
+
+        // A pressed trigger fired as the run began; the loss neither takes that back nor fires
+        // again.
+        let spec = TriggerSpec::compile(Trigger::Pressed).expect("valid");
+        let mut memory = Memory::default();
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), P);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(10), Abort::All), I);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(20), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(30), Abort::No), P, "a new run");
+
+        // `Down` reads the level: the motion stays delivered until it stops.
+        let spec = TriggerSpec::compile(Trigger::Down).expect("valid");
+        let mut memory = Memory::default();
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), T);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(10), Abort::All), T);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(20), Abort::No), I);
     }
 
     #[test]

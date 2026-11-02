@@ -130,7 +130,7 @@ pub struct TickSpan {
 impl TickSpan {
     #[must_use]
     pub const fn instant(at: u32) -> Self {
-        Self { from: at, to: at + 1 }
+        Self { from: at, to: at.saturating_add(1) }
     }
 }
 

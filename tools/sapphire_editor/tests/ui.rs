@@ -697,32 +697,52 @@ fn a_first_cook_reaches_an_editor_already_open() {
 /// shows, so a slip of a few digits costs a frame what a real move costs, not a shape per tick claimed.
 #[test]
 fn a_move_longer_than_any_can_be_draws_only_what_shows() {
-    let draw = |text: &str| {
-        let dir = TestDir::new("huge");
-        let options = Options {
-            file: Some(dir.write("slice.moves.ron", text)),
-            content: Some(dir.0.join("no cook here")),
-            link: Some("127.0.0.1:9".parse().expect("an address")),
-        };
-        let mut editor = Editor::new(options);
-        assert!(editor.select_move("light_1"));
-        let ctx = egui::Context::default();
-        let mut shapes = 0;
-        for pass in 0..2 {
-            let input = capture::raw_input(1400, 900, f64::from(pass) * 0.1);
-            let mut output = ctx.run_ui(input, |ui| editor.ui(ui));
-            output.textures_delta.clear();
-            shapes = output.shapes.len();
-        }
-        shapes
-    };
-    let usual = draw(SLICE);
+    let usual = shapes_drawn(SLICE);
     for recovery in ["400000", "4000000000"] {
         let text = SLICE.replacen("recovery: 18", &format!("recovery: {recovery}"), 1);
         assert_ne!(text, SLICE);
-        let shapes = draw(&text);
+        let shapes = shapes_drawn(&text);
         assert!(shapes < usual * 2 + 1000, "recovery {recovery} drew {shapes} shapes, against {usual}");
     }
+}
+
+/// The largest number each kind of value can say draws, in the builds that check their sums: a panic here
+/// would take any edits with it.
+#[test]
+fn the_largest_numbers_a_document_can_say_draw() {
+    for (from, to) in [
+        ("startup: 5", "startup: 4294967295"),
+        ("active: 3", "active: 4294967295"),
+        ("recovery: 18", "recovery: 4294967295"),
+        ("from: 5", "from: 4294967295"),
+        ("to: 8", "to: 4294967295"),
+        ("\"swing_windup\", at: 0", "\"swing_windup\", at: 4294967295"),
+    ] {
+        assert!(SLICE.contains(from), "{from}");
+        shapes_drawn(&SLICE.replacen(from, to, 1));
+    }
+}
+
+/// What the interface draws of `text`, on `light_1`, with the playhead as far on as it goes.
+fn shapes_drawn(text: &str) -> usize {
+    let dir = TestDir::new("huge");
+    let options = Options {
+        file: Some(dir.write("slice.moves.ron", text)),
+        content: Some(dir.0.join("no cook here")),
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+    };
+    let mut editor = Editor::new(options);
+    assert!(editor.select_move("light_1"));
+    editor.set_tick(u32::MAX);
+    let ctx = egui::Context::default();
+    let mut shapes = 0;
+    for pass in 0..2 {
+        let input = capture::raw_input(1400, 900, f64::from(pass) * 0.1);
+        let mut output = ctx.run_ui(input, |ui| editor.ui(ui));
+        output.textures_delta.clear();
+        shapes = output.shapes.len();
+    }
+    shapes
 }
 
 /// `sapphire_editor` with no file, as its usage allows and `cargo xtask editor` says, still has something

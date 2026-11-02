@@ -199,7 +199,7 @@ fn lanes(spans: &[TickSpan], labels: &[String], instant: bool, per_tick: f32) ->
     for index in order {
         let span = spans[index];
         let from = span.from as f32 * per_tick;
-        let mut to = span.to.max(span.from + 1) as f32 * per_tick;
+        let mut to = span.to.max(span.from.saturating_add(1)) as f32 * per_tick;
         if instant {
             to += labels[index].chars().count() as f32 * CHAR + 6.0;
         }
@@ -403,13 +403,14 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     let segments = [
         ("startup", phases.startup, 0, Color32::from_rgb(92, 106, 66)),
         ("active", phases.active, phases.startup, Color32::from_rgb(168, 92, 58)),
-        ("recovery", phases.recovery, phases.startup + phases.active, Color32::from_rgb(64, 76, 104)),
+        ("recovery", phases.recovery, phases.startup.saturating_add(phases.active), Color32::from_rgb(64, 76, 104)),
     ];
     for (name, length, start, fill) in segments {
         if length == 0 {
             continue;
         }
-        let segment = Rect::from_x_y_ranges(scale.x(start)..=scale.x(start + length), phase_row.y_range());
+        let end = start.saturating_add(length);
+        let segment = Rect::from_x_y_ranges(scale.x(start)..=scale.x(end), phase_row.y_range());
         painter.rect_filled(segment.shrink2(Vec2::new(0.5, 0.0)), CornerRadius::same(2), fill);
         let text = format!("{name} {length}");
         let clip = painter.with_clip_rect(segment.intersect(rect));
@@ -424,7 +425,7 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     if view.editable {
         let edges = [
             (PhaseEdge::StartupEnd, phases.startup, "startup end"),
-            (PhaseEdge::ActiveEnd, phases.startup + phases.active, "active end"),
+            (PhaseEdge::ActiveEnd, phases.startup.saturating_add(phases.active), "active end"),
             (PhaseEdge::MoveEnd, ticks, "move end"),
         ];
         for (edge, tick, label) in edges {
@@ -515,7 +516,7 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     }
 
     // The playhead's column, over everything.
-    let column = Rect::from_x_y_ranges(scale.x(view.tick)..=scale.x(view.tick + 1), rect.y_range());
+    let column = Rect::from_x_y_ranges(scale.x(view.tick)..=scale.x(view.tick.saturating_add(1)), rect.y_range());
     painter.rect_filled(column, CornerRadius::ZERO, Color32::from_white_alpha(26));
     painter.rect_stroke(
         column,
@@ -641,7 +642,7 @@ fn draw_entry(
 
     if track.is_instant() {
         let cell =
-            Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.from + 1), band.y_range());
+            Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.to), band.y_range());
         let hit = cell.expand2(Vec2::new(2.0, 0.0));
         let response = ui.interact(hit, id("instant"), Sense::click_and_drag());
         response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label.as_str()));

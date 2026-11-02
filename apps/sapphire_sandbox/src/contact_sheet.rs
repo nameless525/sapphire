@@ -223,6 +223,8 @@ pub(crate) fn run(stage: &mut Stage, path: &Path, cells: u32, framing: Framing) 
     for (column, sample) in samples.iter().enumerate() {
         while step < sample.step {
             stage.step();
+            // Spring bones follow every pose on the way, as a player's frames would show them.
+            stage.scene.animate(&stage.content, 1.0);
             step += 1;
         }
         for (row, yaw) in VIEW_YAWS_DEGREES.into_iter().enumerate() {

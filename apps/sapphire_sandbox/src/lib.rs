@@ -160,7 +160,8 @@
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
 //! - `--springs on|off` (with `--clip`): runs the character's spring bones or not, on by default
-//!   (M2 N5). The strike scenes from before them pin them off; `lookdev-strike-springs-*` show them.
+//!   (M2 N5). Scenes that don't show them pin them off; `lookdev-strike-springs-*` and
+//!   `lookdev-clip-run-springs` do.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
 //!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
 //!   and `--size <cell>` set the grid, and `--zoom <factor>` pulls back for a clip that travels.

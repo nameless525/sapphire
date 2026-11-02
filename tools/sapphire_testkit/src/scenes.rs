@@ -154,7 +154,7 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
 /// replay on it.
-pub fn scenes() -> [Scene; 122] {
+pub fn scenes() -> [Scene; 123] {
     [
         Scene {
             name: "turntable-start",
@@ -2555,6 +2555,30 @@ pub fn scenes() -> [Scene; 122] {
                 "hero",
                 "--clip",
                 "Hit_B",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "15",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The run with spring bones (M2 N5), the same frame as `lookdev-clip-run`: the hair lags the
+        // body's bob and keeps its shape, where VRM's step alone flings it out in ropes round the head.
+        Scene {
+            name: "lookdev-clip-run-springs",
+            args: &[
+                "--capture-ticks",
+                "31",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "Running_B",
                 "--time-of-day",
                 "10",
                 "--tier",

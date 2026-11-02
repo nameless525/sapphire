@@ -64,19 +64,22 @@ impl LiveMoves {
     }
 
     /// A new simulation of `scenario` with `config`, as a build with these edits in its documents would
-    /// make one: each edited set is revision 0, and everything the setup spawned has its numbers.
+    /// make one: each edited set is revision 0, and all the setup does runs on it, so what it spawns has
+    /// its numbers and a brain's first wait is drawn from it. As in that build, the setup can refuse an
+    /// edit, as a party does a set with no swap in it.
     pub fn start(
         &self,
         scenario: &Scenario,
         config: SimConfig,
     ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
-        let (mut sim, cast) = scenario.start(config)?;
+        let mut sim = Simulation::new(config);
         for path in scenario.documents {
             let name = document_file_name(path);
             if let (Some(id), Some(set)) = (scenario.set_of(name), self.latest(name)) {
-                sim.start_move_set_from(id, set.clone());
+                sim.stand_in_move_set(id, set.clone());
             }
         }
+        let cast = (scenario.setup)(&mut sim)?;
         Ok((sim, cast))
     }
 }
@@ -86,7 +89,7 @@ mod tests {
     use sapphire_core::Name;
     use sapphire_moves::MoveSetDocument;
 
-    use super::super::scenario::{SCENARIOS, duel_on, find_scenario, test_moves};
+    use super::super::scenario::{SCENARIOS, arena_fight_on, duel_on, find_scenario, test_moves};
     use super::super::script::{ATTEMPT_EVERY, attempts, fight};
     use super::super::{PlayError, Player, Recording, Replay};
     use super::*;
@@ -246,6 +249,51 @@ mod tests {
         // This build, without it, refuses.
         let refused = Player::new(replay, SCENARIOS);
         assert!(matches!(refused, Err(PlayError::MovesChanged { .. })), "{:?}", refused.err());
+    }
+
+    /// What a setup draws, it draws from the edit: a brain's first wait here, which a replay of the fight
+    /// would otherwise reach on no build at all, its hash saying the edit and its world not having it.
+    #[test]
+    fn a_new_fight_sets_up_on_the_edit() {
+        fn patient() -> MoveSet {
+            let text = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
+            let mut document = MoveSetDocument::parse(text).expect("parses");
+            let brain = document.brain.as_mut().expect("it has one");
+            (brain.patience.min, brain.patience.max) = (500, 500);
+            document.compile().expect("compiles")
+        }
+        fn built_with_it(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+            arena_fight_on(sim, patient())
+        }
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let mut live = LiveMoves::default();
+        live.remember("warrior.moves.ron", patient());
+        let (tuned, _) = live.start(scenario, scenario.config).expect("sets up");
+        let (built, _) =
+            Scenario { setup: built_with_it, ..*scenario }.start(scenario.config).expect("sets up");
+        assert_eq!(tuned.tables_hash(), built.tables_hash(), "the same tables");
+        assert_eq!(tuned.checksum(), built.checksum(), "and the same world, before a step");
+    }
+
+    /// The warrior thinks because its document says how, so a fight with an edit that takes that away has
+    /// a warrior who stands there, and no less of a fight to start.
+    #[test]
+    fn a_new_fight_starts_without_a_brain_an_edit_took_away() {
+        for name in ["arena-fight", "party"] {
+            let scenario = find_scenario(SCENARIOS, name).expect("listed");
+            let warrior = |sim: &Simulation| sim.actors().find(|actor| actor.brain.is_on()).is_some();
+            let (compiled, _) = scenario.start(scenario.config).expect("sets up");
+            assert!(warrior(&compiled), "{name}: the document as it stands has a brain");
+
+            let text = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
+            let mut document = MoveSetDocument::parse(text).expect("parses");
+            document.brain = None;
+            let mut live = LiveMoves::default();
+            live.remember("warrior.moves.ron", document.compile().expect("compiles"));
+            let (mut edited, cast) = live.start(scenario, scenario.config).expect("sets up");
+            assert!(!warrior(&edited), "{name}");
+            edited.step(&attempts(0, &cast));
+        }
     }
 
     /// `LiveMoves::start` leaves revision 0 with the edit, so a fight's checksums are a build's, however

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
-    self, LiveMoves, Player, Replay, SCENARIOS, compile_document, find_scenario,
+    self, LiveMoves, Player, Replay, SCENARIOS, ScenarioError, compile_document, find_scenario,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorView, Buttons, CharacterWorld, CombatSet, ControllerProfile,
@@ -1196,6 +1196,21 @@ fn a_swap_with_no_assist_left_still_swaps() {
     assert_eq!(f.active(), b);
     assert_eq!(f.move_name(b), None);
     assert_eq!(f.view(a).moves.current, None);
+}
+
+/// A new fight is what a build with the edit would make, and a party doesn't form on a set with no assist.
+#[test]
+fn a_new_fight_refuses_an_edit_that_leaves_no_assist() {
+    let (sim, _) = real_fight();
+    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let id = scenario.set_of("player.moves.ron").expect("its first");
+    let mut document = MoveSetDocument::parse(&edited("", "")).expect("parses");
+    document.moves.retain(|mv| mv.name != "swap_in");
+    let set = document.compile_over(sim.move_library().current(id).expect("its set")).expect("compiles");
+    let mut live = LiveMoves::default();
+    live.remember("player.moves.ron", set);
+    let refused = live.start(scenario, scenario.config).map(|_| ());
+    assert!(matches!(refused, Err(ScenarioError::Party(PartyError::NoSwapInMove { .. }))), "{refused:?}");
 }
 
 /// The suite's `party-swap`, tick by tick: what [`replay`]'s script says of it. If this moves, its comments do.

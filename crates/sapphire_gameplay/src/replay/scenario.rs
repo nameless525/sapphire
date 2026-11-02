@@ -363,12 +363,17 @@ pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 /// presentation to stand where they are; input reaches only the player, since the brain overrides the
 /// warrior's stick and none of its intents has a button.
 pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    arena_fight_on(sim, warrior_moves()?)
+}
+
+/// [`arena_fight`], with `warrior` for the warrior's moves.
+pub(super) fn arena_fight_on(sim: &mut Simulation, warrior: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
     let cooked = crate::arena::cooked_colliders()?;
     let set = ColliderSet::read(&cooked)?;
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
     let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
     let player_moves = Some(sim.add_move_set(player_moves()?));
-    let warrior = Some(sim.add_move_set(warrior_moves()?));
+    let warrior = Some(sim.add_move_set(warrior));
     let spawns = crate::arena::spawns();
     let player = sim.spawn(ActorSpawn {
         position: spawns.player.position(),
@@ -383,8 +388,8 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
         controller,
     })?;
     sim.set_warp_target(player, WarpTarget::Actor(enemy));
-    let thinking = sim.give_brain(enemy, player);
-    debug_assert!(thinking, "the warrior's document has a brain");
+    // An edit may have taken its brain away (`LiveMoves::start`), and then it stands there.
+    sim.give_brain(enemy, player);
     Ok(vec![player, enemy])
 }
 
@@ -414,8 +419,7 @@ pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     for member in members {
         sim.set_warp_target(member, WarpTarget::Actor(enemy));
     }
-    let thinking = sim.give_brain(enemy, first);
-    debug_assert!(thinking, "the warrior's document has a brain");
+    sim.give_brain(enemy, first);
     Ok(vec![first, enemy])
 }
 

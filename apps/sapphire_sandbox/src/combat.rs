@@ -156,14 +156,14 @@ impl LiveFight {
         })
     }
 
-    /// Reports this fight and makes the next. If it can't, which a scenario that started once has no
-    /// reason for, this one goes on.
+    /// Reports this fight and makes the next. If it can't, because a live edit took something the scenario
+    /// needs, this one goes on and it tries again as long after, so a save that puts it back is taken.
     fn start_over(&mut self) {
         self.report();
+        self.fell_at = None;
         match self.live.start(self.scenario, self.scenario.config) {
             Ok((sim, cast)) => {
                 (self.sim, self.cast) = (sim, cast);
-                self.fell_at = None;
                 self.fights += 1;
             }
             Err(error) => tracing::error!(target: LOG_TARGET, %error, "the fight can't start over"),
@@ -326,9 +326,10 @@ impl Combat {
         if fight.sim.tick() != 0 || fight.sim.move_library().is_current(id, &set) {
             return false;
         }
-        fight.live.remember(document, set);
-        match fight.live.start(fight.scenario, fight.scenario.config) {
-            Ok((sim, cast)) => (fight.sim, fight.cast) = (sim, cast),
+        let mut live = fight.live.clone();
+        live.remember(document, set);
+        match live.start(fight.scenario, fight.scenario.config) {
+            Ok((sim, cast)) => (fight.sim, fight.cast, fight.live) = (sim, cast, live),
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, "the fight keeps the moves it has");
                 return false;

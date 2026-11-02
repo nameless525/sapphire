@@ -270,13 +270,11 @@ impl Simulation {
         self.replace_move_set(id, set).map(|revision| Tuned::Replaced { revision })
     }
 
-    /// Makes `set` what a set started from, before the first step: revision 0, with everything spawned
-    /// so far taking its numbers, as if the scenario had loaded it (see
-    /// [`LiveMoves`](crate::replay::LiveMoves)). `None` for an ID this simulation never gave.
-    pub(crate) fn start_move_set_from(&mut self, id: MoveSetId, set: MoveSet) -> Option<()> {
-        debug_assert_eq!(self.tick(), 0, "only a simulation that hasn't stepped can start over");
-        self.replace_move_set(id, set.clone())?;
-        self.ecs.world_mut().resource_mut::<MoveLibrary>().start_over(id, set)
+    /// Makes `set` what the set added as `id` will be, whatever it's added with, before a scenario sets up:
+    /// revision 0, with whatever its setup spawns and draws from it taking its numbers, as if the scenario
+    /// had loaded it (see [`LiveMoves`](crate::replay::LiveMoves)).
+    pub(crate) fn stand_in_move_set(&mut self, id: MoveSetId, set: MoveSet) {
+        self.ecs.world_mut().resource_mut::<MoveLibrary>().stand_in(id, set);
     }
 
     /// The hash of the move data, controller profiles and collision world this simulation runs on,

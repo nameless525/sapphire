@@ -128,6 +128,8 @@ struct Revision {
 pub struct MoveLibrary {
     /// Each set's revisions still in use, oldest first; the last is current.
     sets: Vec<Vec<Revision>>,
+    /// What [`Self::add`] takes for these IDs when it reaches them, whatever it's given.
+    stand_ins: Vec<(MoveSetId, MoveSet)>,
 }
 
 fn revision(number: u32, set: MoveSet) -> Revision {
@@ -138,8 +140,15 @@ fn revision(number: u32, set: MoveSet) -> Revision {
 impl MoveLibrary {
     pub(crate) fn add(&mut self, set: MoveSet) -> MoveSetId {
         let id = MoveSetId(u32::try_from(self.sets.len()).expect("fewer than 2³² sets"));
+        let stand_in = self.stand_ins.iter().position(|(stands_for, _)| *stands_for == id);
+        let set = stand_in.map_or(set, |index| self.stand_ins.swap_remove(index).1);
         self.sets.push(vec![revision(0, set)]);
         id
+    }
+
+    /// Has the set that will be added as `id` be `set`, whatever it's added with.
+    pub(crate) fn stand_in(&mut self, id: MoveSetId, set: MoveSet) {
+        self.stand_ins.push((id, set));
     }
 
     /// Makes `set` the current revision, and drops older ones `in_use` doesn't name. Returns the new
@@ -196,13 +205,6 @@ impl MoveLibrary {
     pub fn is_current(&self, id: MoveSetId, set: &MoveSet) -> bool {
         let cooked = set.to_cooked().expect("a set that compiled writes");
         self.revisions(id).last().is_some_and(|current| current.hash == xxh3_64(&cooked))
-    }
-
-    /// Starts a set over from `set`, as if that were what was added: revision 0, for a simulation that
-    /// hasn't stepped. Returns `None` for an ID this library never gave.
-    pub(crate) fn start_over(&mut self, id: MoveSetId, set: MoveSet) -> Option<()> {
-        *self.sets.get_mut(id.0 as usize)? = vec![revision(0, set)];
-        Some(())
     }
 
     /// How many sets are loaded: IDs count up from 0.

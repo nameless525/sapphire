@@ -370,7 +370,7 @@ pub struct FramePacket {
 | `sapphire_debug` | L3 | Debug draw, stats, dev console, inspector (dev only) | `egui`, `egui-wgpu` | M1 |
 | `sapphire_hot_reload` | dev only | Desktop hot reload: watches packs, WGSL sources and documents (dev only) | `notify` | M1 |
 | `sapphire_world` | L4 | Time of day; zones, cells, prefabs, spawning, transitions | — | M1 (time of day), M3 |
-| `sapphire_gameplay` | L4 | Controller, combat core, abilities, party, targeting, AI framework | `statig` | M2 |
+| `sapphire_gameplay` | L4 | Controller, combat core, abilities, party, targeting, AI framework | — | M2 |
 | `sapphire_camera` | L4 | The camera director: rigs, sphere-cast collision, springs on its own clock, shakes | — | M2 |
 | `sapphire_controls` | L5 | Combat's bindings, the mapping from each frame's input to each tick's, and the pause | `sapphire_input`, `sapphire_gameplay` | M2 |
 | `sapphire_cues` | L5 | What a gameplay cue fires: effects, sound, shake, screen effects and rumble, from one table in one frame | `sapphire_gameplay`, `sapphire_audio`, `sapphire_vfx`, `sapphire_camera`, `sapphire_world` | M2 |
@@ -2167,8 +2167,18 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 **Enemy AI**
 
 - An enemy's "brain" outputs intents into the *same* move system the player uses, so bosses are authored in the same timeline editor.
-- `statig` hierarchical state machines handle behavior states; utility scores pick attacks.
+- A plain `enum` and a `match` handle behavior states, not `statig` (M2 G6's evaluation, below); utility scores pick attacks.
 - An encounter director hands out attack tokens and manages waves. Boss phases are data plus Luau hooks.
+- **As built (M2 G6, `sapphire_gameplay::brain`):** one enemy's brain; the director and boss phases wait.
+  - **Faces:** `step_brain(&mut Brain, &BrainDef, &Seen, &mut Pcg32) -> BrainOutput` is one brain for one tick, plain values in and out, as `step_controller` is; `Brain` is the component every pooled actor carries, off until `Simulation::give_brain(actor, target)`, which needs the actor's set to have a brain. `think` runs in `CombatSet::Intents`, after `press_intents`, in ID order, on the owner's clock. A frozen clock stops it: nothing runs down and nothing is drawn, so hitstop costs it no patience.
+  - **Same paths as a player:** it presses with `IntentRing::press`, counted in the same stats, and tilts `Controls::current.stick`, which `move_characters` reads. It aims warps through `WarpTarget::Actor`, and `ControllerDrive::face` (new, also for a later lock-on strafe) keeps it facing its target while the stick points elsewhere, at the brain's own turn rate. It reads only `ActorTransform`, `MoveRunner`, `MoveOutput::windows` and `Fighter`: what a player reads off a screen, as `TargetDoing` (free, swinging, opening, reacting, untouchable).
+  - **States:** `Pacing`, keeping a band of distance (walk in past `far`, back off inside `near`, stand or circle between, by a drawn `circle_share`), and looking for an attack once its patience is out; `Attacking`, the move it pressed, known by its serial; `Resting`, for a drawn `rest` after an attack, then a new patience; `Reacting`, any move it didn't press, pressing nothing but `rise` at a tick drawn inside `during`'s window, then a drawn `recover`, keeping the patience it had, so being hit doesn't put off its next attack; `Defeated`, for good. A poise break lying down is a new reaction with no rise. A target that's gone or defeated leaves it standing.
+  - **Attacks:** `BrainAttack::score` is weight × reach (a tent: 0 at `near`, 1 at `best`, 0 at `far`) × `against` (a multiplier per `TargetDoing`) × `recent` (from `floor` back to 1 over `ticks` since it was used). One is drawn in proportion from `SimRng`; if none scores it keeps walking and draws nothing. `each_shipped_attack_lands_from_where_it_says_it_suits` holds the shipped reaches to what the volumes and warps do: the farthest hit from a standing start is 2.7 m for `swipe`, 3.4 for `overhead` and 6.1 for `lunge`, which found the first guess's 7 m wrong.
+  - **Data:** the `brain:` section of the enemy's own move document (`BrainDocument`, compiled to `BrainDef` in `MoveSet` 3), beside its `fighter:`, for the same reasons: it reaches `tables_hash`, so a replay refuses a stale brain, T2's `replace_move_set` replaces it, and it needs no new asset kind, cooker or hash term. Every number and name is checked with the document's issues.
+  - **Why no `statig`:** tried, at 0.4.1. It runs without allocating and its generated `State` can be `Copy`. But `StateMachine` isn't `Copy`, can be read and not written, and has a private `initialized` flag beside the state, so the checksum's flip tests can't reach it; it brings a macro and five build-time crates, one of them (`proc-macro-error2`) with a future-incompatibility warning on every build; and hierarchy and entry or exit actions have nothing to do here. Boss phases may want hierarchy; that's a decision for then.
+  - **Replays:** scenario `arena-fight`: the arena, the player on the test moves, the warrior on its own document. `arena-fight-still` (`idle`, 2,400 ticks): the player takes hits to defeat at tick 1,737 and the warrior then stands. `arena-fight-won` (`fight-back`, 2,100 ticks): a blind script of dodges and dash attacks, whose warps aim them, beats it at tick 1,747 with 225 of 300 health left. `tests/brain.rs` holds each file to what it's meant to contain.
+  - **Cost (R9):** `brain_bench` on an M5, release, at a load average of about 30, minimums of 7 alternating rounds of 20,000 steps: `step_brain` takes 10 ns pacing and 17 ns choosing among 3 attacks; `think` adds 0.02 µs a brain at 2 actors and 0.34 at 64 (brains standing, against the same world with them off); a duel's median step is 2.1 µs and 99.9th percentile 3.1, and 16 and 64 thinking actors take 12.2 and 58.2 µs at the median, against 1,000 µs. Their 99.9th percentiles, 7.6 and 21 ms, are the scheduler's quantum at that load: steps add up to a quarter of a second a round, which is about 20 preemptions. No allocation from the first tick (`a_brain_allocates_nothing_from_the_first_step`).
+  - **Gaps:** a light hit interrupts every wind-up, since none has armour, so a player who keeps hitting never gets hit; that's Feel review 3's to judge, and its levers are the moves' `armour` and the brain's numbers. A defeated actor's capsule stays as an obstacle, as G3 left it. Target choice is a fixed foe: no factions and no director yet. No string: the swipe's late cancel window goes unused.
 
 **Tests**
 
@@ -3174,7 +3184,6 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `lewton` | 0.10 | `sapphire_assets` | MIT or Apache-2.0. Pure Rust Vorbis decoding, so `symphonia` (MPL-2.0) stays out |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `rerecast`, `landmass` | 0.4, 0.9 | `sapphire_nav`, `sapphire_pipeline` | Vendor both (small maintainer base) |
-| `statig` | 0.4 | `sapphire_gameplay` | |
 | `mlua` (feature `luau`) | 0.12 | `sapphire_script` | No `luau-jit` |
 | `fluent`, `icu` | 0.17, 2.4 | `sapphire_loc` | |
 | `reqwest`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | latest | `sapphire_patch` (later) | **unchecked** |

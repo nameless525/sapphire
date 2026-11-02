@@ -365,9 +365,15 @@ impl FrameCapture {
             match compress(width, height, pixels, MAX_CAPTURE) {
                 Ok((halved, png)) => {
                     tracing::info!(target: LOG_TARGET, frame, width, height, halved, bytes = png.len(), elapsed = ?stopwatch.elapsed(), "live link captured a frame");
+                    let captured = |png| ReplyBody::Captured(Capture { frame, width, height, halved, png });
+                    // The last reply takes the PNG itself, so the usual single capture copies nothing.
+                    let mut replies = replies;
+                    let last = replies.pop();
                     for reply in replies {
-                        let capture = Capture { frame, width, height, halved, png: png.clone() };
-                        reply.reply(ReplyBody::Captured(capture));
+                        reply.reply(captured(png.clone()));
+                    }
+                    if let Some(reply) = last {
+                        reply.reply(captured(png));
                     }
                 }
                 Err(error) => {

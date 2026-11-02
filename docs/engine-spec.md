@@ -359,7 +359,8 @@ pub struct FramePacket {
 | `sapphire_tod` | L3 | Time of day's model: keys, timelines, looks and how they blend | `serde`, `bevy_reflect` | M1 |
 | `sapphire_moves` | L2 | Moves' cooked plain data: frame data, baked root motion and hit-volume tables. The cooker can link it. | `rkyv` | M2 |
 | `sapphire_anim` | L3 | Skeletal runtime, anim graph, IK, spring bones (cloth later) | Our own, on `glam` | M2 |
-| `sapphire_physics` | L3 | Collision world, queries, character capsules, hit shapes | `rapier3d`, `parry3d` | M2 |
+| `sapphire_colliders` | L2 | Collider documents, their cooked form and collision groups, as plain data. The cooker can link it. | `rkyv` | M2 |
+| `sapphire_physics` | L3 | Collision world, queries, character capsules, hit shapes | `parry3d` | M2 |
 | `sapphire_audio` | L3 | Audio backend and cue playback | `kira`, behind `AudioBackend` | M2 |
 | `sapphire_vfx` | L3 | Particles (CPU in M2, GPU later), trails, decals, screen effects | `sapphire_render` | M2–M3 |
 | `sapphire_ui` | L3 | Retained game UI and text (M3); touch controls and a quad HUD (M2) | `taffy`, `parley` (M3) | M2–M3 |
@@ -1615,20 +1616,27 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 **How**
 
-- Wrap `rapier3d` 0.36 completely behind engine types, so a Rapier upgrade or a switch to Jolt touches only this crate.
+- **Decision ([m2-plan.md](m2-plan.md) §3, changed by D3's spike): `parry3d` 0.31 directly, with no Rapier,** completely behind engine types, so a change of library or a switch to Jolt touches only this crate. `rapier3d`'s `enhanced-determinism` changes `glam` for the whole process, and its controller allocates on every step, warmed (R6).
 - **Uses:**
-  - Static world collision (trimesh, convex, heightfield).
-  - Kinematic character capsules.
-  - A few dynamic props.
-  - Trigger sensors.
+  - Static world collision (boxes, spheres, capsules, triangle meshes).
+  - Kinematic character capsules, and spheres and boxes that follow them, such as hurtboxes.
+  - Later, if a game needs them: a few dynamic props, trigger sensors, heightfields. They go behind the same types.
 - **Queries:** ray casts, shape casts and overlaps for the controller, camera and AI.
-- **Step:** fixed 60 Hz inside `FixedPhysics`, with the deterministic feature on. M2's first package checks what that feature does to `glam` for the whole process, and whether a warmed controller allocates (R6). If either is trouble, the kinematic controller is written on `parry3d` directly ([m2-plan.md](m2-plan.md), D3).
+- **Step:** none while nothing is dynamic. A move or a new pose applies at once, so queries later in the same tick read it, and `FixedPhysics` has nothing to do.
 - **Hit detection is not rigid-body physics.** `HitQuery` uses `parry3d` 0.31 shapes:
   - Hitboxes are spheres, capsules or oriented boxes that follow bones through tables baked at cook time, so the simulation runs headless and never reads a pose. During a blend the visible bone can differ slightly from its volume, which the debug view shows.
   - Each tick, a hitbox is swept from its previous position to its current one, so a fast swing can't tunnel through a target between 60 Hz ticks.
   - It tests against the hurtbox set, with broadphase over a dedicated collision group.
   - Multi-hit attacks dedupe hits by hit-group ID.
 - Ragdolls come *later*. If console certification or large worlds ever demand it, swap in Jolt (via `joltc`).
+- **As built (M2 D3, `sapphire_physics`, `sapphire_colliders`):** the spike's evidence is in [m2-plan.md](m2-plan.md)'s D3 row.
+  - **The world:** `PhysicsWorld::new` or `from_cooked` builds statics once, into one tree sorted by ID. Bodies are a list sorted by `BodyId`, tested group first, so a hurtbox's group is its broadphase. Nothing allocates after that within `body_capacity`, from the first call.
+  - **Moves:** `move_and_collide` pushes out of overlaps, sweeps, stops a skin short of what it hits, slides, and returns each surface's normal, point and fraction of the motion (`MoveOutcome`). What counts as ground or a step is G1's. Sweeps are continuous, so no speed tunnels.
+  - **Queries:** `cast_ray`, `cast_shape`, `cast_shape_all`, `overlap`, `penetration` and `cast_body`. Groups are engine types (`Group`, `GroupMask`, `CollisionGroups`), and `Group::Hurtbox` is D4's.
+  - **Sweeps by GJK's distance alone:** the gap along a straight path is convex, so Newton's method on it lands at or short of the surface, and a slope that stops closing is an exact miss. GJK's distance reads up to 0.1% long, so a shape whose radius doesn't cover that holds its step back by it. `query::cast_shapes` and `query::contact` aren't used: EPA allocates on any overlap, and their ray cast can miss a wall dead ahead. Overlaps measure from the shapes' cores (a capsule's segment, a sphere's center), so a box has no overlap normal and can't `move_and_collide`.
+  - **Determinism:** per architecture. Results depend on a world's contents, never its history, and `write_canonical` writes its state as canonical bytes. `tests/checksum.rs` pins arm64; x86-64 is filled in from CI, where Linux and Windows must agree. A compile-time assert on glam's alignments fails any build where a crate turns `enhanced-determinism` on.
+  - **Documents:** `.colliders.ron` (`ColliderDocument` 1) cooks to `.scol` (`ColliderSet` 1, `AssetKind::Colliders`) and every refusal names its entry. `[cooker]` in `xtask/layers.toml` keeps collision libraries, the renderer and the world out of the tool. Meshes are inline in the document, with no reference to a mesh asset yet.
+  - **Budget:** `physics_bench` on an M5, under load: a median step of 21–25 µs against 700 µs, with 2 moves and 20 queries on an 8,192-triangle mesh; with 6 bodies, a p99 of 30.5 µs and a worst of 37.1. No phone has run it. `PhysicsWorld::take_stats` is R9's counter.
 
 ### 5.15 `sapphire_audio` (L3)
 
@@ -2285,6 +2293,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 | Move graphs, frame data, effects, UI, tiers | Editor documents (RON) | serde | rkyv | rkyv |
 | Zones | Blender glTF + custom-property extras, plus editor documents | `gltf` | Cells, instances, probes, navmesh tiles (`rerecast`) | Same, with lower density and fewer probes |
 | Ambient probe grids | `.probes.ron` documents naming the zone's meshes | serde | rkyv `.sprobe`: sparse bricks, L2 sky visibility, L1 bounce per time-of-day key | Same, at twice the spacing with L1 visibility |
+| Static collision | `.colliders.ron` documents: named boxes, spheres, capsules and triangle meshes | serde | rkyv `.scol`, sorted by name, so a collider's place is its ID | Same |
 | Shaders | WGSL / WESL | `wesl`, `naga` | Validated WGSL plus permutation inventory | Same, with mobile tier flags |
 | Audio | WAV / OGG plus cue RON | Copied or transcoded by the cooker | OGG plus cues | OGG plus cues |
 | Fonts | TTF / OTF | `skrifa` | Subset font plus MSDF atlas for display text | Same |
@@ -2758,7 +2767,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `wgpu-profiler` | 0.28 | `sapphire_rhi` | Not used (M1 F5): the frame graph times its passes itself, see §5.20 |
 | `dlss_wgpu` | 6.0 | `sapphire_render` (Windows / Linux) | NVIDIA + Vulkan only |
 | `objc2-metal-fx`, `objc2-foundation` | latest | `sapphire_render`, `sapphire_platform` (Apple) | |
-| `rapier3d`, `parry3d` | 0.36, 0.31 | `sapphire_physics` | Jolt via `joltc` as the escape hatch |
+| `parry3d` | 0.31 | `sapphire_physics` | Never with `enhanced-determinism`, which changes glam for the whole process (M2 D3). Jolt via `joltc` as the escape hatch |
 | `kira` | 0.12 | `sapphire_audio` | MIT or Apache-2.0, on `cpal`. Phones are community-confirmed, so M2 tests them early |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `rerecast`, `landmass` | 0.4, 0.9 | `sapphire_nav`, `sapphire_pipeline` | Vendor both (small maintainer base) |

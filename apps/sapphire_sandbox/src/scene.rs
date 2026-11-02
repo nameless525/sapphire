@@ -141,7 +141,7 @@ use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::garments;
 use crate::hud::SandboxHud;
 use crate::ik::{IkControls, IkDriver, IkGround, IkLook, IkOptions};
-use crate::input::SimActions;
+use crate::input::{SandboxInput, SimActions};
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
@@ -1689,6 +1689,20 @@ impl Scene {
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(drawn.mesh()));
     }
 
+    /// The view's share of a windowed frame, `dt` real seconds after the last: `input`'s orbit and zoom,
+    /// on the real clock so the view stays responsive in slow motion. A pause holds a fight's view, as the
+    /// director's frame asks, shakes and all: only the sandbox's own orbit still moves, for looking
+    /// around at what's held. Returns the seconds the view moved by, for [`Self::end_cue_frame`].
+    pub fn drive_view(&mut self, input: &SandboxInput, dt: f32) -> f32 {
+        let view_dt = if input.is_paused() { 0.0 } else { dt };
+        let mut camera = self.camera_mut();
+        input.drive_camera(&mut camera);
+        camera.update(dt);
+        let (look, zoom) = input.camera_motion();
+        self.drive_arena_camera(view_dt, look, zoom);
+        view_dt
+    }
+
     /// Gives the arena's camera director this much real time and input for its next frame, if one's
     /// on, and says whether it took them.
     pub fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
@@ -1988,10 +2002,10 @@ impl Scene {
 
     /// Ends a frame's steps of a fight's cues, `dt` real seconds after the last frame's, for a frame drawn
     /// at `alpha`, after the audio system took [`Self::cue_sounds`]: tells `rumble` what changed, and
-    /// shakes the camera for the frame to come.
-    pub fn end_cue_frame(&mut self, dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) {
+    /// shakes the camera for the frame to come by `view_dt`, what [`Self::drive_view`] gave the view.
+    pub fn end_cue_frame(&mut self, dt: f32, view_dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) {
         let Some(cues) = &mut self.cues else { return };
-        let (turn, offset) = cues.end_frame(dt, alpha, rumble);
+        let (turn, offset) = cues.end_frame(dt, view_dt, alpha, rumble);
         // With a director on, its own frame has the shakes, and a turn its roll.
         if self.arena.as_mut().is_none_or(|arena| arena.director().is_none()) {
             self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
@@ -2218,7 +2232,7 @@ impl Scene {
         &mut self,
         now: sapphire_platform::Timestamp,
         window: &sapphire_platform::Window,
-        input: &mut crate::input::SandboxInput,
+        input: &mut SandboxInput,
     ) {
         let Some(hud) = &mut self.hud else { return };
         let metrics = hud.metrics_of(window);
@@ -2231,7 +2245,7 @@ impl Scene {
         &mut self,
         now: sapphire_platform::Timestamp,
         metrics: sapphire_ui::UiMetrics,
-        input: &mut crate::input::SandboxInput,
+        input: &mut SandboxInput,
     ) {
         let Some(hud) = &mut self.hud else { return };
         if let Some(touch) = hud.update(now, metrics) {
@@ -2700,6 +2714,58 @@ mod tests {
         director.fire_shake(finish, 1.0);
         let most = (0..30).map(|_| tilt(&mut scene, 1.0 / 60.0)).fold(0.0_f32, f32::max);
         assert!(most > 1e-3, "it rolls: {most}");
+    }
+
+    /// A pause holds what's on screen, a shake mid-swing and the director's springs among it, however
+    /// long it lasts, and the shake plays on from there when it ends.
+    #[test]
+    fn a_pause_holds_the_directors_view_and_its_shake() {
+        let (mut scene, _) = arena_stage(ArenaShot::Director);
+        let size = sapphire_platform::Size { width: 1000, height: 500 };
+        let mut input = SandboxInput::new(true, true, size).expect("the default bindings");
+        let press = |input: &mut SandboxInput, at: u64| {
+            let time = |ms: u64| sapphire_platform::Timestamp::from_nanos(ms * 1_000_000);
+            let key = |ms: u64, down| {
+                sapphire_platform::Event::Key(sapphire_platform::KeyEvent {
+                    timestamp: time(ms),
+                    window: sapphire_platform::WindowId::from_raw(1),
+                    scancode: sapphire_platform::Scancode::P,
+                    keycode: sapphire_platform::Keycode(0),
+                    modifiers: sapphire_platform::Modifiers::default(),
+                    down,
+                    repeat: false,
+                })
+            };
+            input.handle_event(&key(at, true));
+            input.handle_event(&key(at + 1, false));
+            input.update(time(at + 2));
+        };
+        let frame = |scene: &mut Scene, input: &SandboxInput| {
+            scene.drive_view(input, 1.0 / 60.0);
+            let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera.view;
+            scene.end_frame();
+            view
+        };
+        let _ = frame(&mut scene, &input);
+        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
+        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
+        director.fire_shake(finish, 1.0);
+        for _ in 0..4 {
+            let _ = frame(&mut scene, &input);
+        }
+
+        press(&mut input, 100);
+        assert!(input.is_paused());
+        let held = frame(&mut scene, &input);
+        for _ in 0..120 {
+            assert_eq!(frame(&mut scene, &input), held, "nothing moves in a pause");
+        }
+
+        press(&mut input, 200);
+        input.update(sapphire_platform::Timestamp::from_nanos(210_000_000));
+        assert!(!input.is_paused());
+        let moved = (0..4).any(|_| frame(&mut scene, &input) != held);
+        assert!(moved, "the shake plays on from where it was");
     }
 
     /// The arena stands its two actors where the simulation has them, and no turntable moves them:
@@ -4278,7 +4344,7 @@ mod tests {
             combat.step(&mut crate::combat::no_bindings);
             scene.show_cues(combat.simulation());
             let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
             let shaken = view_at(&scene) != still;
             let packet = scene.frame_packet(1.0, Some((640, 360)));
             let (spark, effects) = (!packet.vfx.is_empty(), packet.post.effects);
@@ -4288,7 +4354,7 @@ mod tests {
                 assert_ne!(effects, sapphire_render::PostEffects::NONE, "the hit's screen effect");
                 assert!(!shaken, "its shake is fired, and reads from where it begins, which is nothing");
                 scene.step();
-                scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
+                scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
                 assert!(view_at(&scene) != still, "the hit's shake, a frame on");
                 landed = true;
                 break;
@@ -4317,7 +4383,7 @@ mod tests {
             scene.follow_simulation(combat.simulation(), &cast);
             scene.show_cues(combat.simulation());
             scene.show_damage(combat.simulation());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
         };
         // How far the view's right has left level, whether the frame draws no effects, its screen
         // effects, and the numbers its HUD draws.
@@ -4369,7 +4435,7 @@ mod tests {
                 combat.step(&mut crate::combat::no_bindings);
                 let ((), fired) = sapphire_core::alloc::count_in_scope(|| {
                     scene.show_cues(combat.simulation());
-                    scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
+                    scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
                 });
                 allocations += fired.allocations;
                 let _ = scene.frame_packet(1.0, Some((640, 360)));
@@ -4390,7 +4456,7 @@ mod tests {
             scene.step();
             combat.step(&mut crate::combat::no_bindings);
             scene.show_cues(combat.simulation());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
             let packet = scene.frame_packet(1.0, Some((640, 360)));
             assert!(packet.vfx.is_empty());
             assert_eq!(packet.post.effects, sapphire_render::PostEffects::NONE);

@@ -495,17 +495,13 @@ impl App for SandboxApp {
 
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
-        let mut camera = self.scene.camera_mut();
-        self.input.drive_camera(&mut camera);
-        camera.update(dt);
-        let (look, zoom) = self.input.camera_motion();
-        self.scene.drive_arena_camera(dt, look, zoom);
+        let view_dt = self.scene.drive_view(&self.input, dt);
         let presentation = stopwatch.lap();
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, self.scene.sound(), self.scene.cue_sounds());
         }
         let pad = self.input.active_gamepad();
-        self.scene.end_cue_frame(dt, steps.alpha, &mut PadRumble { platform, pad });
+        self.scene.end_cue_frame(dt, view_dt, steps.alpha, &mut PadRumble { platform, pad });
         self.stages.audio = stopwatch.lap();
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,

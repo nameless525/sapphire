@@ -105,7 +105,7 @@ impl Fight {
         self.combat.step(&mut no_bindings);
         self.scene.follow_simulation(self.combat.simulation(), self.combat.cast());
         self.scene.show_cues(self.combat.simulation());
-        self.scene.end_cue_frame(TICK, 1.0, &mut ());
+        self.scene.end_cue_frame(TICK, TICK, 1.0, &mut ());
     }
 
     fn simulation(&self) -> &Simulation {
@@ -374,7 +374,7 @@ fn a_hits_shake_starts_when_the_pose_gets_there() {
             combat.step(&mut no_bindings);
             scene.follow_simulation(combat.simulation(), combat.cast());
             scene.show_cues(combat.simulation());
-            scene.end_cue_frame(TICK, 0.5, &mut ());
+            scene.end_cue_frame(TICK, TICK, 0.5, &mut ());
             let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
             if hit && landed.is_none() {
                 landed = Some(frame);

@@ -217,10 +217,17 @@ impl CueShow {
 
     /// Ends the frame's steps, `dt` real seconds after the last frame's, for a frame drawn at `alpha`:
     /// forgets its sounds, tells `rumble` what changed, and returns where its shakes turn and move the
-    /// view.
-    pub fn end_frame(&mut self, dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) -> (Vec3, Vec3) {
+    /// view, having played them by `view_dt`, which a pause holds at zero. A pad's rumble runs on: it's in
+    /// the player's hands, not on the screen.
+    pub fn end_frame(
+        &mut self,
+        dt: f32,
+        view_dt: f32,
+        alpha: f32,
+        rumble: &mut dyn RumbleSink,
+    ) -> (Vec3, Vec3) {
         self.dispatcher.end_frame(dt, rumble);
-        self.shakes.stack.advance(dt, behind_latest(alpha));
+        self.shakes.stack.advance(view_dt, behind_latest(alpha));
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
     }
 
@@ -379,13 +386,20 @@ mod tests {
         assert!(director.take_stats().shakes_fired > 0, "its shakes are the director's");
         let shaken = |show: &mut CueShow| {
             // A shake reads from where it begins on the frame it fires, and moves the view from the next.
-            let _ = show.end_frame(1.0 / 60.0, 1.0, &mut ());
-            show.end_frame(1.0 / 60.0, 1.0, &mut ())
+            let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
+            show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ())
         };
         assert_eq!(shaken(&mut with_director), (Vec3::ZERO, Vec3::ZERO));
 
         let mut plain = run(None);
-        assert_ne!(shaken(&mut plain), (Vec3::ZERO, Vec3::ZERO), "the plain view's shake");
+        let moved = shaken(&mut plain);
+        assert_ne!(moved, (Vec3::ZERO, Vec3::ZERO), "the plain view's shake");
+        assert_eq!(plain.end_frame(1.0 / 60.0, 0.0, 1.0, &mut ()), moved, "a pause holds it");
+        assert_ne!(
+            plain.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ()),
+            moved,
+            "and it plays on from there"
+        );
     }
 
     /// The shipped table resolves against the libraries a scene starts with.

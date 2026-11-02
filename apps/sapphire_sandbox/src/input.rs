@@ -142,7 +142,6 @@ impl SandboxInput {
     }
 
     /// Whether the steps are stopped.
-    #[cfg(test)]
     pub fn is_paused(&self) -> bool {
         self.controls.is_paused()
     }

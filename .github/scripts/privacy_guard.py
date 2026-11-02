@@ -41,7 +41,8 @@ SECRET_PATTERNS = (
 PERSONAL_DOMAINS = {b"gmail.com", b"icloud.com", b"outlook.com", b"hotmail.com", b"yahoo.com",
                     b"protonmail.com", b"proton.me", b"me.com", b"live.com"}
 EXAMPLE_DOMAINS = {b"example.com", b"example.org", b"example.net"}
-BOT_EMAILS = {b"noreply@github.com", b"noreply@anthropic.com"}
+# Public service addresses. support@github.com is what Dependabot signs its commits off with.
+BOT_EMAILS = {b"noreply@github.com", b"noreply@anthropic.com", b"support@github.com"}
 # Verified public GitHub profile alias used on GitHub's synthetic PR merge commits.
 # Scope this to the exact public identity; do not allow arbitrary real-name headers.
 PUBLIC_NAME_ALIASES = {b"342860605+nameless525@users.noreply.github.com": {b"nameless"}}

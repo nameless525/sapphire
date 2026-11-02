@@ -54,6 +54,10 @@ class ContentTests(unittest.TestCase):
         self.assertTrue(pg.public_email(b"49699333+dependabot[bot]@users.noreply.github.com"))
         self.assertFalse(pg.public_email(b"person@example.com"))
 
+    def test_dependabot_sign_off_is_public_but_a_person_signing_off_is_not(self):
+        self.assertFalse(self.rules(b"Signed-off-by: dependabot[bot] <support@github.com>"))
+        self.assertTrue(self.rules(b"Signed-off-by: A Person <" + PRIVATE.encode() + b">"))
+
     def test_private_filename_rules(self):
         for path in (b".env", b"src/.env.production", b".aws/credentials", b"signing/release.p12",
                      b"CLAUDE.md", b".claude/tools/run.sh", b".claude/settings.local.json"):

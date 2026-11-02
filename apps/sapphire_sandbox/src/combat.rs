@@ -16,6 +16,14 @@
 //! ([`Combat::keep_so_far`]), since a phone kills what's in the background without saying so and an
 //! iPhone's app never quits. Only what came after the last of those is lost to a killed process.
 //!
+//! **A session nobody can play again survives a bad save** ([`SessionFiles`]), on both of those routes.
+//! Each write goes beside the file first, so a process killed in the middle of one leaves the last whole
+//! file standing, and it replaces only what this session put there. A file that can't be written, for a
+//! full disk, a directory gone since the run began or someone else's file at the name, sends the session
+//! to one file in the temp directory instead, and says where. If that fails too, the overlay's recorder
+//! goes on recording and asks to be tried again. Only when the app is already quitting is what came after
+//! the last file lost, and that error says so.
+//!
 //! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window,
 //! and with `--script`, `--offscreen` runs one for hot reload and live link.
 //!
@@ -33,6 +41,7 @@
 //! outside what rule R6 counts ([`read_bindings`]'s caller keeps it so).
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
@@ -90,6 +99,8 @@ enum Mode {
         script: Option<ScriptActions>,
         /// The tick limit, once reached.
         stopped: Option<ReplayError>,
+        /// The files its session has reached.
+        files: SessionFiles,
     },
     /// `--fight`: played, and kept nowhere.
     Fighting(LiveFight),
@@ -253,7 +264,8 @@ impl Combat {
         let script = script.map(script_actions).transpose()?;
         let recording = Recording::tuned(scenario, scenario.config, live)
             .map_err(|error| format!("--record: {error}"))?;
-        let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None };
+        let files = SessionFiles::new(std::env::temp_dir());
+        let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None, files };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
@@ -446,25 +458,55 @@ impl Combat {
     /// Writes what a recording of someone playing holds so far, for an app that may never come back from
     /// where it's going. A failure is logged and the fight goes on: there's no one to tell, and the next
     /// try, or the end, may do better. Nothing else has a file to keep.
-    pub fn keep_so_far(&self) {
-        let Mode::Recording { recording, script: None, .. } = &self.mode else { return };
+    pub fn keep_so_far(&mut self) {
+        let Mode::Recording { recording, script: None, files, .. } = &mut self.mode else { return };
         let replay = recording.so_far();
-        match write_replay(&self.path, &replay) {
-            Ok(bytes) => tracing::info!(
+        let bytes = replay.encode();
+        let size = bytes.len();
+        match files.write(&self.path, bytes) {
+            Ok(()) => tracing::info!(
                 target: LOG_TARGET,
                 path = %self.path.display(),
                 ticks = replay.ticks(),
-                bytes,
+                bytes = size,
                 checksum = %format_args!("{:016x}", recording.simulation().checksum()),
                 "kept the recording so far",
             ),
-            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the recording so far wasn't kept"),
+            Err(unwritten) => tracing::warn!(
+                target: LOG_TARGET,
+                error = %unwritten.into_message(),
+                "the recording so far didn't reach its file",
+            ),
         }
     }
 
-    /// Ends the run: checks a replay, or writes a recording, and logs where it got to.
-    pub fn finish(self) -> Result<(), String> {
+    /// Ends the run: checks a replay, or writes a recording, and logs where it got to. A session that
+    /// didn't reach its file fails this with an error that says what became of it.
+    pub fn finish(mut self) -> Result<(), String> {
         self.check()?;
+        let written = self.write_recording();
+        self.report_end(written.is_ok());
+        written.map_err(Unwritten::into_message)
+    }
+
+    /// Writes a recording as it stands, with the run going on, so that a session that reaches no file at
+    /// all can stay in memory and be tried again. Nothing else has a file to write.
+    fn write_recording(&mut self) -> Result<(), Unwritten> {
+        let Mode::Recording { recording, files, .. } = &mut self.mode else { return Ok(()) };
+        files.write(&self.path, recording.so_far().encode())
+    }
+
+    /// Removes what a recording thrown away wrote on the way.
+    #[cfg(any(feature = "dev", test))]
+    fn remove_files(&self) {
+        if let Mode::Recording { files, .. } = &self.mode {
+            files.remove(&self.path);
+        }
+    }
+
+    /// Logs where the run got to. A recording says so only if its file was `written`: what became of it
+    /// otherwise is the error's to say.
+    fn report_end(self, written: bool) {
         let Self { path, mode, steps_past_end } = self;
         match mode {
             Mode::Replaying { player, name, recorded } => {
@@ -518,21 +560,167 @@ impl Combat {
                 }
                 let (replay, played) = recording.finish();
                 log_gate(&played);
-                let bytes = write_replay(&path, &replay)?;
-                tracing::info!(
-                    target: LOG_TARGET,
-                    path = %path.display(),
-                    ticks = replay.ticks(),
-                    bytes,
-                    checksum = %format_args!("{:016x}", played.trail.end()),
-                    allocations = played.stats.allocations,
-                    "recorded a replay",
-                );
+                if written {
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        path = %path.display(),
+                        ticks = replay.ticks(),
+                        bytes = replay.encode().len(),
+                        checksum = %format_args!("{:016x}", played.trail.end()),
+                        allocations = played.stats.allocations,
+                        "recorded a replay",
+                    );
+                }
             }
             Mode::Fighting(fight) => fight.report(),
         }
-        Ok(())
     }
+}
+
+/// The files a recording's session has reached. Someone played it and no script makes it again, so it
+/// goes somewhere whatever happens, and each write knows what it may replace: `path` was free when the
+/// recording began, so anything there now that this didn't put there isn't this session's.
+struct SessionFiles {
+    /// Where the session goes if its own file won't take it.
+    rescue_dir: PathBuf,
+    /// What this session last put at its own name.
+    kept: Option<Vec<u8>>,
+    /// Where it last went instead, and what it put there: always later than `kept`.
+    rescued: Option<(PathBuf, Vec<u8>)>,
+}
+
+impl SessionFiles {
+    fn new(rescue_dir: PathBuf) -> Self {
+        Self { rescue_dir, kept: None, rescued: None }
+    }
+
+    /// Writes the session as `bytes` to `path`, or if it can't, to its one file in `rescue_dir`, however
+    /// many trips to the background that takes. Reaching `path` again removes that file, which is only an
+    /// older part of this now.
+    fn write(&mut self, path: &Path, bytes: Vec<u8>) -> Result<(), Unwritten> {
+        let error = match write_file(path, &bytes, self.kept.as_deref()) {
+            Ok(()) => {
+                if let Some((rescue, held)) = self.rescued.take()
+                    && holds(&rescue, &held)
+                {
+                    let _ = fs::remove_file(rescue);
+                }
+                self.kept = Some(bytes);
+                return Ok(());
+            }
+            Err(error) => error,
+        };
+        let failed = format!("--record {}: {error}", path.display());
+        let (rescue, ours) = match &self.rescued {
+            Some((rescue, held)) if holds(rescue, held) => (rescue.clone(), Some(held.as_slice())),
+            _ => (self.free_rescue(path), None),
+        };
+        match write_file(&rescue, &bytes, ours) {
+            Ok(()) => {
+                let message = format!("{failed}. The session is in {} instead", rescue.display());
+                self.rescued = Some((rescue, bytes));
+                Err(Unwritten::Rescued(message))
+            }
+            Err(second) => {
+                let left = self.last_file(path).map_or(String::new(), |file| {
+                    format!(". {} still holds it as far as it was last kept", file.display())
+                });
+                Err(Unwritten::Nowhere(format!(
+                    "{failed}. Nor would {} take the session: {second}{left}",
+                    rescue.display()
+                )))
+            }
+        }
+    }
+
+    /// A name for the session's file in `rescue_dir` that nothing has yet.
+    fn free_rescue(&self, path: &Path) -> PathBuf {
+        let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("session");
+        (1_u32..)
+            .map(|number| self.rescue_dir.join(format!("{stem}-unsaved-{number}.sreplay")))
+            .find(|rescue| !rescue.exists())
+            .expect("fewer than 2³² rescued sessions")
+    }
+
+    /// The file holding what was last written of the session, if that's still there as it was written.
+    fn last_file<'a>(&'a self, path: &'a Path) -> Option<&'a Path> {
+        let rescued = self.rescued.as_ref().filter(|(rescue, held)| holds(rescue, held));
+        let kept = self.kept.as_ref().filter(|kept| holds(path, kept));
+        rescued.map(|(rescue, _)| rescue.as_path()).or(kept.map(|_| path))
+    }
+
+    /// Removes what this session wrote, for one that's been thrown away. A file someone has changed since
+    /// isn't its to remove.
+    #[cfg(any(feature = "dev", test))]
+    fn remove(&self, path: &Path) {
+        if self.kept.as_ref().is_some_and(|kept| holds(path, kept)) {
+            let _ = fs::remove_file(path);
+        }
+        if let Some((rescue, held)) = &self.rescued
+            && holds(rescue, held)
+        {
+            let _ = fs::remove_file(rescue);
+        }
+    }
+}
+
+/// How a session failed to reach the file it was meant for.
+enum Unwritten {
+    /// It's in another file, which this names.
+    Rescued(String),
+    /// None of it went anywhere this time, and only the run holds what came after the last file, if any.
+    Nowhere(String),
+}
+
+impl Unwritten {
+    fn into_message(self) -> String {
+        match self {
+            Self::Rescued(message) | Self::Nowhere(message) => message,
+        }
+    }
+}
+
+/// Writes `bytes` to `path` beside itself first, so a process killed mid-write leaves the last whole file
+/// standing, and a full disk's part of a file never reads as a damaged replay. `ours` is what this
+/// session last put at `path`, the one thing there it may replace: anything else stays, and this fails.
+///
+/// A rename replaces whatever it lands on, so a name not known to be ours is claimed first, which fails
+/// if it's taken. Phones are why it isn't a hard link: Android refuses apps those. A kill between the
+/// claim and the rename leaves an empty file at the name, with the session whole beside it.
+fn write_file(path: &Path, bytes: &[u8], ours: Option<&[u8]>) -> std::io::Result<()> {
+    let partial = path.with_extension("partial");
+    fill(fs::File::create(&partial)?, &partial, bytes)?;
+    let replacing = ours.is_some_and(|ours| holds(path, ours));
+    let claimed = if replacing {
+        Ok(())
+    } else {
+        fs::OpenOptions::new().write(true).create_new(true).open(path).map(drop)
+    };
+    let placed = claimed.and_then(|()| {
+        fs::rename(&partial, path).inspect_err(|_| {
+            if !replacing {
+                let _ = fs::remove_file(path);
+            }
+        })
+    });
+    placed.inspect_err(|_| {
+        let _ = fs::remove_file(&partial);
+    })
+}
+
+/// Writes `bytes` to `file`, the file at `path`, and removes it if they don't all go in.
+fn fill(mut file: impl Write, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let written = file.write_all(bytes);
+    // Closed first: Windows may refuse to remove a file that's open.
+    drop(file);
+    written.inspect_err(|_| {
+        let _ = fs::remove_file(path);
+    })
+}
+
+/// Whether the file at `path` holds exactly `bytes`.
+fn holds(path: &Path, bytes: &[u8]) -> bool {
+    fs::read(path).is_ok_and(|now| now == bytes)
 }
 
 /// What a [`Combat`] is running, as the overlay shows it.
@@ -608,24 +796,33 @@ impl SessionRecorder {
         Combat::recording(&path, scenario, None, live)
     }
 
-    /// Ends a recording and writes it.
+    /// Ends a recording and writes it. If the session can reach no file at all, the recording goes on,
+    /// and saving again tries again.
     pub fn save(&mut self, combat: &mut Option<Combat>) {
-        let Some(recording) = take_recording(combat) else { return };
+        let Some(mut recording) = take_recording(combat) else { return };
         let edited_at = recording.edited_at();
         let ticks = edited_at.map_or(recording.simulation().tick(), u64::from);
         let path = recording.path.clone();
-        self.note = Some(match (recording.finish(), edited_at) {
+        let written = recording.write_recording();
+        if let Err(Unwritten::Nowhere(error)) = written {
+            self.note = Some(format!("{error}. It's still recording: stop and save to try again."));
+            *combat = Some(recording);
+            return;
+        }
+        recording.report_end(written.is_ok());
+        self.note = Some(match (written, edited_at) {
             (Ok(()), None) => format!("Saved {ticks} ticks to {}", path.display()),
             (Ok(()), Some(_)) => {
                 format!("Saved {ticks} ticks to {}: a live edit ended the file there", path.display())
             }
-            (Err(error), _) => error,
+            (Err(error), _) => error.into_message(),
         });
     }
 
-    /// Ends a recording and writes nothing.
+    /// Ends a recording, writes nothing, and removes what it kept on the way.
     pub fn discard(&mut self, combat: &mut Option<Combat>) {
         if let Some(recording) = take_recording(combat) {
+            recording.remove_files();
             self.note = Some(format!("Discarded {} ticks", recording.simulation().tick()));
         }
     }
@@ -645,17 +842,6 @@ pub(crate) fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn Acti
     if !asked {
         bindings.actions(0, &[player]);
     }
-}
-
-/// Writes `replay` to `path` beside itself first, so a process killed mid-write leaves the last whole
-/// file standing. Returns how many bytes it took.
-fn write_replay(path: &Path, replay: &Replay) -> Result<usize, String> {
-    let fail = |error: std::io::Error| format!("--record {}: {error}", path.display());
-    let bytes = replay.encode();
-    let partial = path.with_extension("partial");
-    fs::write(&partial, &bytes).map_err(fail)?;
-    fs::rename(&partial, path).map_err(fail)?;
-    Ok(bytes.len())
 }
 
 /// A script by name.
@@ -1139,6 +1325,284 @@ mod tests {
         blocked.start(&mut none, "duel");
         assert!(none.is_none());
         assert!(blocked.note().is_some(), "it says why");
+    }
+
+    fn send_rescues_to(combat: &mut Combat, dir: PathBuf) {
+        let Mode::Recording { files, .. } = &mut combat.mode else { panic!("a recording") };
+        files.rescue_dir = dir;
+    }
+
+    /// A recording whose directory has gone since it began, as a full disk fails it too: all it has
+    /// left is where it would rescue the session to.
+    fn recording_with_nowhere_to_go(scratch: &ScratchDir, rescue: PathBuf) -> Combat {
+        let inside = scratch.0.join("going");
+        fs::create_dir_all(&inside).expect("makes");
+        let mut combat = recording(&inside.join("played.sreplay"), None);
+        for _ in 0..3 {
+            combat.step(&mut press_light);
+        }
+        fs::remove_dir_all(&inside).expect("removes");
+        send_rescues_to(&mut combat, rescue);
+        combat
+    }
+
+    fn ticks_in(path: &Path) -> u32 {
+        Replay::decode(&fs::read(path).expect("a file")).expect("a whole replay").ticks()
+    }
+
+    /// A recording of someone playing, in a directory of its own, and its file's name.
+    fn played_in(scratch: &ScratchDir) -> (Combat, PathBuf) {
+        fs::create_dir_all(&scratch.0).expect("makes");
+        let path = scratch.0.join("played.sreplay");
+        (recording(&path, None), path)
+    }
+
+    /// `steps` more ticks of `combat`, so each write has something new to hold.
+    fn play(combat: &mut Combat, steps: u32) {
+        for _ in 0..steps {
+            combat.step(&mut press_light);
+        }
+    }
+
+    /// A killed app says nothing and writes nothing: what it last kept is all there is, whole, and the
+    /// write it was in the middle of leaves only a part beside it, which the next run's write takes over.
+    #[test]
+    fn a_session_kept_on_a_trip_survives_a_kill() {
+        let scratch = ScratchDir::new("killed");
+        let (mut combat, path) = played_in(&scratch);
+        play(&mut combat, 5);
+        combat.keep_so_far();
+        play(&mut combat, 5);
+        fs::write(path.with_extension("partial"), b"part of a re").expect("writes");
+        std::mem::forget(combat);
+        assert_eq!(ticks_in(&path), 5);
+
+        fs::remove_file(&path).expect("removes");
+        let mut combat = recording(&path, None);
+        play(&mut combat, 3);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&path), 3);
+        assert!(!path.with_extension("partial").exists(), "nothing's left beside it");
+    }
+
+    /// A file there from before the first trip isn't the session's, and the session stays in one file
+    /// over every trip after, right to the error that names it.
+    #[test]
+    fn a_kept_session_never_replaces_what_appeared_at_its_name() {
+        let scratch = ScratchDir::new("trip-appeared");
+        let (mut combat, path) = played_in(&scratch);
+        send_rescues_to(&mut combat, scratch.0.clone());
+        play(&mut combat, 2);
+        fs::write(&path, b"another session").expect("writes");
+
+        combat.keep_so_far();
+        let rescued = scratch.0.join("played-unsaved-1.sreplay");
+        assert_eq!(ticks_in(&rescued), 2);
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&rescued), 4, "the same file");
+        assert!(!scratch.0.join("played-unsaved-2.sreplay").exists());
+
+        play(&mut combat, 2);
+        let error = combat.finish().expect_err("its own file didn't take it");
+        assert!(error.contains(&rescued.display().to_string()), "{error}");
+        assert_eq!(ticks_in(&rescued), 6);
+        assert_eq!(fs::read(&path).expect("kept"), b"another session");
+        assert!(!path.with_extension("partial").exists() && !rescued.with_extension("partial").exists());
+    }
+
+    /// What it kept is the session's to replace only while it's what it kept.
+    #[test]
+    fn a_kept_file_someone_replaced_is_theirs() {
+        let scratch = ScratchDir::new("trip-replaced");
+        let (mut combat, path) = played_in(&scratch);
+        send_rescues_to(&mut combat, scratch.0.clone());
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&path), 2);
+        fs::write(&path, b"another session").expect("writes");
+
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(fs::read(&path).expect("kept"), b"another session");
+        assert_eq!(ticks_in(&scratch.0.join("played-unsaved-1.sreplay")), 4);
+    }
+
+    /// A kept file someone tidied away leaves the name free, which is all the session asks of it.
+    #[test]
+    fn a_kept_file_removed_since_is_written_again() {
+        let scratch = ScratchDir::new("trip-removed");
+        let (mut combat, path) = played_in(&scratch);
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        fs::remove_file(&path).expect("removes");
+        play(&mut combat, 2);
+        combat.finish().expect("the name's free");
+        assert_eq!(ticks_in(&path), 4);
+    }
+
+    /// One session, one file: reaching its own name again takes the rescue back, unless someone has
+    /// changed that since.
+    #[test]
+    fn a_session_back_at_its_own_name_leaves_no_rescue() {
+        let scratch = ScratchDir::new("trip-back");
+        let rescue = scratch.0.join("rescue");
+        fs::create_dir_all(&rescue).expect("makes");
+        let inside = scratch.0.join("going");
+        fs::create_dir_all(&inside).expect("makes");
+        let path = inside.join("played.sreplay");
+        let mut combat = recording(&path, None);
+        send_rescues_to(&mut combat, rescue.clone());
+        play(&mut combat, 2);
+        fs::remove_dir_all(&inside).expect("removes");
+        combat.keep_so_far();
+        let rescued = rescue.join("played-unsaved-1.sreplay");
+        assert_eq!(ticks_in(&rescued), 2);
+
+        fs::create_dir_all(&inside).expect("makes");
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&path), 4);
+        assert!(!rescued.exists());
+        combat.finish().expect("its own file");
+        assert_eq!(ticks_in(&path), 4);
+    }
+
+    /// With no write landing, the last whole file stands, and the error says that's what's left.
+    #[test]
+    fn a_session_with_nowhere_to_go_says_what_it_kept() {
+        let scratch = ScratchDir::new("trip-lost");
+        let (mut combat, path) = played_in(&scratch);
+        send_rescues_to(&mut combat, scratch.0.join("no-such"));
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        // Nothing can write beside it now, as a full disk would refuse.
+        fs::create_dir_all(path.with_extension("partial")).expect("makes");
+        play(&mut combat, 2);
+
+        let error = combat.finish().expect_err("nothing took it");
+        assert!(error.contains("Nor would"), "{error}");
+        assert!(error.contains(&format!("{} still holds it", path.display())), "{error}");
+        assert_eq!(ticks_in(&path), 2);
+    }
+
+    /// Throwing a session away takes its kept files with it, and only those.
+    #[test]
+    fn discarding_a_recording_removes_what_it_kept() {
+        let scratch = ScratchDir::new("trip-discarded");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        recorder.start(&mut combat, "duel");
+        let running = combat.as_mut().expect("running");
+        play(running, 2);
+        running.keep_so_far();
+        let path = scratch.0.join("duel-1.sreplay");
+        assert_eq!(ticks_in(&path), 2);
+        recorder.discard(&mut combat);
+        assert!(!path.exists());
+
+        recorder.start(&mut combat, "duel");
+        let running = combat.as_mut().expect("running");
+        play(running, 2);
+        running.keep_so_far();
+        fs::write(&path, b"another session").expect("writes");
+        recorder.discard(&mut combat);
+        assert_eq!(fs::read(&path).expect("kept"), b"another session");
+    }
+
+    /// `--record`'s last chance: the session goes elsewhere, it says where, and the run still fails.
+    #[test]
+    fn a_session_its_file_wont_take_goes_elsewhere_and_says_where() {
+        let scratch = ScratchDir::new("rescued");
+        let rescue = scratch.0.join("rescue");
+        fs::create_dir_all(&rescue).expect("makes");
+        let combat = recording_with_nowhere_to_go(&scratch, rescue.clone());
+        let error = combat.finish().expect_err("its own file didn't take it");
+        let rescued = rescue.join("played-unsaved-1.sreplay");
+        assert!(error.contains(&rescued.display().to_string()), "{error}");
+        let replay = Replay::decode(&fs::read(&rescued).expect("written")).expect("reads");
+        assert_eq!((replay.scenario(), replay.ticks()), (SCENARIOS[0].name, 3));
+
+        // A second one leaves the first where it is.
+        let combat = recording_with_nowhere_to_go(&scratch, rescue.clone());
+        let error = combat.finish().expect_err("its own file didn't take it");
+        assert!(error.contains("played-unsaved-2.sreplay"), "{error}");
+        assert_eq!(Replay::decode(&fs::read(&rescued).expect("kept")).expect("reads").ticks(), 3);
+    }
+
+    /// A disk that fills part way leaves no part of a file behind.
+    #[test]
+    fn a_full_disk_leaves_no_partial_file() {
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::StorageFull.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let scratch = Scratch::new("full");
+        fs::write(&scratch.0, b"a part").expect("writes");
+        let error = fill(Full, &scratch.0, b"the rest").expect_err("no room");
+        assert_eq!(error.kind(), std::io::ErrorKind::StorageFull);
+        assert!(!scratch.0.exists());
+    }
+
+    /// With nowhere to write at all, a run that's ending can only say what it lost.
+    #[test]
+    fn a_session_with_nowhere_to_go_says_so() {
+        let scratch = ScratchDir::new("lost");
+        let error = recording_with_nowhere_to_go(&scratch, scratch.0.join("no-such"))
+            .finish()
+            .expect_err("nothing took it");
+        assert!(error.contains("Nor would"), "{error}");
+    }
+
+    /// The overlay's recorder has a running app to wait in: the session stays, and so does the fight,
+    /// until a save finds somewhere for it.
+    #[test]
+    fn the_overlay_keeps_a_session_it_cant_save_and_tries_again() {
+        let scratch = ScratchDir::new("retried");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = Some(recording_with_nowhere_to_go(&scratch, scratch.0.join("no-such")));
+
+        recorder.save(&mut combat);
+        let running = combat.as_mut().expect("it keeps the session");
+        assert!(recorder.note().is_some_and(|note| note.contains("try again")), "{:?}", recorder.note());
+        running.step(&mut press_light);
+        let CombatStatus::Recording { path, .. } = running.status() else { panic!("still recording") };
+        let path = path.to_owned();
+
+        // The directory's back, and the session has everything played meanwhile.
+        fs::create_dir_all(path.parent().expect("a directory")).expect("makes");
+        recorder.save(&mut combat);
+        assert!(combat.is_none(), "it's over");
+        assert!(recorder.note().is_some_and(|note| note.contains("Saved 4 ticks")), "{:?}", recorder.note());
+        assert_eq!(Replay::decode(&fs::read(&path).expect("written")).expect("reads").ticks(), 4);
+    }
+
+    /// Somewhere else's file isn't replaced, whatever appeared at the name since the run began. The
+    /// overlay says where its session went, as `--record` does, and doesn't go on recording it.
+    #[test]
+    fn a_recording_never_replaces_what_appeared_at_its_name() {
+        let scratch = ScratchDir::new("appeared");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        recorder.start(&mut combat, "duel");
+        combat.as_mut().expect("running").step(&mut press_light);
+        let appeared = scratch.0.join("duel-1.sreplay");
+        fs::write(&appeared, b"another session").expect("writes");
+        send_rescues_to(combat.as_mut().expect("running"), scratch.0.clone());
+
+        recorder.save(&mut combat);
+        assert!(combat.is_none(), "it went somewhere");
+        assert_eq!(fs::read(&appeared).expect("kept"), b"another session");
+        assert!(!appeared.with_extension("partial").exists(), "nothing's left beside it");
+        let rescued = scratch.0.join("duel-1-unsaved-1.sreplay");
+        let note = recorder.note().expect("it says");
+        assert!(note.contains(&rescued.display().to_string()), "{note}");
+        assert_eq!(Replay::decode(&fs::read(&rescued).expect("written")).expect("reads").ticks(), 1);
     }
 
     #[test]

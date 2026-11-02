@@ -537,7 +537,7 @@ impl App for SandboxApp {
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
         if let Some(Err(error)) = self.combat.take().map(Combat::finish) {
-            tracing::error!(target: LOG_TARGET, %error, "the recording wasn't written");
+            tracing::error!(target: LOG_TARGET, %error, "the recording didn't reach its file");
         }
         tracing::info!(target: LOG_TARGET, presented = self.presented_frames, "quit");
     }
@@ -756,7 +756,7 @@ impl SandboxApp {
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
-                if let Some(combat) = &self.combat {
+                if let Some(combat) = &mut self.combat {
                     combat.keep_so_far();
                 }
                 let pad = self.input.active_gamepad();
@@ -792,7 +792,7 @@ impl SandboxApp {
             }
             LifecycleEvent::Terminating => {
                 self.save_pipeline_cache();
-                if let Some(combat) = &self.combat {
+                if let Some(combat) = &mut self.combat {
                     combat.keep_so_far();
                 }
             }

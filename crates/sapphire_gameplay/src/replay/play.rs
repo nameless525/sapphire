@@ -259,7 +259,8 @@ impl Recording {
         &self.tracked.sim
     }
 
-    /// The replay as far as it's got, for a file that outlives a process: it goes on recording.
+    /// The replay as far as it's got: what [`Self::finish`] would give now, with the run going on, for a
+    /// file that outlives a process or a save that may fail.
     #[must_use]
     pub fn so_far(&self) -> Replay {
         self.recorder.clone().finish()

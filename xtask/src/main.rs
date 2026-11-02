@@ -3,8 +3,8 @@
 //! Owns layer checking, content cooking, and building, bundling and launching the apps
 //! per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
 //! as a process, and golden-image tests (`golden`), which compare sandbox captures with
-//! per-backend references; live link's desktop tool (`link`) runs as a process too.
-//! `package` (store artifacts) and `replay` come later.
+//! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
+//! as processes too. `package` (store artifacts) comes later.
 
 mod cli;
 mod content;
@@ -12,6 +12,7 @@ mod golden;
 mod layers;
 mod link;
 mod platforms;
+mod replay;
 mod workspace;
 
 use std::path::PathBuf;
@@ -80,6 +81,18 @@ Commands:
       --addr <host:port> is the device (default 127.0.0.1:7811: desktop, the iOS Simulator,
       `iproxy` and `adb forward`); --listen <host:port> waits for a device that dials, behind
       `adb reverse` (the app's `--live-link connect=<addr>`).
+  replay [--update] [--replay <name>]
+      Run the recorded combat replays in tests/replays/ with no window or GPU (spec §9, gates 2
+      and 4): each must reach this architecture's checksums (checksums.<arch>.txt) with no heap
+      allocation in the fixed step. A failure names the first tick that differs. --update takes
+      this architecture's new values, leaving every other architecture's file alone, and stamps
+      a changed move's hash into the replays: then review what moved, as with a golden.
+      target/replays/ always holds this architecture's file as it should be.
+  replay --record <name> --scenario <name> --script <name> [--ticks <n>] [--seed <n>]
+      Record a new tests/replays/<name>.sreplay from a registered script, and this architecture's
+      checksums for it.
+  replay --list
+      List the scenarios, scripts and replays.
   help
       Show this message.
 
@@ -158,6 +171,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 shard: shard.as_deref(),
                 scene_timeout,
             })
+        }
+        "replay" => {
+            let command = replay::Command::parse(&mut args)?;
+            args.finish(false)?;
+            replay::run(&command)
         }
         "help" | "--help" | "-h" => {
             eprintln!("{USAGE}");

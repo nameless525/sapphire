@@ -73,6 +73,8 @@ sapphire_livelink = { kind = "dev_only" }
 sapphire_sandbox = { kind = "app", features = ["tracy", "dev"] }
 # Tools.
 sapphire_pipeline = { kind = "tool" }
+# The headless replay runner (M2 D2): what `cargo xtask replay` and CI's Replays job build.
+sapphire_replay = { kind = "tool" }
 sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
 
@@ -102,8 +104,12 @@ edges = [
 # `wgpu-types` isn't listed: bevy_reflect's `std` feature names it as a weak optional dependency
 # (`wgpu-types?/std`), and `cargo metadata`'s graph keeps those though nothing builds it. `cargo tree
 # -p sapphire_gameplay -e normal --all-features --target all` shows it isn't there.
+#
+# `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
+# clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
 crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics"]
+runners = ["sapphire_replay"]
 forbidden = [
     "naga",
     "sapphire_anim",

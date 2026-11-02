@@ -1,0 +1,25 @@
+[package]
+name = "sapphire_replay"
+description = "The headless replay runner: plays recorded combat runs with no window or GPU, against per-architecture checksums and the zero-allocation gate. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sapphire_replay"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+# The counting allocator gate 4 reads, in the binary.
+sapphire_core.workspace = true
+sapphire_gameplay.workspace = true
+
+[dev-dependencies]
+# A system for a test's world to allocate in.
+sapphire_ecs.workspace = true
+
+[lints]
+workspace = true

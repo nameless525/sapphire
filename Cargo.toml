@@ -41,6 +41,7 @@ members = [
     "apps/sapphire_sandbox",
     # Tools (never shipped)
     "tools/sapphire_pipeline",
+    "tools/sapphire_replay",
     "tools/sapphire_testkit",
     "xtask",
 ]

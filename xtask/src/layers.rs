@@ -168,6 +168,9 @@ struct DevOnlyDependencies {
 struct Simulation {
     #[serde(default)]
     crates: Vec<String>,
+    /// Tools that run the simulation headless: held to `forbidden`, with no clippy.toml of their own.
+    #[serde(default)]
+    runners: Vec<String>,
     #[serde(default)]
     forbidden: Vec<String>,
 }
@@ -561,7 +564,7 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
         }
     }
 
-    for krate in &config.simulation.crates {
+    for krate in config.simulation.crates.iter().chain(&config.simulation.runners) {
         if !config.crates.contains_key(krate) {
             violations.push(Violation::SimulationCrateUnplaced { krate: krate.clone() });
         }
@@ -594,7 +597,9 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
             }
         }
 
-        if config.simulation.crates.contains(&package.name) {
+        if config.simulation.crates.contains(&package.name)
+            || config.simulation.runners.contains(&package.name)
+        {
             for (dependency, path) in graph.reachable_named(&package.id, &simulation_forbidden) {
                 violations.push(Violation::SimulationReachable {
                     krate: package.name.clone(),
@@ -1367,6 +1372,38 @@ mod tests {
         .unwrap();
         let violations = check(&config, &metadata(&[("a", &[])], &[])).unwrap();
         assert_eq!(violations, [Violation::SimulationCrateUnplaced { krate: "gone".into() }]);
+    }
+
+    /// A replay runner is held to the same tree, so its job stays free of a GPU, and needs no
+    /// clippy.toml of its own.
+    #[test]
+    fn a_replay_runner_reaches_nothing_forbidden() {
+        let config = Config::parse(
+            r#"
+            [crates]
+            sapphire_render = { kind = "runtime", layer = 3 }
+            runner = { kind = "tool" }
+            [simulation]
+            runners = ["runner", "gone"]
+            forbidden = ["wgpu"]
+            "#,
+        )
+        .unwrap();
+        let members = [("runner", &[][..]), ("sapphire_render", &[][..])];
+        let clean = metadata(&members, &[("sapphire_render", "wgpu", Normal)]);
+        assert_eq!(
+            check(&config, &clean).unwrap(),
+            [Violation::SimulationCrateUnplaced { krate: "gone".into() }]
+        );
+        let dirty = metadata(&members, &[("runner", "tiny", Normal), ("tiny", "wgpu", Normal)]);
+        assert!(check(&config, &dirty).unwrap().contains(&Violation::SimulationReachable {
+            krate: "runner".into(),
+            dependency: "wgpu".into(),
+            path: vec!["runner".into(), "tiny".into(), "wgpu".into()],
+        }));
+        assert_eq!(check_simulation_clippy_files(&config, &workspace::root()).unwrap(), []);
+        let shipped = Config::parse(include_str!("../layers.toml")).unwrap();
+        assert!(shipped.simulation.runners.iter().any(|runner| runner == "sapphire_replay"));
     }
 
     #[test]

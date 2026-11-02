@@ -105,19 +105,6 @@ fn the_tick_count_is_in_the_checksum() {
     assert_eq!(sim.tick(), 1);
 }
 
-/// What the script's whole state hashes to, on every OS: `sapphire_gameplay`'s state is scalars and
-/// `libm` so far, so CI's x86-64 runners and an arm64 Mac must all reach this. It stands until D2's
-/// recorded replays take over. A package that adds state to the checksum updates it.
-#[test]
-fn the_script_reaches_its_recorded_checksum() {
-    let (mut sim, actors) = world(7);
-    let checksums = run(&mut sim, &actors, TICKS);
-    let got = (checksums[0], checksums[119], checksums[TICKS as usize - 1]);
-    assert_eq!(got, RECORDED, "the state's hash moved: {got:#x?}");
-}
-
-const RECORDED: (u64, u64, u64) = (0xd1e8_a770_c2ad_d49f, 0x6319_e472_3dd3_9429, 0x2a48_77fd_9e24_ca60);
-
 #[test]
 fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {
     let (mut a, actors) = world(7);

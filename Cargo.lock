@@ -2816,6 +2816,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_replay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sapphire_core",
+ "sapphire_ecs",
+ "sapphire_gameplay",
+]
+
+[[package]]
 name = "sapphire_rhi"
 version = "0.1.0"
 dependencies = [

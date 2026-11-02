@@ -1656,6 +1656,38 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - Set the iOS audio session category at boot.
 - **Phones:** `kira` documents itself as mainly for desktop, and its phone support is community-confirmed, on `cpal`'s AAudio and CoreAudio backends. `cpal` needs the Android context set under SDL's entry. M2 tests both on the iOS Simulator and Android emulator early.
 
+**As built (M2 E1)**
+
+- **Formats are plain data in `sapphire_assets`** (`sound`, `cue`), since `AssetKind::references` must read them and `AssetId` lives there. The cooker links no mixer: a test walks `Cargo.lock` from the pipeline.
+  - A cooked sound (`.ssound`, `Sound` v1) is the `.ogg` byte for byte, with its rate, channels and length. The cook decodes all of it through the runtime's decoder, `lewton` (pure Rust, no unsafe code).
+  - A cue (`.cue.ron` → `.scue`, `Cue` v1) has its sounds, volume and pitch ranges, an optional attenuation, a bus (`Sfx`, `Ambience`, `Ui`) and its answer to hitstop (`Ignore`, `Duck`, `Freeze`). A malformed document names the field. A cue naming a missing asset, or something that isn't a sound, fails the cook by name.
+- **Sounds and cues have a pack of their own,** `audio.spack`: 2,776,452 bytes for 281 sounds and 3 cues, in raw blocks, since Vorbis doesn't compress further. `shared.spack` holds neither, and E1 left it byte-identical on both cooks. Only an app that plays sound mounts it, so captures, benches and goldens never read it. Every sound ships in it, referenced or not, until packs have roots. A cold cook of all 284 assets takes 0.6 s.
+- **`AudioSystem`** takes one `AudioFrame` of plain data per frame: the listener, emitters by `EmitterId`, the world time scale and cue requests.
+  - Picks come from a `CueRandom` the caller owns. Each cue takes three numbers in request order, whatever its ranges, so one cue's ranges move no other's picks.
+  - Attenuation and pan are worked out here rather than by kira's spatial tracks, so the mock's tests mean something and a voice stays cheap.
+  - 32 voices. Past that a new cue is dropped and counted, so nothing playing is cut off.
+  - `ClockSnapshot` bends pitch and closes a low-pass on the world's buses as the world time scale falls, in real time. `Ui` stays out of it.
+- **Backends:** `AudioBackend` is plain numbers per voice and bus. `KiraBackend<O>` runs kira's mixer on an `Output`; `MockBackend` writes down what it was asked.
+  - `CpalOutput` connects kira's public `Renderer` to cpal, because kira's own backend can't pause a stream, unwraps a restart that fails, and polls the default device. A worker thread owns the stream, so opening one never holds up a frame: on the loaded emulator that took 1.2 s to open and 1.6 s to start.
+  - `OfflineOutput` renders into a buffer, because kira's mock hides its output. `tests/offline.rs` measures the low-pass, pitch, gain, pan, freezing and suspending in real samples.
+- **No device is a state.** `DeviceState::NoDevice` retries every 5 s and drops cues, counted. A stream the OS invalidates is rebuilt on the default device, keeping every voice. A new default device on a desktop is followed only after a loss: nothing polls for one.
+- **The OS's side is in `sapphire_platform`:** `Platform::prepare_audio`, `audio_interrupted` and `activate_audio`.
+  - iOS: category `Ambient` (the player's music plays on, and the silent switch is obeyed), a preferred 10 ms buffer, and an interruption flag the app polls.
+  - Android: `ndk-context` gets the VM and activity from SDL's JNI handles. Without them cpal panics opening a stream.
+  - Android's audio focus isn't taken, so a call only pauses the game through its lifecycle.
+- **The sandbox's `--cue click|hit|swing`** plays at the character, with `--cue-repeat <seconds>`. Capture, bench and `--offscreen` refuse it, and capture and bench end by checking `device_opens()`, so every golden scene proves no device opened. `audio.spack` mounts only under the flag.
+- **What the phones showed** (no one listening; counters and logs only):
+  - **iOS Simulator (iPhone 17 Pro, iOS 26.3):** 48 kHz stereo, about 94 callbacks a second, no underruns, cues played and voices freed. A 10-second background trip stopped callbacks and came back on the same stream. Interruption notifications posted by a temporary patch (a real call can't be made headlessly) suspended and resumed the mixer, with or without `ShouldResume`, dropping cues meanwhile. So did a posted route loss and media reset: each rebuilt the stream in about 10 ms.
+  - **Android emulator (API 36, arm64):** no panic under SDL's entry, so the context works. AAudio opened 48 kHz stereo and refused low latency (`perfMode` 12 to 10), which cpal logs as "Real-time scheduling was refused". A background trip paused and restarted the same stream. Under a load average of 60 to 300, the emulator's mixer pulled only 11–33% of real time, with 9–16 underruns in a run, while the callback itself took 3–9% of real time: this says nothing about a phone's timing.
+  - **Only a device can prove:** that it sounds right, real latency, AAudio's fast path and MMAP, real calls and Siri, route changes such as headphones, and Android's audio focus.
+- **Costs** (release, on an M5, the machine busy; `tests/costs.rs`, `tests/allocations.rs`):
+  - The update, median: 0.08 µs with no voices, 0.62 µs moving 32, 0.88 µs starting a cue, against budgets of 200 and 300 µs. The loaded emulator read 15–82 µs per update, the Simulator at most 19 µs, apart from one frame that logged a warning (180 µs).
+  - The mix of 512 frames, median: 38 µs at one voice, 132 µs at 32, 1.2% of real time.
+  - A warmed cue allocates 11 times, 7,304 bytes, on the calling thread, all kira's per-sound state, so fixed steps should queue cues for the frame's update. A frame moving a voice and a block of the mix allocate nothing. `AudioSystem` itself allocates nothing per frame.
+  - Decoding takes 1/350 to 1/650 of a sound's length. Mounting the pack and decoding `hit`'s five sounds took 4.4 ms on the Simulator and 34 to 794 ms on the loaded emulator.
+  - The binary grows by 0.6 MiB stripped (15,462,664 against 14,843,448 bytes on macOS, release).
+  - Without `--cue` there is no system, thread, device or pack, only that code's size. Linux binaries now need `libasound.so.2` at run time.
+
 ### 5.16 `sapphire_vfx` (L3)
 
 **How**
@@ -2781,7 +2813,9 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `dlss_wgpu` | 6.0 | `sapphire_render` (Windows / Linux) | NVIDIA + Vulkan only |
 | `objc2-metal-fx`, `objc2-foundation` | latest | `sapphire_render`, `sapphire_platform` (Apple) | |
 | `parry3d` | 0.31 | `sapphire_physics` | Never with `enhanced-determinism`, which changes glam for the whole process (M2 D3). Jolt via `joltc` as the escape hatch |
-| `kira` | 0.12 | `sapphire_audio` | MIT or Apache-2.0, on `cpal`. Phones are community-confirmed, so M2 tests them early |
+| `kira` | 0.12 | `sapphire_audio` | MIT or Apache-2.0. Its `triple_buffer` is MPL-2.0, excepted in `deny.toml`. No default features: `sapphire_audio` connects it to `cpal` itself. Runs on the Simulator and emulator; a device is still owed (§5.15) |
+| `cpal` | 0.18 | `sapphire_audio` | Apache-2.0. `realtime` asks Android for low latency, and brings `audio_thread_priority` (MPL-2.0, excepted in `deny.toml`) |
+| `lewton` | 0.10 | `sapphire_assets` | MIT or Apache-2.0. Pure Rust Vorbis decoding, so `symphonia` (MPL-2.0) stays out |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `rerecast`, `landmass` | 0.4, 0.9 | `sapphire_nav`, `sapphire_pipeline` | Vendor both (small maintainer base) |
 | `statig` | 0.4 | `sapphire_gameplay` | |

@@ -1,0 +1,246 @@
+// The player's moves (M2 O3): frame data in 60 Hz ticks, for a character with a blade in its right
+// hand. Zenless Zone Zero's rhythm is the target: a press moves the character within three ticks, a cut
+// lands inside an eighth of a second, a string flows as fast as the player presses, and a dodge gets out
+// of nearly anything. These are tuning values, made to be changed by the feel reviews.
+//
+// Each move plays the clip of its name beside this file (`light_1.keypose.ron`), and a cook bakes its
+// root motion and its blade from that clip. One tick of a move is one tick of its clip, so a change to a
+// move's length is a change to its clip's too. Windows move freely inside it.
+//
+// `blade` is a socket on the right hand: the middle of a 0.9 m blade leaving the fist on the thumb side,
+// 22 degrees toward the fingers, its +Y running grip to tip. A hit is a capsule along it.
+//
+// E3 hangs effects on the cues: `swing` is the blade starting to cut, and `step`, `skid` and
+// `finisher_land` a foot taking the weight.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            // A dodge beats a skill beats an attack when two could fire at one instant.
+            (name: "light", button: Light, buffer: 12, priority: 1),
+            (name: "skill", button: Skill, buffer: 10, priority: 2),
+            (name: "dodge", button: Dodge, buffer: 8, priority: 3),
+        ],
+        neutral: [
+            (intent: "light", move: "light_1"),
+            (intent: "skill", move: "skill"),
+            (intent: "dodge", move: "dodge"),
+        ],
+        moves: [
+            (
+                // 567 ms. The first cut: 117 ms of wind-up, then a slash from high on the right to low
+                // on the left on a step of the right foot, carrying about 0.7 m. The next press takes over
+                // from tick 14, the blade just past its mark; left alone, the back foot steps through.
+                name: "light_1",
+                startup: 7,
+                active: 4,
+                recovery: 23,
+                motion: (
+                    clip: (
+                        source: "6d321a52-1aed-4279-bc32-a177b8fd81d4",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (name: "light_1_hit", from: 7, to: 11, path: "blade", shape: Capsule(radius: 0.22, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 2, to: 34, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 14, to: 28, allow: [
+                        (intent: "light", move: "light_2"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 7, max_distance: 0.6, max_turn: 0.8, keep: 1.0),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 7),
+                    (name: "step", at: 11),
+                ],
+            ),
+            (
+                // 600 ms. The second cut, a backhand rising from low on the left to high on the right on
+                // a step of the left foot, carrying about 0.6 m. It starts where the first settles, and
+                // ends where the finisher starts.
+                name: "light_2",
+                startup: 7,
+                active: 4,
+                recovery: 25,
+                motion: (
+                    clip: (
+                        source: "0c4be2d4-4149-4852-80c5-109683aad3e1",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (name: "light_2_hit", from: 7, to: 11, path: "blade", shape: Capsule(radius: 0.22, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 2, to: 36, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 14, to: 30, allow: [
+                        (intent: "light", move: "light_3"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 7, max_distance: 0.6, max_turn: 0.8, keep: 1.0),
+                ],
+                cues: [
+                    (name: "swing", at: 7),
+                    (name: "step", at: 11),
+                ],
+            ),
+            (
+                // 867 ms. The finisher commits: 267 ms gathering low and rising with the blade overhead,
+                // then a two-handed chop on a long bound of 1.4 m. It holds the landing, with only a dodge
+                // to get out early.
+                name: "light_3",
+                startup: 16,
+                active: 4,
+                recovery: 32,
+                motion: (
+                    clip: (
+                        source: "5fe300c9-a4a3-4339-a556-7bc112f2bb59",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (name: "light_3_hit", from: 16, to: 20, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 4, to: 52, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 44, to: 52, allow: [(intent: "light", move: "light_1")]),
+                ],
+                warps: [
+                    (from: 0, to: 16, max_distance: 1.0, max_turn: 1.0, keep: 1.1),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 16),
+                    (name: "finisher_land", at: 19),
+                ],
+            ),
+            (
+                // 400 ms: a low leap straight back, 2.4 m in 14 ticks. Invulnerable for 217 ms, the first
+                // 100 ms of them perfect. An attack out of its end is the dash attack.
+                name: "dodge",
+                startup: 1,
+                active: 13,
+                recovery: 10,
+                motion: (
+                    clip: (
+                        source: "9b5f353a-2c97-45c7-a70f-bcab216de811",
+                    ),
+                ),
+                hurtboxes: [
+                    (name: "body", from: 1, to: 14, state: Off),
+                ],
+                invulnerable: [(from: 1, to: 14)],
+                perfect_dodge: [(from: 1, to: 7)],
+                cancels: [
+                    (from: 9, to: 24, allow: [
+                        (intent: "light", move: "dash_attack"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                    (from: 16, to: 24, allow: [(intent: "dodge", move: "dodge", when: Instant)]),
+                ],
+                cues: [
+                    (name: "dodge_start", at: 0),
+                    (name: "skid", at: 10),
+                ],
+            ),
+            (
+                // 567 ms: out of a dodge's end, thrown forward low with the blade trailing, cutting across
+                // on the way past. It covers about 2.6 m and homes in on what it's aimed at.
+                name: "dash_attack",
+                startup: 5,
+                active: 5,
+                recovery: 24,
+                motion: (
+                    clip: (
+                        source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (name: "dash_hit", from: 5, to: 10, path: "blade", shape: Capsule(radius: 0.26, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 2, to: 34, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 18, to: 34, allow: [(intent: "light", move: "light_1")]),
+                ],
+                warps: [
+                    (from: 0, to: 10, max_distance: 2.0, max_turn: 1.2, keep: 1.1),
+                ],
+                cues: [
+                    (name: "swing", at: 5),
+                    (name: "skid", at: 10),
+                ],
+            ),
+            (
+                // 867 ms: a burst with two hits, safe to start and open to punishment after. A coiled
+                // drop that takes a hit for free, a whole turn with the arm out, and a rising cut coming
+                // out of the turn, ended by a flick of the blade.
+                name: "skill",
+                startup: 12,
+                active: 14,
+                recovery: 26,
+                motion: (
+                    clip: (
+                        source: "9491f5d1-0c11-45c9-8139-8f54918b25f6",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (name: "skill_hit_1", from: 12, to: 16, path: "blade", shape: Capsule(radius: 0.24, length: 0.9)),
+                    (name: "skill_hit_2", from: 21, to: 26, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                ],
+                invulnerable: [(from: 0, to: 12)],
+                parry: [(from: 2, to: 6)],
+                cancels: [
+                    (from: 38, to: 52, allow: [
+                        (intent: "dodge", move: "dodge"),
+                        (intent: "light", move: "light_1"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 12, max_distance: 1.0, max_turn: 1.2, keep: 1.0),
+                ],
+                cues: [
+                    (name: "skill_flash", at: 0),
+                    (name: "skill_hit", at: 12),
+                    (name: "skill_hit", at: 21),
+                    (name: "step", at: 31),
+                ],
+            ),
+        ],
+    ),
+)

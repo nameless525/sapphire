@@ -34,6 +34,9 @@
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
 //!   linking a mixer (`sapphire_audio`, which plays them).
+//! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
+//!   how a character's clips play: which layers, which states, what plays for which move. Plain
+//!   data, with its clips as dependencies; `sapphire_anim` runs it.
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
 //!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
 //!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it
@@ -92,6 +95,7 @@
 pub mod character_maps;
 pub mod clip;
 pub mod cue;
+pub mod graph;
 mod id;
 mod kind;
 pub mod material;

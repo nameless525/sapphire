@@ -94,6 +94,7 @@ use std::str::FromStr;
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
+use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
@@ -105,6 +106,7 @@ use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_reflect::Versioned;
 
+use crate::anim_graph::{self, AnimGraphCookError};
 use crate::assembly::{self, AssemblyError};
 use crate::audio::{self, AudioCookError};
 use crate::bake::foliage::FoliageError;
@@ -299,6 +301,12 @@ impl Recipe {
                 format: MoveSet::VERSION,
                 extension: MOVE_SET_EXTENSION,
             },
+            ImportSettings::AnimGraph(_) => Self {
+                importer: anim_graph::IMPORTER,
+                cooker: anim_graph::COOKER,
+                format: AnimGraph::VERSION,
+                extension: GRAPH_EXTENSION,
+            },
             ImportSettings::GltfClips(_) => Self::gltf_clip(),
             ImportSettings::FbxClips(_) => Self::fbx_clip(),
             ImportSettings::Vrma(_) => Self { importer: vrma::IMPORTER, ..Self::gltf_clip() },
@@ -354,6 +362,8 @@ impl Recipe {
             audio::cue_output_path(relative, self.extension)
         } else if moves::is_source(relative) {
             moves::output_path(relative, self.extension)
+        } else if anim_graph::is_source(relative) {
+            anim_graph::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -470,6 +480,15 @@ pub enum CookError {
         #[source]
         source: Box<MoveSetCookError>,
     },
+    #[error("failed to cook animation graph {}", path.display())]
+    AnimGraph {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<AnimGraphCookError>,
+    },
+    #[error("animation graph {} names {id} (`{name}`), which is not a clip of this content tree that cooks", path.display())]
+    NotAClip { path: PathBuf, name: String, id: AssetId },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
         path: PathBuf,
@@ -831,7 +850,8 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
-        | ImportSettings::MoveSet(_) => Ok(Vec::new()),
+        | ImportSettings::MoveSet(_)
+        | ImportSettings::AnimGraph(_) => Ok(Vec::new()),
     }
 }
 
@@ -992,6 +1012,12 @@ impl Planned {
 
     fn is_sound(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Sound(_))
+    }
+
+    /// Whether it cooks to a clip: a sub-asset of an animation source, or a key-pose document.
+    fn is_clip(&self) -> bool {
+        matches!(self.part, Part::Clip { .. } | Part::KeyPose { .. })
+            || (self.part == Part::Own && matches!(self.asset.meta.importer, ImportSettings::KeyPose(_)))
     }
 }
 
@@ -1427,6 +1453,8 @@ fn cook_source(
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::MoveSet(_) => moves::cook(bytes, |clip| move_tables(clip, assets))
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
+            .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -1813,6 +1841,17 @@ fn source_dependencies(
             }
             Ok(Vec::new())
         }
+        // A graph holds only its clips' IDs, so their contents aren't inputs.
+        ImportSettings::AnimGraph(_) => {
+            let graph = anim_graph::read(bytes)
+                .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) })?;
+            for clip in graph.clips {
+                if !assets.get(clip.id).is_some_and(Planned::is_clip) {
+                    return Err(CookError::NotAClip { path: path.to_owned(), name: clip.name, id: clip.id });
+                }
+            }
+            Ok(Vec::new())
+        }
         ImportSettings::GltfClips(_) | ImportSettings::Vrma(_) => gltf::external_files(bytes)
             .map_err(|source| CookError::Import { path: path.to_owned(), source })?
             .into_iter()
@@ -1961,6 +2000,7 @@ fn imported_mesh(
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::MoveSet(_)
+        | ImportSettings::AnimGraph(_)
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),

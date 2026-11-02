@@ -59,6 +59,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sapphire_assets::clip::CLIP_EXTENSION;
 use sapphire_assets::cue::CUE_EXTENSION;
+use sapphire_assets::graph::GRAPH_EXTENSION;
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
@@ -110,7 +111,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Clip
         | AssetKind::Colliders
         | AssetKind::Cue
-        | AssetKind::MoveSet => Codec::Lz4,
+        | AssetKind::MoveSet
+        | AssetKind::AnimGraph => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -129,6 +131,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         SOUND_EXTENSION => Some(AssetKind::Sound),
         CUE_EXTENSION => Some(AssetKind::Cue),
         MOVE_SET_EXTENSION => Some(AssetKind::MoveSet),
+        GRAPH_EXTENSION => Some(AssetKind::AnimGraph),
         _ => None,
     }
 }

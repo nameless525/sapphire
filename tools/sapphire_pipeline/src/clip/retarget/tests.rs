@@ -12,6 +12,7 @@ use sapphire_assets::rig::HumanBone::{self, *};
 use sapphire_assets::skeleton::{Joint, JointTransform, Skeleton};
 
 use super::*;
+use crate::anim_graph::BoundsGate;
 use crate::clip::source::ClipSource;
 use crate::clip::tests::{angle_between, root_of};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, ReductionError};
@@ -1258,6 +1259,29 @@ fn as_cooked_the_run_covers_the_ground_the_controller_does() {
     assert!((5.0..7.0).contains(&run), "{run}");
     let walk = planted_speed("MovementBasic", "Walking_B");
     assert!((0.7..1.5).contains(&walk), "{walk}");
+}
+
+/// N3 takes no posed bounds, because nothing its graph plays needs them: every retarget it names keeps
+/// the skin inside the sphere the bind pose's bounds make. A clip that doesn't fails here, and needs
+/// posed bounds before a graph can play it (`BoundsGate`).
+#[test]
+fn the_graphs_retargets_stay_inside_the_characters_bounds() {
+    let gate = BoundsGate::of_the_character();
+    let (skeleton, _) = character();
+    let files: Vec<Kaykit> = FILES.iter().map(|file| Kaykit::open(file)).collect();
+    let mut named = 0;
+    for clip in BoundsGate::clips() {
+        let Some(name) = &clip.clip else { continue };
+        let file = files.iter().find(|file| file.names.contains(name)).expect(name);
+        let out = as_cooked(file, name);
+        let reach = (0..=usize::from(out.ticks))
+            .step_by(2)
+            .map(|tick| gate.reach(&pose(&out, skeleton, tick)))
+            .fold(0.0, f32::max);
+        assert!(reach <= gate.radius, "{name}: the skin reaches {reach} of {}", gate.radius);
+        named += 1;
+    }
+    assert!(named >= 8, "{named}");
 }
 
 /// `follow`, on a real clip: the rig retargeted onto itself, its hand blocks and slots named, takes

@@ -1,0 +1,97 @@
+// How the look-dev character's clips play (M2 N3). KayKit's locomotion, retargeted onto the character,
+// for the walking and running; its moves are the combat slice's and the graph show's.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            // Rig_Medium_General.
+                        (name: "hit_a", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Hit_A", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "hit_b", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Hit_B", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            // Rig_Medium_MovementBasic.
+            (name: "walk", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Walking_B", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "run", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Running_B", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "air", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Jump_Idle", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "land", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Jump_Land", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            // Rig_Medium_MovementAdvanced.
+            (name: "walk_back", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Walking_Backwards", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "strafe_left", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Left", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "strafe_right", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Right", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "dodge_back", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Dodge_Backward", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            (name: "dodge_forward", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Dodge_Forward", target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
+            // The character's own key-pose documents.
+            (name: "idle", source: "0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4"),
+            (name: "strike", source: "15af86bb-67b3-4208-bc54-1618aabf450b"),
+            (name: "breathing", source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3"),
+        ],
+        masks: [
+            // From the spine up: what a flinch moves, with the legs left to what they're doing.
+            (name: "upper", bones: [(bone: Spine, weight: 1.0)]),
+        ],
+        locomotion: (
+            start: "ground",
+            // Half the gap to the character's velocity in 3 ticks: quick enough not to lag a stop.
+            smoothing: 3.0,
+            states: [
+                (name: "ground", plays: Blend((
+                    // Each `at` is where its clip's feet don't slide on this character: the mean velocity of
+                    // the foot on the floor, which isn't steady in a walk (0.4 to 1.6 m/s in a stance; O2's
+                    // median reads 0.72). Each `phase` is where in the clip the left foot lands, so the
+                    // walk and the run cross over on the same stride. The controller's 2 m/s walk is a
+                    // blend by speed, 82% walk and 18% run, with no clip played faster than it was
+                    // authored. Both strafes hold the body turned 60° as authored and run along it, so
+                    // that's where they sit, and what's between them and the run is a 2D blend.
+                    samples: [
+                        (clip: "idle", at: (0.0, 0.0), sync: false),
+                        (clip: "walk", at: (0.0, 1.13), phase: 0.844),
+                        (clip: "run", at: (0.0, 5.9), phase: 0.0),
+                        (clip: "walk_back", at: (0.0, -0.95), phase: 0.375),
+                        (clip: "strafe_left", at: (4.79, 2.75), phase: 0.0),
+                        (clip: "strafe_right", at: (-4.73, 2.70), phase: 0.958),
+                    ],
+                    rate: (0.5, 1.6),
+                ))),
+                (name: "air", plays: Clip(clip: "air", looping: true)),
+                (name: "land", plays: Clip(clip: "land")),
+            ],
+            transitions: [
+                (from: "ground", to: "air", when: Airborne, decay: 8),
+                (from: "air", to: "land", when: Landed, decay: 3),
+                (from: "air", to: "ground", when: Grounded, decay: 6),
+                // A landing goes on only as long as nothing wants to move.
+                (from: "land", to: "ground", when: Moving(1.0), decay: 6),
+                (from: "land", to: "ground", when: Finished, decay: 10),
+            ],
+        ),
+        combat: (
+            // A cancel closes 38% of the way to its new pose by the first frame, 79% by the second and
+            // 96% by the third, with the old pose's motion carried into it. A dodge reads quicker.
+            decay: 5,
+            exit: 12,
+            moves: [
+                // The graph show's moves (`show.moves.ron`).
+                (move: "strike", clip: "strike"),
+                (move: "dodge_back", clip: "dodge_back", decay: 3),
+                // The combat slice's moves, until O3's signature moves replace them.
+                (move: "light_1", clip: "strike"),
+                (move: "light_2", clip: "strike"),
+                (move: "light_3", clip: "strike"),
+                (move: "dodge", clip: "dodge_back", decay: 3),
+                (move: "dash_attack", clip: "dodge_forward", decay: 3),
+                (move: "skill", clip: "strike"),
+                // What a hit forces, by G3's names. A knockdown and a death wait for posed bounds: a body
+                // on the floor leaves the character's sphere.
+                (move: "stagger_light", clip: "hit_a", decay: 3),
+                (move: "stagger_heavy", clip: "hit_b", decay: 3),
+            ],
+        ),
+        additive: [
+            (name: "breathing", clip: "breathing", weight: 1.0),
+        ],
+        reactions: [
+            (name: "flinch", clip: "hit_a", mask: "upper", weight: 0.7, fade_out: 12),
+        ],
+        // Every 2.5 to 6 seconds, on the owner's clock, so hitstop holds a blink half shut.
+        blink: Some((expression: "blink", every: (150, 360), close: 3, hold: 1, open: 7)),
+    ),
+)

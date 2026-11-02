@@ -1,0 +1,37 @@
+// Breathing, added over whatever the character is doing (M2 N3): the difference from its first tick,
+// so it starts from nothing and ends there. In for about a second and a half and out for two, lifting
+// the chest and shoulders and easing the head back to level. Small: it's there to keep a held pose
+// alive, and a strike over it shouldn't read any different.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 210,
+        keys: [
+            (tick: 0, pose: {
+                Spine: (x: 0),
+                Chest: (x: 0),
+                UpperChest: (x: 0),
+                LeftShoulder: (z: 0),
+                RightShoulder: (z: 0),
+                Head: (x: 0),
+            }),
+            (tick: 90, pose: {
+                Spine: (x: -0.4),
+                Chest: (x: -0.8),
+                UpperChest: (x: -1.0),
+                LeftShoulder: (z: -1.2),
+                RightShoulder: (z: 1.2),
+                Head: (x: 0.8),
+            }),
+            (tick: 210, pose: {
+                Spine: (x: 0),
+                Chest: (x: 0),
+                UpperChest: (x: 0),
+                LeftShoulder: (z: 0),
+                RightShoulder: (z: 0),
+                Head: (x: 0),
+            }),
+        ],
+    ),
+)

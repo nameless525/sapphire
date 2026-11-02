@@ -11,6 +11,7 @@ use sapphire_serialize::cooked::access_unchecked;
 
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
+use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
 use crate::probes::{ArchivedProbeGrid, ProbeGrid};
@@ -57,6 +58,7 @@ mod sealed {
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
+    impl Sealed for crate::graph::AnimGraph {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -144,6 +146,17 @@ impl Asset for MoveSet {
         // SAFETY: as for meshes: `MoveSet::from_cooked` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<MoveSet>(bytes) }
             .expect("the envelope was checked when the move set was decoded")
+    }
+}
+
+impl Asset for AnimGraph {
+    const KIND: AssetKind = AssetKind::AnimGraph;
+    type View<'a> = &'a ArchivedAnimGraph;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedAnimGraph {
+        // SAFETY: as for meshes: `AnimGraph::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<AnimGraph>(bytes) }
+            .expect("the envelope was checked when the graph was decoded")
     }
 }
 

@@ -127,6 +127,7 @@ use sapphire_reflect::Versioned;
 use sapphire_serialize::{DocumentError, from_ron, to_ron};
 use serde::{Deserialize, Serialize};
 
+use crate::anim_graph::{self, AnimGraphSettings};
 use crate::assembly;
 use crate::audio::{self, CueSettings, SoundSettings};
 use crate::bake::OutlineSettings;
@@ -212,6 +213,8 @@ pub enum ImportSettings {
     Cue(CueSettings),
     /// A move set document (`.moves.ron`): frame data and tables the simulation reads (M2 G2).
     MoveSet(MoveSetSettings),
+    /// An animation graph document (`.animgraph.ron`): how a character's clips play (M2 N3).
+    AnimGraph(AnimGraphSettings),
     /// A glTF wanted for its animations alone: clips and a skeleton, and no mesh (M2 N1), whatever
     /// the file holds. No extension picks this: its sidecar does.
     GltfClips(ClipSettings),
@@ -251,6 +254,9 @@ impl ImportSettings {
         }
         if moves::is_source(source) {
             return Some(Self::MoveSet(MoveSetSettings::default()));
+        }
+        if anim_graph::is_source(source) {
+            return Some(Self::AnimGraph(AnimGraphSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -293,6 +299,7 @@ impl ImportSettings {
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::MoveSet(_)
+            | Self::AnimGraph(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_) => None,
@@ -313,6 +320,7 @@ impl ImportSettings {
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::MoveSet(_)
+            | Self::AnimGraph(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_) => None,

@@ -161,6 +161,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
                 AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
                 AssetKind::MoveSet => unreachable!("move sets never go to the uploader"),
+                AssetKind::AnimGraph => unreachable!("animation graphs never go to the uploader"),
             }
             Ok(())
         })
@@ -671,7 +672,7 @@ fn only_meshes_and_clips_may_depend_on_a_skeleton_and_a_skeleton_on_nothing() {
             "{kind}"
         );
         assert!(!AssetKind::Skeleton.may_depend_on(kind), "{kind}");
-        assert!(!kind.may_depend_on(AssetKind::Clip), "nothing cooked names a clip yet: {kind}");
+        assert_eq!(kind.may_depend_on(AssetKind::Clip), kind == AssetKind::AnimGraph, "{kind}");
     }
 }
 

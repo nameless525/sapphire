@@ -96,6 +96,7 @@
 //!
 //! [`AssetId`]: sapphire_assets::AssetId
 
+pub mod anim_graph;
 pub mod assembly;
 pub mod audio;
 pub mod bake;

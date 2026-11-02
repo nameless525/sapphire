@@ -11,9 +11,11 @@ use sapphire_math::det;
 use sapphire_serialize::cooked::AlignedVec;
 
 use super::*;
+use crate::anim_graph::BoundsGate;
 use crate::clip::tests::{angle_between, model_of, root_of, sample_pose};
 use crate::clip::{ClipTarget, cook};
 use crate::import::vrm;
+use crate::meta;
 
 const HIPS: usize = 1;
 const SPINE: usize = 2;
@@ -613,6 +615,46 @@ fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig)
     let skeleton = Skeleton::new(&imported.mesh.skin.as_ref().expect("skinned").joints);
     let cooked = Cooked::new(&document, &skeleton, &rig);
     (document, cooked, skeleton, rig)
+}
+
+/// N3 takes no posed bounds, because nothing its graph plays needs them: every document it names
+/// keeps the skin inside the sphere the bind pose's bounds make. A clip that doesn't fails here, and
+/// needs posed bounds before a graph can play it (`BoundsGate`).
+#[test]
+fn the_graphs_documents_stay_inside_the_characters_bounds() {
+    let gate = BoundsGate::of_the_character();
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/character");
+    let mut named = 0;
+    for clip in BoundsGate::clips().iter().filter(|clip| clip.clip.is_none()) {
+        let document = fs::read_dir(&folder)
+            .expect("the folder")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.to_string_lossy().ends_with(".keypose.ron.meta")
+                    && meta::read(path).is_ok_and(|sidecar| sidecar.id == clip.source)
+            })
+            .unwrap_or_else(|| panic!("{}'s document", clip.name));
+        let file = document.file_name().and_then(|name| name.to_str()).expect("a name");
+        let name = file.trim_end_matches(".keypose.ron.meta");
+        let (_, cooked, _, _) = on_the_character(name);
+        let ticks = Clip::read(&cooked.clip).expect("a valid clip").ticks.to_native();
+        let reach =
+            (0..=ticks).step_by(2).map(|tick| gate.reach(&cooked.model(tick as f32))).fold(0.0, f32::max);
+        assert!(reach <= gate.radius, "{name}: the skin reaches {reach} of {}", gate.radius);
+        named += 1;
+    }
+    assert!(named >= 3, "{named}");
+}
+
+/// The gate above bites: a death's whole body leaves the sphere, so O2's deaths stay out of the graph
+/// until there are posed bounds.
+#[test]
+fn a_death_leaves_the_characters_bounds() {
+    let gate = BoundsGate::of_the_character();
+    let (_, cooked, _, _) = on_the_character("death_back");
+    let reach = (0..=80).step_by(4).map(|tick| gate.reach(&cooked.model(tick as f32))).fold(0.0, f32::max);
+    assert!(reach > gate.radius, "the skin reaches {reach} of {}", gate.radius);
 }
 
 /// A sole's height above the floor, as the lower of the ankle and the toes against their rests.

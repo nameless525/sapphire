@@ -386,6 +386,93 @@ pub(crate) fn module(device: &wgpu::Device, program: Program, sources: &ShaderSo
     })
 }
 
+/// Runs `expression`, a `vec4<f32>` of `input`, over `inputs` in a compute shader appended to
+/// `wgsl`, and returns its results: for tests of a shader's own functions on values only the GPU
+/// sees, which no compiler can fold. `uniforms` bind at group 0, binding 0, as `post.wgsl` declares
+/// them; `wgsl`'s other bindings stay unbound, so `expression` must not reach them.
+#[cfg(test)]
+pub(crate) fn evaluate_on_gpu(
+    wgsl: &str,
+    uniforms: Option<&[u8]>,
+    expression: &str,
+    inputs: &[[f32; 4]],
+) -> Vec<[f32; 4]> {
+    use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
+    use wgpu::util::DeviceExt;
+
+    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+    let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+    let device = gpu.device();
+    let group = u32::from(uniforms.is_some());
+    let source = format!(
+        "{wgsl}
+@group({group}) @binding(14) var<storage, read> evaluate_inputs: array<vec4<f32>>;
+@group({group}) @binding(15) var<storage, read_write> evaluate_results: array<vec4<f32>>;
+@compute @workgroup_size(1)
+fn cs_evaluate(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let input = evaluate_inputs[id.x];
+    evaluate_results[id.x] = {expression};
+}}
+"
+    );
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: None,
+        module: &module,
+        entry_point: Some("cs_evaluate"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bytes: &[u8] = bytemuck::cast_slice(inputs);
+    let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+    let init = |contents: &[u8], usage| {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents, usage })
+    };
+    let (input_buffer, result_buffer) = (init(bytes, storage), init(bytes, storage));
+    let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(group),
+        entries: &[
+            wgpu::BindGroupEntry { binding: 14, resource: input_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 15, resource: result_buffer.as_entire_binding() },
+        ],
+    });
+    let uniform_group = uniforms.map(|uniforms| {
+        let buffer = init(uniforms, wgpu::BufferUsages::UNIFORM);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+        })
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        if let Some(uniform_group) = &uniform_group {
+            pass.set_bind_group(0, uniform_group, &[]);
+        }
+        pass.set_bind_group(group, &bind_group, &[]);
+        pass.dispatch_workgroups(inputs.len() as u32, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&result_buffer, 0, &read_buffer, 0, bytes.len() as u64);
+    gpu.queue().submit([encoder.finish()]);
+    read_buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+    device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let mapped = read_buffer.get_mapped_range(..).expect("mapped");
+    bytemuck::pod_collect_to_vec(&mapped[..])
+}
+
 #[cfg(test)]
 mod tests {
     //! Headless shader checks: CI catches WGSL errors without a GPU. naga comes through the

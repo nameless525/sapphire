@@ -122,10 +122,11 @@ fn gtao_depth_filter(d: vec4<f32>) -> f32 {
     return dot(weights, d) / dot(weights, vec4<f32>(1.0));
 }
 
-// XeGTAO's arc cosine approximation (Eberly), within 1e-4 of acos over [−1, 1].
+// XeGTAO's arc cosine approximation (Eberly), within 1e-4 of acos over [−1, 1]. A normalized dot
+// can round just past 1, where the square root would be NaN.
 fn gtao_acos(x: f32) -> f32 {
     let a = abs(x);
-    let root = sqrt(1.0 - a) * (1.5707288 + a * (-0.2121144 + a * (0.0742610 - 0.0187293 * a)));
+    let root = sqrt(max(1.0 - a, 0.0)) * (1.5707288 + a * (-0.2121144 + a * (0.0742610 - 0.0187293 * a)));
     return select(GTAO_PI - root, root, x >= 0.0);
 }
 

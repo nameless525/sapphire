@@ -137,6 +137,8 @@ const FLARE_HEXAGON: u32 = 2u;
 const FLARE_STREAK: u32 = 3u;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+// The largest finite f16, as temporal.wgsl has it: scene color can hold infinities.
+const COLOR_MAX: f32 = 65504.0;
 // FSR 1's RCAS limit, 1/4 - 1/16: the strongest negative lobe sharpening uses.
 const RCAS_LIMIT: f32 = 0.1875;
 
@@ -221,9 +223,15 @@ fn down_taps(uv: vec2<f32>) -> DownTaps {
     return taps;
 }
 
+// A prefilter tap exposed, its infinities at the ceiling, where the threshold's division stays
+// finite (temporal AA's resolve does the same).
+fn exposed_tap(color: vec3<f32>) -> vec3<f32> {
+    return min(color, vec3<f32>(COLOR_MAX)) * post.composite.x;
+}
+
 // Exposure and the threshold, then the tap's Karis weight, 1 / (1 + brightness).
 fn prefilter_tap(color: vec3<f32>, weight: f32) -> vec4<f32> {
-    let bright = bloom_threshold(color * post.composite.x);
+    let bright = bloom_threshold(exposed_tap(color));
     let karis = weight / (1.0 + max3(bright));
     return vec4<f32>(bright * karis, karis);
 }
@@ -237,7 +245,7 @@ fn world_at(uv: vec2<f32>) -> f32 {
 // `prefilter_tap` where `world` of the pixel is the world's: the rest takes the characters'
 // threshold and strength.
 fn character_tap(color: vec3<f32>, world: f32, weight: f32) -> vec4<f32> {
-    let exposed = color * post.composite.x;
+    let exposed = exposed_tap(color);
     let character = soft_threshold(exposed, post.character_bloom) * post.character_bloom.w;
     let bright = mix(character, bloom_threshold(exposed), saturate(world));
     let karis = weight / (1.0 + max3(bright));

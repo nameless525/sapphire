@@ -5,7 +5,8 @@
 //! into a pooled transient:
 //!
 //! 1. **Bloom prefilter** (½ size): exposure, a soft-knee threshold (the characters' own, M1 P2)
-//!    and a Karis average.
+//!    and a Karis average. Each tap takes scene color's ceiling, f16's largest, before exposure:
+//!    an infinity would make the threshold NaN, which the chain spreads over the frame.
 //! 2. **Bloom down** (¼ to 1/32): dual-filter downsamples (Bjørge, SIGGRAPH 2015), a 4×4
 //!    footprint from five bilinear taps.
 //! 3. **Bloom up** (1/16 back to ½): tent upsamples, each replacing `scatter` of the down

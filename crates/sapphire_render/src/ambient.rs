@@ -2479,6 +2479,33 @@ mod tests {
     use sapphire_assets::probes::{EMPTY_BRICK, ProbeData, ProbeGrid};
 
     use super::*;
+    use crate::shaders::{ShaderFile, evaluate_on_gpu};
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn gtao_arc_cosine_stays_finite_just_past_one() {
+        // A normalized dot along the view ray rounds just above 1 for a surface beside the camera
+        // (own review RS2-3), and `sqrt` of what's left below 0 is NaN. The inputs reach the shader
+        // through a buffer, so no compiler can fold them: without the guard Metal returns NaN here
+        // in spite of its fast math, and CI's lavapipe job runs this too.
+        let sources = ShaderSources::compiled_in();
+        let source = sources.get(ShaderFile::Occlusion);
+        let pi = source.lines().find(|line| line.starts_with("const GTAO_PI")).expect("its constant");
+        let start = source.find("fn gtao_acos").expect("the function");
+        let end = start + source[start..].find("\n}\n").expect("its end") + 3;
+        let wgsl = format!("{pi}\n{}", &source[start..end]);
+        let inputs: Vec<f32> = vec![1.000_000_2, 1.000_000_5, -1.000_000_2, 1.0, -1.0, 0.5, 0.0, -0.5];
+        let expected = inputs.iter().map(|x: &f32| x.clamp(-1.0, 1.0).acos());
+        let results = evaluate_on_gpu(
+            &wgsl,
+            None,
+            "vec4<f32>(gtao_acos(input.x))",
+            &inputs.iter().map(|&x| [x; 4]).collect::<Vec<_>>(),
+        );
+        for ((x, expected), result) in inputs.iter().zip(expected).zip(results) {
+            assert!((result[0] - expected).abs() < 1e-3, "acos({x}) is {expected}, not {}", result[0]);
+        }
+    }
 
     #[test]
     fn constants_are_only_those_that_are_on() {

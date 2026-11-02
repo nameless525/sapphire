@@ -742,9 +742,23 @@ fn character_pose(
     let pose = CharacterPose::new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights);
     let head = rig_joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
     let floor = mesh.streams.bounds.min[1].max(0.0);
-    let joints = FigureJoints::new(&pose, &rig_joints, head, floor);
+    let joints = FigureJoints::new(&pose, &rig_joints, head, floor, CHARACTER_SHAPE);
     Ok((pose, joints))
 }
+
+/// What a [`Figure`] says that no pose moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FigureShape {
+    /// From the head joint to the middle of the skull, in the model's units.
+    pub head_center: Vec3,
+    /// The radius of its body capsule (M1 R4).
+    pub body_radius: f32,
+    pub expression: FaceExpression,
+}
+
+/// The character's.
+const CHARACTER_SHAPE: FigureShape =
+    FigureShape { head_center: HEAD_CENTER, body_radius: BODY_RADIUS, expression: FACE_EXPRESSION };
 
 /// Where a posed character's [`Figure`] finds its parts: what follows the skeleton every frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -759,10 +773,11 @@ pub(crate) struct FigureJoints {
     feet: Option<([usize; 2], f32)>,
     /// The right hand's joint, which a blade follows. `None` for a rig without one.
     right_hand: Option<usize>,
+    shape: FigureShape,
 }
 
 impl FigureJoints {
-    fn new(pose: &CharacterPose, rig: &RigJoints, head: usize, floor: f32) -> Self {
+    pub fn new(pose: &CharacterPose, rig: &RigJoints, head: usize, floor: f32, shape: FigureShape) -> Self {
         let feet =
             rig.joint(HumanBone::LeftFoot).zip(rig.joint(HumanBone::RightFoot)).map(|(left, right)| {
                 let ankle = pose.model()[left].translation.y.min(pose.model()[right].translation.y);
@@ -774,6 +789,7 @@ impl FigureJoints {
             floor,
             feet,
             right_hand: rig.joint(HumanBone::RightHand),
+            shape,
         }
     }
 
@@ -792,6 +808,7 @@ impl FigureJoints {
             floor,
             feet: Some((feet, ankle - floor)),
             right_hand: None,
+            shape: CHARACTER_SHAPE,
         }
     }
 
@@ -807,13 +824,13 @@ impl FigureJoints {
         (position, (rotation * self.rest_head.inverse()).normalize())
     }
 
-    fn figure(head: Vec3, face: Quat, feet: Vec3) -> Figure {
+    fn figure(&self, head: Vec3, face: Quat, feet: Vec3) -> Figure {
         Figure {
-            head: head + face * HEAD_CENTER,
+            head: head + face * self.shape.head_center,
             feet,
-            body_radius: BODY_RADIUS,
+            body_radius: self.shape.body_radius,
             face,
-            expression: FACE_EXPRESSION,
+            expression: self.shape.expression,
         }
     }
 
@@ -821,7 +838,7 @@ impl FigureJoints {
     /// drawn with.
     pub fn held(&self, pose: &CharacterPose) -> Figure {
         let (head, face) = self.head(pose);
-        Self::figure(head, face, Vec3::new(head.x, self.floor, head.z))
+        self.figure(head, face, Vec3::new(head.x, self.floor, head.z))
     }
 
     /// The figure of a pose in motion: its head, and its feet between the two feet's joints, risen
@@ -834,7 +851,7 @@ impl FigureJoints {
             let height = (left.y.min(right.y) - ankle).max(self.floor);
             Vec3::new((left.x + right.x) * 0.5, height, (left.z + right.z) * 0.5)
         });
-        Self::figure(head, face, feet)
+        self.figure(head, face, feet)
     }
 }
 

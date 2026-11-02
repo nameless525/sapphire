@@ -1,0 +1,68 @@
+// How the enemy's clips play (M2 G6): KayKit's, retargeted onto the warrior. Its moves are
+// `warrior.moves.ron`'s, which M2 G3 forces and a brain presses, and each plays at the move's own ticks,
+// so a move's blow goes where its clip's does: `swipe`'s 24 to 29 on the slice's 23 to 28, `overhead`'s 45
+// to 51 as the chop's 41 to 46 lands. `lunge` has its arm out first, at the stab's 21 to 26, and its body
+// follows at 30 to 38, as a lunge does. A clip past its end holds its last keys.
+(
+    type: "sapphire::assets::AnimGraph",
+    version: 1,
+    data: (
+        clips: [
+            // Rig_Medium_General.
+            (name: "idle", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Idle_A", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "hit_a", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Hit_A", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "hit_b", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Hit_B", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "fall", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Death_A", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            // Rig_Medium_MovementBasic.
+            (name: "walk", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Walking_B", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "run", source: "2bb6b794-55db-42cf-921a-c0638eed48ca", clip: "Running_B", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            // Rig_Medium_MovementAdvanced.
+            (name: "walk_back", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Walking_Backwards", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "strafe_left", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Left", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "strafe_right", source: "c7c4200c-d939-494a-8851-0fbc2f8a7a35", clip: "Running_Strafe_Right", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            // Rig_Medium_CombatMelee.
+            (name: "slice", source: "aa00c3be-b36a-477a-95a2-deb148f75ff8", clip: "Melee_1H_Attack_Slice_Diagonal", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "chop", source: "aa00c3be-b36a-477a-95a2-deb148f75ff8", clip: "Melee_2H_Attack_Chop", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+            (name: "stab", source: "aa00c3be-b36a-477a-95a2-deb148f75ff8", clip: "Melee_1H_Attack_Stab", target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6"),
+        ],
+        locomotion: (
+            start: "ground",
+            // Half the gap to its velocity in 5 ticks: a big thing, slower to change its mind than the
+            // character's 3.
+            smoothing: 5.0,
+            states: [
+                (name: "ground", plays: Blend((
+                    // Each `at` is where its clip's feet don't slide on this body, as the character's
+                    // graph measures them, carried across: that graph's figure for the same clip, over
+                    // the character's leg stretch of 2.04, times the warrior's 2.1 and its scale of 0.8.
+                    // Its own `phase` for each, too, which belongs to the clip. A brain's circle at 1.4
+                    // m/s and step back at 1.2 sit between these, with no clip faster than it was authored.
+                    samples: [
+                        (clip: "idle", at: (0.0, 0.0), sync: false),
+                        (clip: "walk", at: (0.0, 0.93), phase: 0.844),
+                        (clip: "run", at: (0.0, 4.86), phase: 0.0),
+                        (clip: "walk_back", at: (0.0, -0.78), phase: 0.375),
+                        (clip: "strafe_left", at: (3.95, 2.26), phase: 0.0),
+                        (clip: "strafe_right", at: (-3.89, 2.22), phase: 0.958),
+                    ],
+                    rate: (0.5, 1.6),
+                ))),
+            ],
+        ),
+        combat: (
+            decay: 6,
+            exit: 14,
+            moves: [
+                (move: "swipe", clip: "slice"),
+                (move: "overhead", clip: "chop"),
+                (move: "lunge", clip: "stab"),
+                (move: "stagger_light", clip: "hit_a", decay: 3),
+                (move: "stagger_heavy", clip: "hit_b", decay: 3),
+                (move: "knockdown", clip: "fall", decay: 3),
+                // Nothing in the pack gets up that retargets, so its pose on the floor decays into standing.
+                (move: "recover", clip: "idle", decay: 30),
+                (move: "death", clip: "fall", decay: 3),
+            ],
+        ),
+    ),
+)

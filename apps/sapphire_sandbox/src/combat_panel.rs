@@ -59,6 +59,7 @@ fn recorder_state(combat: &Combat) -> RecorderState {
             at_limit,
             scripted,
         },
+        CombatStatus::Fighting { fights } => RecorderState::Fighting { fight: fights, tick },
     }
 }
 

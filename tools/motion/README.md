@@ -27,6 +27,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 2. Read a sheet: `python3 tools/motion/sheet.py light_1:0,3,7,8,9,10,11,15,22 --views 205,90`. The default views are from behind and from the side, which is what a fight's camera sees and what shows a silhouette best. Sheets go to `target/motion/`.
 3. Run `cargo test -p sapphire_pipeline --test player_moves`, which holds each move to its shape. It says nothing about whether the move looks good.
 4. Commit `moves.py` or `frames.py` with what they wrote. A clean checkout's `moves.py --write` changes nothing.
+5. The simulation keeps a cooked copy of the set for the arena's fight: `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, then `cargo xtask replay --update`.
 
 ## Posing rules learned the hard way
 

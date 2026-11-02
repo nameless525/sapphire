@@ -134,6 +134,8 @@ pub enum RecorderState {
     },
     /// A replay playing.
     Replaying { name: String, tick: u64, ticks: u32 },
+    /// A fight with no file (`--fight`), of the many it's had, which starts over by itself.
+    Fighting { fight: u32, tick: u64 },
 }
 
 /// What the panel asks of the recorder.
@@ -261,6 +263,9 @@ fn recorder(
         }
         RecorderState::Replaying { name, tick, ticks } => {
             ui.label(format!("Replaying {name}: tick {tick} of {ticks}"));
+        }
+        RecorderState::Fighting { fight, tick } => {
+            ui.label(format!("Fight {fight}, tick {tick}. Nothing's written, and R starts it over."));
         }
     }
     if let Some(note) = &recorder.note {

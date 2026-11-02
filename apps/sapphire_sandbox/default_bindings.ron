@@ -18,6 +18,8 @@
             // A few ticks of hitstop on the turntable.
             (name: "hitstop", kind: Button),
             (name: "quit", kind: Button),
+            // Start `--fight`'s fight over.
+            (name: "restart_fight", kind: Button),
         ],
         contexts: [
             (
@@ -62,6 +64,14 @@
             (
                 name: "desktop",
                 bindings: [(action: "quit", source: Key(Escape), trigger: Pressed)],
+            ),
+            // Enabled with `--fight`: nothing combat's bindings use.
+            (
+                name: "fight",
+                bindings: [
+                    (action: "restart_fight", source: Key(R), trigger: Pressed, name: "restart_fight.keyboard"),
+                    (action: "restart_fight", source: Pad(DpadDown), trigger: Pressed, name: "restart_fight.gamepad"),
+                ],
             ),
         ],
     ),

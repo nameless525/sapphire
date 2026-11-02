@@ -1,8 +1,9 @@
 // The enemy's moves (M2 O4): the skeleton warrior, a head taller than the character, with a long
 // blade in its right hand. Frame data in 60 Hz ticks, slower to come out than the player's, as the
-// reference fights' common enemies are, so a dodge has something to read. Motion is keyed by hand
-// until O2's and N3's clips bake in its place; the timing and the volumes are what this document
-// owns. In root space +Z is forward and +X the warrior's left, and a blade's +Y runs grip to tip.
+// reference fights' common enemies are, so a dodge has something to read. Root and blade are keyed by
+// hand: `warrior.animgraph.ron` names the clip each move plays, at the move's own ticks, so a move's blow
+// goes where its clip's does. In root space +Z is forward and +X the warrior's left, and a blade's +Y
+// runs grip to tip.
 //
 // A brain presses the attacks through `IntentRing::press` (M2 G6), so no intent has a button. It's
 // the `brain` section here, so a replay's hash holds it and replacing the set replaces it.
@@ -50,7 +51,7 @@
             // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
             spacing: (near: 1.6, far: 2.6),
             pace: (
-                // About 4.1 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
+                // About 4 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
                 // is what the lunge is for.
                 approach: 0.7,
                 // A step back at 1.2 m/s, and a slow circle at 1.4 m/s.
@@ -64,9 +65,9 @@
             patience: (min: 40, max: 130),
             // 0.4 to 1.25 s standing after an attack ends: the opening an attack's recovery started.
             rest: (min: 24, max: 75),
-            // A beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
+            // A short beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
             // doesn't put off its next attack.
-            recover: (min: 8, max: 30),
+            recover: (min: 2, max: 10),
             attacks: [
                 (
                     // Quick and short: its answer to someone standing close or just finished swinging.
@@ -151,30 +152,35 @@
                 ],
             ),
             (
-                // 1.67 s. The telegraphed heavy: 800 ms with the blade raised over its head, turning
+                // 1.67 s. The telegraphed heavy: 750 ms with the blade raised over its head, turning
                 // to follow, then a two-handed chop straight down its front, reaching about 2.3 m and
-                // landing with the tip low. It can't get out of the recovery: this is the opening.
+                // landing with the tip low. It lands as `Melee_2H_Attack_Chop`'s blade finishes coming
+                // down, ticks 41 to 46 of 98, since a graph plays a clip at its move's own ticks. It can't
+                // get out of the recovery: this is the opening.
                 name: "overhead",
-                startup: 48,
+                startup: 45,
                 active: 6,
-                recovery: 46,
+                recovery: 49,
+                // A hit under 20 poise lands and doesn't stop it, which leaves a dodge to answer it with.
+                // Only the skill's big hit, or breaking its poise, cuts it short.
+                armour: [(from: 0, to: 45, threshold: 20)],
                 motion: (
                     root: [
-                        (at: 40, offset: (0.0, 0.0, -0.1)),
-                        (at: 48, offset: (0.0, 0.0, -0.1)),
-                        (at: 54, offset: (0.0, 0.0, 0.7)),
-                        (at: 62, offset: (0.0, 0.0, 0.8)),
+                        (at: 37, offset: (0.0, 0.0, -0.1)),
+                        (at: 45, offset: (0.0, 0.0, -0.1)),
+                        (at: 51, offset: (0.0, 0.0, 0.7)),
+                        (at: 59, offset: (0.0, 0.0, 0.8)),
                     ],
                     paths: [
                         (
                             name: "blade",
                             keys: [
                                 (at: 0, offset: (-0.3, 1.1, 0.25), rotation: (0.2588, 0.0, 0.0, 0.9659)),
-                                (at: 40, offset: (-0.1, 2.15, -0.35), rotation: (-0.1736, 0.0, 0.0, 0.9848)),
-                                (at: 48, offset: (0.0, 2.35, 0.0)),
-                                (at: 50, offset: (0.0, 2.09, 0.71), rotation: (0.342, 0.0, 0.0, 0.9397)),
-                                (at: 52, offset: (0.0, 1.44, 1.08), rotation: (0.6428, 0.0, 0.0, 0.766)),
-                                (at: 54, offset: (0.0, 0.7, 0.95), rotation: (0.866, 0.0, 0.0, 0.5)),
+                                (at: 37, offset: (-0.1, 2.15, -0.35), rotation: (-0.1736, 0.0, 0.0, 0.9848)),
+                                (at: 45, offset: (0.0, 2.35, 0.0)),
+                                (at: 47, offset: (0.0, 2.09, 0.71), rotation: (0.342, 0.0, 0.0, 0.9397)),
+                                (at: 49, offset: (0.0, 1.44, 1.08), rotation: (0.6428, 0.0, 0.0, 0.766)),
+                                (at: 51, offset: (0.0, 0.7, 0.95), rotation: (0.866, 0.0, 0.0, 0.5)),
                                 (at: 100, offset: (0.2, 0.6, 0.5)),
                             ],
                         ),
@@ -183,8 +189,8 @@
                 hitboxes: [
                     (
                         name: "overhead_hit",
-                        from: 48,
-                        to: 54,
+                        from: 45,
+                        to: 51,
                         path: "blade",
                         shape: Capsule(radius: 0.26, length: 0.9),
                         attack: (
@@ -198,12 +204,12 @@
                     ),
                 ],
                 warps: [
-                    (from: 0, to: 48, max_distance: 0.8, max_turn: 1.6, keep: 1.6),
+                    (from: 0, to: 45, max_distance: 0.8, max_turn: 1.6, keep: 1.6),
                 ],
                 cues: [
                     (name: "telegraph", at: 0),
-                    (name: "swing", at: 48),
-                    (name: "heavy_land", at: 53),
+                    (name: "swing", at: 45),
+                    (name: "heavy_land", at: 50),
                 ],
             ),
             (
@@ -214,6 +220,8 @@
                 startup: 30,
                 active: 8,
                 recovery: 34,
+                // As the overhead's.
+                armour: [(from: 0, to: 30, threshold: 20)],
                 motion: (
                     root: [
                         (at: 26, offset: (0.0, 0.0, -0.15)),
@@ -260,6 +268,9 @@
                 startup: 0,
                 active: 0,
                 recovery: 20,
+                // A hit under 20 poise doesn't start it over: the light string lands a hit every 30
+                // ticks or so, and would hold it here until it fell, swinging at nothing.
+                armour: [(from: 0, to: 20, threshold: 20)],
                 motion: (
                     root: [
                         (at: 6, offset: (0.0, 0.0, -0.22)),

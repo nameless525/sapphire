@@ -23,7 +23,7 @@
 //! else. A recording ends its file at the first edit that changes something, and the fight goes on
 //! (`sapphire_gameplay::replay::Recording`); a replay refuses edits; and a fight started later starts from
 //! the newest edits, as a build with them in its documents would ([`LiveMoves`]), with a file that says
-//! so through its hash.
+//! so through its hash. `--arena --fight` has no file to end, and starts over from its edits.
 //!
 //! **Knowing it worked.** The first frame a new revision's move plays logs `the next attempt plays the new
 //! moves`, and live link's status lists what each fighter is playing, with its revision and windows.
@@ -84,11 +84,10 @@ struct Source {
     edits: u32,
 }
 
-/// A revision no attempt has played yet.
+/// A set's newest moves, which no attempt has played yet.
 struct Waiting {
     document: String,
     set: MoveSetId,
-    revision: u32,
     stopwatch: Stopwatch,
 }
 
@@ -237,7 +236,7 @@ impl LiveTuning {
                 self.waiting.retain(|waiting| waiting.document != document);
                 let (document, stopwatch) = (document.to_owned(), Stopwatch::start());
                 let reply = format!("moves of {document}, as revision {revision}");
-                self.waiting.push(Waiting { document, set, revision, stopwatch });
+                self.waiting.push(Waiting { document, set, stopwatch });
                 reply
             }
             Some((_, Tuned::Unchanged { revision })) => {
@@ -245,6 +244,25 @@ impl LiveTuning {
             }
             None => format!("moves of {document}, for the next fight: none plays it now"),
         })
+    }
+
+    /// A fight starts on the simulation's own cooked copy of its moves. A pack's set that differs from
+    /// that is what a cook made of an edited document, as `cargo xtask run` makes one before it launches,
+    /// so a fight starts from it, and a saved edit lasts past a relaunch. A fresh pack and a fresh copy
+    /// are the same bytes, so this changes nothing (`tools/sapphire_pipeline/tests/player_moves.rs`).
+    pub fn start_fight_from_cooks(&self, combat: &mut Combat, content: &Content) {
+        for cooked in &self.cooked {
+            let Some(set) = content.move_set(&cooked.handle).and_then(|set| set.to_owned_set().ok()) else {
+                continue;
+            };
+            if combat.start_fight_from(cooked.document, set) {
+                tracing::info!(
+                    target: LOG_TARGET,
+                    document = cooked.document,
+                    "the fight starts from what a cook made of this document, not the build's copy",
+                );
+            }
+        }
     }
 
     /// Says why a document of moves reaches nothing here, if it doesn't.
@@ -335,7 +353,9 @@ impl LiveTuning {
             let playing = [combat, show].into_iter().flatten().find_map(|(sim, cast)| {
                 cast.iter().find_map(|actor| {
                     let current = sim.actor(*actor)?.moves.current?;
-                    let new = current.at.set == waiting.set && current.at.revision == waiting.revision;
+                    // The newest, which a fight started over from an edit has as its revision 0.
+                    let newest = sim.move_library().current_revision(waiting.set);
+                    let new = current.at.set == waiting.set && Some(current.at.revision) == newest;
                     new.then_some((sim, *actor, current.at))
                 })
             });
@@ -344,7 +364,7 @@ impl LiveTuning {
                 target: LOG_TARGET,
                 document = waiting.document,
                 mv = sim.move_library().get(at).map_or("", |mv| mv.label()),
-                revision = waiting.revision,
+                revision = at.revision,
                 actor = actor.raw(),
                 tick = sim.tick(),
                 since_ms = format_args!("{:.1}", waiting.stopwatch.elapsed().as_secs_f64() * 1e3),
@@ -718,6 +738,72 @@ mod tests {
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
         assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
         assert_eq!(kind_of_file(Path::new("x/default_day.ron")), None);
+    }
+
+    /// `player.moves.ron` with `light_1` two ticks later, over `running`, as a save with no cook makes it.
+    fn later_light(running: &MoveSet) -> MoveSet {
+        let text = include_str!("../../../content/combat/player/player.moves.ron");
+        let mut document = MoveSetDocument::parse(text).expect("parses");
+        let light = document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("there");
+        light.startup += 2;
+        light.recovery -= 2;
+        for hitbox in &mut light.hitboxes {
+            hitbox.from += 2;
+            hitbox.to += 2;
+        }
+        compile_document(&document.to_text().expect("writes"), Some(running)).expect("compiles").set
+    }
+
+    fn a_fight() -> Combat {
+        let option = CombatOption::Fight { script: Some("attempts".to_owned()) };
+        Combat::new(&option).expect("it starts")
+    }
+
+    /// A fight with no file takes a live edit, ends no file over it, and starts over from it: revision 0,
+    /// as if the build had it.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_fight_takes_an_edit_and_starts_over_from_it() {
+        const PLAYER: &str = "player.moves.ron";
+        let mut combat = a_fight();
+        let id = combat.plays(PLAYER).expect("it plays this document");
+        let edited = later_light(combat.simulation().move_library().current(id).expect("it runs"));
+        let tuned = combat.tune(PLAYER, edited.clone()).expect("no refusal");
+        assert_eq!(tuned, Some((id, Tuned::Replaced { revision: 1 })));
+        assert_eq!(combat.edited_at(), None, "it has no file to end");
+        let same = combat.tune(PLAYER, edited.clone()).expect("no refusal");
+        assert_eq!(same, Some((id, Tuned::Unchanged { revision: 1 })));
+
+        combat.restart();
+        let library = combat.simulation().move_library();
+        assert_eq!(library.current_revision(id), Some(0));
+        assert!(library.is_current(id, &edited));
+        assert_eq!(combat.simulation().tick(), 0);
+    }
+
+    /// A fight that hasn't stepped starts from a cook that differs from the build's copy, and goes on
+    /// starting from it. A cook that doesn't differ, a set it doesn't play and a fight under way change
+    /// nothing.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_fight_starts_from_a_newer_cook_of_its_moves() {
+        const PLAYER: &str = "player.moves.ron";
+        let mut combat = a_fight();
+        let id = combat.plays(PLAYER).expect("it plays this document");
+        let baked = sapphire_gameplay::replay::player_moves().expect("reads");
+        let edited = later_light(&baked);
+        assert!(!combat.start_fight_from(PLAYER, baked.clone()), "the same bytes");
+        assert!(!combat.start_fight_from(SLICE_FILE, edited.clone()), "not one of this fight's");
+        let hash = combat.simulation().tables_hash();
+        assert!(combat.start_fight_from(PLAYER, edited.clone()));
+        assert_ne!(combat.simulation().tables_hash(), hash);
+        assert_eq!(combat.simulation().move_library().current_revision(id), Some(0));
+        assert!(combat.simulation().move_library().is_current(id, &edited));
+        combat.restart();
+        assert!(combat.simulation().move_library().is_current(id, &edited), "the next fight too");
+
+        combat.step(&mut no_bindings);
+        assert!(!combat.start_fight_from(PLAYER, baked), "under way");
     }
 
     /// The paths this module watches are the files the build compiled in.

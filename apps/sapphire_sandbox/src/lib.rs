@@ -162,7 +162,8 @@
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
 //! - `--blade on|off` (with `--look-dev` or `--arena`): the player's sword in the character's right
 //!   hand (M2 O3, `blade.rs`), placed by the hand's joint each frame at the `blade` socket its hit
-//!   volumes bake from. On for `--look-dev body`, off otherwise, so no older scene draws one.
+//!   volumes bake from. On for `--look-dev body` and `--fight`, off otherwise, so no older scene draws
+//!   one.
 //! - `--springs on|off` (with `--clip` or `--graph`): runs the character's spring bones or not, on by default
 //!   (M2 N5). Scenes that don't show them pin them off; `lookdev-strike-springs-*` and
 //!   `lookdev-clip-run-springs` do.
@@ -171,14 +172,21 @@
 //!   and `--size <cell>` set the grid, `--sheet-ticks <a,b,..>` and `--sheet-views <yaw,yaw,..>` name
 //!   what it draws, and `--zoom <factor>` pulls back for a clip that travels.
 //! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
-//!   as a place to fight: the character at the player's spawn point and a stand-in at the enemy's,
+//!   as a place to fight: the character at the player's spawn point and the enemy at the enemy's,
 //!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s
 //!   director. `--arena-shot follow` is a plain fixed follow instead, which the golden scenes pin,
 //!   and `over` looks straight down on the square. `--debug-draw colliders` draws the colliders over
 //!   it all. With `--replay <arena replay>` the actors follow the replay, and `--record <file>
 //!   --scenario arena` plays one by the bindings, in a window. It's a scene of its own: it can't join
 //!   `--look-dev` or anything that can't. The golden scenes `arena-day`, `arena-golden` and
-//!   `arena-replay` show it.
+//!   `arena-replay` show it, and `arena-fight-telegraph`, `arena-fight-hit` and `arena-fight-cut` a
+//!   fight with the enemy.
+//! - `--fight` (with `--arena`): player against brain with no file (M2 G6, `combat.rs`), each on its
+//!   graph and its IK, the player with its sword. Add `--cues` and `--hud live` for the rest. In a window
+//!   whoever's there plays it on combat's bindings alone, as with `--combat-input`, and it starts over
+//!   4 s after someone falls, or on `R` or the d-pad's down. With `--script <name>` and `--capture`,
+//!   `--bench` or `--offscreen` a script plays it, down the same path, for agents; each fight's log line
+//!   says how it went.
 //! - `--graph <script>` (with `--look-dev`, without `--clip`): plays the animation graph on the
 //!   character from a scripted input (M2 N3, `anim_graph.rs`): `stand`, `walk`, `run`, `strafe`, `back`,
 //!   `jump`, `cancel`, `hitstop`, `flinch` or `cut`, at fixed ticks, with a controller and a simulation
@@ -285,7 +293,8 @@
 //!     Without those two and without `--script`, in the windowed app, it records whoever's playing,
 //!     through combat's bindings, and writes the file when the app quits (`combat.rs`).
 //!   - `--cues`, with either: fire that simulation's cues as a game does (M2 E3, `cues.rs`), on the
-//!     scene's character: its effects, screen effects and camera shakes, and in the windowed app its
+//!     scene's character, or in `--arena` where its actors are: effects, screen effects and camera
+//!     shakes, and in the windowed app its
 //!     sounds and rumble, which load `audio.spack`. A capture and a bench stay silent.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the

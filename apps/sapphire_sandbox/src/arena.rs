@@ -19,8 +19,8 @@
 //!   and the street's moon gate in the middle of the frame.
 //! - **Spawn points:** `sapphire_gameplay::arena`, read from `content/arena/square.spawns.ron`.
 //! - **Who stands there:** [`ArenaActors`]: the character, in the look-dev stage's held pose, at the
-//!   player's spawn point, and the same character in the same pose as a stand-in at the enemy's.
-//!   With `--replay` or `--record`, each actor's root follows `ActorTransform` a tick at a time.
+//!   player's spawn point, and the enemy (`crate::enemy`) and its blade at the enemy's. With `--replay`,
+//!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time.
 //! - **The camera** (`--arena-shot`, [`ArenaShot`]): `sapphire_camera`'s director by default, on its
 //!   combat rig, framing both fighters and colliding with the world. `follow` is a plain fixed follow,
 //!   what the golden scenes pin, so a change of camera tuning moves none of them.
@@ -32,51 +32,75 @@
 //! - **Moving the player (G1, in):** the `arena` scenario (`sapphire_gameplay::replay`) gives
 //!   everyone a capsule on the document's colliders, so a stick collides, steps and jumps.
 //!   [`ArenaActors::follow`] reads `ActorView`, whatever moved it.
-//! - **Live input (I1, in):** `--arena --record <file> --scenario arena` in a window plays by the
-//!   bindings (`crate::combat::read_bindings`), turned by [`crate::scene::Scene::camera_heading`]. A
-//!   fight with no file wants a `Combat` mode of its own, a recording with nowhere to write.
-//! - **The camera (G5, in):** [`ArenaCamera`]. Look and zoom reach it through
-//!   [`crate::scene::Scene::drive_arena_camera`]. Lock-on, shakes and a chosen target are the
-//!   director's own calls, made on [`ArenaCamera::director`]; its target today is the enemy, always.
-//! - **Moves (G2, in) and hits (G3):** the scenario loads the test moves and aims warps, so a script's
-//!   `Buttons` start them; the script `arena-walk` (`replay/script.rs`) presses only jump. Hits ask the
-//!   simulation's `PhysicsWorld`, in `CombatSet::Hits`.
-//! - **Animation (N2, in; the graph, N3):** the two `RenderPose`s [`crate::scene::Scene::spawn_arena`]
-//!   writes once. `--clip` plays a `crate::animate::ClipPlayer` on the character with its root motion
-//!   off, and [`ArenaActors::present`] keeps the transform. A graph plugs in the same way, and what
-//!   it plays reads `ActorView::moves`.
-//! - **IK (N4, in):** `--clip <name> --ik on` casts for the character's feet in this world
-//!   ([`ArenaGround::share`]), the same `Arc` the camera reads. A `crate::anim_graph::GraphDriver`
-//!   takes the same `crate::ik::IkDriver`.
-//! - **The enemy (O4, in; G6):** its stand-in's mesh, in `spawn_arena`, where `crate::enemy`'s can go,
-//!   and its brain in the scenario.
-//! - **Effects (E2, `--vfx`) and the HUD (I2, `--hud`):** both draw over whatever scene is up, and
-//!   read positions from [`ArenaActors`], which has what they need.
+//! - **Live input (I1 and G6, in):** `--arena --fight` in a window is player against brain with no file
+//!   (`crate::combat`), played by the bindings (`crate::combat::read_bindings`), turned by
+//!   [`crate::scene::Scene::camera_heading`], and `--script` drives the same path without a window.
+//!   `--arena --record <file> --scenario arena` keeps one. A new fight is a new simulation, and
+//!   [`ArenaActors::follow`] sees its tick go back: everything stands where it now is, and the camera cuts.
+//! - **The camera (G5 and G6, in):** [`ArenaCamera`]. Look and zoom reach it through
+//!   [`crate::scene::Scene::drive_arena_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
+//!   chosen each frame by [`ArenaActors::present`], so a fallen enemy, or one out of range, stops being
+//!   framed. The player's lock-on button holds the line to it, through the director's own rig
+//!   ([`ArenaActors::set_lock_on`]). Shakes are the director's own calls too, for E3, made on
+//!   [`ArenaCamera::director`], which [`ArenaActors::director`] hands to `crate::cues`. `OrbitCamera::set_view`
+//!   keeps the view upright, so a shake's roll goes through `OrbitCamera::set_shake` ([`roll_of`]).
+//! - **Moves (G2, O3, in) and hits (G3):** `arena-fight` loads the player's real moves and the
+//!   `arena` scenario the test moves, and both aim warps, so a script's `Buttons` start them; the script
+//!   `arena-walk` (`replay/script.rs`) presses only jump. Hits ask the simulation's `PhysicsWorld`, in
+//!   `CombatSet::Hits`.
+//! - **Animation (N3, in):** `crate::scene::Scene::play_fighters` gives each fighter a graph, and each
+//!   frame [`ArenaActors::graph_input`] turns what the last step said of it into what its graph plays:
+//!   its move at the move's own ticks, its feet from its controller, on its own clock. No root motion comes
+//!   from a clip: [`ArenaActors::present`] keeps the transform, and the blade with it, through
+//!   [`ArenaActors::hold_blade`].
+//! - **IK (N4, in):** each fighter's graph driver casts for its feet in this world
+//!   ([`ArenaGround::share`]), the same `Arc` the camera reads, and looks at the other
+//!   ([`ArenaActors::look_target`]). `--clip <name> --ik on` casts here too.
+//! - **The enemy (O4 and G6, in):** `crate::enemy`'s model and blade, in `spawn_arena`, and its brain in
+//!   the `arena-fight` scenario. The `arena` scenario's opponent draws as the same warrior and has no
+//!   brain: it just stands there.
+//! - **Effects and cues (E2, E3, in):** `--cues` fires a fight's cues where the simulation has its
+//!   actors (`crate::cues::CueStage::Actors`), and `--vfx` draws over whatever scene is up.
+//! - **The HUD (I2, in):** `--hud live` shows what [`ArenaActors::hud_values`] reads of the fighters.
+//!   Its touch zones reach no `TickActions` yet: a fight is played on a pad or a keyboard.
 
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
+use std::time::Duration;
 
+use sapphire_anim::{GraphInput, ReactionInput};
 use sapphire_assets::AssetId;
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Rig, Subject};
 use sapphire_colliders::{ArchivedColliderSet, ColliderError, Group};
 use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::{ActorId, Simulation};
+use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingWeights, choose_target};
+use sapphire_gameplay::{ActorId, ActorView, Buttons, Simulation, Stick};
 use sapphire_math::{Mat4, Quat, Vec2, Vec3};
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
+use sapphire_time::TICK_HZ;
+use sapphire_ui::{FighterValues, HudValues, SkillValues};
 
+use crate::anim_graph::{combat_input, duration_ticks, locomotion_of, time_ticks};
 use crate::combat_views::{self, Canvas};
+use crate::enemy;
 use crate::extract::RenderTransform;
 use crate::orbit::OrbitCamera;
 
 /// The arena's colliders, by their sidecar's ID (`content/arena/square.colliders.ron.meta`).
 pub(crate) const COLLIDERS: AssetId = AssetId::from_text("773529bf-89bd-4e37-b9c7-1a687405b42f");
 
-/// The scenario every replay through the arena starts from.
+/// The scenario a replay of the arena on its own starts from.
 pub(crate) const SCENARIO: &str = "arena";
 
-/// Which noise the director's shakes draw from. Nothing fires one yet.
+/// The scenario of a fight with the enemy (M2 G6): `--fight`, and the replays made from it.
+pub(crate) const FIGHT_SCENARIO: &str = "arena-fight";
+
+/// Who a soft lock can find before a simulation says: the second actor a scenario spawns.
+const ENEMY_ID: ActorId = ActorId::from_raw(2).expect("not zero");
+
+/// Which noise the director's shakes draw from.
 const CAMERA_SEED: u64 = 7;
 
 /// The plain camera's look: how high over the player's feet it aims, how far round from straight
@@ -144,11 +168,12 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
 
 /// Refuses a fight that doesn't start from the arena's scenario: its actors aren't standing here.
 pub(crate) fn check_scenario(combat: &crate::combat::Combat) -> Result<(), String> {
-    if combat.scenario() == SCENARIO {
+    if [SCENARIO, FIGHT_SCENARIO].contains(&combat.scenario()) {
         return Ok(());
     }
     Err(format!(
-        "--arena plays a fight of the `{SCENARIO}` scenario, and this one starts from `{}`",
+        "--arena plays a fight of the `{SCENARIO}` scenario or of `{FIGHT_SCENARIO}`, and this one starts \
+         from `{}`",
         combat.scenario(),
     ))
 }
@@ -260,7 +285,11 @@ struct Root {
 
 impl Root {
     fn at(spawn: SpawnPoint) -> Self {
-        let (position, yaw) = (spawn.position(), spawn.yaw());
+        Self::standing(spawn.position(), spawn.yaw())
+    }
+
+    /// Here, with nothing to draw between.
+    fn standing(position: Vec3, yaw: f32) -> Self {
         Self { position, yaw, previous_position: position, previous_yaw: yaw }
     }
 
@@ -285,6 +314,50 @@ impl Root {
     }
 }
 
+/// What draws the enemy: its model and its blade, which is drawn on its own.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ArenaEnemy {
+    pub warrior: Entity,
+    pub blade: Entity,
+    /// The blade's mesh in the warrior's model space, where its pose has the hand.
+    pub blade_in_model: Mat4,
+    /// The joint that holds it.
+    pub hand: usize,
+}
+
+/// How high the character's eyes stand over its feet, in metres: what the warrior looks at.
+const PLAYER_EYES: f32 = 1.5;
+
+/// What a fighter's graph hears from the steps between one frame and the next.
+#[derive(Clone, Copy, Debug, Default)]
+struct FighterSignals {
+    /// It landed since the last frame.
+    landed: bool,
+    /// A new fight stood it where it stands since the last frame.
+    cut: bool,
+}
+
+/// How far a view is turned about where it looks, from upright, as [`OrbitCamera::set_shake`] takes it:
+/// radians about its backward.
+fn roll_of(rotation: Quat) -> f32 {
+    let forward = rotation * sapphire_math::FORWARD;
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    let upright = right.cross(forward);
+    let up = rotation * Vec3::Y;
+    (-up.dot(right)).atan2(up.dot(upright))
+}
+
+/// One fighter's bars, for the HUD: `points` asks for its health in digits.
+fn fighter_values(view: &ActorView, points: bool) -> FighterValues {
+    let share = |left: u32, whole: u32| if whole == 0 { 1.0 } else { left as f32 / whole as f32 };
+    let fighter = &view.fighter;
+    FighterValues {
+        hp: share(fighter.health(), fighter.max_health()),
+        poise: share(fighter.poise(), fighter.max_poise()),
+        hp_points: points.then(|| fighter.health()),
+    }
+}
+
 /// `sapphire_camera`'s director as the arena runs it (M2 G5), and what the frame's clock and input
 /// have given it since its last frame.
 struct ArenaCamera {
@@ -306,6 +379,13 @@ impl ArenaCamera {
         director.look_from(spawns().player.yaw(), pitch);
         Self { director, dt: 0.0, look: Vec2::ZERO, zoom: 0.0 }
     }
+
+    /// Behind the player again and settled, for a new fight, whatever rigs are on.
+    fn start_over(&mut self) {
+        let pitch = self.director.tuning().explore.pitch;
+        self.director.look_from(spawns().player.yaw(), pitch);
+        self.director.cut();
+    }
 }
 
 /// The player's and the enemy's entities and where the simulation has them: what the scene carries
@@ -313,6 +393,22 @@ impl ArenaCamera {
 pub(crate) struct ArenaActors {
     player: (Entity, Root),
     enemy: (Entity, Root),
+    /// Its blade, and where that is in the enemy's model space.
+    blade: (Entity, Mat4),
+    /// The enemy's joint that holds its blade.
+    hand: usize,
+    /// What the last step said of each of them, for what poses them to read. Nothing before a fight.
+    seen: [Option<ActorView>; 2],
+    /// What each one's graph has yet to hear.
+    signals: [FighterSignals; 2],
+    /// The enemy, as the simulation calls it.
+    enemy_id: ActorId,
+    /// Who the soft lock has now.
+    target: Option<ActorId>,
+    /// Whether the player's lock-on is on.
+    locked_on: bool,
+    /// The simulation's tick when it last stepped: going back, it's a new fight.
+    tick: u64,
     /// The plain camera follows the player, unless another shot holds still.
     follows: bool,
     /// The director, on its own shot.
@@ -324,11 +420,19 @@ pub(crate) struct ArenaActors {
 
 impl ArenaActors {
     /// The two at their spawn points, drawn by `player` and `enemy`.
-    pub fn new(player: Entity, enemy: Entity, shot: ArenaShot, ground: ArenaGround) -> Self {
+    pub fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
         let spawns = spawns();
         Self {
             player: (player, Root::at(spawns.player)),
-            enemy: (enemy, Root::at(spawns.enemy)),
+            enemy: (enemy.warrior, Root::at(spawns.enemy)),
+            blade: (enemy.blade, enemy.blade_in_model),
+            hand: enemy.hand,
+            seen: [None; 2],
+            signals: [FighterSignals::default(); 2],
+            enemy_id: ENEMY_ID,
+            target: None,
+            locked_on: false,
+            tick: 0,
             follows: shot == ArenaShot::Follow,
             camera: (shot == ArenaShot::Director).then(ArenaCamera::new),
             ground,
@@ -336,20 +440,147 @@ impl ArenaActors {
         }
     }
 
-    /// The enemy's entity: it draws the character's mesh and holds its pose.
+    /// The enemy's entity.
+    #[cfg(test)]
     pub fn enemy_entity(&self) -> Entity {
         self.enemy.0
     }
 
+    /// Who fights here, the player first, for whatever poses them: each one's entity, and what the
+    /// last step said of it. Nothing's said before a fight.
+    pub fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
+        [(self.player.0, self.seen[0].as_ref()), (self.enemy.0, self.seen[1].as_ref())]
+    }
+
+    /// What `fighter`'s graph plays this frame, the player being 0, `alpha` of the way from its last step
+    /// to its latest, as its transform draws. A frozen clock asks the same thing at every `alpha`, and
+    /// a defeated fighter keeps its last move's end once that move's over (`GraphInput::defeated`).
+    /// Nothing before a fight.
+    pub fn graph_input(&mut self, fighter: usize, alpha: f32) -> Option<GraphInput> {
+        let view = self.seen[fighter].as_ref()?;
+        let signals = &mut self.signals[fighter];
+        let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
+        let behind = (1.0 - alpha) * duration_ticks(view.clock_delta);
+        let mut locomotion = locomotion_of(view);
+        locomotion.landed = std::mem::take(&mut signals.landed);
+        Some(GraphInput {
+            ticks: time_ticks(view.clock_now) - behind,
+            locomotion,
+            combat: combat_input(view, behind),
+            reaction: ReactionInput::default(),
+            cut: std::mem::take(&mut signals.cut),
+            defeated: view.fighter.is_defeated(),
+        })
+    }
+
+    /// What `fighter` looks at: the other's head, while the other's up to look at.
+    pub fn look_target(&self, fighter: usize, alpha: f32) -> Option<Vec3> {
+        let other = 1 - fighter;
+        self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
+        let height = if other == 0 { PLAYER_EYES } else { enemy::EYES };
+        Some(self.drawn(other, alpha).w_axis.truncate() + Vec3::Y * height)
+    }
+
+    /// Where `fighter` draws, `alpha` of the way between its last two steps.
+    pub fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
+        if fighter == 0 {
+            self.player.1.transform(alpha)
+        } else {
+            self.enemy.1.transform(alpha) * Mat4::from_scale(Vec3::splat(enemy::SCALE))
+        }
+    }
+
+    /// The enemy's joint that holds its blade.
+    pub fn blade_hand(&self) -> usize {
+        self.hand
+    }
+
+    /// Where the enemy's pose has the hand that holds its blade, in its model space: from a pose that
+    /// moves, each frame. [`Self::present`] draws the blade there.
+    pub fn hold_blade(&mut self, blade_in_model: Mat4) {
+        self.blade.1 = blade_in_model;
+    }
+
+    /// What the HUD shows of the fighters, once a fight has stepped.
+    pub fn hud_values(&self) -> Option<HudValues> {
+        let player = self.seen[0].as_ref()?;
+        let enemy = self.seen[1].as_ref().map(|enemy| fighter_values(enemy, false));
+        Some(HudValues { player: fighter_values(player, true), enemy, skill: SkillValues::default() })
+    }
+
+    /// How long the fight's gone on, for a HUD with no clock of its own.
+    pub fn fight_time(&self) -> Duration {
+        Duration::from_nanos(self.tick.saturating_mul(1_000_000_000 / u64::from(TICK_HZ)))
+    }
+
+    /// The camera director, if it's on: what a fight's shakes go to.
+    pub fn director(&mut self) -> Option<&mut CameraDirector> {
+        self.camera.as_mut().map(|camera| &mut camera.director)
+    }
+
+    /// Holds the line from the player to whoever the soft lock has, or lets go: the director's own rig,
+    /// which blends in and out over its own half-life.
+    pub fn set_lock_on(&mut self, on: bool) {
+        self.locked_on = on;
+        if let Some(camera) = &mut self.camera {
+            camera.director.set_rig(Rig::LockOn, on);
+        }
+    }
+
     /// Takes the fixed step's roots from `simulation`, after each of its steps. `cast` is the
-    /// scenario's, the player first.
+    /// scenario's, the player first. A tick that went back is a new fight, which stands where it stands
+    /// with the camera cut to it, rather than sliding back across the square.
     pub fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) {
         self.fighting = true;
-        for (id, (_, root)) in cast.iter().zip([&mut self.player, &mut self.enemy]) {
-            if let Some(actor) = simulation.actor(*id) {
+        let tick = simulation.tick();
+        let started_over = tick < self.tick;
+        self.tick = tick;
+        for (index, (id, (_, root))) in cast.iter().zip([&mut self.player, &mut self.enemy]).enumerate() {
+            let actor = simulation.actor(*id);
+            self.seen[index] = actor;
+            let Some(actor) = actor else { continue };
+            let signals = &mut self.signals[index];
+            signals.landed |= actor.controller.state.events.landed;
+            if started_over {
+                *signals = FighterSignals { landed: false, cut: true };
+            }
+            if started_over {
+                *root = Root::standing(actor.position, actor.yaw);
+            } else {
                 root.advance(actor.position, actor.yaw);
             }
         }
+        if let Some(enemy) = cast.get(1) {
+            self.enemy_id = *enemy;
+        }
+        if started_over {
+            self.target = None;
+            if let Some(camera) = &mut self.camera {
+                camera.start_over();
+            }
+        }
+        // The press rather than the hold: a button that's held stays locked, and pressing again lets go.
+        let pressed = self.seen[0].is_some_and(|player| player.controls.pressed().contains(Buttons::LOCK_ON));
+        if pressed {
+            self.set_lock_on(!self.locked_on);
+        }
+    }
+
+    /// Who the player's soft lock has at this frame: [`choose_target`], from where the player stands and
+    /// points, among those still standing.
+    fn choose_target(&mut self, alpha: f32) -> Option<Vec3> {
+        let standing = self.seen[1].is_none_or(|enemy| !enemy.fighter.is_defeated());
+        let enemy = TargetCandidate { id: self.enemy_id, position: self.enemy.1.position(alpha) };
+        let candidates = standing.then_some(enemy);
+        let query = TargetQuery {
+            position: self.player.1.position(alpha),
+            yaw: self.player.1.yaw(alpha),
+            stick: self.seen[0].map_or(Stick::CENTER, |player| player.controls.current.stick),
+            current: self.target,
+            candidates: candidates.as_slice(),
+        };
+        self.target = choose_target(&query, &TargetingWeights::SOFT_LOCK);
+        self.target.map(|_| enemy.position)
     }
 
     /// What the frame's clock and input give the director, if it's on: real seconds, unscaled, and the
@@ -390,29 +621,38 @@ impl ArenaActors {
     /// cost an allocation a frame (see [`crate::scene`]). With no `aspect` nothing draws, so the
     /// director waits.
     pub fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
-        for (entity, root) in [&self.player, &self.enemy] {
-            if let Some(mut transform) = world.get_mut::<RenderTransform>(*entity) {
-                transform.set_if_neq(RenderTransform(root.transform(alpha)));
+        let warrior = self.drawn(1, alpha);
+        let drawn = [
+            (self.player.0, self.drawn(0, alpha)),
+            (self.enemy.0, warrior),
+            (self.blade.0, warrior * self.blade.1),
+        ];
+        for (entity, drawn) in drawn {
+            if let Some(mut transform) = world.get_mut::<RenderTransform>(entity) {
+                transform.set_if_neq(RenderTransform(drawn));
             }
         }
         let feet = self.player.1.position(alpha);
+        let target = self.choose_target(alpha);
         if self.follows {
             world.resource_mut::<OrbitCamera>().set_target(follow_target(feet));
         }
         if let (Some(camera), Some(aspect)) = (&mut self.camera, aspect) {
             let profile = profile();
-            let subject = |position| Subject { position, height: profile.height, radius: profile.radius };
+            let radius = profile.radius;
             let frame = CameraFrame {
                 dt: std::mem::take(&mut camera.dt),
-                player: subject(feet),
+                player: Subject { position: feet, height: profile.height, radius },
                 player_yaw: self.player.1.yaw(alpha),
-                target: Some(subject(self.enemy.1.position(alpha))),
+                target: target.map(|position| Subject { position, height: enemy::CROWN, radius }),
                 look: std::mem::take(&mut camera.look),
                 zoom: std::mem::take(&mut camera.zoom),
                 aspect,
             };
             let pose = camera.director.update(&frame, &self.ground.world);
-            world.resource_mut::<OrbitCamera>().set_view(pose.eye, pose.forward(), pose.fov_y);
+            let mut view = world.resource_mut::<OrbitCamera>();
+            view.set_view(pose.eye, pose.forward(), pose.fov_y);
+            view.set_shake(Vec3::new(0.0, 0.0, roll_of(pose.rotation)), Vec3::ZERO);
         }
     }
 
@@ -542,6 +782,308 @@ mod tests {
         assert!(error.contains("moved_here"), "{error}");
     }
 
+    /// Actors with entities of a world of their own, and that world.
+    fn actors_on(ground: ArenaGround, shot: ArenaShot) -> (ArenaActors, World) {
+        let mut world = World::new();
+        let mut placed = || world.spawn(RenderTransform::default()).id();
+        let (player, warrior, blade) = (placed(), placed(), placed());
+        let enemy = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
+        (ArenaActors::new(player, enemy, shot, ground), world)
+    }
+
+    /// A fight of the `arena-fight` scenario, on a director, and what it does first.
+    fn fight() -> (ArenaActors, World, Simulation, Vec<ActorId>) {
+        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let (sim, cast) = scenario.start(scenario.config).expect("it starts");
+        let (mut actors, mut world) = actors_on(built(), ArenaShot::Director);
+        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
+        actors.drive_camera(1.0 / 60.0, Vec2::ZERO, 0.0);
+        actors.present(&mut world, 1.0, Some(16.0 / 9.0));
+        (actors, world, sim, cast)
+    }
+
+    /// A step of a fight with these buttons held by the player, and the actors told.
+    fn step_fight(actors: &mut ArenaActors, sim: &mut Simulation, cast: &[ActorId], buttons: Buttons) {
+        let mut tick = sapphire_gameplay::TickActions::NEUTRAL;
+        let held = sapphire_gameplay::ActorActions { buttons, stick: Stick::CENTER };
+        tick.set(cast[0], held).expect("room");
+        sim.step(&tick);
+        actors.follow(sim, cast);
+    }
+
+    /// Before a fight a graph plays nothing. In one, a move plays at the move's own ticks, the same number
+    /// its tables read, and a frame between steps reads as far behind as its transform draws.
+    #[test]
+    fn a_fighters_graph_reads_its_move_at_the_moves_own_ticks() {
+        let (mut actors, _, mut sim, cast) = fight();
+        assert_eq!(actors.graph_input(0, 1.0), None, "nothing before a fight");
+        step_fight(&mut actors, &mut sim, &cast, Buttons::LIGHT);
+        for _ in 0..4 {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        }
+        let current = sim.actor(cast[0]).expect("alive").moves.current.expect("it swung");
+        let whole = duration_ticks(current.elapsed);
+        let input = actors.graph_input(0, 1.0).expect("a fight");
+        let combat = input.combat.expect("in a move");
+        assert_eq!(combat.name, current.name);
+        assert_eq!(combat.position, whole);
+        let halfway = actors.graph_input(0, 0.5).expect("a fight");
+        assert_eq!(halfway.combat.expect("in a move").position, whole - 0.5);
+        assert_eq!(halfway.ticks, input.ticks - 0.5);
+        assert!(!input.cut);
+        assert_eq!(actors.graph_input(1, 1.0).expect("a fight").combat, None, "the warrior hasn't moved");
+    }
+
+    /// Hitstop: a frozen clock asks the same thing at any `alpha`, which is what a graph skips on.
+    #[test]
+    fn a_frozen_fighter_asks_the_same_thing_at_every_alpha() {
+        let (mut actors, _, mut sim, cast) = fight();
+        let mut frozen = false;
+        for _ in 0..240 {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+            if sim.actor(cast[0]).expect("alive").clock_delta == sapphire_time::SimDuration::ZERO {
+                frozen = true;
+                break;
+            }
+        }
+        assert!(frozen, "the warrior's overhead lands inside 4 s");
+        // Whatever the steps had to say, once: then it's the same every frame.
+        actors.graph_input(0, 1.0);
+        let first = actors.graph_input(0, 1.0);
+        assert_eq!(actors.graph_input(0, 0.25), first);
+        assert_eq!(actors.graph_input(0, 0.75), first);
+    }
+
+    /// A defeated fighter's graph hears so through its fall and after it, which is what keeps it down
+    /// (`GraphInput::defeated`), and the next fight is a cut.
+    #[test]
+    fn a_defeated_fighter_says_so_and_the_next_fight_is_a_cut() {
+        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let (mut actors, _, mut sim, cast) = fight();
+        // An idle player falls inside a minute.
+        let mut steps = 0;
+        loop {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+            let defeated = sim.actor(cast[0]).expect("alive").fighter.is_defeated();
+            assert_eq!(actors.graph_input(0, 1.0).expect("a fight").defeated, defeated);
+            if defeated {
+                break;
+            }
+            steps += 1;
+            assert!(steps < 4000, "the player never fell");
+        }
+        let mut fell = false;
+        for _ in 0..240 {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+            let input = actors.graph_input(0, 1.0).expect("a fight");
+            assert!(input.defeated, "for good");
+            fell |= input.combat.is_some_and(|combat| combat.name == sapphire_core::Name::new("defeat"));
+        }
+        assert!(fell, "its fall played");
+        let over = actors.graph_input(0, 1.0).expect("a fight");
+        assert_eq!(over.combat, None, "and it's over");
+        assert_eq!(actors.look_target(1, 1.0), None, "there's no one to look at");
+        assert!(actors.look_target(0, 1.0).is_some());
+
+        let (mut again, cast) = scenario.start(scenario.config).expect("it starts");
+        again.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        actors.follow(&again, &cast);
+        let next = actors.graph_input(0, 1.0).expect("a fight");
+        assert!(next.cut, "a new fight stands alone");
+        assert_eq!(next.combat, None);
+        assert!(!actors.graph_input(0, 1.0).expect("a fight").cut, "once");
+    }
+
+    /// What a landing says lasts until a frame hears it.
+    #[test]
+    fn a_landing_waits_for_a_frame() {
+        let (mut actors, _, mut sim, cast) = fight();
+        let mut landed = false;
+        for tick in 0..240 {
+            let buttons = if tick == 0 { Buttons::JUMP } else { Buttons::NONE };
+            step_fight(&mut actors, &mut sim, &cast, buttons);
+            landed |= sim.actor(cast[0]).expect("alive").controller.state.events.landed;
+            if landed {
+                break;
+            }
+        }
+        assert!(landed, "it came down");
+        step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        assert!(actors.graph_input(0, 1.0).expect("a fight").locomotion.landed);
+        assert!(!actors.graph_input(0, 1.0).expect("a fight").locomotion.landed, "once");
+    }
+
+    /// Whatever a move set can start, its fighter's graph has a row for: a move with none would play
+    /// locomotion, so a knocked-down fighter would stand there.
+    #[test]
+    fn every_move_a_fighter_has_is_in_its_graph() {
+        let read = |text: &str| sapphire_assets::graph::AnimGraph::from_document(text).expect("it reads");
+        let warrior = read(include_str!("../../../content/combat/enemy/warrior.animgraph.ron"));
+        let character = read(include_str!("../../../content/lookdev/character/character.animgraph.ron"));
+        for (graph, set) in [
+            (&warrior, sapphire_gameplay::replay::warrior_moves().expect("it compiles")),
+            (&character, sapphire_gameplay::replay::player_moves().expect("it reads")),
+            (&character, sapphire_gameplay::replay::test_moves().expect("it compiles")),
+        ] {
+            for mv in set.moves() {
+                let label = mv.label();
+                assert!(graph.combat.moves.iter().any(|row| row.name == label), "no clip plays {label}");
+            }
+        }
+    }
+
+    /// The bars are the simulation's, in shares, with only the player's in digits.
+    #[test]
+    fn the_hud_reads_the_fighters() {
+        let (mut actors, _, mut sim, cast) = fight();
+        assert_eq!(actors.hud_values(), None, "nothing before a fight");
+        step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        let values = actors.hud_values().expect("a fight");
+        assert_eq!(values.player.hp, 1.0);
+        assert_eq!(values.player.hp_points, Some(300));
+        let enemy = values.enemy.expect("there");
+        assert_eq!((enemy.hp, enemy.poise, enemy.hp_points), (1.0, 1.0, None));
+        for _ in 0..240 {
+            step_fight(&mut actors, &mut sim, &cast, Buttons::NONE);
+        }
+        let hurt = actors.hud_values().expect("a fight");
+        let player = sim.actor(cast[0]).expect("alive").fighter;
+        assert!(player.health() < 300, "the overhead landed");
+        assert_eq!(hurt.player.hp, player.health() as f32 / 300.0);
+        assert_eq!(hurt.player.hp_points, Some(player.health()));
+        assert_eq!(hurt.player.poise, player.poise() as f32 / player.max_poise() as f32);
+    }
+
+    /// A view's roll, read back: nothing for an upright one, and either way for one that's turned.
+    #[test]
+    fn a_shakes_roll_is_read_about_the_views_backward() {
+        let upright = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-0.3);
+        assert!(roll_of(upright).abs() < 1e-5, "{}", roll_of(upright));
+        for roll in [0.04, -0.04] {
+            // The view's backward is -forward, and +Z is where a pose looks.
+            let turned = upright * Quat::from_rotation_z(-roll);
+            assert!((roll_of(turned) - roll).abs() < 1e-5, "{} against {roll}", roll_of(turned));
+        }
+    }
+
+    /// The soft lock's choice is what the camera frames: the enemy from the first frame, and nobody once
+    /// it's fallen or the player's run out of range, and back again on the way in.
+    #[test]
+    fn the_camera_frames_who_the_soft_lock_chooses() {
+        let (mut actors, _, _, cast) = fight();
+        assert_eq!(actors.target, Some(cast[1]));
+        let mut world = World::new();
+        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
+
+        // Out of range: the keep range is 16 m, and coming back in it takes 12 m to be chosen again.
+        let enemy = spawns().enemy.position();
+        let away = |metres: f32| enemy + Vec3::new(metres, 0.0, 0.0);
+        let mut stand_at = |actors: &mut ArenaActors, position| {
+            actors.player.1 = Root::standing(position, 0.0);
+            actors.present(&mut world, 1.0, None);
+            actors.target
+        };
+        assert_eq!(stand_at(&mut actors, away(15.0)), Some(cast[1]), "kept out to its keep range");
+        assert_eq!(stand_at(&mut actors, away(17.0)), None);
+        assert_eq!(stand_at(&mut actors, away(15.0)), None, "not chosen again yet");
+        assert_eq!(stand_at(&mut actors, away(11.0)), Some(cast[1]));
+    }
+
+    /// Nobody stands to frame once the enemy's fallen, and a new fight stands it up again.
+    #[test]
+    fn a_fallen_enemy_stops_being_framed() {
+        let (mut actors, mut world, mut sim, cast) = fight();
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        actors.follow(&sim, &cast);
+        actors.present(&mut world, 1.0, None);
+        assert_eq!(actors.target, Some(cast[1]));
+
+        let mut fallen = actors.seen[1].expect("it's there");
+        assert!(!fallen.fighter.is_defeated());
+        fallen.fighter = fallen_fighter(&mut sim, &cast);
+        actors.seen[1] = Some(fallen);
+        actors.present(&mut world, 1.0, None);
+        assert_eq!(actors.target, None);
+    }
+
+    /// The warrior, felled through real hits: the player's fists on the fight's first thousands of
+    /// ticks, from a dash attack's reach.
+    fn fallen_fighter(sim: &mut Simulation, cast: &[ActorId]) -> sapphire_gameplay::Fighter {
+        let mut source = sapphire_gameplay::replay::fight_back;
+        for _ in 0..4000 {
+            let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), cast);
+            sim.step(&actions);
+            let enemy = sim.actor(cast[1]).expect("alive");
+            if enemy.fighter.is_defeated() {
+                return enemy.fighter;
+            }
+        }
+        panic!("the script doesn't beat it any more");
+    }
+
+    /// A simulation whose tick went back is a new fight: everyone stands where it says, with nothing to
+    /// draw between, and the camera cuts. A replay past its end, whose tick stays, isn't.
+    #[test]
+    fn a_new_fight_stands_where_it_stands() {
+        let (mut actors, mut world, mut sim, cast) = fight();
+        let mut source = sapphire_gameplay::replay::fight_back;
+        for _ in 0..200 {
+            let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), &cast);
+            sim.step(&actions);
+            actors.follow(&sim, &cast);
+        }
+        let moved = actors.player.1.position(1.0);
+        assert!(moved.distance(spawns().player.position()) > 0.5, "it fought: {moved}");
+        actors.follow(&sim, &cast);
+        assert_eq!(actors.player.1.previous_position, moved, "the same tick again is no new fight");
+
+        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let (fresh, cast) = scenario.start(scenario.config).expect("it starts");
+        actors.follow(&fresh, &cast);
+        let start = spawns().player.position();
+        assert_eq!(actors.player.1.position(0.0), start, "it doesn't slide back across the square");
+        assert_eq!(actors.player.1.position(1.0), start);
+        assert_eq!(actors.enemy.1.position(0.0), spawns().enemy.position());
+
+        // The cut lands the view behind the player, at once, however far off it was.
+        actors.drive_camera(1.0 / 60.0, Vec2::ZERO, 0.0);
+        actors.present(&mut world, 1.0, Some(16.0 / 9.0));
+        let eye = world.resource::<OrbitCamera>().eye();
+        assert!(eye.distance(start) < 8.0, "{eye} from {start}");
+    }
+
+    /// The player's lock-on button turns the director's rig on, on the press, and off on the next; a
+    /// held button stays where it is, and a new fight keeps it.
+    #[test]
+    fn the_lock_on_button_turns_the_directors_rig() {
+        use sapphire_gameplay::{ActorActions, TickActions};
+        let (mut actors, mut world, mut sim, cast) = fight();
+        let mut step = |actors: &mut ArenaActors, buttons: Buttons| {
+            let mut actions = TickActions::NEUTRAL;
+            actions.set(cast[0], ActorActions { buttons, ..ActorActions::NEUTRAL }).expect("room");
+            sim.step(&actions);
+            actors.follow(&sim, &cast);
+        };
+        let wanted = |actors: &mut ArenaActors, world: &mut World| {
+            for _ in 0..240 {
+                actors.drive_camera(1.0 / 60.0, Vec2::ZERO, 0.0);
+                actors.present(world, 1.0, Some(16.0 / 9.0));
+            }
+            actors.camera.as_ref().expect("a director").director.weight(Rig::LockOn)
+        };
+        step(&mut actors, Buttons::NONE);
+        assert_eq!(wanted(&mut actors, &mut world), 0.0);
+        step(&mut actors, Buttons::LOCK_ON);
+        step(&mut actors, Buttons::LOCK_ON);
+        assert!(actors.locked_on, "held, it's one press");
+        assert!(wanted(&mut actors, &mut world) > 0.99);
+        step(&mut actors, Buttons::NONE);
+        assert!(actors.locked_on, "it isn't held on");
+        step(&mut actors, Buttons::LOCK_ON);
+        assert!(!actors.locked_on);
+        assert!(wanted(&mut actors, &mut world) < 0.01);
+    }
+
     /// What a canvas is asked to draw, whatever it is.
     #[derive(Default)]
     struct Drawn(usize);
@@ -562,9 +1104,7 @@ mod tests {
         let cooked = cooked_colliders().expect("it cooks");
         let ground = ArenaGround::new(ColliderSet::read(&cooked).expect("it reads")).expect("it stands");
         let colliders = ground.world.statics().len();
-        let mut world = World::new();
-        let (player, enemy) = (world.spawn_empty().id(), world.spawn_empty().id());
-        let mut actors = ArenaActors::new(player, enemy, ArenaShot::Follow, ground);
+        let mut actors = actors_on(ground, ArenaShot::Follow).0;
 
         let mut alone = Drawn::default();
         actors.draw_colliders(&mut alone);

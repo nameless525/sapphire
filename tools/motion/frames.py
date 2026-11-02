@@ -43,6 +43,9 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 // E3 hangs effects on the cues: `swing` is the blade starting to cut, and `step`, `skid` and
 // `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on
 // the scale `warrior.moves.ron` was tuned to: the three-hit string does 28 damage and 36 poise.
+//
+// The last five moves are what a hit forces (M2 G6). They have no clip of their own: the character's
+// graph draws them from its reactions and deaths, and they stand still while it does.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -68,8 +71,62 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
                 // From the ground to the crown of the head at 1.62 m. A dodge turns it off.
                 (name: "body", offset: (0.0, 0.81, 0.0), shape: Capsule(radius: 0.3, length: 1.02)),
             ],
+            reactions: (
+                light: "flinch",
+                medium: "stagger",
+                heavy: "knockdown",
+                poise_break: "dazed",
+                defeat: "defeat",
+            ),
         ),
         moves: [
+"""
+
+REACTIONS = """            (
+                // 300 ms: a light hit's. A dodge gets out of its end.
+                name: "flinch",
+                startup: 0,
+                active: 6,
+                recovery: 12,
+                cancels: [(from: 10, to: 18, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 500 ms: a medium hit's.
+                name: "stagger",
+                startup: 0,
+                active: 10,
+                recovery: 20,
+                cancels: [(from: 22, to: 30, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 1,167 ms: a heavy hit's, down and up again, untouchable throughout.
+                name: "knockdown",
+                startup: 0,
+                active: 30,
+                recovery: 40,
+                invulnerable: [(from: 0, to: 70)],
+                cancels: [(from: 60, to: 70, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "knocked_down", at: 0)],
+            ),
+            (
+                // 1,500 ms: a broken poise's, open to punishment: hits land and it stays dazed.
+                name: "dazed",
+                startup: 0,
+                active: 60,
+                recovery: 30,
+                armour: [(from: 0, to: 90, threshold: 1000)],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 2 s, with no way out: the fight's over for this one.
+                name: "defeat",
+                startup: 0,
+                active: 30,
+                recovery: 90,
+                cues: [(name: "falls", at: 0)],
+            ),
 """
 
 FOOTER = """        ],
@@ -124,7 +181,8 @@ MOVES = [
     dict(
         name='dodge',
         say=["400 ms: a low leap straight back, 2.4 m in 14 ticks. Invulnerable for 217 ms, the first",
-             "100 ms of them perfect. An attack out of its end is the dash attack."],
+             "100 ms of them perfect: a swing reaching a body-sized volume then slows the world, and a",
+             "press answers with the dash attack. An attack out of its end is the dash attack too."],
         frames=(1, 13, 10),
         hurtboxes=[('body', 1, 14, 'Off')],
         invulnerable=[(1, 14)],
@@ -234,7 +292,14 @@ def write(folder, clips):
                 lines.append(f'{i}    (name: "{name}", from: {a0}, to: {b0}, state: {state}),')
             lines.append(f"{i}],")
         spans(lines, 'invulnerable', d.get('invulnerable'), i)
-        spans(lines, 'perfect_dodge', d.get('perfect_dodge'), i)
+        for a0, b0 in d.get('perfect_dodge', ()):
+            lines.append(f"{i}perfect_dodge: [(")
+            lines.append(f"{i}    from: {a0},")
+            lines.append(f"{i}    to: {b0},")
+            lines.append(f"{i}    volume: (offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.55, length: 1.0)),")
+            lines.append(f"{i}    slow_motion: (per_mille: 200, steps: 30),")
+            lines.append(f'{i}    counter: (ticks: 45, allow: [(intent: "light", move: "dash_attack")]),')
+            lines.append(f"{i})],")
         spans(lines, 'parry', d.get('parry'), i)
         lines.append(f"{i}cancels: [")
         for a0, b0, allows in d['cancels']:
@@ -257,6 +322,7 @@ def write(folder, clips):
         lines.append(f"{i}],")
         lines.append('            ),')
         text.append('\n'.join(lines))
+    text.append(REACTIONS.rstrip('\n'))
     text.append(FOOTER)
     with open(os.path.join(folder, 'player.moves.ron'), 'w') as f:
         f.write('\n'.join(text))

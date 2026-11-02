@@ -216,12 +216,12 @@ pub(crate) fn combat_input(view: &ActorView, behind: f64) -> Option<CombatInput>
 }
 
 /// `duration` in ticks with a fraction.
-fn duration_ticks(duration: SimDuration) -> f64 {
+pub(crate) fn duration_ticks(duration: SimDuration) -> f64 {
     duration.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK)
 }
 
 /// `time` in ticks with a fraction.
-fn time_ticks(time: SimTime) -> f64 {
+pub(crate) fn time_ticks(time: SimTime) -> f64 {
     time.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK)
 }
 
@@ -285,6 +285,11 @@ pub(crate) struct ClipTable<'a> {
 }
 
 impl<'a> ClipTable<'a> {
+    /// No clips: what a graph that isn't loaded plays from.
+    pub fn empty() -> Self {
+        Self { clips: [None; MAX_GRAPH_CLIPS], version: 0 }
+    }
+
     pub fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
         let mut table = Self { clips: [None; MAX_GRAPH_CLIPS], version: 0 };
         for (slot, (id, clip, generation)) in table.clips.iter_mut().zip(clips) {
@@ -319,13 +324,37 @@ pub(crate) struct GraphDriver {
     springs_on: bool,
     /// The player's teleports its springs and IK have started over for.
     teleports: u32,
-    /// Its feet, look and hands: `None` without `--ik on`.
+    /// Its feet, look and hands: `None` without `--ik on` or a fight.
     ik: Option<IkDriver>,
+    /// Whether its graph has made a pose yet.
+    posed: bool,
 }
 
 impl GraphDriver {
     pub fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
-        Self { player, joints, base: Mat4::IDENTITY, springs: None, springs_on: true, teleports: 0, ik: None }
+        Self {
+            player,
+            joints,
+            base: Mat4::IDENTITY,
+            springs: None,
+            springs_on: true,
+            teleports: 0,
+            ik: None,
+            posed: false,
+        }
+    }
+
+    /// This driver, finding the right hand at `joint`.
+    #[cfg(test)]
+    pub fn with_right_hand(self, joint: usize) -> Self {
+        Self { joints: self.joints.with_right_hand(joint), ..self }
+    }
+
+    /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig without
+    /// one, and before its graph has made a pose: until then the character holds what it has.
+    pub fn right_hand(&self) -> Option<Mat4> {
+        let joint = self.joints.right_hand().filter(|_| self.posed)?;
+        Some(Mat4::from(self.player.pose().model()[joint]))
     }
 
     /// This driver, simulating `springs` beside its pose.
@@ -436,6 +465,7 @@ impl GraphDriver {
                 ik.solve(self.player.pose_mut(), place);
             }
             self.player.finish();
+            self.posed = true;
         }
         evaluated
     }

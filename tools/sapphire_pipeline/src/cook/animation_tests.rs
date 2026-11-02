@@ -800,10 +800,10 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
     let warrior_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/enemy/warrior.glb");
     let warrior = meta::read(&sidecar_path(&warrior_path)).unwrap().id;
     let rows = [
-        ("General", 1, 0, 4),
-        ("MovementBasic", 0, 0, 6),
-        ("MovementAdvanced", 0, 0, 7),
-        ("CombatMelee", 0, 0, 3),
+        ("General", 1, 0, 6),
+        ("MovementBasic", 0, 0, 8),
+        ("MovementAdvanced", 0, 0, 10),
+        ("CombatMelee", 0, 0, 4),
         ("Special", 0, 0, 0),
     ];
     let mut owner = None;

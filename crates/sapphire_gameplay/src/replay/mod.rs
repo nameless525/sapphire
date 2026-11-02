@@ -48,7 +48,7 @@ pub use file::{
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
     SCENARIOS, Scenario, ScenarioError, arena, arena_fight, document_file_name, duel, find_scenario, melee,
-    melee_buttons, test_moves, warrior_moves,
+    melee_buttons, player_moves, test_moves, warrior_moves,
 };
 pub use script::{
     ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, SCRIPTS, Script, arena_walk, attempts,

@@ -1599,7 +1599,12 @@ fn every_authored_window_of_the_test_content_is_covered_by_a_replay() {
     assert!(files.len() >= 6, "{files:?}");
     for file in files {
         let bytes = std::fs::read(&file).expect("reads");
-        let mut player = Player::new(Replay::decode(&bytes).expect("decodes"), SCENARIOS).expect("starts");
+        let replay = Replay::decode(&bytes).expect("decodes");
+        // The fight plays the shipped moves, which aren't the test content.
+        if replay.scenario() == "arena-fight" {
+            continue;
+        }
+        let mut player = Player::new(replay, SCENARIOS).expect("starts");
         let mut last: BTreeMap<ActorId, CurrentMove> = BTreeMap::new();
         let mut opened: BTreeMap<ActorId, Name> = BTreeMap::new();
         while player.step() {

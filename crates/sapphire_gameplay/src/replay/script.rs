@@ -93,9 +93,9 @@ pub const SCRIPTS: &[Script] = &[
     },
     Script {
         name: "fight-back",
-        about: "the arena's player against the warrior, with no eyes for it: a dodge and a dash attack, over \
-                and over, which the dash's warp aims at whatever's in reach",
-        ticks: 2100,
+        about: "the arena's player against the warrior, with no eyes for it: the string, a dodge and a dash \
+                attack, over and over, which the warps aim at whatever's in reach",
+        ticks: 1700,
         actions: fight_back,
     },
     Script {
@@ -384,14 +384,21 @@ fn facing_off(
 
 /// One round of [`fight_back`]: a dodge from nothing, and a light press into its window, which plays
 /// the dash attack, whose warp finds the warrior. Its i-frames take most of what comes.
-const FIGHT_BACK: [(u64, Buttons); 2] = [(0, Buttons::DODGE), (12, Buttons::LIGHT)];
+const FIGHT_BACK: [(u64, Buttons); 5] = [
+    (0, Buttons::LIGHT),
+    (16, Buttons::LIGHT),
+    (32, Buttons::LIGHT),
+    (84, Buttons::DODGE),
+    (96, Buttons::LIGHT),
+];
 
 /// Ticks of [`fight_back`]'s round.
-const FIGHT_BACK_ROUND: u64 = 64;
+const FIGHT_BACK_ROUND: u64 = 150;
 
 /// [`SCRIPTS`]' `fight-back`: a script reads a tick and nothing else, so it can't aim its stick at
-/// anyone. This one doesn't need to: dash attacks warp. Whatever the warrior does, this makes it through
-/// its health with the player's left.
+/// anyone. This one doesn't need to: the warrior comes to it, and the cuts warp. On the scenario's seed
+/// this gets through its health with about half the player's left. A dodge on its own schedule, with
+/// no eyes for the telegraphs, takes the overheads it would have dodged, which is what makes it a fight.
 #[must_use]
 pub fn fight_back(tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;

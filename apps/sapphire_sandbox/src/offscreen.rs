@@ -76,6 +76,9 @@ impl App for OffscreenApp {
             OffscreenMode::Serve => {
                 let mut stage = Stage::new(platform, &options)?;
                 stage.combat = combat;
+                if let Some(combat) = &mut stage.combat {
+                    stage.dev.start_fight_from_cooks(combat, &stage.content);
+                }
                 let serving = crate::serve::Serving::new(stage, options.clone(), width, height);
                 return Ok(Self { serving: Some(serving) });
             }
@@ -254,7 +257,8 @@ impl Stage {
             let ground = content.arena_ground(&mut renderer, &gpu)?;
             let world = ground.share();
             let look = LookDev { town, fog_cards, pose, figure };
-            scene.spawn_arena(Arena { shot, look, ground });
+            let enemy = content.enemy(&mut renderer, &gpu)?;
+            scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer, &gpu)?;
                 let mut player = crate::lookdev::player(&content)
@@ -263,11 +267,25 @@ impl Stage {
                     .with_springs_on(options.springs != Some(false));
                 if let Some(ik) = &options.ik {
                     let look = ik.look.map(|look| (look, 0.0));
-                    let solver =
-                        scene.ik_on(world, look, &content, player.pose()).map_err(AppInitError::msg)?;
+                    let solver = scene
+                        .ik_on(world.clone(), look, &content, player.pose())
+                        .map_err(AppInitError::msg)?;
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            }
+            if options.combat.is_some() {
+                content.load_graph(crate::lookdev::GRAPH, &mut renderer, &gpu)?;
+                content.load_enemy_graph(&mut renderer, &gpu)?;
+                let player = crate::lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                let solver = scene
+                    .ik_on(world.clone(), None, &content, player.player.pose())
+                    .map_err(AppInitError::msg)?;
+                scene.play_fighters(
+                    player.with_springs_on(options.springs != Some(false)).with_ik(solver),
+                    content.enemy_driver(world)?,
+                );
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
         }
@@ -294,9 +312,12 @@ impl Stage {
                 content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
             scene.spawn_stage(layout, crate::stage::upload_stage(&mut renderer, character)?);
         }
-        // Offscreen there are no touches: the HUD is its fixed frame, in either mode.
+        // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
+        // live and a fight's bars stand behind it.
         if let Some(hud) = options.hud {
-            let hud = crate::hud::HudOptions { mode: crate::hud::HudMode::Fixed, ..hud };
+            let fight = options.arena.is_some() && options.combat.is_some();
+            let mode = if fight { hud.mode } else { crate::hud::HudMode::Fixed };
+            let hud = crate::hud::HudOptions { mode, ..hud };
             scene.set_hud(crate::hud::SandboxHud::new(hud));
         }
         #[cfg(feature = "dev")]

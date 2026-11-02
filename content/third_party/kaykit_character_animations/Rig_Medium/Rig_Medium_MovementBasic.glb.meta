@@ -138,6 +138,8 @@
                     target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
                     names: [
                         "Running_A",
+                        "Running_B",
+                        "Walking_B",
                     ],
                     follow: [
                         "hand.l",

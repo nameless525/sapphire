@@ -72,6 +72,15 @@ The next run's Linux and Windows jobs compare against that one file, which is wh
 
 `--record <file> --scenario <name>`, with no `--script`, `--capture` or `--bench`, records a fight someone plays: the windowed app's simulation takes each fixed step's input from combat's bindings (`sapphire_controls::ControlsSource`, through `combat::action_source` in the sandbox), turned by the camera's yaw, so the file carries world directions and no camera. A pause records nothing, since no steps run. The file is written when the app quits, so a killed process leaves none. On Android, give an absolute path inside the app's own directory (`/data/user/0/dev.sapphire.sandbox/files/<name>.sreplay`) and fetch it with `adb exec-out run-as dev.sapphire.sandbox cat files/<name>.sreplay`.
 
+`--arena --fight` is a fight with no file, player against the enemy's brain, on the graphs, cues, HUD and sword a game would have: in a window it's played on combat's bindings alone, and it starts over 4 s after someone falls, or on `R` or the d-pad's down. Nothing's written. With `--script <name>` and `--capture`, `--bench` or `--offscreen`, a script plays it down the same path, which is how to run one here, where no window may open. Each fight logs a line when it ends, with its ticks, who fell, both healths, its checksum and its allocations; the checksum is the one a headless run of that script reaches at that tick.
+
+The player's moves reach the simulation as a cooked copy, `crates/sapphire_gameplay/baked/player.smoves`. After changing `content/combat/player/` or `MoveSet`'s layout, rewrite it and the fight's replays:
+
+```
+SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy
+cargo xtask replay --update
+```
+
 ## Tuning a fight
 
 Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron`, `character.animgraph.ron` and, with `--cues`, `default_cues.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
@@ -80,7 +89,9 @@ Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_cont
 - A bad document changes nothing, and its issues name the move and the track. The next good one works.
 - A move that names a clip takes new windows and phases with no cook. Its length is its clip's, and a change to the `clip` block needs `cargo xtask content`, then hot reload's remount or `cargo xtask link push`.
 - A recording ends its file at the first edit that changes something, and the fight goes on: a replay can only answer for what it recorded. A fight started afterwards starts from the edit, and its file says so through its hash.
-- To try it with no window: `--offscreen --record <file> --scenario duel --script attempts`, which presses LIGHT every half second.
+- A fight with no file takes edits too, and starts over from them.
+- To try it with no window: `--offscreen --record <file> --scenario duel --script attempts`, which presses LIGHT every half second, or on the real moves `--offscreen --arena --fight --script attempts`.
+- The simulation's copy of the player's moves stays what it was until it's rewritten (above), so after tuning `player.moves.ron`, rewrite it and commit it with the document. A `dev` build's fight already starts from a newer cook.
 
 ## Build profiles and content
 

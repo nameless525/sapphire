@@ -3,11 +3,12 @@
 //! - **`fixed`:** one frozen frame, the same on any device: synthetic touches on a made-up clock put
 //!   a thumb on the stick and another dragging the attack, with a hit landing and numbers in the
 //!   air. What the golden scenes capture. Real touches go to the app as if there were no HUD.
-//! - **`live`:** real touches through the zones, on `Platform::now`. No gameplay stands behind them,
-//!   so a stand-in shows that input arrives: the attack spends the enemy's bars and throws a number,
-//!   a held attack a heavier one, the dodge spends the player's, the skill starts a cooldown, and
-//!   the camera's drag orbits. Every button event and each second's stick and camera are logged, so
-//!   a run on a device can be read from its log.
+//! - **`live`:** real touches through the zones, on `Platform::now`. With a fight on (`--arena`), its
+//!   bars are the fighters' ([`SandboxHud::show_fight`]), offscreen too, where the fight's own time is
+//!   its clock. With none, no gameplay stands behind the zones, so a stand-in shows that input arrives:
+//!   the attack spends the enemy's bars and throws a number, a held attack a heavier one, the dodge spends
+//!   the player's, the skill starts a cooldown, and the camera's drag orbits. Every button event and each
+//!   second's stick and camera are logged, so a run on a device can be read from its log.
 //!
 //! The renderer sees only the packet's draw list (rule R4). Offscreen modes have no window: their
 //! metrics come from the target and `--hud-scale`, and `--hud-insets` makes up what a notch would
@@ -104,6 +105,8 @@ pub(crate) struct SandboxHud {
     values: HudValues,
     now: Timestamp,
     live: LiveValues,
+    /// What a fight says of its fighters, in place of the stand-in's numbers.
+    fight: Option<HudValues>,
     /// A window's metrics this frame, read by [`Self::update`]; offscreen frames have none.
     window_metrics: Option<UiMetrics>,
     /// The metrics the layout was made for.
@@ -134,10 +137,20 @@ impl SandboxHud {
             values: HudValues::default(),
             now: Timestamp::default(),
             live: LiveValues::default(),
+            fight: None,
             window_metrics: None,
             metrics: None,
             last_stats: HudStats::default(),
             last_cost: Duration::ZERO,
+        }
+    }
+
+    /// What the fight says of its fighters this frame, `time` into it: live mode shows it. Offscreen
+    /// there's no other clock.
+    pub fn show_fight(&mut self, values: HudValues, time: Duration) {
+        self.fight = Some(values);
+        if self.window_metrics.is_none() && self.options.mode == HudMode::Live {
+            self.now = Timestamp::from_nanos(time.as_nanos() as u64);
         }
     }
 
@@ -165,22 +178,25 @@ impl SandboxHud {
         self.live.camera_logged += camera;
         for event in &actions.events {
             let enemy = self.layout.metrics.size * Vec2::new(0.5, 0.42);
+            let stand_in = self.fight.is_none();
             match (event.button, event.kind) {
-                (Button::Attack, ButtonEventKind::Pressed) => {
+                (Button::Attack, ButtonEventKind::Pressed) if stand_in => {
                     self.live.hits += 1;
                     self.live.enemy_hp = wrapped(self.live.enemy_hp - 0.06);
                     self.live.enemy_poise = wrapped(self.live.enemy_poise - 0.11);
                     let value = 240 + self.live.hits * 37 % 900;
                     self.hud.spawn_damage(value, enemy, DamageKind::Normal);
                 }
-                (Button::Attack, ButtonEventKind::Held) => {
+                (Button::Attack, ButtonEventKind::Held) if stand_in => {
                     let value = 2400 + self.live.hits * 311 % 4000;
                     self.hud.spawn_damage(value, enemy + Vec2::new(0.0, -24.0), DamageKind::Heavy);
                 }
-                (Button::Dodge, ButtonEventKind::Pressed) => {
+                (Button::Dodge, ButtonEventKind::Pressed) if stand_in => {
                     self.live.player_hp = wrapped(self.live.player_hp - 0.09);
                 }
-                (Button::Skill, ButtonEventKind::Pressed) if self.live.cooldown_until.is_none() => {
+                (Button::Skill, ButtonEventKind::Pressed)
+                    if stand_in && self.live.cooldown_until.is_none() =>
+                {
                     self.live.cooldown_until =
                         Some(Timestamp::from_nanos(now.as_nanos() + LIVE_COOLDOWN.as_nanos() as u64));
                 }
@@ -227,7 +243,12 @@ impl SandboxHud {
                 // draws the same.
                 self.now = ms(FIXED_NOW);
             }
-            HudMode::Live => self.values = self.live_values(),
+            HudMode::Live => {
+                self.values = match self.fight {
+                    Some(values) => values,
+                    None => self.live_values(),
+                };
+            }
         }
         let actions = if self.options.mode == HudMode::Fixed {
             self.controls.update(self.now)
@@ -332,6 +353,42 @@ fn wrapped(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With a fight on, live mode's bars are the fight's, on the fight's clock where there's no other.
+    #[test]
+    fn live_mode_shows_a_fights_values_in_place_of_the_stand_in() {
+        let mut hud = SandboxHud::new(HudOptions { mode: HudMode::Live, ..HudOptions::default() });
+        let mut list = UiDrawList::default();
+        hud.draw((640, 360), &mut list);
+        assert_eq!(hud.values.enemy.map(|enemy| enemy.hp), Some(1.0), "the stand-in, unhurt");
+
+        let values = HudValues {
+            player: FighterValues { hp: 0.5, poise: 0.25, hp_points: Some(150) },
+            enemy: Some(FighterValues { hp: 0.75, poise: 1.0, hp_points: None }),
+            skill: SkillValues::default(),
+        };
+        hud.show_fight(values, Duration::from_secs(2));
+        hud.draw((640, 360), &mut list);
+        assert_eq!(hud.values, values);
+        assert_eq!(hud.now, ms(2000));
+    }
+
+    /// A fixed frame stays the same frame, whatever's going on behind it.
+    #[test]
+    fn a_fixed_frame_ignores_a_fight() {
+        let mut hud = SandboxHud::new(HudOptions::default());
+        let mut list = UiDrawList::default();
+        hud.draw((640, 360), &mut list);
+        let before = hud.values;
+        let values = HudValues {
+            player: FighterValues { hp: 0.1, ..FighterValues::default() },
+            ..HudValues::default()
+        };
+        hud.show_fight(values, Duration::from_secs(2));
+        hud.draw((640, 360), &mut list);
+        assert_eq!(hud.values, before);
+        assert_eq!(hud.now, ms(FIXED_NOW));
+    }
 
     #[test]
     fn a_fixed_frame_draws_the_same_quads_every_frame() {

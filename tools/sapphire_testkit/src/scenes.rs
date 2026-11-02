@@ -152,9 +152,10 @@ pub struct Scene {
 ///
 /// The arena scenes (M2 O5) pin what the look-dev scenes pin: Desktop-High and ambient occlusion off,
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
-/// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
-/// replay on it.
-pub fn scenes() -> [Scene; 137] {
+/// They alone run `--arena`, so no earlier scene sees its stage. `arena-replay` plays a replay on it,
+/// and `arena-fight-telegraph`, `arena-fight-hit` and `arena-fight-cut` a fight with the enemy (M2 G6),
+/// side on, so the character isn't in front of what they're there to show.
+pub fn scenes() -> [Scene; 140] {
     [
         Scene {
             name: "turntable-start",
@@ -2202,6 +2203,92 @@ pub fn scenes() -> [Scene; 137] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The enemy's overhead, 38 ticks into its 48 of wind-up with its arm up and its blade over it,
+        // from `arena-fight-still`, whose player only stands there: what a dodge has to read.
+        Scene {
+            name: "arena-fight-telegraph",
+            args: &[
+                "--capture-ticks",
+                "112",
+                "--cues",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--view",
+                "75,8",
+                "--replay",
+                "tests/replays/arena-fight-still.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // That overhead landed, three ticks on from its first contact: both clocks frozen, with the
+        // blade across the player, who has started to fall.
+        Scene {
+            name: "arena-fight-hit",
+            args: &[
+                "--capture-ticks",
+                "128",
+                "--cues",
+                "--hud",
+                "live",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--view",
+                "75,8",
+                "--replay",
+                "tests/replays/arena-fight-still.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The player's turn, from `arena-fight-won`: a dash attack cutting across the warrior as it lands,
+        // on O3's clip with the sword in the graph's hand, which is what the blade's hit sweeps along.
+        Scene {
+            name: "arena-fight-cut",
+            args: &[
+                "--capture-ticks",
+                "104",
+                "--cues",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--view",
+                "75,8",
+                "--replay",
+                "tests/replays/arena-fight-won.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with
         // a crisp highlight; gold, its tinted matcap and highlight, the sky reflected on its
         // metallic stripes; leather, darker toward its rim, with a soft GGX highlight; a dark suit
@@ -4103,7 +4190,9 @@ mod tests {
         let mut sizes = Vec::new();
         for scene in scenes() {
             let hud = scene.args.contains(&"--hud");
-            assert_eq!(hud, scene.name.starts_with("hud-"), "{}", scene.name);
+            // `arena-fight-hit` shows the bars reading a real fight.
+            let expected = scene.name.starts_with("hud-") || scene.name == "arena-fight-hit";
+            assert_eq!(hud, expected, "{}", scene.name);
             if hud {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);

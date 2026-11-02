@@ -18,14 +18,25 @@
 //! and with `--script`, `--offscreen` runs one for hot reload and live link.
 //!
 //! **Live edits (M2 T2, `tuning.rs`):** a replay plays what it recorded and refuses them. A recording's
-//! fight takes them, and its file stops at the first that changes anything: `Recording` says why.
+//! fight takes them, and its file stops at the first that changes anything: `Recording` says why. A fight
+//! with no file takes them too, and starts over from them.
+//!
+//! **A fight with no file** (`--arena --fight`, M2 G6): [`Mode::Fighting`] asks the same
+//! [`action_source`] for its ticks and writes nothing, so it can go on for as long as anyone plays. When
+//! someone falls it waits [`RESTART_AFTER`], logs how it went and makes the scenario again, and the key
+//! that starts it over does the same at once ([`Combat::restart`]). A new fight is a new [`Simulation`],
+//! from the same first tick: nothing carries over, and a script plays it exactly as it played the one
+//! before. That's what the app's own test leans on (`tests/replays.rs`): each fight's checksum in the log
+//! is the one a headless run of the same script reaches at that tick. Making one allocates, between steps,
+//! outside what rule R6 counts ([`read_bindings`]'s caller keeps it so).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, LiveMoves, Played, Player, RecordedTrail,
-    Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
+    Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario, checksums_file_name, find_scenario,
+    find_script,
 };
 use sapphire_gameplay::{ActorId, Simulation, TickActions};
 #[cfg(feature = "dev")]
@@ -36,6 +47,10 @@ use crate::options::{CaptureFrames, CombatOption};
 
 /// A script's actions: a function of the tick.
 type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
+
+/// How long a fight goes on after someone falls before it starts over, in ticks: long enough to see
+/// them fall. The warrior's death lasts 150.
+pub(crate) const RESTART_AFTER: u64 = 240;
 
 /// Where a recording's actions come from: the one seam between what drives a fight and the file.
 ///
@@ -74,11 +89,100 @@ enum Mode {
         /// The tick limit, once reached.
         stopped: Option<ReplayError>,
     },
+    /// `--fight`: played, and kept nowhere.
+    Fighting(LiveFight),
+}
+
+/// A fight with no file: see the [module docs](self).
+struct LiveFight {
+    scenario: &'static Scenario,
+    /// The edits it's taken: what the next fight starts from.
+    live: LiveMoves,
+    sim: Simulation,
+    cast: Vec<ActorId>,
+    /// The script it plays. With none, it plays the bindings it's given.
+    script: Option<ScriptActions>,
+    /// The tick someone fell at.
+    fell_at: Option<u64>,
+    /// How many fights there have been, this one included.
+    fights: u32,
+}
+
+impl LiveFight {
+    fn new(
+        scenario: &'static Scenario,
+        script: Option<ScriptActions>,
+        live: LiveMoves,
+    ) -> Result<Self, String> {
+        let (sim, cast) =
+            live.start(scenario, scenario.config).map_err(|error| format!("--fight: {error}"))?;
+        Ok(Self { scenario, live, sim, cast, script, fell_at: None, fights: 1 })
+    }
+
+    /// One tick, and whatever it ended. Returns whether it asked `bindings`.
+    fn step(&mut self, bindings: &mut dyn ActionSource) -> bool {
+        let asks = self.script.is_none();
+        let actions = action_source(&mut self.script, bindings).actions(self.sim.tick(), &self.cast);
+        self.sim.step(&actions);
+        let tick = self.sim.tick();
+        match self.fell_at {
+            None if self.someone_fell() => self.fell_at = Some(tick),
+            Some(at) if tick - at >= RESTART_AFTER => self.start_over(),
+            _ => {}
+        }
+        asks
+    }
+
+    fn someone_fell(&self) -> bool {
+        self.cast.iter().any(|id| self.sim.actor(*id).is_some_and(|actor| actor.fighter.is_defeated()))
+    }
+
+    /// Reports this fight and makes the next. If it can't, which a scenario that started once has no
+    /// reason for, this one goes on.
+    fn start_over(&mut self) {
+        self.report();
+        match self.live.start(self.scenario, self.scenario.config) {
+            Ok((sim, cast)) => {
+                (self.sim, self.cast) = (sim, cast);
+                self.fell_at = None;
+                self.fights += 1;
+            }
+            Err(error) => tracing::error!(target: LOG_TARGET, %error, "the fight can't start over"),
+        }
+    }
+
+    /// Takes a live edit: the next attempt reads it, and every fight after this one starts from it.
+    #[cfg(feature = "dev")]
+    fn tune(&mut self, document: &str, id: MoveSetId, set: sapphire_moves::MoveSet) -> Option<Tuned> {
+        let tuned = self.sim.tune_move_set(id, set.clone())?;
+        if matches!(tuned, Tuned::Replaced { .. }) {
+            self.live.remember(document, set);
+        }
+        Some(tuned)
+    }
+
+    /// Says how this fight went.
+    fn report(&self) {
+        let health = |index: usize| {
+            self.cast.get(index).and_then(|id| self.sim.actor(*id)).map_or(0, |actor| actor.fighter.health())
+        };
+        tracing::info!(
+            target: LOG_TARGET,
+            fight = self.fights,
+            ticks = self.sim.tick(),
+            fell_at = ?self.fell_at,
+            player_health = health(0),
+            enemy_health = health(1),
+            checksum = %format_args!("{:016x}", self.sim.checksum()),
+            allocations = self.sim.stats().allocations,
+            "a fight ended",
+        );
+    }
 }
 
 /// A simulation run alongside the scene.
 pub(crate) struct Combat {
-    /// The replay file, read or to write.
+    /// The replay file, read or to write. A fight with no file has none.
     path: PathBuf,
     mode: Mode,
     /// Fixed steps taken after a replay's last tick.
@@ -94,7 +198,15 @@ impl Combat {
             CombatOption::Record { path, scenario, script } => {
                 Self::recording(path, scenario, script.as_deref(), &LiveMoves::default())
             }
+            CombatOption::Fight { script } => Self::fighting(script.as_deref()),
         }
+    }
+
+    fn fighting(script: Option<&str>) -> Result<Self, String> {
+        let scenario = find_scenario(SCENARIOS, crate::arena::FIGHT_SCENARIO)
+            .ok_or_else(|| format!("--fight: no scenario `{}`", crate::arena::FIGHT_SCENARIO))?;
+        let fight = LiveFight::new(scenario, script.map(script_actions).transpose()?, LiveMoves::default())?;
+        Ok(Self { path: PathBuf::new(), mode: Mode::Fighting(fight), steps_past_end: 0 })
     }
 
     fn replaying(path: &Path) -> Result<Self, String> {
@@ -127,14 +239,7 @@ impl Combat {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
         };
-        let script = script
-            .map(|name| {
-                find_script(name).map(|script| script.actions).ok_or_else(|| {
-                    let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
-                    format!("--script: no script `{name}`; there's {known:?}")
-                })
-            })
-            .transpose()?;
+        let script = script.map(script_actions).transpose()?;
         let recording = Recording::tuned(scenario, scenario.config, live)
             .map_err(|error| format!("--record: {error}"))?;
         let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None };
@@ -146,6 +251,7 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { player, .. } => player.replay().scenario(),
             Mode::Recording { scenario, .. } => scenario,
+            Mode::Fighting(fight) => fight.scenario.name,
         }
     }
 
@@ -183,14 +289,37 @@ impl Combat {
                 }
                 Ok(tuned.map(|tuned| (id, tuned)))
             }
+            Mode::Fighting(fight) => Ok(fight.tune(document, id, set).map(|tuned| (id, tuned))),
         }
     }
 
-    /// The tick a live edit ended a recording's file at, if one did.
+    /// Starts a fight that hasn't stepped from `set`, if that isn't what it has: for what a cook made of
+    /// this document, when it's newer than the simulation's own copy. Says whether it did. Nothing else
+    /// has anywhere to start from: a replay plays what it recorded, and a recording's file says what it
+    /// ran on.
+    #[cfg(feature = "dev")]
+    pub fn start_fight_from(&mut self, document: &str, set: sapphire_moves::MoveSet) -> bool {
+        let Some(id) = self.plays(document) else { return false };
+        let Mode::Fighting(fight) = &mut self.mode else { return false };
+        if fight.sim.tick() != 0 || fight.sim.move_library().is_current(id, &set) {
+            return false;
+        }
+        fight.live.remember(document, set);
+        match fight.live.start(fight.scenario, fight.scenario.config) {
+            Ok((sim, cast)) => (fight.sim, fight.cast) = (sim, cast),
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %error, "the fight keeps the moves it has");
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The tick a live edit ended a recording's file at, if one did. A fight has no file to end.
     #[cfg(any(feature = "dev", test))]
     pub fn edited_at(&self) -> Option<u32> {
         match &self.mode {
-            Mode::Replaying { .. } => None,
+            Mode::Replaying { .. } | Mode::Fighting(_) => None,
             Mode::Recording { recording, .. } => recording.edited_at(),
         }
     }
@@ -200,6 +329,7 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { player, .. } => player.cast(),
             Mode::Recording { recording, .. } => recording.cast(),
+            Mode::Fighting(fight) => &fight.cast,
         }
     }
 
@@ -249,6 +379,14 @@ impl Combat {
                 }
                 asks
             }
+            Mode::Fighting(fight) => fight.step(bindings),
+        }
+    }
+
+    /// Starts a fight with no file over, between steps. Nothing else has anywhere to start over from.
+    pub fn restart(&mut self) {
+        if let Mode::Fighting(fight) = &mut self.mode {
+            fight.start_over();
         }
     }
 
@@ -257,6 +395,7 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { player, .. } => player.simulation(),
             Mode::Recording { recording, .. } => recording.simulation(),
+            Mode::Fighting(fight) => &fight.sim,
         }
     }
 
@@ -279,6 +418,7 @@ impl Combat {
                 at_limit: stopped.is_some(),
                 scripted: script.is_some(),
             },
+            Mode::Fighting(fight) => CombatStatus::Fighting { fights: fight.fights },
         }
     }
 
@@ -360,6 +500,7 @@ impl Combat {
                     "recorded a replay",
                 );
             }
+            Mode::Fighting(fight) => fight.report(),
         }
         Ok(())
     }
@@ -371,6 +512,7 @@ impl Combat {
 pub(crate) enum CombatStatus<'a> {
     Replaying { name: &'a str, length: u32 },
     Recording { scenario: &'static str, path: &'a Path, at_limit: bool, scripted: bool },
+    Fighting { fights: u32 },
 }
 
 /// The overlay's replay recorder: starts recording the player, and ends it, between frames.
@@ -474,6 +616,14 @@ pub(crate) fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn Acti
     if !asked {
         bindings.actions(0, &[player]);
     }
+}
+
+/// A script by name.
+fn script_actions(name: &str) -> Result<ScriptActions, String> {
+    find_script(name).map(|script| script.actions).ok_or_else(|| {
+        let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
+        format!("--script: no script `{name}`; there's {known:?}")
+    })
 }
 
 /// Rule R6, beside a renderer. The replay suite is the gate; here it's a finding to look at, since a
@@ -619,6 +769,109 @@ mod tests {
         assert_eq!(count(Some(&mut played)), 1, "a recording of the player");
         assert_eq!(count(Some(&mut scripted)), 1, "a script's, which asks them nothing");
         assert_eq!(count(Some(&mut replaying)), 1, "a replay");
+    }
+
+    fn fighting(script: Option<&str>) -> Combat {
+        Combat::new(&CombatOption::Fight { script: script.map(str::to_owned) }).expect("sets up")
+    }
+
+    /// What `--arena --fight` does in a window, short of the window: the keys go through the sandbox's
+    /// own input to the same step, the player's verbs land, the brain thinks, nothing's written, and
+    /// the key that starts it over makes the same first tick again.
+    #[test]
+    fn a_fight_is_played_through_the_bindings_and_starts_over_on_its_key() {
+        let mut combat = fighting(None);
+        assert_eq!(combat.scenario(), crate::arena::FIGHT_SCENARIO);
+        crate::arena::check_scenario(&combat).expect("it's the arena's");
+        let cast = combat.cast().to_vec();
+        let at_start = combat.simulation().checksum();
+        let enemy = |combat: &Combat| combat.simulation().actor(cast[1]).expect("alive");
+        let player = |combat: &Combat| combat.simulation().actor(cast[0]).expect("alive");
+        assert!(enemy(&combat).brain.is_on(), "someone's thinking for it");
+
+        let mut input = SandboxInput::new(false, true, Size { width: 640, height: 360 }).expect("binds");
+        input.listen_for_fight_restart().expect("binds");
+        let mut now = 0;
+        let mut frame = |input: &mut SandboxInput, combat: &mut Combat, keys: &[(Scancode, bool)]| {
+            for &(scancode, down) in keys {
+                now += 1;
+                input.push(now, RawInput::Key { scancode, down });
+            }
+            now += 16;
+            assert!(!input.update(Timestamp::from_nanos(now * 1_000_000)));
+            let actions = input.take_actions();
+            if actions.restart_fight {
+                combat.restart();
+            }
+            read_bindings(Some(combat), &mut input.source(0.0), cast[0]);
+        };
+
+        frame(&mut input, &mut combat, &[(Scancode::J, true)]);
+        let current = player(&combat).moves.current.expect("it started a move");
+        assert_eq!(current.name, sapphire_core::Name::new("light_1"));
+        frame(&mut input, &mut combat, &[(Scancode::J, false)]);
+        for _ in 0..30 {
+            frame(&mut input, &mut combat, &[]);
+        }
+        assert_ne!(enemy(&combat).position, sapphire_gameplay::arena::spawns().enemy.position(), "it walked");
+        let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+        assert_eq!(fights, 1);
+
+        frame(&mut input, &mut combat, &[(Scancode::R, true)]);
+        // The key lands between frames, and that frame's step is the new fight's first.
+        assert_eq!(combat.simulation().tick(), 1);
+        let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+        assert_eq!(fights, 2);
+        let mut fresh = fighting(None);
+        fresh.step(&mut no_bindings);
+        assert_eq!(combat.simulation().checksum(), fresh.simulation().checksum());
+        assert_ne!(at_start, combat.simulation().checksum(), "a tick on");
+        combat.finish().expect("nothing to write");
+    }
+
+    /// Whoever falls, it goes on long enough to see, starts over from the same first tick, and plays
+    /// the same fight: nothing carries over. The script stands still, so the player falls.
+    #[test]
+    fn a_fight_starts_over_after_someone_falls() {
+        let mut combat = fighting(Some("idle"));
+        let cast = combat.cast().to_vec();
+        let mut trail = vec![combat.simulation().checksum()];
+        let fallen = loop {
+            assert!(!combat.step(&mut no_bindings), "a script asks no one");
+            trail.push(combat.simulation().checksum());
+            let player = combat.simulation().actor(cast[0]).expect("alive");
+            if player.fighter.is_defeated() {
+                break combat.simulation().tick();
+            }
+            assert!(combat.simulation().tick() < 10_000, "it never fell");
+        };
+        for _ in 1..RESTART_AFTER {
+            combat.step(&mut no_bindings);
+            trail.push(combat.simulation().checksum());
+        }
+        assert_eq!(combat.simulation().tick(), fallen + RESTART_AFTER - 1, "still the same fight");
+        combat.step(&mut no_bindings);
+        let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+        assert_eq!(fights, 2);
+        assert_eq!(combat.simulation().tick(), 0, "it starts over");
+
+        for expected in &trail {
+            assert_eq!(combat.simulation().checksum(), *expected, "at tick {}", combat.simulation().tick());
+            combat.step(&mut no_bindings);
+        }
+        assert_eq!(combat.simulation().stats().allocations, 0, "rule R6");
+    }
+
+    #[test]
+    fn a_fight_has_no_bad_scripts_and_only_it_starts_over() {
+        let error = Combat::new(&CombatOption::Fight { script: Some("no-such".to_owned()) });
+        assert!(error.err().expect("refused").contains("no-such"));
+
+        let scratch = Scratch::new("no-restart");
+        let mut recording = recording(&scratch.0, Some("idle"));
+        recording.step(&mut no_bindings);
+        recording.restart();
+        assert_eq!(recording.simulation().tick(), 1, "a recording has a file to keep to");
     }
 
     /// A directory of this test's own, gone when it ends.

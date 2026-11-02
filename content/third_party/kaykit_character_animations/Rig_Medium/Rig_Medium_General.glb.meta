@@ -83,8 +83,10 @@
                 (
                     target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
                     names: [
+                        "Death_A",
                         "Hit_A",
                         "Hit_B",
+                        "Idle_A",
                     ],
                     follow: [
                         "hand.l",

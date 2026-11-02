@@ -1079,17 +1079,25 @@ pub(crate) fn warrior() -> (AssetId, Skeleton, HumanMap) {
 /// are the rig's, so each mapped bone turns exactly as the source's. `hand.l`, `hand.r` and the hand
 /// slots under them have no bone, so the sidecars name them under `follow`, and they turn exactly as
 /// the source's too: a blade held at `handslot.r` stays in the clip's grip. Left at rest they'd miss
-/// it by 67 to 94 degrees, depending on the clip, which is what the option is for.
+/// it by 55 to 94 degrees, depending on the clip, which is what the option is for.
 #[test]
 fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
     let (id, skeleton, map) = warrior();
     let rows = [
+        ("General", "Death_A", 0.4),
         ("General", "Hit_A", 0.005),
         ("General", "Hit_B", 0.005),
+        ("General", "Idle_A", 0.005),
         ("MovementBasic", "Running_A", 0.26),
+        ("MovementBasic", "Running_B", 0.3),
+        ("MovementBasic", "Walking_B", 0.065),
+        ("MovementAdvanced", "Running_Strafe_Left", 0.275),
+        ("MovementAdvanced", "Running_Strafe_Right", 0.275),
+        ("MovementAdvanced", "Walking_Backwards", 0.03),
         ("CombatMelee", "Melee_1H_Attack_Chop", 0.155),
         ("CombatMelee", "Melee_1H_Attack_Slice_Diagonal", 0.025),
         ("CombatMelee", "Melee_1H_Attack_Stab", 0.005),
+        ("CombatMelee", "Melee_2H_Attack_Chop", 0.005),
     ];
     let mapped = [
         Hips,
@@ -1155,7 +1163,7 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
             if grip > 0.001 {
                 failures.push(format!("{name}: a hand block misses the clip's grip by {grip} rad"));
             }
-            if grip_at_rest < 1.0 {
+            if grip_at_rest < 0.9 {
                 failures.push(format!("{name}: at rest they'd only miss by {grip_at_rest} rad"));
             }
             if floor.abs() > 0.001 {

@@ -63,7 +63,7 @@
 //! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
 //!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
 //! - **The arena** (`--arena`): the same town, its lamps and its day, with the character at the
-//!   player's spawn point and a stand-in at the enemy's, each posed from where the simulation has
+//!   player's spawn point and the enemy at the enemy's, each posed from where the simulation has
 //!   its actor rather than by a turntable, and the camera following the player
 //!   ([`Scene::spawn_arena`], [`Scene::follow_simulation`], [`crate::arena`]).
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
@@ -128,12 +128,12 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
 use crate::animate::{ClipPlayer, Evaluation, SpringView};
-use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
+use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
 use crate::blade::{self, HeldBlade};
 use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
-use crate::cues::{CueShow, CueSounds};
+use crate::cues::{CueShow, CueSounds, CueStage};
 use crate::debug_shapes::DebugDrawDemo;
 use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
@@ -269,8 +269,11 @@ pub(crate) struct LookDev {
     pub figure: Figure,
 }
 
-/// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws.
+/// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws,
+/// and the enemy who fights there.
 pub(crate) struct Arena {
+    pub enemy: EnemyMeshes,
+    pub held: enemy::Held,
     pub shot: ArenaShot,
     pub look: LookDev,
     pub ground: ArenaGround,
@@ -383,12 +386,15 @@ pub(crate) struct Scene {
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
-    /// The enemy and its blade, with `--look-dev enemy`.
+    /// The enemy and its blade, with `--look-dev enemy` or `--arena`.
     enemy: Option<(Entity, Entity)>,
     /// The character's blade, with `--blade on`.
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
     arena: Option<ArenaActors>,
+    /// What poses them.
+    /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
+    fighters_posed: bool,
     /// Where the character's light rig finds its head and body, for a character without a
     /// [`Figure`] of its own.
     figure: Figure,
@@ -528,6 +534,7 @@ impl Scene {
             enemy: None,
             blade: None,
             arena: None,
+            fighters_posed: false,
             figure,
             animating: false,
             players,
@@ -1080,7 +1087,7 @@ impl Scene {
             self.replace_player(content);
         }
         let graph_changed = content.take_graph_changed();
-        if self.graph_show.is_some() && (character_changed || graph_changed) {
+        if (self.graph_show.is_some() || self.fighters_posed) && (character_changed || graph_changed) {
             self.replace_graph(content, character_changed);
         }
     }
@@ -1312,6 +1319,15 @@ impl Scene {
                 }
             }
         }
+        if !self.fighters_posed || character_changed {
+            return;
+        }
+        let Some(enemy) = self.enemy.map(|(warrior, _)| warrior) else { return };
+        let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(enemy) else { return };
+        match content.enemy_binding() {
+            Ok(binding) => playing.player.replace(Arc::new(binding)),
+            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
+        }
     }
 
     /// Evaluates every character playing a clip, one job each, for a frame `alpha` of the way from
@@ -1328,6 +1344,70 @@ impl Scene {
         if self.graph_show.is_some() {
             self.animate_graph(&content.graph_clips(), alpha);
         }
+        if self.fighters_posed {
+            self.animate_fighters(&content.graph_clips(), &content.enemy_graph_clips(), alpha);
+        }
+    }
+
+    /// Plays each fighter's graph for this frame, from what the last step said of it, solves its feet
+    /// and its look at the other, and moves the enemy's blade to its hand. Two run in turn on this
+    /// thread, so there's no list of jobs to make, and this allocates nothing; a crowd would want
+    /// `evaluate_all`'s jobs and a retained list. A fighter whose mesh is changing keeps the pose it has
+    /// until it fits.
+    fn animate_fighters(&mut self, player: &ClipTable<'_>, enemy: &ClipTable<'_>, alpha: f32) {
+        profiling::scope!("animate fighters");
+        let started = Stopwatch::start();
+        let mut stats = AnimStats::default();
+        let Some(arena) = &mut self.arena else { return };
+        let world = self.ecs.world_mut();
+        let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
+        let view = SpringView::new(&camera, self.spring_quality);
+        let entities = [arena.fighters()[0].0, arena.fighters()[1].0];
+        for (index, (entity, clips)) in entities.into_iter().zip([player, enemy]).enumerate() {
+            let Some(input) = arena.graph_input(index, alpha) else { continue };
+            let Ok((mut driver, render, figure, rig, _)) = self.graph_players.get_mut(world, entity) else {
+                continue;
+            };
+            stats.characters += 1;
+            if !driver.fits(&render) {
+                continue;
+            }
+            let place = arena.drawn(index, alpha);
+            if let Some(ik) = driver.ik_mut() {
+                let look_target = arena.look_target(index, alpha);
+                ik.set_controls(IkControls { look_target, ..ik.controls() });
+            }
+            let springs_run = driver.springs_run(&view, &RenderTransform(place), &figure);
+            let mut job = GraphEvaluation {
+                driver,
+                render,
+                figure,
+                rig,
+                input,
+                world_from_model: Affine3A::from_mat4(place),
+                place,
+                springs_run,
+                evaluated: false,
+                spring_work: SpringWork::default(),
+                spring_time: Duration::ZERO,
+            };
+            job.run(clips);
+            stats.teleports += job.driver.player.teleports();
+            if job.evaluated {
+                stats.evaluated += 1;
+                stats.joints += job.driver.player.pose().joint_count() as u32;
+                stats.ik += u32::from(job.driver.has_ik());
+                if index == 1 {
+                    let hand = job.driver.player.pose().model()[arena.blade_hand()];
+                    arena.hold_blade(Mat4::from(hand));
+                }
+            }
+            stats.springs += u32::from(job.spring_work.wrote_pose);
+            stats.spring_substeps += job.spring_work.substeps;
+            stats.spring_time += job.spring_time;
+        }
+        stats.time = started.elapsed();
+        self.anim_stats = stats;
     }
 
     /// Plays the show's frame on the character. Allocates nothing: the show has one character, so
@@ -1466,15 +1546,6 @@ impl Scene {
     /// one the character has.
     fn hold_character(&mut self, pose: RenderPose, figure: Figure) {
         self.figure = figure;
-        if let Some(enemy) = self.arena.as_ref().map(ArenaActors::enemy_entity) {
-            let mut enemy = self.ecs.world_mut().entity_mut(enemy);
-            if let Some(mut held) = enemy.get_mut::<RenderPose>() {
-                held.set_if_neq(pose.clone());
-            }
-            if let Some(mut rig) = enemy.get_mut::<CharacterLightRig>() {
-                rig.head = figure.head;
-            }
-        }
         let mut character = self.ecs.world_mut().entity_mut(self.character);
         if let Some(mut held) = character.get_mut::<RenderPose>() {
             held.set_if_neq(pose);
@@ -1505,23 +1576,34 @@ impl Scene {
     }
 
     /// Builds the arena (`--arena`, [`crate::arena`]): the look-dev stage's town, day and light rigs
-    /// where the town stands, with the character at the player's spawn point and a stand-in in the
-    /// same pose at the enemy's. Unlike the look-dev stage, the town stays still and they move, so
-    /// neither has a turntable: [`Self::follow_simulation`] carries each actor's root here.
+    /// where the town stands, with the character at the player's spawn point and the enemy
+    /// ([`crate::enemy`]) and its blade at the enemy's. Unlike the look-dev stage, the town stays still
+    /// and they move, so none of them has a turntable: [`Self::follow_simulation`] carries each actor's
+    /// root here.
     pub fn spawn_arena(&mut self, arena: Arena) {
-        let Arena { shot, look, ground } = arena;
-        let pose = look.pose.clone();
-        let figure = look.figure;
+        let Arena { enemy, held, shot, look, ground } = arena;
         self.ecs
             .world_mut()
             .insert_resource(shot.camera(sapphire_gameplay::arena::spawns().player.position()));
         self.spawn_town(Vec3::ZERO, look);
-        let world = self.ecs.world_mut();
-        world.entity_mut(self.character).remove::<Turntable>();
-        let mesh = *world.get::<RenderMesh>(self.character).expect("the scene's character draws");
-        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: figure.head };
-        let enemy = world.spawn((mesh, RenderTransform::default(), rig, pose)).id();
+        self.ecs.world_mut().entity_mut(self.character).remove::<Turntable>();
+        let (blade_in_model, hand) = (held.blade, held.hand);
+        self.spawn_enemy(enemy, held);
+        let (warrior, blade) = self.enemy.expect("it just stood there");
+        let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
         self.arena = Some(ArenaActors::new(self.character, enemy, shot, ground));
+    }
+
+    /// Poses the arena's fighters by these graphs from now on, from what the simulation says of them
+    /// ([`crate::arena`]). They hold what they have until a fight steps. Nothing without `--arena`.
+    pub fn play_fighters(&mut self, player: GraphDriver, enemy: GraphDriver) {
+        let Some(arena) = &self.arena else { return };
+        let [(player_entity, _), (enemy_entity, _)] = arena.fighters();
+        let figure = self.figure;
+        let world = self.ecs.world_mut();
+        world.entity_mut(player_entity).insert((player, figure));
+        world.entity_mut(enemy_entity).insert(enemy);
+        self.fighters_posed = true;
     }
 
     /// Takes the arena's actors from `simulation`, after a step of it: nothing without `--arena`.
@@ -1664,7 +1746,11 @@ impl Scene {
         let world = self.ecs.world_mut();
         let character = world.entity(self.character);
         let place = character.get::<RenderTransform>().map_or(Mat4::IDENTITY, |transform| transform.0);
-        let hand = character.get::<ClipPlayer>().and_then(ClipPlayer::right_hand).unwrap_or(held.held_hand);
+        let hand = character
+            .get::<ClipPlayer>()
+            .and_then(ClipPlayer::right_hand)
+            .or_else(|| character.get::<GraphDriver>().and_then(GraphDriver::right_hand))
+            .unwrap_or(held.held_hand);
         let holder = character.get::<Figure>().copied().unwrap_or(self.figure);
         let item = hand * blade::socket();
         let figure = holder.of_item_at(item);
@@ -1800,11 +1886,15 @@ impl Scene {
         let view_projection = camera.proj * camera.view;
         let place = world.get::<RenderTransform>(self.character);
         let stand = place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate());
+        let stage = match &mut self.arena {
+            Some(arena) => CueStage::Actors { director: arena.director() },
+            None => CueStage::OneCharacter { stand },
+        };
         let (mut stack, presets) = self
             .screen_effects
             .get_mut(self.ecs.world_mut())
             .expect("the scene inserts the effect stack and its presets");
-        cues.step(sim, &mut stack, &presets, view_projection, stand);
+        cues.step(sim, &mut stack, &presets, view_projection, stage);
     }
 
     /// What a fight's cues ask of the audio system this frame.
@@ -1817,7 +1907,10 @@ impl Scene {
     pub fn end_cue_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) {
         let Some(cues) = &mut self.cues else { return };
         let (turn, offset) = cues.end_frame(dt, rumble);
-        self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
+        // With a director on, its own frame has the shakes, and a turn its roll.
+        if self.arena.as_mut().is_none_or(|arena| arena.director().is_none()) {
+            self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
+        }
     }
 
     /// Stops a fight's rumble at once: the app lost focus or the foreground.
@@ -1986,6 +2079,11 @@ impl Scene {
             }
         });
         if let (Some(hud), Some(size)) = (&mut self.hud, target_size) {
+            if let Some(arena) = &self.arena
+                && let Some(values) = arena.hud_values()
+            {
+                hud.show_fight(values, arena.fight_time());
+            }
             let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
             hud.draw(size, &mut extract.packet_mut().ui);
         }
@@ -2150,9 +2248,6 @@ impl Scene {
 
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.
     pub fn set_character_mesh(&mut self, mesh: MeshHandle) {
-        if let Some(enemy) = self.arena.as_ref().map(ArenaActors::enemy_entity) {
-            self.ecs.world_mut().entity_mut(enemy).insert(RenderMesh(mesh));
-        }
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
     }
 
@@ -2342,7 +2437,15 @@ mod tests {
             let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
             let ground = ArenaGround::new(set).expect("the stage stands on it");
             let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-            scene.spawn_arena(Arena { shot, look, ground });
+            let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+            let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
+            let held = enemy::Held {
+                pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
+                figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
+                blade: blade_in_model,
+                hand: 0,
+            };
+            scene.spawn_arena(Arena { enemy, held, shot, look, ground });
             (scene, figure)
         };
         let (mut scene, figure) = build(ArenaShot::Follow);
@@ -2359,8 +2462,18 @@ mod tests {
         assert_eq!(origin(&scene, character), spawns.player.position());
         assert_eq!(origin(&scene, enemy), spawns.enemy.position());
         assert_eq!(scene.figure, figure);
+        // Drawn at its own size, with its blade where the model holds it, facing where it faces.
+        let (warrior, blade) = scene.enemy.expect("it stands there");
+        let scale = enemy::SCALE;
+        let transform =
+            |scene: &Scene, entity| scene.ecs.world().get::<RenderTransform>(entity).expect("placed").0;
+        let upright = transform(&scene, warrior).transform_vector3(Vec3::Y).length();
+        assert!((upright - scale).abs() < 1e-5, "{upright}");
+        let hand = transform(&scene, blade).transform_point3(Vec3::ZERO);
+        let expected = spawns.enemy.position() + Vec3::new(0.0, scale, 0.0);
+        assert!(hand.distance(expected) < 1e-5, "{hand}");
         let packet = scene.ecs.world().resource::<RenderExtract>().packet();
-        assert_eq!(packet.characters.len(), 2, "both are lit as characters");
+        assert_eq!(packet.characters.len(), 3, "all three are lit as characters");
 
         let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
         let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
@@ -2490,6 +2603,7 @@ mod tests {
             pose,
             figure: warrior_figure,
             blade: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)),
+            hand: 0,
         };
         let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) };
         scene.spawn_enemy(meshes, held);
@@ -2880,6 +2994,118 @@ mod tests {
                 assert_eq!(drawn.moved_to, None, "nothing moved");
                 assert_eq!(scene.anim_stats().characters, 1);
                 assert_eq!(scene.anim_stats().evaluated, 0);
+            }
+        }
+
+        /// An arena whose fighters both play `driver`'s graph, standing at the start of a fight, and that
+        /// fight: the warrior's blade hangs from joint 2.
+        fn fighting(table: &ClipTable<'_>) -> (Scene, Simulation, Vec<sapphire_gameplay::ActorId>) {
+            use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+            let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+            let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 5], morph_weights: vec![0.25, 0.0] };
+            let figure = Figure { head: Vec3::new(0.0, 1.6, 0.0), ..Figure::MANNEQUIN };
+            let town = TownMeshes {
+                town: MeshHandle::from_raw(1),
+                plants: [MeshHandle::from_raw(2); lookdev::Plant::ALL.len()],
+                mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+            };
+            let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
+            let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
+            let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2 };
+            scene.spawn_arena(Arena {
+                enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) },
+                held,
+                shot: ArenaShot::Follow,
+                look: LookDev { town, fog_cards: None, pose, figure },
+                ground: ArenaGround::new(set).expect("the stage stands on it"),
+            });
+            scene.play_fighters(driver(table).with_right_hand(1), driver(table));
+            let scenario = find_scenario(SCENARIOS, crate::arena::FIGHT_SCENARIO).expect("listed");
+            let (sim, cast) = scenario.start(scenario.config).expect("it starts");
+            (scene, sim, cast)
+        }
+
+        /// The character's sword stays in the hand of the held pose until its graph has made a pose.
+        #[test]
+        fn a_graphs_hand_says_nothing_until_it_has_a_pose() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let (mut scene, mut sim, cast) = fighting(&table);
+            let character = scene.character;
+            let hand =
+                |scene: &Scene| scene.ecs.world().get::<GraphDriver>(character).expect("on").right_hand();
+            assert_eq!(hand(&scene), None, "no pose yet");
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            scene.follow_simulation(&sim, &cast);
+            scene.animate_fighters(&table, &table, 1.0);
+            let held = scene.ecs.world().get::<GraphDriver>(character).expect("on").player.pose().model()[1];
+            assert_eq!(hand(&scene), Some(Mat4::from(held)));
+        }
+
+        /// Both fighters play from the steps' views, the enemy's blade goes where its hand does, a frozen
+        /// clock asks nothing of them, and a frame allocates nothing.
+        #[test]
+        fn both_fighters_play_their_graphs_and_the_blade_stays_in_hand() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let (mut scene, mut sim, cast) = fighting(&table);
+            let (warrior, blade) = scene.enemy.expect("it stands there");
+            let palette = |scene: &Scene, entity| {
+                scene.ecs.world().get::<RenderPose>(entity).expect("posed").palette.clone()
+            };
+            let held = palette(&scene, warrior);
+
+            scene.animate_fighters(&table, &table, 1.0);
+            assert_eq!(scene.anim_stats().characters, 0, "nothing before a fight");
+            assert_eq!(palette(&scene, warrior), held, "it holds what it has");
+
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            scene.follow_simulation(&sim, &cast);
+            scene.animate_fighters(&table, &table, 1.0);
+            assert_eq!(scene.anim_stats().characters, 2);
+            assert_eq!(scene.anim_stats().evaluated, 2);
+            assert_eq!(scene.anim_stats().joints, 10);
+            assert_ne!(palette(&scene, warrior), held, "the graph has it");
+            assert_ne!(palette(&scene, scene.character), held);
+
+            let _ = scene.frame_packet(1.0, Some((16, 9)));
+            scene.end_frame();
+            let world = scene.ecs.world();
+            let drawn = |entity| world.get::<RenderTransform>(entity).expect("placed").0;
+            let driver = world.get::<GraphDriver>(warrior).expect("playing");
+            let hand = Mat4::from(driver.player.pose().model()[2]);
+            let expected = drawn(warrior) * hand;
+            assert!(drawn(blade).abs_diff_eq(expected, 1e-5), "{} against {expected}", drawn(blade));
+
+            scene.animate_fighters(&table, &table, 1.0);
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                for _ in 0..200 {
+                    sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                    scene.follow_simulation(&sim, &cast);
+                    scene.animate_fighters(&table, &table, 0.5);
+                }
+            });
+            if sapphire_core::alloc::PER_THREAD_COUNTS {
+                assert_eq!(counts.allocations, 0, "{counts:?}");
+            }
+
+            let mut frozen = false;
+            for _ in 0..240 {
+                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                scene.follow_simulation(&sim, &cast);
+                frozen = sim.actor(cast[0]).expect("alive").clock_delta == sapphire_time::SimDuration::ZERO;
+                scene.animate_fighters(&table, &table, 1.0);
+                if frozen {
+                    break;
+                }
+            }
+            assert!(frozen, "a hit stops its target's clock within 4 s");
+            for alpha in [0.25, 0.75] {
+                scene.animate_fighters(&table, &table, alpha);
+                assert!(scene.anim_stats().evaluated <= 1, "at most the one still moving");
             }
         }
 

@@ -14,6 +14,7 @@ use sapphire_moves::{
     Reach, Recent, Spacing, TickRange,
 };
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
+use sapphire_time::SimDuration;
 
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
@@ -768,7 +769,7 @@ fn hitstop_freezes_it_timers_and_all() {
     frozen.sim.clock_mut(frozen.brain).expect("alive").0.apply_hitstop(FREEZE);
     for tick in 0..FREEZE {
         frozen.step();
-        assert_eq!(frozen.view().clock_delta, sapphire_time::SimDuration::ZERO, "tick {tick}");
+        assert_eq!(frozen.view().clock_delta, SimDuration::ZERO, "tick {tick}");
         assert_eq!(frozen.mind(), brain_before, "tick {tick}: not a bit of it moves");
         assert_eq!(frozen.view().position, position, "tick {tick}");
     }
@@ -980,23 +981,55 @@ fn the_replay_of_a_player_standing_still_plays_what_it_says() {
     assert!(u64::from(replay.ticks()) > fell + 300, "it runs on past the end, for the standing");
 }
 
-/// The replay of someone fighting back is that: dodges and dash attacks, hits both ways, each of the
-/// warrior's attacks tried, each of its reactions played, and the warrior falls, with the player standing.
+/// The replay of someone fighting back is that: the string, dodges and dash attacks, hits both ways, the
+/// warrior's close attacks tried, each of its reactions played, and the warrior falls, with the player
+/// standing.
 #[test]
 fn the_replay_of_a_player_fighting_back_plays_what_it_says() {
     let summary = summary_of(WON);
-    assert!(summary.player_moves.contains(&name("dodge")), "{:?}", summary.player_moves);
-    assert!(summary.player_moves.contains(&name("dash_attack")), "{:?}", summary.player_moves);
+    for mv in ["light_1", "light_2", "light_3", "dodge", "dash_attack"] {
+        assert!(summary.player_moves.contains(&name(mv)), "no {mv}: {:?}", summary.player_moves);
+    }
     assert!(summary.hits_on_player >= 1, "it landed nothing on the player: a fight has two sides");
     assert!(summary.hits_on_enemy >= 10, "{}", summary.hits_on_enemy);
     assert!(summary.player_defeated_at.is_none(), "the player wins this one");
     assert!(summary.enemy_defeated_at.is_some(), "the warrior falls");
-    for attack in ["swipe", "overhead", "lunge"] {
+    for attack in ["swipe", "overhead"] {
         assert!(summary.enemy_moves.contains(&name(attack)), "no {attack}: {:?}", summary.enemy_moves);
     }
     for reaction in ["stagger_light", "stagger_heavy", "death"] {
         assert!(summary.enemy_moves.contains(&name(reaction)), "no {reaction}: {:?}", summary.enemy_moves);
     }
+}
+
+/// A dodge on the player's real moves, timed by nothing but luck, meets the warrior's swing: the world
+/// slows, and a press answers with the dash attack sooner than a dodge's own cancel window opens.
+#[test]
+fn a_perfect_dodge_of_the_warrior_opens_a_counter_into_the_dash_attack() {
+    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let press = |buttons| {
+        let mut actions = TickActions::NEUTRAL;
+        actions.set(cast[0], ActorActions { buttons, stick: Stick::CENTER }).expect("fits");
+        actions
+    };
+    for tick in 0..3600_u64 {
+        sim.step(&press(if tick % 30 == 0 { Buttons::DODGE } else { Buttons::NONE }));
+        if !sim.cues().any(|cue| cue.cue == sapphire_gameplay::PERFECT_DODGE && cue.actor == cast[0]) {
+            continue;
+        }
+        let dodge = sim.actor(cast[0]).expect("alive").moves.current.expect("its dodge");
+        assert_eq!(dodge.name, name("dodge"));
+        for _ in 0..2 {
+            sim.step(&press(Buttons::LIGHT));
+        }
+        let answer = sim.actor(cast[0]).expect("alive").moves.current.expect("its answer");
+        assert_eq!(answer.name, name("dash_attack"));
+        let into = answer.started_at.since(dodge.started_at);
+        assert!(into < SimDuration::from_ticks(9), "a dodge's own cancel opens at 9: {into:?}");
+        return;
+    }
+    panic!("a minute of dodging met no swing");
 }
 
 /// Its fighter's reactions are plain moves: the brain is the only thing that presses, and everything

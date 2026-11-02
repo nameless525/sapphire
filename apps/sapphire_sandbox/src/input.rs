@@ -37,6 +37,8 @@ const BINDINGS: &str = include_str!("../default_bindings.ron");
 const CONTEXTS: [(&str, i32); 2] = [("camera", 10), ("debug", 20)];
 /// Enabled on desktop only: `Esc` quits there.
 const DESKTOP_CONTEXT: (&str, i32) = ("desktop", 30);
+/// Enabled with `--fight`.
+const FIGHT_CONTEXT: (&str, i32) = ("fight", 40);
 
 /// The actor the sandbox's ticks name when there's no scenario to say: the one a simulation spawns
 /// first.
@@ -49,6 +51,8 @@ pub(crate) struct SimActions {
     pub toggle_slow_motion: bool,
     /// Freeze the turntable for a few ticks.
     pub hitstop: bool,
+    /// Start `--fight`'s fight over.
+    pub restart_fight: bool,
 }
 
 /// The actions the sandbox reads.
@@ -59,6 +63,7 @@ struct Actions {
     slow_motion: ActionId,
     hitstop: ActionId,
     quit: ActionId,
+    restart_fight: ActionId,
 }
 
 pub(crate) struct SandboxInput {
@@ -91,6 +96,7 @@ impl SandboxInput {
             slow_motion: action("slow_motion")?,
             hitstop: action("hitstop")?,
             quit: action("quit")?,
+            restart_fight: action("restart_fight")?,
         };
         let mut controls = CombatControls::new(map).map_err(|error| bindings(&error))?;
         let system = controls.input_mut();
@@ -105,6 +111,17 @@ impl SandboxInput {
         }
         system.set_window_size(window_size.width as f32, window_size.height as f32);
         Ok(Self { controls, actions, queued: SimActions::default(), paused: false })
+    }
+
+    /// Listens for the key that starts `--fight`'s fight over, in a context of its own: pausing takes
+    /// combat's bindings away and leaves this one, and [`Self::update`] ignores it while paused.
+    pub fn listen_for_fight_restart(&mut self) -> Result<(), AppInitError> {
+        let system = self.controls.input_mut();
+        let context = system.map().context(FIGHT_CONTEXT.0).ok_or_else(|| {
+            AppInitError::msg(format!("default bindings have no `{}` context", FIGHT_CONTEXT.0))
+        })?;
+        system.enable_context(context, FIGHT_CONTEXT.1);
+        Ok(())
     }
 
     /// Queues a platform event for the next [`Self::update`].
@@ -125,6 +142,8 @@ impl SandboxInput {
                 self.queued.toggle_slow_motion ^= true;
             } else if event.action == self.actions.hitstop {
                 self.queued.hitstop = true;
+            } else if event.action == self.actions.restart_fight && !self.controls.is_paused() {
+                self.queued.restart_fight = true;
             }
         }
         if self.paused != self.controls.is_paused() {
@@ -240,7 +259,10 @@ mod tests {
         input.push(2, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
         input.push(3, RawInput::PadButton { pad: 0, button: PadButton::East, down: true });
         assert!(!input.update(ms(16)));
-        assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: true, hitstop: true });
+        assert_eq!(
+            input.take_actions(),
+            SimActions { toggle_slow_motion: true, hitstop: true, restart_fight: false }
+        );
         assert_eq!(input.take_actions(), SimActions::default());
 
         // Two toggles before a step cancel out.
@@ -358,10 +380,16 @@ mod tests {
             touch(&mut input, t, 0, phase, 300.0, 300.0);
         }
         input.update(ms(316));
-        assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: true, hitstop: false });
+        assert_eq!(
+            input.take_actions(),
+            SimActions { toggle_slow_motion: true, hitstop: false, restart_fight: false }
+        );
         touch(&mut input, 1000, 0, TouchPhase::Down, 300.0, 300.0);
         input.update(ms(1600));
-        assert_eq!(input.take_actions(), SimActions { toggle_slow_motion: false, hitstop: true });
+        assert_eq!(
+            input.take_actions(),
+            SimActions { toggle_slow_motion: false, hitstop: true, restart_fight: false }
+        );
     }
 
     #[test]
@@ -451,6 +479,42 @@ mod tests {
         assert_ne!(input.orbit(), Vec2::ZERO);
         assert_eq!(input.controls.look(), Vec2::ZERO);
         assert_eq!(input.controls.camera_zoom(), 0.0);
+    }
+
+    /// `--fight`'s key starts it over, once a press, and not from the pause, whose steps have stopped.
+    /// Nothing else hears it: without `--fight` it does nothing, and combat binds neither source.
+    #[test]
+    fn the_fight_starts_over_on_its_own_key() {
+        let mut input = input_with(true, true);
+        input.push(1, RawInput::Key { scancode: Scancode::R, down: true });
+        assert!(!input.update(ms(16)));
+        assert!(!input.take_actions().restart_fight, "not without --fight");
+        input.push(17, RawInput::Key { scancode: Scancode::R, down: false });
+        assert!(!input.update(ms(32)));
+
+        input.listen_for_fight_restart().expect("it's bound");
+        input.push(33, RawInput::Key { scancode: Scancode::R, down: true });
+        assert!(!input.update(ms(48)));
+        assert_eq!(next_buttons(&mut input), Buttons::NONE, "it's no verb of combat's");
+        assert!(input.take_actions().restart_fight);
+        assert!(!input.update(ms(64)));
+        assert!(!input.take_actions().restart_fight, "held, it's one press");
+        input.push(65, RawInput::Key { scancode: Scancode::R, down: false });
+        assert!(!input.update(ms(80)));
+
+        input.push(80, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+        input.push(81, RawInput::PadButton { pad: 0, button: PadButton::DpadDown, down: true });
+        assert!(!input.update(ms(96)));
+        assert!(input.take_actions().restart_fight, "and on a pad");
+        input.push(97, RawInput::PadButton { pad: 0, button: PadButton::DpadDown, down: false });
+        assert!(!input.update(ms(112)));
+
+        input.push(113, RawInput::Key { scancode: Scancode::ESCAPE, down: true });
+        assert!(!input.update(ms(128)));
+        input.push(129, RawInput::Key { scancode: Scancode::ESCAPE, down: false });
+        input.push(130, RawInput::Key { scancode: Scancode::R, down: true });
+        assert!(!input.update(ms(144)));
+        assert!(!input.take_actions().restart_fight, "not from the pause");
     }
 
     #[test]

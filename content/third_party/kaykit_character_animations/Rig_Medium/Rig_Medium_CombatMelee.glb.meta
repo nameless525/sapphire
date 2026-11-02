@@ -19,6 +19,7 @@
                         "Melee_1H_Attack_Chop",
                         "Melee_1H_Attack_Slice_Diagonal",
                         "Melee_1H_Attack_Stab",
+                        "Melee_2H_Attack_Chop",
                     ],
                     follow: [
                         "hand.l",

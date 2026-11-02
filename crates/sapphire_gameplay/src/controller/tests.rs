@@ -676,7 +676,7 @@ fn a_stick_is_world_space() {
 mod mesh_arena;
 
 /// arm64: an Apple M5. CI's macOS runners must agree.
-const CHECKSUM_AARCH64: u64 = 0x6a8c_3e56_872d_600a;
+const CHECKSUM_AARCH64: u64 = 0x8599_a836_8173_c497;
 
 /// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run fails,
 /// printing the value to put here. Linux and Windows failing with different values is what this exists

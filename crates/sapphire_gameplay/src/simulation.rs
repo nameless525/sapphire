@@ -13,7 +13,7 @@ use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_physics::PhysicsWorld;
 use sapphire_time::Stopwatch;
 
-use crate::actions::{CurrentActions, TickActions, read_actions};
+use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
 };
@@ -570,5 +570,6 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),
         fighter,
         brain,
+        controls: *actor.get::<Controls>().expect("every pooled entity has controls"),
     }
 }

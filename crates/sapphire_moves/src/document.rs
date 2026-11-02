@@ -1493,8 +1493,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 4,
-                current: 3
+                found: 5,
+                current: 4
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -2283,6 +2283,7 @@ mod tests {
                     good.intents().to_vec(),
                     good.neutral().to_vec(),
                     good.fighter().cloned(),
+                    None,
                     moves,
                 )
             };

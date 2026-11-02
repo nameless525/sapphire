@@ -19,6 +19,7 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::{
     ColliderId, ColliderSet, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
 };
+use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
 
 use crate::actions::{Buttons, Controls};
@@ -42,6 +43,14 @@ const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warri
 
 /// That document, from the repository's root.
 const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
+
+/// The player's moves (`content/combat/player/player.moves.ron`), cooked. A cook bakes their tables
+/// from their clips, which takes the pipeline, and nothing that runs a replay links that, so the
+/// simulation keeps a copy. `tools/sapphire_pipeline/tests/player_moves.rs` holds it to the document.
+const PLAYER_MOVES: &[u8] = include_bytes!("../../baked/player.smoves");
+
+/// That document, from the repository's root.
+const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
 
 /// Why a scenario couldn't set its world up, as with a replay that asks for too small a pool.
 #[derive(Debug, thiserror::Error)]
@@ -144,7 +153,7 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "arena-fight",
-        about: "the arena's player on the test moves, aiming warps at the real warrior: O4's moves and fighter, \
+        about: "the arena's player on its own moves, aiming warps at the real warrior: O4's moves and fighter, \
                 driven by its own brain, so input drives only the player",
         config: SimConfig {
             seed: 7,
@@ -152,7 +161,7 @@ pub const SCENARIOS: &[Scenario] = &[
             step_budget: BUDGET_DESKTOP_LOW,
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
-        documents: &[TEST_MOVES_PATH, WARRIOR_MOVES_PATH],
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: arena_fight,
     },
 ];
@@ -171,6 +180,13 @@ pub fn test_moves() -> Result<MoveSet, MoveSetError> {
 /// The real enemy's moves, fighter and brain: `content/combat/enemy/warrior.moves.ron`.
 pub fn warrior_moves() -> Result<MoveSet, MoveSetError> {
     MoveSetDocument::parse(WARRIOR_MOVES)?.compile()
+}
+
+/// The player's moves, from the simulation's cooked copy of them.
+pub fn player_moves() -> Result<MoveSet, MoveSetError> {
+    let mut bytes = AlignedVec::<16>::with_capacity(PLAYER_MOVES.len());
+    bytes.extend_from_slice(PLAYER_MOVES);
+    MoveSet::from_cooked(&bytes)
 }
 
 /// Steps a [`Buttons::ULTIMATE`] press slows the world for, in [`melee`], and to how many thousandths.
@@ -296,8 +312,8 @@ pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(cast)
 }
 
-/// A fight: the arena's square, the player at its spawn point on the test moves, and the warrior at
-/// its, on its own document, with a brain that fights the player. The cast is both, the player first, for
+/// A fight: the arena's square, the player at its spawn point on its moves, and the warrior at its, on
+/// its own document, with a brain that fights the player. The cast is both, the player first, for
 /// presentation to stand where they are; input reaches only the player, since the brain overrides the
 /// warrior's stick and none of its intents has a button.
 pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
@@ -305,7 +321,7 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
     let set = ColliderSet::read(&cooked)?;
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
     let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-    let player_moves = Some(sim.add_move_set(test_moves()?));
+    let player_moves = Some(sim.add_move_set(player_moves()?));
     let warrior = Some(sim.add_move_set(warrior_moves()?));
     let spawns = crate::arena::spawns();
     let player = sim.spawn(ActorSpawn {

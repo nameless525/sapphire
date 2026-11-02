@@ -28,6 +28,7 @@
 *.otf binary
 # Cooked or GPU-ready formats.
 *.ktx2 binary
+*.smoves binary
 *.dds binary
 *.astc binary
 *.smesh binary

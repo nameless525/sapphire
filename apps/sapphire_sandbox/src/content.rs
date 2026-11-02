@@ -39,7 +39,7 @@
 //! of: a new version replaces it there, and the scene takes its key hours ([`Content::probes`],
 //! [`Content::probe_hours`]).
 //!
-//! `--look-dev enemy` also loads the enemy ([`enemy::WARRIOR`], [`enemy::BLADE`], [`Content::enemy`]),
+//! `--look-dev enemy` and `--arena` also load the enemy ([`enemy::WARRIOR`], [`enemy::BLADE`], [`Content::enemy`]),
 //! its mesh copied as it uploads, since its held pose derives from it ([`Content::held_enemy`]).
 //!
 //! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
@@ -73,10 +73,11 @@
 
 use std::collections::HashMap;
 use std::io;
-#[cfg(feature = "dev")]
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
+use sapphire_anim::{
+    AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton,
+};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
@@ -95,6 +96,7 @@ use sapphire_colliders::ColliderSet;
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
 use sapphire_livelink::{LivePacks, PushedPack};
+use sapphire_physics::PhysicsWorld;
 use sapphire_platform::{AppInitError, IoFile, IoPriority, IoThread, Platform, ReadError};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
@@ -102,7 +104,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
-use crate::anim_graph::ClipTable;
+use crate::anim_graph::{ClipTable, GraphDriver};
 use crate::arena;
 use crate::blade;
 use crate::enemy::{self, EnemyMeshes};
@@ -322,6 +324,35 @@ impl GpuAssets {
 /// ([`Content::renderer_rebuilt`]).
 pub(crate) struct RendererAssets(GpuAssets);
 
+/// A graph and the clips it names, kept resident.
+struct HeldGraph {
+    graph: Handle<AnimGraph>,
+    clips: Vec<(AssetId, Handle<Clip>)>,
+}
+
+impl HeldGraph {
+    /// Takes handles on the clips it names now.
+    fn hold_clips(&mut self, server: &mut AssetServer) -> Result<(), LoadError> {
+        let Some(graph) = server.get(&self.graph) else { return Ok(()) };
+        let ids: Vec<AssetId> = graph.clip_ids().collect();
+        let clips = ids.into_iter().map(|id| Ok((id, server.load_with(id, LoadPriority::Critical)?)));
+        self.clips = clips.collect::<Result<_, LoadError>>()?;
+        Ok(())
+    }
+
+    /// Its clips, as a frame's evaluation reads them. Allocates nothing.
+    fn table<'a>(&self, server: &'a AssetServer) -> ClipTable<'a> {
+        ClipTable::new(self.clips.iter().map(|(id, clip)| (*id, server.get(clip), server.generation(clip))))
+    }
+
+    /// A number that moves with any new version of it or its clips.
+    fn version(&self, server: &AssetServer) -> u32 {
+        self.clips.iter().fold(server.generation(&self.graph), |versions, (_, clip)| {
+            versions.wrapping_add(server.generation(clip))
+        })
+    }
+}
+
 /// The asset server, what it has uploaded, and the character it keeps loaded.
 pub(crate) struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
@@ -347,7 +378,7 @@ pub(crate) struct Content {
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
     /// The look-dev town, its plants and its mountains, once asked for (`--look-dev`).
     town: Vec<Handle<Mesh>>,
-    /// The enemy's model and its blade, once asked for (`--look-dev enemy`).
+    /// The enemy's model and its blade, once asked for (`--look-dev enemy`, `--arena`).
     enemy: Vec<Handle<Mesh>>,
     /// The player's sword, once asked for (`--blade on`).
     sword: Option<Handle<Mesh>>,
@@ -366,10 +397,11 @@ pub(crate) struct Content {
     /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
     clip_version: u32,
-    /// The graph the character plays, once asked for (`--graph`), the clips it names, and the versions
+    /// The graph the character plays, once asked for (`--graph`, `--arena`), and the versions
     /// the scene last knew of ([`Self::take_graph_changed`]).
-    graph: Option<Handle<AnimGraph>>,
-    graph_clips: Vec<(AssetId, Handle<Clip>)>,
+    graph: Option<HeldGraph>,
+    /// The graph the enemy plays, with `--arena`.
+    enemy_graph: Option<HeldGraph>,
     graph_version: u32,
     /// The graph live tuning took as a document, over the cooked one until that has a new version.
     #[cfg(feature = "dev")]
@@ -443,7 +475,7 @@ impl Content {
             clip: None,
             clip_version: 0,
             graph: None,
-            graph_clips: Vec::new(),
+            enemy_graph: None,
             graph_version: 0,
             #[cfg(feature = "dev")]
             live_graph: None,
@@ -780,7 +812,7 @@ impl Content {
 
     /// Loads until the enemy and its blade are on `renderer`, with their materials and the maps
     /// they name, and the warrior's skeleton is resident, and returns their meshes: the load screen
-    /// of `--look-dev enemy`. They stay loaded from then on.
+    /// of `--look-dev enemy` and `--arena`. They stay loaded from then on.
     pub fn enemy(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<EnemyMeshes, AppInitError> {
         // Asking again tries what failed before, as the character does.
         let warrior: Handle<Mesh> =
@@ -837,6 +869,28 @@ impl Content {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
         enemy::held(skin, skeleton).map_err(AppInitError::msg)
+    }
+
+    /// A graph driver for the enemy, from what [`Self::enemy`] and [`Self::load_enemy_graph`] loaded.
+    pub fn enemy_driver(&self, ground: Arc<PhysicsWorld>) -> Result<GraphDriver, AppInitError> {
+        let binding = self.enemy_binding()?;
+        let skin = self.gpu.warrior_mesh.as_ref().and_then(|mesh| mesh.skin.as_ref());
+        let skeleton = self.enemy_skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton));
+        let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
+            return Err(AppInitError::msg("the enemy isn't loaded"));
+        };
+        enemy::driver(skin, skeleton, Arc::new(binding), ground).map_err(AppInitError::msg)
+    }
+
+    /// The enemy's graph as it stands, bound to the enemy.
+    pub fn enemy_binding(&self) -> Result<GraphBinding, AppInitError> {
+        let skeleton = self.enemy_skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton));
+        let graph = self.enemy_graph.as_ref().and_then(|graph| self.server.get(&graph.graph));
+        let (Some(skeleton), Some(graph)) = (skeleton, graph) else {
+            return Err(AppInitError::msg("the enemy's graph isn't loaded"));
+        };
+        let graph = graph.to_owned_graph().map_err(AppInitError::msg)?;
+        GraphBinding::new(&graph, skeleton, None, 0, &self.enemy_graph_clips()).map_err(AppInitError::msg)
     }
 
     /// Loads the arena's colliders until they're resident, and builds what the stage stands on from
@@ -976,37 +1030,62 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), AppInitError> {
-        let graph = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
-        let assets = &mut self.gpu;
-        let loaded = self.server.finish(&graph, |upload| assets.upload(upload, renderer, gpu));
-        self.graph = Some(graph);
-        for unloaded in self.server.take_unloaded() {
-            self.gpu.unload(unloaded);
-        }
-        loaded.map_err(|error| AppInitError::msg(format!("the graph didn't load: {error}")))?;
-        self.hold_graph_clips().map_err(AppInitError::msg)?;
+        self.graph = Some(self.load_held_graph(id, renderer, gpu)?);
         self.graph_version = self.graph_versions();
         Ok(())
     }
 
-    /// Takes handles on the clips the graph names now, which it keeps loaded as its dependencies: a new
-    /// version may name others. Allocates, so only when [`Self::take_graph_changed`] says so.
+    /// Loads the enemy's graph as [`Self::load_graph`] does the character's ([`Self::enemy_graph_clips`]
+    /// reads it).
+    pub fn load_enemy_graph(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        self.enemy_graph = Some(self.load_held_graph(enemy::GRAPH, renderer, gpu)?);
+        self.graph_version = self.graph_versions();
+        Ok(())
+    }
+
+    fn load_held_graph(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<HeldGraph, AppInitError> {
+        let graph = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&graph, |upload| assets.upload(upload, renderer, gpu));
+        let mut held = HeldGraph { graph, clips: Vec::new() };
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the graph {id} didn't load: {error}")))?;
+        held.hold_clips(&mut self.server).map_err(AppInitError::msg)?;
+        Ok(held)
+    }
+
+    /// Takes handles on the clips the graphs name now, which they keep loaded as their dependencies: a
+    /// new version may name others. Allocates, so only when [`Self::take_graph_changed`] says so.
     pub fn hold_graph_clips(&mut self) -> Result<(), LoadError> {
-        let Some(graph) = self.graph() else { return Ok(()) };
-        let ids: Vec<AssetId> = graph.clip_ids().collect();
+        if let Some(held) = &mut self.enemy_graph {
+            held.hold_clips(&mut self.server)?;
+        }
+        let Some(held) = &mut self.graph else { return Ok(()) };
         #[cfg(feature = "dev")]
-        let ids = match &self.live_graph {
-            Some(live) => live.graph.clips.iter().map(|clip| clip.id).collect(),
-            None => ids,
-        };
-        let clips = ids.into_iter().map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
-        self.graph_clips = clips.collect::<Result<_, LoadError>>()?;
+        if let Some(live) = &self.live_graph {
+            let ids = live.graph.clips.iter().map(|clip| clip.id);
+            let clips = ids.map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
+            held.clips = clips.collect::<Result<_, LoadError>>()?;
+            return Ok(());
+        }
+        held.hold_clips(&mut self.server)?;
         Ok(())
     }
 
     /// The graph [`Self::load_graph`] loaded.
     pub fn graph(&self) -> Option<&ArchivedAnimGraph> {
-        self.graph.as_ref().and_then(|graph| self.server.get(graph))
+        self.graph.as_ref().and_then(|held| self.server.get(&held.graph))
     }
 
     /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
@@ -1029,9 +1108,10 @@ impl Content {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), String> {
+        let current = self.graph.as_ref().map_or(&[][..], |held| held.clips.as_slice());
         let mut held = Vec::with_capacity(graph.clips.len());
         for clip in &graph.clips {
-            if let Some(found) = self.graph_clips.iter().find(|(id, _)| *id == clip.id) {
+            if let Some(found) = current.iter().find(|(id, _)| *id == clip.id) {
                 held.push(found.clone());
                 continue;
             }
@@ -1042,13 +1122,15 @@ impl Content {
             loaded.map_err(|e| failed(&e))?;
             held.push((clip.id, handle));
         }
-        for old in &self.graph_clips {
+        for old in current {
             let room = held.len() < sapphire_assets::graph::MAX_GRAPH_CLIPS;
             if room && !held.iter().any(|(id, _)| *id == old.0) {
                 held.push(old.clone());
             }
         }
-        self.graph_clips = held;
+        if let Some(current) = &mut self.graph {
+            current.clips = held;
+        }
         self.graph_version = self.graph_versions();
         Ok(())
     }
@@ -1056,35 +1138,36 @@ impl Content {
     /// Binds characters to `graph` from now on, until the cooked graph has a new version.
     #[cfg(feature = "dev")]
     pub fn set_live_graph(&mut self, graph: AnimGraph) {
-        let cooked = self.graph.as_ref().map_or(0, |graph| self.server.generation(graph));
+        let cooked = self.graph.as_ref().map_or(0, |held| self.server.generation(&held.graph));
         self.live_graph = Some(LiveGraph { graph, cooked });
     }
 
     /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
     pub fn graph_clips(&self) -> ClipTable<'_> {
-        ClipTable::new(
-            self.graph_clips
-                .iter()
-                .map(|(id, clip)| (*id, self.server.get(clip), self.server.generation(clip))),
-        )
+        self.graph.as_ref().map_or_else(ClipTable::empty, |held| held.table(&self.server))
     }
 
-    /// A number that moves with any new version of the graph or its clips.
+    /// The clips the enemy's graph names, likewise.
+    pub fn enemy_graph_clips(&self) -> ClipTable<'_> {
+        self.enemy_graph.as_ref().map_or_else(ClipTable::empty, |held| held.table(&self.server))
+    }
+
+    /// A number that moves with any new version of a graph or its clips.
     fn graph_versions(&self) -> u32 {
-        let graph = self.graph.as_ref().map_or(0, |graph| self.server.generation(graph));
-        self.graph_clips
-            .iter()
-            .fold(graph, |versions, (_, clip)| versions.wrapping_add(self.server.generation(clip)))
+        [&self.graph, &self.enemy_graph]
+            .into_iter()
+            .flatten()
+            .fold(0, |versions, held| versions.wrapping_add(held.version(&self.server)))
     }
 
-    /// Whether the graph or a clip it names has a new version since the last call or since
+    /// Whether a graph or a clip one names has a new version since the last call or since
     /// [`Self::load_graph`], which a character's graph has to be bound again for. Always false without a
     /// graph, and it allocates nothing.
     pub fn take_graph_changed(&mut self) -> bool {
         let version = self.graph_versions();
         #[cfg(feature = "dev")]
         if let Some(live) = &self.live_graph
-            && self.graph.as_ref().is_some_and(|graph| self.server.generation(graph) != live.cooked)
+            && self.graph.as_ref().is_some_and(|held| self.server.generation(&held.graph) != live.cooked)
         {
             // A cook of the document came after it: that's the graph now.
             self.live_graph = None;
@@ -1445,7 +1528,7 @@ mod tests {
                 clip: None,
                 clip_version: 0,
                 graph: None,
-                graph_clips: Vec::new(),
+                enemy_graph: None,
                 graph_version: 0,
                 #[cfg(feature = "dev")]
                 live_graph: None,

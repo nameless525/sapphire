@@ -353,4 +353,7 @@ pub struct ActorView {
     pub fighter: Fighter,
     /// What's thinking for it, if anything: see [`crate::Simulation::give_brain`].
     pub brain: Brain,
+    /// Its input as its last step read it: its stick, in the world's directions, is where it's
+    /// pointing, for [`crate::targeting`].
+    pub controls: Controls,
 }

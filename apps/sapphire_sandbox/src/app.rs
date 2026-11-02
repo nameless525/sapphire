@@ -34,7 +34,7 @@ use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::{PLAYER, SandboxInput};
 use crate::lookdev::{Shot, TownMeshes};
-use crate::options::Options;
+use crate::options::{CombatOption, Options};
 use crate::rims::RimRigMeshes;
 use crate::scene::{Arena, LookDev, Scene};
 use crate::stage::StageMeshes;
@@ -162,7 +162,10 @@ impl App for SandboxApp {
         };
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let desktop = info.device_class == DeviceClass::Desktop;
-        let input = SandboxInput::new(desktop, options.combat_input, window.size())?;
+        let mut input = SandboxInput::new(desktop, options.combat_input, window.size())?;
+        if matches!(options.combat, Some(CombatOption::Fight { .. })) {
+            input.listen_for_fight_restart()?;
+        }
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
@@ -248,12 +251,12 @@ impl App for SandboxApp {
                 scene.spawn_enemy(meshes, content.held_enemy()?);
             }
         }
-        if let (Some(shot), Some(town)) = (options.arena, renderer.town) {
+        if let (Some(shot), Some(town), Some(enemy)) = (options.arena, renderer.town, renderer.enemy) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
             let ground = content.arena_ground(&mut renderer.renderer, &device.gpu)?;
             let world = ground.share();
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
-            scene.spawn_arena(Arena { shot, look, ground });
+            scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
                 let mut player = lookdev::player(&content)
@@ -262,11 +265,25 @@ impl App for SandboxApp {
                     .with_springs_on(options.springs != Some(false));
                 if let Some(ik) = &options.ik {
                     let look = ik.look.map(|look| (look, 0.0));
-                    let solver =
-                        scene.ik_on(world, look, &content, player.pose()).map_err(AppInitError::msg)?;
+                    let solver = scene
+                        .ik_on(world.clone(), look, &content, player.pose())
+                        .map_err(AppInitError::msg)?;
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            }
+            if options.combat.is_some() {
+                content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
+                content.load_enemy_graph(&mut renderer.renderer, &device.gpu)?;
+                let player = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                let solver = scene
+                    .ik_on(world.clone(), None, &content, player.player.pose())
+                    .map_err(AppInitError::msg)?;
+                scene.play_fighters(
+                    player.with_springs_on(options.springs != Some(false)).with_ik(solver),
+                    content.enemy_driver(world)?,
+                );
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
         }
@@ -304,6 +321,14 @@ impl App for SandboxApp {
         }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &mut content)?;
+        #[cfg(feature = "dev")]
+        let combat = {
+            let mut combat = combat;
+            if let Some(combat) = &mut combat {
+                dev.start_fight_from_cooks(combat, &content);
+            }
+            combat
+        };
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -504,7 +529,14 @@ impl SandboxApp {
         if steps.count == 0 {
             return steps;
         }
-        self.scene.apply(self.input.take_actions());
+        let actions = self.input.take_actions();
+        // Between steps, as the overlay's recorder is: a new fight's simulation allocates.
+        if actions.restart_fight
+            && let Some(combat) = &mut self.combat
+        {
+            combat.restart();
+        }
+        self.scene.apply(actions);
         // The camera the player was looking at when they pushed. A tick carries the direction they
         // meant, so nothing past here reads a camera.
         let camera_yaw = self.scene.camera_heading();
@@ -1086,7 +1118,7 @@ pub(crate) struct SceneRenderer {
     hard_edges: Option<MeshHandle>,
     /// The look-dev town and its plants, with `--look-dev`.
     town: Option<TownMeshes>,
-    /// The enemy, with `--look-dev enemy`.
+    /// The enemy, with `--look-dev enemy` or `--arena`.
     enemy: Option<EnemyMeshes>,
     /// The player's sword, with `--blade on`.
     sword: Option<MeshHandle>,
@@ -1239,8 +1271,9 @@ pub(crate) fn create_renderer(
         let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let town = options.in_town().then(|| content.town(&mut renderer, gpu)).transpose()?;
-        let enemy =
-            (options.look_dev == Some(Shot::Enemy)).then(|| content.enemy(&mut renderer, gpu)).transpose()?;
+        let enemy = (options.look_dev == Some(Shot::Enemy) || options.arena.is_some())
+            .then(|| content.enemy(&mut renderer, gpu))
+            .transpose()?;
         let sword = options.blade().then(|| content.sword(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {

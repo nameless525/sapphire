@@ -26,6 +26,13 @@
             (name: "idle_combat", source: "5fa1f634-6e77-4485-9f50-577be76b7323"),
             (name: "death_back", source: "bcd18896-4e3d-4a31-8075-848494beee4a"),
             (name: "death_forward", source: "7a20f0b9-eae3-48cf-b715-9b937731fe6b"),
+            // The player's moves (`content/combat/player/`).
+            (name: "light_1", source: "6d321a52-1aed-4279-bc32-a177b8fd81d4"),
+            (name: "light_2", source: "0c4be2d4-4149-4852-80c5-109683aad3e1"),
+            (name: "light_3", source: "5fe300c9-a4a3-4339-a556-7bc112f2bb59"),
+            (name: "dodge", source: "9b5f353a-2c97-45c7-a70f-bcab216de811"),
+            (name: "dash_attack", source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958"),
+            (name: "skill", source: "9491f5d1-0c11-45c9-8139-8f54918b25f6"),
         ],
         masks: [
             // From the spine up: what a flinch moves, with the legs left to what they're doing.
@@ -75,13 +82,14 @@
                 // The graph show's moves (`show.moves.ron`).
                 (move: "strike", clip: "strike"),
                 (move: "dodge_back", clip: "dodge_back", decay: 3),
-                // The combat slice's moves, until O3's signature moves replace them.
-                (move: "light_1", clip: "strike"),
-                (move: "light_2", clip: "strike"),
-                (move: "light_3", clip: "strike"),
-                (move: "dodge", clip: "dodge_back", decay: 3),
-                (move: "dash_attack", clip: "dodge_forward", decay: 3),
-                (move: "skill", clip: "strike"),
+                // The player's moves, each playing the clip it bakes from, so what's drawn is what hits.
+                (move: "light_1", clip: "light_1"),
+                (move: "light_2", clip: "light_2"),
+                (move: "light_3", clip: "light_3"),
+                (move: "dodge", clip: "dodge", decay: 3),
+                (move: "dash_attack", clip: "dash_attack", decay: 3),
+                (move: "skill", clip: "skill"),
+                // The combat slice's moves that the player hasn't got.
                 (move: "heavy", clip: "strike"),
                 (move: "spin", clip: "strike"),
                 (move: "dodge_counter", clip: "dodge_forward", decay: 3),

@@ -362,6 +362,33 @@ fn a_swipe_lands_on_a_warrior_and_it_reacts() {
     assert_eq!(current(&sim, target).expect("reacting").name, name("stagger_light"));
 }
 
+/// The telegraphed attacks aren't stopped by a hit under 20 poise, which leaves a dodge to answer them
+/// with, and a flinch isn't started over by one: a swipe's 12 takes its numbers and that's all. The
+/// swipe itself has no such thing, so a hit can still beat it to the punch.
+#[test]
+fn a_light_hit_doesnt_stop_a_telegraph_or_start_a_flinch_over_and_does_cut_a_swipe() {
+    for (mv, stops) in [("overhead", false), ("lunge", false), ("stagger_light", false), ("swipe", true)] {
+        let (mut sim, _, target) = swiping();
+        for _ in 0..20 {
+            step(&mut sim);
+        }
+        assert!(sim.force_move(target, name(mv)));
+        until_it_lands(&mut sim);
+        let view = sim.actor(target).expect("alive");
+        assert_eq!(view.fighter.health(), view.fighter.max_health() - 20, "{mv}: its numbers");
+        assert_eq!(view.fighter.poise(), view.fighter.max_poise() - 12, "{mv}");
+        let stats = sim.stats();
+        assert_eq!(
+            (stats.hits_absorbed, stats.reactions_forced),
+            (u64::from(!stops), u64::from(stops)),
+            "{mv}"
+        );
+        step(&mut sim);
+        let now = current(&sim, target).expect("running").name;
+        assert_eq!(now, name(if stops { "stagger_light" } else { mv }), "{mv}");
+    }
+}
+
 /// Lying down or broken, a hit takes its numbers and plays no reaction, so neither can be cut short.
 #[test]
 fn a_hit_cant_cut_a_knockdown_or_a_break_short() {

@@ -246,7 +246,7 @@ impl BrainRise {
     }
 }
 
-/// How one kind of enemy fights. See the [module docs](self).
+/// How one kind of enemy fights.
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BrainDef {
     pub spacing: Spacing,

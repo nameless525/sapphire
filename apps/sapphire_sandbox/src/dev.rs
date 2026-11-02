@@ -90,6 +90,12 @@ pub(crate) struct FrameState<'a> {
 }
 
 impl DevTools {
+    /// Starts a fight from what a cook made of its documents, where that's newer than the build's copy
+    /// (`LiveTuning::start_fight_from_cooks`). Before its first step.
+    pub fn start_fight_from_cooks(&self, combat: &mut Combat, content: &Content) {
+        self.tuning.start_fight_from_cooks(combat, content);
+    }
+
     /// The overlay, drawing into `format` targets, shown from the start if `--debug-overlay`
     /// asked for it (with its panel list); hot reload of the packs in the platform's content
     /// root and the engine's sources, unless `--no-hot-reload` turned it off; and live link,

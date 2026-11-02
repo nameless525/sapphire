@@ -16,7 +16,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use sapphire_camera::CameraTuning;
-use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
+use sapphire_gameplay::replay::{
+    LiveMoves, Player, Replay, SCENARIOS, compile_document, find_scenario, find_script, player_moves,
+};
 use sapphire_livelink::protocol::{DeviceStatus, MoveAttempt};
 use sapphire_livelink::{Client, LinkError};
 use sapphire_moves::MoveSetDocument;
@@ -27,6 +29,10 @@ const SLICE_FILE: &str = "slice.moves.ron";
 const GRAPH: &str = include_str!("../../../content/lookdev/character/character.animgraph.ron");
 const CUES: &str = include_str!("../../../crates/sapphire_cues/default_cues.ron");
 const CUES_FILE: &str = "default_cues.ron";
+const PLAYER: &str = include_str!("../../../content/combat/player/player.moves.ron");
+const PLAYER_FILE: &str = "player.moves.ron";
+const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
+const WARRIOR_FILE: &str = "warrior.moves.ron";
 
 /// How long a sandbox has to build its scene's pipelines, slowly on a CPU rasterizer.
 const STARTUP: Duration = Duration::from_secs(300);
@@ -118,6 +124,17 @@ impl App {
         &mut self,
         client: &mut Client,
         what: &str,
+        done: impl FnMut(&DeviceStatus) -> Option<T>,
+    ) -> T {
+        self.until_within(PATIENCE, client, what, done)
+    }
+
+    /// [`Self::until`], for something that takes as long as it takes.
+    fn until_within<T>(
+        &mut self,
+        patience: Duration,
+        client: &mut Client,
+        what: &str,
         mut done: impl FnMut(&DeviceStatus) -> Option<T>,
     ) -> T {
         let started = Stopwatch::start();
@@ -127,7 +144,7 @@ impl App {
                 return found;
             }
             self.assert_running();
-            assert!(started.elapsed() < PATIENCE, "never saw {what}: {status:#?}\n{}", self.log());
+            assert!(started.elapsed() < patience, "never saw {what}: {status:#?}\n{}", self.log());
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -163,7 +180,12 @@ impl Drop for App {
 
 /// The test moves' `light_1`, with its wind-up and its hit `by` ticks later and its length the same.
 fn light_later_by(by: u32) -> String {
-    let mut document = MoveSetDocument::parse(SLICE).expect("parses");
+    later_by(SLICE, by)
+}
+
+/// This document's `light_1`, with its wind-up and its hit `by` ticks later and its length the same.
+fn later_by(text: &str, by: u32) -> String {
+    let mut document = MoveSetDocument::parse(text).expect("parses");
     let light = document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("there");
     light.startup += by;
     light.recovery -= by;
@@ -285,6 +307,101 @@ fn a_saved_move_plays_on_the_next_attempt() {
     fs::write(&document, light_later_by(4)).expect("writes");
     let again = app.until(&mut client, "the next revision", |status| light_at(status, 2));
     assert_eq!(again.startup, 9);
+}
+
+/// Exit test 2 on the moves a player fights with: `--arena --fight`, whose simulation runs on its cooked
+/// copy of `player.moves.ron`, takes a saved timing with no cook, and a following attempt plays it. The
+/// document as it stands is no edit, so the copy, the pack and the document agree about what's running. A
+/// length, which is its clip's, is refused by name. The next fight starts at revision 0 of the edits, and
+/// it's the fight a headless run of those edits plays, tick for tick.
+#[test]
+#[ignore = "needs a dev build, a GPU and cooked content"]
+fn a_saved_timing_of_the_real_moves_plays_in_a_fight_and_the_next_fight_starts_from_it() {
+    let temp = Temp::new("fight");
+    let document = temp.path(PLAYER_FILE);
+    fs::write(&document, PLAYER).expect("writes");
+    let watched = temp.text(PLAYER_FILE);
+    let args = [
+        "--arena",
+        "--fight",
+        "--script",
+        "attempts",
+        "--tier",
+        "desktop-low",
+        "--ao",
+        "off",
+        "--watch-document",
+        &watched,
+    ];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+
+    let before = app.until(&mut client, "an attempt", |status| light_at(status, 0));
+    assert_eq!((before.startup, before.active, before.recovery), (7, 4, 23));
+    assert_eq!(before.hit_windows[0].from, 7);
+    let reply = client.push_document(PLAYER_FILE, PLAYER.to_owned()).expect("the document as it stands");
+    assert!(reply.contains("with the same moves, still revision 0"), "{reply}");
+
+    // The saved file, with no cook. A following attempt reads it.
+    let edited = later_by(PLAYER, 2);
+    fs::write(&document, &edited).expect("writes");
+    let after = app.until(&mut client, "the saved revision", |status| light_at(status, 1));
+    assert_eq!((after.startup, after.active, after.recovery), (9, 4, 21));
+    assert_eq!((after.hit_windows[0].from, after.hit_windows[0].to), (9, 13));
+    assert!(after.serial > before.serial, "a following attempt, not the one playing");
+    assert_eq!(after.newest_revision, 1);
+    app.until_logged("the next attempt plays the new moves");
+    let status = client.status().expect("a status");
+    let listed = status.documents.iter().find(|document| document.source.ends_with(PLAYER_FILE));
+    assert_eq!(listed.expect("it's listed").edits, 1, "the same bytes were no edit");
+
+    // A length is its clip's: only a cook can change one, and it says so by name.
+    let mut longer = MoveSetDocument::parse(PLAYER).expect("parses");
+    longer.moves.iter_mut().find(|mv| mv.name == "light_1").expect("there").recovery += 1;
+    let refused = client
+        .push_document(PLAYER_FILE, longer.to_text().expect("writes"))
+        .expect_err("a length its clip doesn't have");
+    let LinkError::Refused(text) = &refused else { panic!("{refused}") };
+    assert!(text.contains("move `light_1`"), "{text}");
+
+    // The warrior's document is a fight's too. A frail one ends this fight soon.
+    let frail = WARRIOR.replacen("health: 240", "health: 30", 1);
+    assert_ne!(frail, WARRIOR);
+    let reply = client.push_document(WARRIOR_FILE, frail.clone()).expect("a good document");
+    assert!(reply.contains("revision 1"), "{reply}");
+
+    // Someone falls, and the next fight starts from both edits, as what they are: revision 0.
+    let next = app.until_within(STARTUP, &mut client, "the next fight", |status| light_at(status, 0));
+    assert_eq!((next.startup, next.active, next.recovery), (9, 4, 21));
+    assert_eq!(next.hit_windows[0].from, 9);
+    assert_eq!(next.newest_revision, 0);
+    app.until_logged("a fight ended");
+
+    // Every fight after the edits is what a build with them in its documents would play. The first
+    // crossed them, so it has nothing to be held to.
+    let log = app.quit();
+    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let mut live = LiveMoves::default();
+    let baked = player_moves().expect("the simulation's copy reads");
+    live.remember(PLAYER_FILE, compile_document(&edited, Some(&baked)).expect("compiles").set);
+    live.remember(WARRIOR_FILE, compile_document(&frail, None).expect("compiles").set);
+    let script = find_script("attempts").expect("listed").actions;
+    let mut held = 0;
+    for line in log.lines().filter(|line| line.contains("a fight ended")).skip(1) {
+        let field = |name: &str| {
+            let start = line.find(name).unwrap_or_else(|| panic!("no {name} in: {line}")) + name.len();
+            line[start..].split_whitespace().next().expect("a value").to_owned()
+        };
+        let ticks: u64 = field(" ticks=").parse().expect("a number");
+        let (mut sim, cast) = live.start(scenario, scenario.config).expect("sets up");
+        for tick in 0..ticks {
+            sim.step(&script(tick, &cast));
+        }
+        assert_eq!(format!("{:016x}", sim.checksum()), field(" checksum="), "{line}");
+        assert!(line.contains("allocations=0"), "{line}");
+        held += 1;
+    }
+    assert!(held >= 1, "the fight after the edits says how it went at quit:\n{log}");
 }
 
 /// The camera's tuning and the character's graph reach the stages that have them, and each bad document

@@ -1,14 +1,12 @@
 //! `--cues`: the cues of a `--replay` or a `--record`ed fight fired as a game fires them, through
 //! `sapphire_cues` (M2 E3): effects, the scene's screen effects, a shake on its camera, sound and rumble.
 //!
-//! - **On this stage.** The look-dev stage draws none of the simulation's actors, and its character
-//!   stands at the origin in a held pose. So [`on_stage`] carries a fight to it: what lands on an actor
-//!   lands on the scene's character, wherever the fight has walked to, at that place on its own surface.
-//!   A fight with its actors drawn takes the simulation's places as they are and needs none of this, so
-//!   `--arena` refuses `--cues` until G6 moves it there.
-//! - **A camera that isn't the director's.** The scene frames its stage with `OrbitCamera`, so a
-//!   [`ShakeStack`] plays shakes on it, from the director's own tuning. A stage with a
-//!   `sapphire_camera::CameraDirector` hands that to the dispatcher instead, with no other change.
+//! - **Where it lands** ([`CueStage`]). The arena draws the simulation's actors, so a cue lands where
+//!   the simulation has them. The look-dev stage draws none of them, and its character stands at the
+//!   origin in a held pose, so [`on_stage`] carries a fight to it: what lands on an actor lands on the
+//!   scene's character, wherever the fight has walked to, at that place on its own surface.
+//! - **The camera.** With a `sapphire_camera::CameraDirector` on, shakes are its own. Any other view is
+//!   `OrbitCamera`, so a [`ShakeStack`] plays shakes on it, from the director's own tuning.
 //! - **Sound and rumble are the windowed app's.** A capture or a bench never mounts `audio.spack`
 //!   (`audio.rs`), and has no pad. Their frames just forget what the steps asked for.
 //! - **It reads the simulation and changes nothing in it,** so a replay's checksums still hold, and a
@@ -19,7 +17,7 @@
 use std::time::Duration;
 
 use sapphire_audio::{CueRequest, Emitter};
-use sapphire_camera::{CameraTuning, ShakeId, ShakeStack};
+use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
 use sapphire_cues::{
     CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
 };
@@ -38,6 +36,15 @@ const SEED: u64 = 0x5EED;
 /// How a hurtbox's surface maps onto the character's: the test moves' capsule is 0.7 m across and 1.75 m
 /// tall, and the character about half as wide and 1.55 m tall, so a hit on one's edge lands on the other's.
 const ON_THE_CHARACTER: Vec3 = Vec3::new(0.5, 0.88, 0.5);
+
+/// Where a fight's cues land.
+pub(crate) enum CueStage<'a> {
+    /// On the one character that stands here, whichever actor they name ([`on_stage`]).
+    OneCharacter { stand: Vec3 },
+    /// Where the simulation has its actors, which are drawn there: the arena. With a director on, it plays
+    /// their shakes.
+    Actors { director: Option<&'a mut CameraDirector> },
+}
 
 /// The camera's shakes, for a view that plays them itself.
 struct OrbitShakes {
@@ -128,14 +135,14 @@ impl CueShow {
     }
 
     /// Fires what the simulation's latest step published, and moves the effects by its clocks: call it
-    /// after each step. `stand` is where the scene's character stands. Allocates nothing once warmed.
+    /// after each step. Allocates nothing once warmed.
     pub fn step(
         &mut self,
         sim: &Simulation,
         screen: &mut EffectStack,
         presets: &ScreenLibrary,
         view_projection: Mat4,
-        stand: Vec3,
+        stage: CueStage<'_>,
     ) {
         let tick = sim.tick();
         if self.tick == Some(tick) {
@@ -143,19 +150,22 @@ impl CueShow {
         }
         self.tick = Some(tick);
         let stopwatch = Stopwatch::start();
-        let root_of = |_| Some(stand);
-        let mut step = CueStep {
-            vfx: &mut self.world,
-            screen,
-            presets,
-            shakes: &mut self.shakes,
-            view_projection,
-            root_of: &root_of,
+        let (stand, shakes): (Option<Vec3>, &mut dyn ShakeSink) = match stage {
+            CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes),
+            CueStage::Actors { director: Some(director) } => (None, director),
+            CueStage::Actors { director: None } => (None, &mut self.shakes),
         };
-        self.dispatcher.read_step(tick, sim.cues().map(|cue| on_stage(cue, sim, stand)), &mut step);
+        let root_of = |id| stand.or_else(|| sim.actor(id).map(|actor| actor.position));
+        let mut step =
+            CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, root_of: &root_of };
+        let cues = sim.cues().map(|cue| stand.map_or(cue, |stand| on_stage(cue, sim, stand)));
+        self.dispatcher.read_step(tick, cues, &mut step);
         self.dispatcher.advance_effects(sim, &mut self.world);
         self.emitters.clear();
-        self.emitters.extend(sim.actors().map(|actor| Emitter { position: stand, ..actor_emitter(&actor) }));
+        self.emitters.extend(sim.actors().map(|actor| {
+            let emitter = actor_emitter(&actor);
+            Emitter { position: stand.unwrap_or(emitter.position), ..emitter }
+        }));
         self.world_time_scale = sim.world().resource::<WorldClock>().0.effective_scale();
         self.stepping += stopwatch.elapsed();
     }
@@ -294,6 +304,41 @@ mod tests {
             hit: None,
         };
         assert_eq!(on_stage(event, &sim, Vec3::ONE), event);
+    }
+
+    /// In the arena a cue lands where the simulation has its actor, no shake goes near the orbit camera's
+    /// stack while a director's on, and the sound is heard from there too.
+    #[test]
+    fn a_fights_cues_land_where_its_actors_are() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let run = |director: Option<&mut CameraDirector>| {
+            let presets = ScreenLibrary::default_effects();
+            let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+            let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+            let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+            let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+            let mut director = director;
+            for _ in 0..140 {
+                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                let stage = CueStage::Actors { director: director.as_deref_mut() };
+                show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage);
+            }
+            let places: Vec<Vec3> = sim.actors().map(|actor| actor.position).collect();
+            let heard: Vec<Vec3> = show.emitters.iter().map(|emitter| emitter.position).collect();
+            assert_eq!(heard, places, "heard from where they stand");
+            let stats = show.stats();
+            assert!(stats.effects > 0 && stats.shakes > 0, "the overhead landed: {stats:?}");
+            show
+        };
+
+        let mut director = CameraDirector::new(CameraTuning::default_tuning(), SEED).expect("it's good");
+        let mut with_director = run(Some(&mut director));
+        assert!(director.take_stats().shakes_fired > 0, "its shakes are the director's");
+        assert_eq!(with_director.end_frame(1.0 / 60.0, &mut ()), (Vec3::ZERO, Vec3::ZERO));
+
+        let mut plain = run(None);
+        assert_ne!(plain.end_frame(1.0 / 60.0, &mut ()), (Vec3::ZERO, Vec3::ZERO), "the plain view's shake");
     }
 
     /// The shipped table resolves against the libraries a scene starts with.

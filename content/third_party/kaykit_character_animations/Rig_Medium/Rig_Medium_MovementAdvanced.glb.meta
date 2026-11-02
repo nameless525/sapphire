@@ -175,6 +175,21 @@
                         RightFoot: 0.7,
                     },
                 ),
+                // The enemy, on its own lengths, its hands in the clip's grip so a held blade is too.
+                (
+                    target: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
+                    names: [
+                        "Running_Strafe_Left",
+                        "Running_Strafe_Right",
+                        "Walking_Backwards",
+                    ],
+                    follow: [
+                        "hand.l",
+                        "hand.r",
+                        "handslot.l",
+                        "handslot.r",
+                    ],
+                ),
             ],
         )),
     ),

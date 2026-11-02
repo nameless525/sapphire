@@ -25,6 +25,8 @@ use sapphire_pipeline::{meta, moves};
 const MOVES: [&str; 6] = ["light_1", "light_2", "light_3", "dodge", "dash_attack", "skill"];
 /// The attacks, each with a hit.
 const ATTACKS: [&str; 5] = ["light_1", "light_2", "light_3", "dash_attack", "skill"];
+/// What a hit forces, with no clip of their own: the character's graph draws them.
+const REACTIONS: [&str; 5] = ["flinch", "stagger", "knockdown", "dazed", "defeat"];
 /// How far along its +Y the blade path's middle is from either end of the blade.
 const HALF_BLADE: f32 = 0.45;
 /// The ball of the foot's height over the sole, at rest.
@@ -169,7 +171,7 @@ fn cook_against(
 ) -> Result<MoveSet, MoveSetError> {
     let map = HumanMap::from_rig(rig);
     document.compile_with(|mv| {
-        let motion = mv.motion.clip.as_ref().ok_or("every move plays a clip")?;
+        let Some(motion) = mv.motion.clip.as_ref() else { return Ok(None) };
         let clip = clips.get(mv.name.as_str()).ok_or("its clip has its name")?;
         let input = moves::TableInput {
             sampled: &clip.sampled,
@@ -234,7 +236,7 @@ fn every_moves_timing_can_be_saved_with_no_cook() {
     assert_eq!(bytes(&same.set), bytes(&player.set));
 
     let mut document = player.document.clone();
-    for mv in &mut document.moves {
+    for mv in document.moves.iter_mut().filter(|mv| !REACTIONS.contains(&mv.name.as_str())) {
         assert!(mv.motion.clip.is_some(), "{}: the route this tests", mv.name);
         assert!(mv.recovery > 1, "{}: there's a tick to move", mv.name);
         mv.startup += 1;
@@ -291,8 +293,12 @@ fn what_a_saved_document_cant_change_waits_for_a_cook() {
 #[test]
 fn each_move_plays_the_clip_of_its_name() {
     let player = player();
-    assert_eq!(player.document.moves.len(), MOVES.len(), "every move is listed here");
+    assert_eq!(player.document.moves.len(), MOVES.len() + REACTIONS.len(), "every move is listed here");
     for mv in &player.document.moves {
+        if REACTIONS.contains(&mv.name.as_str()) {
+            assert!(mv.motion.clip.is_none(), "{}: a graph draws it, so nothing bakes from a clip", mv.name);
+            continue;
+        }
         let clip = player.clip(&mv.name);
         let motion = mv.motion.clip.as_ref().expect("it names a clip");
         assert_eq!(motion.source, clip.id.to_string(), "{}: its `source` is its document", mv.name);
@@ -303,6 +309,44 @@ fn each_move_plays_the_clip_of_its_name() {
             mv.name
         );
     }
+}
+
+/// The simulation's own copy of the cooked set (`sapphire_gameplay::replay::player_moves`), which a
+/// replay reads with no cooker to make it. A cook of the document makes those bytes, on every
+/// architecture, so a replay's `tables_hash` holds across them. `SAPPHIRE_BAKE_MOVES=1` writes them.
+#[test]
+fn the_simulations_copy_of_the_set_is_what_a_cook_makes() {
+    let player = player();
+    let map = HumanMap::from_rig(&player.rig);
+    let text = std::fs::read(content().join("combat/player/player.moves.ron")).expect("the moves");
+    let cooked = moves::cook(&text, |motion| {
+        let clip = player
+            .clips
+            .values()
+            .find(|clip| clip.id.to_string() == motion.source)
+            .expect("its `source` is one of the documents");
+        moves::bake(
+            motion,
+            &moves::TableInput {
+                sampled: &clip.sampled,
+                skeleton: &player.skeleton,
+                map: Some(&map),
+                constraints: &player.rig.constraints,
+            },
+        )
+    })
+    .expect("the document cooks");
+    let copy =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/sapphire_gameplay/baked/player.smoves");
+    if std::env::var_os("SAPPHIRE_BAKE_MOVES").is_some() {
+        std::fs::write(&copy, &cooked).expect("writes");
+    }
+    let held = std::fs::read(&copy).expect("the simulation's copy");
+    assert!(
+        held == cooked,
+        "the document moved: SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy, \
+         then cargo xtask replay --update"
+    );
 }
 
 /// `blade` is the same socket in every move, so one blade can stand for all of them.

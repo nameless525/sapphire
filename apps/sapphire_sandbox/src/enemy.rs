@@ -1,30 +1,39 @@
-//! The enemy on the look-dev stage (`--look-dev enemy`, M2 O4): KayKit's skeleton warrior,
-//! re-proportioned and in its anime character materials (`content/combat/enemy/`), squaring up to the
-//! character in the town under the stage's day, so the two looks can be judged side by side at combat
-//! distance.
+//! The enemy (M2 O4): KayKit's skeleton warrior, re-proportioned and in its anime character materials
+//! (`content/combat/enemy/`). `--look-dev enemy` squares it up to the character in the town under the
+//! stage's day, so the two looks can be judged side by side at combat distance, and `--arena` fights
+//! it (M2 G6, [`crate::arena`]).
 //!
-//! Nothing plays its clips yet, which cook onto it by retarget (`sapphire_pipeline::combat::warrior`),
-//! so it holds one pose, as the character does without `--clip` ([`held`]): a [`CharacterPose`] with
-//! the rig's bones turned from its T-pose by [`pose::hold`], found by name rather than through a VRM's
-//! rig. The rig has no twist helpers, so no constraints follow.
+//! On the look-dev stage it holds one pose, as the character does without `--clip` ([`held`]): a
+//! [`CharacterPose`] with the rig's bones turned from its T-pose by [`pose::hold`], found by name rather
+//! than through a VRM's rig. The rig has no twist helpers, so no constraints follow. In a fight its
+//! graph poses it ([`GRAPH`], [`driver`]), on clips that cook onto it by retarget
+//! (`sapphire_pipeline::combat::warrior`), its feet and head solved over that ([`ik_rig`]), and with no
+//! fight it holds that pose.
 //!
 //! - **Scale:** [`SCALE`]: see there.
-//! - **The blade** is a mesh of its own, placed once at the rig's right hand slot ([`HAND_SLOT`]). No
-//!   attachment system exists, and a held pose doesn't need one: when clips play, whoever poses the
-//!   warrior moves the blade by `place × model_from_joint[hand slot]` each frame. It draws as a
-//!   character with no body, so it casts no capsule of its own, and its light is judged at the
-//!   warrior's head, so the two are lit alike.
+//! - **The blade** is a mesh of its own, placed at the rig's right hand slot ([`HAND_SLOT`]). No
+//!   attachment system exists: when clips play, the blade moves by `place × model_from_joint[hand slot]`
+//!   each frame (`ArenaActors::hold_blade`), and each clip's retarget keeps that slot in the clip's grip
+//!   (`follow` in the pack's sidecars), so nothing corrects it here. It draws as a character with no
+//!   body, so it casts no capsule of its own, and its light is judged at the warrior's head, so the
+//!   two are lit alike.
 //!
 //! Hit volumes and timing are the moves' (`warrior.moves.ron`): nothing here reads them.
 
-use sapphire_anim::{ArchivedSkeleton, CharacterPose};
+use std::sync::Arc;
+
+use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Skin;
 use sapphire_assets::rig::HumanBone;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_physics::PhysicsWorld;
 use sapphire_render::{FaceExpression, MeshHandle};
 
+use crate::anim_graph::GraphDriver;
 use crate::extract::RenderPose;
+use crate::ik::{IkControls, IkDriver};
+use crate::lookdev::{FigureJoints, FigureShape};
 use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
@@ -32,6 +41,11 @@ use crate::scene::Figure;
 pub(crate) const WARRIOR: AssetId = AssetId::from_text("322aa57e-957d-45f1-8d51-0c1d80f5d1d6");
 /// Its blade, by its sidecar's ID (`content/third_party/kaykit_skeletons/assets/Skeleton_Blade.gltf.meta`).
 pub(crate) const BLADE: AssetId = AssetId::from_text("1a612690-4615-4346-86f0-c903784d2db5");
+
+/// The graph it plays in a fight, by its sidecar's ID (`content/combat/enemy/warrior.animgraph.ron.meta`).
+pub(crate) const GRAPH: AssetId = AssetId::from_text("175de058-a4cd-4b75-8a04-4884914ac08f");
+/// What its graph draws from, which has nothing to draw for yet: it has no blink.
+const GRAPH_SEED: u32 = 2;
 
 /// The joint the blade grips, in the rig's own names.
 pub(crate) const HAND_SLOT: &str = "handslot.r";
@@ -41,6 +55,12 @@ pub(crate) const HAND_SLOT: &str = "handslot.r";
 /// 1.62 m: a head taller, as the reference fights' common enemies stand, with a blade whose reach,
 /// 1.8 m with the arm straight, is about what its moves author (`warrior.moves.ron`).
 pub(crate) const SCALE: f32 = 0.8;
+
+/// How far its crown stands over its feet, in metres, once it's at [`SCALE`]: what a camera frames.
+pub(crate) const CROWN: f32 = 2.33 * SCALE;
+
+/// How high its eyes stand over its feet, in metres: what the character looks at in a fight.
+pub(crate) const EYES: f32 = CROWN - 0.2;
 
 /// Where it stands on the stage, in metres from the character at the origin: to the character's right
 /// and a little in front, at the distance its quick cut reaches from, turned toward the character and
@@ -63,6 +83,15 @@ const BONES: [(&str, HumanBone); 13] = [
     ("upperleg.r", HumanBone::RightUpperLeg),
     ("foot.l", HumanBone::LeftFoot),
     ("foot.r", HumanBone::RightFoot),
+];
+
+/// The bones IK needs that the pose doesn't turn. Toes are what plant a foot's ball.
+const LEG_BONES: [(&str, HumanBone); 5] = [
+    ("hips", HumanBone::Hips),
+    ("lowerleg.l", HumanBone::LeftLowerLeg),
+    ("lowerleg.r", HumanBone::RightLowerLeg),
+    ("toes.l", HumanBone::LeftToes),
+    ("toes.r", HumanBone::RightToes),
 ];
 
 /// The held pose's turns, in the model's rest space (facing +Z, its left toward +X): hunched forward
@@ -100,6 +129,12 @@ fn turns() -> [(HumanBone, Quat); 12] {
 const BODY_RADIUS: f32 = 0.3;
 /// From the head joint to the middle of the skull, in the model's units.
 const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.27, 0.03);
+/// What its figure says that no pose moves.
+const SHAPE: FigureShape = FigureShape {
+    head_center: HEAD_CENTER,
+    body_radius: BODY_RADIUS,
+    expression: FaceExpression { blush: 0.0, gloom: 0.0 },
+};
 
 /// The enemy's meshes on a renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +150,8 @@ pub(crate) struct Held {
     pub figure: Figure,
     /// The blade's mesh in the warrior's model space.
     pub blade: Mat4,
+    /// The joint that holds it.
+    pub hand: usize,
 }
 
 /// Where the warrior stands on the stage: the model's space to the world.
@@ -129,11 +166,9 @@ pub(crate) fn place() -> Mat4 {
 /// The warrior's held pose and what it makes, from its cooked skin and skeleton. Fails if the rig
 /// lacks a joint the pose needs.
 pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, String> {
-    let find = |name: &str| skeleton.find(name).ok_or_else(|| format!("the warrior's rig has no {name:?}"));
-    let bones =
-        BONES.iter().map(|&(name, bone)| Ok((bone, find(name)?))).collect::<Result<Vec<_>, String>>()?;
-    let hand_slot = find(HAND_SLOT)?;
-    let joints = RigJoints::of_bones(bones);
+    let hand_slot =
+        skeleton.find(HAND_SLOT).ok_or_else(|| format!("the warrior's rig has no {HAND_SLOT:?}"))?;
+    let joints = rig_joints(skeleton)?;
     let head_joint = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
     let mut pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
     pose::hold(&mut pose, &joints, &turns());
@@ -141,14 +176,50 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, Str
     let figure = Figure {
         head: head + head_rotation * HEAD_CENTER,
         feet: Vec3::new(head.x, 0.0, head.z),
-        body_radius: BODY_RADIUS,
+        body_radius: SHAPE.body_radius,
         face: Quat::IDENTITY,
-        expression: FaceExpression { blush: 0.0, gloom: 0.0 },
+        expression: SHAPE.expression,
     };
     let blade = Mat4::from(pose.model()[hand_slot]);
     let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
     pose.write_palette(&mut palette);
-    Ok(Held { pose: RenderPose { palette, morph_weights: Vec::new() }, figure, blade })
+    Ok(Held { pose: RenderPose { palette, morph_weights: Vec::new() }, figure, blade, hand: hand_slot })
+}
+
+/// A driver for the warrior on `binding`, over its rest pose: what poses it in a fight
+/// ([`crate::scene::Scene::play_fighters`]). Fails if the rig lacks a joint the pose needs.
+pub(crate) fn driver(
+    skin: &Skin,
+    skeleton: &ArchivedSkeleton,
+    binding: Arc<GraphBinding>,
+    ground: Arc<PhysicsWorld>,
+) -> Result<GraphDriver, String> {
+    let joints = rig_joints(skeleton)?;
+    let head = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
+    let pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
+    let figure = FigureJoints::new(&pose, &joints, head, 0.0, SHAPE);
+    let ik = IkDriver::new(ik_rig(skeleton, &pose)?, ground, IkControls::default());
+    Ok(GraphDriver::new(GraphPlayer::new(binding, pose, GRAPH_SEED), figure).with_ik(ik))
+}
+
+/// What IK reads of `skeleton`, over `pose`, in the model's space with its soles at 0. No eyes and no
+/// neck: its head alone turns. Fails if the rig lacks a joint.
+pub(crate) fn ik_rig(skeleton: &ArchivedSkeleton, pose: &CharacterPose) -> Result<IkRig, String> {
+    let find = |name: &str| skeleton.find(name).ok_or_else(|| format!("the warrior's rig has no {name:?}"));
+    let bones = BONES
+        .iter()
+        .chain(&LEG_BONES)
+        .map(|&(name, bone)| Ok((bone, find(name)?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(IkRig::new(pose, &bones, HEAD_CENTER, None, 0.0))
+}
+
+/// The rig's bones, found by name.
+fn rig_joints(skeleton: &ArchivedSkeleton) -> Result<RigJoints, String> {
+    let find = |name: &str| skeleton.find(name).ok_or_else(|| format!("the warrior's rig has no {name:?}"));
+    let bones =
+        BONES.iter().map(|&(name, bone)| Ok((bone, find(name)?))).collect::<Result<Vec<_>, String>>()?;
+    Ok(RigJoints::of_bones(bones))
 }
 
 /// The figure the blade draws as, in its own space: no body, so it adds no capsule to the character's
@@ -207,14 +278,17 @@ mod tests {
         let joints = [Joint { name: "hips".to_owned(), parent: None, rest: JointTransform::IDENTITY }];
         let bytes = sapphire_anim::Skeleton::new(&joints).to_cooked().expect("cooked");
         let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
-        let error = held(&skin_over(1), skeleton).expect_err("no joints");
+        let pose = CharacterPose::new(skeleton, &[], &[], Vec::new());
+        let Err(error) = ik_rig(skeleton, &pose) else { panic!("it has only hips") };
         assert!(error.contains("no \"spine\""), "{error}");
+        let error = held(&skin_over(1), skeleton).expect_err("no joints");
+        assert!(error.contains("no \"handslot.r\""), "{error}");
     }
 
     /// A head taller than the character, and standing within the reach of its quick cut.
     #[test]
     fn it_stands_a_head_taller_than_the_character_at_combat_distance() {
-        let (crown, horns) = (2.33 * SCALE, 2.59 * SCALE);
+        let (crown, horns) = (CROWN, 2.59 * SCALE);
         assert!((1.75..1.95).contains(&crown) && horns < 2.2, "{crown} and {horns} m against 1.62 m");
         let distance = STANDS_AT.length();
         assert!((1.5..2.6).contains(&distance), "{distance} m from the character");

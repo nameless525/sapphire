@@ -84,6 +84,7 @@ impl LiveMoves {
 #[cfg(test)]
 mod tests {
     use sapphire_core::Name;
+    use sapphire_moves::MoveSetDocument;
 
     use super::super::scenario::{SCENARIOS, duel_on, find_scenario, test_moves};
     use super::super::script::{ATTEMPT_EVERY, attempts, fight};
@@ -300,6 +301,51 @@ mod tests {
         assert!(!compile_document(&plain, Some(&cooked)).expect("keys").motion_as_cooked);
     }
 
+    /// A fight runs on the simulation's cooked copy of the player's moves. A saved timing compiles over
+    /// the set that's running with no cook, the same bytes again are no edit, and the next fight starts at
+    /// revision 0 of the edit, with a hash that says so.
+    #[test]
+    fn a_fight_takes_a_saved_timing_over_its_cooked_copy_and_starts_over_from_it() {
+        const PLAYER: &str = "player.moves.ron";
+        let fight = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let id = fight.set_of(PLAYER).expect("it plays this document");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let text =
+            std::fs::read_to_string(root.join("content/combat/player/player.moves.ron")).expect("reads");
+
+        let (mut sim, _) = fight.start(fight.config).expect("sets up");
+        let shipped = sim.tables_hash();
+        let same = compile_document(&text, sim.move_library().current(id)).expect("it compiles");
+        assert!(same.motion_as_cooked, "its clips' motion comes from what's running");
+        assert_eq!(sim.tune_move_set(id, same.set), Some(Tuned::Unchanged { revision: 0 }));
+        assert_eq!(sim.tables_hash(), shipped, "the document and the copy agree");
+
+        let mut document = MoveSetDocument::parse(&text).expect("parses");
+        let light = document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("there");
+        light.startup += 2;
+        light.recovery -= 2;
+        for hitbox in &mut light.hitboxes {
+            hitbox.from += 2;
+            hitbox.to += 2;
+        }
+        let edited = document.to_text().expect("writes");
+        let edited = compile_document(&edited, sim.move_library().current(id)).expect("it compiles").set;
+        assert_eq!(sim.tune_move_set(id, edited.clone()), Some(Tuned::Replaced { revision: 1 }));
+        let tuned = sim.tables_hash();
+        assert_ne!(tuned, shipped);
+
+        let mut live = LiveMoves::default();
+        live.remember(PLAYER, edited.clone());
+        let (next, _) = live.start(fight, fight.config).expect("sets up");
+        assert_eq!(next.move_library().current_revision(id), Some(0));
+        assert!(next.move_library().is_current(id, &edited));
+        let (_, light) = edited.find(Name::new("light_1")).expect("there");
+        assert_eq!(light.startup, 9);
+        assert_ne!(next.tables_hash(), shipped, "a file from this fight says it ran on the edit");
+        let warrior = fight.set_of("warrior.moves.ron").expect("it plays this document");
+        assert_eq!(next.move_library().current_revision(warrior), Some(0), "the other set's as it was");
+    }
+
     /// A document's issues name the move and the track: it's what a person hears from `link push`.
     #[test]
     fn a_bad_document_says_which_move_and_track() {
@@ -322,8 +368,11 @@ mod tests {
             assert_eq!(library.set_count(), scenario.documents.len(), "{}", scenario.name);
             for path in scenario.documents {
                 let text = std::fs::read_to_string(root.join(path)).expect(path);
-                let set = compile_document(&text, None).expect(path).set;
                 let id = scenario.set_of(document_file_name(path)).expect(path);
+                // Moves that name clips read the tables they run on, which is how a live edit reads them,
+                // and everything else about the document has to match. `player_moves` is a cooked copy,
+                // and `tools/sapphire_pipeline/tests/player_moves.rs` answers for its tables.
+                let set = compile_document(&text, library.current(id)).expect(path).set;
                 assert!(library.is_current(id, &set), "{}: {path}", scenario.name);
             }
         }

@@ -136,8 +136,8 @@ pub(crate) struct Options {
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
     /// `--blade on|off`: the player's sword in the character's right hand (M2 O3). On for
-    /// `--look-dev body`, off anywhere else unless it says, so no older scene draws one. Needs
-    /// `--look-dev` or `--arena`. See [`Self::blade`].
+    /// `--look-dev body` and `--fight`, off anywhere else unless it says, so no older scene draws one.
+    /// Needs `--look-dev` or `--arena`. See [`Self::blade`].
     pub blade: Option<bool>,
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
@@ -200,7 +200,7 @@ pub(crate) struct Options {
     pub cue: Option<CueOption>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
-    /// `--replay` or `--record`: a combat simulation beside the scene (M2 D2).
+    /// `--replay`, `--record` or `--fight`: a combat simulation beside the scene (M2 D2, G6).
     pub combat: Option<CombatOption>,
     /// `--cues`: fire that simulation's cues, as a game does (M2 E3).
     pub cues: bool,
@@ -237,6 +237,10 @@ pub(crate) enum CombatOption {
     /// <name>` and `--capture` or `--bench`, on the script's actions. In the windowed app, on the
     /// actions of whoever's playing, so it's `None` there.
     Record { path: PathBuf, scenario: String, script: Option<String> },
+    /// `--arena --fight`: player against brain, with no file, starting over when someone falls. In the
+    /// windowed app, on the actions of whoever's playing, so it's `None` there. With `--script <name>`
+    /// and `--capture`, `--bench` or `--offscreen`, on the script's.
+    Fight { script: Option<String> },
 }
 
 /// How live link takes connections (`--live-link`), in `dev` builds.
@@ -429,7 +433,8 @@ impl Options {
 
     /// Whether the character holds the player's sword: as `--blade` says, and on `--look-dev body`.
     pub fn blade(&self) -> bool {
-        self.blade.unwrap_or(self.look_dev == Some(Shot::Body))
+        let fighting = matches!(self.combat, Some(CombatOption::Fight { .. }));
+        self.blade.unwrap_or(self.look_dev == Some(Shot::Body) || fighting)
     }
 
     /// The character the scene draws: the look-dev VRM in the town, the mannequin otherwise.
@@ -503,6 +508,7 @@ impl Options {
         let (mut ik, mut ik_ground, mut ik_look) = (false, None, None);
         let (mut faces, mut face_layout) = (false, None);
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
+        let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
@@ -882,6 +888,7 @@ impl Options {
                     }
                     options.watch_documents.push(path);
                 }
+                "--fight" => fight = true,
                 _ => unknown.push(arg.clone()),
             }
         }
@@ -978,8 +985,14 @@ impl Options {
         if options.blade.is_some() && !options.in_town() {
             return Err("--blade goes in the character's hand: it needs --look-dev or --arena".to_owned());
         }
-        if options.springs.is_some() && options.clip.is_none() && options.graph.is_none() {
-            return Err("--springs runs under a clip or a graph: it needs --clip or --graph".to_owned());
+        if options.springs.is_some()
+            && options.clip.is_none()
+            && options.graph.is_none()
+            && options.arena.is_none()
+        {
+            return Err(
+                "--springs runs under a clip or a graph: it needs --clip, --graph or --arena".to_owned()
+            );
         }
         if ik && options.clip.is_none() && options.graph.is_none() {
             return Err("--ik solves over a clip or a graph: it needs --clip or --graph".to_owned());
@@ -1020,7 +1033,14 @@ impl Options {
             (None, None) => None,
         };
         let capturing = matches!(mode, Some(OffscreenMode::Capture { .. }));
+        if fight && options.arena.is_none() {
+            return Err("--fight fights in the arena: it needs --arena".to_owned());
+        }
+        if fight && (replay.is_some() || record.is_some() || scenario.is_some()) {
+            return Err("--fight is a fight of its own: drop --replay, --record and --scenario".to_owned());
+        }
         options.combat = match (replay, record, scenario, script) {
+            (None, None, None, script) if fight => Some(CombatOption::Fight { script }),
             (None, None, None, None) => None,
             (Some(path), None, None, None) => {
                 Some(CombatOption::Replay { path, to_end: capture_ticks.is_none() })
@@ -1044,11 +1064,6 @@ impl Options {
         if options.cues && options.combat.is_none() {
             return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
         }
-        if options.cues && options.arena.is_some() {
-            return Err(
-                "--cues lands a fight's hits on the look-dev character, so not with --arena yet".to_owned()
-            );
-        }
         if options.cues && options.vfx.is_some() {
             return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
         }
@@ -1071,6 +1086,23 @@ impl Options {
                     "--record needs --scenario and --script without a window: no one's there to play"
                         .to_owned(),
                 );
+            }
+            Some(CombatOption::Fight { script: Some(_) }) if mode.is_none() => {
+                return Err(format!(
+                    "--script needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}: the windowed app's \
+                     fight is whoever's playing"
+                ));
+            }
+            Some(CombatOption::Fight { script: None }) if mode.is_some() => {
+                return Err("--fight needs --script without a window: no one's there to play".to_owned());
+            }
+            // The sandbox's own bindings would take the dodge and the heavy off a pad.
+            // Someone's there to play it, so it's all on: the bars, the sparks and the sound.
+            Some(CombatOption::Fight { script: None }) => {
+                options.combat_input = true;
+                options.cues = options.vfx.is_none() && options.cue.is_none();
+                let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+                options.hud.get_or_insert(live);
             }
             _ => {}
         }
@@ -1507,6 +1539,8 @@ mod tests {
         assert!(!parse(&["--look-dev", "body", "--blade", "off"]).unwrap().0.blade());
         assert!(parse(&["--look-dev", "hero", "--blade", "on"]).unwrap().0.blade());
         assert!(!parse(&["--arena"]).unwrap().0.blade());
+        assert!(parse(&["--arena", "--fight"]).unwrap().0.blade(), "whoever fights has one");
+        assert!(!parse(&["--arena", "--fight", "--blade", "off"]).unwrap().0.blade());
         assert!(parse(&["--arena", "--blade", "on"]).unwrap().0.blade());
         assert!(parse(&["--blade", "on"]).unwrap_err().contains("--look-dev"));
         assert!(parse(&["--look-dev", "hero", "--blade", "maybe"]).unwrap_err().contains("on or off"));
@@ -1668,6 +1702,40 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    /// A fight has no file: in a window whoever's there plays it on combat's bindings alone, and
+    /// anywhere else a script does, down the same path.
+    #[test]
+    fn a_fight_is_played_in_a_window_or_scripted_anywhere_else() {
+        let (windowed, unknown) = parse(&["--arena", "--fight"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(windowed.combat, Some(CombatOption::Fight { script: None }));
+        assert!(windowed.cues, "whoever's there gets the sparks and the sound");
+        assert_eq!(windowed.hud.map(|hud| hud.mode), Some(HudMode::Live), "and the bars");
+        assert!(windowed.offscreen.is_none());
+        assert!(windowed.combat_input, "the sandbox's bindings would take the dodge off a pad");
+        windowed.refuse_offscreen().expect("Android's windowed app can fight too");
+
+        let scripted = Some(CombatOption::Fight { script: Some("idle".to_owned()) });
+        for offscreen in [&["--offscreen"][..], &["--capture", "x"], &["--bench", "10"]] {
+            let args = [offscreen, &["--arena", "--fight", "--script", "idle"]].concat();
+            let (options, _) = parse(&args).unwrap();
+            assert_eq!(options.combat, scripted, "{offscreen:?}");
+            assert!(!options.combat_input, "{offscreen:?}");
+        }
+
+        let refused = |args: &[&str], part: &str| {
+            let error = parse(args).expect_err("refused");
+            assert!(error.contains(part), "{args:?}: {error}");
+        };
+        refused(&["--fight"], "--arena");
+        refused(&["--arena", "--fight", "--script", "idle"], "--capture");
+        refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
+        refused(&["--arena", "--fight", "--offscreen"], "no one's there");
+        refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");
+        refused(&["--arena", "--fight", "--record", "a", "--scenario", "s"], "--record");
+        refused(&["--arena", "--fight", "--scenario", "s"], "--scenario");
     }
 
     #[test]
@@ -2050,7 +2118,8 @@ mod tests {
             assert!(error.contains(with), "{args:?}: {error}");
         };
         refused(&["--capture", "x", "--cues"], "--replay or --record");
-        refused(&["--capture", "x", "--replay", "a", "--cues", "--arena"], "--arena");
+        let (options, _) = parse(&["--capture", "x", "--replay", "a", "--cues", "--arena"]).unwrap();
+        assert!(options.cues, "a fight's cues land where its actors are");
         refused(&["--capture", "x", "--replay", "a", "--cues", "--vfx", "arc"], "exclusive");
         refused(&["--cues", "--record", "a", "--scenario", "s", "--cue", "hit"], "exclusive");
     }

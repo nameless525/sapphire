@@ -3054,6 +3054,7 @@ dependencies = [
 name = "sapphire_look"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "glam 0.33.12",
  "sapphire_math",
 ]
@@ -3275,6 +3276,17 @@ dependencies = [
  "sapphire_serialize",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_ui"
+version = "0.1.0"
+dependencies = [
+ "profiling",
+ "sapphire_core",
+ "sapphire_look",
+ "sapphire_math",
+ "sapphire_platform",
 ]
 
 [[package]]

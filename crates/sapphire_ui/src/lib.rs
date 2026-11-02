@@ -1,0 +1,85 @@
+//! The game's on-screen interface, first slice (spec §5.17, M2 I2): touch controls and a combat HUD
+//! as quads over a generated atlas, drawn after post. `taffy`, `parley`, UI documents and menus stay
+//! in M3 (M2 plan §3); this is what a fight needs on a phone.
+//!
+//! # Owns
+//!
+//! - **Layout** ([`layout`]): rectangles in UI points, the frame's metrics ([`UiMetrics`]: size and
+//!   safe-area insets, from a [`Window`](sapphire_platform::Window) or made up for a capture) and
+//!   anchors. A UI point is `pixels / display scale`, so a thumb's size is the same everywhere.
+//! - **The atlas** ([`atlas`]): every shape as a signed distance field, painted by code at load.
+//! - **Painting** ([`paint`]): shapes into [`sapphire_look::UiQuad`]s, in points.
+//! - **Touch zones** ([`touch`]): fingers to a floating stick, three buttons and a camera drag, with
+//!   ownership from press to release and `sapphire_input`'s rules for cancels and focus, read back
+//!   as plain [`TouchActions`].
+//! - **The combat HUD** ([`hud`]): where everything goes ([`HudLayout`], shared by what's drawn and
+//!   what's hit-tested), plain [`HudValues`] and how it all draws and animates ([`CombatHud`]).
+//!
+//! # Does not own
+//!
+//! - **Drawing.** It writes a [`UiDrawList`], which the frame packet
+//!   carries and the renderer draws. There is no edge to the renderer or to wgpu either way (rule
+//!   R4): the list's types are `sapphire_look`'s, beneath both.
+//! - **What a press means.** [`TouchActions`] are values and edges: the app turns them into intents,
+//!   directly or through `sapphire_input`'s `Virtual` sources. No gameplay here.
+//! - **Where the numbers come from:** health and poise (G3) and the projection of a hit to the screen
+//!   reach it as plain values.
+//! - **The OS clock** (rule R2): the app passes [`Platform::now`](sapphire_platform::Platform::now).
+//!   Nothing else moves the animation, so tests and captures choose their own time.
+//!
+//! # Driving it
+//!
+//! ```ignore
+//! let layout = HudLayout::new(UiMetrics::of_window(&window, 1.0));
+//! let mut controls = TouchControls::new(layout);
+//! let mut hud = CombatHud::new();
+//!
+//! // Every platform event: what the controls take, nothing else should see.
+//! if !controls.handle_event(event) {
+//!     input.handle_event(event);
+//! }
+//!
+//! // Each frame, on the real clock:
+//! let actions = controls.update(platform.now());
+//! // ... actions.stick.value, actions.camera_delta, actions.events into intents ...
+//! hud.update(platform.now(), &values, actions);
+//! hud.spawn_damage(1284, screen_position, DamageKind::Normal);
+//! hud.draw(controls.layout(), actions, &mut packet.ui);
+//! ```
+//!
+//! # Allocation
+//!
+//! Steady-state frames allocate nothing: finger slots and damage numbers are fixed arrays, the event
+//! list keeps its capacity and the draw list is the packet's (`tests/allocations.rs`). The atlas is
+//! the one allocation, at load: 69,120 bytes, painted in about 0.85 ms (release, Apple M5).
+//!
+//! The sandbox's fixed frame is 41 quads, written in 2.3 µs on the same machine.
+//!
+//! # What M3 adds to go further
+//!
+//! - **Layout:** `taffy` boxes in place of [`HudLayout`]'s hand-placed rectangles, with anchors and
+//!   safe areas as they are.
+//! - **Text:** `parley` and a dynamic glyph atlas (several atlas pages, so a list names a page per
+//!   batch); this slice draws digits alone.
+//! - **More of the quad:** nine-slice on both axes (this has a horizontal three-slice), images and
+//!   gradients, and masks or scissors.
+//! - **Retained widgets, UI documents and hot reload,** with data bound by reflection paths;
+//!   gamepad focus navigation and hiding the controls when a gamepad connects (spec §6.6).
+
+pub mod atlas;
+pub mod hud;
+pub mod layout;
+pub mod paint;
+pub mod touch;
+
+pub use atlas::{Atlas, Sprite, Sprites};
+pub use hud::{
+    BarsLayout, ButtonLayout, CombatHud, DamageKind, FighterValues, HudLayout, HudStats, HudValues,
+    SkillValues, StickLayout,
+};
+pub use layout::{Anchor, Insets, Rect, UiMetrics};
+pub use paint::{Align, Paint, Painter};
+pub use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
+pub use touch::{
+    Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions, TouchControls, TouchTuning,
+};

@@ -1,0 +1,23 @@
+[package]
+name = "sapphire_ui"
+description = "The game's on-screen interface, first slice: anchored quads over a generated distance field atlas, the combat HUD and its touch zones."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+profiling.workspace = true
+# The draw list the frame packet carries.
+sapphire_look.workspace = true
+sapphire_math.workspace = true
+# Touch events, the event clock and the window's metrics.
+sapphire_platform.workspace = true
+
+[dev-dependencies]
+# The counting allocator, for the steady-state allocation test.
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

@@ -26,6 +26,9 @@
 //!   vignette, the compositing layers and combat's screen effects ([`PostParams`]).
 //! - **The frame's effects** ([`vfx`]): the sprites and ribbon points `sapphire_vfx` resolves and
 //!   the renderer draws ([`VfxFrame`]), and the shapes of their generated map ([`VfxShape`]).
+//! - **The on-screen interface's draw list** ([`ui`], M2 I2): quads over a distance field atlas
+//!   ([`UiDrawList`], [`UiQuad`], [`UiAtlas`]), so `sapphire_ui` writes straight into the packet
+//!   with no edge to the renderer, and the renderer draws them with no edge to `sapphire_ui`.
 //!
 //! # Does not own
 //!
@@ -46,6 +49,7 @@ pub mod fog;
 pub mod light;
 pub mod post;
 pub mod sky;
+pub mod ui;
 pub mod vfx;
 
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
@@ -59,4 +63,5 @@ pub use post::{
     PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
+pub use ui::{UiAtlas, UiDrawList, UiQuad};
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

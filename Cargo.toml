@@ -31,6 +31,7 @@ members = [
     "crates/sapphire_physics",
     "crates/sapphire_audio",
     "crates/sapphire_vfx",
+    "crates/sapphire_ui",
     # L4 framework
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
@@ -78,6 +79,7 @@ sapphire_colliders = { path = "crates/sapphire_colliders" }
 sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_vfx = { path = "crates/sapphire_vfx" }
+sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
 sapphire_debug = { path = "crates/sapphire_debug" }

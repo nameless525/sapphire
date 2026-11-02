@@ -28,8 +28,8 @@
 //!
 //! - Device access and event timestamps: `sapphire_platform`.
 //! - Intents: gameplay turns action events into intents in the fixed step (M2's intent buffer).
-//! - On-screen controls' layout and drawing, and routing touches to them: `game_ui` on
-//!   `sapphire_ui` (M3).
+//! - On-screen controls' layout and drawing, and routing touches to them: `sapphire_ui` (M2 I2),
+//!   whose touch zones take a finger before this crate's gestures can see it.
 //! - Persisting rebinds: user settings (`sapphire_save`, M3). [`InputSystem::bindings`] is the
 //!   document they will store.
 //!

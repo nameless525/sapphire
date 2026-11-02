@@ -158,7 +158,9 @@ impl HotReload {
             path: path.to_owned(),
             source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file in a directory"),
         };
-        let (dir, name) = (path.parent().ok_or_else(missing)?, path.file_name().ok_or_else(missing)?);
+        let name = path.file_name().ok_or_else(missing)?;
+        // A name alone has an empty parent, which is no directory to the OS.
+        let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let watch = self.watcher.watch(dir)?;
         self.documents.push((watch, name.to_owned(), path.to_owned()));
         Ok(DocumentId(self.documents.len() - 1))

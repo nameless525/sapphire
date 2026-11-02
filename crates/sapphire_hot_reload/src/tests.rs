@@ -225,6 +225,8 @@ fn directories_are_watched_once_and_missing_ones_fail() {
     assert!(matches!(watcher.watch(&dir.join("missing")), Err(WatchError::Io { .. })));
     let mut reload = HotReload::new(TEST_DEBOUNCE).unwrap();
     assert!(reload.watch_document(Path::new("")).is_err());
+    // A name alone is a file where the app runs, as `--watch-document x.moves.ron` names one.
+    reload.watch_document(Path::new("Cargo.toml")).expect("a file here");
 }
 
 /// Writes `path` every 5 ms, and reads `read` as often, until `stop` or ten seconds have passed.

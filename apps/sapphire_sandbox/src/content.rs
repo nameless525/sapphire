@@ -1920,6 +1920,79 @@ mod tests {
         assert!(show.simulation().move_library().is_current(set, &show_moves(4)));
     }
 
+    /// A cook reads a document when it starts, so one that started before the newest save brings what the
+    /// file said then, which mustn't undo the save with nothing to say so. A cook of what the file says is
+    /// no edit past its own.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_cook_older_than_the_newest_save_leaves_the_save_playing() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        let handle = stage.content.hold_move_set(MOVES).expect("in the pack");
+        let file = std::env::temp_dir()
+            .join(format!("sapphire_sandbox_older_cook_{}", std::process::id()))
+            .join("show.moves.ron");
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("a folder");
+        let save = |longer_by: u32| {
+            let text = include_str!("../../../content/lookdev/character/show.moves.ron");
+            let mut document = sapphire_moves::MoveSetDocument::parse(text).expect("parses");
+            document.moves[0].recovery += longer_by;
+            std::fs::write(&file, document.to_text().expect("writes")).expect("the save");
+        };
+        let mut tuning = crate::tuning::LiveTuning::following("show.moves.ron", handle).reading(file.clone());
+        let revision = |stage: &Stage| {
+            let show = stage.scene.graph_show().expect("a show");
+            let set = show.simulation().actor(show.cast()[0]).expect("alive").moves.set.expect("a set");
+            show.simulation().move_library().current_revision(set)
+        };
+        let plays = |stage: &Stage, longer_by: u32| {
+            let show = stage.scene.graph_show().expect("a show");
+            let set = show.simulation().actor(show.cast()[0]).expect("alive").moves.set.expect("a set");
+            show.simulation().move_library().is_current(set, &show_moves(longer_by))
+        };
+        // Frames until the pack has landed and been followed.
+        let land = |stage: &mut Stage, tuning: &mut crate::tuning::LiveTuning, longer_by: u32| {
+            stage.source.insert(PACK, pack_with_moves(longer_by));
+            stage.content.remount(PACK).expect("the new pack");
+            let mut followed = false;
+            for _ in 0..1000 {
+                stage.frame();
+                let changes = stage.content.take_changes();
+                followed |= changes.iter().any(|change| {
+                    matches!(change, AssetChange::Reloaded { kind: AssetKind::MoveSet, .. })
+                });
+                let fight = crate::tuning::Fight { combat: None, scene: &mut stage.scene };
+                assert_eq!(tuning.follow_packs(&changes, &stage.content, fight), Vec::<String>::new());
+                if followed {
+                    return;
+                }
+            }
+            panic!("the pack never landed");
+        };
+        for _ in 0..10 {
+            stage.frame();
+        }
+
+        // Saved during the cook: seven ticks longer, where it read four.
+        save(7);
+        land(&mut stage, &mut tuning, 4);
+        assert!(plays(&stage, 7), "the save stands");
+        assert_eq!(revision(&stage), Some(1), "one edit, not the cook and then the save");
+
+        // The next cook reads the save, and is no edit.
+        land(&mut stage, &mut tuning, 7);
+        assert!(plays(&stage, 7));
+        assert_eq!(revision(&stage), Some(1));
+
+        // A file that doesn't read says nothing against a cook.
+        std::fs::write(&file, "half a docu").expect("half a save");
+        land(&mut stage, &mut tuning, 9);
+        assert!(plays(&stage, 9));
+        assert_eq!(revision(&stage), Some(2));
+        std::fs::remove_dir_all(file.parent().expect("a folder")).expect("cleaned up");
+    }
+
     /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the
     /// first frame that draws them.
     #[test]

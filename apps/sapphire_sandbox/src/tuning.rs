@@ -7,7 +7,8 @@
 //!   numbers at once. There are no clips to bake from here, so a move that names one reads the tables its
 //!   last cook gave it, and a move's windows change with no cook. Its length is its clip's, and an edit of
 //!   its clip is a cook's to bring, through a pack ([`LiveTuning::follow_packs`]), by asset ID, with
-//!   `cargo xtask content` and hot reload's remount or `cargo xtask link push`. The reply says so.
+//!   `cargo xtask content` and hot reload's remount or `cargo xtask link push`. The reply says so. A cook
+//!   older than the newest save leaves the save playing, over the cook's tables.
 //! - **The camera** (`default_camera.ron`): the director's tuning, whose goals ease to the new numbers.
 //! - **The animation graph** (`.animgraph.ron`): bound against what's loaded, it takes effect at the next
 //!   state's start ([`sapphire_anim::GraphPlayer::replace`]). Its pack's route was N3's, and still works.
@@ -103,6 +104,8 @@ pub(crate) struct LiveTuning {
     sources: Vec<Source>,
     waiting: Vec<Waiting>,
     cooked: Vec<CookedSet>,
+    /// The files hot reload reads this app's documents from, on a machine that has them.
+    files: Vec<PathBuf>,
 }
 
 impl LiveTuning {
@@ -124,7 +127,12 @@ impl LiveTuning {
                 }
             }
         }
-        Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), cooked }
+        let mut files = Vec::new();
+        if !options.no_hot_reload {
+            files.extend(sources.iter().map(|source| sources::repository_file(&source.path)));
+            files.extend(options.watch_documents.iter().cloned());
+        }
+        Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), cooked, files }
     }
 
     /// The documents `options` runs can take.
@@ -160,7 +168,20 @@ impl LiveTuning {
         let path = format!("content/{document}");
         let source = Source { path, document: Document::Moves, edits: 0 };
         let cooked = vec![CookedSet { document, handle }];
-        Self { moves: LiveMoves::default(), sources: vec![source], waiting: Vec::new(), cooked }
+        Self {
+            moves: LiveMoves::default(),
+            sources: vec![source],
+            waiting: Vec::new(),
+            cooked,
+            files: Vec::new(),
+        }
+    }
+
+    /// Reading its document from `file`, for tests of a save meeting a cook.
+    #[cfg(test)]
+    pub fn reading(mut self, file: PathBuf) -> Self {
+        self.files.push(file);
+        self
     }
 
     /// What hot reload watches for it: each document, and each `--watch-document`, by its file's name.
@@ -332,13 +353,27 @@ impl LiveTuning {
             let taken = set
                 .to_owned_set()
                 .map_err(|error| error_chain(&error))
-                .and_then(|set| self.take_moves(document, set, fight));
+                .and_then(|set| self.take_moves(document, self.newest_of(document, set), fight));
             match taken {
                 Ok(what) => tracing::info!(target: LOG_TARGET, what, "a pack replaced the moves"),
                 Err(error) => errors.push(format!("{document}, from its pack: {error}")),
             }
         }
         errors
+    }
+
+    /// What to take of a pack's `cooked` set. A cook reads a document when it starts, so one that started
+    /// before the newest save brings what the file said then, and taking that would undo the save with
+    /// nothing to say so, while the file went on saying otherwise. So where there's a file it's the word,
+    /// over the tables the cook made. What a cook read is the same bytes, and so no edit past its own. With
+    /// no file, on a phone, or one that doesn't read yet, the cook is all there is.
+    fn newest_of(&self, document: &str, cooked: MoveSet) -> MoveSet {
+        let modified = |path: &&PathBuf| std::fs::metadata(path).and_then(|file| file.modified()).ok();
+        let named = self.files.iter().filter(|path| path.file_name().is_some_and(|name| name == document));
+        let Some(text) = named.max_by_key(modified).and_then(|path| std::fs::read_to_string(path).ok()) else {
+            return cooked;
+        };
+        compile_document(&text, Some(&cooked)).map_or(cooked, |live| live.set)
     }
 
     /// Once a frame, after its fixed steps and before it draws: says when an attempt first plays what an
@@ -495,6 +530,7 @@ mod tests {
             }],
             waiting: Vec::new(),
             cooked: Vec::new(),
+            files: Vec::new(),
         }
     }
 

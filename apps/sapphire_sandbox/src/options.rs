@@ -189,6 +189,8 @@ pub(crate) struct Options {
     pub debug_overlay: Option<String>,
     /// `--no-hot-reload`: watch no files. Only `dev` builds watch any.
     pub no_hot_reload: bool,
+    /// `--combat-input`: the windowed app's input is combat's bindings alone.
+    pub combat_input: bool,
     /// `--live-link <mode>`: how live link takes connections, instead of listening on the
     /// loopback interface. Only `dev` builds have it.
     pub live_link: Option<LiveLinkOption>,
@@ -721,6 +723,7 @@ impl Options {
                     })?);
                 }
                 "--no-hot-reload" => options.no_hot_reload = true,
+                "--combat-input" => options.combat_input = true,
                 "--serial-passes" => options.serial_passes = true,
                 "--live-link" => options.live_link = Some(value("--live-link")?.parse()?),
                 "--spin" => {

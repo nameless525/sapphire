@@ -154,7 +154,8 @@ impl App for SandboxApp {
             }
         };
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
-        let input = SandboxInput::new(info.device_class == DeviceClass::Desktop, window.size())?;
+        let desktop = info.device_class == DeviceClass::Desktop;
+        let input = SandboxInput::new(desktop, options.combat_input, window.size())?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
@@ -400,33 +401,40 @@ fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
 }
 
 impl SandboxApp {
-    /// Runs this frame's fixed steps. Queued input lands on the first of them (rule R3), and
-    /// the steps themselves must not allocate (rule R6).
+    /// Runs this frame's fixed steps, none while paused. Queued input lands on the first of them
+    /// (rule R3), and the steps themselves must not allocate (rule R6).
     fn simulate(&mut self, frame_time: Duration) -> FixedSteps {
         profiling::scope!("simulate");
-        let steps = self.driver.advance(frame_time);
+        let steps = self.input.advance(&mut self.driver, frame_time);
         if steps.count == 0 {
             return steps;
         }
         self.scene.apply(self.input.take_actions());
 
-        let scene = &mut self.scene;
-        #[cfg(feature = "dev")]
-        let dev = &mut self.dev;
-        let ((), allocations) = sapphire_core::alloc::count_in_scope(|| {
-            for _ in 0..steps.count {
+        for _ in 0..steps.count {
+            // The tick's input for a simulation. Nothing plays it yet, so it goes to the log.
+            let tick = self.input.next_tick();
+            #[cfg(feature = "dev")]
+            self.dev.log_tick_actions(&tick);
+            #[cfg(not(feature = "dev"))]
+            let _ = tick;
+
+            let scene = &mut self.scene;
+            #[cfg(feature = "dev")]
+            let dev = &mut self.dev;
+            let ((), allocations) = sapphire_core::alloc::count_in_scope(|| {
                 // The overlay's pause, step and speed, applied to the step about to run.
                 #[cfg(feature = "dev")]
                 dev.before_fixed_step(scene);
                 scene.step();
-            }
-        });
-        // Only exact where counts are per thread (spec R6; `PER_THREAD_COUNTS`).
-        debug_assert!(
-            !sapphire_core::alloc::PER_THREAD_COUNTS || allocations.allocations == 0,
-            "rule R6: the fixed step allocated {} times",
-            allocations.allocations
-        );
+            });
+            // Only exact where counts are per thread (spec R6; `PER_THREAD_COUNTS`).
+            debug_assert!(
+                !sapphire_core::alloc::PER_THREAD_COUNTS || allocations.allocations == 0,
+                "rule R6: the fixed step allocated {} times",
+                allocations.allocations
+            );
+        }
         steps
     }
 

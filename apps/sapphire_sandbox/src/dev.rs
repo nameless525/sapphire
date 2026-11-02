@@ -17,6 +17,7 @@ use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
     CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels, WindowMetrics,
 };
+use sapphire_gameplay::TickActions;
 use sapphire_platform::{
     AppInitError, Event, FramePacing, Platform, TextInputKind, Timestamp, Window, WindowEvent,
 };
@@ -25,6 +26,7 @@ use sapphire_render::quality::Quality;
 use sapphire_render::{RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
+use crate::LOG_TARGET;
 use crate::content::Content;
 use crate::input::SandboxInput;
 use crate::link::{CaptureRequest, Link, LinkFrame};
@@ -54,6 +56,8 @@ pub(crate) struct DevTools {
     /// The frame's time on the platform clock, from [`Self::poll`].
     now: Timestamp,
     focused: bool,
+    /// The latest tick's input, to log when it changes.
+    tick: TickActions,
 }
 
 /// What the overlay reads from the app in one frame.
@@ -118,6 +122,7 @@ impl DevTools {
             last_frame: AllocCounts::default(),
             now: Timestamp::default(),
             focused: true,
+            tick: TickActions::NEUTRAL,
         })
     }
 
@@ -221,6 +226,28 @@ impl DevTools {
             render: stages.render,
         });
         self.overlay.record_frame(frame_time, stages.as_ref());
+    }
+
+    /// Logs a tick's input when it differs from the last: how to see a pad or a keyboard reach the
+    /// simulation's input while nothing plays it.
+    pub fn log_tick_actions(&mut self, tick: &TickActions) {
+        if *tick == self.tick {
+            return;
+        }
+        self.tick = *tick;
+        for (actor, actions) in tick.iter() {
+            tracing::info!(
+                target: LOG_TARGET,
+                actor = actor.raw(),
+                buttons = format_args!("{:#04x}", actions.buttons.bits()),
+                stick_x = actions.stick.x(),
+                stick_y = actions.stick.y(),
+                "tick actions"
+            );
+        }
+        if tick.is_empty() {
+            tracing::info!(target: LOG_TARGET, "tick actions: neutral");
+        }
     }
 
     /// The time controls' hook, before each fixed step: the world clock's, time of day's and the

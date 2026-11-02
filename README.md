@@ -75,10 +75,13 @@ Each command cooks the sample content, builds the sandbox, packages it where the
 | Wheel, pinch, triggers | Zoom |
 | `Space`, gamepad South or a double tap | World slow motion |
 | `H`, gamepad East or a long press | Hitstop |
+| `P`, gamepad Start or Android's Back | Pause: the simulation stops, and the overlay, hot reload and live link don't |
+| `P`, `Esc`, gamepad Start or East, or a tap, while paused | Resume |
+| Android's Back, gamepad Back or `Backspace`, which pause too, while paused | Leave |
 | `Esc` (desktop) | Quit |
 | `` ` `` (the key below `Esc`), or hold two fingers still for a second | Show or hide the debug overlay (`dev` builds) |
 
-The bindings are a `sapphire_input` document, [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron).
+The bindings are `sapphire_input` documents: [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron), over combat's own in [`crates/sapphire_controls/combat_bindings.ron`](crates/sapphire_controls/combat_bindings.ron). `--combat-input` leaves combat's alone: every verb on the pad and the keyboard.
 
 ### Debug overlay
 

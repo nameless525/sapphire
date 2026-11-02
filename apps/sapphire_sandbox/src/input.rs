@@ -1,29 +1,44 @@
 //! The sandbox's input: `sapphire_input` with the default bindings, and what the sandbox does
 //! with their actions.
 //!
-//! - **Bindings** are the document `default_bindings.ron`, compiled into the app. Embedded
-//!   rather than cooked: the app must stay controllable (and quittable) when content fails to
-//!   load, the bindings don't differ per cook, and player rebinds will come from user settings
-//!   on top of them (M3) rather than replace them.
+//! - **Bindings** are two documents compiled into the app and compiled into one map: the sandbox's
+//!   own, `default_bindings.ron`, and combat's (`sapphire_controls`). Embedded rather than cooked:
+//!   the app must stay controllable (and quittable) when content fails to load, the bindings don't
+//!   differ per cook, and player rebinds will come from user settings on top of them (M3) rather
+//!   than replace them.
 //! - **Camera input is presentation.** `orbit` and `zoom` apply once per frame on the real
 //!   clock, so the camera stays responsive in slow motion.
 //! - **Simulation input is queued.** `slow_motion` and `hitstop` become [`SimActions`] that the
 //!   next fixed step consumes, so an input lands on a tick rather than whenever the OS delivered
 //!   it (spec §4.2 step 1, rule R3), and replays stay deterministic.
+//! - **Combat's controls** sit under the sandbox's contexts, so the sandbox's bindings take whatever
+//!   source they share, and with `--combat-input` the sandbox's are off. Their [`TickActions`] drive
+//!   nothing yet, since there's no fight to play: dev builds log them. Their pause stops the fixed
+//!   steps in every build, and Android's Back opens it and then leaves through it.
 
-use sapphire_input::{ActionEventKind, ActionId, InputMap, InputSystem};
+use std::time::Duration;
+
+use sapphire_controls::{CombatControls, default_bindings};
+use sapphire_gameplay::{ActorId, TickActions};
+use sapphire_input::{ActionEventKind, ActionId, InputMap};
 use sapphire_math::Vec2;
 use sapphire_platform::{AppInitError, Event, Size, Timestamp};
+use sapphire_time::{FixedStepDriver, FixedSteps};
 
+use crate::LOG_TARGET;
 use crate::orbit::OrbitCamera;
 
 /// The default bindings document.
 const BINDINGS: &str = include_str!("../default_bindings.ron");
 
-/// Contexts enabled everywhere, with their priorities. Their sources don't overlap yet.
-const CONTEXTS: [(&str, i32); 2] = [("camera", 0), ("debug", 10)];
+/// Contexts enabled everywhere, with their priorities, which fall between combat's and the pause's.
+/// Their sources don't overlap yet.
+const CONTEXTS: [(&str, i32); 2] = [("camera", 10), ("debug", 20)];
 /// Enabled on desktop only: `Esc` quits there.
-const DESKTOP_CONTEXT: (&str, i32) = ("desktop", 20);
+const DESKTOP_CONTEXT: (&str, i32) = ("desktop", 30);
+
+/// The actor the sandbox's ticks name: the one a simulation spawns first.
+const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
 
 /// Simulation actions requested since the last fixed step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,17 +60,25 @@ struct Actions {
 }
 
 pub(crate) struct SandboxInput {
-    system: InputSystem,
+    controls: CombatControls,
     actions: Actions,
     queued: SimActions,
+    /// The pause as last logged.
+    paused: bool,
 }
 
 impl SandboxInput {
     /// Input from the default bindings, for a window `window_size` points large. `desktop`
-    /// enables the desktop-only context.
-    pub fn new(desktop: bool, window_size: Size) -> Result<Self, AppInitError> {
-        let map = InputMap::from_ron(BINDINGS)
-            .map_err(|error| AppInitError::msg(format!("default bindings: {error}")))?;
+    /// enables the desktop-only context. `combat_input` leaves combat's controls alone with the
+    /// player, without the sandbox's bindings over them.
+    pub fn new(desktop: bool, combat_input: bool, window_size: Size) -> Result<Self, AppInitError> {
+        let bindings =
+            |error: &dyn std::fmt::Display| AppInitError::msg(format!("default bindings: {error}"));
+        let own = InputMap::from_ron(BINDINGS).map_err(|error| bindings(&error))?;
+        let mut document = default_bindings().map_err(|error| bindings(&error))?;
+        document.actions.extend_from_slice(&own.document().actions);
+        document.contexts.extend_from_slice(&own.document().contexts);
+        let map = InputMap::new(document).map_err(|error| bindings(&error))?;
         let action = |name: &str| {
             map.action(name)
                 .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` action")))
@@ -67,28 +90,32 @@ impl SandboxInput {
             hitstop: action("hitstop")?,
             quit: action("quit")?,
         };
-        let mut system = InputSystem::new(map);
-        for (name, priority) in CONTEXTS.into_iter().chain(desktop.then_some(DESKTOP_CONTEXT)) {
-            let context = system
-                .map()
-                .context(name)
-                .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` context")))?;
-            system.enable_context(context, priority);
+        let mut controls = CombatControls::new(map).map_err(|error| bindings(&error))?;
+        let system = controls.input_mut();
+        if !combat_input {
+            for (name, priority) in CONTEXTS.into_iter().chain(desktop.then_some(DESKTOP_CONTEXT)) {
+                let context = system
+                    .map()
+                    .context(name)
+                    .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` context")))?;
+                system.enable_context(context, priority);
+            }
         }
         system.set_window_size(window_size.width as f32, window_size.height as f32);
-        Ok(Self { system, actions, queued: SimActions::default() })
+        Ok(Self { controls, actions, queued: SimActions::default(), paused: false })
     }
 
     /// Queues a platform event for the next [`Self::update`].
     pub fn handle_event(&mut self, event: &Event) {
-        self.system.handle_event(event);
+        self.controls.handle_event(event);
     }
 
     /// Processes the frame's input as of `now` (the platform clock) and queues the simulation
-    /// actions it triggered. Returns whether the player asked to quit.
+    /// actions it triggered. Returns whether the player asked to quit, or left from the pause.
     pub fn update(&mut self, now: Timestamp) -> bool {
-        self.system.update(now);
-        for event in self.system.events() {
+        self.controls.update(now);
+        let system = self.controls.input();
+        for event in system.events() {
             if event.kind != ActionEventKind::Triggered {
                 continue;
             }
@@ -98,16 +125,34 @@ impl SandboxInput {
                 self.queued.hitstop = true;
             }
         }
-        self.system.state(self.actions.quit).fired()
+        if self.paused != self.controls.is_paused() {
+            self.paused = self.controls.is_paused();
+            tracing::info!(target: LOG_TARGET, paused = self.paused, "pause");
+        }
+        system.state(self.actions.quit).fired() || self.controls.wants_to_leave()
     }
 
-    /// Applies this frame's orbit and zoom.
+    /// This frame's fixed steps: none while paused, and no burst after.
+    pub fn advance(&self, driver: &mut FixedStepDriver, frame_time: Duration) -> FixedSteps {
+        self.controls.advance(driver, frame_time)
+    }
+
+    /// One fixed step's input for the simulation, for the actor it spawned first. Once per step: this
+    /// is where a replay's recording takes its ticks.
+    #[must_use = "a press this returns is gone from the next call"]
+    pub fn next_tick(&mut self) -> TickActions {
+        self.controls.next_tick(PLAYER)
+    }
+
+    /// Applies this frame's orbit and zoom, the sandbox's own or combat's. Sources go to one or the
+    /// other, by context, so they add.
     pub fn drive_camera(&self, camera: &mut OrbitCamera) {
-        let orbit = self.system.state(self.actions.orbit).value();
+        let system = self.controls.input();
+        let orbit = system.state(self.actions.orbit).value() + self.controls.look();
         if orbit != Vec2::ZERO {
             camera.rotate(orbit.x, orbit.y);
         }
-        let zoom = self.system.state(self.actions.zoom).axis();
+        let zoom = system.state(self.actions.zoom).axis() + self.controls.camera_zoom();
         if zoom != 0.0 {
             camera.zoom(zoom.exp());
         }
@@ -120,17 +165,18 @@ impl SandboxInput {
 
     #[cfg(feature = "dev")]
     pub fn last_device(&self) -> Option<sapphire_input::DeviceKind> {
-        self.system.last_device()
+        self.controls.input().last_device()
     }
 
     #[cfg(feature = "dev")]
     pub fn gamepads(&self) -> usize {
-        self.system.gamepads()
+        self.controls.input().gamepads()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use sapphire_gameplay::Buttons;
     use sapphire_input::{PadAxis, PadButton, RawInput};
     use sapphire_platform::{GamepadType, LifecycleEvent, Scancode, TouchPhase};
 
@@ -141,15 +187,19 @@ mod tests {
     }
 
     fn input(desktop: bool) -> SandboxInput {
-        let mut input =
-            SandboxInput::new(desktop, Size { width: 1000, height: 500 }).expect("default bindings");
+        input_with(desktop, false)
+    }
+
+    fn input_with(desktop: bool, combat_input: bool) -> SandboxInput {
+        let mut input = SandboxInput::new(desktop, combat_input, Size { width: 1000, height: 500 })
+            .expect("default bindings");
         input.update(ms(0));
         input
     }
 
     impl SandboxInput {
         fn push(&mut self, t: u64, raw: RawInput) {
-            self.system.push(ms(t), raw);
+            self.controls.input_mut().push(ms(t), raw);
         }
 
         fn key(&mut self, t: u64, scancode: Scancode, down: bool) {
@@ -157,12 +207,12 @@ mod tests {
         }
 
         fn orbit(&self) -> Vec2 {
-            self.system.state(self.actions.orbit).value()
+            self.controls.input().state(self.actions.orbit).value()
         }
 
         /// The distance factor this frame's zoom applies.
         fn zoom_factor(&self) -> f32 {
-            self.system.state(self.actions.zoom).axis().exp()
+            self.controls.input().state(self.actions.zoom).axis().exp()
         }
     }
 
@@ -195,7 +245,7 @@ mod tests {
         input.key(2, Scancode::H, true);
         input.update(ms(16));
         assert!(input.orbit().x > 0.0);
-        input.system.release_all(ms(20));
+        input.controls.input_mut().release_all(ms(20));
         input.update(ms(32));
         assert_eq!(input.orbit(), Vec2::ZERO);
         assert!(input.take_actions().hitstop);
@@ -333,5 +383,101 @@ mod tests {
         let mut mobile = input(false);
         mobile.key(1, Scancode::ESCAPE, true);
         assert!(!mobile.update(ms(16)));
+    }
+
+    /// What the next tick gives the actor it names.
+    fn next_buttons(input: &mut SandboxInput) -> Buttons {
+        input.next_tick().get(PLAYER).buttons
+    }
+
+    #[test]
+    fn combat_sits_under_the_sandboxs_bindings() {
+        let mut input = input(true);
+        input.key(1, Scancode::J, true);
+        input.push(2, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+        input.push(3, RawInput::PadButton { pad: 0, button: PadButton::North, down: true });
+        input.push(4, RawInput::PadButton { pad: 0, button: PadButton::South, down: true });
+        input.update(ms(16));
+        assert_eq!(next_buttons(&mut input), Buttons::LIGHT | Buttons::SKILL, "sources it alone binds");
+        assert!(input.take_actions().toggle_slow_motion, "South is still the sandbox's");
+
+        // Its camera too, or the sandbox's camera would turn twice.
+        input.key(17, Scancode::LEFT, true);
+        input.push(18, RawInput::PadAxis { pad: 0, axis: PadAxis::RightX, value: 1.0 });
+        input.push(19, RawInput::MouseButton { button: sapphire_input::MouseButton::Left, down: true });
+        input.push(20, RawInput::MouseMotion { delta: Vec2::new(10.0, 5.0) });
+        input.push(21, RawInput::MouseWheel { delta: Vec2::new(0.0, 1.0) });
+        input.update(ms(32));
+        assert_ne!(input.orbit(), Vec2::ZERO);
+        assert_eq!(input.controls.look(), Vec2::ZERO);
+        assert_eq!(input.controls.camera_zoom(), 0.0);
+    }
+
+    #[test]
+    fn combat_input_takes_the_sandboxs_bindings_off() {
+        let mut input = input_with(true, true);
+        input.key(1, Scancode::SPACE, true);
+        input.key(2, Scancode::H, true);
+        assert!(!input.update(ms(16)));
+        assert_eq!(next_buttons(&mut input), Buttons::JUMP, "Space is combat's now");
+        assert_eq!(input.take_actions(), SimActions::default());
+
+        // The camera is combat's too, and Esc is the pause's way in.
+        input.key(17, Scancode::LEFT, true);
+        input.update(ms(32));
+        assert_eq!(input.orbit(), Vec2::ZERO);
+        assert!(input.controls.look().x > 0.0);
+        input.key(33, Scancode::ESCAPE, true);
+        assert!(!input.update(ms(48)), "Esc pauses instead of quitting");
+        assert!(input.controls.is_paused());
+    }
+
+    #[test]
+    fn pausing_stops_the_steps() {
+        let mut input = input(true);
+        let mut driver = FixedStepDriver::default();
+        let frame = Duration::from_millis(17);
+        assert_eq!(input.advance(&mut driver, frame).count, 1);
+
+        input.key(1, Scancode::P, true);
+        input.update(ms(16));
+        for _ in 0..100 {
+            assert_eq!(input.advance(&mut driver, frame).count, 0);
+        }
+        input.key(20, Scancode::P, false);
+        input.key(21, Scancode::P, true);
+        input.update(ms(32));
+        input.update(ms(48));
+        assert_eq!(input.advance(&mut driver, frame).count, 1, "no burst");
+    }
+
+    #[test]
+    fn escape_resumes_while_paused_then_quits_again() {
+        let mut input = input(true);
+        input.key(1, Scancode::P, true);
+        input.key(2, Scancode::P, false);
+        input.update(ms(16));
+        assert!(input.controls.is_paused());
+        input.key(17, Scancode::ESCAPE, true);
+        assert!(!input.update(ms(32)), "the pause takes Esc from the desktop's quit");
+        input.key(33, Scancode::ESCAPE, false);
+        input.update(ms(48));
+        assert!(!input.controls.is_paused());
+        input.key(49, Scancode::ESCAPE, true);
+        assert!(input.update(ms(64)), "Esc quits again");
+    }
+
+    #[test]
+    fn android_back_opens_the_pause_then_leaves_with_every_context_up() {
+        // On a phone, and with the sandbox's contexts over combat's.
+        const BACK: Scancode = Scancode(282);
+        let mut input = input(false);
+        input.key(1, BACK, true);
+        input.key(2, BACK, false);
+        assert!(!input.update(ms(16)), "the first Back pauses");
+        assert!(input.controls.is_paused());
+        input.key(17, BACK, true);
+        input.key(18, BACK, false);
+        assert!(input.update(ms(32)), "the second leaves");
     }
 }

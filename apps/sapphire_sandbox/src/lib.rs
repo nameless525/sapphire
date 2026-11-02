@@ -10,7 +10,7 @@
 //! # Controls
 //!
 //! The default bindings are a `sapphire_input` document, `default_bindings.ron`, compiled into
-//! the app (see `input.rs`).
+//! the app (see `input.rs`), over `sapphire_controls`' combat bindings.
 //!
 //! | Input | Action |
 //! |---|---|
@@ -18,8 +18,16 @@
 //! | Wheel, pinch, triggers | Zoom |
 //! | `Space`, gamepad South, double tap | Toggle world slow motion (perfect-dodge style, 0.2×) |
 //! | `H`, gamepad East, long press (0.5 s) | 8-tick hitstop on the turntable |
+//! | `P`, gamepad Start | Pause: the fixed steps stop, and the frame goes on |
+//! | Android's Back, gamepad Back, `Backspace` | Pause, and while paused, leave |
+//! | `P`, `Esc`, gamepad Start or East, a tap (while paused) | Resume |
 //! | `Esc` | Quit (desktop) |
 //! | `` ` ``, a still two-finger hold (1 s) | Show or hide the debug overlay (`dev` builds) |
+//!
+//! Combat's verbs (`sapphire_controls`' `combat_bindings.ron`) sit under these, so a source only
+//! they bind reaches a tick: `J`, or gamepad West, is the light attack. Nothing plays ticks yet, so
+//! `dev` builds log them as they change, as `tick actions`. `--combat-input` takes the table's
+//! other rows away, leaving combat's bindings alone.
 //!
 //! # Development builds
 //!
@@ -208,6 +216,8 @@
 //!   from in front of the character; a negative pitch looks up at the sky).
 //! - `--no-hot-reload` (`dev` builds): watch nothing, so files edited during the run don't
 //!   change it.
+//! - `--combat-input`: the windowed app's input is combat's bindings alone: every verb on the pad
+//!   and the keyboard, its camera on `look`, and `Esc` pausing rather than quitting.
 //! - `--live-link off|<addr>|listen=<addr>|connect=<addr>` (`dev` builds): how live link takes
 //!   connections instead of listening on 127.0.0.1:7811: listening at another address (one
 //!   beyond loopback, such as `0.0.0.0:7811`, takes pushes from the network: an opt-in, logged as

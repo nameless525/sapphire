@@ -19,6 +19,7 @@ use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
+use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
 
@@ -26,7 +27,8 @@ use crate::simulation::SimRng;
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
 /// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
 /// cues. 6: M2 G4's perfect dodges and counter windows. 7: M2 G6's brains and a controller drive's facing.
-const CHECKSUM_LAYOUT: u32 = 7;
+/// 8: M2 G7's party, which writes nothing without one.
+const CHECKSUM_LAYOUT: u32 = 8;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -367,6 +369,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     world.resource::<HitQuery>().write_canonical(&mut hasher);
     world.resource::<CharacterWorld>().physics().write_canonical(&mut |bytes| hasher.bytes(bytes));
     world.resource::<SlowMotion>().write_canonical(&mut hasher);
+    world.resource::<Party>().write_canonical(&mut hasher);
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
@@ -413,8 +416,9 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
 /// The hash of what a run depends on, for a replay to check it runs against what it recorded: each
 /// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
-/// those are the same on every target, as the statics' digest is: authored numbers, by their bits.
-pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld) -> u64 {
+/// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
+/// tuning goes in too, if there's a party.
+pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld, party: &Party) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
     hasher.u32(hashes.len() as u32);
@@ -423,6 +427,7 @@ pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld) ->
     }
     hasher.u64(characters.profiles_hash());
     hasher.u64(characters.physics().statics_digest());
+    party.write_tuning(&mut hasher);
     hasher.finish()
 }
 
@@ -758,6 +763,66 @@ mod sensitivity_tests {
         assert_ne!(sim.checksum(), with_request);
         sim.request_slow_motion(200, 4);
         assert_ne!(sim.checksum(), with_request);
+    }
+
+    /// A party of three on the party scenario's moves, the second on the field, with the first resting.
+    fn party_world() -> Simulation {
+        let mut sim = Simulation::new(SimConfig::default());
+        let mut members = Vec::new();
+        for member in 0..crate::party::PARTY_SLOTS {
+            let moves = Some(sim.add_move_set(crate::replay::party_moves(member).unwrap()));
+            members.push(sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).unwrap());
+        }
+        let tuning = crate::party::PartyTuning { swap_cooldown: 7, rest: 11 };
+        sim.form_party(&members, tuning).unwrap();
+        let mut swap = TickActions::NEUTRAL;
+        swap.set(members[0], ActorActions { buttons: Buttons::SWAP, stick: Stick::CENTER }).unwrap();
+        sim.step(&swap);
+        assert_eq!(sim.party().active(), Some(members[1]));
+        sim
+    }
+
+    #[test]
+    fn every_field_of_the_party_is_in_the_checksum() {
+        type Edit = fn(&mut crate::party::Formed);
+        let edits: &[(&str, Edit)] = &[
+            ("a slot's actor", |f| f.slots[0].as_mut().unwrap().actor = ActorId::from_raw(99).unwrap()),
+            ("a slot's readiness", |f| {
+                let slot = f.slots[0].as_mut().unwrap();
+                slot.ready_at = SimTime::from_subticks(slot.ready_at.as_subticks() + 1);
+            }),
+            ("an emptied slot", |f| f.slots[2] = None),
+            ("who's on the field", |f| f.active = 2),
+            ("the cooldown", |f| f.tuning.swap_cooldown += 1),
+            ("the rest", |f| f.tuning.rest += 1),
+            ("swaps", |f| f.swaps += 1),
+            ("forced swaps", |f| f.forced_swaps += 1),
+            ("down", |f| f.down = !f.down),
+        ];
+        let mut sim = party_world();
+        for (what, edit) in edits {
+            let before = sim.checksum();
+            let kept = *sim.ecs_mut().world_mut().resource::<Party>();
+            let mut party = sim.ecs_mut().world_mut().resource_mut::<Party>();
+            edit(party.formed.as_mut().unwrap());
+            assert_ne!(sim.checksum(), before, "{what} isn't in the checksum");
+            *sim.ecs_mut().world_mut().resource_mut::<Party>() = kept;
+            assert_eq!(sim.checksum(), before, "restoring {what} didn't restore the checksum");
+        }
+    }
+
+    /// What lets a fight with no party keep its checksums but for the layout's number.
+    #[test]
+    fn no_party_writes_nothing() {
+        let write = |write: &dyn Fn(&mut StateHasher)| {
+            let mut hasher = StateHasher::new();
+            write(&mut hasher);
+            hasher.finish()
+        };
+        let party = Party::default();
+        let nothing = write(&|_| {});
+        assert_eq!(write(&|hasher| party.write_canonical(hasher)), nothing);
+        assert_eq!(write(&|hasher| party.write_tuning(hasher)), nothing);
     }
 
     /// A hurtbox is state between steps, and a query could read it.

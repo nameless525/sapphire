@@ -89,6 +89,8 @@
                 (move: "dodge", clip: "dodge", decay: 3),
                 (move: "dash_attack", clip: "dash_attack", decay: 3),
                 (move: "skill", clip: "skill"),
+                // A party's assist. A swap cuts to it, so there's nothing to blend from.
+                (move: "swap_in", clip: "dash_attack", decay: 3),
                 // The combat slice's moves that the player hasn't got.
                 (move: "heavy", clip: "strike"),
                 (move: "spin", clip: "strike"),

@@ -11,7 +11,7 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_physics::PhysicsWorld;
-use sapphire_time::Stopwatch;
+use sapphire_time::{SimDuration, Stopwatch};
 
 use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
@@ -29,6 +29,7 @@ use crate::movement::{self, ActorTransform};
 use crate::moves::{
     self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, Tuned, WarpTarget,
 };
+use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 
@@ -81,6 +82,9 @@ pub struct SimRng(pub Pcg32);
 pub enum CombatSet {
     /// The intent ring: what actors want to do this tick.
     Intents,
+    /// A party's swap, with every press in the ring and before any cancel reads one: so the assist starts
+    /// on the press's own step, and everything from here on sees who came in, where it now stands.
+    Party,
     /// The move graph checks cancel windows.
     Cancels,
     /// Each move advances on its local clock.
@@ -134,6 +138,7 @@ impl Simulation {
         world.insert_resource(AppliedHits::default());
         world.insert_resource(ResolveStats::default());
         world.insert_resource(SlowMotion::default());
+        world.insert_resource(Party::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -143,6 +148,7 @@ impl Simulation {
             schedule.configure_sets(
                 (
                     CombatSet::Intents,
+                    CombatSet::Party,
                     CombatSet::Cancels,
                     CombatSet::Moves,
                     CombatSet::Movement,
@@ -159,6 +165,7 @@ impl Simulation {
                 FixedCombat,
                 (intents::press_intents, brain::think).chain().in_set(CombatSet::Intents),
             )
+            .add_systems(FixedCombat, party::settle_swaps.in_set(CombatSet::Party))
             .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
             .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
             .add_systems(
@@ -278,7 +285,11 @@ impl Simulation {
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
         let world = self.ecs.world();
-        checksum::tables_hash(world.resource::<MoveLibrary>(), world.resource::<CharacterWorld>())
+        checksum::tables_hash(
+            world.resource::<MoveLibrary>(),
+            world.resource::<CharacterWorld>(),
+            world.resource::<Party>(),
+        )
     }
 
     /// The loaded sets of moves.
@@ -401,6 +412,9 @@ impl Simulation {
         stats.defeats = resolved.defeats;
         stats.hurtboxes_refused = resolved.hurtboxes_refused;
         stats.perfect_dodges = resolved.perfect_dodges;
+        let party = world.resource::<Party>();
+        stats.swaps = party.swaps();
+        stats.forced_swaps = party.forced_swaps();
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -501,6 +515,29 @@ impl Simulation {
         true
     }
 
+    /// Makes `members` a party, between steps: the first stays on the field where it stands, and its ID is
+    /// what input names from here on, whoever's on the field. The others leave it at once. Each needs a
+    /// set of moves with a `swap` intent and a `swap_in` move. A simulation has one party, for good. See
+    /// the `party` module.
+    pub fn form_party(&mut self, members: &[ActorId], tuning: PartyTuning) -> Result<(), PartyError> {
+        party::form(self.ecs.world_mut(), members, tuning)
+    }
+
+    /// The party, if it's formed: who's on the field, and each slot's readiness.
+    #[must_use]
+    pub fn party(&self) -> &Party {
+        self.ecs.world().resource::<Party>()
+    }
+
+    /// How long until a party's slot can next change place, by the clock of who's in it: the rest of its
+    /// [`PartyTuning::swap_cooldown`] on the field, or of its [`PartyTuning::rest`] off it. `None` for a
+    /// member that's gone. What a HUD's swap button reads.
+    #[must_use]
+    pub fn party_ready_in(&self, slot: PartySlot) -> Option<SimDuration> {
+        let now = self.actor(slot.actor)?.clock_now;
+        Some(if slot.ready_at > now { slot.ready_at.since(now) } else { SimDuration::ZERO })
+    }
+
     /// Slows the world for a number of steps, between steps: [`SlowMotion::request`], as a test or a
     /// tool would. A system does the same with `ResMut<SlowMotion>`.
     pub fn request_slow_motion(&mut self, per_mille: u32, steps: u16) {
@@ -571,5 +608,6 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         fighter,
         brain,
         controls: *actor.get::<Controls>().expect("every pooled entity has controls"),
+        off_field: world.resource::<Party>().is_off_field(id),
     }
 }

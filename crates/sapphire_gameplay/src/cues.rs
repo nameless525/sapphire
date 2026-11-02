@@ -31,6 +31,12 @@ pub const DEFEATED: Name = Name::new("defeated");
 /// dodge's flash and sound on, in the step the world starts to slow.
 pub const PERFECT_DODGE: Name = Name::new("perfect_dodge");
 
+/// Published when a member takes the field, with it for its actor, whether a press or a defeat brought it.
+pub const PARTY_SWAP: Name = Name::new("party_swap");
+
+/// Published once, with the last to fall for its actor, when a party has nobody left standing.
+pub const PARTY_DEFEATED: Name = Name::new("party_defeated");
+
 /// What a hit's cues carry: everything it landed with, for what presentation hangs on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitCue {
@@ -68,8 +74,8 @@ pub struct CueEvent {
     pub hit: Option<HitCue>,
 }
 
-/// One step's cues: its moves' in the order they fired, each actor's in time order, then its perfect
-/// dodges' by dodger, then its hits' in the order they applied. Nothing in the simulation reads it back.
+/// One step's cues: a swap's first, then its moves' in the order they fired, each actor's in time order, then
+/// its perfect dodges' by dodger, then its hits' in the order they applied. Nothing in the simulation reads it back.
 #[derive(Resource, Debug)]
 pub struct CueQueue {
     events: [Option<CueEvent>; CUE_QUEUE_LEN],

@@ -72,6 +72,7 @@ use crate::actors::{ActorId, ActorTable};
 use crate::checksum::StateHasher;
 use crate::hits::remove_hurtboxes;
 use crate::movement::ActorTransform;
+use crate::party::Party;
 
 /// Which [`ControllerProfile`] an actor runs on, handed out in the order they were added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -441,12 +442,13 @@ pub enum PhysicsWorldError {
 /// find it.
 pub(crate) fn move_characters(
     table: Res<'_, ActorTable>,
+    party: Res<'_, Party>,
     mut characters: ResMut<'_, CharacterWorld>,
     mut actors: Query<'_, '_, (&Controls, &EntityClock, &mut CharacterController, &mut ActorTransform)>,
 ) {
     let stopwatch = Stopwatch::start();
     let characters = &mut *characters;
-    for (id, entity) in table.iter() {
+    for (id, entity) in table.iter().filter(|&(id, _)| !party.is_off_field(id)) {
         let Ok((controls, clock, mut controller, mut transform)) = actors.get_mut(entity) else {
             continue;
         };

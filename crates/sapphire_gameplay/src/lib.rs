@@ -32,6 +32,8 @@
 //!   `moves` module's counter window.
 //! - [`brain`] (M2 G6): what presses an enemy's intents and tilts its stick, on the same paths as a
 //!   player's, from a section of its move set's document.
+//! - The party (M2 G7): [`Party`], three slots with one on the field and the others off it and still
+//!   ticking, swapping as an ability and a swap-in assist as a move, in the `party` module.
 //!
 //! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
@@ -134,6 +136,7 @@ mod hits;
 mod intents;
 mod movement;
 mod moves;
+mod party;
 pub mod replay;
 mod resolve;
 mod simulation;
@@ -149,7 +152,10 @@ pub use controller::{
     ControllerProfile, ControllerState, GroundMode, MovementMode, PhysicsWorldError, ProfileError, ProfileId,
     ResolvedProfile, actor_body, step_controller,
 };
-pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PERFECT_DODGE, POISE_BROKEN};
+pub use cues::{
+    CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,
+    POISE_BROKEN,
+};
 pub use hits::{
     DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,
     MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS,
@@ -162,6 +168,7 @@ pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
     MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, Tuned, WarpTarget,
 };
+pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
 pub use stats::{

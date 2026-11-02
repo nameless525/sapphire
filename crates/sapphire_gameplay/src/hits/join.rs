@@ -13,6 +13,7 @@ use crate::actors::ActorTable;
 use crate::controller::CharacterWorld;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRunner};
+use crate::party::Party;
 use crate::resolve::{Fighter, ResolveStats};
 
 /// [`CombatSet::Movement`](crate::CombatSet::Movement), after every actor has moved: makes each
@@ -25,10 +26,12 @@ pub(crate) fn place_hurtboxes(
     library: Res<'_, MoveLibrary>,
     mut characters: ResMut<'_, CharacterWorld>,
     mut stats: ResMut<'_, ResolveStats>,
+    party: Res<'_, Party>,
     actors: Query<'_, '_, (&MoveRunner, &MoveOutput, &ActorTransform, &Fighter)>,
 ) {
     let physics = characters.physics_mut();
-    for (id, entity) in table.iter() {
+    // Off the field an actor has no bodies: leaving took them out, and nothing here puts them back.
+    for (id, entity) in table.iter().filter(|&(id, _)| !party.is_off_field(id)) {
         let Ok((runner, output, root, fighter)) = actors.get(entity) else { continue };
         let Some(def) = runner.set().and_then(|set| library.current(set)).and_then(MoveSet::fighter) else {
             continue;
@@ -60,9 +63,10 @@ pub(crate) fn sweep_hits(
     table: Res<'_, ActorTable>,
     library: Res<'_, MoveLibrary>,
     characters: Res<'_, CharacterWorld>,
+    party: Res<'_, Party>,
     actors: Query<'_, '_, (&EntityClock, &MoveRunner, &MoveOutput, &ActorTransform, &Fighter)>,
 ) {
-    for (attacker, entity) in table.iter() {
+    for (attacker, entity) in table.iter().filter(|&(attacker, _)| !party.is_off_field(attacker)) {
         let Ok((clock, runner, output, root, fighter)) = actors.get(entity) else { continue };
         if fighter.is_defeated() {
             continue;

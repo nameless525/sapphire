@@ -27,6 +27,8 @@ const MOVES: [&str; 6] = ["light_1", "light_2", "light_3", "dodge", "dash_attack
 const ATTACKS: [&str; 5] = ["light_1", "light_2", "light_3", "dash_attack", "skill"];
 /// What a hit forces, with no clip of their own: the character's graph draws them.
 const REACTIONS: [&str; 5] = ["flinch", "stagger", "knockdown", "dazed", "defeat"];
+/// A party's assist, and the clip it plays: it has none of its own (M2 G7).
+const ASSIST: (&str, &str) = ("swap_in", "dash_attack");
 /// How far along its +Y the blade path's middle is from either end of the blade.
 const HALF_BLADE: f32 = 0.45;
 /// The ball of the foot's height over the sole, at rest.
@@ -162,6 +164,11 @@ fn player() -> &'static Player {
     })
 }
 
+/// The clip a move plays: its name's, but for the assist's.
+fn played_by(mv: &str) -> &str {
+    if mv == ASSIST.0 { ASSIST.1 } else { mv }
+}
+
 /// `document` baked from `clips`, as a cook bakes it.
 fn cook_against(
     document: &MoveSetDocument,
@@ -172,7 +179,7 @@ fn cook_against(
     let map = HumanMap::from_rig(rig);
     document.compile_with(|mv| {
         let Some(motion) = mv.motion.clip.as_ref() else { return Ok(None) };
-        let clip = clips.get(mv.name.as_str()).ok_or("its clip has its name")?;
+        let clip = clips.get(played_by(&mv.name)).ok_or("its clip has its name")?;
         let input = moves::TableInput {
             sampled: &clip.sampled,
             skeleton,
@@ -293,13 +300,13 @@ fn what_a_saved_document_cant_change_waits_for_a_cook() {
 #[test]
 fn each_move_plays_the_clip_of_its_name() {
     let player = player();
-    assert_eq!(player.document.moves.len(), MOVES.len() + REACTIONS.len(), "every move is listed here");
+    assert_eq!(player.document.moves.len(), MOVES.len() + REACTIONS.len() + 1, "every move is listed here");
     for mv in &player.document.moves {
         if REACTIONS.contains(&mv.name.as_str()) {
             assert!(mv.motion.clip.is_none(), "{}: a graph draws it, so nothing bakes from a clip", mv.name);
             continue;
         }
-        let clip = player.clip(&mv.name);
+        let clip = player.clip(played_by(&mv.name));
         let motion = mv.motion.clip.as_ref().expect("it names a clip");
         assert_eq!(motion.source, clip.id.to_string(), "{}: its `source` is its document", mv.name);
         assert_eq!(

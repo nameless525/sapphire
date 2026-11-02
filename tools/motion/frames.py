@@ -44,8 +44,11 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 // `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on
 // the scale `warrior.moves.ron` was tuned to: the three-hit string does 28 damage and 36 poise.
 //
-// The last five moves are what a hit forces (M2 G6). They have no clip of their own: the character's
-// graph draws them from its reactions and deaths, and they stand still while it does.
+// The five moves after those are what a hit forces (M2 G6). They have no clip of their own: the
+// character's graph draws them from its reactions and deaths, and they stand still while it does.
+//
+// The last is a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press that
+// brings it. Only a party reads either: with no party, the button does nothing.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -56,6 +59,7 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
             (name: "light", button: Light, buffer: 14, priority: 1),
             (name: "skill", button: Skill, buffer: 10, priority: 2),
             (name: "dodge", button: Dodge, buffer: 8, priority: 3),
+            (name: "swap", button: Swap, buffer: 12, priority: 4),
         ],
         neutral: [
             (intent: "light", move: "light_1"),
@@ -224,6 +228,24 @@ MOVES = [
     ),
 ]
 
+# What comes after the reactions, so that adding one moves no other move's place in the set.
+ASSISTS = [
+    dict(
+        name='swap_in',
+        clip='dash_attack',
+        say=["567 ms: a party's next member arriving, on the dash attack's clip: a throw forward low that",
+             "cuts across on the way past, untouchable until it's about to land. Its aim is whoever left's."],
+        frames=(5, 5, 24),
+        hitboxes=[('swap_hit', 5, 10, 'Capsule(radius: 0.26, length: 0.9)',
+                   'damage: 12, poise: 14, weight: Medium, hitstop: 5, knockback: (distance: 0.5, ticks: 10)')],
+        invulnerable=[(0, 5)],
+        cancels=[(18, 34, [('dodge', 'dodge', None), ('light', 'light_1', None)])],
+        warps=[(0, 10, 2.0, 1.2, 1.1)],
+        cues=[('swap_in', 0), ('swing', 5), ('skid', 10)],
+        active=(5, 10),
+    ),
+]
+
 
 def fnum(v, places=3):
     s = f"{v:.{places}f}"
@@ -254,75 +276,10 @@ def allow_text(allow):
 def write(folder, clips):
     text = [HEADER.rstrip('\n')]
     for d in MOVES:
-        clip = clips[d['name']]
-        s, a, r = d['frames']
-        assert s + a + r == clip.ticks, (d['name'], s + a + r, clip.ticks)
-        i = ' ' * 16
-        lines = ['            (']
-        for line in d['say']:
-            lines.append(f"{i}// {line}")
-        lines += [f'{i}name: "{d["name"]}",', f"{i}startup: {s},", f"{i}active: {a},", f"{i}recovery: {r},"]
-        lines.append(f"{i}motion: (")
-        lines.append(f"{i}    clip: (")
-        lines.append(f'{i}        source: "{IDS[d["name"]]}",')
-        if d['active']:
-            lines.append(f"{i}        paths: [(")
-            lines.append(f'{i}            name: "blade",')
-            lines.append(f'{i}            follows: Bone("RightHand"),')
-            lines.append(f"{i}            offset: {vec(_offset)},")
-            lines.append(f"{i}            rotation: {vec(_rotation, 4)},")
-            lines.append(f"{i}        )],")
-        lines.append(f"{i}    ),")
-        lines.append(f"{i}),")
-        if d.get('hitboxes'):
-            lines.append(f"{i}hitboxes: [")
-            for name, a0, b0, shape, attack in d['hitboxes']:
-                lines.append(f'{i}    (')
-                lines.append(f'{i}        name: "{name}",')
-                lines.append(f'{i}        from: {a0},')
-                lines.append(f'{i}        to: {b0},')
-                lines.append(f'{i}        path: "blade",')
-                lines.append(f'{i}        shape: {shape},')
-                lines.append(f'{i}        attack: ({attack}),')
-                lines.append(f'{i}    ),')
-            lines.append(f"{i}],")
-        if d.get('hurtboxes'):
-            lines.append(f"{i}hurtboxes: [")
-            for name, a0, b0, state in d['hurtboxes']:
-                lines.append(f'{i}    (name: "{name}", from: {a0}, to: {b0}, state: {state}),')
-            lines.append(f"{i}],")
-        spans(lines, 'invulnerable', d.get('invulnerable'), i)
-        for a0, b0 in d.get('perfect_dodge', ()):
-            lines.append(f"{i}perfect_dodge: [(")
-            lines.append(f"{i}    from: {a0},")
-            lines.append(f"{i}    to: {b0},")
-            lines.append(f"{i}    volume: (offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.55, length: 1.0)),")
-            lines.append(f"{i}    slow_motion: (per_mille: 200, steps: 30),")
-            lines.append(f'{i}    counter: (ticks: 45, allow: [(intent: "light", move: "dash_attack")]),')
-            lines.append(f"{i})],")
-        spans(lines, 'parry', d.get('parry'), i)
-        lines.append(f"{i}cancels: [")
-        for a0, b0, allows in d['cancels']:
-            if len(allows) == 1:
-                lines.append(f"{i}    (from: {a0}, to: {b0}, allow: [{allow_text(allows[0])}]),")
-            else:
-                lines.append(f"{i}    (from: {a0}, to: {b0}, allow: [")
-                for allow in allows:
-                    lines.append(f"{i}        {allow_text(allow)},")
-                lines.append(f"{i}    ]),")
-        lines.append(f"{i}],")
-        if d.get('warps'):
-            lines.append(f"{i}warps: [")
-            for a0, b0, dist, turn_, keep in d['warps']:
-                lines.append(f"{i}    (from: {a0}, to: {b0}, max_distance: {dist}, max_turn: {turn_}, keep: {keep}),")
-            lines.append(f"{i}],")
-        lines.append(f"{i}cues: [")
-        for name, at in d['cues']:
-            lines.append(f'{i}    (name: "{name}", at: {at}),')
-        lines.append(f"{i}],")
-        lines.append('            ),')
-        text.append('\n'.join(lines))
+        text.append(move_text(d, clips))
     text.append(REACTIONS.rstrip('\n'))
+    for d in ASSISTS:
+        text.append(move_text(d, clips))
     text.append(FOOTER)
     with open(os.path.join(folder, 'player.moves.ron'), 'w') as f:
         f.write('\n'.join(text))
@@ -336,3 +293,75 @@ def write(folder, clips):
     ),
 )
 ''')
+
+
+def move_text(d, clips):
+    played = d.get('clip', d['name'])
+    clip = clips[played]
+    s, a, r = d['frames']
+    assert s + a + r == clip.ticks, (d['name'], s + a + r, clip.ticks)
+    i = ' ' * 16
+    lines = ['            (']
+    for line in d['say']:
+        lines.append(f"{i}// {line}")
+    lines += [f'{i}name: "{d["name"]}",', f"{i}startup: {s},", f"{i}active: {a},", f"{i}recovery: {r},"]
+    lines.append(f"{i}motion: (")
+    lines.append(f"{i}    clip: (")
+    lines.append(f'{i}        source: "{IDS[played]}",')
+    if d['active']:
+        lines.append(f"{i}        paths: [(")
+        lines.append(f'{i}            name: "blade",')
+        lines.append(f'{i}            follows: Bone("RightHand"),')
+        lines.append(f"{i}            offset: {vec(_offset)},")
+        lines.append(f"{i}            rotation: {vec(_rotation, 4)},")
+        lines.append(f"{i}        )],")
+    lines.append(f"{i}    ),")
+    lines.append(f"{i}),")
+    if d.get('hitboxes'):
+        lines.append(f"{i}hitboxes: [")
+        for name, a0, b0, shape, attack in d['hitboxes']:
+            lines.append(f'{i}    (')
+            lines.append(f'{i}        name: "{name}",')
+            lines.append(f'{i}        from: {a0},')
+            lines.append(f'{i}        to: {b0},')
+            lines.append(f'{i}        path: "blade",')
+            lines.append(f'{i}        shape: {shape},')
+            lines.append(f'{i}        attack: ({attack}),')
+            lines.append(f'{i}    ),')
+        lines.append(f"{i}],")
+    if d.get('hurtboxes'):
+        lines.append(f"{i}hurtboxes: [")
+        for name, a0, b0, state in d['hurtboxes']:
+            lines.append(f'{i}    (name: "{name}", from: {a0}, to: {b0}, state: {state}),')
+        lines.append(f"{i}],")
+    spans(lines, 'invulnerable', d.get('invulnerable'), i)
+    for a0, b0 in d.get('perfect_dodge', ()):
+        lines.append(f"{i}perfect_dodge: [(")
+        lines.append(f"{i}    from: {a0},")
+        lines.append(f"{i}    to: {b0},")
+        lines.append(f"{i}    volume: (offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.55, length: 1.0)),")
+        lines.append(f"{i}    slow_motion: (per_mille: 200, steps: 30),")
+        lines.append(f'{i}    counter: (ticks: 45, allow: [(intent: "light", move: "dash_attack")]),')
+        lines.append(f"{i})],")
+    spans(lines, 'parry', d.get('parry'), i)
+    lines.append(f"{i}cancels: [")
+    for a0, b0, allows in d['cancels']:
+        if len(allows) == 1:
+            lines.append(f"{i}    (from: {a0}, to: {b0}, allow: [{allow_text(allows[0])}]),")
+        else:
+            lines.append(f"{i}    (from: {a0}, to: {b0}, allow: [")
+            for allow in allows:
+                lines.append(f"{i}        {allow_text(allow)},")
+            lines.append(f"{i}    ]),")
+    lines.append(f"{i}],")
+    if d.get('warps'):
+        lines.append(f"{i}warps: [")
+        for a0, b0, dist, turn_, keep in d['warps']:
+            lines.append(f"{i}    (from: {a0}, to: {b0}, max_distance: {dist}, max_turn: {turn_}, keep: {keep}),")
+        lines.append(f"{i}],")
+    lines.append(f"{i}cues: [")
+    for name, at in d['cues']:
+        lines.append(f'{i}    (name: "{name}", at: {at}),')
+    lines.append(f"{i}],")
+    lines.append('            ),')
+    return '\n'.join(lines)

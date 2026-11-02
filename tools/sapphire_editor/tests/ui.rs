@@ -160,7 +160,7 @@ fn the_ui_opens_and_names_its_tracks() {
     assert!(harness.state().file().is_some_and(|file| !file.is_dirty()));
     // With no cook it can't preview a move with a clip, and says so; the windows are there all the same.
     assert!(harness.state().frame().is_none());
-    assert_eq!(MoveSetDocument::parse(PLAYER).expect("parses").moves.len(), 11);
+    assert_eq!(MoveSetDocument::parse(PLAYER).expect("parses").moves.len(), 12);
 }
 
 /// Presses at `from`, moves to `to` over a few frames and lets go, as a hand does.

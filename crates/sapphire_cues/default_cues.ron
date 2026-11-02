@@ -167,6 +167,15 @@
             (cue: "recover"),
             (cue: "death"),
             (cue: "death_fade"),
+            // A party (M2 G7): someone taking the field, at its feet, with the skid's sound for now. Its assist's
+            // blow says the rest. The party going down is the app's to show.
+            (
+                cue: "party_swap",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["5e8f2a10-94c7-4d3b-8e26-1b6c0f7d3a95"], // skid
+            ),
+            (cue: "swap_in"),
+            (cue: "party_defeated"),
         ],
     ),
 )

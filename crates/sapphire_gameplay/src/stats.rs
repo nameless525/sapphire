@@ -92,6 +92,10 @@ pub struct SimStats {
     pub hurtboxes_refused: u64,
     /// Perfect dodges fired so far. `Simulation::hits` has the swings behind the latest step's.
     pub perfect_dodges: u64,
+    /// A party's swaps so far, those a defeat forced among them.
+    pub swaps: u32,
+    /// Of those, the ones a defeat forced.
+    pub forced_swaps: u32,
 }
 
 impl SimStats {

@@ -54,6 +54,7 @@ use crate::actors::{ActorId, ActorTable};
 use crate::cues::{CueEvent, CueQueue};
 use crate::intents::{Intent, IntentRing};
 use crate::movement::{ActorTransform, RootDelta};
+use crate::party::Party;
 use crate::resolve::Fighter;
 
 /// Most hit volumes one actor publishes in a step. Past this they're counted
@@ -554,12 +555,14 @@ fn target_position(
 /// [`crate::CombatSet::Cancels`]: everything that changes which move an actor is in, up to this
 /// step's reading, and then what's left in its intent ring expires.
 #[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
+#[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn settle_cancels(
     table: Res<'_, ActorTable>,
     library: Res<'_, MoveLibrary>,
     world_clock: Res<'_, WorldClock>,
     mut cues: ResMut<'_, CueQueue>,
     mut stats: ResMut<'_, MoveStats>,
+    party: Res<'_, Party>,
     mut actors: Query<
         '_,
         '_,
@@ -573,6 +576,14 @@ pub(crate) fn settle_cancels(
             continue;
         };
         *output = MoveOutput::default();
+        // Off the field nothing starts: a force, or a press something made for it, is dropped here.
+        if party.is_off_field(id) {
+            runner.forced = None;
+            if !ring.is_empty() {
+                ring.reset();
+            }
+            continue;
+        }
         let Some(set) = runner.set else { continue };
         // A defeated actor starts nothing more: with nothing in its ring, only a forced start can fire.
         if fighter.is_defeated() {

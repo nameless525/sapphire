@@ -356,4 +356,7 @@ pub struct ActorView {
     /// Its input as its last step read it: its stick, in the world's directions, is where it's
     /// pointing, for [`crate::targeting`].
     pub controls: Controls,
+    /// A party's member who isn't on the field: its position is where it last stood, and nothing it does
+    /// reaches the fight. See [`crate::Party`].
+    pub off_field: bool,
 }

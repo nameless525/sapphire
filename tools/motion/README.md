@@ -17,7 +17,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 |---|---|
 | `moves.py` | The six moves, one function each: a key names where the feet stand, where the hand and blade go, how the body turns and where the head looks. |
 | `pose.py` | Solves a key's legs and arms by inverse kinematics, samples between keys as `sapphire_pipeline::keypose` does, checks a move (feet under the ground, slipping feet, the blade through the body, joint turns) and writes the `.keypose.ron`. |
-| `frames.py` | `player.moves.ron`: frame data, cancel windows, hits, combat numbers and cues. |
+| `frames.py` | `player.moves.ron`: frame data, cancel windows, hits, combat numbers and cues. `swap_in`, a party's assist, is frames on the dash attack's clip, with no key-pose document of its own. |
 | `rig.py` | Reads the character's rest skeleton from its VRM, so nothing derived from it is committed. |
 | `sheet.py` | Writes the documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
 

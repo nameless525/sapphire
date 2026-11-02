@@ -340,16 +340,18 @@ impl Controls {
 }
 
 /// [`sapphire_ecs::SimSet::Input`]: hands each live actor its input. An ID the tick mentions that
-/// isn't alive any more is ignored.
+/// isn't alive any more is ignored. A party's input reaches whoever's on the field, whichever member's
+/// on it: [`crate::Party::input_actor`].
 pub(crate) fn read_actions(
     actions: Res<'_, CurrentActions>,
     table: Res<'_, crate::ActorTable>,
+    party: Res<'_, crate::Party>,
     mut controls: Query<'_, '_, &mut Controls>,
 ) {
     for (id, entity) in table.iter() {
         let Ok(mut controls) = controls.get_mut(entity) else { continue };
         controls.previous = controls.current;
-        controls.current = actions.0.get(id);
+        controls.current = party.input_of(id).map_or(ActorActions::NEUTRAL, |input| actions.0.get(input));
     }
 }
 

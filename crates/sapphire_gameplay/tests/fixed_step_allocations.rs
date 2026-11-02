@@ -57,6 +57,29 @@ fn steps_do_not_allocate_from_the_first_tick() {
     assert!(stats.intents_expired > 0, "{stats:?}");
 }
 
+/// A party's whole fight, counted from the first step: swaps, assists and falls, capsules and hurtboxes
+/// leaving and coming back, and the party going down.
+#[test]
+fn a_partys_fight_does_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let script = find_script("party-swap").expect("listed");
+    let ticks: Vec<TickActions> =
+        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "the fight allocated {} times", counts.allocations);
+    assert!(sim.stats().swaps >= 5 && sim.party().is_down(), "{:?}", sim.stats());
+}
+
 /// Characters on the mesh arena, counted from the first step: walking, stairs, walls, jumps, falls and
 /// landings, every one of them a move or a cast, plus a move's root motion through the controller.
 #[test]

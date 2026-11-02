@@ -15,8 +15,11 @@
 // `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on
 // the scale `warrior.moves.ron` was tuned to: the three-hit string does 28 damage and 36 poise.
 //
-// The last five moves are what a hit forces (M2 G6). They have no clip of their own: the character's
-// graph draws them from its reactions and deaths, and they stand still while it does.
+// The five moves after those are what a hit forces (M2 G6). They have no clip of their own: the
+// character's graph draws them from its reactions and deaths, and they stand still while it does.
+//
+// The last is a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press that
+// brings it. Only a party reads either: with no party, the button does nothing.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -27,6 +30,7 @@
             (name: "light", button: Light, buffer: 14, priority: 1),
             (name: "skill", button: Skill, buffer: 10, priority: 2),
             (name: "dodge", button: Dodge, buffer: 8, priority: 3),
+            (name: "swap", button: Swap, buffer: 12, priority: 4),
         ],
         neutral: [
             (intent: "light", move: "light_1"),
@@ -357,6 +361,50 @@
                 active: 30,
                 recovery: 90,
                 cues: [(name: "falls", at: 0)],
+            ),
+            (
+                // 567 ms: a party's next member arriving, on the dash attack's clip: a throw forward low that
+                // cuts across on the way past, untouchable until it's about to land. Its aim is whoever left's.
+                name: "swap_in",
+                startup: 5,
+                active: 5,
+                recovery: 24,
+                motion: (
+                    clip: (
+                        source: "997ddfa0-e2bf-4887-94dd-e8f51cb6e958",
+                        paths: [(
+                            name: "blade",
+                            follows: Bone("RightHand"),
+                            offset: (-0.234, -0.002, 0.417),
+                            rotation: (0.5818, -0.5914, -0.3876, 0.4019),
+                        )],
+                    ),
+                ),
+                hitboxes: [
+                    (
+                        name: "swap_hit",
+                        from: 5,
+                        to: 10,
+                        path: "blade",
+                        shape: Capsule(radius: 0.26, length: 0.9),
+                        attack: (damage: 12, poise: 14, weight: Medium, hitstop: 5, knockback: (distance: 0.5, ticks: 10)),
+                    ),
+                ],
+                invulnerable: [(from: 0, to: 5)],
+                cancels: [
+                    (from: 18, to: 34, allow: [
+                        (intent: "dodge", move: "dodge"),
+                        (intent: "light", move: "light_1"),
+                    ]),
+                ],
+                warps: [
+                    (from: 0, to: 10, max_distance: 2.0, max_turn: 1.2, keep: 1.1),
+                ],
+                cues: [
+                    (name: "swap_in", at: 0),
+                    (name: "swing", at: 5),
+                    (name: "skid", at: 10),
+                ],
             ),
         ],
     ),

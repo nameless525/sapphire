@@ -7,6 +7,7 @@ use sapphire_time::{NORMAL_SPEED, ScaleSource, ScaledClock};
 use super::{AppliedHits, HitOutcome};
 use crate::actors::ActorTable;
 use crate::checksum::StateHasher;
+use crate::party::Party;
 
 /// World-clock slow motion, which a perfect dodge asks for. A request slows the world for an exact number
 /// of real fixed steps, ends by itself and is in the checksum. Hitstop counts real steps too, so it lasts
@@ -83,12 +84,12 @@ impl SlowMotion {
 
 /// What brings a clock back up to its own speed in a world slowed to `per_mille`: exactly 1× for what a
 /// document can author, and as near as a whole number of thousandths for anything else.
-pub(super) fn counter_scale(per_mille: u32) -> u32 {
+pub(crate) fn counter_scale(per_mille: u32) -> u32 {
     (NORMAL_SPEED * NORMAL_SPEED).checked_div(per_mille).unwrap_or(NORMAL_SPEED)
 }
 
 /// The system. Each applied hit freezes its attacker and, unless armour took it, its target; a defeat
-/// with a finish freeze stops every actor. An actor's freeze is the longest asked of it, so the order
+/// with a finish freeze stops every actor on the field. An actor's freeze is the longest asked of it, so the order
 /// of these changes nothing. See the [module docs](super#when-hits-overlap). Then slow motion moves on,
 /// and when it starts, changes or ends, each clock scaled back up follows it.
 pub(crate) fn apply_time(
@@ -96,6 +97,7 @@ pub(crate) fn apply_time(
     applied: Res<'_, AppliedHits>,
     mut slow: ResMut<'_, SlowMotion>,
     mut world_clock: ResMut<'_, WorldClock>,
+    party: Res<'_, Party>,
     mut clocks: Query<'_, '_, &mut EntityClock>,
 ) {
     for hit in &applied.0 {
@@ -110,7 +112,7 @@ pub(crate) fn apply_time(
             freeze(hit.event.target, hit.attack.hitstop);
         }
         if hit.outcome == HitOutcome::Defeated && hit.attack.finish_freeze > 0 {
-            for (actor, _) in table.iter() {
+            for (actor, _) in table.iter().filter(|&(actor, _)| !party.is_off_field(actor)) {
                 freeze(actor, hit.attack.finish_freeze);
             }
         }

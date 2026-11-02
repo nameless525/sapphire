@@ -1600,8 +1600,8 @@ fn every_authored_window_of_the_test_content_is_covered_by_a_replay() {
     for file in files {
         let bytes = std::fs::read(&file).expect("reads");
         let replay = Replay::decode(&bytes).expect("decodes");
-        // The fight plays the shipped moves, which aren't the test content.
-        if replay.scenario() == "arena-fight" {
+        // The fights play the shipped moves, which aren't the test content.
+        if ["arena-fight", "party"].contains(&replay.scenario()) {
             continue;
         }
         let mut player = Player::new(replay, SCENARIOS).expect("starts");

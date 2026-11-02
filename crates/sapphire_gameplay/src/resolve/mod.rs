@@ -144,7 +144,7 @@ pub(crate) use self::dodge::fire_perfect_dodges;
 pub(crate) use self::fighter::Slide;
 pub use self::fighter::{Fighter, HitOutcome};
 pub use self::time::SlowMotion;
-pub(crate) use self::time::apply_time;
+pub(crate) use self::time::{apply_time, counter_scale};
 use crate::actors::ActorTable;
 use crate::cues::{CueEvent, CueQueue, DEFEATED, HitCue, POISE_BROKEN};
 use crate::hits::{HitEvent, HitQuery};

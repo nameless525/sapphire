@@ -141,6 +141,11 @@ impl Fighter {
         self.slide.length != SimDuration::ZERO
     }
 
+    /// Stops any push: its owner has left the field, and nothing moves it there.
+    pub(crate) fn stop_slide(&mut self) {
+        self.slide = Slide::default();
+    }
+
     pub(super) fn advance_slide(&mut self, delta: SimDuration) -> Vec3 {
         self.slide.advance(delta)
     }

@@ -27,6 +27,7 @@ use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
+use crate::party::{PARTY_SLOTS, PartyError, PartyTuning};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
@@ -51,6 +52,8 @@ const PLAYER_MOVES: &[u8] = include_bytes!("../../baked/player.smoves");
 
 /// That document, from the repository's root.
 const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
+/// What the party's tests add to [`TEST_MOVES`]: a swap and three assists.
+const PARTY_MOVES: &str = include_str!("../../../sapphire_moves/test_content/party.moves.ron");
 
 /// Why a scenario couldn't set its world up, as with a replay that asks for too small a pool.
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +70,8 @@ pub enum ScenarioError {
     World(#[from] PhysicsWorldError),
     #[error(transparent)]
     Profile(#[from] ProfileError),
+    #[error(transparent)]
+    Party(#[from] PartyError),
 }
 
 /// A named starting world.
@@ -164,6 +169,19 @@ pub const SCENARIOS: &[Scenario] = &[
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: arena_fight,
     },
+    Scenario {
+        name: "party",
+        about: "`arena-fight`, with the player a party of three on the player's moves, one on the field: input \
+                drives whoever that is, and the warrior's brain fights them",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: party,
+    },
 ];
 
 /// The scenario named `name`, among `scenarios`.
@@ -187,6 +205,34 @@ pub fn player_moves() -> Result<MoveSet, MoveSetError> {
     let mut bytes = AlignedVec::<16>::with_capacity(PLAYER_MOVES.len());
     bytes.extend_from_slice(PLAYER_MOVES);
     MoveSet::from_cooked(&bytes)
+}
+
+/// What the [`party`] scenario's swap takes: a second on the field, and two and a half off it.
+pub const PARTY_TUNING: PartyTuning = PartyTuning { swap_cooldown: 60, rest: 150 };
+
+/// Each [`party_document`] member's health: little enough that a test's fight reaches a defeat soon, and
+/// different, so the three can't stand in for each other in a checksum.
+const PARTY_HEALTH: [u32; PARTY_SLOTS] = [60, 90, 120];
+
+/// A party member who differs from the others, for tests and benches, where identical members would hide an
+/// order leak: the test content, with `party.moves.ron`'s swap, its assist as that member's `swap_in`,
+/// and its own health. No scenario plays these, because a scenario's sets are each one document (M2 T2).
+pub fn party_document(member: usize) -> Result<MoveSetDocument, MoveSetError> {
+    let mut document = MoveSetDocument::parse(TEST_MOVES)?;
+    let party = MoveSetDocument::parse(PARTY_MOVES)?;
+    document.intents.extend(party.intents);
+    let mut assist = party.moves[member % PARTY_SLOTS].clone();
+    assist.name = "swap_in".to_owned();
+    document.moves.push(assist);
+    if let Some(fighter) = &mut document.fighter {
+        fighter.health = PARTY_HEALTH[member % PARTY_SLOTS];
+    }
+    Ok(document)
+}
+
+/// A [`party_document`] member's moves.
+pub fn party_moves(member: usize) -> Result<MoveSet, MoveSetError> {
+    party_document(member)?.compile()
 }
 
 /// Steps a [`Buttons::ULTIMATE`] press slows the world for, in [`melee`], and to how many thousandths.
@@ -340,6 +386,37 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
     let thinking = sim.give_brain(enemy, player);
     debug_assert!(thinking, "the warrior's document has a brain");
     Ok(vec![player, enemy])
+}
+
+/// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point, the
+/// first on the field. They share a set, so a live edit of the document reaches all three. The cast is who
+/// a tick names: the party, by its first member's ID whoever's on the field, then the warrior. Each
+/// actor's ID is what it is in an `arena-fight`, and the other two members come after.
+pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cooked = crate::arena::cooked_colliders()?;
+    let set = ColliderSet::read(&cooked)?;
+    sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
+    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
+    let moves = Some(sim.add_move_set(player_moves()?));
+    let warrior = Some(sim.add_move_set(warrior_moves()?));
+    let spawns = crate::arena::spawns();
+    let (position, yaw) = (spawns.player.position(), spawns.player.yaw());
+    let member = ActorSpawn { position, yaw, moves, controller };
+    let first = sim.spawn(member)?;
+    let enemy = sim.spawn(ActorSpawn {
+        position: spawns.enemy.position(),
+        yaw: spawns.enemy.yaw(),
+        moves: warrior,
+        controller,
+    })?;
+    let members = [first, sim.spawn(member)?, sim.spawn(member)?];
+    sim.form_party(&members, PARTY_TUNING)?;
+    for member in members {
+        sim.set_warp_target(member, WarpTarget::Actor(enemy));
+    }
+    let thinking = sim.give_brain(enemy, first);
+    debug_assert!(thinking, "the warrior's document has a brain");
+    Ok(vec![first, enemy])
 }
 
 #[cfg(test)]

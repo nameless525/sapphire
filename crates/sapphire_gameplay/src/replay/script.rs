@@ -99,6 +99,14 @@ pub const SCRIPTS: &[Script] = &[
         actions: fight_back,
     },
     Script {
+        name: "party-swap",
+        about: "the party against the warrior: a swap through a freeze, some refused by the cooldown or by nobody \
+                being ready, assists landing, and then nothing, while the warrior fells each in turn, each \
+                defeat forcing the next in, until nobody's left",
+        ticks: PARTY_SWAP_TICKS,
+        actions: party_swap,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -363,6 +371,30 @@ const CANCEL_WINDOWS_OPPONENT: [(u64, Buttons); 1] = [(50, Buttons::HEAVY)];
 pub fn cancel_windows(tick: u64, cast: &[ActorId]) -> TickActions {
     let sticks = if tick <= 45 { [Stick::new(0, 127), Stick::new(0, -127)] } else { [Stick::new(0, 0); 2] };
     facing_off(tick, cast, sticks, &CANCEL_WINDOWS_PLAYER, &CANCEL_WINDOWS_OPPONENT)
+}
+
+/// Ticks of [`party_swap`]: until a little after the last of the party has fallen.
+const PARTY_SWAP_TICKS: u32 = 5300;
+
+/// What [`party_swap`] presses, for the party, whose input names its first member throughout. After these
+/// everyone just stands there, and the warrior gets through all three, a fall forcing each next one in.
+const PARTY_SWAP: [(u64, Buttons); 6] = [
+    (72, Buttons::LIGHT), // `light_1`, which reaches the warrior on tick 82 and freezes the first member for 3.
+    (83, Buttons::SWAP),  // Pressed through that freeze: it waits, and the second comes in on tick 86.
+    (116, Buttons::SWAP), // Far too soon after that: it runs out unused.
+    (200, Buttons::SWAP), // Out of the knockdown the warrior's overhead gave the second: the third comes in.
+    (290, Buttons::SWAP), // The third has stayed long enough, and the first has rested: back to it.
+    (330, Buttons::LIGHT),
+];
+
+/// [`SCRIPTS`]' `party-swap`: the [`party`](super::party) scenario's fight, by [`PARTY_SWAP`].
+#[must_use]
+pub fn party_swap(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&party) = cast.first() else { return actions };
+    let buttons = on_schedule(tick, u64::MAX, &PARTY_SWAP);
+    actions.set(party, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
+    actions
 }
 
 /// The two of a `duel` on their schedules, holding these sticks.

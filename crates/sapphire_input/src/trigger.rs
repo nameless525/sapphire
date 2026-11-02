@@ -7,8 +7,9 @@ use bevy_reflect::Reflect;
 use sapphire_platform::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// When a binding fires (Enhanced Input's triggers). A binding is *actuated* while its modified
-/// value reaches its actuation threshold; the trigger turns that into a state over time.
+/// When a binding fires (Enhanced Input's triggers). A binding is *actuated* from when its modified
+/// value reaches its actuation threshold until it falls a tenth under it, so an analog source's noise
+/// at the threshold isn't a run of presses; the trigger turns that into a state over time.
 ///
 /// | Trigger | Ongoing | Triggered |
 /// |---|---|---|
@@ -150,6 +151,11 @@ impl Memory {
     /// Memory for a binding that just became active while its source reads `actuated`.
     pub fn entering(actuated: bool) -> Self {
         Self { actuated, suppressed: actuated, ..Self::default() }
+    }
+
+    /// Whether its source read actuated at the last evaluation.
+    pub fn actuated(&self) -> bool {
+        self.actuated
     }
 }
 

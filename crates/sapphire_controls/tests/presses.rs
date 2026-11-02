@@ -199,6 +199,27 @@ fn an_analog_trigger_presses_at_its_threshold() {
     .unwrap();
 }
 
+/// A slow pull lingers around the threshold, where a real trigger's noise reads a little either side of it
+/// from one report to the next. That's one press, of one finger.
+#[test]
+fn a_trigger_lingering_at_its_threshold_is_one_press() {
+    let trigger = |value| axis(PadAxis::RightTrigger, value);
+    const U: Buttons = Buttons::ULTIMATE;
+    run(&Row {
+        name: "a trigger's noise around half a pull",
+        presses: 1,
+        frames: vec![
+            f(&[trigger(0.498)], &[N]),
+            f(&[trigger(0.502)], &[U]),
+            f(&[trigger(0.498)], &[U]),
+            f(&[trigger(0.502), trigger(0.498), trigger(0.502)], &[U]),
+            f(&[trigger(1.0)], &[U]),
+            f(&[trigger(0.0)], &[N]),
+        ],
+    })
+    .unwrap();
+}
+
 #[test]
 fn presses_past_the_limit_are_counted() {
     let mut rig = Rig::new();

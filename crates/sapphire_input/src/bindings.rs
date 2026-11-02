@@ -98,8 +98,8 @@ pub struct BindingDesc {
     /// the same and lower-priority contexts, so `Ctrl+S` doesn't also fire plain `S`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord: Option<String>,
-    /// The magnitude the modified value must reach to count as actuated. Default: 0.5 for
-    /// button actions, and any nonzero value for axes.
+    /// The magnitude the modified value must reach to count as actuated, and then fall a tenth under
+    /// to stop counting. Default: 0.5 for button actions, and any nonzero value for axes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actuation: Option<f32>,
     /// A name players rebind this binding by ([`InputSystem::rebind`](crate::InputSystem::rebind)),

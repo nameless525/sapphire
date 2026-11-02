@@ -24,6 +24,8 @@ const QUEUE_CAPACITY: usize = 256;
 const EVENT_CAPACITY: usize = 64;
 /// Stick or trigger travel that a rebinding capture takes as a choice.
 const CAPTURE_AXIS: f32 = 0.5;
+/// The share of its actuation threshold under which an actuated binding lets go.
+const LET_GO_SHARE: f32 = 0.9;
 
 /// Where an action is after an update (Enhanced Input's trigger state).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -694,7 +696,7 @@ impl InputSystem {
                     }
                 };
                 let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
-                let actuated = is_actuated(value, binding.threshold);
+                let actuated = is_actuated(value, binding.threshold, state.memory.actuated());
                 // Motion can't let go, so a cancel ends its run. In this pass the only motion to get
                 // here is touch's, and another device's held key or armed double tap keeps `abort`.
                 let abort =
@@ -782,7 +784,7 @@ impl InputSystem {
                     let binding = &map.bindings()[index];
                     let raw = self.devices.value(binding.source, self.frame);
                     let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
-                    state.memory = Memory::entering(is_actuated(value, binding.threshold));
+                    state.memory = Memory::entering(is_actuated(value, binding.threshold, false));
                     state.output = Output::default();
                     // Closed until the evaluation after this rebuild opens it.
                     state.accepted = Accepted::default();
@@ -799,9 +801,11 @@ impl InputSystem {
     }
 }
 
-fn is_actuated(value: Vec2, threshold: f32) -> bool {
+/// Whether a binding reading `value` is actuated, given whether it was: it takes `threshold` to start,
+/// and falling a little under that to stop, so an analog trigger's noise at the threshold is one press.
+fn is_actuated(value: Vec2, threshold: f32, was: bool) -> bool {
     let magnitude = value.length();
-    magnitude > 0.0 && magnitude >= threshold
+    magnitude > 0.0 && magnitude >= if was { threshold * LET_GO_SHARE } else { threshold }
 }
 
 fn phase(state: TriggerState) -> ActionPhase {

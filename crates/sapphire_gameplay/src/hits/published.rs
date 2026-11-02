@@ -4,7 +4,7 @@
 use sapphire_core::Name;
 use sapphire_math::Vec3;
 use sapphire_moves::HurtboxState;
-use sapphire_physics::{GroupMask, PhysicsWorld, Shape};
+use sapphire_physics::{PhysicsWorld, Shape};
 use sapphire_time::SimDuration;
 
 use super::HitQuery;
@@ -63,8 +63,8 @@ pub struct PublishedMoves<'a> {
 
 impl HitQuery {
     /// Sweeps everything one actor's moves published this step, in the order published: step 1 of
-    /// [a step](Self#a-step) for that actor. Moves don't author [`VolumeSweep::rearm`] or
-    /// [`VolumeSweep::blocked_by`] yet, so a group hits a target once per playing and walls stop nothing.
+    /// [a step](Self#a-step) for that actor, with each volume's [`VolumeSweep::rearm`] and
+    /// [`VolumeSweep::blocked_by`] as its move authors them.
     pub fn sweep_published(
         &mut self,
         world: &PhysicsWorld,
@@ -72,7 +72,10 @@ impl HitQuery {
         moves: &PublishedMoves<'_>,
     ) {
         for (index, volume) in moves.output.volumes.iter().enumerate() {
-            let Some(path) = library.get(volume.at).and_then(|mv| mv.tables.path(volume.path)) else {
+            let Some(mv) = library.get(volume.at) else { continue };
+            let (Some(hitbox), Some(path)) =
+                (mv.hitboxes.get(volume.hitbox as usize), mv.tables.path(volume.path))
+            else {
                 continue;
             };
             self.sweep(
@@ -82,10 +85,10 @@ impl HitQuery {
                     instance: volume.serial,
                     volume: index as u16,
                     group: volume.name,
-                    rearm: &[],
+                    rearm: &hitbox.rearm,
                     shape: hit_shape(volume.shape),
                     path,
-                    blocked_by: GroupMask::NONE,
+                    blocked_by: hitbox.blocked_by(),
                     owner: OwnerStep {
                         delta: moves.delta,
                         reading: move_reading(moves.runner, &volume),

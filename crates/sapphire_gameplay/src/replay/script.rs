@@ -64,6 +64,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: dodge_dash,
     },
     Script {
+        name: "fight",
+        about: "two fighters close and trade: strings, heavies through armour, a knockdown, a poise break \
+                and a defeat with its finish freeze",
+        ticks: 1500,
+        actions: fight,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -210,6 +217,46 @@ pub fn dodge_dash(tick: u64, cast: &[ActorId]) -> TickActions {
     };
     press(cast.first(), on_schedule(tick, 240, &DODGE_DASH));
     press(cast.get(1), on_schedule(tick, 120, &OPPONENT));
+    actions
+}
+
+/// Ticks of one round of [`fight`].
+const FIGHT_ROUND: u64 = 360;
+
+/// The player's half of a round of [`fight`]: the string, pressed often enough that a press waits in
+/// the buffer through whatever hitstop does to the windows, then a heavy that knocks down, a trade,
+/// and a heavy whose armour takes the opponent's light.
+const FIGHT_PLAYER: [(u64, Buttons); 9] = [
+    (30, Buttons::LIGHT),
+    (36, Buttons::LIGHT),
+    (42, Buttons::LIGHT),
+    (48, Buttons::LIGHT),
+    (54, Buttons::LIGHT),
+    (60, Buttons::LIGHT),
+    (115, Buttons::HEAVY),
+    (230, Buttons::LIGHT),
+    (258, Buttons::HEAVY),
+];
+
+/// The opponent's half: the trade's press, on the player's tick, and a light into that heavy's armour.
+const FIGHT_OPPONENT: [(u64, Buttons); 2] = [(230, Buttons::LIGHT), (262, Buttons::LIGHT)];
+
+/// [`SCRIPTS`]' `fight`: both walk at each other at the start of a round and again before its trade,
+/// since pushes part them, and fight until one of them falls. The other then keeps swinging at what's
+/// left, which takes nothing.
+#[must_use]
+pub fn fight(tick: u64, cast: &[ActorId]) -> TickActions {
+    let at = tick % FIGHT_ROUND;
+    let walking = matches!(at, 0..=25 | 205..=225);
+    let mut actions = TickActions::NEUTRAL;
+    let mut drive = |actor: Option<&ActorId>, buttons: Buttons, forward: i8| {
+        if let Some(&actor) = actor {
+            let stick = Stick::new(0, if walking { forward } else { 0 });
+            actions.set(actor, ActorActions { buttons, stick }).expect("two actors fit a tick");
+        }
+    };
+    drive(cast.first(), on_schedule(tick, FIGHT_ROUND, &FIGHT_PLAYER), 127);
+    drive(cast.get(1), on_schedule(tick, FIGHT_ROUND, &FIGHT_OPPONENT), -127);
     actions
 }
 

@@ -26,6 +26,7 @@ use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, WarpTarget};
+use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
 
@@ -74,12 +75,12 @@ impl Scenario {
     }
 }
 
-/// Every scenario. G3 adds the fights with hits in them here.
+/// Every scenario.
 pub const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "melee",
-        about: "three characters on flat ground and the test moves, warps aimed round the ring, and buttons \
-                that freeze and slow clocks and spawn actors",
+        about: "three characters on flat ground within reach of each other on the test moves, warps aimed round \
+                the ring, and buttons that slow clocks and spawn actors",
         config: SimConfig {
             seed: 7,
             max_actors: 16,
@@ -125,19 +126,20 @@ pub fn test_moves() -> Result<MoveSet, MoveSetError> {
     MoveSetDocument::parse(TEST_MOVES)?.compile()
 }
 
-/// Ticks a [`Buttons::HEAVY`] press freezes its own actor's clock, in [`melee`].
-pub const MELEE_HITSTOP_TICKS: u16 = 6;
+/// Steps a [`Buttons::ULTIMATE`] press slows the world for, in [`melee`], and to how many thousandths.
+const MELEE_SLOW_STEPS: u16 = 45;
+const MELEE_SLOW_PER_MILLE: u32 = 200;
 
-/// The first three actors' buttons that do to clocks and the pool what hits will, until M2 G3:
-/// [`Buttons::HEAVY`] freezes the actor, [`Buttons::SWAP`] toggles slowing it, [`Buttons::ULTIMATE`]
-/// toggles slowing the world, and [`Buttons::JUMP`] jumps and spawns another actor at a random yaw,
-/// which plays a skill and leaves, with no capsule, as what a fight spawns that isn't a body has none.
-/// None of these buttons has an intent in the test content.
+/// The first three actors' buttons that do what no move in the test content does yet: [`Buttons::SWAP`]
+/// toggles slowing the actor, [`Buttons::ULTIMATE`] slows the world for a while, as M2 G4's perfect dodge
+/// will, and [`Buttons::JUMP`] jumps and spawns another actor at a random yaw, which plays a skill and
+/// leaves, with no capsule, as what a fight spawns that isn't a body has none. Hits freeze clocks on
+/// their own.
 pub fn melee_buttons(
     table: Res<'_, ActorTable>,
     mut requests: ResMut<'_, ActorRequests>,
     mut rng: ResMut<'_, SimRng>,
-    mut world_clock: ResMut<'_, WorldClock>,
+    mut slow: ResMut<'_, SlowMotion>,
     mut actors: Query<'_, '_, (&Controls, &mut EntityClock, &mut MoveRunner, &ActorTransform)>,
 ) {
     for (id, entity) in table.iter() {
@@ -152,16 +154,12 @@ pub fn melee_buttons(
             continue;
         }
         let pressed = controls.pressed();
-        if pressed.contains(Buttons::HEAVY) {
-            clock.0.apply_hitstop(MELEE_HITSTOP_TICKS);
-        }
         if pressed.contains(Buttons::SWAP) && clock.0.remove_source(ScaleSource::Gameplay) == 0 {
             // Toggled, so the stack never fills.
             let _ = clock.0.push_scale(ScaleSource::Gameplay, 500);
         }
-        if pressed.contains(Buttons::ULTIMATE) && world_clock.0.remove_source(ScaleSource::PerfectDodge) == 0
-        {
-            let _ = world_clock.0.push_scale(ScaleSource::PerfectDodge, 200);
+        if pressed.contains(Buttons::ULTIMATE) {
+            slow.request(MELEE_SLOW_PER_MILLE, MELEE_SLOW_STEPS);
         }
         if pressed.contains(Buttons::JUMP) {
             let yaw = rng.0.unit_f32() * std::f32::consts::TAU;

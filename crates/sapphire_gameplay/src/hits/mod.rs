@@ -7,10 +7,11 @@
 //! [`published_hurtbox`] turn into those inputs. [`HitQuery`]'s docs say how it behaves.
 //!
 //! Doesn't own: which volumes are active on a tick, or a move's hurtbox track (M2 G2); damage, poise,
-//! reactions, hitstop or cues (M2 G3); debug views (M2 T1).
+//! reactions, hitstop or cues (the `resolve` module); debug views (M2 T1).
 
 mod book;
 mod hurtbox;
+mod join;
 mod published;
 #[cfg(test)]
 mod tests;
@@ -26,6 +27,7 @@ use sapphire_time::SimDuration;
 
 use self::book::Book;
 pub use self::hurtbox::{HurtboxId, MAX_HURTBOXES, remove_hurtboxes};
+pub(crate) use self::join::{place_hurtboxes, sweep_hits};
 pub use self::published::{PublishedMoves, hit_shape, published_hurtbox};
 pub use self::volume::{MAX_SAG, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, SubStep, VolumeSweep, volume_pose};
 use crate::actors::ActorId;

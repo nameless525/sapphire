@@ -75,6 +75,18 @@ pub struct SimStats {
     pub controllers_refused: u64,
     /// What the collision world did in the latest step: moves, sweeps and casts.
     pub physics: PhysicsStats,
+    /// Hits that did something so far. `Simulation::hits` has what hit queries found.
+    pub hits_applied: u64,
+    /// Of those, the ones armour took.
+    pub hits_absorbed: u64,
+    /// Reactions a hit forced so far.
+    pub reactions_forced: u64,
+    /// Poise meters emptied so far.
+    pub poise_breaks: u64,
+    /// Actors defeated so far.
+    pub defeats: u64,
+    /// Hurtboxes the physics world refused so far: non-zero means it's too small, or a pose went bad.
+    pub hurtboxes_refused: u64,
 }
 
 impl SimStats {

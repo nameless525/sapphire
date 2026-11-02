@@ -22,10 +22,11 @@ use crate::controller::{
     self, CharacterController, CharacterWorld, ControllerProfile, PhysicsWorldError, ProfileError, ProfileId,
 };
 use crate::cues::{CueEvent, CueQueue};
-use crate::hits::HitQuery;
+use crate::hits::{self, HitQuery, remove_hurtboxes};
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
 use crate::moves::{self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, WarpTarget};
+use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
@@ -99,6 +100,8 @@ type ResolveParams = (
     ResMut<'static, ActorRequests>,
     ResMut<'static, ActorTable>,
     ResMut<'static, WorldClock>,
+    Res<'static, MoveLibrary>,
+    ResMut<'static, HitQuery>,
     Query<'static, 'static, ActorState<'static>>,
     ResMut<'static, CharacterWorld>,
 );
@@ -125,6 +128,9 @@ impl Simulation {
         world.insert_resource(MoveStats::default());
         world.insert_resource(CueQueue::default());
         world.insert_resource(HitQuery::new());
+        world.insert_resource(AppliedHits::default());
+        world.insert_resource(ResolveStats::default());
+        world.insert_resource(SlowMotion::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -151,10 +157,19 @@ impl Simulation {
             .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
             .add_systems(
                 FixedCombat,
-                (movement::apply_root_motion, controller::move_characters)
+                (
+                    resolve::push_knockback,
+                    movement::apply_root_motion,
+                    controller::move_characters,
+                    hits::place_hurtboxes,
+                )
                     .chain()
                     .in_set(CombatSet::Movement),
             )
+            .add_systems(FixedCombat, hits::sweep_hits.in_set(CombatSet::Hits))
+            .add_systems(FixedCombat, resolve::apply_hits.in_set(CombatSet::Resolve))
+            .add_systems(FixedCombat, resolve::apply_time.in_set(CombatSet::TimeScale))
+            .add_systems(FixedCombat, resolve::publish_hit_cues.in_set(CombatSet::Cues))
             .add_systems(FixedPost, actors::resolve_actor_requests);
         ecs.startup();
 
@@ -192,7 +207,8 @@ impl Simulation {
 
     /// Replaces a loaded set, between steps, and returns the new revision's number, or `None` for an
     /// ID this simulation never gave. Moves already running finish on what they started with; the
-    /// next move to start reads this (M2 T2). See the `moves` module.
+    /// next move to start reads this (M2 T2). So do hurtboxes and reactions, from the next step. A
+    /// fighter's numbers are copied at its spawn, so the next spawn reads those. See the `moves` module.
     pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
         let world = self.ecs.world_mut();
         let in_use: Vec<u32> = world
@@ -202,7 +218,20 @@ impl Simulation {
             .filter(|running| running.at.set == id)
             .map(|running| running.at.revision)
             .collect();
-        world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))
+        let playing: Vec<ActorId> = world
+            .resource::<ActorTable>()
+            .iter()
+            .filter(|&(_, entity)| world.get::<MoveRunner>(entity).is_some_and(|run| run.set() == Some(id)))
+            .map(|(actor, _)| actor)
+            .collect();
+        let replaced =
+            world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))?;
+        // The next step puts back what the new revision lists, under its numbers.
+        let mut characters = world.resource_mut::<CharacterWorld>();
+        for actor in playing {
+            remove_hurtboxes(characters.physics_mut(), actor);
+        }
+        Some(replaced)
     }
 
     /// The hash of the move data, controller profiles and collision world this simulation runs on,
@@ -264,17 +293,17 @@ impl Simulation {
     /// Removes an actor between steps, at once, and returns whether it was alive. Its ID is never
     /// used again.
     pub fn despawn(&mut self, id: ActorId) -> bool {
-        let (mut requests, table, clock, actors, characters) =
+        let (mut requests, table, clock, library, hits, actors, characters) =
             self.resolve.get_mut(self.ecs.world_mut()).expect(ACTORS_EXIST);
         let alive = requests.despawn(id, &table);
-        actors::resolve_actor_requests(requests, table, clock, actors, characters);
+        actors::resolve_actor_requests(requests, table, clock, library, hits, actors, characters);
         alive
     }
 
     fn resolve_requests(&mut self) {
-        let (requests, table, clock, actors, characters) =
+        let (requests, table, clock, library, hits, actors, characters) =
             self.resolve.get_mut(self.ecs.world_mut()).expect(ACTORS_EXIST);
-        actors::resolve_actor_requests(requests, table, clock, actors, characters);
+        actors::resolve_actor_requests(requests, table, clock, library, hits, actors, characters);
     }
 
     /// Runs one fixed step on `actions`: the only way time moves. Allocates nothing on this thread
@@ -325,6 +354,13 @@ impl Simulation {
         stats.controllers_over_budget_steps += u64::from(characters.last_time > physics_budget);
         stats.controllers_refused = characters.refused;
         stats.physics = characters.physics().take_stats();
+        let resolved = world.resource::<ResolveStats>();
+        stats.hits_applied = resolved.hits_applied;
+        stats.hits_absorbed = resolved.hits_absorbed;
+        stats.reactions_forced = resolved.reactions_forced;
+        stats.poise_breaks = resolved.poise_breaks;
+        stats.defeats = resolved.defeats;
+        stats.hurtboxes_refused = resolved.hurtboxes_refused;
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -407,8 +443,14 @@ impl Simulation {
         true
     }
 
+    /// Slows the world for a number of steps, between steps: [`SlowMotion::request`], as a test or a
+    /// tool would. A system does the same with `ResMut<SlowMotion>`.
+    pub fn request_slow_motion(&mut self, per_mille: u32, steps: u16) {
+        self.ecs.world_mut().resource_mut::<SlowMotion>().request(per_mille, steps);
+    }
+
     /// A live actor's clock, between steps: hitstop and time scales from outside the simulation, as
-    /// in a test. [`CombatSet::Resolve`] does this itself (M2 G3).
+    /// in a test. [`CombatSet::TimeScale`] does this for hits.
     pub fn clock_mut(&mut self, id: ActorId) -> Option<Mut<'_, EntityClock>> {
         let world = self.ecs.world_mut();
         let entity = world.resource::<ActorTable>().entity(id)?;
@@ -451,6 +493,7 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
     let clock = actor.get::<EntityClock>().expect("every pooled entity has a clock");
     let runner = actor.get::<MoveRunner>().expect("every pooled entity has a runner");
     let output = actor.get::<MoveOutput>().expect("every pooled entity has an output");
+    let fighter = *actor.get::<Fighter>().expect("every pooled entity has a fighter");
     ActorView {
         id,
         position: transform.position,
@@ -460,5 +503,6 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         hitstop_ticks: clock.0.hitstop_ticks(),
         moves: MoveRead::of(runner, output, world.resource::<MoveLibrary>()),
         controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),
+        fighter,
     }
 }

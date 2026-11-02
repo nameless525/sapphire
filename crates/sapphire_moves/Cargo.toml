@@ -11,6 +11,8 @@ license.workspace = true
 # Cooked tables derive `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true
 rkyv.workspace = true
+# A hit volume says which collision groups stop it, by their names.
+sapphire_colliders.workspace = true
 sapphire_core.workspace = true
 sapphire_math.workspace = true
 sapphire_reflect.workspace = true

@@ -25,9 +25,11 @@
 //!   [`HitQuery::sweep_published`] and [`published_hurtbox`] make from what moves publish.
 //! - [`arena`]: the look-dev town's square as a place to fight: its collision, from a committed
 //!   document, and where a duel starts.
+//! - Resolve (M2 G3): [`Fighter`], its health, poise and push, what a landed hit comes to
+//!   ([`HitOutcome`]), the reactions and hitstop it asks for, and [`SlowMotion`], the seam for
+//!   world-clock slow motion. The `resolve` module's docs say how a hit lands.
 //!
-//! The system that runs hit queries arrives with M2 G3, in [`CombatSet::Hits`]. Until then hit volumes
-//! are published for it to sweep.
+//! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
 //! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), animation, the
 //! platform layer, input bindings, SDL or wgpu. `cargo xtask check-layers` holds its dependency
@@ -128,6 +130,7 @@ mod intents;
 mod movement;
 mod moves;
 pub mod replay;
+mod resolve;
 mod simulation;
 mod stats;
 pub mod targeting;
@@ -140,7 +143,7 @@ pub use controller::{
     ControllerProfile, ControllerState, GroundMode, MovementMode, PhysicsWorldError, ProfileError, ProfileId,
     ResolvedProfile, actor_body, step_controller,
 };
-pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue};
+pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, POISE_BROKEN};
 pub use hits::{
     HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS,
     MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, PublishedMoves,
@@ -152,6 +155,7 @@ pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
     MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, WarpTarget,
 };
+pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,

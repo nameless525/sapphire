@@ -18,12 +18,14 @@ use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
+use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
-/// D4's hit queries. 4: M2 G1's controllers and their world.
-const CHECKSUM_LAYOUT: u32 = 4;
+/// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
+/// cues.
+const CHECKSUM_LAYOUT: u32 = 5;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -191,10 +193,13 @@ fn write_output(hasher: &mut StateHasher, output: &MoveOutput) {
     hasher.u8(u8::from(windows.parry));
     hasher.u8(u8::from(windows.cancel));
     hasher.u8(u8::from(windows.warp));
+    hasher.u32(windows.armour);
     hasher.u32(output.volumes.len() as u32);
     for volume in output.volumes.iter() {
         write_move_ref(hasher, volume.at);
         hasher.u32(volume.serial);
+        hasher.u64(volume.started_at.as_subticks());
+        hasher.u32(volume.hitbox);
         write_name(hasher, volume.name);
         write_name(hasher, volume.path);
         write_shape(hasher, volume.shape);
@@ -230,6 +235,40 @@ fn write_target(hasher: &mut StateHasher, target: WarpTarget) {
     }
 }
 
+fn write_slide(hasher: &mut StateHasher, slide: &Slide) {
+    hasher.vec3(slide.direction);
+    hasher.f32(slide.distance);
+    hasher.u64(slide.length.as_subticks());
+    hasher.u64(slide.elapsed.as_subticks());
+    hasher.f32(slide.moved);
+}
+
+fn write_fighter(hasher: &mut StateHasher, fighter: &Fighter) {
+    hasher.u32(fighter.health);
+    hasher.u32(fighter.max_health);
+    hasher.u32(fighter.poise);
+    hasher.u32(fighter.max_poise);
+    hasher.u64(fighter.poise_refill.as_subticks());
+    match fighter.poise_refills_at {
+        Some(at) => {
+            hasher.u8(1);
+            hasher.u64(at.as_subticks());
+        }
+        None => hasher.u8(0),
+    }
+    hasher.u8(u8::from(fighter.defeated));
+    write_slide(hasher, &fighter.slide);
+}
+
+const fn outcome_code(outcome: HitOutcome) -> u8 {
+    match outcome {
+        HitOutcome::Flinched => 0,
+        HitOutcome::Absorbed => 1,
+        HitOutcome::PoiseBroken => 2,
+        HitOutcome::Defeated => 3,
+    }
+}
+
 fn write_cues(hasher: &mut StateHasher, cues: &CueQueue) {
     // Nothing simulated reads these, but a cue that goes missing or arrives twice is a break in a
     // replay that only here shows: what a player sees and hears (pillar 3).
@@ -240,6 +279,21 @@ fn write_cues(hasher: &mut StateHasher, cues: &CueQueue) {
         hasher.u64(event.tick);
         hasher.u64(event.local_time.as_subticks());
         hasher.u64(event.move_time.as_subticks());
+        match event.hit {
+            Some(hit) => {
+                hasher.u8(1);
+                hasher.u32(hit.target.raw());
+                hasher.u8(hit.hurtbox);
+                hasher.vec3(hit.point);
+                hasher.vec3(hit.normal);
+                hasher.u8(hit.weight as u8);
+                hasher.u32(hit.damage);
+                hasher.u32(hit.poise);
+                hasher.u16(hit.hitstop);
+                hasher.u8(outcome_code(hit.outcome));
+            }
+            None => hasher.u8(0),
+        }
     }
     hasher.u64(cues.published());
     hasher.u64(cues.dropped());
@@ -258,6 +312,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     hasher.u32(world.resource::<ActorRequests>().next_id());
     world.resource::<HitQuery>().write_canonical(&mut hasher);
     world.resource::<CharacterWorld>().physics().write_canonical(&mut |bytes| hasher.bytes(bytes));
+    world.resource::<SlowMotion>().write_canonical(&mut hasher);
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
@@ -289,6 +344,9 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
         }
         if let Some(controller) = actor.get::<CharacterController>() {
             controller.write_canonical(&mut hasher);
+        }
+        if let Some(fighter) = actor.get::<Fighter>() {
+            write_fighter(&mut hasher, fighter);
         }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
@@ -445,6 +503,7 @@ mod sensitivity_tests {
             ("parry", |o| o.windows.parry = !o.windows.parry),
             ("cancel", |o| o.windows.cancel = !o.windows.cancel),
             ("warp", |o| o.windows.warp = !o.windows.warp),
+            ("armour", |o| o.windows.armour += 1),
         ];
         for (what, edit) in edits {
             flips::<MoveOutput>(&mut sim, swinging, what, edit);
@@ -454,6 +513,10 @@ mod sensitivity_tests {
         let volume_edits: &[(&str, VolumeEdit)] = &[
             ("a volume's move", |v| v.at.index += 1),
             ("a volume's serial", |v| v.serial += 1),
+            ("when its move began", |v| {
+                v.started_at = SimTime::from_subticks(v.started_at.as_subticks() + 1)
+            }),
+            ("a volume's hitbox", |v| v.hitbox += 1),
             ("a volume's name", |v| v.name = Name::new("x")),
             ("a volume's path", |v| v.path = Name::new("x")),
             ("a volume's shape", |v| v.shape = Shape::Sphere { radius: 9.0 }),
@@ -497,6 +560,77 @@ mod sensitivity_tests {
         });
     }
 
+    #[test]
+    fn every_field_of_a_fighter_is_in_the_checksum() {
+        type Edit = fn(&mut Fighter);
+        let edits: &[(&str, Edit)] = &[
+            ("health", |f| f.health += 1),
+            ("max health", |f| f.max_health += 1),
+            ("poise", |f| f.poise += 1),
+            ("max poise", |f| f.max_poise += 1),
+            ("the refill's length", |f| f.poise_refill = SimDuration::from_subticks(1)),
+            ("when poise refills", |f| f.poise_refills_at = Some(SimTime::from_subticks(1))),
+            ("defeated", |f| f.defeated = !f.defeated),
+            ("a slide's direction", |f| f.slide.direction.x += 0.125),
+            ("a slide's distance", |f| f.slide.distance += 0.125),
+            ("a slide's length", |f| f.slide.length = SimDuration::from_subticks(1)),
+            ("a slide's progress", |f| f.slide.elapsed = SimDuration::from_subticks(1)),
+            ("how far a slide has gone", |f| f.slide.moved += 0.125),
+        ];
+        let (mut sim, swinging, _) = world();
+        for (what, edit) in edits {
+            flips::<Fighter>(&mut sim, swinging, what, edit);
+        }
+        // And where it's a time that's already set, not just whether it is.
+        let at = |f: &mut Fighter| f.poise_refills_at = Some(SimTime::from_subticks(7));
+        flips::<Fighter>(&mut sim, swinging, "a set refill time", at);
+        let world = sim.ecs_mut().world_mut();
+        let entity = world.resource::<ActorTable>().entity(swinging).unwrap();
+        at(&mut world.get_mut::<Fighter>(entity).unwrap());
+        flips::<Fighter>(&mut sim, swinging, "another refill time", |f| {
+            f.poise_refills_at = Some(SimTime::from_subticks(8));
+        });
+    }
+
+    #[test]
+    fn slow_motion_is_in_the_checksum() {
+        type Edit = fn(&mut SlowMotion);
+        let edits: &[(&str, Edit)] = &[
+            ("a request", |s| s.requested = Some((200, 3))),
+            ("steps left", |s| s.left += 1),
+            ("refusals", |s| s.refused += 1),
+        ];
+        let (mut sim, ..) = world();
+        for (what, edit) in edits {
+            let before = sim.checksum();
+            let kept = *sim.ecs_mut().world_mut().resource::<SlowMotion>();
+            edit(&mut sim.ecs_mut().world_mut().resource_mut::<SlowMotion>());
+            assert_ne!(sim.checksum(), before, "{what} isn't in the checksum");
+            *sim.ecs_mut().world_mut().resource_mut::<SlowMotion>() = kept;
+            assert_eq!(sim.checksum(), before, "restoring {what} didn't restore the checksum");
+        }
+        // Each number of a request, and which steps it asks for.
+        sim.request_slow_motion(200, 3);
+        let with_request = sim.checksum();
+        sim.request_slow_motion(201, 3);
+        assert_ne!(sim.checksum(), with_request);
+        sim.request_slow_motion(200, 4);
+        assert_ne!(sim.checksum(), with_request);
+    }
+
+    /// A hurtbox is state between steps, and a query could read it.
+    #[test]
+    fn the_physics_worlds_bodies_are_in_the_checksum() {
+        let (mut sim, swinging, _) = world();
+        let before = sim.checksum();
+        let body = crate::HurtboxId::new(swinging, 0).unwrap().body();
+        let characters = sim.ecs_mut().world_mut().resource_mut::<CharacterWorld>().into_inner();
+        let pose = characters.physics().body_pose(body).expect("it has a hurtbox");
+        let moved = sapphire_physics::Pose::new(pose.position + Vec3::X, pose.rotation);
+        characters.physics_mut().set_body_pose(body, moved).unwrap();
+        assert_ne!(sim.checksum(), before);
+    }
+
     /// Nothing reads the cue queue, so its effect on a run never shows except here.
     #[test]
     fn the_cues_are_in_the_checksum() {
@@ -507,6 +641,7 @@ mod sensitivity_tests {
             tick: 0,
             local_time: SimTime::ZERO,
             move_time: SimDuration::ZERO,
+            hit: None,
         };
         let before = sim.checksum();
         sim.ecs_mut().world_mut().resource_mut::<CueQueue>().push(event);
@@ -524,6 +659,43 @@ mod sensitivity_tests {
             world_cues.clear();
             world_cues.push(other);
             assert_ne!(sim.checksum(), published, "{what}");
+        }
+
+        // A hit's cue carries what it landed with, each field of which counts.
+        let hit = crate::cues::HitCue {
+            target: swinging,
+            hurtbox: 0,
+            point: Vec3::ZERO,
+            normal: Vec3::Z,
+            weight: sapphire_moves::Weight::Light,
+            damage: 1,
+            poise: 1,
+            hitstop: 1,
+            outcome: HitOutcome::Flinched,
+        };
+        let with = |sim: &mut Simulation, hit| {
+            let mut world_cues = sim.ecs_mut().world_mut().resource_mut::<CueQueue>();
+            world_cues.clear();
+            world_cues.push(crate::cues::CueEvent { hit: Some(hit), ..event });
+            sim.checksum()
+        };
+        let plain = with(&mut sim, hit);
+        assert_ne!(plain, published);
+        use crate::resolve::HitOutcome::{Absorbed, Defeated, PoiseBroken};
+        for (what, other) in [
+            ("its target", crate::cues::HitCue { target: ActorId::from_raw(99).unwrap(), ..hit }),
+            ("its hurtbox", crate::cues::HitCue { hurtbox: 1, ..hit }),
+            ("its point", crate::cues::HitCue { point: Vec3::X, ..hit }),
+            ("its normal", crate::cues::HitCue { normal: Vec3::X, ..hit }),
+            ("its weight", crate::cues::HitCue { weight: sapphire_moves::Weight::Heavy, ..hit }),
+            ("its damage", crate::cues::HitCue { damage: 2, ..hit }),
+            ("its poise", crate::cues::HitCue { poise: 2, ..hit }),
+            ("its hitstop", crate::cues::HitCue { hitstop: 2, ..hit }),
+            ("absorbed", crate::cues::HitCue { outcome: Absorbed, ..hit }),
+            ("broken", crate::cues::HitCue { outcome: PoiseBroken, ..hit }),
+            ("defeated", crate::cues::HitCue { outcome: Defeated, ..hit }),
+        ] {
+            assert_ne!(with(&mut sim, other), plain, "{what}");
         }
     }
 

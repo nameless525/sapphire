@@ -111,6 +111,8 @@ edges = [
     # Baked tables are cooked the same way.
     ["sapphire_moves", "sapphire_serialize"],
     ["sapphire_moves", "sapphire_reflect"],
+    # A hit volume names the collision groups that stop it.
+    ["sapphire_moves", "sapphire_colliders"],
     # Cooked collider sets are named and versioned the same way, and packs store them.
     ["sapphire_colliders", "sapphire_serialize"],
     ["sapphire_colliders", "sapphire_reflect"],

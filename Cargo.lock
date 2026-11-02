@@ -3128,6 +3128,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_reflect",
  "rkyv",
+ "sapphire_colliders",
  "sapphire_core",
  "sapphire_math",
  "sapphire_reflect",

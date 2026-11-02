@@ -6,14 +6,17 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use bevy_reflect::TypePath;
+use sapphire_colliders::{Group, GroupMask};
 use sapphire_core::Name;
 use sapphire_math::{Quat, det};
 use sapphire_reflect::Versioned;
 use serde::{Deserialize, Serialize};
 
 use crate::set::{
-    Allow, Button, CancelMode, CancelWindow, Cue, Hitbox, HurtboxChange, HurtboxState, IntentDef,
-    MAX_BUFFER_TICKS, MAX_INTENTS, MAX_MOVE_TICKS, MoveParts, MoveSet, MoveSetError, Shape, Span, WarpWindow,
+    Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, Cue, FighterDef, FighterHurtbox,
+    HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback, MAX_BUFFER_TICKS,
+    MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MoveParts, MoveSet, MoveSetError,
+    Reactions, Shape, Span, WarpWindow, Weight,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -45,6 +48,10 @@ pub struct MoveSetDocument {
     /// What starts a move from no move at all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub neutral: Vec<AllowDocument>,
+    /// What makes this set's actors something a hit can land on. Without it they play their moves and
+    /// nothing touches them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fighter: Option<FighterDocument>,
     pub moves: Vec<MoveDocument>,
 }
 
@@ -65,6 +72,53 @@ pub struct IntentDocument {
     /// Higher wins, when two could fire at the same instant.
     #[serde(default)]
     pub priority: u8,
+}
+
+/// A fighter: its numbers, its hurtboxes and its reactions. See [`FighterDef`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FighterDocument {
+    pub health: u32,
+    /// The poise meter. Left out or zero, nothing breaks it.
+    #[serde(default)]
+    pub poise: u32,
+    /// Ticks after the last hit that took poise before the meter is full again. Left out or zero,
+    /// only a break fills it.
+    #[serde(default)]
+    pub poise_refill: u32,
+    pub hurtboxes: Vec<FighterHurtboxDocument>,
+    #[serde(default)]
+    pub reactions: ReactionsDocument,
+}
+
+/// One of a fighter's own hurtboxes. See [`FighterHurtbox`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FighterHurtboxDocument {
+    pub name: String,
+    /// Metres from the root, in the root's space.
+    #[serde(default)]
+    pub offset: [f32; 3],
+    /// A unit rotation from the root, as x, y, z, w.
+    #[serde(default = "identity")]
+    pub rotation: [f32; 4],
+    pub shape: Shape,
+}
+
+/// Which moves a fighter's reactions play. See [`Reactions`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReactionsDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heavy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poise_break: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defeat: Option<String>,
 }
 
 /// An intent starting a move. See [`Allow`].
@@ -105,6 +159,8 @@ pub struct MoveDocument {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parry: Vec<SpanDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub armour: Vec<ArmourDocument>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cancels: Vec<CancelDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warps: Vec<WarpDocument>,
@@ -128,6 +184,38 @@ pub struct HitboxDocument {
     /// A path in this move's tables.
     pub path: String,
     pub shape: Shape,
+    /// What it does when it lands. Left out, a hit is an event and nothing more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attack: Option<AttackDocument>,
+    /// Ticks at which its hit group re-arms, ascending, inside its window: a multi-hit spin's beats.
+    /// Hitboxes sharing a name share a hit group, so they list the same ticks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rearm: Vec<u32>,
+    /// The collision groups that stop it. Left out, nothing does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<Group>,
+}
+
+/// What a hit volume does. See [`Attack`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AttackDocument {
+    pub damage: u32,
+    pub poise: u32,
+    pub weight: Weight,
+    /// Ticks both owners freeze for, up to [`MAX_HITSTOP_TICKS`].
+    pub hitstop: u16,
+    /// Ticks every actor freezes for if this defeats its target, up to [`MAX_HITSTOP_TICKS`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub finish_freeze: u16,
+    pub knockback: Knockback,
+    /// The cue it publishes. Left out, [`HIT_LANDED`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cue: Option<String>,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
 }
 
 /// A hurtbox change. See [`HurtboxChange`].
@@ -137,6 +225,15 @@ pub struct HurtboxDocument {
     pub from: u32,
     pub to: u32,
     pub state: HurtboxState,
+}
+
+/// A window of super armour. See [`ArmourWindow`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArmourDocument {
+    pub from: u32,
+    pub to: u32,
+    pub threshold: u32,
 }
 
 /// A cancel window. See [`CancelWindow`].
@@ -288,6 +385,113 @@ impl Checker {
             }
         }
         allows.iter().filter_map(|allow| self.allow(track, allow, intents, moves)).collect()
+    }
+
+    /// Checks what a hit volume does, and builds it.
+    fn attack(&mut self, name: &str, attack: &AttackDocument) -> Attack {
+        for (what, ticks) in [("hitstop", attack.hitstop), ("finish_freeze", attack.finish_freeze)] {
+            if ticks > MAX_HITSTOP_TICKS {
+                self.add(
+                    "hitboxes",
+                    format!("`{name}` has a {what} of {ticks} ticks, past the limit of {MAX_HITSTOP_TICKS}"),
+                );
+            }
+        }
+        let Knockback { distance, ticks } = attack.knockback;
+        if !distance.is_finite() || distance < 0.0 {
+            self.add("hitboxes", format!("`{name}` has a knockback that's negative or not finite"));
+        } else if distance > 0.0 && !(1..=MAX_MOVE_TICKS).contains(&ticks) {
+            self.add(
+                "hitboxes",
+                format!("`{name}` has a knockback over {ticks} ticks, not 1 to {MAX_MOVE_TICKS}"),
+            );
+        }
+        let cue = match &attack.cue {
+            Some(cue) => {
+                self.named("hitboxes", cue);
+                Name::intern(cue)
+            }
+            None => HIT_LANDED,
+        };
+        Attack::new(
+            attack.damage,
+            attack.poise,
+            attack.weight,
+            attack.hitstop,
+            attack.finish_freeze,
+            attack.knockback,
+            cue,
+        )
+    }
+
+    /// Checks a hit volume's re-arm ticks, which land inside its window, in order.
+    fn rearm(&mut self, name: &str, hitbox: &HitboxDocument) {
+        if !hitbox.rearm.windows(2).all(|pair| pair[0] < pair[1]) {
+            self.add("hitboxes", format!("`{name}`'s re-arm ticks are out of order"));
+        }
+        for &tick in &hitbox.rearm {
+            if tick <= hitbox.from || tick >= hitbox.to {
+                let (from, to) = (hitbox.from, hitbox.to);
+                self.add(
+                    "hitboxes",
+                    format!("`{name}` re-arms at tick {tick}, outside its window {from}..{to}"),
+                );
+            }
+        }
+    }
+
+    /// Checks a fighter and resolves its reactions' names, which must be moves of this set.
+    fn fighter(&mut self, fighter: &FighterDocument, moves: &[MoveDocument]) -> FighterDef {
+        if fighter.health == 0 {
+            self.add("fighter", "a fighter needs some health".to_owned());
+        }
+        if fighter.hurtboxes.is_empty() {
+            self.add("fighter", "a fighter needs a hurtbox".to_owned());
+        }
+        if fighter.hurtboxes.len() > MAX_HURTBOXES {
+            let count = fighter.hurtboxes.len();
+            self.add("fighter", format!("{count} hurtboxes, past the limit of {MAX_HURTBOXES}"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut hurtboxes = Vec::with_capacity(fighter.hurtboxes.len());
+        for hurtbox in &fighter.hurtboxes {
+            self.named("fighter", &hurtbox.name);
+            if !seen.insert(hurtbox.name.as_str()) {
+                self.add("fighter", format!("hurtbox `{}` appears twice", hurtbox.name));
+            }
+            self.shape("fighter", &hurtbox.name, hurtbox.shape);
+            if !hurtbox.offset.iter().chain(&hurtbox.rotation).all(|value| value.is_finite()) {
+                self.add("fighter", format!("hurtbox `{}` has a place that isn't finite", hurtbox.name));
+            }
+            let length_squared: f32 = hurtbox.rotation.iter().map(|value| value * value).sum();
+            if (length_squared - 1.0).abs() > UNIT_TOLERANCE {
+                self.add("fighter", format!("hurtbox `{}` doesn't have a unit rotation", hurtbox.name));
+            }
+            let local = PathSample { translation: hurtbox.offset, rotation: hurtbox.rotation };
+            hurtboxes.push(FighterHurtbox::new(Name::intern(&hurtbox.name), local, hurtbox.shape));
+        }
+        let reactions = &fighter.reactions;
+        let mut reaction = |which: &str, name: &Option<String>| {
+            let name = name.as_deref()?;
+            if !moves.iter().any(|mv| mv.name == name) {
+                self.add("fighter", format!("the {which} reaction `{name}` is not a move in this set"));
+            }
+            Some(Name::intern(name))
+        };
+        let reactions = Reactions::new(
+            reaction("light", &reactions.light),
+            reaction("medium", &reactions.medium),
+            reaction("heavy", &reactions.heavy),
+            reaction("poise break", &reactions.poise_break),
+            reaction("defeat", &reactions.defeat),
+        );
+        FighterDef {
+            health: fighter.health,
+            poise: fighter.poise,
+            poise_refill: fighter.poise_refill,
+            hurtboxes,
+            reactions,
+        }
     }
 
     /// Checks hand-keyed motion and bakes it, or `None` if a key is wrong.
@@ -483,6 +687,7 @@ impl MoveSetDocument {
             intents.push(IntentDef::new(intent.name.clone(), intent.button, intent.buffer, intent.priority));
         }
         let neutral = check.allows("neutral", &self.neutral, &intent_names, &self.moves);
+        let fighter = self.fighter.as_ref().map(|fighter| check.fighter(fighter, &self.moves));
 
         let mut names = BTreeSet::new();
         let mut moves = Vec::with_capacity(self.moves.len());
@@ -502,25 +707,31 @@ impl MoveSetDocument {
             if ticks > MAX_MOVE_TICKS {
                 continue;
             }
-            if let Some(built) = compile_move(mv, ticks, &intent_names, &self.moves, &mut check, &mut tables)
-            {
+            let known = Known { intents: &intent_names, moves: &self.moves, fighter: self.fighter.as_ref() };
+            if let Some(built) = compile_move(mv, ticks, &known, &mut check, &mut tables) {
                 moves.push(built);
             }
         }
 
         if check.issues.is_empty() {
-            Ok(MoveSet::from_parts(intents, neutral, moves))
+            Ok(MoveSet::from_parts(intents, neutral, fighter, moves))
         } else {
             Err(MoveSetError::Invalid(check.issues))
         }
     }
 }
 
+/// What a move's tracks can refer to.
+struct Known<'a> {
+    intents: &'a BTreeSet<&'a str>,
+    moves: &'a [MoveDocument],
+    fighter: Option<&'a FighterDocument>,
+}
+
 fn compile_move(
     mv: &MoveDocument,
     ticks: u32,
-    intents: &BTreeSet<&str>,
-    moves: &[MoveDocument],
+    known: &Known<'_>,
     check: &mut Checker,
     tables: &mut impl FnMut(&MoveDocument) -> Option<BakedTables>,
 ) -> Option<crate::set::Move> {
@@ -541,7 +752,23 @@ fn compile_move(
             let (name, path) = (&hitbox.name, &hitbox.path);
             check.add("hitboxes", format!("`{name}` rides path `{path}`, which isn't in the move's table"));
         }
-        hitboxes.push(Hitbox::new(Name::intern(&hitbox.name), path, span, hitbox.shape));
+        let attack = hitbox.attack.as_ref().map(|attack| check.attack(&hitbox.name, attack));
+        check.rearm(&hitbox.name, hitbox);
+        let same_group = mv.hitboxes.iter().find(|other| other.name == hitbox.name);
+        if same_group.is_some_and(|first| first.rearm != hitbox.rearm) {
+            check.add("hitboxes", format!("`{}` share a hit group and re-arm differently", hitbox.name));
+        }
+        let blocked_by =
+            hitbox.blocked_by.iter().fold(GroupMask::NONE, |mask, group| mask.union(group.mask()));
+        hitboxes.push(Hitbox::new(
+            Name::intern(&hitbox.name),
+            path,
+            span,
+            hitbox.shape,
+            attack,
+            hitbox.rearm.clone(),
+            blocked_by,
+        ));
     }
 
     let mut hurtboxes = Vec::with_capacity(mv.hurtboxes.len());
@@ -550,6 +777,11 @@ fn compile_move(
         let span = check.span("hurtboxes", change.from, change.to, ticks);
         if let HurtboxState::Shape(shape) = change.state {
             check.shape("hurtboxes", &change.name, shape);
+        }
+        if let Some(fighter) = known.fighter
+            && !fighter.hurtboxes.iter().any(|hurtbox| hurtbox.name == change.name)
+        {
+            check.add("hurtboxes", format!("`{}` is not one of this fighter's hurtboxes", change.name));
         }
         hurtboxes.push(HurtboxChange::new(Name::intern(&change.name), span, change.state));
     }
@@ -561,13 +793,23 @@ fn compile_move(
     let perfect_dodge = spans(check, "perfect_dodge", &mv.perfect_dodge);
     let parry = spans(check, "parry", &mv.parry);
 
+    let mut armour = Vec::with_capacity(mv.armour.len());
+    for window in &mv.armour {
+        let span = check.span("armour", window.from, window.to, ticks);
+        if window.threshold == 0 {
+            let (from, to) = (window.from, window.to);
+            check.add("armour", format!("window {from}..{to} has a threshold of 0, which stops nothing"));
+        }
+        armour.push(ArmourWindow { span, threshold: window.threshold });
+    }
+
     let mut cancels = Vec::with_capacity(mv.cancels.len());
     for window in &mv.cancels {
         let span = check.span("cancels", window.from, window.to, ticks);
         if window.allow.is_empty() {
             check.add("cancels", format!("window {}..{} allows nothing", window.from, window.to));
         }
-        let allow = check.allows("cancels", &window.allow, intents, moves);
+        let allow = check.allows("cancels", &window.allow, known.intents, known.moves);
         cancels.push(CancelWindow { span, allow });
     }
 
@@ -628,6 +870,7 @@ fn compile_move(
             invulnerable,
             perfect_dodge,
             parry,
+            armour,
             cancels,
             warps,
             cues,
@@ -641,7 +884,7 @@ mod tests {
     use sapphire_time::SimDuration;
 
     use super::*;
-    use crate::set::{MOVE_SET_EXTENSION, Phase};
+    use crate::set::{MOVE_SET_EXTENSION, Move, Phase};
 
     const SLICE: &str = include_str!("../test_content/slice.moves.ron");
 
@@ -701,8 +944,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 2,
-                current: 1
+                found: 3,
+                current: 2
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -714,6 +957,7 @@ mod tests {
         set = MoveSet::from_parts(
             set.intents().to_vec(),
             vec![Allow::new(Name::new("light"), target, Name::new("x"), CancelMode::Buffered)],
+            set.fighter().cloned(),
             set.moves().to_vec(),
         );
         let bad = set.to_cooked().unwrap();
@@ -727,6 +971,12 @@ mod tests {
         fn light(document: &mut MoveSetDocument) -> &mut MoveDocument {
             document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("in the content")
         }
+        fn attack(document: &mut MoveSetDocument) -> &mut AttackDocument {
+            light(document).hitboxes[0].attack.as_mut().expect("in the content")
+        }
+        fn fighter(document: &mut MoveSetDocument) -> &mut FighterDocument {
+            document.fighter.as_mut().expect("in the content")
+        }
         let cases: &[(&str, Edit, &[&str])] = &[
             (
                 "more intents than a set's holds have bits",
@@ -735,7 +985,7 @@ mod tests {
                     let name = |index| format!("extra_{index}");
                     d.intents.extend((0..16).map(|i| IntentDocument { name: name(i), ..extra.clone() }));
                 },
-                &["intents", "19 intents", "limit of 16"],
+                &["intents", "21 intents", "limit of 16"],
             ),
             (
                 "a window past the move's end",
@@ -864,6 +1114,142 @@ mod tests {
                 &["light_1", "cancels", "allows nothing"],
             ),
             (
+                "a hitstop past its limit",
+                |d| attack(d).hitstop = 121,
+                &["light_1", "hitboxes", "light_1_hit", "hitstop of 121 ticks", "limit of 120"],
+            ),
+            (
+                "a finish freeze past its limit",
+                |d| attack(d).finish_freeze = 121,
+                &["light_1", "hitboxes", "light_1_hit", "finish_freeze of 121 ticks"],
+            ),
+            (
+                "a knockback going backwards",
+                |d| attack(d).knockback.distance = -1.0,
+                &["light_1", "hitboxes", "light_1_hit", "knockback", "negative"],
+            ),
+            (
+                "a knockback that isn't finite",
+                |d| attack(d).knockback.distance = f32::NAN,
+                &["light_1", "hitboxes", "light_1_hit", "knockback", "not finite"],
+            ),
+            (
+                "a knockback in no time",
+                |d| attack(d).knockback = Knockback { distance: 1.0, ticks: 0 },
+                &["light_1", "hitboxes", "light_1_hit", "knockback over 0 ticks"],
+            ),
+            (
+                "a knockback past a move's longest",
+                |d| attack(d).knockback = Knockback { distance: 1.0, ticks: 3601 },
+                &["light_1", "hitboxes", "light_1_hit", "knockback over 3601 ticks"],
+            ),
+            (
+                "a cue with no name",
+                |d| attack(d).cue = Some(String::new()),
+                &["light_1", "hitboxes", "empty"],
+            ),
+            (
+                "re-arm ticks out of order",
+                |d| {
+                    let hitbox = &mut light(d).hitboxes[0];
+                    (hitbox.from, hitbox.to, hitbox.rearm) = (5, 8, vec![7, 6]);
+                },
+                &["light_1", "hitboxes", "light_1_hit", "out of order"],
+            ),
+            (
+                "a re-arm tick repeated",
+                |d| light(d).hitboxes[0].rearm = vec![6, 6],
+                &["light_1", "hitboxes", "out of order"],
+            ),
+            (
+                "a re-arm on its window's first tick, which can't follow anything",
+                |d| light(d).hitboxes[0].rearm = vec![5],
+                &["light_1", "hitboxes", "re-arms at tick 5", "outside its window 5..8"],
+            ),
+            (
+                "a re-arm on its window's end",
+                |d| light(d).hitboxes[0].rearm = vec![8],
+                &["light_1", "hitboxes", "re-arms at tick 8"],
+            ),
+            (
+                "two windows of one group re-arming differently",
+                |d| {
+                    let copy = HitboxDocument { rearm: vec![6], ..light(d).hitboxes[0].clone() };
+                    light(d).hitboxes.push(copy);
+                },
+                &["light_1", "hitboxes", "`light_1_hit`", "re-arm differently"],
+            ),
+            (
+                "an armour window that stops nothing",
+                |d| light(d).armour.push(ArmourDocument { from: 1, to: 4, threshold: 0 }),
+                &["light_1", "armour", "1..4", "threshold of 0"],
+            ),
+            (
+                "an armour window past the move's end",
+                |d| light(d).armour.push(ArmourDocument { from: 1, to: 40, threshold: 5 }),
+                &["light_1", "armour", "1..40", "past the move's end"],
+            ),
+            (
+                "a hurtbox window naming none of the fighter's",
+                |d| {
+                    light(d).hurtboxes.push(HurtboxDocument {
+                        name: "ghost".to_owned(),
+                        from: 1,
+                        to: 2,
+                        state: HurtboxState::Off,
+                    });
+                },
+                &["light_1", "hurtboxes", "`ghost`", "not one of this fighter's"],
+            ),
+            ("a fighter with no health", |d| fighter(d).health = 0, &["`fighter`", "needs some health"]),
+            (
+                "a fighter with no hurtbox",
+                |d| fighter(d).hurtboxes.clear(),
+                &["`fighter`", "needs a hurtbox"],
+            ),
+            (
+                "a fighter with too many hurtboxes",
+                |d| {
+                    let hurtbox = fighter(d).hurtboxes[0].clone();
+                    let named = |i| FighterHurtboxDocument { name: format!("extra_{i}"), ..hurtbox.clone() };
+                    fighter(d).hurtboxes.extend((0..16).map(named));
+                },
+                &["`fighter`", "17 hurtboxes", "limit of 16"],
+            ),
+            (
+                "a hurtbox listed twice",
+                |d| {
+                    let hurtbox = fighter(d).hurtboxes[0].clone();
+                    fighter(d).hurtboxes.push(hurtbox);
+                },
+                &["`fighter`", "`body`", "appears twice"],
+            ),
+            (
+                "a hurtbox with no size",
+                |d| fighter(d).hurtboxes[0].shape = Shape::Sphere { radius: 0.0 },
+                &["`fighter`", "`body`", "shape"],
+            ),
+            (
+                "a hurtbox placed nowhere",
+                |d| fighter(d).hurtboxes[0].offset[1] = f32::INFINITY,
+                &["`fighter`", "`body`", "isn't finite"],
+            ),
+            (
+                "a hurtbox with a rotation that isn't unit",
+                |d| fighter(d).hurtboxes[0].rotation = [0.0, 0.0, 0.0, 2.0],
+                &["`fighter`", "`body`", "unit rotation"],
+            ),
+            (
+                "a reaction that isn't a move",
+                |d| fighter(d).reactions.defeat = Some("ghost".to_owned()),
+                &["`fighter`", "defeat reaction", "`ghost`", "not a move"],
+            ),
+            (
+                "another reaction that isn't a move",
+                |d| fighter(d).reactions.poise_break = Some("ghost".to_owned()),
+                &["`fighter`", "poise break reaction", "`ghost`"],
+            ),
+            (
                 "a root key out of order",
                 |d| light(d).motion.root.reverse(),
                 &["light_1", "motion", "out of order"],
@@ -914,8 +1300,106 @@ mod tests {
 
     #[test]
     fn an_empty_set_is_refused() {
-        let document = MoveSetDocument { intents: vec![], neutral: vec![], moves: vec![] };
+        let document = MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, moves: vec![] };
         assert!(document.check().iter().any(|issue| issue.message.contains("at least one move")));
+    }
+
+    #[test]
+    fn what_a_fight_reads_compiles_from_its_document() {
+        let set = slice().compile().unwrap();
+        let (_, light) = set.find(Name::new("light_1")).unwrap();
+        let attack = light.hitboxes[0].attack.expect("authored");
+        assert_eq!((attack.damage, attack.poise, attack.weight, attack.hitstop), (6, 8, Weight::Light, 3));
+        assert_eq!(attack.knockback, Knockback { distance: 0.25, ticks: 8 });
+        assert_eq!(attack.cue(), HIT_LANDED, "with none authored");
+        assert_eq!(light.hitboxes[0].rearm, Vec::<u32>::new());
+        assert_eq!(light.hitboxes[0].blocked_by(), GroupMask::NONE);
+
+        let (_, heavy) = set.find(Name::new("heavy")).unwrap();
+        let attack = heavy.hitboxes[0].attack.expect("authored");
+        assert_eq!(attack.weight, Weight::Heavy);
+        assert_eq!(attack.cue(), Name::new("hit_heavy"), "authored");
+        assert_eq!(attack.finish_freeze, 24);
+        assert_eq!(heavy.armour, [ArmourWindow { span: Span { from: 2, to: 20 }, threshold: 15 }]);
+
+        let (_, spin) = set.find(Name::new("spin")).unwrap();
+        assert_eq!(spin.hitboxes[0].rearm, [11, 15]);
+        assert_eq!(spin.hitboxes[0].blocked_by(), Group::World.mask());
+
+        let fighter = set.fighter().expect("authored");
+        assert_eq!((fighter.health, fighter.poise, fighter.poise_refill), (300, 60, 240));
+        assert_eq!(fighter.refill(), SimDuration::from_ticks(240));
+        assert_eq!(fighter.hurtboxes.len(), 1);
+        let body = fighter.hurtboxes[0];
+        assert_eq!(body.name(), Name::new("body"));
+        assert_eq!(body.local.translation, [0.0, 0.9, 0.0]);
+        assert_eq!(body.local.rotation, PathSample::IDENTITY.rotation, "by default");
+        assert_eq!(body.shape, Shape::Capsule { radius: 0.35, length: 1.0 });
+        let reactions = fighter.reactions;
+        assert_eq!(reactions.flinch(Weight::Light), Some(Name::new("flinch")));
+        assert_eq!(reactions.flinch(Weight::Medium), Some(Name::new("stagger")));
+        assert_eq!(reactions.flinch(Weight::Heavy), Some(Name::new("knockdown")));
+        assert_eq!(reactions.poise_break(), Some(Name::new("dazed")));
+        assert_eq!(reactions.defeat(), Some(Name::new("defeat")));
+        assert!(Weight::Light < Weight::Medium && Weight::Medium < Weight::Heavy);
+    }
+
+    #[test]
+    fn a_set_with_no_fighter_or_attacks_still_compiles_as_it_did() {
+        let mut document = slice();
+        document.fighter = None;
+        for mv in &mut document.moves {
+            for hitbox in &mut mv.hitboxes {
+                hitbox.attack = None;
+            }
+        }
+        let text = document.to_text().unwrap();
+        assert!(!text.contains("fighter:") && !text.contains("attack:"), "{text}");
+        let set = MoveSetDocument::parse(&text).unwrap().compile().unwrap();
+        assert!(set.fighter().is_none());
+        assert_eq!(set.moves()[0].hitboxes[0].attack, None);
+    }
+
+    #[test]
+    fn a_misspelt_field_in_what_a_hit_does_is_an_error() {
+        let with = |from: &str, to: &str| {
+            assert!(SLICE.contains(from), "{from}");
+            MoveSetDocument::parse(&SLICE.replacen(from, to, 1))
+        };
+        assert!(matches!(with("hitstop:", "hitstp:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("poise_refill:", "poise_refil:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("threshold:", "treshold:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("distance:", "distanse:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(
+            with("heavy: \"knockdown\"", "hevy: \"knockdown\""),
+            Err(MoveSetError::Document(_))
+        ));
+    }
+
+    /// Bytes from anywhere are checked as well as documents are, for what the simulation relies on.
+    #[test]
+    fn a_fight_read_from_damaged_bytes_is_refused() {
+        let good = slice().compile().unwrap();
+        let rebuilt = |edit: fn(&mut Vec<Move>, &mut Option<FighterDef>)| {
+            let mut moves = good.moves().to_vec();
+            let mut fighter = good.fighter().cloned();
+            edit(&mut moves, &mut fighter);
+            let set = MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, moves);
+            MoveSet::from_cooked(&set.to_cooked().unwrap())
+        };
+        assert!(rebuilt(|_, _| {}).is_ok());
+        let too_many = rebuilt(|_, fighter| {
+            let fighter = fighter.as_mut().unwrap();
+            let body = fighter.hurtboxes[0];
+            fighter.hurtboxes = vec![body; MAX_HURTBOXES + 1];
+        });
+        assert!(matches!(too_many, Err(MoveSetError::Damaged(text)) if text.contains("hurtboxes")));
+        let rearm = rebuilt(|moves, _| moves[0].hitboxes[0].rearm = vec![7, 6]);
+        assert!(matches!(rearm, Err(MoveSetError::Damaged(text)) if text.contains("re-arms")));
+        let armour = rebuilt(|moves, _| {
+            moves[0].armour = vec![ArmourWindow { span: Span { from: 1, to: 999 }, threshold: 1 }];
+        });
+        assert!(matches!(armour, Err(MoveSetError::Damaged(text)) if text.contains("window")));
     }
 
     #[test]

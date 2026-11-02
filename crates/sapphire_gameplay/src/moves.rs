@@ -44,6 +44,7 @@ use crate::actors::{ActorId, ActorTable};
 use crate::cues::{CueEvent, CueQueue};
 use crate::intents::{Intent, IntentRing};
 use crate::movement::{ActorTransform, RootDelta};
+use crate::resolve::Fighter;
 
 /// Most hit volumes one actor publishes in a step. Past this they're counted
 /// ([`crate::SimStats::volumes_dropped`]).
@@ -283,6 +284,12 @@ impl<T: Copy, const N: usize> Published<T, N> {
         self.items[..usize::from(self.len)].first_mut()?.as_mut()
     }
 
+    /// One of the list, by its place.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<T> {
+        self.items[..usize::from(self.len)].get(index).copied().flatten()
+    }
+
     /// Empties the list, for tests of what's watching it.
     #[cfg(test)]
     pub(crate) fn clear(&mut self) {
@@ -298,6 +305,10 @@ pub struct ActiveVolume {
     pub at: MoveRef,
     /// Which playing of a move it belongs to: targets hit are remembered per `(serial, name)`.
     pub serial: u32,
+    /// When that playing began, on the actor's clock.
+    pub started_at: SimTime,
+    /// Its place in the move's [`Move::hitboxes`], where what it does when it lands is.
+    pub hitbox: u32,
     /// The hit's name.
     pub name: Name,
     /// The path it rides.
@@ -330,6 +341,9 @@ pub struct LiveWindows {
     pub parry: bool,
     pub cancel: bool,
     pub warp: bool,
+    /// The highest threshold of the armour windows that count this step, or 0 with none: a hit taking
+    /// less poise than this plays no reaction.
+    pub armour: u32,
 }
 
 /// What an actor's moves published this step, for hits, resolve and presentation. Cleared each
@@ -469,16 +483,24 @@ pub(crate) fn settle_cancels(
     world_clock: Res<'_, WorldClock>,
     mut cues: ResMut<'_, CueQueue>,
     mut stats: ResMut<'_, MoveStats>,
-    mut actors: Query<'_, '_, (&EntityClock, &mut MoveRunner, &mut IntentRing, &mut MoveOutput, &WarpTarget)>,
+    mut actors: Query<
+        '_,
+        '_,
+        (&EntityClock, &mut MoveRunner, &mut IntentRing, &mut MoveOutput, &WarpTarget, &Fighter),
+    >,
     transforms: Query<'_, '_, &ActorTransform>,
 ) {
     let tick = world_clock.0.ticks();
     for (id, entity) in table.iter() {
-        let Ok((clock, mut runner, mut ring, mut output, target)) = actors.get_mut(entity) else {
+        let Ok((clock, mut runner, mut ring, mut output, target, fighter)) = actors.get_mut(entity) else {
             continue;
         };
         *output = MoveOutput::default();
         let Some(set) = runner.set else { continue };
+        // A defeated actor starts nothing more: with nothing in its ring, only a forced start can fire.
+        if fighter.is_defeated() {
+            ring.reset();
+        }
         let Ok(origin) = transforms.get(entity) else { continue };
         let target = target_position(*target, &table, &transforms);
         let stage = Stage {
@@ -776,6 +798,7 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
                 tick: stage.tick,
                 local_time: running.started_at + cue.time(),
                 move_time: cue.time(),
+                hit: None,
             });
         }
     }
@@ -787,9 +810,14 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
     windows.parry |= live(&mv.parry);
     windows.cancel |= mv.cancels.iter().any(|window| window.span.live(stretch));
     windows.warp |= mv.warps.iter().any(|window| window.span.live(stretch));
+    for window in &mv.armour {
+        if window.span.live(stretch) {
+            windows.armour = windows.armour.max(window.threshold);
+        }
+    }
 
-    for hitbox in &mv.hitboxes {
-        publish_volume(stage, mv, running, hitbox, stretch);
+    for (index, hitbox) in mv.hitboxes.iter().enumerate() {
+        publish_volume(stage, mv, running, index as u32, hitbox, stretch);
     }
     for change in &mv.hurtboxes {
         publish_hurtbox(stage, change, stretch);
@@ -797,12 +825,21 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
     walk_root(stage, mv, running, stretch);
 }
 
-fn publish_volume(stage: &mut Stage<'_>, mv: &Move, running: &Running, hitbox: &Hitbox, stretch: Stretch) {
+fn publish_volume(
+    stage: &mut Stage<'_>,
+    mv: &Move,
+    running: &Running,
+    index: u32,
+    hitbox: &Hitbox,
+    stretch: Stretch,
+) {
     let Some((from, to)) = hitbox.span.sweep(stretch) else { return };
     let Some(path) = mv.tables.path(hitbox.path()) else { return };
     let published = stage.output.volumes.push(ActiveVolume {
         at: running.at,
         serial: running.serial,
+        started_at: running.started_at,
+        hitbox: index,
         name: hitbox.name(),
         path: hitbox.path(),
         shape: hitbox.shape,

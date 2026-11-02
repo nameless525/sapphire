@@ -17,14 +17,16 @@ use std::num::NonZeroU32;
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
+use sapphire_moves::MoveSet;
 use sapphire_time::{SimDuration, SimTime};
 
 use crate::actions::Controls;
 use crate::controller::{CharacterController, CharacterWorld, ProfileId};
-use crate::hits::MAX_HURTBOXES;
+use crate::hits::{HitQuery, MAX_HURTBOXES};
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
-use crate::moves::{MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
+use crate::moves::{MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
+use crate::resolve::Fighter;
 
 /// How many bodies a pool of `max_actors` can put in a world: each actor's capsule and all its
 /// hurtboxes.
@@ -211,6 +213,7 @@ struct ActorBundle {
     output: MoveOutput,
     target: WarpTarget,
     controller: CharacterController,
+    fighter: Fighter,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -227,6 +230,7 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             output: MoveOutput::default(),
             target: WarpTarget::default(),
             controller: CharacterController::default(),
+            fighter: Fighter::default(),
         });
         pool.push(entity.id());
     }
@@ -244,6 +248,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut MoveOutput,
     &'w mut WarpTarget,
     &'w mut CharacterController,
+    &'w mut Fighter,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -256,6 +261,7 @@ type ActorStateItem<'w> = (
     Mut<'w, MoveOutput>,
     Mut<'w, WarpTarget>,
     Mut<'w, CharacterController>,
+    Mut<'w, Fighter>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -264,6 +270,8 @@ pub(crate) fn resolve_actor_requests(
     mut requests: ResMut<'_, ActorRequests>,
     mut table: ResMut<'_, ActorTable>,
     mut world_clock: ResMut<'_, WorldClock>,
+    library: Res<'_, MoveLibrary>,
+    mut hits: ResMut<'_, HitQuery>,
     mut actors: Query<'_, '_, ActorState<'_>>,
     mut characters: ResMut<'_, CharacterWorld>,
 ) {
@@ -273,11 +281,12 @@ pub(crate) fn resolve_actor_requests(
             let (_, entity) = table.live.remove(index);
             requests.free.push(entity);
             characters.despawned(id);
+            hits.forget_actor(id);
         }
     }
     for PendingSpawn { id, entity, spawn } in requests.spawns.drain(..) {
         if let Ok(actor) = actors.get_mut(entity) {
-            reset_actor(actor, id, spawn, &mut world_clock, &mut characters);
+            reset_actor(actor, id, spawn, &mut world_clock, &mut characters, &library);
             table.live.push((id, entity));
         }
     }
@@ -286,11 +295,22 @@ pub(crate) fn resolve_actor_requests(
 /// Makes a pooled entity a new actor. Clock IDs come from the world clock in spawn order, so a replay
 /// gets the same ones (and a reused entity's old scale handles can't touch its new clock).
 fn reset_actor(
-    (mut clock, mut controls, mut transform, mut runner, mut ring, mut output, mut target, mut controller): ActorStateItem<'_>,
+    (
+        mut clock,
+        mut controls,
+        mut transform,
+        mut runner,
+        mut ring,
+        mut output,
+        mut target,
+        mut controller,
+        mut fighter,
+    ): ActorStateItem<'_>,
     id: ActorId,
     spawn: ActorSpawn,
     world_clock: &mut WorldClock,
     characters: &mut CharacterWorld,
+    library: &MoveLibrary,
 ) {
     *clock = world_clock.new_entity_clock();
     *controls = Controls::default();
@@ -300,6 +320,8 @@ fn reset_actor(
     *output = MoveOutput::default();
     *target = WarpTarget::None;
     *controller = characters.spawned(id, spawn.controller, &transform);
+    let def = spawn.moves.and_then(|set| library.current(set)).and_then(MoveSet::fighter);
+    *fighter = def.map_or_else(Fighter::default, Fighter::new);
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -320,4 +342,6 @@ pub struct ActorView {
     pub moves: MoveRead,
     /// Its character controller, inactive if it has none.
     pub controller: CharacterController,
+    /// Its health and poise.
+    pub fighter: Fighter,
 }

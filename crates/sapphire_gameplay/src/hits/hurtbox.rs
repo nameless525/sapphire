@@ -9,8 +9,11 @@ use super::volume::volume_pose;
 use crate::ActorTransform;
 use crate::actors::ActorId;
 
-/// The most hurtboxes one actor can have.
-pub const MAX_HURTBOXES: u8 = 16;
+/// The most hurtboxes one actor can have: as many as a move set's fighter may list.
+pub const MAX_HURTBOXES: u8 = {
+    assert!(sapphire_moves::MAX_HURTBOXES <= (INDEX_MASK + 1) as usize);
+    sapphire_moves::MAX_HURTBOXES as u8
+};
 
 /// Marks a [`BodyId`] as a hurtbox's, above any ID a character's capsule uses.
 const HURTBOX_BIT: u32 = 1 << 31;

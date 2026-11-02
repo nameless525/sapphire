@@ -9,16 +9,16 @@
 //!
 //! - [`MoveSetDocument`], the RON a person or the timeline editor writes, checked with messages
 //!   naming the move and track ([`Issue`]);
-//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, and each [`Move`]'s
-//!   tracks and tables;
+//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`] and each
+//!   [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
 //! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
 //!
 //! Plain data with no renderer, world or ECS behind it, so the cooker and a replay job can both link
 //! it.
 //!
-//! Doesn't own: running moves (`sapphire_gameplay`), sampling a clip into these tables (the
-//! pipeline's clip cook, M2 N1), or testing hit volumes against anything (M2 D4).
+//! Doesn't own: running moves or applying hits (`sapphire_gameplay`), sampling a clip into these tables
+//! (the pipeline's clip cook, M2 N1), or testing hit volumes against anything (M2 D4).
 //!
 //! # The document
 //!
@@ -39,6 +39,17 @@
 //!         ],
 //!         // What starts a move when no move is running.
 //!         neutral: [(intent: "light", move: "jab")],
+//!         // What makes its actors something a hit can land on. Left out, nothing touches them.
+//!         fighter: (
+//!             health: 100,
+//!             // A hit taking the last of this plays `poise_break` and fills it again.
+//!             poise: 40,
+//!             // Full again this long after the last hit that took some.
+//!             poise_refill: 240,
+//!             hurtboxes: [(name: "body", offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.35, length: 1.0))],
+//!             // The moves reactions play, by a hit's weight: light, medium and heavy.
+//!             reactions: (light: "jab", poise_break: "jab", defeat: "jab"),
+//!         ),
 //!         moves: [(
 //!             name: "jab",
 //!             // The move lasts their sum: 20 ticks.
@@ -51,8 +62,25 @@
 //!                 paths: [(name: "fist", keys: [(at: 0, offset: (0.2, 1.2, 0.5))])],
 //!             ),
 //!             // Every window is `from` up to but not including `to`.
-//!             hitboxes: [(name: "jab_hit", from: 4, to: 6, path: "fist", shape: Sphere(radius: 0.3))],
+//!             hitboxes: [(
+//!                 name: "jab_hit",
+//!                 from: 4,
+//!                 to: 6,
+//!                 path: "fist",
+//!                 shape: Sphere(radius: 0.3),
+//!                 // All optional. Left out, a hit is an event and nothing more.
+//!                 attack: (
+//!                     damage: 8,
+//!                     poise: 6,
+//!                     weight: Light,
+//!                     // Both owners' clocks freeze this long.
+//!                     hitstop: 4,
+//!                     knockback: (distance: 0.3, ticks: 8),
+//!                 ),
+//!             )],
 //!             invulnerable: [(from: 0, to: 2)],
+//!             // Below this much poise, a hit does its damage and no reaction plays.
+//!             armour: [(from: 0, to: 4, threshold: 10)],
 //!             cancels: [(from: 10, to: 18, allow: [
 //!                 (intent: "light", move: "jab"),
 //!                 (intent: "lunge", move: "jab", when: Instant),
@@ -142,14 +170,16 @@ mod document;
 mod set;
 
 pub use document::{
-    AllowDocument, CancelDocument, CueDocument, HitboxDocument, HurtboxDocument, IntentDocument, Issue,
-    MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey, RootKey, SpanDocument,
+    AllowDocument, ArmourDocument, AttackDocument, CancelDocument, CueDocument, FighterDocument,
+    FighterHurtboxDocument, HitboxDocument, HurtboxDocument, IntentDocument, Issue, MotionDocument,
+    MoveDocument, MoveSetDocument, PathDocument, PathKey, ReactionsDocument, RootKey, SpanDocument,
     WarpDocument,
 };
 pub use set::{
-    Allow, ArchivedMoveSet, Button, CancelMode, CancelWindow, Cue, Hitbox, HurtboxChange, HurtboxState,
-    IntentDef, MAX_BUFFER_TICKS, MAX_INTENTS, MAX_MOVE_TICKS, MOVE_SET_EXTENSION, Move, MoveSet,
-    MoveSetError, Phase, Shape, Span, Stretch, WarpWindow,
+    Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, Cue, FighterDef,
+    FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback, MAX_BUFFER_TICKS,
+    MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MOVE_SET_EXTENSION, Move, MoveSet,
+    MoveSetError, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight,
 };
 
 use bevy_reflect::TypePath;

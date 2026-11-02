@@ -2,6 +2,8 @@
 // ticks, with motion keyed by hand until real clips bake (M2 O3 replaces this content, not its
 // format). A press reaches a moving frame the tick after it lands; attacks commit for a third of a
 // second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them perfect.
+// A light hit freezes both fighters for 50 ms and a heavy one for 167; a poise meter takes about seven
+// light hits or two heavy ones to break, and its break is a second and a half to punish.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -9,14 +11,34 @@
         intents: [
             // A dodge beats a skill beats an attack when two could fire at one instant.
             (name: "light", button: Light, buffer: 12, priority: 1),
+            (name: "heavy", button: Heavy, buffer: 10, priority: 1),
+            (name: "spin", button: Ultimate, buffer: 10, priority: 2),
             (name: "skill", button: Skill, buffer: 10, priority: 2),
             (name: "dodge", button: Dodge, buffer: 8, priority: 3),
         ],
         neutral: [
             (intent: "light", move: "light_1"),
+            (intent: "heavy", move: "heavy"),
+            (intent: "spin", move: "spin"),
             (intent: "skill", move: "skill"),
             (intent: "dodge", move: "dodge"),
         ],
+        fighter: (
+            health: 300,
+            poise: 60,
+            // Four seconds without a hit that takes poise, and the meter is full again.
+            poise_refill: 240,
+            hurtboxes: [
+                (name: "body", offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.35, length: 1.0)),
+            ],
+            reactions: (
+                light: "flinch",
+                medium: "stagger",
+                heavy: "knockdown",
+                poise_break: "dazed",
+                defeat: "defeat",
+            ),
+        ),
         moves: [
             (
                 // 433 ms. Quick to come out and quick to chain.
@@ -43,7 +65,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "light_1_hit", from: 5, to: 8, path: "blade", shape: Capsule(radius: 0.25, length: 0.9)),
+                    (
+                        name: "light_1_hit",
+                        from: 5,
+                        to: 8,
+                        path: "blade",
+                        shape: Capsule(radius: 0.25, length: 0.9),
+                        attack: (damage: 6, poise: 8, weight: Light, hitstop: 3, knockback: (distance: 0.25, ticks: 8)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 26, allow: [(intent: "dodge", move: "dodge")]),
@@ -82,7 +111,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "light_2_hit", from: 6, to: 10, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                    (
+                        name: "light_2_hit",
+                        from: 6,
+                        to: 10,
+                        path: "blade",
+                        shape: Capsule(radius: 0.28, length: 0.9),
+                        attack: (damage: 8, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.3, ticks: 8)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 30, allow: [(intent: "dodge", move: "dodge")]),
@@ -119,7 +155,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "light_3_hit", from: 9, to: 14, path: "blade", shape: Sphere(radius: 0.5)),
+                    (
+                        name: "light_3_hit",
+                        from: 9,
+                        to: 14,
+                        path: "blade",
+                        shape: Sphere(radius: 0.5),
+                        attack: (damage: 14, poise: 18, weight: Medium, hitstop: 7, finish_freeze: 16, knockback: (distance: 0.7, ticks: 12)),
+                    ),
                 ],
                 cancels: [
                     (from: 4, to: 42, allow: [(intent: "dodge", move: "dodge")]),
@@ -178,7 +221,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "dash_hit", from: 4, to: 8, path: "blade", shape: Capsule(radius: 0.3, length: 1.0)),
+                    (
+                        name: "dash_hit",
+                        from: 4,
+                        to: 8,
+                        path: "blade",
+                        shape: Capsule(radius: 0.3, length: 1.0),
+                        attack: (damage: 10, poise: 12, weight: Medium, hitstop: 5, knockback: (distance: 0.5, ticks: 10)),
+                    ),
                 ],
                 cancels: [
                     (from: 2, to: 28, allow: [(intent: "dodge", move: "dodge")]),
@@ -215,8 +265,22 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "skill_hit_1", from: 8, to: 12, path: "fist", shape: Sphere(radius: 0.4)),
-                    (name: "skill_hit_2", from: 15, to: 20, path: "fist", shape: Box(half_extents: (0.4, 0.4, 0.7))),
+                    (
+                        name: "skill_hit_1",
+                        from: 8,
+                        to: 12,
+                        path: "fist",
+                        shape: Sphere(radius: 0.4),
+                        attack: (damage: 8, poise: 10, weight: Light, hitstop: 4, knockback: (distance: 0.2, ticks: 6)),
+                    ),
+                    (
+                        name: "skill_hit_2",
+                        from: 15,
+                        to: 20,
+                        path: "fist",
+                        shape: Box(half_extents: (0.4, 0.4, 0.7)),
+                        attack: (damage: 16, poise: 24, weight: Medium, hitstop: 8, knockback: (distance: 0.6, ticks: 10)),
+                    ),
                 ],
                 invulnerable: [(from: 0, to: 8)],
                 parry: [(from: 2, to: 6)],
@@ -231,6 +295,137 @@
                     (name: "skill_hit", at: 8),
                     (name: "skill_hit", at: 15),
                 ],
+            ),
+            (
+                // 817 ms: slow to come out, armoured against light hits through its wind-up, and it knocks
+                // down what it lands on.
+                name: "heavy",
+                startup: 14,
+                active: 5,
+                recovery: 30,
+                motion: (
+                    root: [
+                        (at: 14, offset: (0.0, 0.0, 0.2)),
+                        (at: 19, offset: (0.0, 0.0, 1.1)),
+                        (at: 26, offset: (0.0, 0.0, 1.2)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (0.4, 1.6, 0.0)),
+                                (at: 14, offset: (0.2, 1.9, 0.4)),
+                                (at: 19, offset: (-0.2, 0.6, 1.3)),
+                                (at: 49, offset: (0.2, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "heavy_hit",
+                        from: 14,
+                        to: 19,
+                        path: "blade",
+                        shape: Capsule(radius: 0.35, length: 1.1),
+                        attack: (
+                            damage: 30,
+                            poise: 40,
+                            weight: Heavy,
+                            hitstop: 10,
+                            finish_freeze: 24,
+                            knockback: (distance: 1.4, ticks: 16),
+                            cue: "hit_heavy",
+                        ),
+                    ),
+                ],
+                armour: [(from: 2, to: 20, threshold: 15)],
+                cancels: [(from: 20, to: 49, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "swing", at: 14)],
+            ),
+            (
+                // 650 ms: a spin with three beats, which a wall stops.
+                name: "spin",
+                startup: 7,
+                active: 12,
+                recovery: 20,
+                motion: (
+                    root: [
+                        (at: 1, offset: (0.0, 0.0, 0.01)),
+                        (at: 19, offset: (0.0, 0.0, 0.4)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 7, offset: (1.0, 1.0, 0.0)),
+                                (at: 10, offset: (0.0, 1.0, 1.0)),
+                                (at: 13, offset: (-1.0, 1.0, 0.0)),
+                                (at: 16, offset: (0.0, 1.0, -1.0)),
+                                (at: 19, offset: (1.0, 1.0, 0.0)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "spin_hit",
+                        from: 7,
+                        to: 19,
+                        path: "blade",
+                        shape: Sphere(radius: 0.6),
+                        attack: (damage: 5, poise: 6, weight: Light, hitstop: 2, knockback: (distance: 0.1, ticks: 4), cue: "hit_spin"),
+                        rearm: [11, 15],
+                        blocked_by: [World],
+                    ),
+                ],
+                cancels: [(from: 22, to: 39, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "swing", at: 7)],
+            ),
+            (
+                // 300 ms: a light hit's reaction, with a dodge out of its end.
+                name: "flinch",
+                startup: 0,
+                active: 6,
+                recovery: 12,
+                cancels: [(from: 10, to: 18, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 500 ms: a medium hit's.
+                name: "stagger",
+                startup: 0,
+                active: 10,
+                recovery: 20,
+                cancels: [(from: 22, to: 30, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 1,167 ms: a heavy hit's, down and up again, untouchable throughout.
+                name: "knockdown",
+                startup: 0,
+                active: 30,
+                recovery: 40,
+                invulnerable: [(from: 0, to: 70)],
+                cancels: [(from: 60, to: 70, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "knocked_down", at: 0)],
+            ),
+            (
+                // 1,500 ms: a broken poise's, open to punishment: hits land and it stays dazed.
+                name: "dazed",
+                startup: 0,
+                active: 60,
+                recovery: 30,
+                armour: [(from: 0, to: 90, threshold: 1000)],
+                cues: [(name: "reaction", at: 0)],
+            ),
+            (
+                // 2 s, with no way out: the fight's over for this one.
+                name: "defeat",
+                startup: 0,
+                active: 30,
+                recovery: 90,
+                cues: [(name: "falls", at: 0)],
             ),
         ],
     ),

@@ -175,6 +175,8 @@ fn only_the_running_moves_volumes_read_the_clock() {
     let volume = |serial| crate::ActiveVolume {
         at: current.at,
         serial,
+        started_at: sapphire_time::SimTime::ZERO,
+        hitbox: 0,
         name: Name::new("swing"),
         path: Name::new("blade"),
         shape: sapphire_moves::Shape::Sphere { radius: 0.1 },

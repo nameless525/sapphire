@@ -2,6 +2,7 @@
 //! [`MoveSetDocument`](crate::MoveSetDocument). See the [crate docs](crate).
 
 use bevy_reflect::TypePath;
+use sapphire_colliders::GroupMask;
 use sapphire_core::Name;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
@@ -10,7 +11,7 @@ use sapphire_time::SimDuration;
 use serde::{Deserialize, Serialize};
 
 use crate::document::Issue;
-use crate::{BakedTables, TablesError};
+use crate::{BakedTables, PathSample, TablesError};
 
 /// Conventional file extension for cooked move sets.
 pub const MOVE_SET_EXTENSION: &str = "smoves";
@@ -24,6 +25,15 @@ pub const MAX_BUFFER_TICKS: u32 = 15;
 /// Longest move a set may hold, in ticks (a minute): past this it's a typo, and a keyed table's
 /// samples would be its cost.
 pub const MAX_MOVE_TICKS: u32 = 3600;
+
+/// Most hurtboxes one fighter has: `sapphire_gameplay`'s hurtbox IDs hold four bits of index.
+pub const MAX_HURTBOXES: usize = 16;
+
+/// Longest one hit may freeze anyone, in ticks (two seconds): past this it's a typo.
+pub const MAX_HITSTOP_TICKS: u16 = 120;
+
+/// The cue a hit publishes when its [`Attack`] names none.
+pub const HIT_LANDED: Name = Name::new("hit_landed");
 
 /// The move's frame data as far as a designer divides it: what the debug view shows and N3's combat
 /// layer can read. Nothing in the simulation depends on it; windows say what happens when.
@@ -349,18 +359,131 @@ pub struct CancelWindow {
     pub allow: Vec<Allow>,
 }
 
-/// A hit volume's active window: a shape riding a named path of the move's tables.
+/// How heavy a hit is: which reaction it asks of its target ([`Reactions`]), lightest first. When two
+/// hits land on one target in one step, the heavier's reaction plays.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[repr(u8)]
+pub enum Weight {
+    #[default]
+    Light,
+    Medium,
+    Heavy,
+}
+
+/// A push away from the attacker, on the target's own clock, so hitstop delays it and costs it nothing.
+/// It eases out: quick at first, slowing to a stop.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct Knockback {
+    /// Metres. Zero is no push.
+    pub distance: f32,
+    /// How long it takes, in ticks of the target's clock.
+    pub ticks: u32,
+}
+
+/// What a hit volume does to what it touches: M2 G3's resolve reads this.
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct Attack {
+    /// Taken off the target's health.
+    pub damage: u32,
+    /// Taken off the target's poise, and what a move's [`ArmourWindow`] is measured against.
+    pub poise: u32,
+    /// Which reaction it asks for.
+    pub weight: Weight,
+    /// Ticks both owners' clocks freeze for. A hit the target's armour takes freezes only the attacker.
+    pub hitstop: u16,
+    /// Ticks every actor's clock freezes for, if this hit defeats its target. See `sapphire_gameplay`'s
+    /// `resolve` module on why this isn't a clock of its own.
+    pub finish_freeze: u16,
+    pub knockback: Knockback,
+    cue: u64,
+}
+
+impl Attack {
+    pub(crate) const fn new(
+        damage: u32,
+        poise: u32,
+        weight: Weight,
+        hitstop: u16,
+        finish_freeze: u16,
+        knockback: Knockback,
+        cue: Name,
+    ) -> Self {
+        Self { damage, poise, weight, hitstop, finish_freeze, knockback, cue: cue.as_u64() }
+    }
+
+    /// The cue it publishes when it lands, for M2 E3's table: authored, or [`HIT_LANDED`].
+    #[must_use]
+    pub const fn cue(&self) -> Name {
+        Name::from_u64(self.cue)
+    }
+}
+
+/// A hit volume's active window: a shape riding a named path of the move's tables.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Hitbox {
     name: u64,
     path: u64,
     pub span: Span,
     pub shape: Shape,
+    /// What it does when it lands. With none it's a hit query and nothing more: events, and no effect.
+    pub attack: Option<Attack>,
+    /// Whole ticks into the move at which its hit group re-arms, ascending. Empty is once per playing.
+    pub rearm: Vec<u32>,
+    blocked_by: u32,
 }
 
 impl Hitbox {
-    pub(crate) const fn new(name: Name, path: Name, span: Span, shape: Shape) -> Self {
-        Self { name: name.as_u64(), path: path.as_u64(), span, shape }
+    pub(crate) fn new(
+        name: Name,
+        path: Name,
+        span: Span,
+        shape: Shape,
+        attack: Option<Attack>,
+        rearm: Vec<u32>,
+        blocked_by: GroupMask,
+    ) -> Self {
+        Self {
+            name: name.as_u64(),
+            path: path.as_u64(),
+            span,
+            shape,
+            attack,
+            rearm,
+            blocked_by: blocked_by.bits(),
+        }
+    }
+
+    /// What stops it: nothing, unless it says.
+    #[must_use]
+    pub const fn blocked_by(&self) -> GroupMask {
+        GroupMask::from_bits(self.blocked_by)
     }
 
     /// The hit's name: what G3 looks its effect up by, and within one playing of a move what its
@@ -406,6 +529,14 @@ impl HurtboxChange {
     pub const fn name(&self) -> Name {
         Name::from_u64(self.name)
     }
+}
+
+/// A window of super armour: while it's open, a hit whose [`Attack::poise`] is below `threshold` does its
+/// damage and takes its poise, and the actor plays no reaction. Enough poise taken still breaks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct ArmourWindow {
+    pub span: Span,
+    pub threshold: u32,
 }
 
 /// A motion warp window: the move's own root motion bends toward a target within these limits.
@@ -466,6 +597,7 @@ pub struct Move {
     pub invulnerable: Vec<Span>,
     pub perfect_dodge: Vec<Span>,
     pub parry: Vec<Span>,
+    pub armour: Vec<ArmourWindow>,
     pub cancels: Vec<CancelWindow>,
     /// Never overlapping, so at most one bends the motion at any instant.
     pub warps: Vec<WarpWindow>,
@@ -529,6 +661,7 @@ pub(crate) struct MoveParts {
     pub(crate) invulnerable: Vec<Span>,
     pub(crate) perfect_dodge: Vec<Span>,
     pub(crate) parry: Vec<Span>,
+    pub(crate) armour: Vec<ArmourWindow>,
     pub(crate) cancels: Vec<CancelWindow>,
     pub(crate) warps: Vec<WarpWindow>,
     pub(crate) cues: Vec<Cue>,
@@ -547,6 +680,7 @@ impl MoveParts {
             mut invulnerable,
             mut perfect_dodge,
             mut parry,
+            mut armour,
             mut cancels,
             mut warps,
             mut cues,
@@ -557,6 +691,7 @@ impl MoveParts {
         invulnerable.sort_by_key(|span| span.from);
         perfect_dodge.sort_by_key(|span| span.from);
         parry.sort_by_key(|span| span.from);
+        armour.sort_by_key(|window| window.span.from);
         cancels.sort_by_key(|window| window.span.from);
         warps.sort_by_key(|window| window.span.from);
         cues.sort_by_key(|cue| cue.at);
@@ -572,10 +707,110 @@ impl MoveParts {
             invulnerable,
             perfect_dodge,
             parry,
+            armour,
             cancels,
             warps,
             cues,
         }
+    }
+}
+
+/// One of a fighter's own hurtboxes: where it rides on the root, and its shape when no window says
+/// otherwise. Its place in [`FighterDef::hurtboxes`] is its number in the physics world.
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct FighterHurtbox {
+    name: u64,
+    /// Where it sits, in the root's space: it turns as the root does.
+    pub local: PathSample,
+    pub shape: Shape,
+}
+
+impl FighterHurtbox {
+    pub(crate) const fn new(name: Name, local: PathSample, shape: Shape) -> Self {
+        Self { name: name.as_u64(), local, shape }
+    }
+
+    /// Its name, by which a move's hurtbox windows change it.
+    #[must_use]
+    pub const fn name(&self) -> Name {
+        Name::from_u64(self.name)
+    }
+}
+
+/// The moves a fighter's reactions play, by name, forced through whatever's running. One left out is
+/// no reaction: the hit does its damage, and whatever's running plays on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct Reactions {
+    light: Option<u64>,
+    medium: Option<u64>,
+    heavy: Option<u64>,
+    poise_break: Option<u64>,
+    defeat: Option<u64>,
+}
+
+impl Reactions {
+    pub(crate) fn new(
+        light: Option<Name>,
+        medium: Option<Name>,
+        heavy: Option<Name>,
+        poise_break: Option<Name>,
+        defeat: Option<Name>,
+    ) -> Self {
+        Self {
+            light: light.map(Name::as_u64),
+            medium: medium.map(Name::as_u64),
+            heavy: heavy.map(Name::as_u64),
+            poise_break: poise_break.map(Name::as_u64),
+            defeat: defeat.map(Name::as_u64),
+        }
+    }
+
+    /// The reaction to a hit of this weight.
+    #[must_use]
+    pub fn flinch(&self, weight: Weight) -> Option<Name> {
+        match weight {
+            Weight::Light => self.light,
+            Weight::Medium => self.medium,
+            Weight::Heavy => self.heavy,
+        }
+        .map(Name::from_u64)
+    }
+
+    /// The reaction to a hit that empties the poise meter.
+    #[must_use]
+    pub fn poise_break(&self) -> Option<Name> {
+        self.poise_break.map(Name::from_u64)
+    }
+
+    /// The reaction to a hit that empties the health.
+    #[must_use]
+    pub fn defeat(&self) -> Option<Name> {
+        self.defeat.map(Name::from_u64)
+    }
+}
+
+/// What makes a character something a hit can land on. It lives in the move set because everything a
+/// fight depends on has to reach a replay's `tables_hash`, and a character's numbers and reactions are
+/// tuned with its moves. A set without one plays moves and can't be hit.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct FighterDef {
+    /// Health at a spawn, at least 1.
+    pub health: u32,
+    /// The poise meter at a spawn. Zero is no meter: nothing breaks it.
+    pub poise: u32,
+    /// Ticks of its clock after the last hit that took poise before the meter is full again. Zero is
+    /// never, short of a break, which fills it at once.
+    pub poise_refill: u32,
+    /// At least one, at most [`MAX_HURTBOXES`].
+    pub hurtboxes: Vec<FighterHurtbox>,
+    pub reactions: Reactions,
+}
+
+impl FighterDef {
+    /// How long after the last hit that took poise the meter is full again: see [`Self::poise_refill`].
+    #[must_use]
+    pub const fn refill(&self) -> SimDuration {
+        SimDuration::from_ticks(self.poise_refill as u64)
     }
 }
 
@@ -589,12 +824,13 @@ impl MoveParts {
 pub struct MoveSet {
     intents: Vec<IntentDef>,
     neutral: Vec<Allow>,
+    fighter: Option<FighterDef>,
     moves: Vec<Move>,
 }
 
 impl Versioned for MoveSet {
-    /// 1: M2 G2.
-    const VERSION: u32 = 1;
+    /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter.
+    const VERSION: u32 = 2;
 }
 
 /// A move set that can't be built, read or written.
@@ -625,8 +861,13 @@ fn list(issues: &[Issue]) -> String {
 }
 
 impl MoveSet {
-    pub(crate) fn from_parts(intents: Vec<IntentDef>, neutral: Vec<Allow>, moves: Vec<Move>) -> Self {
-        Self { intents, neutral, moves }
+    pub(crate) fn from_parts(
+        intents: Vec<IntentDef>,
+        neutral: Vec<Allow>,
+        fighter: Option<FighterDef>,
+        moves: Vec<Move>,
+    ) -> Self {
+        Self { intents, neutral, fighter, moves }
     }
 
     /// Reads a cooked set, whose bytes must start 16-byte aligned, after validating the archive and
@@ -659,6 +900,9 @@ impl MoveSet {
         if !self.neutral.iter().all(in_bounds) {
             return damaged("a neutral start names no move".to_owned());
         }
+        if self.fighter.as_ref().is_some_and(|fighter| fighter.hurtboxes.len() > MAX_HURTBOXES) {
+            return damaged(format!("a fighter with more than {MAX_HURTBOXES} hurtboxes"));
+        }
         for mv in &self.moves {
             let label = mv.label();
             mv.tables.check().map_err(|source| MoveSetError::Tables { name: label.to_owned(), source })?;
@@ -672,6 +916,7 @@ impl MoveSet {
                 .chain(&mv.invulnerable)
                 .chain(&mv.perfect_dodge)
                 .chain(&mv.parry)
+                .chain(mv.armour.iter().map(|window| &window.span))
                 .chain(mv.cancels.iter().map(|window| &window.span))
                 .chain(mv.warps.iter().map(|window| &window.span));
             let mut spans = spans;
@@ -686,6 +931,9 @@ impl MoveSet {
             }
             if !mv.warps.windows(2).all(|pair| pair[0].span.to <= pair[1].span.from) {
                 return damaged(format!("move `{label}`'s warp windows overlap or are out of order"));
+            }
+            if !mv.hitboxes.iter().all(|hitbox| hitbox.rearm.is_sorted()) {
+                return damaged(format!("a hitbox of move `{label}` re-arms out of order"));
             }
         }
         Ok(())
@@ -708,6 +956,12 @@ impl MoveSet {
     #[must_use]
     pub fn neutral(&self) -> &[Allow] {
         &self.neutral
+    }
+
+    /// What makes its actors something a hit can land on, if anything does.
+    #[must_use]
+    pub const fn fighter(&self) -> Option<&FighterDef> {
+        self.fighter.as_ref()
     }
 
     /// The moves, in document order: [`Allow::target`] indexes these.

@@ -7,6 +7,7 @@ use sapphire_math::{Vec3, det};
 use crate::actors::ActorTable;
 use crate::controller::{CharacterController, ControllerDrive};
 use crate::moves::{MoveOutput, MoveRunner};
+use crate::resolve::Fighter;
 
 /// Where an actor is, as the fixed step left it. Scalar on purpose: `Vec3` adds the same way on every
 /// architecture, which `Vec3A` doesn't promise (spec §5.4).
@@ -37,14 +38,19 @@ pub struct RootDelta {
 /// root motion, warp included. It runs inside the combat step because hits read positions in the same
 /// tick, and what [`MoveOutput::previous`] holds is the tick's start, whatever the controller does.
 ///
-/// A running move takes the stick away from its first tick, startup's still frames included. A move's
-/// last stretch of motion arrives on the tick it ends, when it isn't running any more.
+/// A running move takes the stick away from its first tick, startup's still frames included, and a defeat
+/// takes it for good: the fallen stay where they fell, whatever input goes on saying. A move's last stretch
+/// of motion arrives on the tick it ends, when it isn't running any more.
 pub(crate) fn apply_root_motion(
     table: Res<'_, ActorTable>,
-    mut actors: Query<'_, '_, (&mut ActorTransform, &mut MoveOutput, &MoveRunner, &mut CharacterController)>,
+    mut actors: Query<
+        '_,
+        '_,
+        (&mut ActorTransform, &mut MoveOutput, &MoveRunner, &Fighter, &mut CharacterController),
+    >,
 ) {
     for (_, entity) in table.iter() {
-        let Ok((mut transform, mut output, runner, mut controller)) = actors.get_mut(entity) else {
+        let Ok((mut transform, mut output, runner, fighter, mut controller)) = actors.get_mut(entity) else {
             continue;
         };
         output.previous = *transform;
@@ -52,7 +58,7 @@ pub(crate) fn apply_root_motion(
         let delta = output.root_delta.translation;
         if !controller.is_active() {
             transform.position += delta;
-        } else if runner.is_running() || delta != Vec3::ZERO {
+        } else if runner.is_running() || delta != Vec3::ZERO || fighter.is_defeated() {
             controller.drive = ControllerDrive::strike(delta);
         }
     }

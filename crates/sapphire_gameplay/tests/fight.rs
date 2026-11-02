@@ -8,9 +8,9 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterWorld, CombatSet, CueEvent,
-    DEFEATED, Fighter, HitOutcome, HurtboxId, MAX_HURTBOXES, POISE_BROKEN, SimConfig, Simulation, SlowMotion,
-    Stick, TickActions,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterWorld, CombatSet, ControllerProfile,
+    CueEvent, DEFEATED, Fighter, HitOutcome, HurtboxId, MAX_HURTBOXES, POISE_BROKEN, SimConfig, Simulation,
+    SlowMotion, Stick, TickActions,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{HIT_LANDED, MoveSet, MoveSetDocument, PathSample, Weight};
@@ -1271,6 +1271,46 @@ fn a_defeated_actor_falls_and_does_nothing_more() {
     idle(&mut sim, 30);
     assert_eq!(sim.stats().hits_applied, applied);
     assert_eq!(fighter(&sim, target).health(), 0);
+}
+
+/// Input goes on reaching a fallen character, and nothing comes of it, with a move playing or not.
+#[test]
+fn a_defeated_actor_stays_where_it_fell() {
+    let (mut sim, spawn) = world_of(still());
+    let floor = StaticCollider {
+        id: ColliderId(0),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(100.0, 0.5, 100.0) }),
+        pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
+        memberships: Group::World.mask(),
+    };
+    sim.set_physics_world(PhysicsWorld::new(vec![floor], sim.body_capacity()).unwrap()).unwrap();
+    let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).unwrap());
+    let attacker = sim.spawn(ActorSpawn { controller, ..spawn }).unwrap();
+    let at = Vec3::new(0.0, 0.0, 1.0);
+    let target = sim.spawn(ActorSpawn { position: at, yaw: PI, controller, ..spawn }).unwrap();
+    land(&mut sim, attacker, Buttons::LOCK_ON);
+    assert!(fighter(&sim, target).is_defeated());
+
+    let held = |sim: &Simulation| {
+        let view = sim.actor(target).unwrap();
+        (view.position, view.yaw)
+    };
+    let mut pushing = TickActions::NEUTRAL;
+    pushing.set(target, ActorActions { buttons: Buttons::JUMP, stick: Stick::new(127, 0) }).unwrap();
+    let fell = held(&sim);
+    sim.step(&pushing);
+    assert_eq!(playing(&sim, target), Some(name("defeat")));
+    while playing(&sim, target).is_some() {
+        sim.step(&pushing);
+    }
+    assert_eq!(held(&sim), fell, "under its reaction");
+    let mut released = TickActions::NEUTRAL;
+    released.set(target, ActorActions { buttons: Buttons::NONE, stick: Stick::new(127, 0) }).unwrap();
+    for _ in 0..30 {
+        sim.step(&released);
+        sim.step(&pushing);
+    }
+    assert_eq!(held(&sim), fell, "with nothing playing");
 }
 
 #[test]

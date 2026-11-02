@@ -3283,6 +3283,8 @@ dependencies = [
  "sapphire_jobs",
  "sapphire_livelink",
  "sapphire_math",
+ "sapphire_moves",
+ "sapphire_physics",
  "sapphire_platform",
  "sapphire_reflect",
  "sapphire_render",

@@ -455,6 +455,7 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         position: transform.position,
         yaw: transform.yaw,
         clock_now: clock.0.now(),
+        clock_delta: clock.0.last_delta(),
         hitstop_ticks: clock.0.hitstop_ticks(),
         moves: MoveRead::of(runner, output, world.resource::<MoveLibrary>()),
         controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),

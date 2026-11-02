@@ -15,7 +15,8 @@ use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{
-    CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels, WindowMetrics,
+    CombatSnapshot, CpuStages, DebugOverlay, OverlayConfig, OverlayFrame, OverlayOutput, Panels,
+    RecorderRequest, WindowMetrics,
 };
 use sapphire_gameplay::TickActions;
 use sapphire_platform::{
@@ -27,6 +28,7 @@ use sapphire_render::{RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
+use crate::combat::{Combat, SessionRecorder};
 use crate::content::Content;
 use crate::input::SandboxInput;
 use crate::link::{CaptureRequest, Link, LinkFrame};
@@ -58,6 +60,10 @@ pub(crate) struct DevTools {
     focused: bool,
     /// The latest tick's input, to log when it changes.
     tick: TickActions,
+    /// The combat panel's replay recorder (M2 T1).
+    recorder: SessionRecorder,
+    /// What the combat panel shows, built while it does.
+    combat: CombatSnapshot,
 }
 
 /// What the overlay reads from the app in one frame.
@@ -76,6 +82,8 @@ pub(crate) struct FrameState<'a> {
     pub assets: AssetStats,
     /// The audio system's counters, with `--cue`.
     pub audio: Option<sapphire_audio::AudioStats>,
+    /// The fight, if one is running.
+    pub combat: Option<&'a Combat>,
 }
 
 impl DevTools {
@@ -102,6 +110,7 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_render::debug_view::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
+            .and_then(|()| cvars.register_all(&crate::combat_views::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());
         Ok(Self {
@@ -123,6 +132,8 @@ impl DevTools {
             now: Timestamp::default(),
             focused: true,
             tick: TickActions::NEUTRAL,
+            recorder: SessionRecorder::new(platform.user_dir().join("replays")),
+            combat: CombatSnapshot::default(),
         })
     }
 
@@ -250,6 +261,17 @@ impl DevTools {
         }
     }
 
+    /// Does what the combat panel asked of the recorder. Between frames, so no step sees a fight half
+    /// started, and each still reads the bindings exactly once ([`SessionRecorder`]).
+    pub fn apply_recorder(&mut self, combat: &mut Option<Combat>) {
+        match self.overlay.recorder_controls().take() {
+            Some(RecorderRequest::Start { scenario }) => self.recorder.start(combat, &scenario),
+            Some(RecorderRequest::Save) => self.recorder.save(combat),
+            Some(RecorderRequest::Discard) => self.recorder.discard(combat),
+            None => {}
+        }
+    }
+
     /// The time controls' hook, before each fixed step: the world clock's, time of day's and the
     /// screen effects'. Allocation-free (rule R6).
     pub fn before_fixed_step(&mut self, scene: &mut Scene) {
@@ -264,6 +286,11 @@ impl DevTools {
     /// needs GPU timings whether the overlay shows or not.
     pub fn update(&mut self, frame: FrameState<'_>, executor: &mut GraphExecutor) -> OverlayOutput {
         self.overlay.configure_graph(executor, frame.gpu, frame.gpu_timing);
+        // Only a window has someone to play.
+        let combat = self.overlay.shows_combat().then(|| {
+            self.combat = crate::combat_panel::snapshot(frame.combat, &self.recorder, frame.input.is_some());
+            &self.combat
+        });
         self.overlay.update(&OverlayFrame {
             now: self.now,
             window: frame.window,
@@ -282,6 +309,7 @@ impl DevTools {
             camera: frame.scene.packet().main_view().map(|view| view.camera),
             debug_labels: &frame.scene.packet().debug.labels,
             screen_effects: Some(frame.scene.screen_effects()),
+            combat,
             assets: Some(frame.assets),
             audio: frame.audio,
             hot_reload: Some(self.reload.status()),

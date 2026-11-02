@@ -362,6 +362,9 @@ impl Stage {
         #[cfg(feature = "dev")]
         let mut stopwatch = self.dev.overlay_visible().then(sapphire_time::Stopwatch::start);
         self.scene.animate(&self.content, alpha);
+        if let Some(combat) = &self.combat {
+            combat.draw_views();
+        }
         let packet = self.scene.frame_packet(alpha, Some((width, height)));
         #[cfg(feature = "dev")]
         let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
@@ -393,6 +396,7 @@ impl Stage {
                 scene: &self.scene,
                 assets: self.content.stats(),
                 audio: None,
+                combat: self.combat.as_ref(),
             };
             self.dev.update(state, &mut self.graph);
             started.elapsed()

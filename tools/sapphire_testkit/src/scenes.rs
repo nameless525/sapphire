@@ -23,6 +23,7 @@
 
 mod costs;
 
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
@@ -131,7 +132,9 @@ pub struct Scene {
 ///
 /// The debug draw scene (M2 T1) alone turns debug draw on (`--debug-draw`; nothing else in these
 /// builds draws any, so no earlier scene changes) and pins what the material layer scenes pin, with
-/// plain post and a plain sky, so the frame under its lines changes only with what they show.
+/// plain post and a plain sky, so the frame under its lines changes only with what they show. Its
+/// view of a fight (`debugdraw-volumes`) plays a committed replay, which the app checks against the
+/// checksums beside it before it writes the picture.
 ///
 /// The effects scenes (M2 E2) play `--vfx`'s shows at fixed ticks, whose simulation is seeded: the
 /// sword arc at noon and at night, a hit at sunset and a duel's worst moment, on the look-dev stage
@@ -146,7 +149,7 @@ pub struct Scene {
 /// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier
 /// scene plays one, and a character without a clip is never sampled) and pin what the look-dev
 /// scenes pin.
-pub fn scenes() -> [Scene; 111] {
+pub fn scenes() -> [Scene; 112] {
     [
         Scene {
             name: "turntable-start",
@@ -2098,6 +2101,35 @@ pub fn scenes() -> [Scene; 111] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The combat views (M2 T1) on `melee-sweep` at tick 10, over the plain scene, whose mannequin
+        // has nothing to do with the fight: the first actor, left, with its hurtbox in green and the
+        // red sweep of its first hit's blade, half a metre this tick, faint where it began; the second,
+        // nearest, mid-dodge and in its perfect window, magenta; the third, right, in its skill's parry
+        // window, yellow. Each arrow is which way its actor faces.
+        Scene {
+            name: "debugdraw-volumes",
+            args: &[
+                "--capture-ticks",
+                "10",
+                "--replay",
+                "tests/replays/melee-sweep.sreplay",
+                "--zoom",
+                "2.0",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-draw",
+                "volumes",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with
         // a crisp highlight; gold, its tinted matcap and highlight, the sky reflected on its
         // metallic stripes; leather, darker toward its rim, with a soft GGX highlight; a dark suit
@@ -3006,6 +3038,15 @@ fn run_scenes(
     Ok(failures)
 }
 
+/// What the sandbox is given for an argument of a scene. A path under `tests/`, such as a committed
+/// replay's, is found from the goldens, which sit there too, wherever the run was started from.
+fn scene_arg(arg: &str, paths: &Paths) -> OsString {
+    match (arg.strip_prefix("tests/"), paths.goldens.parent()) {
+        (Some(path), Some(tests)) => tests.join(path).into_os_string(),
+        _ => arg.into(),
+    }
+}
+
 /// Renders `scene` and checks it, printing one line with its time. `Err` stops the whole run: the
 /// sandbox can't be started, or the output can't be written. A scene that fails is an [`Outcome`].
 fn run_scene(
@@ -3021,7 +3062,8 @@ fn run_scene(
     let capture = paths.out.join(format!("{}.png", scene.name));
     let log = paths.out.join(format!("{}.log", scene.name));
     let mut command = sandbox(scene);
-    command.arg("--capture").arg(&capture).args(["--size", SIZE]).args(scene.args);
+    command.arg("--capture").arg(&capture).args(["--size", SIZE]);
+    command.args(scene.args.iter().map(|arg| scene_arg(arg, paths)));
     let exit = run_with_deadline(&mut command, &log, timeout)
         .map_err(|e| format!("failed to run the sandbox for {} ({}): {e}", scene.name, log.display()))?;
     let error = |status: Status, family: Option<String>, what: String| {
@@ -3401,6 +3443,26 @@ mod tests {
         for (ratio, size) in [("4:3", "480x360"), ("16:9", "640x360"), ("21:9", "840x360")] {
             assert!(sizes.contains(&size), "no HUD scene at {ratio}");
         }
+    }
+
+    #[test]
+    fn a_path_under_tests_is_found_from_the_goldens_and_exists() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let paths = Paths {
+            sandbox: PathBuf::new(),
+            content: PathBuf::new(),
+            goldens: root.join("tests/golden"),
+            out: PathBuf::new(),
+        };
+        assert_eq!(scene_arg("--replay", &paths), OsString::from("--replay"));
+        let mut replays = 0;
+        for scene in scenes() {
+            for arg in scene.args.iter().filter(|arg| arg.starts_with("tests/")) {
+                assert!(Path::new(&scene_arg(arg, &paths)).is_file(), "{}: {arg}", scene.name);
+                replays += 1;
+            }
+        }
+        assert!(replays > 0, "a scene plays a committed replay");
     }
 
     #[test]

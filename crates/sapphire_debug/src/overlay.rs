@@ -18,6 +18,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
 use sapphire_world::tod::TimeOfDay;
 
 use crate::budget::CpuStages;
+use crate::combat::{CombatSnapshot, RecorderControls};
 use crate::effects::EffectControls;
 use crate::history::FrameTimes;
 use crate::input::{EguiInput, WindowMetrics};
@@ -85,6 +86,9 @@ pub struct OverlayFrame<'a> {
     /// The world's screen effects and their presets, if the app runs them (M1 P3): the effects
     /// panel's.
     pub screen_effects: Option<(&'a EffectStack, &'a EffectLibrary)>,
+    /// The fight, while the combat panel shows ([`DebugOverlay::shows_combat`]) and the app has
+    /// combat at all (M2 T1).
+    pub combat: Option<&'a CombatSnapshot>,
     /// The asset server's counters, if the app runs one.
     pub assets: Option<AssetStats>,
     /// The audio system's counters, if the app plays sound (M2 E1).
@@ -171,6 +175,7 @@ pub struct DebugOverlay {
     time: TimeControls,
     day: TodControls,
     effects: EffectControls,
+    recorder: RecorderControls,
     cost: OverlayCost,
     gpu_timing: bool,
     max_texture_side: usize,
@@ -203,6 +208,7 @@ impl DebugOverlay {
             time: TimeControls::default(),
             day: TodControls::default(),
             effects: EffectControls::default(),
+            recorder: RecorderControls::default(),
             cost: OverlayCost::default(),
             gpu_timing: false,
             max_texture_side: gpu.caps().limits.max_texture_dimension_2d as usize,
@@ -309,6 +315,19 @@ impl DebugOverlay {
         &mut self.effects
     }
 
+    /// The replay recorder's developer controls. The app acts on [`RecorderControls::take`] between
+    /// steps.
+    pub fn recorder_controls(&mut self) -> &mut RecorderControls {
+        &mut self.recorder
+    }
+
+    /// Whether the combat panel shows, so the app builds its [`CombatSnapshot`] for
+    /// [`OverlayFrame::combat`]. Nothing asks for one otherwise.
+    #[must_use]
+    pub fn shows_combat(&self) -> bool {
+        self.visible && self.memory.panels.combat
+    }
+
     /// Turns the executor's graph report and GPU timing on while the overlay shows them, and GPU
     /// timing also while `app_timing` says the app reads it (dynamic resolution,
     /// `Quality::wants_gpu_timing`), so the two never switch it off under each other. Call it
@@ -369,8 +388,8 @@ impl DebugOverlay {
             gpu_timing: self.gpu_timing,
         };
         let ctx = self.ctx.clone();
-        let (memory, time, day, effects) =
-            (&mut self.memory, &mut self.time, &mut self.day, &mut self.effects);
+        let (memory, time, day, effects, recorder) =
+            (&mut self.memory, &mut self.time, &mut self.day, &mut self.effects, &mut self.recorder);
         let mut hide = false;
         let visible = self.visible;
         let output = self.input.run_pass(&ctx, raw, |ctx| {
@@ -378,7 +397,7 @@ impl DebugOverlay {
                 labels::paint(ctx, camera, frame.debug_labels);
             }
             if visible {
-                hide = ui::show(ctx, memory, time, day, effects, &view);
+                hide = ui::show(ctx, memory, time, day, effects, recorder, &view);
             }
         });
 

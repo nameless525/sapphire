@@ -69,8 +69,8 @@
 //! # Not here
 //!
 //! The pass that draws lines is `sapphire_render::debug_draw`, and the labels are drawn by
-//! `sapphire_debug`'s overlay (dev builds). The combat views built on this (hit and hurt volumes,
-//! colliders, the intent buffer, the replay recorder) wait for the packages they show.
+//! `sapphire_debug`'s overlay (dev builds). The combat views built on this are the sandbox's
+//! (`combat_views`).
 
 mod buffer;
 mod collect;

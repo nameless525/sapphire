@@ -170,10 +170,13 @@
 //!   characters' regions, ramp rows or outline widths, over the frame after post. In every
 //!   build, so captures and golden scenes show them; the overlay's cvar panel switches them in
 //!   `dev` builds.
-//! - `--debug-draw shapes|lines:<count>`: turn debug draw on and draw a fixed set of shapes around
-//!   the character, one of each kind and each way of lasting and facing a surface (the golden
-//!   scene `debugdraw-shapes`), or that many lines a frame, for benches. `dev` builds have debug
-//!   draw on anyway (`debug.draw`); other builds only with this flag.
+//! - `--debug-draw shapes|lines:<count>|volumes|colliders|combat`: turn debug draw on and draw a
+//!   fixed set of shapes around the character, one of each kind and each way of lasting and facing
+//!   a surface (the golden scene `debugdraw-shapes`), or that many lines a frame, for benches; or,
+//!   with `--replay` or `--record`, the views of that fight (`combat_views.rs`): its hit and hurt
+//!   volumes (the golden scene `debugdraw-volumes`), its colliders, or both. `dev` builds have debug
+//!   draw on anyway (`debug.draw`), and the overlay's combat panel switches the views; other builds
+//!   only with this flag.
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
@@ -224,7 +227,7 @@
 //!   a warning), dialing a tool listening at `<addr>` (behind `adb reverse`), or not at all.
 //! - `--debug-overlay[=panels]` (`dev` builds): show the overlay from the start, with its
 //!   default panels or a comma-separated list (`stats`, `graph`, `time`, `day`, `effects`,
-//!   `console`, `cvars`, `all`). Offscreen captures draw it too.
+//!   `combat`, `console`, `cvars`, `all`). Offscreen captures draw it too.
 //! - `--cue click|hit|swing`: play this cue (`content/audio/`) at the character on the real audio
 //!   device (M2 E1, `audio.rs`); `--cue-repeat <seconds>` plays it again every so often. Slow motion
 //!   bends and darkens it, and hitstop freezes `swing`. Only these flags open a device: no device is
@@ -271,6 +274,9 @@ mod audio;
 mod bench;
 mod capture;
 mod combat;
+#[cfg(feature = "dev")]
+mod combat_panel;
+mod combat_views;
 mod content;
 mod cvars;
 mod debug_shapes;

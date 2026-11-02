@@ -29,6 +29,10 @@
 //!   light lists, material IDs, ramp rows and outline widths) are a list in the cvar panel
 //!   (`r.debug_view`), and the stats panel's "Debug view" row names the one shown with its
 //!   legend's values.
+//! - **The combat panel** (`combat`, M2 T1): each actor's intent buffer, move, phase, elapsed tick and
+//!   live windows, a timeline of the move's tracks, switches for the app's combat views, and the
+//!   replay recorder's start, stop and save, from a plain [`CombatSnapshot`] the app builds, so this
+//!   crate reads no simulation. [`RecorderControls`] carries what it asks for back.
 //! - **Debug draw's labels and switch** (`labels`, M2 T1): the frame packet's labels painted beside
 //!   their points, under the panels, whether the panels show or not; and [`DRAW`], which keeps
 //!   debug draw on in the builds that link this crate. The stats panel counts what it drew and lost.
@@ -93,14 +97,14 @@
 //!
 //! # Later milestones
 //!
-//! - The rest of spec §5.20: the entity inspector over `sapphire_reflect`, hitbox and hurtbox views
-//!   and the input-intent buffer (M2, with combat, on debug draw), and the replay recorder.
+//! - The rest of spec §5.20: the entity inspector over `sapphire_reflect`.
 //! - Clipboard copy and paste once the platform has a clipboard API; IME composition previews;
 //!   cursor shapes; gamepad navigation of the panels; saving panel layout in `user://`.
 //! - On-screen controls (M3) will claim their fingers before the overlay's two-finger hold
 //!   counts them.
 
 mod budget;
+mod combat;
 mod console;
 mod effects;
 mod history;
@@ -116,6 +120,10 @@ mod ui;
 use sapphire_core::cvar::{AnyCvar, Cvar};
 
 pub use budget::{BudgetTier, CpuStage, CpuStages, budget_use, format_bytes, format_ms};
+pub use combat::{
+    ActorSnapshot, COMBAT_VIEW_CVARS, CombatSnapshot, IntentSnapshot, MoveSnapshot, RecorderControls,
+    RecorderRequest, RecorderSnapshot, RecorderState, TrackSnapshot,
+};
 pub use effects::EffectControls;
 pub use history::{FrameSummary, FrameTimes, HISTORY};
 pub use input::WindowMetrics;

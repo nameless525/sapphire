@@ -22,6 +22,7 @@ use sapphire_render::{
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
+use crate::combat::{self, CombatPanel, RecorderControls};
 use crate::console::{Completion, Console, LineKind};
 use crate::effects::{self, EffectControls};
 use crate::history::{FrameTimes, HISTORY};
@@ -44,6 +45,8 @@ pub struct Panels {
     pub day: bool,
     /// The screen effects (M1 P3).
     pub effects: bool,
+    /// A fight's moves and intents, the views of it and the replay recorder (M2 T1).
+    pub combat: bool,
     pub console: bool,
     pub cvars: bool,
 }
@@ -56,7 +59,8 @@ impl Default for Panels {
 }
 
 impl Panels {
-    pub const NAMES: [&'static str; 7] = ["stats", "graph", "time", "day", "effects", "console", "cvars"];
+    pub const NAMES: [&'static str; 8] =
+        ["stats", "graph", "time", "day", "effects", "combat", "console", "cvars"];
 
     const NONE: Self = Self {
         stats: false,
@@ -64,11 +68,20 @@ impl Panels {
         time: false,
         day: false,
         effects: false,
+        combat: false,
         console: false,
         cvars: false,
     };
-    const ALL: Self =
-        Self { stats: true, graph: true, time: true, day: true, effects: true, console: true, cvars: true };
+    const ALL: Self = Self {
+        stats: true,
+        graph: true,
+        time: true,
+        day: true,
+        effects: true,
+        combat: true,
+        console: true,
+        cvars: true,
+    };
 
     /// A comma-separated list of [`Self::NAMES`], or `all`.
     pub fn parse(list: &str) -> Result<Self, String> {
@@ -81,6 +94,7 @@ impl Panels {
                 "time" => panels.time = true,
                 "day" => panels.day = true,
                 "effects" => panels.effects = true,
+                "combat" => panels.combat = true,
                 "console" => panels.console = true,
                 "cvars" => panels.cvars = true,
                 _ => {
@@ -102,6 +116,7 @@ pub(crate) struct UiMemory {
     console_input: String,
     focus_console: bool,
     day: TodPanel,
+    combat: CombatPanel,
 }
 
 impl UiMemory {
@@ -112,6 +127,7 @@ impl UiMemory {
             console_input: String::new(),
             focus_console: true,
             day: TodPanel::default(),
+            combat: CombatPanel::default(),
         }
     }
 
@@ -157,6 +173,7 @@ pub(crate) fn show(
     time: &mut TimeControls,
     day: &mut TodControls,
     effects: &mut EffectControls,
+    recorder: &mut RecorderControls,
     view: &View<'_>,
 ) -> bool {
     let hide = bar(ctx, &mut memory.panels, view);
@@ -167,7 +184,7 @@ pub(crate) fn show(
     let safe = view.safe;
     let at = |x: f32, y: f32| safe.min + vec2(x, y);
     let right = |width: f32, y: f32| pos2(safe.max.x - width - 6.0, safe.min.y + y).max(at(440.0, y));
-    let UiMemory { panels, console, console_input, focus_console, day: day_panel } = memory;
+    let UiMemory { panels, console, console_input, focus_console, day: day_panel, combat } = memory;
     panel("Stats", &mut panels.stats, at(6.0, 44.0), safe)
         .default_width(340.0)
         .resizable(false)
@@ -187,6 +204,9 @@ pub(crate) fn show(
     panel("Screen effects", &mut panels.effects, at(1010.0, 180.0), safe)
         .default_width(360.0)
         .show(ctx, |ui| effects::panel(ui, effects, view.frame.screen_effects));
+    panel("Combat", &mut panels.combat, at(350.0, 44.0), safe)
+        .default_width(480.0)
+        .show(ctx, |ui| combat::panel(ui, combat, recorder, view.frame.cvars, view.frame.combat));
     panel("Cvars", &mut panels.cvars, right(380.0, (safe.height() - 250.0).max(44.0)), safe)
         .default_width(380.0)
         .show(ctx, |ui| cvars(ui, view.frame.cvars));
@@ -226,6 +246,7 @@ fn bar(ctx: &egui::Context, panels: &mut Panels, view: &View<'_>) -> bool {
                     ui.toggle_value(&mut panels.time, "Time");
                     ui.toggle_value(&mut panels.day, "Day");
                     ui.toggle_value(&mut panels.effects, "Effects");
+                    ui.toggle_value(&mut panels.combat, "Combat");
                     ui.toggle_value(&mut panels.console, "Console");
                     ui.toggle_value(&mut panels.cvars, "Cvars");
                     ui.separator();
@@ -1324,7 +1345,7 @@ fn cvars(ui: &mut Ui, cvars: &CvarRegistry) {
 
 /// The widget that edits `cvar`: a checkbox, a slider for a ranged number, a drag value, or a
 /// list of choices.
-fn cvar_widget(ui: &mut Ui, cvar: &dyn AnyCvar) {
+pub(crate) fn cvar_widget(ui: &mut Ui, cvar: &dyn AnyCvar) {
     let range = cvar.range();
     let changed = match cvar.value() {
         CvarValue::Bool(mut value) => ui.checkbox(&mut value, "").changed().then_some(CvarValue::Bool(value)),

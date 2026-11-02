@@ -17,7 +17,7 @@ use std::num::NonZeroU32;
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_time::SimTime;
+use sapphire_time::{SimDuration, SimTime};
 
 use crate::actions::Controls;
 use crate::controller::{CharacterController, CharacterWorld, ProfileId};
@@ -312,6 +312,8 @@ pub struct ActorView {
     pub yaw: f32,
     /// This actor's own time, which hitstop stops and time scales slow.
     pub clock_now: SimTime,
+    /// How far that time moved in the last step: zero while frozen.
+    pub clock_delta: SimDuration,
     /// Frozen ticks still to come.
     pub hitstop_ticks: u16,
     /// What its moves are doing: the move, its phase and local time, and what counts this step.

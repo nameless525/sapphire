@@ -416,6 +416,9 @@ impl SandboxApp {
     /// (rule R3), and the steps themselves must not allocate (rule R6).
     fn simulate(&mut self, frame_time: Duration) -> FixedSteps {
         profiling::scope!("simulate");
+        // The overlay's recorder, between frames: a recording starts or ends with no step under way.
+        #[cfg(feature = "dev")]
+        self.dev.apply_recorder(&mut self.combat);
         let steps = self.input.advance(&mut self.driver, frame_time);
         if steps.count == 0 {
             return steps;
@@ -504,6 +507,9 @@ impl SandboxApp {
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             self.scene.animate(&self.content, alpha);
+            if let Some(combat) = &self.combat {
+                combat.draw_views();
+            }
             let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size));
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.
@@ -532,6 +538,7 @@ impl SandboxApp {
                         scene: &self.scene,
                         assets: self.content.stats(),
                         audio: self.audio.as_ref().map(SandboxAudio::stats),
+                        combat: self.combat.as_ref(),
                     };
                     // It also keeps GPU timing on while dynamic resolution reads it.
                     let output = self.dev.update(state, &mut self.graph);

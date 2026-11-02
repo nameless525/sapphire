@@ -1,12 +1,15 @@
 //! `--debug-draw`: fixed debug draws through the real path, from the facade in `sapphire_core`
 //! through the collector and the frame packet to the renderer's pass (spec §5.20, M2 T1), for the
-//! golden scene `debugdraw-shapes` and for measuring the pass at a stated load.
+//! golden scene `debugdraw-shapes` and for measuring the pass at a stated load; and the views of a
+//! fight (`volumes`, `colliders` and `combat` for both), which `combat_views.rs` draws.
 //!
 //! Drawing stays off unless this flag or a `dev` build turns it on, so no other scene or shipping
 //! frame sees any of it.
 
 use sapphire_core::debug_draw::{self as dd, Color, Style};
 use sapphire_math::{Quat, Vec3};
+
+use crate::combat_views::CombatViews;
 
 /// Timed draws last this long on the world clock: longer than any capture.
 const LONG: f32 = 3600.0;
@@ -18,14 +21,22 @@ pub enum DebugDrawDemo {
     Shapes,
     /// This many lines a frame, depth-tested, across the frame, for benches.
     Lines(u32),
+    /// These views of the fight `--replay` or `--record` runs.
+    Combat(CombatViews),
 }
 
 impl DebugDrawDemo {
     /// Parses `--debug-draw`'s value.
     pub fn parse(value: &str) -> Result<Self, String> {
-        let expected = || format!("--debug-draw expects shapes or lines:<count>, got {value:?}");
-        if value == "shapes" {
-            return Ok(Self::Shapes);
+        let expected = || {
+            format!("--debug-draw expects shapes, lines:<count>, volumes, colliders or combat, got {value:?}")
+        };
+        match value {
+            "shapes" => return Ok(Self::Shapes),
+            "volumes" => return Ok(Self::Combat(CombatViews::VOLUMES)),
+            "colliders" => return Ok(Self::Combat(CombatViews::COLLIDERS)),
+            "combat" => return Ok(Self::Combat(CombatViews::ALL)),
+            _ => {}
         }
         let count = value.strip_prefix("lines:").ok_or_else(expected)?;
         count.parse().map(Self::Lines).map_err(|_| expected())
@@ -33,10 +44,14 @@ impl DebugDrawDemo {
 
     /// Once, as the scene starts: what stays.
     pub fn draw_once(self) {
-        if self == Self::Shapes {
-            let timed = Style::new(Color::rgb(160, 120, 255)).for_seconds(LONG);
-            let tilt = Quat::from_rotation_y(0.6);
-            dd::oriented_box(Vec3::new(0.0, 0.02, 0.0), Vec3::new(0.7, 0.02, 0.7), tilt, timed);
+        match self {
+            Self::Shapes => {
+                let timed = Style::new(Color::rgb(160, 120, 255)).for_seconds(LONG);
+                let tilt = Quat::from_rotation_y(0.6);
+                dd::oriented_box(Vec3::new(0.0, 0.02, 0.0), Vec3::new(0.7, 0.02, 0.7), tilt, timed);
+            }
+            Self::Combat(views) => views.turn_on(),
+            Self::Lines(_) => {}
         }
     }
 
@@ -52,6 +67,8 @@ impl DebugDrawDemo {
         match self {
             Self::Shapes => shapes(),
             Self::Lines(count) => lines(count),
+            // `Combat::draw_views`, which has the fight.
+            Self::Combat(_) => {}
         }
     }
 }
@@ -103,6 +120,9 @@ mod tests {
     fn the_flags_value_is_parsed() {
         assert_eq!(DebugDrawDemo::parse("shapes"), Ok(DebugDrawDemo::Shapes));
         assert_eq!(DebugDrawDemo::parse("lines:2000"), Ok(DebugDrawDemo::Lines(2000)));
+        assert_eq!(DebugDrawDemo::parse("volumes"), Ok(DebugDrawDemo::Combat(CombatViews::VOLUMES)));
+        assert_eq!(DebugDrawDemo::parse("colliders"), Ok(DebugDrawDemo::Combat(CombatViews::COLLIDERS)));
+        assert_eq!(DebugDrawDemo::parse("combat"), Ok(DebugDrawDemo::Combat(CombatViews::ALL)));
         for bad in ["", "lines", "lines:", "lines:many", "circles"] {
             assert!(DebugDrawDemo::parse(bad).is_err(), "{bad}");
         }

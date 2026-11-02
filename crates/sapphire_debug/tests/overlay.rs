@@ -77,6 +77,7 @@ impl App {
             time_of_day: None,
             characters: &[],
             screen_effects: None,
+            combat: None,
             assets: None,
             audio: None,
             hot_reload: None,

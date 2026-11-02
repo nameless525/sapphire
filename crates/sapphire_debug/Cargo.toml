@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_debug"
-description = "The development overlay: stats and budgets, the frame graph and GPU pass timings, a cvar console, time controls and the time-of-day scrubber, on egui."
+description = "The development overlay: stats and budgets, the frame graph and GPU pass timings, a cvar console, time controls, the time-of-day scrubber and the combat panel, on egui."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

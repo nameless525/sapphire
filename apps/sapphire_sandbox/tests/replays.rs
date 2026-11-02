@@ -228,6 +228,33 @@ fn a_capture_beside_the_renderer_reaches_the_headless_checksums() {
     assert!(capture.exists());
 }
 
+/// The views of a fight (M2 T1) look at every tick of it, through the facade, and the fight is the same
+/// one: the app compares each checksum with a headless run's, and each view's lines reach the frame.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_combat_views_change_nothing_the_checksums_see() {
+    let temp = Temp::new("views");
+    let (replay, _) = record(120, melee_sweep);
+    let played = headless(&replay.encode());
+    suite_of(&temp, "duel", &replay, &played);
+
+    let capture = temp.path("drawn.png");
+    let output = run_app(&[
+        "--capture",
+        capture.to_str().expect("UTF-8"),
+        "--capture-frames",
+        "120",
+        "--capture-step",
+        "1",
+        "--replay",
+        &temp.text("duel.sreplay"),
+        "--debug-draw",
+        "combat",
+    ]);
+    assert_reached(&output, 120, played.trail.end());
+    assert!(capture.exists());
+}
+
 /// A bench steps in its frame path, with GPU timing on for the last of it, and goes on past the end.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]

@@ -854,6 +854,9 @@ impl Options {
             (None, Some(_), None, _) => return Err("--record needs --scenario".to_owned()),
             _ => return Err("--scenario and --script need --record".to_owned()),
         };
+        if matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_))) && options.combat.is_none() {
+            return Err("--debug-draw's views of a fight need --replay or --record".to_owned());
+        }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
         match &options.combat {
             Some(CombatOption::Replay { .. }) if !drawn_alone => {
@@ -1308,6 +1311,12 @@ mod tests {
             Some(DebugDrawDemo::Lines(2000))
         );
         assert!(parse(&["--debug-draw", "circles"]).is_err());
+        // The views of a fight have nothing to show without one.
+        let error = parse(&["--debug-draw", "volumes"]).expect_err("no fight");
+        assert!(error.contains("--replay or --record"), "{error}");
+        let (options, _) = parse(&["--capture", "x", "--replay", "a", "--debug-draw", "combat"]).unwrap();
+        assert!(matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_))));
+        assert!(parse(&["--record", "a", "--scenario", "s", "--debug-draw", "colliders"]).is_ok());
     }
 
     #[test]

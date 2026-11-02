@@ -1,11 +1,12 @@
 //! `--replay` and `--record`: a combat simulation stepping beside the scene, one tick per fixed step
 //! that isn't paused.
 //!
-//! The simulation has nothing to show yet, so what this holds now is the property everything later
-//! leans on: a run inside the app, with the renderer beside it, reaches the same checksums as the
-//! headless runner, through the same `sapphire_gameplay::replay` code. `--replay` compares with the
-//! recorded checksums next to the file, where there are any, and fails the run if it differs, so a
-//! golden or a bench from a recorded fight can't come from another fight.
+//! Nothing skinned follows the simulation yet, and the combat views (`combat_views.rs`) are all that
+//! show it, so what this holds now is the property everything later leans on: a run inside the app,
+//! with the renderer beside it, reaches the same checksums as the headless runner, through the same
+//! `sapphire_gameplay::replay` code. `--replay` compares with the recorded checksums next to the file,
+//! where there are any, and fails the run if it differs, so a golden or a bench from a recorded fight
+//! can't come from another fight.
 //!
 //! **Where a recording's actions come from:** [`action_source`], which returns an
 //! [`ActionSource`]: a named script, with `--capture` or `--bench`, or in the windowed app the
@@ -22,7 +23,7 @@ use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, Played, Player, RecordedTrail, Recording, Replay,
     ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
 };
-use sapphire_gameplay::{ActorId, TickActions};
+use sapphire_gameplay::{ActorId, Simulation, TickActions};
 
 use crate::LOG_TARGET;
 use crate::options::{CaptureFrames, CombatOption};
@@ -60,6 +61,9 @@ enum Mode {
     },
     Recording {
         recording: Recording,
+        /// The scenario it started from, for the overlay.
+        #[cfg(any(feature = "dev", test))]
+        scenario: &'static str,
         /// The script it plays. With none, it records the bindings it's given.
         script: Option<ScriptActions>,
         /// The tick limit, once reached.
@@ -122,7 +126,13 @@ impl Combat {
             .transpose()?;
         let recording =
             Recording::new(scenario, scenario.config).map_err(|error| format!("--record: {error}"))?;
-        let mode = Mode::Recording { recording, script, stopped: None };
+        let mode = Mode::Recording {
+            recording,
+            #[cfg(any(feature = "dev", test))]
+            scenario: scenario.name,
+            script,
+            stopped: None,
+        };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
@@ -162,7 +172,7 @@ impl Combat {
                 }
                 false
             }
-            Mode::Recording { recording, script, stopped } => {
+            Mode::Recording { recording, script, stopped, .. } => {
                 if stopped.is_some() {
                     return false;
                 }
@@ -172,6 +182,36 @@ impl Combat {
                 }
                 asks
             }
+        }
+    }
+
+    /// The simulation as it stands.
+    pub fn simulation(&self) -> &Simulation {
+        match &self.mode {
+            Mode::Replaying { player, .. } => player.simulation(),
+            Mode::Recording { recording, .. } => recording.simulation(),
+        }
+    }
+
+    /// Draws the combat views that are on: once a frame, before its debug draws are collected, and
+    /// after `Scene::animate`, so M2 N3's `VisiblePose` has the frame's pose to read.
+    pub fn draw_views(&self) {
+        crate::combat_views::draw_current(self.simulation());
+    }
+
+    /// What's running, for the overlay's recorder.
+    #[cfg(any(feature = "dev", test))]
+    pub fn status(&self) -> CombatStatus<'_> {
+        match &self.mode {
+            Mode::Replaying { player, name, .. } => {
+                CombatStatus::Replaying { name, length: player.replay().ticks() }
+            }
+            Mode::Recording { scenario, script, stopped, .. } => CombatStatus::Recording {
+                scenario,
+                path: &self.path,
+                at_limit: stopped.is_some(),
+                scripted: script.is_some(),
+            },
         }
     }
 
@@ -247,6 +287,96 @@ impl Combat {
         }
         Ok(())
     }
+}
+
+/// What a [`Combat`] is running, as the overlay shows it.
+#[cfg(any(feature = "dev", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CombatStatus<'a> {
+    Replaying { name: &'a str, length: u32 },
+    Recording { scenario: &'static str, path: &'a Path, at_limit: bool, scripted: bool },
+}
+
+/// The overlay's replay recorder: starts recording the player, and ends it, between frames.
+///
+/// **A recording always starts its scenario over.** A replay is a scenario's name, a seed and every
+/// tick's actions from tick 0. It holds no state of its own, and the simulation has no way to write
+/// one, so a tick in the middle of a fight has nothing a replay could begin from. So there's no
+/// recording what's on screen: Start makes a new simulation of the scenario, and refuses while a fight
+/// is running, which someone may want to keep.
+///
+/// **The bindings stay read once a step.** This only changes which [`Combat`] there is, in between
+/// steps, and [`read_bindings`] asks them exactly once of whichever it finds.
+///
+/// Files go in `dir`, named after their scenario with the first free number, so nothing is overwritten
+/// and a session is never lost to a name. Each is a replay like any other: to keep one, put it in
+/// `tests/replays/` and run `cargo xtask replay --update`.
+#[cfg(any(feature = "dev", test))]
+pub(crate) struct SessionRecorder {
+    dir: PathBuf,
+    /// How the last save went, or why the last request failed.
+    note: Option<String>,
+}
+
+#[cfg(any(feature = "dev", test))]
+impl SessionRecorder {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir, note: None }
+    }
+
+    /// What the panel says under its controls.
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+
+    /// Starts `scenario` over, recording the player from its first tick. See the type's docs.
+    pub fn start(&mut self, combat: &mut Option<Combat>, scenario: &str) {
+        if combat.is_some() {
+            self.note = Some("A fight is running: end it before starting another.".to_owned());
+            return;
+        }
+        match self.new_recording(scenario) {
+            Ok(recording) => {
+                *combat = Some(recording);
+                self.note = None;
+            }
+            Err(error) => self.note = Some(error),
+        }
+    }
+
+    fn new_recording(&self, scenario: &str) -> Result<Combat, String> {
+        // Up front: failing here costs nothing, and failing at the end would cost the session.
+        fs::create_dir_all(&self.dir).map_err(|error| format!("{}: {error}", self.dir.display()))?;
+        let path = (1_u32..)
+            .map(|number| self.dir.join(format!("{scenario}-{number}.sreplay")))
+            .find(|path| !path.exists())
+            .expect("fewer than 2³² recordings");
+        Combat::new(&CombatOption::Record { path, scenario: scenario.to_owned(), script: None })
+    }
+
+    /// Ends a recording and writes it.
+    pub fn save(&mut self, combat: &mut Option<Combat>) {
+        let Some(recording) = take_recording(combat) else { return };
+        let ticks = recording.simulation().tick();
+        let path = recording.path.clone();
+        self.note = Some(match recording.finish() {
+            Ok(()) => format!("Saved {ticks} ticks to {}", path.display()),
+            Err(error) => error,
+        });
+    }
+
+    /// Ends a recording and writes nothing.
+    pub fn discard(&mut self, combat: &mut Option<Combat>) {
+        if let Some(recording) = take_recording(combat) {
+            self.note = Some(format!("Discarded {} ticks", recording.simulation().tick()));
+        }
+    }
+}
+
+/// The recording of the player that's running, out of `combat`. A replay or a script's recording stays.
+#[cfg(any(feature = "dev", test))]
+fn take_recording(combat: &mut Option<Combat>) -> Option<Combat> {
+    combat.take_if(|combat| matches!(combat.status(), CombatStatus::Recording { scripted: false, .. }))
 }
 
 /// Asks `bindings` for one fixed step's input, exactly once: a recording of the player asks them
@@ -402,6 +532,164 @@ mod tests {
         assert_eq!(count(Some(&mut played)), 1, "a recording of the player");
         assert_eq!(count(Some(&mut scripted)), 1, "a script's, which asks them nothing");
         assert_eq!(count(Some(&mut replaying)), 1, "a replay");
+    }
+
+    /// A directory of this test's own, gone when it ends.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("sapphire-sandbox-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn press_light(_tick: u64, cast: &[ActorId]) -> TickActions {
+        let mut actions = TickActions::NEUTRAL;
+        let pressed = ActorActions { buttons: Buttons::LIGHT, ..ActorActions::NEUTRAL };
+        actions.set(cast[0], pressed).expect("room");
+        actions
+    }
+
+    /// What the overlay's Record button does: a fresh scenario, at its first tick, whatever came
+    /// before, and the file holds only what came after. A fight that ran first leaves no mark on it.
+    #[test]
+    fn the_overlay_records_from_the_scenarios_first_tick() {
+        let scratch = ScratchDir::new("from-the-start");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        let player = ActorId::from_raw(1).expect("not zero");
+
+        // The session before: bindings read with nothing recording them.
+        for _ in 0..5 {
+            read_bindings(combat.as_mut(), &mut press_light, player);
+        }
+        recorder.start(&mut combat, "duel");
+        let running = combat.as_ref().expect("started");
+        assert_eq!(running.simulation().tick(), 0, "the scenario starts over");
+        let CombatStatus::Recording { scenario, scripted, at_limit, path } = running.status() else {
+            panic!("{:?}", running.status());
+        };
+        assert_eq!((scenario, scripted, at_limit), ("duel", false, false));
+        assert_eq!(path, scratch.0.join("duel-1.sreplay"));
+
+        for tick in 1..=3 {
+            read_bindings(combat.as_mut(), &mut press_light, player);
+            assert_eq!(combat.as_ref().expect("running").simulation().tick(), tick);
+        }
+        recorder.save(&mut combat);
+        assert!(combat.is_none(), "it's over");
+        assert!(recorder.note().is_some_and(|note| note.contains("Saved 3 ticks")), "{:?}", recorder.note());
+
+        let replay =
+            Replay::decode(&fs::read(scratch.0.join("duel-1.sreplay")).expect("written")).expect("reads");
+        assert_eq!((replay.scenario(), replay.ticks()), ("duel", 3));
+
+        // It plays back to what a recording made in one go reaches.
+        let scenario = find_scenario(SCENARIOS, "duel").expect("there");
+        let mut whole = Recording::new(scenario, scenario.config).expect("sets up");
+        for _ in 0..3 {
+            whole.step(&mut press_light).expect("short");
+        }
+        let (whole, played) = whole.finish();
+        assert_eq!(replay, whole, "the same file, byte for byte");
+        let mut player = Player::new(replay, SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.finish().trail, played.trail);
+    }
+
+    /// The rule I1 left for this: however a recording starts and ends, each step reads the bindings
+    /// once, since asking is what moves a press along.
+    #[test]
+    fn the_bindings_are_read_once_a_step_as_a_recording_starts_and_ends() {
+        let scratch = ScratchDir::new("once");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        let player = ActorId::from_raw(1).expect("not zero");
+        let step = |combat: &mut Option<Combat>| {
+            let mut asked = 0;
+            let mut bindings = |_: u64, _: &[ActorId]| {
+                asked += 1;
+                TickActions::NEUTRAL
+            };
+            read_bindings(combat.as_mut(), &mut bindings, player);
+            asked
+        };
+        assert_eq!(step(&mut combat), 1, "nothing's recording");
+        recorder.start(&mut combat, "duel");
+        assert_eq!(step(&mut combat), 1, "the recording's first step");
+        assert_eq!(step(&mut combat), 1, "and its next");
+        recorder.save(&mut combat);
+        assert_eq!(step(&mut combat), 1, "saved");
+        recorder.start(&mut combat, "melee");
+        assert_eq!(step(&mut combat), 1, "another");
+        recorder.discard(&mut combat);
+        assert_eq!(step(&mut combat), 1, "discarded");
+    }
+
+    #[test]
+    fn the_overlay_never_overwrites_a_session_and_a_discard_writes_nothing() {
+        let scratch = ScratchDir::new("names");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        let saved = |number: u32| scratch.0.join(format!("melee-{number}.sreplay"));
+
+        recorder.start(&mut combat, "melee");
+        recorder.discard(&mut combat);
+        assert!(combat.is_none());
+        assert!(!saved(1).exists(), "discarded");
+        assert!(recorder.note().is_some_and(|note| note.contains("Discarded")), "{:?}", recorder.note());
+
+        recorder.start(&mut combat, "melee");
+        recorder.save(&mut combat);
+        let first = fs::read(saved(1)).expect("written");
+        recorder.start(&mut combat, "melee");
+        recorder.save(&mut combat);
+        assert!(saved(2).exists());
+        assert_eq!(fs::read(saved(1)).expect("still there"), first);
+    }
+
+    #[test]
+    fn the_overlay_leaves_a_running_fight_alone_and_says_why_it_cant_start() {
+        let scratch = ScratchDir::new("refused");
+        let mut recorder = SessionRecorder::new(scratch.0.clone());
+        let mut combat = None;
+        recorder.start(&mut combat, "duel");
+        for _ in 0..2 {
+            combat.as_mut().expect("running").step(&mut no_bindings);
+        }
+        recorder.start(&mut combat, "melee");
+        let running = combat.as_ref().expect("kept");
+        assert_eq!(running.simulation().tick(), 2, "a session isn't thrown away for another");
+        assert!(recorder.note().is_some_and(|note| note.contains("running")), "{:?}", recorder.note());
+        recorder.discard(&mut combat);
+
+        // Nothing but a recording of the player is the panel's to end.
+        let script = Scratch::new("script");
+        let mut scripted = Some(recording(&script.0, Some("idle")));
+        recorder.save(&mut scripted);
+        recorder.discard(&mut scripted);
+        assert!(scripted.is_some(), "a script's recording ends with its capture");
+
+        // A scenario this build lacks, and a directory it can't make.
+        let mut none = None;
+        recorder.start(&mut none, "no-such");
+        assert!(none.is_none());
+        assert!(recorder.note().is_some_and(|note| note.contains("no-such")), "{:?}", recorder.note());
+        let file = scratch.0.join("a-file");
+        fs::create_dir_all(&scratch.0).expect("makes");
+        fs::write(&file, b"in the way").expect("writes");
+        let mut blocked = SessionRecorder::new(file.join("replays"));
+        blocked.start(&mut none, "duel");
+        assert!(none.is_none());
+        assert!(blocked.note().is_some(), "it says why");
     }
 
     #[test]

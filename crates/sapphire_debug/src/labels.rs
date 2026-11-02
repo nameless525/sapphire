@@ -39,7 +39,7 @@ fn project(clip_from_world: Mat4, label: &DebugLabel, size: Vec2) -> Option<Pos2
     })
 }
 
-fn color(color: Color) -> Color32 {
+pub(crate) fn color(color: Color) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a)
 }
 

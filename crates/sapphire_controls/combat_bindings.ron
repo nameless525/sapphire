@@ -1,0 +1,156 @@
+// Combat's default bindings (sapphire_input's document format), compiled into sapphire_controls.
+// Rebinding is editing this file, or `InputSystem::rebind` by a binding's name at run time.
+//
+// The pad follows Zenless Zone Zero's shape: basic attack on the left face button, dodge on the
+// bottom one, special on the top, ultimate on the right trigger, swap on the right shoulder, lock-on
+// on the right stick's press. Heavy and jump have no match there, so they take what's left.
+//
+//   Verb       Pad                     Keyboard     Mouse
+//   light      West (X, Square)        J            left
+//   heavy      East (B, Circle)        K            right
+//   dodge      South (A, Cross)        Left Shift
+//   skill      North (Y, Triangle)     E
+//   ultimate   Right trigger           Q
+//   swap       Right shoulder          Tab
+//   lock_on    Right stick press       L            middle
+//   jump       Left shoulder           Space
+//   move       Left stick              W A S D
+//   look       Right stick             arrow keys   motion, and wheel to zoom
+//   pause      Start                   Esc, P
+//
+// Back, however it comes (Android's, the pad's, Backspace), opens the pause, and leaves from it:
+// docs/m2-handoff.md has why. While paused, what opened it closes it, and so do the pad's East and a
+// tap on a phone.
+//
+// Every verb is `DownFromPress`, so a button held as the context returns isn't a press (crate docs).
+// `Virtual` sources, named after their actions, are what on-screen controls inject
+// (`CombatControls::set_on_screen`).
+(
+    type: "sapphire::input::InputBindings",
+    version: 1,
+    data: (
+        actions: [
+            // The simulation's input (`TickActions`): one button per verb, and the stick.
+            (name: "move", kind: Axis2D),
+            (name: "light", kind: Button),
+            (name: "heavy", kind: Button),
+            (name: "dodge", kind: Button),
+            (name: "skill", kind: Button),
+            (name: "ultimate", kind: Button),
+            (name: "swap", kind: Button),
+            (name: "lock_on", kind: Button),
+            (name: "jump", kind: Button),
+            // Presentation, never in `TickActions`: (yaw, pitch) in radians this frame, and the
+            // natural log of the camera's distance factor, below zero moving closer.
+            (name: "look", kind: Axis2D),
+            (name: "camera_zoom", kind: Axis1D),
+            // What runs the steps.
+            (name: "pause", kind: Button),
+            (name: "resume", kind: Button),
+            (name: "leave", kind: Button),
+        ],
+        contexts: [
+            (
+                name: "combat",
+                bindings: [
+                    // The stick's path: past a round dead zone, its length rescales from 0 at 0.15
+                    // to 1 at 0.95, so a worn stick still reaches the end of the range and a
+                    // square-gated one can't run faster on a diagonal. No curve: walking speed
+                    // stays where the thumb puts it.
+                    (
+                        action: "move",
+                        source: PadStick(Left),
+                        modifiers: [DeadZone(lower: 0.15, upper: 0.95)],
+                        name: "move.gamepad",
+                    ),
+                    (action: "move", source: Key(W), modifiers: [Swizzle], name: "move_forward.keyboard"),
+                    (action: "move", source: Key(S), modifiers: [Swizzle, Negate(Y)], name: "move_back.keyboard"),
+                    (action: "move", source: Key(A), modifiers: [Negate(X)], name: "move_left.keyboard"),
+                    (action: "move", source: Key(D), name: "move_right.keyboard"),
+                    (action: "move", source: Virtual("move")),
+
+                    (action: "light", source: Pad(West), trigger: DownFromPress, name: "light.gamepad"),
+                    (action: "light", source: Key(J), trigger: DownFromPress, name: "light.keyboard"),
+                    (action: "light", source: Mouse(Left), trigger: DownFromPress, name: "light.mouse"),
+                    (action: "light", source: Virtual("light"), trigger: DownFromPress),
+
+                    (action: "heavy", source: Pad(East), trigger: DownFromPress, name: "heavy.gamepad"),
+                    (action: "heavy", source: Key(K), trigger: DownFromPress, name: "heavy.keyboard"),
+                    (action: "heavy", source: Mouse(Right), trigger: DownFromPress, name: "heavy.mouse"),
+                    (action: "heavy", source: Virtual("heavy"), trigger: DownFromPress),
+
+                    (action: "dodge", source: Pad(South), trigger: DownFromPress, name: "dodge.gamepad"),
+                    (action: "dodge", source: Key(LeftShift), trigger: DownFromPress, name: "dodge.keyboard"),
+                    (action: "dodge", source: Virtual("dodge"), trigger: DownFromPress),
+
+                    (action: "skill", source: Pad(North), trigger: DownFromPress, name: "skill.gamepad"),
+                    (action: "skill", source: Key(E), trigger: DownFromPress, name: "skill.keyboard"),
+                    (action: "skill", source: Virtual("skill"), trigger: DownFromPress),
+
+                    (action: "ultimate", source: PadAxis(RightTrigger), trigger: DownFromPress, name: "ultimate.gamepad"),
+                    (action: "ultimate", source: Key(Q), trigger: DownFromPress, name: "ultimate.keyboard"),
+                    (action: "ultimate", source: Virtual("ultimate"), trigger: DownFromPress),
+
+                    (action: "swap", source: Pad(RightShoulder), trigger: DownFromPress, name: "swap.gamepad"),
+                    (action: "swap", source: Key(Tab), trigger: DownFromPress, name: "swap.keyboard"),
+                    (action: "swap", source: Virtual("swap"), trigger: DownFromPress),
+
+                    (action: "lock_on", source: Pad(RightStick), trigger: DownFromPress, name: "lock_on.gamepad"),
+                    (action: "lock_on", source: Key(L), trigger: DownFromPress, name: "lock_on.keyboard"),
+                    (action: "lock_on", source: Mouse(Middle), trigger: DownFromPress, name: "lock_on.mouse"),
+                    (action: "lock_on", source: Virtual("lock_on"), trigger: DownFromPress),
+
+                    (action: "jump", source: Pad(LeftShoulder), trigger: DownFromPress, name: "jump.gamepad"),
+                    (action: "jump", source: Key(Space), trigger: DownFromPress, name: "jump.keyboard"),
+                    (action: "jump", source: Virtual("jump"), trigger: DownFromPress),
+
+                    // The camera, on the real clock. The stick's curve gives fine aim near the
+                    // middle: 2.5 rad/s at full tilt. 0.008 rad per point of mouse, 0.006 of finger.
+                    (
+                        action: "look",
+                        source: PadStick(Right),
+                        modifiers: [
+                            DeadZone(lower: 0.15, upper: 0.95),
+                            ResponseCurve(exponent: 2.0),
+                            Scale((-2.5, 2.5)),
+                            ScaleByDeltaTime,
+                        ],
+                        name: "look.gamepad",
+                    ),
+                    (action: "look", source: MouseMotion, modifiers: [Scale((-0.008, -0.008))]),
+                    (action: "look", source: Touch(Drag), modifiers: [Scale((-0.006, -0.006))]),
+                    (action: "look", source: Key(Left), modifiers: [Scale((1.5, 0.0)), ScaleByDeltaTime]),
+                    (action: "look", source: Key(Right), modifiers: [Scale((-1.5, 0.0)), ScaleByDeltaTime]),
+                    (action: "look", source: Key(Up), modifiers: [Swizzle, Scale((0.0, 1.5)), ScaleByDeltaTime]),
+                    (action: "look", source: Key(Down), modifiers: [Swizzle, Scale((0.0, -1.5)), ScaleByDeltaTime]),
+                    // 0.9× the distance per wheel notch away from you: ln 0.9.
+                    (action: "camera_zoom", source: MouseWheel, modifiers: [Scale((-0.10536052, 0.0))]),
+                    (action: "camera_zoom", source: Touch(Pinch), modifiers: [Negate(X)]),
+
+                    (action: "pause", source: Pad(Start), trigger: Pressed, name: "pause.gamepad"),
+                    (action: "pause", source: Key(Escape), trigger: Pressed, name: "pause.keyboard"),
+                    (action: "pause", source: Key(P), trigger: Pressed),
+                    // Android's Back reaches input as SDL's AC_BACK.
+                    (action: "pause", source: Key(Hid(282)), trigger: Pressed),
+                    (action: "pause", source: Pad(Back), trigger: Pressed),
+                    (action: "pause", source: Key(Backspace), trigger: Pressed),
+                ],
+            ),
+            (
+                name: "pause",
+                bindings: [
+                    (action: "resume", source: Pad(Start), trigger: Pressed, name: "resume.gamepad"),
+                    (action: "resume", source: Pad(East), trigger: Pressed),
+                    (action: "resume", source: Key(Escape), trigger: Pressed, name: "resume.keyboard"),
+                    (action: "resume", source: Key(P), trigger: Pressed),
+                    // A phone's way back in, until a pause menu has a button for it.
+                    (action: "resume", source: Touch(Press), trigger: Tap(seconds: 0.3)),
+
+                    (action: "leave", source: Key(Hid(282)), trigger: Pressed),
+                    (action: "leave", source: Pad(Back), trigger: Pressed, name: "leave.gamepad"),
+                    (action: "leave", source: Key(Backspace), trigger: Pressed, name: "leave.keyboard"),
+                ],
+            ),
+        ],
+    ),
+)

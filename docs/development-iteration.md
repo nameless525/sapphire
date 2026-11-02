@@ -15,6 +15,7 @@ same `CARGO_TARGET_DIR`.
 - Moves, their documents and the simulation's determinism and allocation tests: `cargo test -p sapphire_moves -p sapphire_gameplay --locked`. They need no GPU. Its cost: `cargo run --release -p sapphire_gameplay --example step_bench`.
 - The recorded combat replays: `cargo xtask replay [--replay <name>]`. They need no GPU, and the suite itself takes about 20 ms. See [Replays](#replays).
 - The same replays beside the renderer: `cargo xtask content`, then `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`.
+- Combat's controls, driven by synthetic input: `cargo test -p sapphire_input -p sapphire_controls --locked`. Their cost: `cargo run --release -p sapphire_controls --example update_bench`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
 - All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world -p sapphire_debug --tests --locked -- --ignored --test-threads=1`.

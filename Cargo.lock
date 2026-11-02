@@ -2958,6 +2958,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_controls"
+version = "0.1.0"
+dependencies = [
+ "profiling",
+ "sapphire_core",
+ "sapphire_gameplay",
+ "sapphire_input",
+ "sapphire_math",
+ "sapphire_platform",
+ "sapphire_serialize",
+ "sapphire_time",
+ "thiserror",
+]
+
+[[package]]
 name = "sapphire_core"
 version = "0.1.0"
 dependencies = [
@@ -3253,6 +3268,7 @@ dependencies = [
  "sapphire_anim",
  "sapphire_assets",
  "sapphire_audio",
+ "sapphire_controls",
  "sapphire_core",
  "sapphire_crash",
  "sapphire_debug",

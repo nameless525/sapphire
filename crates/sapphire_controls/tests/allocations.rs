@@ -1,0 +1,68 @@
+//! Steady-state frames allocate nothing: presses, steps, pauses and on-screen values. It runs on the
+//! same frames as the fixed step, whose rule R6 the mapping's half must not break. Installs
+//! `CountingAllocator` as this test binary's global allocator.
+
+use std::alloc::System;
+
+use sapphire_controls::CombatControls;
+use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
+use sapphire_gameplay::{ActorId, Buttons};
+use sapphire_input::{PadAxis, PadButton, RawInput, Timestamp};
+use sapphire_math::Vec2;
+use sapphire_platform::{GamepadType, Scancode};
+use sapphire_time::FixedStepDriver;
+
+#[global_allocator]
+static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
+
+/// One 16 ms frame starting at `frame`'s time, with input from every device and a pause now and
+/// then.
+fn frame(controls: &mut CombatControls, driver: &mut FixedStepDriver, frame: u64) -> u64 {
+    let t = |offset: u64| Timestamp::from_nanos((frame * 16 + offset) * 1_000_000);
+    let down = frame % 4 < 2;
+    let input = controls.input_mut();
+    input.push(t(1), RawInput::Key { scancode: Scancode::J, down });
+    input.push(t(2), RawInput::Key { scancode: Scancode::W, down: !down });
+    input.push(t(3), RawInput::PadButton { pad: 0, button: PadButton::South, down });
+    let stick = (frame as f32 * 0.1).sin();
+    input.push(t(4), RawInput::PadAxis { pad: 0, axis: PadAxis::LeftX, value: stick });
+    input.push(t(5), RawInput::PadAxis { pad: 0, axis: PadAxis::RightX, value: stick });
+    // Every 100 frames, the pause opens or closes.
+    input.push(t(6), RawInput::Key { scancode: Scancode::ESCAPE, down: frame.is_multiple_of(100) });
+    let buttons = if frame % 8 < 4 { Buttons::DODGE } else { Buttons::NONE };
+    controls.set_on_screen(t(7), buttons, Vec2::new(stick, 0.0));
+    controls.update(t(16));
+    let mut seen = 0;
+    let steps = controls.advance(driver, std::time::Duration::from_millis(33));
+    for _ in 0..steps.count {
+        let tick = controls.next_tick(ActorId::from_raw(1).expect("not zero"));
+        seen += tick.get(ActorId::from_raw(1).expect("not zero")).buttons.bits().count_ones() as u64;
+    }
+    seen + u64::from(controls.look() != Vec2::ZERO) + u64::from(controls.camera_zoom() != 0.0)
+}
+
+#[test]
+fn steady_state_frames_do_not_allocate() {
+    // Counts are exact per thread only where Rust uses native TLS (see `sapphire_core::alloc`).
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut controls = CombatControls::with_default_bindings().expect("the default bindings");
+    let mut driver = FixedStepDriver::default();
+    let pad = RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne };
+    controls.input_mut().push(Timestamp::default(), pad);
+    for n in 0..120 {
+        frame(&mut controls, &mut driver, n);
+    }
+
+    let mut seen = 0;
+    let ((), counts) = alloc::count_in_scope(|| {
+        for n in 120..1120 {
+            seen += frame(&mut controls, &mut driver, n);
+        }
+    });
+    assert!(alloc::is_installed());
+    assert!(seen > 500, "the frames exercised the mapping: {seen}");
+    assert!(controls.stats().presses > 100, "and pressed things: {:?}", controls.stats());
+    assert_eq!(counts.allocations, 0, "1000 frames allocated {} times", counts.allocations);
+}

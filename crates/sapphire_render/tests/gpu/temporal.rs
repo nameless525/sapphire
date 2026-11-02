@@ -199,6 +199,11 @@ fn taa_settings() -> RenderSettings {
 /// What to read back after a frame: a texture from the frame's targets.
 type Read<'a> = (fn(&PrepassTargets) -> Option<TextureId>, &'a Readback);
 
+/// The sky's grey: the middle of 8-bit code 188. A flat sky's history can rest a half-float step
+/// under the frame (WARP's does), and at linear 0.5, which is code 187.52, that step reads one
+/// whole code lower across the frame and swamps what the tests measure at edges.
+const SKY_GREY: f32 = 0.5029;
+
 /// A renderer and its frames, drawing into one target.
 struct Frames {
     renderer: Renderer,
@@ -223,9 +228,9 @@ impl Frames {
             packets: FramePacketRing::new(),
             target: target(gpu, size),
             sky: SkyGradient {
-                zenith: Vec3::splat(0.5),
-                horizon: Vec3::splat(0.5),
-                ground: Vec3::splat(0.5),
+                zenith: Vec3::splat(SKY_GREY),
+                horizon: Vec3::splat(SKY_GREY),
+                ground: Vec3::splat(SKY_GREY),
             },
             layers: None,
             characters: Vec::new(),
@@ -546,8 +551,11 @@ fn velocity_ignores_the_jitter() {
             &[(|t| Some(t.velocity), &velocity)],
         );
         let texels = velocity.texels(&gpu);
-        // Exactly zero (the y axis's sign flip leaves -0 in places).
-        assert!(texels.iter().all(|texel| rg16f(texel) == [0.0, 0.0]), "frame {frame}: still geometry moves");
+        // Zero up to the target's smallest step: WARP rounds a few texels to 6e-8, 1e-5 of a pixel.
+        assert!(
+            texels.iter().flat_map(|texel| rg16f(texel)).all(|axis| axis.abs() < 1e-6),
+            "frame {frame}: still geometry moves"
+        );
     }
     // A rectangle in the plane z = 0 moving 3 pixels right a frame moves exactly that,
     // whatever the jitter (45 pixels per unit).
@@ -561,7 +569,7 @@ fn velocity_ignores_the_jitter() {
         let texels = velocity.texels(&gpu);
         let center = ((size.1 / 2) * size.0 + size.0 / 2 + 22 + 3 * frame) as usize;
         let [vx, vy] = rg16f(&texels[center]);
-        assert!((vx * size.0 as f32 - 3.0).abs() < 5e-3 && vy == 0.0, "frame {frame}: {vx} {vy}");
+        assert!((vx * size.0 as f32 - 3.0).abs() < 5e-3 && vy.abs() < 1e-6, "frame {frame}: {vx} {vy}");
     }
 }
 

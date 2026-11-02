@@ -1,0 +1,68 @@
+# The GPU tests on WARP, Windows' CPU rasterizer, once a change is on main. CI's `GPU tests` job
+# runs the same suites on lavapipe for every PR. WARP takes longer than all of a PR's other
+# checks together, so it isn't a PR check: this catches what only D3D12 shows soon after landing,
+# and a PR changing this file runs it, so the file is tested before it lands.
+#
+# As in ci.yml, actions are pinned to commit SHAs and the runner image is pinned.
+
+name: GPU tests (WARP)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**/*.md']
+  pull_request:
+    paths: ['.github/workflows/gpu-tests-warp.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only the newest push is worth the runner: it holds the older ones' changes.
+concurrency:
+  group: gpu-tests-warp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TOOLS_DEBUG: "0"
+  RUST_BACKTRACE: short
+  RUST_CACHE_ENV_VARS: CARGO CC CFLAGS CXX CMAKE RUST ImageOS SDKROOT
+
+jobs:
+  gpu-tests:
+    name: GPU tests (dx12-warp)
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      SAPPHIRE_GPU_BACKEND: dx12
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      # Built apart from the run, so the run's time is the tests' own. Bash, so the first build's
+      # failure fails the step (PowerShell checks the last).
+      - name: Build the GPU tests
+        shell: bash
+        run: |
+          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-run
+          cargo test --package sapphire_sandbox --features dev --locked --lib --no-run
+      # Beside the test executables, where D3D12 looks for it.
+      - name: Install WARP 1.0.21
+        shell: pwsh
+        run: |
+          curl.exe -sSfL --retry 5 -o warp.zip https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.warp/1.0.21/microsoft.direct3d.warp.1.0.21.nupkg
+          if ((Get-FileHash warp.zip -Algorithm SHA256).Hash -ne "EA44B77EB30EEC14427193E20F40CDB2E4C31ED11AB39CB880538FDF4BAC2681") { throw "WARP package checksum mismatch" }
+          tar.exe -xf warp.zip build/native/bin/x64/d3d10warp.dll
+          Copy-Item build/native/bin/x64/d3d10warp.dll target/debug/deps/
+      - name: GPU tests (render, RHI, world)
+        run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-fail-fast -- --ignored --test-threads=1
+      - name: GPU tests (sandbox, dev)
+        run: cargo test --package sapphire_sandbox --features dev --locked --lib -- --ignored --test-threads=1

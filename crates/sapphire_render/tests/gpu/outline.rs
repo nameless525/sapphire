@@ -1035,7 +1035,7 @@ const TURN: f32 = 0.05;
 /// across itself: 82% of 4× MSAA's contrast, 122% of its width, and its pixels changed 4.2 times
 /// as much from frame to frame as MSAA's. With the line's velocity, drawn from the current frame
 /// in motion and reprojected by whichever reprojection's history matches best: 94%, 115% and
-/// 2.9 times.
+/// 2.9 times (WARP rasterizes the same line at 92%, 120% and 2.9 times).
 #[test]
 #[ignore = "needs a GPU"]
 fn a_turning_body_keeps_its_lines_crisp_and_steady_under_temporal_aa() {
@@ -1045,7 +1045,7 @@ fn a_turning_body_keeps_its_lines_crisp_and_steady_under_temporal_aa() {
         compare_lines(&gpu, |_| 1.0, 32, still_camera, |frame| Mat4::from_rotation_y(TURN * frame as f32));
     eprintln!("turning: {lines:?}");
     assert!((0.9..1.15).contains(&lines.strength), "{lines:?}");
-    assert!(lines.contrast > 0.9 && lines.width < 1.19, "{lines:?}");
+    assert!(lines.contrast > 0.9 && lines.width < 1.2, "{lines:?}");
     assert!(lines.change < 3.6 * lines.msaa_change, "{lines:?}");
 }
 

@@ -2,7 +2,7 @@
 
 Sapphire is a Rust game engine built for 3D anime-aesthetic action games in the vein of Zenless Zone Zero and Wuthering Waves. It targets **macOS, Windows, Linux, iOS and Android**.
 
-![The look-dev stage at golden hour. An anime girl with long chestnut hair, a white T-shirt and black shorts stands in a flagstone square, in three-quarter view. Behind her on the left is a pavilion with dark red columns and a sweeping charcoal tile roof, the low sun glowing over its eaves. On the right a white plastered wall opens through a round moon gate onto a street strung with paper lanterns. Long blue-violet shadows cross the paving, under a lavender sky and a pale mountain in haze.](docs/media/m1-lookdev.png)
+![The look-dev stage at golden hour. An anime character with long chestnut hair, a white T-shirt and black shorts stands in a flagstone square, in three-quarter view. Behind the character on the left is a pavilion with dark red columns and a sweeping charcoal tile roof, the low sun glowing over its eaves. On the right a white plastered wall opens through a round moon gate onto a street strung with paper lanterns. Long blue-violet shadows cross the paving, under a lavender sky and a pale mountain in haze.](docs/media/m1-lookdev.png)
 
 **Status: M1 is done, pending devices (2026-10-27).** M1 built the engine's data path and its anime look:
 

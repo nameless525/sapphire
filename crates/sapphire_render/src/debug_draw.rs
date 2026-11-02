@@ -42,7 +42,7 @@
 //! - The environment's alpha-tested surfaces aren't cut out of that prepass (crate docs, "Later
 //!   milestones"): their holes hide a line behind them.
 //! - A character's outline hull hides what is behind it, so a tested line stops a line's width
-//!   short of her silhouette.
+//!   short of its silhouette.
 //! - Under TAA that depth jitters, so where a tested line goes behind a silhouette its end moves
 //!   by up to a pixel from frame to frame. A wider filter only spread the same flicker over more
 //!   pixels (3 × 3 texels: three times the pixels at a quarter of the step), so it stays this

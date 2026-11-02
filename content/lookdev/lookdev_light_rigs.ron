@@ -11,7 +11,7 @@
 //   of the depth-offset rim's light gate and back-light weighting from the key light. The stage's
 //   sun swings from the cameras' right at midday round behind them, then sets in front of them on
 //   the left, where the gameplay preset folds it back toward the camera's side; the rim followed
-//   it round the front. Held straight behind and above, the rim stays on both of her silhouettes
+//   it round the front. Held straight behind and above, the rim stays on both of the character's silhouettes
 //   and keeps its back light whatever the hour, as the reference games' character rims do.
 // - Angles are degrees, as in the shipped file: azimuth around the vertical axis through the
 //   head from the camera's side (±180° from behind), elevation above the horizon.

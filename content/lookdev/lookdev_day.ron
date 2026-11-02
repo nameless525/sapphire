@@ -54,13 +54,13 @@
 //   at golden hour and 0.6 at sunset as they come on; whole from the blue hour (19:45) through
 //   the night to the blue hour before dawn, so dusk and night draw as before; 0.3 at sunrise.
 //   Characters' emission never follows it.
-// - Characters' shadow hue (M1 C8's `character_shade`): at every key a share of the light on her
+// - Characters' shadow hue (M1 C8's `character_shade`): at every key a share of the light on the
 //   shadow side takes one cool blue-grey, (0.8, 0.87, 1.0), at the key light's luminance, instead
-//   of the key's color; her lit side keeps the key's. The share peaks around the warm keys: 0.4
+//   of the key's color; the lit side keeps the key's. The share peaks around the warm keys: 0.4
 //   by day, so the day's peach skin shade only cools a touch; 0.45 in the afternoon; 0.7 at
-//   golden hour and 0.75 at sunset, where the warm key would otherwise leave her shadow side tan
+//   golden hour and 0.75 at sunset, where the warm key would otherwise leave the shadow side tan
 //   against the blue-violet world; 0.6 at sunrise; 0.3 at the blue hour and 0.2 through the
-//   night, whose cool key already shades her blue.
+//   night, whose cool key already shades characters blue.
 // - Every number is a starting point for art direction, not a measurement.
 (
     type: "sapphire::world::TodTimeline",

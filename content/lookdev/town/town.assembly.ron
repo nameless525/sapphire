@@ -9,7 +9,7 @@
 // stage that draws it.
 //
 // World space: meters, +Y up. The character stands at the origin facing +Z, where the cameras
-// are; the square opens behind her toward -Z, and the street leaves it through the gate wall's
+// are; the square opens behind the character toward -Z, and the street leaves it through the gate wall's
 // moon gate at x 3.2. Buildings are built in meters inside their groups, each on its footprint's
 // middle with its front toward +Z: a row facing +X turns 90, one facing -X turns -90.
 //

@@ -1608,8 +1608,8 @@ pub fn scenes() -> [Scene; 142] {
             ],
             thresholds: Thresholds::default(),
         },
-        // The hero shot at golden hour: the character in three-quarter view with her SDF face map
-        // and outlines, the pavilion behind her with the low sun's glow round its roof, the gate
+        // The hero shot at golden hour: the character in three-quarter view with the SDF face map
+        // and outlines, the pavilion behind the character with the low sun's glow round its roof, the gate
         // wall and the lantern-lit street through its moon gate (X1 part 2b).
         Scene {
             name: "lookdev-town-hero",
@@ -2430,10 +2430,10 @@ pub fn scenes() -> [Scene; 142] {
             thresholds: Thresholds::default(),
         },
         // The look-dev character's face close-up (X1 part 2c) at midday, pinned as the other
-        // look-dev scenes are: her face's SDF shadow in its peach ramp with a light blush, the
-        // bangs' warm shadow on her forehead, the irises' gradient and sparkles under the
+        // look-dev scenes are: the face's SDF shadow in its peach ramp with a light blush, the
+        // bangs' warm shadow on the forehead, the irises' gradient and sparkles under the
         // glowing highlights, the darkened lash line, the hair's crisp band and thin brown
-        // outlines, the square behind her.
+        // outlines, the square behind the character.
         Scene {
             name: "lookdev-face",
             args: &[

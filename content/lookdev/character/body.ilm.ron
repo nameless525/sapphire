@@ -1,4 +1,4 @@
-// The look-dev character's body control map (M1 X1 part 2c): the shadow under her chin, which
+// The look-dev character's body control map (M1 X1 part 2c): the shadow under the chin, which
 // `gen-lookdev` measures from the model (`neck_shadow.png`, `lookdev::neck_shadow_png`), and
 // otherwise what the body shades with no map: no highlight, a middling highlight size and
 // material ID 0.

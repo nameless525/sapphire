@@ -141,7 +141,7 @@ pub const FACE_EXPRESSION: &str = "character/face/face_expression.png";
 pub const MODEL: &str = "../third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm";
 
 /// The shadow under the character's chin, relative to the look-dev directory: the shadow bias
-/// her body's ILM map (`character/body.ilm.ron`) reads.
+/// the body's ILM map (`character/body.ilm.ron`) reads.
 pub const NECK_SHADOW: &str = "character/neck_shadow.png";
 
 /// Every generated file, relative to the look-dev directory, with its bytes.
@@ -636,9 +636,9 @@ fn iris_texel(color: Vec3, q: Vec2) -> Vec3 {
 /// the model's face UVs (`Face_00_SKIN`'s, mirror-symmetric about u = 0.5, the character's left
 /// at u above 0.5; v runs down):
 /// - R, the nose line: a short stroke down the nose's left side, the far side from a camera on
-///   the head's right, as the shader expects (it mirrors the mask for a camera on her left);
+///   the head's right, as the shader expects (it mirrors the mask for a camera on the character's left);
 /// - G, the face highlight: a small soft spot on the nose's tip, over the model's painted nose;
-/// - B, always lit: nothing, since her eyes, brows and lash line are meshes of their own.
+/// - B, always lit: nothing, since the eyes, brows and lash line are meshes of their own.
 pub fn face_mask_png() -> io::Result<Vec<u8>> {
     mask(512, |p| {
         let mut texel = [0.0; 3];
@@ -676,7 +676,7 @@ pub fn face_expression_png() -> io::Result<Vec<u8>> {
 const BLUSH: f32 = 0.6;
 
 /// The look-dev character's neck shadow (X1 part 2c): the shadow bias (`character_maps::ilm`'s
-/// G, which her body's ILM map, `character/body.ilm.ron`, reads from this map's gray) on the
+/// G, which the body's ILM map, `character/body.ilm.ron`, reads from this map's gray) on the
 /// model's body UVs. The reference games paint a shadow under a character's chin, since
 /// characters never self-shadow (R4) and the jaw would otherwise leave the neck as lit as the
 /// face. Measured on the model `vrm` (a VRM, [`MODEL`]) in its mesh space, standing at the

@@ -65,7 +65,7 @@
 //! streams under its handle, which starts its instances over in their bind pose, so the scene
 //! sends their poses again in the frame that happens ([`Content::take_meshes_replaced`],
 //! `Scene::follow_content`). A new version of the look-dev character's mesh, rig or skeleton holds
-//! her anew ([`Content::take_character_changed`]).
+//! the character anew ([`Content::take_character_changed`]).
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
@@ -1658,7 +1658,8 @@ mod tests {
             let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
             let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
             let (mesh, bounds) = content.character(&mut renderer, &gpu).expect("the character");
-            let (pose, figure) = lookdev::hold(&mut content, &mut renderer, &gpu).expect("her pose");
+            let (pose, figure) =
+                lookdev::hold(&mut content, &mut renderer, &gpu).expect("the character's pose");
             // What the town draws doesn't matter here.
             let bytes = triangle(0.0).to_cooked().expect("cooked");
             let plain = Mesh::read(&bytes).expect("a valid mesh");
@@ -1782,14 +1783,14 @@ mod tests {
     fn a_mesh_replaced_in_place_is_posed_in_the_frame_that_replaces_it() {
         let mut stage = Stage::new();
         let posed = stage.frame();
-        assert!(posed.palette_bytes > 0, "she starts posed: {posed:?}");
+        assert!(posed.palette_bytes > 0, "the character starts posed: {posed:?}");
         assert_eq!(stage.frame().palette_bytes, 0, "a held pose is sent once");
         assert!(!stage.content.take_meshes_replaced(), "nothing replaced yet");
 
-        // Her mesh alone changes, as a sidecar's LOD edit changes it.
+        // The character's mesh alone changes, as a sidecar's LOD edit changes it.
         stage.recook(0.1, 0);
         let replaced = stage.until((1, 0, 0));
-        // No frame draws the new mesh in its bind pose: this frame's skin is her pose, not the
+        // No frame draws the new mesh in its bind pose: this frame's skin is the held pose, not the
         // bind pose a new instance would start from.
         assert_eq!(replaced.ignored_poses, 0);
         assert_eq!(replaced.palette_bytes, posed.palette_bytes, "posed: {replaced:?}");
@@ -1806,12 +1807,12 @@ mod tests {
         assert!(per_joint > 0);
         stage.frame();
 
-        // One joint more, in her mesh, rig and skeleton: the palette she was held with no longer
+        // One joint more, in the character's mesh, rig and skeleton: the palette it was held with no longer
         // fits, whichever of them lands first.
         stage.recook(0.0, 1);
         let settled = stage.until((1, 1, 1));
         assert_eq!(settled.ignored_poses, 0, "{settled:?}");
-        assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "her new palette: {settled:?}");
+        assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "the new palette: {settled:?}");
         assert_eq!(stage.frame().palette_bytes, 0, "held again");
     }
 

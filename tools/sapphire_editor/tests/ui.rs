@@ -693,6 +693,38 @@ fn a_first_cook_reaches_an_editor_already_open() {
     until(&mut harness, "the cook", Editor::has_cook);
 }
 
+/// A document can claim any length, and it's still the person's to open and fix: the timeline draws what
+/// shows, so a slip of a few digits costs a frame what a real move costs, not a shape per tick claimed.
+#[test]
+fn a_move_longer_than_any_can_be_draws_only_what_shows() {
+    let draw = |text: &str| {
+        let dir = TestDir::new("huge");
+        let options = Options {
+            file: Some(dir.write("slice.moves.ron", text)),
+            content: Some(dir.0.join("no cook here")),
+            link: Some("127.0.0.1:9".parse().expect("an address")),
+        };
+        let mut editor = Editor::new(options);
+        assert!(editor.select_move("light_1"));
+        let ctx = egui::Context::default();
+        let mut shapes = 0;
+        for pass in 0..2 {
+            let input = capture::raw_input(1400, 900, f64::from(pass) * 0.1);
+            let mut output = ctx.run_ui(input, |ui| editor.ui(ui));
+            output.textures_delta.clear();
+            shapes = output.shapes.len();
+        }
+        shapes
+    };
+    let usual = draw(SLICE);
+    for recovery in ["400000", "4000000000"] {
+        let text = SLICE.replacen("recovery: 18", &format!("recovery: {recovery}"), 1);
+        assert_ne!(text, SLICE);
+        let shapes = draw(&text);
+        assert!(shapes < usual * 2 + 1000, "recovery {recovery} drew {shapes} shapes, against {usual}");
+    }
+}
+
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real
 /// protocol over a real socket: what it replaced is shown, what it refused is shown by move and track with
 /// the edit kept, and the attempts on the device show up too. `tests/sandbox_push.rs` does the same with a

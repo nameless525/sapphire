@@ -353,9 +353,13 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     let painter = ui.painter_at(rect);
     let right = scale.x(ticks);
 
+    // Only what shows: a document can claim any length, and it still has to open to be fixed.
+    let first_shown = scale.cell(painter.clip_rect().left()).min(ticks);
+    let last_shown = scale.cell(painter.clip_rect().right()).saturating_add(1).min(ticks);
+
     // Background: alternate ticks, so a cell reads as a cell.
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(26));
-    for tick in 0..ticks {
+    for tick in first_shown..last_shown {
         if tick % 2 == 1 {
             let cell = Rect::from_x_y_ranges(scale.x(tick)..=scale.x(tick + 1), rect.y_range());
             painter.rect_filled(cell, CornerRadius::ZERO, Color32::from_gray(31));
@@ -373,7 +377,7 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     } else {
         20
     };
-    for tick in (0..=ticks).step_by(every as usize) {
+    for tick in (first_shown - first_shown % every..=last_shown).step_by(every as usize) {
         painter.text(
             Pos2::new(scale.x(tick) + 2.0, y + 4.0),
             Align2::LEFT_TOP,

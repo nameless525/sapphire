@@ -13,6 +13,8 @@
 //! - [`SimStats`], its counters against the budget (rule R9).
 //! - [`replay`]: recorded runs as files, the scenarios they start from and the checksums they must
 //!   reach, a tick at a time, for a headless runner and an app alike (spec §9, gates 2 and 4).
+//! - [`targeting`]: who a soft lock picks, as a pure function, since it decides where a move warps. The
+//!   camera that frames the choice is `sapphire_camera`, presentation, with no edge to this crate.
 //!
 //! The controller, moves, hits and cameras arrive with M2's G packages. Until then the crate's
 //! systems are a drill (`drill`) that exercises the rest: a button makes an actor follow a baked
@@ -94,6 +96,7 @@ mod motion;
 pub mod replay;
 mod simulation;
 mod stats;
+pub mod targeting;
 
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};

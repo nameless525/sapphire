@@ -28,7 +28,7 @@ The exit tests' numbers were taken on 410cf24b, before the review's fixes, and n
 | A fight's frame fits | CPU p50 0.24–0.36 ms; GPU p50 1.35 ms at Mobile-Low's settings, 6.9 ms at Desktop-High's. One row is repeatably over: Desktop-Low's post with a fused screen effect up, 0.78 ms against 0.7 (spec §3.5) | **Apple M5.** Not a phone, not throttled |
 | Nothing grows | 17.8 minutes at a true 30 fps: footprint +0.05 MB a minute, 43 fights ending on one checksum | Apple M5, Mobile-Low's size and cook. A load this light says nothing about heat |
 | Touch reaches the fight | Won and lost by real multi-touch events on an emulator (I3), and fought again by them on 410cf24b | An emulator's touches are exact, and its timing means nothing |
-| The simulation holds under fuzz | 51,678 swaps, 542 of them forced, 156 parties down, 6,609 perfect dodges, 6,035 counters and 1,007 defeats, across 200 seeds × 3 swap rates at 4,000 ticks, each run twice: the same results, no allocation. 400 restarts of 5 scenarios and 2 hours of ticks in 4: live bytes flat | arm64 only, so no proof across OSes. CI's replays are that |
+| The simulation holds under fuzz | 51,678 swaps, 542 of them forced, 156 parties down, 6,609 perfect dodges, 6,035 counters and 1,007 defeats, across 200 seeds × 3 swap rates at 4,000 ticks, each run twice: the same results, no allocation. 400 restarts of 5 scenarios and 2 hours of ticks in 4: live bytes flat | A reviewer's temporary harness, deleted after the run, so nothing in the repository repeats it. arm64 only, so no proof across OSes. CI's replays are that |
 | Regressions get caught | 142 golden scenes on three backends and about 3,750 `#[test]`s, required on every pull request | Software rasterizers on Linux and Windows |
 
 ## What isn't proven

@@ -120,7 +120,7 @@ Pillars: all of 1 to 6.
 
 - Is it fun? Would you keep playing? What's missing first?
 - Does the dodge-and-counter rhythm land the way the reference does? ([m2-plan.md](m2-plan.md) §2 names Zenless Zone Zero.)
-- Is the enemy fair and readable? Does it read as a threat? (`warrior.moves.ron`'s `brain:` is a first guess. Mashing light still wins in 13–15 s with 220–280 of 300 health left, on a script. Armour on the swipe is the next lever.)
+- Is the enemy fair and readable? Does it read as a threat? (`warrior.moves.ron`'s `brain:` is a first guess. Mashing light still wins in 13–15 s with 220–280 of 300 health left, on a script G6 ran and didn't keep. Armour on the swipe is the next lever.)
 - **Did tuning feel slow?** This is the question the off-ramp hangs on. Say which change took longest, and whether it was the engine or the finding out what to change. The spec's words: "if tuning still feels slow".
 
 Then go on to [m2-go-no-go.md](m2-go-no-go.md).

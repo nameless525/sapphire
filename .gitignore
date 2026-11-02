@@ -3,6 +3,9 @@
 *.profraw
 .DS_Store
 
+# Python's byte code, from tools/motion and the CI scripts.
+__pycache__/
+
 # Gradle's own state and outputs. xtask generates the Android project's inputs under
 # target/android/gen/, outside the source tree.
 /platform/android/.gradle

@@ -18,7 +18,7 @@ same `CARGO_TARGET_DIR`.
 
 The renderer's integration tests live in `crates/sapphire_render/tests/gpu/`, with one module per
 fixture family. One integration executable links the renderer once instead of once per family.
-All 200 existing GPU tests remain ignored by ordinary CPU runs and execute serially in the GPU gate.
+The GPU tests stay ignored by ordinary CPU runs and execute serially in the GPU gate.
 For example, the former `--test ambient` selection is now `--test gpu ambient::`.
 
 A deterministic channel handshake replaces one 200 ms delay in the live-link shutdown regression.

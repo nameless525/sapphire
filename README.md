@@ -138,7 +138,7 @@ On mobile, use `xcrun simctl io booted screenshot <png>` (iOS Simulator) or `adb
 
 ### Golden images
 
-`cargo xtask golden` renders the golden scenes (95 of them, in `tools/sapphire_testkit/src/scenes.rs`) with `--capture` (640×360) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP. `--scene <name>` runs one scene, and `--shard <index>/<count>` every count-th scene from the index-th.
+`cargo xtask golden` renders the golden scenes (95 of them, in `tools/sapphire_testkit/src/scenes.rs`) with `--capture` (640×360) and compares each with its reference in `tests/golden/<scene>.<backend family>.png` using FLIP. `--scene <name>` runs one scene, and `--shard <index>/<count>` one of `count` shards, dealt by the scenes' CI times where that backend has them (`tools/sapphire_testkit/src/scenes/costs.rs`) and in turn elsewhere.
 
 - **Backend families:** `vulkan-lavapipe` (Linux CI), `dx12-warp` (Windows CI), `metal` (any Apple GPU, including CI's).
 - **CI** runs every scene on every pull request, all required: lavapipe in two shards, WARP in six and Metal in one job.

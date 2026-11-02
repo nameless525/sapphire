@@ -23,6 +23,7 @@ None of these blocks M2's code, but M2's exit test needs a phone.
 - **Android frame pacing (F8):** a 90 or 120 Hz panel taking the refresh-rate hint, and the limiter's cadence on real vsyncs (spec §6.2, "Phone check").
 - **Mobile MSAA (R7, Q5):** on-tile 4× MSAA's memory saving and cost on Mali, Adreno and Apple GPUs (spec §5.12, "Anti-aliasing and upscaling").
 - **Post on phones (P2, P3):** with all its layers, the fused pass may be near or over §3.3's 2.5 ms on an A14-class phone. Measurements decide which layers, lens flare and blur taps each phone tier keeps (spec §5.12, "Post-processing").
+- **Whether the performance hunt's gains hold on phones (#114):** the 9–13% GPU gain from dropping wgpu's loop bound was measured on an M5 only, so check A-series, Adreno and Mali. A phone's cold start is by reasoning alone (a guess of 2–3 times an M5's). An iPhone's job pool gives builds 2 threads; on this Mac 3 workers took 3.80 s against 5.05–5.29 s on 1, and Metal's compile runs out of process, so a wider build pool on phones may pay.
 - **A phone driver's shader compiles:** how long Adreno and Mali take to build a pushed shader. The emulator compiles through MoltenVK on the Mac, so it can't tell ([m1-exit-run.md](m1-exit-run.md), "Only a device can prove").
 - **Q14:** whether Android's compositor rotates every frame, before choosing to render pre-rotated (spec §11).
 - **Q9:** the device floors (A14, Snapdragon 865, 6 GB), throttled (spec §11).
@@ -113,6 +114,9 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 | Sky | 0.04–0.32 ms on Desktop-High, against 0.1–0.3 | W2 follow-up, X1 part 2e |
 | Screen effects while they play | past §3.3's 0.7 ms for post on the desktop tiers (the blur, the impact frame) | P3 |
 | A cold shader push | visible after 1.8–2.1 s, no frame over 15 ms | A8 follow-up 2 |
+| Look-dev's four shots, 1080p and phone sizes, since wgpu's loop bound went (#114) | Desktop-High 4.1–4.6 ms, Mobile-High 2.1–2.5 ms, Mobile-Low 1.1–1.3 ms GPU; about 0.2–0.3 ms CPU | performance hunt |
+| First launch, shader cache empty, to the end of startup | 3.0–3.1 s, from 8.0–8.6 s | performance hunt |
+| Warm start to the end of startup | 84–96 ms | performance hunt |
 
 ## Deferred to M2 or later
 
@@ -149,7 +153,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
   - Prewarming could move off the loading thread through the same path.
   - See spec §5.12 ("Materials, shaders and PSOs", the A8 follow-up 2) and the renderer's crate docs.
 - **Still on the frame thread:** the debug views' replay copies, rebuilt after a swap while a view is shown (`debug_view.rs`), and the fallback to the compiled-in shaders when a pipeline built later fails under edited ones (spec §5.12).
-- **Culling and LODs:** nothing culls instances by view, so every mountain sector draws every frame, and draws use LOD0. LOD selection, GPU culling and multi-draw-indirect come with culling (X1 part 2d; the renderer's crate docs).
+- **Culling and LODs:** static instances outside the main frustum skip the main pass and the scene prepass (#96), but shadows still test every sector and draws use LOD0. LOD selection, GPU culling and multi-draw-indirect come with culling (X1 part 2d; the renderer's crate docs).
 - **Reflection probes:** relightable reflection probes slipped from W5 to early M2. Reflections read the prefiltered sky cube today (plan W5; spec §5.12, W5's note). SSR for the characters' reflection add on desktop (C7).
 - **Upscalers:** a spatial upscaler on phones, and DLSS or MetalFX on desktop. TAA's inputs are already what they take (R7; spec §5.12, "Anti-aliasing and upscaling").
 - **Effects on P3's hooks:**
@@ -164,6 +168,12 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 - **Local lights:** cluster occupancy on the GPU, light layers and local-light shadows (the `lights` module docs).
 - **Characters' remaining items** are listed in spec §5.12, in C5's, C6's and C7's "What remains" (alpha-tested eye parts in the prepasses, the eye mask under MSAA, and more).
 - **Items the crate docs still file under "M1":** mesh residency with generational handles, a staging ring for mesh uploads, and draw sorting by material and mesh within a pipeline's group ([lib.rs](../crates/sapphire_render/src/lib.rs), "Later milestones").
+- **Costs the performance hunt measured and left (#114):**
+  - Sampling Desktop-High's 9-tap shadow filter at its corners first: 5–8% of the frame, but it moves 19 goldens, foliage scenes up to 5% of pixels and 41 code values.
+  - Chunking the town so a cascade draws less of it: at most 6% on Desktop-High, a content and culling design.
+  - Cold start past 3 s: batching builds across meshes at load, M4's warm-up, or Metal binary archives (Q5).
+  - GTAO is 30% of Mobile-High's frame, a quality choice for that tier.
+  - 18 optimization ideas from the 2026-10-27 review stay deferred, each with a number: none is worth doing on today's content.
 - **Everything else:** each renderer module's own "Later milestones" section lists the rest.
 
 ### Assets and pipeline
@@ -201,6 +211,15 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
   - all eight permutation bits are taken (C8);
   - its fragment stage binds all 16 sampled textures and its 4 storage buffers (W5, C2).
   - So a new feature is a uniform branch, shares a texture slot, or joins `CharacterData`.
-- **The look-dev town doesn't scale as built:** one mesh drawn whole, nothing culled by view (X1 parts 2b and 2d).
+- **The look-dev town doesn't scale as built:** one mesh, drawn whole wherever it shows, which also puts nearly all of it in every shadow cascade (X1 parts 2b and 2d; the performance hunt below).
 - **Pinned dependencies** (wgpu 30, SDL 3.4.18, ctt from git) each need a deliberate upgrade (above).
 - **M2 is the go/no-go gate.** If tuning still feels slow, the off-ramp moves gameplay and tools to Godot with gdext and keeps the Rust systems (spec §10).
+- **Small limits the M1 reviews left.** None shows in today's content, and each is cheap to pick up when its feature arrives:
+  - **`alpha` means two things (WA-3):** transforms draw up to a tick behind the latest step, while clocks (time of day, cutscenes, screen effects, `FramePacket::time_seconds`) run up to a tick ahead. So screen effects lead the pose they accent by up to a tick, and shown time steps back on entering pause or slow motion. Making clocks interpolate moves time-dependent goldens for little visible gain, so it waits for M2's animation, its first real consumer.
+  - **A fade under a nearer surface (RS2-4):** a fading character's outline mask code survives under a nearer, non-fading two-sided character drawn after it, so TAA and GTAO read the wrong code there. It needs a dissolving character behind another.
+  - **Panic reports (PN-5):** dumps are capped within a run but text reports aren't; a recovering panic loop can grow them until the next run's pruning.
+  - **Assets:** `gone` repeats `Removed` on remounts, and a `Ready` parent whose child failed to reload isn't retried across packs.
+  - **Importers:** non-finite UVs quantize silently, where positions fail the cook. FBX has no mesh budget or `LoadOpts` limits and trusts ufbx's indexes.
+  - **Renderer:** fog's depth groups keep old textures if every card stops drawing and the app resizes. `ShadowPlan::turn` advances in `prepare`, and `RenderStats::ambient` lags a frame. A mid-frame `update_mesh` draws freed index ranges until the next `prepare` (tolerated by decision).
+  - **Post:** chromatic aberration alone reads through an unclamped bilinear filter, and lens flare's `disc_tap` was reviewed by reading only.
+  - **Tools and the sandbox:** the sandbox's remount order after a hot reload isn't retried. `--stage` meshes derived from the character's copy don't follow a re-cook. `--character-rig` resolves against the default library before the look-dev stage replaces it. The overlay's hot reload errors are wiped by later changes. `link watch` exits if the shader directory goes away. `cleanup_stale_partials` runs synchronously at install. The Android manifest lists each `configChanges` value rather than `allKnown`.

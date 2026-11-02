@@ -1070,10 +1070,16 @@ impl Scene {
         self.ecs.fixed_step();
     }
 
-    /// Runs presentation and extraction, then returns this frame's packet, `alpha` of the way
-    /// from the previous fixed step to the latest, with the main view drawing into a target of
-    /// `target_size`. Call it every frame: on frames that draw nothing, pass `None`; their
-    /// packets have no view but still carry instance deltas, which the renderer must see.
+    /// Runs presentation and extraction, then returns this frame's packet, with the main view
+    /// drawing into a target of `target_size`. Call it every frame: on frames that draw nothing,
+    /// pass `None`; their packets have no view but still carry instance deltas, which the renderer
+    /// must see.
+    ///
+    /// `alpha` means two things today (review WA-3). Transforms draw `alpha` of the way from the
+    /// previous fixed step to the latest, so up to a tick behind. Clocks (time of day, cutscenes,
+    /// screen effects, `FramePacket::time_seconds`) run `alpha` of the last step past the latest,
+    /// so up to a tick ahead, and step back when that delta shrinks, on entering pause or slow
+    /// motion. See `docs/m2-handoff.md`.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);

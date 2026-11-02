@@ -18,11 +18,18 @@ use crate::edits::{EditError, MovesText};
 /// A file the editor couldn't open or save.
 #[derive(Debug)]
 pub enum FileError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     /// It isn't UTF-8, so no document of moves.
-    NotText { path: PathBuf },
+    NotText {
+        path: PathBuf,
+    },
     /// The file changed on disk since it was read, and writing would lose what changed.
-    ChangedOnDisk { path: PathBuf },
+    ChangedOnDisk {
+        path: PathBuf,
+    },
 }
 
 impl std::fmt::Display for FileError {
@@ -533,7 +540,12 @@ mod tests {
 
     #[test]
     fn a_verdict_names_move_and_track_by_the_documents_own_words() {
-        let document = MoveSetDocument::parse(&PLAYER.replacen("from: 7,\n                        to: 11", "from: 12,\n                        to: 11", 1)).expect("parses");
+        let document = MoveSetDocument::parse(&PLAYER.replacen(
+            "from: 7,\n                        to: 11",
+            "from: 12,\n                        to: 11",
+            1,
+        ))
+        .expect("parses");
         let verdict = judge(&document, None);
         let issue = verdict.issues.iter().find(|issue| issue.track == "hitboxes").expect("the issue");
         assert_eq!(issue.in_move.as_deref(), Some("light_1"));

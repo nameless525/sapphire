@@ -8,6 +8,7 @@
 
 mod cli;
 mod content;
+mod editor;
 mod golden;
 mod layers;
 mod link;
@@ -55,6 +56,9 @@ Commands:
         android   bundles, uses the connected device or boots the sapphire_api36
                   emulator headless, installs, launches and streams the app's logcat
                   until it exits
+  editor [<file.moves.ron>] [--link <address:port>]
+      Cook, build and open the combat timeline editor. It opens a window, for a person at the
+      machine; `--capture <png>` draws a frame with none (docs/development-iteration.md).
   golden [--update] [--scene <name> | --shard <index>/<count>] [--scene-timeout <seconds>]
       Render the golden scenes with the sandbox's offscreen capture (640x360, no window)
       and compare them with tests/golden/<scene>.<backend family>.png using FLIP.
@@ -159,6 +163,7 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             platforms::run(platform, &App::load(SANDBOX)?, &options, &app_args)
         }
         "link" => link::run(args.rest()),
+        "editor" => editor::run(args.rest()),
         "golden" => {
             let update = args.flag("--update");
             let scene = args.value::<String>("--scene")?;

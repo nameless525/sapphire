@@ -20,7 +20,7 @@ use sapphire_gameplay::{
     Simulation, TickActions, WarpTarget, actor_body, hit_shape, volume_pose,
 };
 use sapphire_math::Vec3;
-use sapphire_moves::{MoveSet, Phase, Shape};
+use sapphire_moves::{MoveSet, Phase};
 use sapphire_physics::{
     ColliderId, Group, PhysicsWorld, Pose, Shape as BodyShape, StaticCollider, StaticShape,
 };
@@ -272,14 +272,20 @@ fn stage(sim: &mut Simulation, set: MoveSet, setup: Setup) -> Result<(ActorId, A
         pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
         memberships: Group::World.mask(),
     };
-    let world = PhysicsWorld::new(vec![floor], sim.body_capacity()).map_err(|error| run_error("the ground", error))?;
+    let world = PhysicsWorld::new(vec![floor], sim.body_capacity())
+        .map_err(|error| run_error("the ground", error))?;
     sim.set_physics_world(world).map_err(|error| run_error("the ground", error))?;
     let controller = sim
         .add_controller_profile(&ControllerProfile::default())
         .map_err(|error| run_error("the character's controller", error))?;
     let moves: MoveSetId = sim.add_move_set(set);
     let player = sim
-        .spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves), controller: Some(controller) })
+        .spawn(ActorSpawn {
+            position: Vec3::ZERO,
+            yaw: 0.0,
+            moves: Some(moves),
+            controller: Some(controller),
+        })
         .map_err(|error| run_error("the character", error))?;
     let dummy = sim
         .spawn(ActorSpawn {
@@ -311,12 +317,6 @@ fn bodies_of(sim: &Simulation, actor: ActorId) -> Vec<FrameBody> {
         bodies.push(FrameBody { shape, pose, hittable: false });
     }
     bodies
-}
-
-/// The shape of a document's volume, as hits read it.
-#[must_use]
-pub fn body_shape(shape: Shape) -> BodyShape {
-    hit_shape(shape)
 }
 
 #[cfg(test)]

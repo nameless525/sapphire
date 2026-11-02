@@ -81,7 +81,7 @@ enum Command {
 }
 
 enum Report {
-    Connection(Result<DeviceStatus, String>),
+    Connection(Result<Box<DeviceStatus>, String>),
     Pushed(Pushed),
 }
 
@@ -157,7 +157,7 @@ impl Link {
                             None => self.attempts.push(attempt.clone()),
                         }
                     }
-                    self.device = Some(status);
+                    self.device = Some(*status);
                 }
                 Ok(Report::Connection(Err(why))) => {
                     self.device = None;
@@ -237,9 +237,8 @@ fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: 
                 }
                 since_try = Stopwatch::start();
                 let Some(address) = address else { continue };
-                let status = connected(address, &mut client).and_then(|client| {
-                    client.status().map_err(|error| error_chain(&error))
-                });
+                let status = connected(address, &mut client)
+                    .and_then(|client| client.status().map(Box::new).map_err(|error| error_chain(&error)));
                 if client.as_ref().is_some_and(Client::is_closed) || status.is_err() {
                     client = None;
                 }

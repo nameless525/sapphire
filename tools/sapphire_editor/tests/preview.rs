@@ -48,9 +48,12 @@ fn editor_on(path: &Path) -> Editor {
     })
 }
 
+/// A tick of [`lone_run`]: the tick, each live volume's pose and the root.
+type LoneFrame = (u64, Vec<(Name, sapphire_physics::Pose)>, ActorTransform);
+
 /// Where a run's volume is, by a simulation with no controller, no dummy and nothing else in the world, so
 /// its root is the table's: the numbers a volume's path gives at a tick, by another road.
-fn lone_run(set: &MoveSet, name: &str) -> Vec<(u64, Vec<(Name, sapphire_physics::Pose)>, ActorTransform)> {
+fn lone_run(set: &MoveSet, name: &str) -> Vec<LoneFrame> {
     let mut sim = Simulation::new(SimConfig::default());
     let moves = sim.add_move_set(set.clone());
     let actor = sim
@@ -107,7 +110,8 @@ fn a_preview_at_a_tick_matches_the_simulations_pose_and_volumes() {
 
             // The volume, against the other simulation's.
             let volume = frame.volumes.iter().find(|volume| volume.name == hit.name);
-            let (_, lone_volumes, lone_root) = lone.iter().find(|(at, _, _)| *at == u64::from(tick)).expect("that tick");
+            let (_, lone_volumes, lone_root) =
+                lone.iter().find(|(at, _, _)| *at == u64::from(tick)).expect("that tick");
             let lone_volume = lone_volumes.iter().find(|(name, _)| *name == Name::intern(&hit.name));
             if tick == 0 {
                 continue;
@@ -144,7 +148,8 @@ fn the_real_attacks_land_on_a_dummy_in_reach() {
     let set = judge(&document, Some(&cooked)).set.expect("compiles");
     for name in ["light_1", "light_2", "light_3", "dash_attack", "skill"] {
         let run = Run::simulate(&set, name, Setup::default()).expect("plays");
-        let hit = run.hits().next().unwrap_or_else(|| panic!("{name} lands at {} m", run.setup.dummy_distance));
+        let hit =
+            run.hits().next().unwrap_or_else(|| panic!("{name} lands at {} m", run.setup.dummy_distance));
         assert!(hit.on_dummy, "{name}");
         let index = run.frame_at_tick(hit.tick).expect("a frame");
         assert_eq!(run.frames[index].tick, hit.tick, "{name}");
@@ -195,4 +200,106 @@ fn captures_of_the_real_moves() {
         }
         last.expect("a capture").write_png(&dir.join(out)).expect("written");
     }
+}
+
+/// The real file, with a real cook: an edit made through the editor compiles over the running tables to
+/// the same set a hand edit does, which is what `MoveSet`'s tables come from when it's pushed.
+#[test]
+#[ignore = "needs a cook"]
+fn an_edit_of_the_players_moves_compiles_over_the_cook_as_a_hand_edit_does() {
+    let source = fs::read_to_string(player_path()).expect("the file");
+    let cook = cook();
+    let running =
+        cook.move_set_of(&player_path()).expect("the cook reads").expect("it holds the player's moves");
+
+    let hand = source.replacen("to: 11,", "to: 13,", 1);
+    assert_ne!(hand, source);
+    let mut text = sapphire_editor::edits::MovesText::new(source);
+    let entry =
+        sapphire_editor::edits::EntryRef { mv: 0, track: sapphire_editor::edits::Track::Hitboxes, index: 0 };
+    text.set_window(entry, 7, 13).expect("an edit");
+    assert_eq!(text.text(), hand, "the text");
+
+    let edited = judge(text.document().expect("it reads"), Some(&running));
+    let by_hand = judge(&MoveSetDocument::parse(&hand).expect("parses"), Some(&running));
+    assert!(edited.issues.is_empty(), "{:?}", edited.issues);
+    let (edited, by_hand) = (edited.set.expect("compiles"), by_hand.set.expect("compiles"));
+    assert_eq!(edited, by_hand);
+    assert_eq!(*edited.to_cooked().expect("cooks"), *by_hand.to_cooked().expect("cooks"));
+}
+
+/// What an edit and a frame cost, on the real file. Run it optimized, as `cargo xtask editor` builds:
+/// `cargo test -p sapphire_editor --profile tools --test preview -- --ignored --nocapture what_the_editor_costs`.
+#[test]
+#[ignore = "needs a cook, and prints costs"]
+#[allow(clippy::print_stdout, reason = "the costs are for a person reading --nocapture")]
+fn what_the_editor_costs() {
+    /// The least of `rounds` runs, what's left once other work on the machine is taken out.
+    fn least(rounds: u32, mut work: impl FnMut()) -> std::time::Duration {
+        (0..rounds)
+            .map(|_| {
+                let started = sapphire_time::Stopwatch::start();
+                work();
+                started.elapsed()
+            })
+            .min()
+            .expect("a round")
+    }
+
+    let source = fs::read_to_string(player_path()).expect("the file");
+    let cook = cook();
+    let set = cook.move_set_of(&player_path()).expect("the cook reads").expect("it holds the player's moves");
+    println!("open the real file and cook: {:?}", least(5, || drop(editor_on(&player_path()))));
+    let document = MoveSetDocument::parse(&source).expect("parses");
+    println!("parse: {:?}", least(20, || drop(MoveSetDocument::parse(&source))));
+    println!("compile over the cook: {:?}", least(20, || drop(judge(&document, Some(&set)))));
+    for name in ["light_1", "skill"] {
+        let simulate = || drop(Run::simulate(&set, name, Setup::default()).expect("runs"));
+        println!("simulate {name}: {:?}", least(20, simulate));
+    }
+
+    let entry =
+        sapphire_editor::edits::EntryRef { mv: 0, track: sapphire_editor::edits::Track::Hitboxes, index: 0 };
+    let mut text = sapphire_editor::edits::MovesText::new(source.clone());
+    let mut to = 11;
+    let edit = least(20, || {
+        to = if to == 11 { 12 } else { 11 };
+        text.set_window(entry, 7, to).expect("an edit");
+        let verdict = judge(text.document().expect("it reads"), Some(&set));
+        let set = verdict.set.expect("compiles");
+        drop(Run::simulate(&set, "light_1", Setup::default()).expect("runs"));
+    });
+    println!("one tick of a drag: splice, read again, compile and run: {edit:?}");
+
+    let mut editor = editor_on(&player_path());
+    editor.set_tick(8);
+    let (width, height) = (1400, 900);
+    let ctx = egui::Context::default();
+    let mut passes = Vec::new();
+    for pass in 0..200 {
+        // A step of the playhead each pass, as playing does.
+        editor.set_tick(pass % 34);
+        let mut input = capture::raw_input(width, height, f64::from(pass) / 60.0);
+        input.predicted_dt = 1.0 / 60.0;
+        let started = sapphire_time::Stopwatch::start();
+        let mut output = ctx.run_ui(input, |ui| editor.ui(ui));
+        output.textures_delta.clear();
+        let shapes = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let spent = started.elapsed();
+        let triangles: usize = shapes
+            .iter()
+            .map(|shape| match &shape.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => mesh.indices.len() / 3,
+                egui::epaint::Primitive::Callback(_) => 0,
+            })
+            .sum();
+        passes.push((spent, triangles));
+    }
+    passes.sort_by_key(|(spent, _)| *spent);
+    println!(
+        "a frame with the figure: pass and tessellate {:?} median, {:?} at worst, {} triangles",
+        passes[passes.len() / 2].0,
+        passes[passes.len() - 1].0,
+        passes[passes.len() / 2].1,
+    );
 }

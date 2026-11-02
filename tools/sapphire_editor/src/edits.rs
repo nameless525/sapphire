@@ -3,7 +3,7 @@
 //! Every edit here is a list of [`Splice`]s, the bytes it replaces and with what, found through
 //! [`crate::text`]'s tree, so nothing else in the file moves: not a comment, not a blank line, not the
 //! order of a move's fields. [`MovesText`] re-reads the text through `sapphire_moves`' own parser after
-//! each one, and holds the tree to that parse ([`agreement`]), so what the tree found and what the
+//! each one, and holds the tree to that parse (`agreement`), so what the tree found and what the
 //! document means can't drift apart unseen. There's no second copy of what a document may say: an edit
 //! that makes it wrong goes through, and [`crate::file`] shows what the document's own check says of it.
 
@@ -100,13 +100,16 @@ impl Track {
     /// Each entry's ticks, as the parsed document has them, in the file's order.
     #[must_use]
     pub fn spans(self, mv: &MoveDocument) -> Vec<TickSpan> {
-        let spans = |list: Vec<(u32, u32)>| list.into_iter().map(|(from, to)| TickSpan { from, to }).collect();
+        let spans =
+            |list: Vec<(u32, u32)>| list.into_iter().map(|(from, to)| TickSpan { from, to }).collect();
         let instants = |list: Vec<u32>| list.into_iter().map(TickSpan::instant).collect();
         match self {
             Self::Hitboxes => spans(mv.hitboxes.iter().map(|entry| (entry.from, entry.to)).collect()),
             Self::Hurtboxes => spans(mv.hurtboxes.iter().map(|entry| (entry.from, entry.to)).collect()),
             Self::Invulnerable => spans(mv.invulnerable.iter().map(|entry| (entry.from, entry.to)).collect()),
-            Self::PerfectDodge => spans(mv.perfect_dodge.iter().map(|entry| (entry.from, entry.to)).collect()),
+            Self::PerfectDodge => {
+                spans(mv.perfect_dodge.iter().map(|entry| (entry.from, entry.to)).collect())
+            }
             Self::Parry => spans(mv.parry.iter().map(|entry| (entry.from, entry.to)).collect()),
             Self::Armour => spans(mv.armour.iter().map(|entry| (entry.from, entry.to)).collect()),
             Self::Cancels => spans(mv.cancels.iter().map(|entry| (entry.from, entry.to)).collect()),
@@ -305,9 +308,9 @@ impl MovesText {
     fn checked(&mut self, splices: &[Splice], entry: EntryRef, want: TickSpan) -> Result<(), EditError> {
         let before = self.text.clone();
         self.apply_splices(splices)?;
-        let got = self.document().and_then(|document| {
-            entry.track.spans(document.moves.get(entry.mv)?).get(entry.index).copied()
-        });
+        let got = self
+            .document()
+            .and_then(|document| entry.track.spans(document.moves.get(entry.mv)?).get(entry.index).copied());
         if got != Some(want) {
             self.set_text(before);
             return Err(EditError(format!(
@@ -327,8 +330,7 @@ impl MovesText {
         for (name, value) in
             [("startup", phases.startup), ("active", phases.active), ("recovery", phases.recovery)]
         {
-            let field =
-                node.field(name).ok_or_else(|| EditError(format!("this move has no `{name}`")))?;
+            let field = node.field(name).ok_or_else(|| EditError(format!("this move has no `{name}`")))?;
             if field.text(&self.text).parse::<u32>().ok() != Some(value) {
                 splices.push(Splice { range: field.span.clone(), text: value.to_string() });
             }
@@ -363,12 +365,7 @@ impl MovesText {
 
     /// Adds `entry_text` at the end of a move's track, in the file's own layout for it, and returns the
     /// new entry.
-    pub fn insert_entry(
-        &mut self,
-        mv: usize,
-        track: Track,
-        entry_text: &str,
-    ) -> Result<EntryRef, EditError> {
+    pub fn insert_entry(&mut self, mv: usize, track: Track, entry_text: &str) -> Result<EntryRef, EditError> {
         let parsed = self.parsed()?;
         let node = self.move_node(parsed, mv)?;
         let count = parsed.document.moves.get(mv).map_or(0, |mv| track.spans(mv).len());
@@ -625,9 +622,7 @@ fn agreement(document: &MoveSetDocument, tree: &Node, text: &str) -> Result<(), 
         if name != Some(mv.name.as_str()) {
             return Err(format!("the editor reads move `{}` as {name:?}", mv.name));
         }
-        for (field, value) in
-            [("startup", mv.startup), ("active", mv.active), ("recovery", mv.recovery)]
-        {
+        for (field, value) in [("startup", mv.startup), ("active", mv.active), ("recovery", mv.recovery)] {
             if number(node.field(field)) != Some(value) {
                 return Err(format!("the editor can't read move `{}`'s `{field}`", mv.name));
             }
@@ -648,15 +643,10 @@ fn agreement(document: &MoveSetDocument, tree: &Node, text: &str) -> Result<(), 
                 let agrees = if track.is_instant() {
                     number(item.field("at")) == Some(span.from)
                 } else {
-                    number(item.field("from")) == Some(span.from)
-                        && number(item.field("to")) == Some(span.to)
+                    number(item.field("from")) == Some(span.from) && number(item.field("to")) == Some(span.to)
                 };
                 if !agrees {
-                    return Err(format!(
-                        "the editor can't read a {} of move `{}`",
-                        track.key(),
-                        mv.name
-                    ));
+                    return Err(format!("the editor can't read a {} of move `{}`", track.key(), mv.name));
                 }
             }
         }
@@ -778,7 +768,10 @@ mod tests {
         text.set_entry_value(hit, "attack.damage", "9").expect("the edit");
         let hand = by_hand(PLAYER, "light_1", "attack:", "damage: 6", "damage: 9");
         assert_eq!(text.text(), hand);
-        assert_eq!(text.document().expect("a document").moves[0].hitboxes[0].attack.as_ref().map(|a| a.damage), Some(9));
+        assert_eq!(
+            text.document().expect("a document").moves[0].hitboxes[0].attack.as_ref().map(|a| a.damage),
+            Some(9)
+        );
 
         let before = text.text().to_owned();
         let refused = text.set_entry_value(hit, "attack.damage", "nine").expect_err("not a number");

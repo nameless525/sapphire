@@ -12,11 +12,13 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use sapphire_assets::AssetId;
+use sapphire_assets::AssetKind;
 use sapphire_assets::mesh::{ArchivedMesh, Mesh, SkinBind, VertexInfluence};
 use sapphire_assets::pack::{Decoder, HEADER_LEN, PackHeader, Toc};
-use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedConstraintKind, CharacterRig, Constraint, ConstraintKind, HumanBone};
+use sapphire_assets::rig::{
+    ArchivedCharacterRig, ArchivedConstraintKind, CharacterRig, Constraint, ConstraintKind, HumanBone,
+};
 use sapphire_assets::skeleton::{ArchivedSkeleton, Skeleton};
-use sapphire_assets::AssetKind;
 use sapphire_math::Vec3;
 use sapphire_moves::{ClipMotionDocument, MoveSet};
 use sapphire_serialize::cooked::AlignedVec;
@@ -177,13 +179,11 @@ impl FigureMesh {
         let triangles_of = |lod: &sapphire_assets::mesh::ArchivedLod| -> usize {
             lod.submeshes.iter().map(|submesh| submesh.index_count.to_native() as usize / 3).sum()
         };
-        let lod = lods
-            .iter()
-            .find(|lod| triangles_of(lod) <= FIGURE_TRIANGLES)
-            .or_else(|| lods.last())?;
+        let lod = lods.iter().find(|lod| triangles_of(lod) <= FIGURE_TRIANGLES).or_else(|| lods.last())?;
         let count = lod.vertex_count.to_native() as usize;
-        let positions: Vec<Vec3> =
-            (0..count).map(|index| mesh.streams.position(index).map(Vec3::from_array)).collect::<Option<_>>()?;
+        let positions: Vec<Vec3> = (0..count)
+            .map(|index| mesh.streams.position(index).map(Vec3::from_array))
+            .collect::<Option<_>>()?;
         let influences: Vec<VertexInfluence> =
             (0..count).map(|index| skin.influences.get(index)).collect::<Option<_>>()?;
         let mut triangles = Vec::with_capacity(triangles_of(lod));
@@ -191,7 +191,11 @@ impl FigureMesh {
             let first = submesh.first_index.to_native() as usize;
             let indices = &mesh.indices[first..first + submesh.index_count.to_native() as usize];
             triangles.extend(
-                indices.chunks_exact(3).map(|tri| [tri[0].to_native(), tri[1].to_native(), tri[2].to_native()]),
+                indices
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|[a, b, c]| [a.to_native(), b.to_native(), c.to_native()]),
             );
         }
         let binds = skin
@@ -199,7 +203,9 @@ impl FigureMesh {
             .iter()
             .map(|bind| SkinBind {
                 joint: bind.joint.to_native(),
-                inverse_bind_matrix: bind.inverse_bind_matrix.map(|column| column.map(|value| value.to_native())),
+                inverse_bind_matrix: bind
+                    .inverse_bind_matrix
+                    .map(|column| column.map(|value| value.to_native())),
             })
             .collect();
         Some(Self { positions, influences, triangles, binds, skeleton })
@@ -223,7 +229,11 @@ impl FigureRig {
 
     fn of(rig: &ArchivedCharacterRig) -> Self {
         Self {
-            humanoid: rig.humanoid.iter().map(|entry| (entry.bone, usize::from(entry.joint.to_native()))).collect(),
+            humanoid: rig
+                .humanoid
+                .iter()
+                .map(|entry| (entry.bone, usize::from(entry.joint.to_native())))
+                .collect(),
             constraints: rig
                 .constraints
                 .iter()

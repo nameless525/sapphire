@@ -2696,6 +2696,8 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 ### 5.28 `sapphire_editor` (Tools, desktop only)
 
+**As built (M2 T3):** the combat timeline editor only, as `tools/sapphire_editor`, with none of the rest of this section yet. It differs from the plan below on purpose: the document is the file's text, with undo as minimal text changes, rather than typed objects with change records, because a moves file's comments and layout are worth more than a general model; there's no docking and no gizmos; and the preview draws a flat CPU-skinned figure in egui beside the real simulation, not the renderer in a texture. `docs/development-iteration.md` has how to use it and what no test can show; `docs/m2-plan.md`'s T3 row has why.
+
 **How**
 
 - **Document model first** (after The Machinery's "The Truth"):

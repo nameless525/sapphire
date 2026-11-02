@@ -10,6 +10,7 @@
 //! needs. The look stays the sandbox's.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 
 use sapphire_anim::{CharacterPose, Clip};
@@ -29,7 +30,6 @@ pub struct Figure {
     rig: FigureRig,
     skeleton: AlignedVec,
     parents: Vec<u16>,
-    names: Vec<String>,
     /// Each clip's model transforms, tick by tick.
     poses: HashMap<AssetId, Vec<Vec<Affine3A>>>,
     /// The skeleton's rest pose, for a move with no clip.
@@ -43,14 +43,8 @@ impl Figure {
         let mesh_id = mesh.or_else(|| cook.mesh_on_skeleton(id));
         let mesh = mesh_id.map(|mesh| FigureMesh::read(cook, mesh)).transpose()?.flatten();
         let rig = mesh_id.map_or(Ok(FigureRig::default()), |mesh| FigureRig::read(cook, mesh))?;
-        let (parents, names) = {
-            let archived = read_skeleton(&skeleton)?;
-            (
-                archived.parents.iter().map(|parent| parent.to_native()).collect(),
-                archived.names.iter().map(|name| name.as_str().to_owned()).collect(),
-            )
-        };
-        let mut figure = Self { mesh, rig, skeleton, parents, names, poses: HashMap::new(), rest: Vec::new() };
+        let parents = read_skeleton(&skeleton)?.parents.iter().map(|parent| parent.to_native()).collect();
+        let mut figure = Self { mesh, rig, skeleton, parents, poses: HashMap::new(), rest: Vec::new() };
         figure.rest = figure.pose()?.model().to_vec();
         Ok(Some(figure))
     }
@@ -100,12 +94,6 @@ impl Figure {
         self.rig.humanoid.iter().find(|(found, _)| *found == bone).map(|(_, joint)| *joint)
     }
 
-    /// A joint by its name.
-    #[must_use]
-    pub fn joint_named(&self, name: &str) -> Option<usize> {
-        self.names.iter().position(|found| found == name)
-    }
-
     /// Its triangles, if it has a mesh.
     #[must_use]
     pub fn triangles(&self) -> &[[u32; 3]] {
@@ -131,7 +119,8 @@ impl Figure {
                 let mut out = Vec3::ZERO;
                 for (bind, weight) in influence.binds.iter().zip(influence.weights) {
                     if weight > 0 {
-                        out += palette[usize::from(*bind)].transform_point3(*position) * (f32::from(weight) / 255.0);
+                        out += palette[usize::from(*bind)].transform_point3(*position)
+                            * (f32::from(weight) / 255.0);
                     }
                 }
                 out
@@ -159,7 +148,8 @@ impl Figures {
     /// For the document at `path`: a mesh named as it is, beside it, stands in for moves with no clip.
     pub fn for_document(path: &Path, cook: &Cook) -> Result<Self, String> {
         let mut figures = Self::default();
-        let stem = path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(".moves.ron"));
+        let stem =
+            path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(".moves.ron"));
         let glb = stem.map(|stem| path.with_file_name(format!("{stem}.glb")));
         figures.beside = glb.and_then(|glb| sidecar_id(&glb));
         if let Some(mesh_id) = figures.beside
@@ -185,11 +175,15 @@ impl Figures {
                     .as_ref()
                     .copied();
                 let Some(skeleton) = skeleton else { return Ok(None) };
-                if !self.by_skeleton.contains_key(&skeleton) {
-                    let Some(figure) = Figure::on_skeleton(cook, skeleton, None)? else { return Ok(None) };
-                    self.by_skeleton.insert(skeleton, figure);
-                }
-                let figure = self.by_skeleton.get_mut(&skeleton).expect("just there");
+                let figure = match self.by_skeleton.entry(skeleton) {
+                    Entry::Occupied(known) => known.into_mut(),
+                    Entry::Vacant(new) => {
+                        let Some(figure) = Figure::on_skeleton(cook, skeleton, None)? else {
+                            return Ok(None);
+                        };
+                        new.insert(figure)
+                    }
+                };
                 if figure.sample_clip(cook, clip)? {
                     return Ok(Some(Casting { skeleton, clip: Some(clip) }));
                 }
@@ -200,7 +194,12 @@ impl Figures {
     }
 
     /// The clip a block names, in this cook: a key-pose document's own rig is the document's ID.
-    fn existing_clip(&self, cook: &Cook, mv: &MoveDocument, clip: AssetId) -> Result<Option<AssetId>, String> {
+    fn existing_clip(
+        &self,
+        cook: &Cook,
+        mv: &MoveDocument,
+        clip: AssetId,
+    ) -> Result<Option<AssetId>, String> {
         if cook.read(clip)?.is_some() {
             return Ok(Some(clip));
         }

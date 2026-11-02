@@ -497,6 +497,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
+      # The timeline editor against what the desktop cook holds and against a real fight: its preview
+      # matches the simulation's pose and volumes, and save and push reaches the fight's next attempt
+      # (m2-plan T3). It finds the sandbox the step above built.
+      - name: Timeline editor (real cook, dev sandbox offscreen)
+        if: runner.os == 'Linux'
+        run: cargo test --package sapphire_editor --locked --test preview --test sandbox_push -- --ignored --test-threads=1
       # The dev sandbox offscreen on a private port, with a fight running: the tool reads its
       # status, sets a cvar, captures a frame and pushes a document that doesn't parse, which the
       # app must refuse and count while it goes on drawing, and an edit of the fight's moves, which

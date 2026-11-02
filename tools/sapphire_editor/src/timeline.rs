@@ -6,7 +6,10 @@
 //! knows what a document may say: a window dragged past a move's end goes there, and the row shows the
 //! document's own words about it ([`Problem`]).
 
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2,
+    WidgetInfo,
+};
 use sapphire_moves::{MoveDocument, RootSample};
 
 use crate::edits::{EntryRef, Phases, TickSpan, Track};
@@ -324,15 +327,15 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
         view.problems
             .iter()
             .filter(|problem| {
-                problem.in_move.as_deref() == Some(mv.name.as_str()) && problem.track.as_deref() == Some(track)
+                problem.in_move.as_deref() == Some(mv.name.as_str())
+                    && problem.track.as_deref() == Some(track)
             })
             .collect()
     };
     let phase_problems = problems_of("phases");
     let motion_problems = problems_of("motion");
-    let height_of = |lanes: usize, problems: usize| {
-        lanes as f32 * LANE + problems as f32 * PROBLEM_LINE + ROW_GAP
-    };
+    let height_of =
+        |lanes: usize, problems: usize| lanes as f32 * LANE + problems as f32 * PROBLEM_LINE + ROW_GAP;
     let mut total = RULER + height_of(1, phase_problems.len());
     total += ROOT_ROW + ROW_GAP + motion_problems.len() as f32 * PROBLEM_LINE;
     for row in &rows {
@@ -344,8 +347,7 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     }
 
     let tracks_width = (ticks.max(1) as f32 * scale.per_tick + TITLES + 10.0).max(width);
-    let (rect, background) =
-        ui.allocate_exact_size(Vec2::new(tracks_width, total), Sense::click_and_drag());
+    let (rect, background) = ui.allocate_exact_size(Vec2::new(tracks_width, total), Sense::click_and_drag());
     background.widget_info(|| WidgetInfo::labeled(egui::Role::Slider, true, "timeline ruler"));
     let scale = TickScale { left: rect.left() + TITLES, per_tick: scale.per_tick };
     let painter = ui.painter_at(rect);
@@ -364,7 +366,13 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     let mut y = rect.top();
     let ruler = Rect::from_min_max(Pos2::new(rect.left(), y), Pos2::new(rect.right(), y + RULER));
     painter.rect_filled(ruler, CornerRadius::ZERO, Color32::from_gray(38));
-    let every = if scale.per_tick >= 12.0 { 5 } else if scale.per_tick >= 5.0 { 10 } else { 20 };
+    let every = if scale.per_tick >= 12.0 {
+        5
+    } else if scale.per_tick >= 5.0 {
+        10
+    } else {
+        20
+    };
     for tick in (0..=ticks).step_by(every as usize) {
         painter.text(
             Pos2::new(scale.x(tick) + 2.0, y + 4.0),
@@ -401,7 +409,13 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
         painter.rect_filled(segment.shrink2(Vec2::new(0.5, 0.0)), CornerRadius::same(2), fill);
         let text = format!("{name} {length}");
         let clip = painter.with_clip_rect(segment.intersect(rect));
-        clip.text(segment.left_center() + Vec2::new(4.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), Color32::WHITE);
+        clip.text(
+            segment.left_center() + Vec2::new(4.0, 0.0),
+            Align2::LEFT_CENTER,
+            text,
+            FontId::proportional(12.0),
+            Color32::WHITE,
+        );
     }
     if view.editable {
         let edges = [
@@ -414,14 +428,20 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
             let handle = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, phase_row.y_range());
             let id = ui.scope_id().with(("phase edge", view.mv_index, label));
             let response = ui.interact(handle, id, Sense::click_and_drag());
-            response.widget_info(|| WidgetInfo::labeled(egui::Role::Slider, true, format!("phases {label} {tick}")));
+            response.widget_info(|| {
+                WidgetInfo::labeled(egui::Role::Slider, true, format!("phases {label} {tick}"))
+            });
             if response.hovered() || response.dragged() {
-                painter.rect_filled(handle.shrink2(Vec2::new(2.5, 0.0)), CornerRadius::same(1), Color32::WHITE);
+                painter.rect_filled(
+                    handle.shrink2(Vec2::new(2.5, 0.0)),
+                    CornerRadius::same(1),
+                    Color32::WHITE,
+                );
             }
             if response.drag_started()
-                && let Some(pointer) = response.interact_pointer_pos()
+                && let Some(pressed) = pressed_x(&response)
             {
-                *drag = Some(Drag::Phase { mv: view.mv_index, edge, phases, grab_offset: x - pointer.x });
+                *drag = Some(Drag::Phase { mv: view.mv_index, edge, phases, grab_offset: x - pressed });
                 actions.push(Action::BeginGesture(format!("move {label} of {}", mv.name)));
             }
             follow_drag(&response, drag, &scale, &mut actions);
@@ -440,7 +460,8 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
 
     // Tracks.
     for row in &rows {
-        let track_problems = if row.track == Track::RootKeys { Vec::new() } else { problems_of(row.track.key()) };
+        let track_problems =
+            if row.track == Track::RootKeys { Vec::new() } else { problems_of(row.track.key()) };
         title_at(&painter, rect, y, title(row.track), !track_problems.is_empty());
         if view.editable && row.track != Track::RootKeys {
             let button = Rect::from_center_size(
@@ -465,7 +486,18 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
                 scale.x(entry.span.from)..=scale.x(entry.span.to.max(entry.span.from)),
                 top + 1.0..=top + LANE - 2.0,
             );
-            draw_entry(ui, &painter, view, entry, entry_ref, band, &scale, drag, &mut actions, &track_problems);
+            draw_entry(
+                ui,
+                &painter,
+                view,
+                entry,
+                entry_ref,
+                band,
+                &scale,
+                drag,
+                &mut actions,
+                &track_problems,
+            );
         }
         y += row.lanes as f32 * LANE;
         y = problem_lines(&painter, &track_problems, scale.left, y);
@@ -481,7 +513,12 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     // The playhead's column, over everything.
     let column = Rect::from_x_y_ranges(scale.x(view.tick)..=scale.x(view.tick + 1), rect.y_range());
     painter.rect_filled(column, CornerRadius::ZERO, Color32::from_white_alpha(26));
-    painter.rect_stroke(column, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_rgb(255, 220, 120)), StrokeKind::Inside);
+    painter.rect_stroke(
+        column,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, Color32::from_rgb(255, 220, 120)),
+        StrokeKind::Inside,
+    );
 
     // Pressing or dragging anywhere else scrubs.
     if (background.clicked() || background.dragged())
@@ -538,7 +575,8 @@ fn root_row(painter: &egui::Painter, root: Option<&[RootSample]>, scale: &TickSc
         return;
     };
     let step = |pair: &[RootSample]| {
-        let delta: f32 = (0..3).map(|axis| (pair[1].translation[axis] - pair[0].translation[axis]).powi(2)).sum();
+        let delta: f32 =
+            (0..3).map(|axis| (pair[1].translation[axis] - pair[0].translation[axis]).powi(2)).sum();
         delta.sqrt()
     };
     let most = root.windows(2).map(step).fold(1e-4, f32::max);
@@ -590,14 +628,16 @@ fn draw_entry(
     };
     let refused = problems.iter().any(|problem| {
         let span = format!("{}..{}", entry.span.from, entry.span.to);
-        problem.message.contains(&span) || (!entry.label.is_empty() && problem.message.contains(&format!("`{}`", entry.label)))
+        problem.message.contains(&span)
+            || (!entry.label.is_empty() && problem.message.contains(&format!("`{}`", entry.label)))
     });
     let base = color(track);
     let base_id = ui.scope_id();
     let id = |part: &str| base_id.with(("timeline entry", entry_ref, part));
 
     if track.is_instant() {
-        let cell = Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.from + 1), band.y_range());
+        let cell =
+            Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.from + 1), band.y_range());
         let hit = cell.expand2(Vec2::new(2.0, 0.0));
         let response = ui.interact(hit, id("instant"), Sense::click_and_drag());
         response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label.as_str()));
@@ -626,9 +666,9 @@ fn draw_entry(
             Color32::from_gray(220),
         );
         if response.drag_started()
-            && let Some(pointer) = response.interact_pointer_pos()
+            && let Some(pressed) = pressed_x(&response)
         {
-            *drag = Some(Drag::Instant { entry: entry_ref, grab_offset: center.x - pointer.x });
+            *drag = Some(Drag::Instant { entry: entry_ref, grab_offset: center.x - pressed });
             actions.push(Action::Select(Some(entry_ref)));
             actions.push(Action::BeginGesture(format!("move {name} {}", entry.label)));
         }
@@ -708,13 +748,13 @@ fn begin_window_drag(
     actions: &mut Vec<Action>,
 ) {
     if response.drag_started()
-        && let Some(pointer) = response.interact_pointer_pos()
+        && let Some(pressed) = pressed_x(response)
     {
         let grab_edge_x = match part {
             Part::Start | Part::Body => band.left(),
             Part::End => band.right(),
         };
-        *drag = Some(Drag::Window { entry: entry_ref, part, span: entry.span, grab_x: pointer.x, grab_edge_x });
+        *drag = Some(Drag::Window { entry: entry_ref, part, span: entry.span, grab_x: pressed, grab_edge_x });
         actions.push(Action::Select(Some(entry_ref)));
         let word = match part {
             Part::Start => "start of",
@@ -725,8 +765,16 @@ fn begin_window_drag(
     }
 }
 
+/// Where the press that became this drag was. egui says a drag has started only once the pointer has
+/// travelled, and that travel counts: measured from there, a drag would come up short by it.
+fn pressed_x(response: &Response) -> Option<f32> {
+    let origin = response.ctx.input(|input| input.pointer.press_origin());
+    origin.or_else(|| response.interact_pointer_pos()).map(|pointer| pointer.x)
+}
+
 fn follow_drag(response: &Response, drag: &mut Option<Drag>, scale: &TickScale, actions: &mut Vec<Action>) {
-    if response.dragged()
+    // A release can arrive in one pass with the last motion, which then counts.
+    if (response.dragged() || response.drag_stopped())
         && let (Some(held), Some(pointer)) = (&*drag, response.interact_pointer_pos())
         && let Some(action) = held.at(pointer.x, scale)
     {
@@ -790,14 +838,26 @@ mod tests {
         let span = TickSpan { from: 7, to: 11 };
         // Grabbed 3 px inside the end, moved two ticks and a bit: the end goes two ticks.
         let drag = Drag::Window { entry, part: Part::End, span, grab_x: 207.0, grab_edge_x: 210.0 };
-        assert_eq!(drag.at(207.0, &scale), Some(Action::SetWindow { entry, from: 7, to: 11, part: Part::End }));
-        assert_eq!(drag.at(229.0, &scale), Some(Action::SetWindow { entry, from: 7, to: 13, part: Part::End }));
+        assert_eq!(
+            drag.at(207.0, &scale),
+            Some(Action::SetWindow { entry, from: 7, to: 11, part: Part::End })
+        );
+        assert_eq!(
+            drag.at(229.0, &scale),
+            Some(Action::SetWindow { entry, from: 7, to: 13, part: Part::End })
+        );
         // Past the far end it goes where it's put: the document says what it thinks of that.
         let drag = Drag::Window { entry, part: Part::Start, span, grab_x: 170.0, grab_edge_x: 170.0 };
-        assert_eq!(drag.at(240.0, &scale), Some(Action::SetWindow { entry, from: 14, to: 11, part: Part::Start }));
+        assert_eq!(
+            drag.at(240.0, &scale),
+            Some(Action::SetWindow { entry, from: 14, to: 11, part: Part::Start })
+        );
         // Its body keeps its length, and stops at tick 0, which is as far as the text can say.
         let drag = Drag::Window { entry, part: Part::Body, span, grab_x: 180.0, grab_edge_x: 170.0 };
-        assert_eq!(drag.at(195.0, &scale), Some(Action::SetWindow { entry, from: 9, to: 13, part: Part::Body }));
+        assert_eq!(
+            drag.at(195.0, &scale),
+            Some(Action::SetWindow { entry, from: 9, to: 13, part: Part::Body })
+        );
         assert_eq!(drag.at(0.0, &scale), Some(Action::SetWindow { entry, from: 0, to: 4, part: Part::Body }));
     }
 

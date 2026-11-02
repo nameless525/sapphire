@@ -17,6 +17,7 @@ same `CARGO_TARGET_DIR`.
 - The same replays beside the renderer: `cargo xtask content`, then `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`.
 - The combat views and the overlay's recorder: `cargo test -p sapphire_sandbox --lib combat`, and with `--features dev -- --include-ignored` for what the panel is shown. The panel itself, clicks included: `cargo test -p sapphire_debug --lib combat::`.
 - Live tuning: `cargo test -p sapphire_gameplay --lib replay::tuning`, and through a real sandbox `cargo xtask content`, then `cargo test -p sapphire_sandbox --features dev --test live_tuning -- --ignored --test-threads=1`. See [Tuning a fight](#tuning-a-fight).
+- The timeline editor, with no window: `cargo test -p sapphire_editor --locked`, against a cook `cargo test -p sapphire_editor --test preview -- --ignored`, and through a real fight `cargo build -p sapphire_sandbox --features dev`, then `cargo test -p sapphire_editor --test sandbox_push -- --ignored`. See [The timeline editor](#the-timeline-editor).
 - Combat's controls, driven by synthetic input: `cargo test -p sapphire_input -p sapphire_controls --locked`. Their cost: `cargo run --release -p sapphire_controls --example update_bench`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
@@ -92,6 +93,37 @@ Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_cont
 - A fight with no file takes edits too, and starts over from them.
 - To try it with no window: `--offscreen --record <file> --scenario duel --script attempts`, which presses LIGHT every half second, or on the real moves `--offscreen --arena --fight --script attempts`.
 - The simulation's copy of the player's moves stays what it was until it's rewritten (above), so after tuning `player.moves.ron`, rewrite it and commit it with the document. A `dev` build's fight already starts from a newer cook.
+
+## The timeline editor
+
+`tools/sapphire_editor` opens a `.moves.ron`: a move's windows on a timeline of 60 Hz ticks, the real simulation at the playhead, and save and push to a running fight. It's for a person at the machine, because it opens a window. Agents never launch it and use `--capture` or the tests.
+
+To use it, with a fight running in another terminal:
+
+```
+cargo xtask run --platform desktop --features dev -- --offscreen --record target/fight.sreplay --scenario duel --script attempts
+cargo xtask editor crates/sapphire_moves/test_content/slice.moves.ron
+```
+
+That fight presses LIGHT every half second with no window, and a dev build listens on 127.0.0.1:7811 unless told otherwise. To play the fight yourself, drop `--offscreen` and `--script attempts`. `cargo xtask editor` cooks, builds in the `tools` profile and passes `--content`. Its address field and `--link <address:port>` name the device.
+
+- **Editing:** drag a window's ends or body, a cue, or a phase's edge, tick by tick. `[` and `]` put a window's ends at the playhead, Alt+arrows nudge what's selected, Delete removes it, `+` on a row adds to it at the playhead. Cmd+Z and Cmd+Shift+Z (Ctrl on other systems) undo and redo a whole drag at a time. Rows a move doesn't use appear with **All tracks**.
+- **Scrubbing:** click or drag the ruler, or use the arrows, `,`, `.`, Home and End. Space plays from the frame you're on and comes back to it at the end; a stop stays where it stopped. The preview simulates the move, with a dummy at the distance you set: its hit marks and hitstop are the fight's own, so a hit shows as ticks that repeat.
+- **What's wrong:** the document's own check, as you drag, naming the move and the track, in the row and under the timeline. Nothing stops you going there. Saving is allowed, because the file is yours and a device refuses what it can't take.
+- **Save and push:** Cmd+S writes the file and pushes it. The side panel shows what it replaced, or what the device refused, with your edit still there, and the attempts the fight is playing now.
+
+Only files a running fight plays can be pushed: `slice.moves.ron` and `show.moves.ron` today. `player.moves.ron` and `warrior.moves.ron` open and save, but a push is refused until a fight plays them. `tools/motion` writes `player.moves.ron`, and the editor says so: an edit there lasts until the next `moves.py --write`.
+
+To see it with no window: `cargo run -p sapphire_editor -- <file> --capture <png> [--move <name>] [--tick <n>] [--size <w>x<h>] [--content target/content/desktop]`, with `SDKROOT` set on a Mac. It draws on the CPU, with no SDL and no GPU.
+
+No test can show:
+
+- that the window opens at all, on any OS: `window.rs` is the one part nothing runs, with its surface, device loss, resizing, HiDPI scale and text input;
+- how a drag feels at speed, whether handles are easy to grab at a real pointer's precision, and whether tick snapping reads as steady;
+- whether playback looks right at 60 Hz (its timing is tested on a synthetic clock, not seen);
+- the real keyboard and mouse: each key's translation from SDL is tested, but on a real layout (a non-US one's `[`, say) it hasn't been pressed;
+- the system's own Close and Quit, which should ask first with edits unsaved;
+- the figure against the game's own look: it's flat clay for reading a pose, with no materials, outlines, springs or IK.
 
 ## Build profiles and content
 

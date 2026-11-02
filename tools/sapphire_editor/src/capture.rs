@@ -111,7 +111,13 @@ pub fn draw(
 
 /// Rasterizes a finished pass, at one pixel per point.
 #[must_use]
-pub fn rasterize(ctx: &Context, textures: &mut Textures, mut output: FullOutput, width: u32, height: u32) -> Capture {
+pub fn rasterize(
+    ctx: &Context,
+    textures: &mut Textures,
+    mut output: FullOutput,
+    width: u32,
+    height: u32,
+) -> Capture {
     textures.apply(&output.textures_delta);
     // Taken: epaint asserts that no texture change is dropped by accident.
     output.textures_delta.clear();
@@ -120,11 +126,7 @@ pub fn rasterize(ctx: &Context, textures: &mut Textures, mut output: FullOutput,
     for primitive in &primitives {
         canvas.primitive(primitive, textures);
     }
-    Capture {
-        width,
-        height,
-        pixels: canvas.pixels.iter().flatten().copied().collect(),
-    }
+    Capture { width, height, pixels: canvas.pixels.iter().flatten().copied().collect() }
 }
 
 struct Canvas {
@@ -137,8 +139,8 @@ impl Canvas {
     fn primitive(&mut self, primitive: &ClippedPrimitive, textures: &Textures) {
         let Primitive::Mesh(mesh) = &primitive.primitive else { return };
         let clip = primitive.clip_rect;
-        for triangle in mesh.indices.chunks_exact(3) {
-            let [a, b, c] = [triangle[0], triangle[1], triangle[2]].map(|index| &mesh.vertices[index as usize]);
+        for triangle in mesh.indices.as_chunks::<3>().0 {
+            let [a, b, c] = triangle.map(|index| &mesh.vertices[index as usize]);
             self.triangle(a, b, c, clip, mesh.texture_id, textures);
         }
     }
@@ -160,15 +162,22 @@ impl Canvas {
         let left = a.pos.x.min(b.pos.x).min(c.pos.x).max(clip.left()).max(0.0).floor() as u32;
         let right = a.pos.x.max(b.pos.x).max(c.pos.x).min(clip.right()).min(self.width as f32).ceil() as u32;
         let top = a.pos.y.min(b.pos.y).min(c.pos.y).max(clip.top()).max(0.0).floor() as u32;
-        let bottom = a.pos.y.max(b.pos.y).max(c.pos.y).min(clip.bottom()).min(self.height as f32).ceil() as u32;
+        let bottom =
+            a.pos.y.max(b.pos.y).max(c.pos.y).min(clip.bottom()).min(self.height as f32).ceil() as u32;
         for y in top..bottom {
             for x in left..right {
                 let at = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
-                let weights = [edge(b.pos, c.pos, at) / area, edge(c.pos, a.pos, at) / area, edge(a.pos, b.pos, at) / area];
+                let weights = [
+                    edge(b.pos, c.pos, at) / area,
+                    edge(c.pos, a.pos, at) / area,
+                    edge(a.pos, b.pos, at) / area,
+                ];
                 if weights.iter().any(|weight| *weight < 0.0) {
                     continue;
                 }
-                let blend = |values: [f32; 3]| values[0] * weights[0] + values[1] * weights[1] + values[2] * weights[2];
+                let blend = |values: [f32; 3]| {
+                    values[0] * weights[0] + values[1] * weights[1] + values[2] * weights[2]
+                };
                 let uv = Pos2::new(blend([a.uv.x, b.uv.x, c.uv.x]), blend([a.uv.y, b.uv.y, c.uv.y]));
                 let sampled = textures.sample(texture, uv);
                 let channel = |index: usize| {
@@ -183,7 +192,8 @@ impl Canvas {
                 let pixel = &mut self.pixels[(y * self.width + x) as usize];
                 let keep = 1.0 - source[3] / 255.0;
                 for index in 0..3 {
-                    pixel[index] = (source[index] + f32::from(pixel[index]) * keep).round().clamp(0.0, 255.0) as u8;
+                    pixel[index] =
+                        (source[index] + f32::from(pixel[index]) * keep).round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -207,16 +217,19 @@ mod tests {
         let mut textures = Textures::default();
         let run = |ctx: &Context, textures: &mut Textures, time| {
             draw(ctx, textures, raw_input(200, 60, time), 200, 60, |ui| {
-                CentralPanel::no_frame().frame(Frame::NONE.fill(Color32::from_rgb(10, 20, 30))).show(ui, |ui| {
-                    ui.label("Sapphire");
-                });
+                CentralPanel::no_frame().frame(Frame::NONE.fill(Color32::from_rgb(10, 20, 30))).show(
+                    ui,
+                    |ui| {
+                        ui.label("Sapphire");
+                    },
+                );
             })
         };
         // egui's first pass measures; the second draws what it measured.
         run(&ctx, &mut textures, 0.0);
         let capture = run(&ctx, &mut textures, 0.1);
         assert_eq!(capture.pixel(199, 59), [10, 20, 30, 255]);
-        let marked = capture.pixels.chunks_exact(4).filter(|pixel| pixel[0] > 100).count();
+        let marked = capture.pixels.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] > 100).count();
         assert!(marked > 20, "{marked} pixels of text");
     }
 }

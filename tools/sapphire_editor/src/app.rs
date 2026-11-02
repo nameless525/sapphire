@@ -17,7 +17,7 @@ use crate::file::{FileError, MovesFile, Verdict, judge};
 use crate::link::{Link, Pushed};
 use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
-use crate::timeline::{self, Action, Drag, PhaseEdge, Part, Problem, TimelineView};
+use crate::timeline::{self, Action, Drag, Part, PhaseEdge, Problem, TimelineView};
 
 /// How often the file and the cook are looked at again.
 const POLL_SECONDS: f64 = 1.0;
@@ -100,6 +100,17 @@ pub struct Editor {
     address_text: String,
     notice: Option<Notice>,
     last_poll: f64,
+    quit: Quit,
+}
+
+/// Where leaving stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Quit {
+    #[default]
+    No,
+    /// Asked, with edits unsaved: the top bar asks back.
+    Asking,
+    Yes,
 }
 
 impl Editor {
@@ -136,6 +147,7 @@ impl Editor {
             address_text: address.to_string(),
             notice: None,
             last_poll: 0.0,
+            quit: Quit::No,
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -297,7 +309,8 @@ impl Editor {
 
     /// Selects a move by name.
     pub fn select_move(&mut self, name: &str) -> bool {
-        let Some(index) = self.document().and_then(|document| document.moves.iter().position(|mv| mv.name == name))
+        let Some(index) =
+            self.document().and_then(|document| document.moves.iter().position(|mv| mv.name == name))
         else {
             return false;
         };
@@ -423,7 +436,8 @@ impl Editor {
 
     fn remake_run(&mut self) {
         self.run_error = None;
-        let Some(mv) = self.document().and_then(|document| document.moves.get(self.selected_move)).cloned() else {
+        let Some(mv) = self.document().and_then(|document| document.moves.get(self.selected_move)).cloned()
+        else {
             self.run = None;
             return;
         };
@@ -437,12 +451,15 @@ impl Editor {
         }
         let Some(set) = &self.set else {
             self.run = None;
-            self.run_error = Some(match (&self.cook.cook, self.document().is_some_and(MoveSetDocument::names_clips)) {
-                (None, true) => "this document's moves name clips, and there's no cook to read them from: \
+            self.run_error =
+                Some(match (&self.cook.cook, self.document().is_some_and(MoveSetDocument::names_clips)) {
+                    (None, true) => {
+                        "this document's moves name clips, and there's no cook to read them from: \
                                  `cargo xtask content`, and the preview follows"
-                    .to_owned(),
-                _ => "the document hasn't compiled yet".to_owned(),
-            });
+                            .to_owned()
+                    }
+                    _ => "the document hasn't compiled yet".to_owned(),
+                });
             return;
         };
         match Run::simulate(set, &mv.name, self.setup) {
@@ -475,6 +492,31 @@ impl Editor {
                 self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
             }
         }
+    }
+
+    /// A drag whose button went away with the window's focus ends here, so the next edit isn't part of it.
+    fn settle_gesture(&mut self, ui: &Ui) {
+        if ui.input(|input| input.pointer.any_down()) {
+            return;
+        }
+        self.drag = None;
+        if let Some(file) = &mut self.file
+            && file.in_gesture()
+        {
+            file.end_gesture();
+        }
+    }
+
+    /// The window was asked to close: it goes at once, unless that would lose edits.
+    pub fn request_quit(&mut self) {
+        let dirty = self.file.as_ref().is_some_and(MovesFile::is_dirty);
+        self.quit = if dirty { Quit::Asking } else { Quit::Yes };
+    }
+
+    /// Whether the window may close now.
+    #[must_use]
+    pub fn may_quit(&self) -> bool {
+        self.quit == Quit::Yes
     }
 
     /// Points the link at another device.
@@ -579,7 +621,9 @@ impl Editor {
 
     /// Adds to a track of the selected move, starting at the playhead.
     pub fn add_to_track(&mut self, track: Track) {
-        let (Some(document), mv_index, tick) = (self.document(), self.selected_move, self.tick) else { return };
+        let (Some(document), mv_index, tick) = (self.document(), self.selected_move, self.tick) else {
+            return;
+        };
         let Some(mv) = document.moves.get(mv_index) else { return };
         let entry = default_entry(document, mv, track, tick);
         let label = format!("add to {}", timeline::title(track));
@@ -664,27 +708,26 @@ impl Editor {
             .default_size(170.0)
             .size_range(120.0..=300.0)
             .show(ui, |ui| self.moves_list(ui));
-        egui::Panel::right("editor side")
-            .default_size(290.0)
-            .size_range(220.0..=460.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("side").show(ui, |ui| {
-                    self.inspector(ui);
-                    ui.separator();
-                    self.device_panel(ui);
-                });
+        egui::Panel::right("editor side").default_size(290.0).size_range(220.0..=460.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("side").show(ui, |ui| {
+                self.inspector(ui);
+                ui.separator();
+                self.device_panel(ui);
             });
+        });
         egui::Panel::bottom("editor timeline")
             .resizable(true)
             .default_size(340.0)
             .show(ui, |ui| self.timeline_panel(ui));
         egui::CentralPanel::default_margins().show(ui, |ui| self.preview_panel(ui, now));
+        self.settle_gesture(ui);
     }
 
     fn keys(&mut self, ui: &Ui, now: f64) {
         let ctx = ui.ctx();
         let typing = ctx.egui_wants_keyboard_input();
-        let pressed = |modifiers: Modifiers, key: Key| ctx.input_mut(|input| input.consume_key(modifiers, key));
+        let pressed =
+            |modifiers: Modifiers, key: Key| ctx.input_mut(|input| input.consume_key(modifiers, key));
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) {
             self.redo();
         }
@@ -742,7 +785,8 @@ impl Editor {
             let mut open = None;
             egui::ComboBox::from_id_salt("documents").selected_text(title).width(210.0).show_ui(ui, |ui| {
                 for path in &self.documents {
-                    let shown = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                    let shown =
+                        path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                     if ui.selectable_label(false, shown).on_hover_text(path.display().to_string()).clicked() {
                         open = Some(path.clone());
                     }
@@ -753,21 +797,35 @@ impl Editor {
             }
 
             let has_file = self.file.is_some();
-            if ui.add_enabled(has_file, egui::Button::new("Save and push")).on_hover_text("Cmd+S, or Ctrl+S").clicked() {
+            if ui
+                .add_enabled(has_file, egui::Button::new("Save and push"))
+                .on_hover_text("Cmd+S, or Ctrl+S")
+                .clicked()
+            {
                 self.save_and_push();
             }
             let undo = self.file.as_ref().and_then(MovesFile::undo_label).map(ToOwned::to_owned);
-            if ui.add_enabled(undo.is_some(), egui::Button::new("Undo")).on_hover_text(undo.unwrap_or_default()).clicked() {
+            if ui
+                .add_enabled(undo.is_some(), egui::Button::new("Undo"))
+                .on_hover_text(undo.unwrap_or_default())
+                .clicked()
+            {
                 self.undo();
             }
             let redo = self.file.as_ref().and_then(MovesFile::redo_label).map(ToOwned::to_owned);
-            if ui.add_enabled(redo.is_some(), egui::Button::new("Redo")).on_hover_text(redo.unwrap_or_default()).clicked() {
+            if ui
+                .add_enabled(redo.is_some(), egui::Button::new("Redo"))
+                .on_hover_text(redo.unwrap_or_default())
+                .clicked()
+            {
                 self.redo();
             }
             ui.separator();
             let device = self.link.device();
             let (dot, words) = match device {
-                Some(status) => (Color32::from_rgb(96, 214, 110), format!("{} ({})", status.app, status.platform)),
+                Some(status) => {
+                    (Color32::from_rgb(96, 214, 110), format!("{} ({})", status.app, status.platform))
+                }
                 None => (Color32::from_gray(110), "no device".to_owned()),
             };
             let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
@@ -786,9 +844,34 @@ impl Editor {
             }
             ui.label(words);
         });
+        if self.quit == Quit::Asking {
+            ui.horizontal(|ui| {
+                ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
+                if ui.button("Save and quit").clicked()
+                    && let Some(file) = &mut self.file
+                {
+                    match file.save() {
+                        Ok(()) => self.quit = Quit::Yes,
+                        Err(error) => {
+                            self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
+                            self.quit = Quit::No;
+                        }
+                    }
+                }
+                if ui.button("Quit without saving").clicked() {
+                    self.quit = Quit::Yes;
+                }
+                if ui.button("Keep editing").clicked() {
+                    self.quit = Quit::No;
+                }
+            });
+        }
         if self.file.as_ref().and_then(MovesFile::conflict).is_some() {
             ui.horizontal(|ui| {
-                ui.colored_label(Color32::from_rgb(255, 170, 90), "The file changed on disk, and you have edits here.");
+                ui.colored_label(
+                    Color32::from_rgb(255, 170, 90),
+                    "The file changed on disk, and you have edits here.",
+                );
                 if ui.button("Take the file's").clicked()
                     && let Some(file) = &mut self.file
                 {
@@ -816,7 +899,8 @@ impl Editor {
             );
         }
         if let Some(notice) = &self.notice {
-            let color = if notice.trouble { Color32::from_rgb(255, 120, 110) } else { Color32::from_gray(190) };
+            let color =
+                if notice.trouble { Color32::from_rgb(255, 120, 110) } else { Color32::from_gray(190) };
             ui.colored_label(color, &notice.text);
         }
         ui.add_space(2.0);
@@ -832,7 +916,10 @@ impl Editor {
             .iter()
             .enumerate()
             .map(|(index, mv)| {
-                let count = problems.iter().filter(|problem| problem.in_move.as_deref() == Some(mv.name.as_str())).count();
+                let count = problems
+                    .iter()
+                    .filter(|problem| problem.in_move.as_deref() == Some(mv.name.as_str()))
+                    .count();
                 (index, mv.name.clone(), mv.ticks(), count)
             })
             .collect();
@@ -841,7 +928,8 @@ impl Editor {
             for (index, name, ticks, count) in rows {
                 let selected = index == self.selected_move;
                 let text = if count > 0 {
-                    RichText::new(format!("{name}  ({ticks})  ! {count}")).color(Color32::from_rgb(255, 130, 115))
+                    RichText::new(format!("{name}  ({ticks})  ! {count}"))
+                        .color(Color32::from_rgb(255, 130, 115))
                 } else {
                     RichText::new(format!("{name}  ({ticks})"))
                 };
@@ -864,9 +952,10 @@ impl Editor {
         };
         let Some(mv) = document.moves.get(self.selected_move).cloned() else { return };
         let root = self.root_samples(&mv.name);
-        let hit_ticks: Vec<u32> = self.run.as_ref().map_or_else(Vec::new, |run| {
-            run.hits().filter(|hit| hit.on_dummy).map(|hit| hit.tick).collect()
-        });
+        let hit_ticks: Vec<u32> = self
+            .run
+            .as_ref()
+            .map_or_else(Vec::new, |run| run.hits().filter(|hit| hit.on_dummy).map(|hit| hit.tick).collect());
         let editable = self.file.as_ref().is_some_and(|file| file.moves_text().failure().is_none());
         let view = TimelineView {
             mv: &mv,
@@ -882,9 +971,13 @@ impl Editor {
         let actions = {
             let drag = &mut self.drag;
             let mut actions = Vec::new();
-            egui::ScrollArea::both().id_salt("timeline").auto_shrink([false, false]).max_height(ui.available_height() - 74.0).show(ui, |ui| {
-                actions = timeline::show(ui, &view, drag);
-            });
+            egui::ScrollArea::both()
+                .id_salt("timeline")
+                .auto_shrink([false, false])
+                .max_height(ui.available_height() - 74.0)
+                .show(ui, |ui| {
+                    actions = timeline::show(ui, &view, drag);
+                });
             actions
         };
         for action in actions {
@@ -930,7 +1023,8 @@ impl Editor {
         egui::ScrollArea::vertical().id_salt("problems").max_height(44.0).show(ui, |ui| {
             for problem in &problems {
                 let source = if problem.from_device { "device refused: " } else { "" };
-                let text = RichText::new(format!("{source}{}", problem.describe())).color(Color32::from_rgb(255, 130, 115));
+                let text = RichText::new(format!("{source}{}", problem.describe()))
+                    .color(Color32::from_rgb(255, 130, 115));
                 if ui.add(egui::Label::new(text).sense(Sense::click())).clicked()
                     && let Some(name) = &problem.in_move
                 {
@@ -948,7 +1042,8 @@ impl Editor {
         ui.horizontal(|ui| {
             ui.label("Dummy");
             let mut distance = self.setup.dummy_distance;
-            let response = ui.add(egui::DragValue::new(&mut distance).speed(0.02).range(0.3..=12.0).suffix(" m"));
+            let response =
+                ui.add(egui::DragValue::new(&mut distance).speed(0.02).range(0.3..=12.0).suffix(" m"));
             if response.changed() {
                 self.set_dummy_distance(distance);
             }
@@ -1014,7 +1109,13 @@ impl Editor {
                 "no character without a cook: `cargo xtask content`"
             };
             let at = rect.right_bottom() + Vec2::new(-10.0, -10.0);
-            painter.text(at, egui::Align2::RIGHT_BOTTOM, why, egui::FontId::proportional(12.0), Color32::from_gray(140));
+            painter.text(
+                at,
+                egui::Align2::RIGHT_BOTTOM,
+                why,
+                egui::FontId::proportional(12.0),
+                Color32::from_gray(140),
+            );
         }
     }
 
@@ -1027,15 +1128,18 @@ impl Editor {
             if ui.small_button("|<").on_hover_text("First tick (Home)").clicked() {
                 self.set_tick(0);
             }
-            if ui.small_button("<").on_hover_text("One tick back (←)").clicked() {
+            if ui.small_button("<").on_hover_text("One tick back (Left, or comma)").clicked() {
                 self.set_tick(self.tick.saturating_sub(1));
             }
-            if ui.small_button(">").on_hover_text("One tick on (→)").clicked() {
+            if ui.small_button(">").on_hover_text("One tick on (Right, or full stop)").clicked() {
                 self.set_tick(self.tick + 1);
             }
             let mut tick = self.tick;
             let response = ui.add(
-                egui::DragValue::new(&mut tick).speed(0.25).range(0..=ticks.saturating_sub(1)).prefix("tick "),
+                egui::DragValue::new(&mut tick)
+                    .speed(0.25)
+                    .range(0..=ticks.saturating_sub(1))
+                    .prefix("tick "),
             );
             if response.changed() {
                 self.set_tick(tick);
@@ -1043,7 +1147,8 @@ impl Editor {
             ui.label(format!("of {ticks}, {:.0} ms", f64::from(self.tick) * 1000.0 / 60.0));
             ui.separator();
             let playing = self.playing.is_some();
-            let label = if playing { "Stop".to_owned() } else { format!("Play from frame {}", self.play_from) };
+            let label =
+                if playing { "Stop".to_owned() } else { format!("Play from frame {}", self.play_from) };
             if ui.button(label).on_hover_text("Space").clicked() {
                 if playing {
                     self.stop();
@@ -1140,7 +1245,8 @@ impl Editor {
             let response = ui.add(drag);
             self.number_gesture(&response, &label);
             if response.changed() {
-                let literal = if is_int { format!("{}", shown.round() as i64) } else { format!("{shown:.decimals$}") };
+                let literal =
+                    if is_int { format!("{}", shown.round() as i64) } else { format!("{shown:.decimals$}") };
                 self.edit(&label, |text| text.set_entry_value(entry, &value.path, &literal));
             }
         } else {
@@ -1163,7 +1269,8 @@ impl Editor {
     fn move_inspector(&mut self, ui: &mut Ui) {
         let Some(document) = self.document() else { return };
         let Some(mv) = document.moves.get(self.selected_move) else { return };
-        let (name, startup, active, recovery, ticks) = (mv.name.clone(), mv.startup, mv.active, mv.recovery, mv.ticks());
+        let (name, startup, active, recovery, ticks) =
+            (mv.name.clone(), mv.startup, mv.active, mv.recovery, mv.ticks());
         let clip = mv.motion.clip.as_ref().map(|clip| clip.source.clone());
         ui.label(RichText::new(name).strong());
         ui.label(format!("{ticks} ticks, {:.0} ms", f64::from(ticks) * 1000.0 / 60.0));
@@ -1171,16 +1278,22 @@ impl Editor {
         match clip {
             Some(_) => {
                 ui.label(
-                    RichText::new("Plays a clip tick for tick, so its length is the clip's. Windows move freely.")
-                        .small()
-                        .color(Color32::from_gray(150)),
+                    RichText::new(
+                        "Plays a clip tick for tick, so its length is the clip's. Windows move freely.",
+                    )
+                    .small()
+                    .color(Color32::from_gray(150)),
                 );
             }
             None => {
                 ui.label(RichText::new("Keyed by hand.").small().color(Color32::from_gray(150)));
             }
         }
-        ui.label(RichText::new("Select something on the timeline to edit it.").small().color(Color32::from_gray(150)));
+        ui.label(
+            RichText::new("Select something on the timeline to edit it.")
+                .small()
+                .color(Color32::from_gray(150)),
+        );
     }
 
     fn device_panel(&mut self, ui: &mut Ui) {
@@ -1195,14 +1308,19 @@ impl Editor {
                         ui.label(format!("takes this file: {} edits so far", document.edits));
                     }
                     None if !name.is_empty() => {
-                        ui.colored_label(Color32::from_rgb(235, 190, 110), format!("no fight there plays {name}"));
+                        ui.colored_label(
+                            Color32::from_rgb(235, 190, 110),
+                            format!("no fight there plays {name}"),
+                        );
                     }
                     None => {}
                 }
             }
             None => {
                 let why = self.link.trouble().unwrap_or("looking");
-                ui.label(RichText::new(format!("Not connected: {why}")).small().color(Color32::from_gray(150)));
+                ui.label(
+                    RichText::new(format!("Not connected: {why}")).small().color(Color32::from_gray(150)),
+                );
             }
         }
         match self.link.last_push() {
@@ -1210,7 +1328,10 @@ impl Editor {
                 ui.label("Pushing...");
             }
             Some(Pushed::Took { owner, milliseconds }) => {
-                ui.colored_label(Color32::from_rgb(120, 214, 130), format!("Took it in {milliseconds} ms: {owner}"));
+                ui.colored_label(
+                    Color32::from_rgb(120, 214, 130),
+                    format!("Took it in {milliseconds} ms: {owner}"),
+                );
             }
             Some(Pushed::Refused(refusals)) => {
                 ui.colored_label(
@@ -1247,7 +1368,9 @@ impl Editor {
             attempt.hit_windows.iter().map(|window| format!("{}..{}", window.from, window.to)).collect();
         if !windows.is_empty() {
             ui.label(
-                RichText::new(format!("   hits {}", windows.join(", "))).small().color(Color32::from_gray(160)),
+                RichText::new(format!("   hits {}", windows.join(", ")))
+                    .small()
+                    .color(Color32::from_gray(160)),
             );
         }
     }
@@ -1264,15 +1387,20 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
     let (from, to) = (tick, tick + 3);
     match track {
         Track::Hitboxes => {
-            let from_clip = mv.motion.clip.as_ref().and_then(|clip| clip.paths.first()).map(|path| path.name.as_str());
-            let path = from_clip.or_else(|| mv.motion.paths.first().map(|path| path.name.as_str())).unwrap_or("path");
+            let from_clip =
+                mv.motion.clip.as_ref().and_then(|clip| clip.paths.first()).map(|path| path.name.as_str());
+            let path = from_clip
+                .or_else(|| mv.motion.paths.first().map(|path| path.name.as_str()))
+                .unwrap_or("path");
             let mut name = format!("{}_hit", mv.name);
             let mut count = 1;
             while mv.hitboxes.iter().any(|hitbox| hitbox.name == name) {
                 count += 1;
                 name = format!("{}_hit_{count}", mv.name);
             }
-            format!("(name: \"{name}\", from: {from}, to: {to}, path: \"{path}\", shape: Sphere(radius: 0.3))")
+            format!(
+                "(name: \"{name}\", from: {from}, to: {to}, path: \"{path}\", shape: Sphere(radius: 0.3))"
+            )
         }
         Track::Hurtboxes => {
             let name = document
@@ -1301,17 +1429,22 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
 /// document count, so a word in a move's comment can't set it off.
 fn generated_by(text: &str) -> Option<String> {
     let header = text.lines().take_while(|line| line.trim_start().starts_with("//"));
-    let mentions = header.map(|line| line.trim_start().trim_start_matches('/').trim()).find(|line| line.contains("Written by"))?;
+    let mentions = header
+        .map(|line| line.trim_start().trim_start_matches('/').trim())
+        .find(|line| line.contains("Written by"))?;
     let at = mentions.find("Written by")?;
     let said = &mentions[at..];
-    let end = said.find(|c| c == ',' || c == '.').map_or(said.len(), |end| end);
-    let tool = said[..end].trim_end_matches(".py").trim();
-    Some(format!("{tool}{}.", if said[..].contains(".py") { ".py" } else { "" }))
+    let end = said.find([',', ';', '(']).unwrap_or(said.len());
+    Some(format!("{}.", said[..end].trim().trim_end_matches('.')))
 }
 
 /// `target/content/desktop` above a document, if it's there.
 fn find_cook(document: &Path) -> Option<PathBuf> {
-    let start = if document.is_absolute() { document.to_owned() } else { std::env::current_dir().ok()?.join(document) };
+    let start = if document.is_absolute() {
+        document.to_owned()
+    } else {
+        std::env::current_dir().ok()?.join(document)
+    };
     start.ancestors().skip(1).map(|dir| dir.join("target/content/desktop")).find(|dir| dir.is_dir())
 }
 
@@ -1359,4 +1492,16 @@ pub fn casting_of(editor: &Editor) -> Option<(AssetId, Option<AssetId>)> {
 #[must_use]
 pub fn figure_of(editor: &Editor) -> Option<&Figure> {
     editor.cook.figures.get(editor.cook.casting?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generated_by;
+    use crate::edits::test_files::{PLAYER, WARRIOR};
+
+    #[test]
+    fn a_file_a_tool_writes_says_which() {
+        assert_eq!(generated_by(PLAYER).as_deref(), Some("Written by tools/motion/moves.py."));
+        assert_eq!(generated_by(WARRIOR), None);
+    }
 }

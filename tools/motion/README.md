@@ -29,6 +29,8 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 4. Commit `moves.py` or `frames.py` with what they wrote. A clean checkout's `moves.py --write` changes nothing.
 5. The simulation keeps a cooked copy of the set for the arena's fight: `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, then `cargo xtask replay --update`.
 
+The timeline editor (`cargo xtask editor`) opens `player.moves.ron` as it does any moves file, and says this tool wrote it: what it changes there lasts until the next `--write`, so copy numbers worth keeping back into `frames.py`.
+
 ## Posing rules learned the hard way
 
 - **Lean from `Spine`, `Chest` and `UpperChest`.** Keep `Hips` pitch to about 8°. Past about 12°, the shorts' seat pushes through the shirt's back as a black patch.

@@ -43,18 +43,18 @@ impl View {
     /// dummy to the right of the character.
     #[must_use]
     pub fn side(dummy_distance: f32) -> Self {
-        Self {
-            yaw: 0.35,
-            pitch: 0.2,
-            zoom: 1.0,
-            focus: Vec3::new(0.0, 1.0, dummy_distance * 0.5),
-        }
+        Self { yaw: 0.35, pitch: 0.2, zoom: 1.0, focus: Vec3::new(0.0, 1.0, dummy_distance * 0.5) }
     }
 
     /// From behind the dummy, looking back along the character's forward.
     #[must_use]
     pub fn front(dummy_distance: f32) -> Self {
-        Self { yaw: std::f32::consts::FRAC_PI_2, pitch: 0.1, zoom: 1.0, focus: Vec3::new(0.0, 1.0, dummy_distance * 0.5) }
+        Self {
+            yaw: std::f32::consts::FRAC_PI_2,
+            pitch: 0.1,
+            zoom: 1.0,
+            focus: Vec3::new(0.0, 1.0, dummy_distance * 0.5),
+        }
     }
 
     /// From above.
@@ -165,7 +165,15 @@ pub fn draw(
 
     // The dummy, what a hit lands on.
     for body in &frame.dummy_bodies {
-        filled_shape(painter, rect, view, body.shape, body.pose, DUMMY.gamma_multiply(0.55), Stroke::new(1.0, DUMMY));
+        filled_shape(
+            painter,
+            rect,
+            view,
+            body.shape,
+            body.pose,
+            DUMMY.gamma_multiply(0.55),
+            Stroke::new(1.0, DUMMY),
+        );
     }
     facing(painter, rect, view, frame.dummy_root, DUMMY);
 
@@ -197,11 +205,26 @@ pub fn draw(
 
     // Where the volumes will be, faintly, and where they are, plainly.
     for ghost in frame.ghosts.iter().filter(|ghost| !ghost.live) {
-        outline_shape(painter, rect, view, ghost.shape, ghost.pose, Stroke::new(1.0, HIT.gamma_multiply(0.45)));
+        outline_shape(
+            painter,
+            rect,
+            view,
+            ghost.shape,
+            ghost.pose,
+            Stroke::new(1.0, HIT.gamma_multiply(0.45)),
+        );
     }
     trail(painter, rect, view, run);
     for volume in &frame.volumes {
-        filled_shape(painter, rect, view, volume.shape, volume.pose, HIT.gamma_multiply(0.42), Stroke::new(1.8, HIT));
+        filled_shape(
+            painter,
+            rect,
+            view,
+            volume.shape,
+            volume.pose,
+            HIT.gamma_multiply(0.42),
+            Stroke::new(1.8, HIT),
+        );
     }
     for hit in &frame.hits {
         let at = view.project(hit.point, rect);
@@ -225,7 +248,13 @@ pub fn draw(
     }
     let mut y = rect.top() + 8.0;
     for (line, color) in lines {
-        painter.text(Pos2::new(rect.left() + 10.0, y), Align2::LEFT_TOP, line, FontId::proportional(13.0), color);
+        painter.text(
+            Pos2::new(rect.left() + 10.0, y),
+            Align2::LEFT_TOP,
+            line,
+            FontId::proportional(13.0),
+            color,
+        );
         y += 17.0;
     }
     if run.hits().next().is_none() {
@@ -247,11 +276,19 @@ fn ground(painter: &egui::Painter, rect: Rect, view: &View, run: &Run) {
     let span = reach.ceil() as i32;
     for step in -3..=span {
         let along = step as f32;
-        line(Vec3::new(-3.0, 0.0, along), Vec3::new(3.0, 0.0, along), if step == 0 { GROUND_LINE } else { GRID });
+        line(
+            Vec3::new(-3.0, 0.0, along),
+            Vec3::new(3.0, 0.0, along),
+            if step == 0 { GROUND_LINE } else { GRID },
+        );
     }
     for step in -3..=3 {
         let across = step as f32;
-        line(Vec3::new(across, 0.0, -3.0), Vec3::new(across, 0.0, reach), if step == 0 { GROUND_LINE } else { GRID });
+        line(
+            Vec3::new(across, 0.0, -3.0),
+            Vec3::new(across, 0.0, reach),
+            if step == 0 { GROUND_LINE } else { GRID },
+        );
     }
 }
 
@@ -260,7 +297,11 @@ fn facing(painter: &egui::Painter, rect: Rect, view: &View, root: ActorTransform
     let lift = Vec3::new(0.0, 0.02, 0.0);
     let from = root.position + lift;
     let to = root.point(Vec3::new(0.0, 0.0, 0.45)) + lift;
-    painter.arrow(view.project(from, rect), view.project(to, rect) - view.project(from, rect), Stroke::new(1.5, color));
+    painter.arrow(
+        view.project(from, rect),
+        view.project(to, rect) - view.project(from, rect),
+        Stroke::new(1.5, color),
+    );
 }
 
 /// The path of what the run's volumes sweep, each volume's middle from its first live step to its last.
@@ -344,9 +385,7 @@ fn figure_mesh(
 fn silhouette(view: &View, rect: Rect, shape: BodyShape, pose: Pose) -> Vec<Pos2> {
     let at = |local: Vec3| view.project(pose.position + pose.rotation * local, rect);
     match shape {
-        BodyShape::Sphere { radius } => {
-            stadium(at(Vec3::ZERO), at(Vec3::ZERO), radius * view.scale(rect))
-        }
+        BodyShape::Sphere { radius } => stadium(at(Vec3::ZERO), at(Vec3::ZERO), radius * view.scale(rect)),
         BodyShape::Capsule { half_height, radius } => {
             stadium(at(Vec3::Y * half_height), at(Vec3::NEG_Y * half_height), radius * view.scale(rect))
         }
@@ -406,19 +445,45 @@ fn hull(mut points: Vec<Pos2>) -> Vec<Pos2> {
     lower
 }
 
-fn filled_shape(painter: &egui::Painter, rect: Rect, view: &View, shape: BodyShape, pose: Pose, fill: Color32, stroke: Stroke) {
+fn filled_shape(
+    painter: &egui::Painter,
+    rect: Rect,
+    view: &View,
+    shape: BodyShape,
+    pose: Pose,
+    fill: Color32,
+    stroke: Stroke,
+) {
     painter.add(Shape::convex_polygon(silhouette(view, rect, shape, pose), fill, stroke));
 }
 
-fn outline_shape(painter: &egui::Painter, rect: Rect, view: &View, shape: BodyShape, pose: Pose, stroke: Stroke) {
+fn outline_shape(
+    painter: &egui::Painter,
+    rect: Rect,
+    view: &View,
+    shape: BodyShape,
+    pose: Pose,
+    stroke: Stroke,
+) {
     painter.add(Shape::closed_line(silhouette(view, rect, shape, pose), stroke));
 }
 
 /// A readable frame on an empty stage, for when there's nothing to play.
 pub fn empty(painter: &egui::Painter, rect: Rect, why: &str) {
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(22));
-    painter.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_gray(50)), StrokeKind::Inside);
-    painter.text(rect.center(), Align2::CENTER_CENTER, why, FontId::proportional(14.0), Color32::from_gray(170));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, Color32::from_gray(50)),
+        StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        why,
+        FontId::proportional(14.0),
+        Color32::from_gray(170),
+    );
 }
 
 #[cfg(test)]

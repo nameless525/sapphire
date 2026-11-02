@@ -55,7 +55,7 @@
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
 
-use sapphire_anim::{ArchivedSkeleton, CharacterPose};
+use sapphire_anim::{ArchivedSkeleton, CharacterPose, SpringBones};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -570,7 +570,8 @@ pub(crate) fn player(content: &Content) -> Result<ClipPlayer, String> {
     let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
-    Ok(ClipPlayer::new(pose, joints))
+    let springs = SpringBones::new(rig, &pose);
+    Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
 /// The character's pose at rest with its soft expression, and where its figure finds its parts.

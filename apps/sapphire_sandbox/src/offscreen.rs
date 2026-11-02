@@ -203,7 +203,12 @@ impl Stage {
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer, &gpu)?;
                 let player = crate::lookdev::player(&content).map_err(AppInitError::msg)?;
-                scene.play_clip(player.with_root_motion(!options.clip_in_place));
+                scene.play_clip(
+                    player
+                        .with_root_motion(!options.clip_in_place)
+                        .with_springs_on(options.springs != Some(false)),
+                );
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
             if shot == crate::lookdev::Shot::Enemy {
                 let meshes = content.enemy(&mut renderer, &gpu)?;

@@ -9,8 +9,9 @@
 //! out what only a window has: acquiring and presenting the swapchain, and vsync. A fast,
 //! repeatable check for changes to the frame path against the budgets of spec §3. It also logs
 //! time of day's own resolve time per frame (part of extraction), against its 0.05 ms budget;
-//! `--day-length` makes the hour move every frame; and animation's time per frame with `--clip`
-//! (M2 N2), against §3.2's "Animation + IK", 1.5 ms on Desktop-Low and 3.0 ms on Mobile-Low.
+//! `--day-length` makes the hour move every frame; animation's time per frame with `--clip`
+//! (M2 N2), against §3.2's "Animation + IK", 1.5 ms on Desktop-Low and 3.0 ms on Mobile-Low; and within
+//! it spring bones' (M2 N5), against §3.2's "Secondary motion", 0.5 ms and 1.0 ms.
 //!
 //! While the frame graph times passes on the GPU (with `--dynamic-resolution`, or the overlay
 //! shown) it also logs the mean GPU pass span of the frames whose timings came back: the GPU
@@ -87,6 +88,9 @@ pub(crate) fn run(
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
     let mut anim = Vec::with_capacity(cpu.capacity());
     let (mut anim_evaluated, mut anim_joints) = (0_u64, 0_u64);
+    // And spring bones' within it, and the sub-steps they ran.
+    let mut springs = Vec::with_capacity(cpu.capacity());
+    let mut spring_substeps = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -121,6 +125,8 @@ pub(crate) fn run(
             anim.push(stats.time);
             anim_evaluated += u64::from(stats.evaluated);
             anim_joints += u64::from(stats.joints);
+            springs.push(stats.spring_time);
+            spring_substeps += u64::from(stats.spring_substeps);
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -133,8 +139,10 @@ pub(crate) fn run(
 
     cpu.sort_unstable();
     anim.sort_unstable();
+    springs.sort_unstable();
     let percentile = |p: usize| cpu[(cpu.len() - 1) * p / 100];
     let anim_percentile = |p: usize| anim[(anim.len() - 1) * p / 100];
+    let spring_percentile = |p: usize| springs[(springs.len() - 1) * p / 100];
     let micros = |duration: Duration| duration.as_secs_f64() * 1e6;
     let quality = stage.quality.stats();
     let (scene_width, scene_height) = stage.renderer.stats().scene_size;
@@ -188,6 +196,11 @@ pub(crate) fn run(
         anim_us_max = format_args!("{:.2}", micros(anim_percentile(100))),
         anim_poses_per_frame = format_args!("{:.2}", anim_evaluated as f64 / f64::from(frames)),
         anim_joints_per_frame = format_args!("{:.1}", anim_joints as f64 / f64::from(frames)),
+        springs = ?options.springs,
+        spring_us_p50 = format_args!("{:.2}", micros(spring_percentile(50))),
+        spring_us_p99 = format_args!("{:.2}", micros(spring_percentile(99))),
+        spring_us_max = format_args!("{:.2}", micros(spring_percentile(100))),
+        spring_substeps_per_frame = format_args!("{:.2}", spring_substeps as f64 / f64::from(frames)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),

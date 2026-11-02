@@ -133,6 +133,9 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
+    /// `--springs on|off`: whether the character's spring bones run under its clip (M2 N5). On unless
+    /// it says off, and a character holding still has none. Needs `--clip`.
+    pub springs: Option<bool>,
     /// `--arena`: the combat stage (M2 O5, [`crate::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
@@ -653,6 +656,13 @@ impl Options {
                         format!("--arena-shot expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
+                "--springs" => {
+                    options.springs = Some(match value("--springs")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--springs expects on or off, got {other:?}")),
+                    });
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -851,6 +861,9 @@ impl Options {
             return Err("--arena is a scene of its own: drop --look-dev, --stage, --environment, --probes, \
                  --foliage, --outline-row, --faces, --rim-rig and --hard-edges"
                 .to_owned());
+        }
+        if options.springs.is_some() && options.clip.is_none() {
+            return Err("--springs runs under a clip: it needs --clip".to_owned());
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
@@ -1185,6 +1198,12 @@ mod tests {
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
+        let springs = ["--look-dev", "hero", "--clip", "strike", "--springs", "off"];
+        assert_eq!(parse(&springs).unwrap().0.springs, Some(false));
+        assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.springs, None);
+        assert!(parse(&["--look-dev", "hero", "--springs", "on"]).unwrap_err().contains("--clip"));
+        let wrong = ["--look-dev", "hero", "--clip", "strike", "--springs", "maybe"];
+        assert!(parse(&wrong).unwrap_err().contains("on or off"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());
         assert!(parse(&["--environment", "--look-dev", "sky"]).is_err());
         assert!(parse(&["--look-dev", "wide", "--outline-row"]).is_err());

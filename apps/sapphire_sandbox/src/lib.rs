@@ -158,6 +158,8 @@
 //!   looping (M2 N2, `animate.rs`). `strike` is the only one yet. Each `--capture-ticks` is a fixed
 //!   point of it, and `--bench` measures it. `--clip-in-place` leaves its root motion out, for a
 //!   shot that frames the character close. The golden scenes `lookdev-strike-*` show it.
+//! - `--springs on|off` (with `--clip`): runs the character's spring bones or not, on by default
+//!   (M2 N5). The strike scenes from before them pin them off; `lookdev-strike-springs-*` show them.
 //! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
 //!   as a place to fight: the character at the player's spawn point and a stand-in at the enemy's,
 //!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s

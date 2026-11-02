@@ -217,7 +217,12 @@ impl App for SandboxApp {
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
                 let player = lookdev::player(&content).map_err(AppInitError::msg)?;
-                scene.play_clip(player.with_root_motion(!options.clip_in_place));
+                scene.play_clip(
+                    player
+                        .with_root_motion(!options.clip_in_place)
+                        .with_springs_on(options.springs != Some(false)),
+                );
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
             if let Some(meshes) = renderer.enemy {
                 scene.spawn_enemy(meshes, content.held_enemy()?);
@@ -783,6 +788,7 @@ impl SandboxApp {
                 self.quality.restore(previous);
             }
         }
+        self.scene.set_spring_quality(crate::animate::spring_quality(self.quality.active().id));
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())
     }

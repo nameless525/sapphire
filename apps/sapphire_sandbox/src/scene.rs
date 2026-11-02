@@ -100,7 +100,9 @@
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
-use sapphire_anim::{AnimStats, ArchivedClip, evaluate_all};
+use std::time::Duration;
+
+use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork, evaluate_all};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
 use sapphire_ecs::bevy_ecs::system::SystemState;
@@ -120,7 +122,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_eff
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
-use crate::animate::{ClipPlayer, Evaluation};
+use crate::animate::{ClipPlayer, Evaluation, SpringView};
 use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
 use crate::combat_views::{CombatViews, Facade};
@@ -370,6 +372,10 @@ pub(crate) struct Scene {
     players: Players,
     /// What animation did in the last frame (rule R9).
     anim_stats: AnimStats,
+    /// How the tier runs spring bones ([`Self::set_spring_quality`]).
+    spring_quality: SpringQuality,
+    /// The shape of the last frame drawn, which [`Self::animate`] reads before this frame's.
+    aspect: f32,
     /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
     /// heads' lids and gaze are poses (M1 C6).
     poses: bool,
@@ -483,6 +489,8 @@ impl Scene {
             animating: false,
             players,
             anim_stats: AnimStats::default(),
+            spring_quality: SpringQuality::DESKTOP,
+            aspect: 16.0 / 9.0,
             poses: skinned,
             bounds,
             characters,
@@ -1072,20 +1080,42 @@ impl Scene {
         if let Some((clip, version)) = clip {
             let mut jobs = Vec::new();
             let world = self.ecs.world_mut();
+            let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
+            let view = SpringView::new(&camera, self.spring_quality);
             for (mut player, clock, render, figure, rig, transform) in self.players.iter_mut(world) {
                 stats.characters += 1;
                 if !player.fits(clip, &render) {
                     continue;
                 }
-                let Some(position) = player.next_position(clip, version, clock.0.presented_ticks(alpha))
-                else {
+                let ticks = clock.0.presented_ticks(alpha);
+                let position = player.next_position(clip, version, ticks);
+                let springs_run = player.springs_run(&view, &transform, &figure);
+                if position.is_none() && !(springs_run && player.springs_due(ticks, &transform)) {
                     continue;
-                };
-                stats.evaluated += 1;
-                stats.joints += player.joint_count() as u32;
-                jobs.push(Evaluation { player, render, figure, rig, transform, position });
+                }
+                if position.is_some() {
+                    stats.evaluated += 1;
+                    stats.joints += player.joint_count() as u32;
+                }
+                jobs.push(Evaluation {
+                    player,
+                    render,
+                    figure,
+                    rig,
+                    transform,
+                    position,
+                    ticks,
+                    springs_run,
+                    spring_work: SpringWork::default(),
+                    spring_time: Duration::ZERO,
+                });
             }
             evaluate_all(&mut jobs, |job| job.run(clip));
+            for job in &jobs {
+                stats.springs += u32::from(job.spring_work.wrote_pose);
+                stats.spring_substeps += job.spring_work.substeps;
+                stats.spring_time += job.spring_time;
+            }
         }
         stats.time = started.elapsed();
         self.anim_stats = stats;
@@ -1094,6 +1124,11 @@ impl Scene {
     /// What animation did in the last frame.
     pub fn anim_stats(&self) -> AnimStats {
         self.anim_stats
+    }
+
+    /// Runs spring bones as a quality tier does, from the next frame on.
+    pub fn set_spring_quality(&mut self, quality: SpringQuality) {
+        self.spring_quality = quality;
     }
 
     /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
@@ -1399,6 +1434,7 @@ impl Scene {
     /// so up to a tick ahead, and step back when that delta shrinks, on entering pause or slow
     /// motion. See `docs/m2-handoff.md`.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
+        self.aspect = drawable_aspect(target_size).unwrap_or(self.aspect);
         self.ecs.presentation(alpha);
         if let Some(arena) = &mut self.arena {
             arena.present(self.ecs.world_mut(), alpha, drawable_aspect(target_size));
@@ -1705,6 +1741,9 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
     let bounds = mesh.streams.bounds.to_native();
     [bounds.min, bounds.max]
 }
+
+#[cfg(test)]
+mod spring_tests;
 
 #[cfg(test)]
 mod tests {

@@ -136,6 +136,7 @@ impl Serving {
                 stage.quality.restore(previous);
             }
         }
+        stage.scene.set_spring_quality(crate::animate::spring_quality(stage.quality.active().id));
     }
 
     fn draw(&mut self) -> Result<(), AppInitError> {

@@ -28,7 +28,7 @@ fn the_script_exercises_what_it_claims_to() {
     for tick in 0..TICKS {
         sim.step(&script(tick, &actors));
         playing |= sim.actors().any(|view| view.moves.current.is_some());
-        frozen |= sim.actors().any(|view| view.hitstop_ticks == replay::MELEE_HITSTOP_TICKS - 1);
+        frozen |= sim.actors().any(|view| view.hitstop_ticks > 0);
         extra_actors |= sim.actors().len() > actors.len();
         hit_volumes |= sim.actors().any(|view| !view.moves.volumes.is_empty());
     }
@@ -127,7 +127,7 @@ fn the_test_contents_hash_is_the_same_on_every_architecture() {
     assert_eq!(hash, TEST_CONTENT_HASH, "the test content's hash is {hash:#x}");
 }
 
-const TEST_CONTENT_HASH: u64 = 0xcb9d_2a4f_7988_a496;
+const TEST_CONTENT_HASH: u64 = 0xb333_ebb7_8a88_bd6f;
 
 #[test]
 fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {
@@ -158,18 +158,20 @@ fn any_difference_in_input_changes_the_checksum_from_that_tick() {
         assert_eq!(nudged.checksum() != baseline[tick as usize], differs, "tick {tick}");
     }
 
-    // A press of a button that starts something: everything differs from then on.
+    // A press of a button that starts something: everything differs from then on. It's the first
+    // tick's, since the script's own presses and the reactions they bring keep this actor busy by
+    // tick 40, and a press that nothing takes is gone with its buffer.
     let (mut pressed, _) = world(3);
     let actor = actors[1];
     for tick in 0..100 {
         let mut actions = script(tick, &actors);
-        if tick == 40 {
+        if tick == 0 {
             let was = actions.get(actor);
             assert!(!was.buttons.contains(Buttons::SKILL), "the script doesn't press it here");
             actions.set(actor, ActorActions { buttons: was.buttons | Buttons::SKILL, ..was }).expect("room");
         }
         pressed.step(&actions);
-        assert_eq!(pressed.checksum() != baseline[tick as usize], tick >= 40, "tick {tick}");
+        assert_ne!(pressed.checksum(), baseline[tick as usize], "tick {tick}");
     }
 }
 

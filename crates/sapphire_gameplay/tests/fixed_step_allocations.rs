@@ -24,7 +24,7 @@ use sapphire_physics::{
     ColliderId, Group, GroupMask, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape,
 };
 use sapphire_time::{ScaleSource, SimDuration};
-use support::{mesh_arena, press, script, slice, world};
+use support::{SLICE, mesh_arena, press, script, slice, world};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -297,7 +297,7 @@ fn an_overfull_step_counts_what_it_drops_without_allocating() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let cues: String = (0..12).map(|at| format!(r#"(name: "cue_{at}", at: {at}),"#)).collect();
+    let cues: String = (0..48).map(|cue| format!(r#"(name: "cue_{cue}", at: {}),"#, cue % 12)).collect();
     let hitboxes: String = (0..12)
         .map(|at| {
             format!(
@@ -495,40 +495,69 @@ fn a_simulations_hit_state_hashes_without_allocating() {
     assert_eq!(counts.allocations, 0);
 }
 
-/// The join with moves, in a real step: published hurtboxes and sweeps, through a fight's worth of
-/// the test content's moves, with hits landing.
+/// A fight's worth of the test content's moves in real steps, from the first: hurtboxes placed, sweeps
+/// and hits, reactions forced through whatever's running, hitstop, pushes, a poise break, a defeat with a
+/// finish freeze, slow motion, cues, and a despawn with its records and bodies. Everyone's in reach, and
+/// nobody's in charge.
 #[test]
-fn sweeping_what_moves_publish_does_not_allocate() {
+fn a_fight_with_hits_landing_allocates_nothing_from_the_first_step() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    const BODY: Name = Name::new("body");
-    const OWN: Shape = Shape::Sphere { radius: 0.4 };
-    let chest = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
-
     let mut sim = Simulation::new(SimConfig::default());
-    let moves = Some(sim.add_move_set(slice()));
+    // Few enough hit points and little enough poise that someone breaks, and someone falls, before
+    // the pushes part them for good.
+    let frail = SLICE.replacen("health: 300", "health: 40", 1).replacen("poise: 60", "poise: 20", 1);
+    let frail = MoveSetDocument::parse(&frail).expect("parses");
+    let moves = Some(sim.add_move_set(frail.compile().expect("compiles")));
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
     let position = Vec3::new(0.0, 0.0, 1.6);
     let target = sim.spawn(ActorSpawn { position, yaw: 3.0, moves, controller: None }).expect("room");
-
-    support::join_moves_to_hits(&mut sim, BODY, OWN, chest);
-
-    // The schedule builds and the hurtboxes go in the world on the first step, which is setup.
-    sim.step(&TickActions::NEUTRAL);
-    let mut landed = 0;
-    for tick in 0..240_u64 {
-        let buttons = if tick % 40 == 0 { Buttons::LIGHT } else { Buttons::NONE };
-        let dodge = if tick % 90 == 45 { Buttons::DODGE } else { Buttons::NONE };
-        let actions = {
+    let at = Vec3::X;
+    let second = sim.spawn(ActorSpawn { position: at, yaw: -1.0, moves, controller: None }).expect("room");
+    let scripted: Vec<TickActions> = (0..2400_u64)
+        .map(|tick| {
             let mut actions = TickActions::NEUTRAL;
-            actions.set(attacker, ActorActions { buttons, ..ActorActions::default() }).expect("room");
-            actions.set(target, ActorActions { buttons: dodge, ..ActorActions::default() }).expect("room");
+            let every = |period, offset| tick % period == offset;
+            let mut press = |actor, buttons| {
+                actions.set(actor, ActorActions { buttons, ..ActorActions::default() }).expect("room");
+            };
+            press(
+                attacker,
+                match () {
+                    () if every(40, 0) => Buttons::LIGHT,
+                    () if every(90, 20) => Buttons::HEAVY,
+                    () if every(130, 70) => Buttons::ULTIMATE,
+                    _ => Buttons::NONE,
+                },
+            );
+            press(target, if every(90, 45) { Buttons::DODGE } else { Buttons::NONE });
+            press(second, if every(55, 5) { Buttons::SKILL } else { Buttons::NONE });
             actions
-        };
-        let ((), counts) = alloc::count_in_scope(|| sim.step(&actions));
-        assert_eq!(counts.allocations, 0, "tick {tick}");
-        landed += sim.hits().events().len();
-    }
-    assert!(landed > 0, "nothing landed, so nothing was tested");
+        })
+        .collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for (tick, actions) in scripted.iter().enumerate() {
+            if tick == 1200 {
+                sim.request_slow_motion(200, 30);
+            }
+            sim.step(actions);
+        }
+    });
+    assert_eq!(counts.allocations, 0);
+    let stats = sim.stats();
+    assert_eq!(stats.allocations, 0);
+    assert!(stats.hits_applied > 5, "{stats:?}");
+    assert!(stats.reactions_forced > 3, "{stats:?}");
+    assert!(stats.poise_breaks > 0, "{stats:?}");
+    assert!(stats.defeats > 0, "nobody fell, so that wasn't tested: {stats:?}");
+    assert!(sim.actors().any(|view| view.fighter.is_defeated()), "{stats:?}");
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        sim.despawn(target);
+        sim.despawn(attacker);
+        sim.step(&TickActions::NEUTRAL);
+    });
+    assert_eq!(counts.allocations, 0, "a despawn gives room back and takes none");
 }

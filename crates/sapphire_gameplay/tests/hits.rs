@@ -1933,9 +1933,8 @@ fn a_turning_sub_step_counts_what_turning_moved() {
 const BODY: Name = Name::new("body");
 const ARMOUR: Name = Name::new("armour");
 
-/// Every actor's own hurtbox: a sphere at chest height, a metre up its root.
+/// Every actor's own hurtbox, as [`DUEL`] authors it.
 const OWN: Shape = Shape::Sphere { radius: 0.1 };
-const CHEST: PathSample = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
 
 /// Moves written to make distances easy to work out by hand.
 const DUEL: &str = r#"(
@@ -1956,6 +1955,11 @@ const DUEL: &str = r#"(
             (intent: "change", move: "change"),
             (intent: "pull", move: "pull"),
         ],
+        // Every actor's own hurtbox: a sphere at chest height, a metre up its root.
+        fighter: (
+            health: 1000,
+            hurtboxes: [(name: "body", offset: (0.0, 1.0, 0.0), shape: Sphere(radius: 0.1))],
+        ),
         moves: [
             (
                 // A blade held at z = 0.5 in the root's space, carried by the root 0.125 m a tick from
@@ -2048,7 +2052,6 @@ fn duel(reach: f32, per_mille: u32) -> (Simulation, ActorId, ActorId) {
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).unwrap();
     let position = Vec3::new(0.0, 0.0, reach);
     let target = sim.spawn(ActorSpawn { position, moves, ..ActorSpawn::default() }).unwrap();
-    support::join_moves_to_hits(&mut sim, BODY, OWN, CHEST);
     sim.step(&TickActions::NEUTRAL);
     if per_mille != 1000 {
         sim.clock_mut(attacker).unwrap().0.push_scale(ScaleSource::Debug, per_mille).unwrap();

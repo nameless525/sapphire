@@ -5,35 +5,51 @@
 //! ```
 //!
 //! Runs the test content's moves at a duel's size, a busy fight's and a full pool's, in alternating
-//! rounds, and reports each size's minimum median and worst step across rounds. Every actor plays
-//! strings, dodge cancels and dash attacks with a warp target and its ring in use, which is more than
-//! most of a real fight's actors do at once. It reads the steps through `Simulation::stats`, as the
-//! overlay would, and adds its checksum cost, which a replay pays per tick only when asked.
+//! rounds, and reports each size's minimum median, 99.9th percentile and worst step across rounds. The
+//! worst is mostly the scheduler while the machine's busy, on a different tick each run, so read the
+//! percentile for what a step's work costs. Every actor plays
+//! strings, dodge cancels and dash attacks with a warp target and its ring in use, with its neighbours
+//! in reach and a capsule on a floor, so hits land, reactions cut moves off, and hurtboxes and capsules
+//! move, which is more than most of a real fight's actors do at once. Nobody falls: they're given health
+//! for it, so the last steps cost what the first do. It reads the steps through `Simulation::stats`, as the overlay would, and adds its checksum
+//! cost, which a replay pays per tick only when asked.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
 use std::time::Duration;
 
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, SimConfig, Simulation, Stick, TickActions, WarpTarget,
+    ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, SimConfig, Simulation, Stick, TickActions,
+    WarpTarget,
 };
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument};
+use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::Stopwatch;
 
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
 
 fn slice() -> MoveSet {
-    MoveSetDocument::parse(SLICE).expect("parses").compile().expect("compiles")
+    let lasting = SLICE.replacen("health: 300,", "health: 4000000000,", 1);
+    MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles")
 }
 
 fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors, ..SimConfig::default() });
-    let moves = sim.add_move_set(slice());
+    let floor = StaticCollider {
+        id: ColliderId(0),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(500.0, 0.5, 500.0) }),
+        pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
+        memberships: Group::World.mask(),
+    };
+    let world = PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("a good world");
+    sim.set_physics_world(world).expect("before any spawn");
+    let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good profile"));
+    let moves = Some(sim.add_move_set(slice()));
     let ids: Vec<ActorId> = (0..actors)
         .map(|index| {
             let position = Vec3::new(index as f32, 0.0, 0.0);
-            sim.spawn(ActorSpawn { position, moves: Some(moves), ..ActorSpawn::default() }).expect("room")
+            sim.spawn(ActorSpawn { position, moves, controller, ..ActorSpawn::default() }).expect("room")
         })
         .collect();
     // Each aims at the next, so warp windows do their work against moving targets.
@@ -63,10 +79,11 @@ fn actions(tick: u64, ids: &[ActorId]) -> TickActions {
 
 struct Round {
     median: Duration,
+    p999: Duration,
     worst: Duration,
     checksum: Duration,
-    /// Moves started, cancels fired and cues published, to show the steps did the work.
-    work: (u64, u64, u64),
+    /// Moves started, cancels fired, cues published and hits applied, to show the steps did the work.
+    work: (u64, u64, u64, u64),
 }
 
 fn round(actors: u32, steps: u64) -> Round {
@@ -91,11 +108,13 @@ fn round(actors: u32, steps: u64) -> Round {
     let stats = sim.stats();
     assert_eq!(stats.steps, steps);
     assert_eq!((stats.allocations, stats.cues_dropped, stats.volumes_dropped), (0, 0, 0));
+    assert!(stats.hits_applied > steps / 100, "a load that stops landing hits stops measuring: {stats:?}");
     Round {
         median: times[times.len() / 2],
+        p999: times[times.len() * 999 / 1000],
         worst: stats.longest_step,
         checksum: checksum_time,
-        work: (stats.moves_started, stats.cancels_fired, stats.cues_published),
+        work: (stats.moves_started, stats.cancels_fired, stats.cues_published, stats.hits_applied),
     }
 }
 
@@ -112,6 +131,7 @@ fn main() {
                 None => this,
                 Some(other) => Round {
                     median: other.median.min(this.median),
+                    p999: other.p999.min(this.p999),
                     worst: other.worst.min(this.worst),
                     checksum: other.checksum.min(this.checksum),
                     work: this.work,
@@ -127,17 +147,19 @@ fn main() {
 
     println!("creating a simulation with 128 pooled actors: {:.0} µs", creation.as_secs_f64() * 1e6);
     println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
-    println!("actors  median step  worst step  checksum  moves  cancels   cues");
+    println!("actors  median step  99.9% step  worst step  checksum  moves  cancels   cues   hits");
     for (size, best) in SIZES.iter().zip(&best) {
         let best = best.as_ref().expect("every size ran");
         println!(
-            "{size:6}  {:9.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}",
+            "{size:6}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}",
             best.median.as_secs_f64() * 1e6,
+            best.p999.as_secs_f64() * 1e6,
             best.worst.as_secs_f64() * 1e6,
             best.checksum.as_secs_f64() * 1e6,
             best.work.0,
             best.work.1,
             best.work.2,
+            best.work.3,
         );
     }
     println!("budget: 1000 µs on Desktop-Low, 1500 µs on Mobile-Low");

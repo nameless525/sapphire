@@ -1843,9 +1843,12 @@ fn the_replay_suites_scripts_play_what_they_say() {
         string.starts[..4],
         names(&[(0, "light_1"), (10, "light_2"), (22, "light_3"), (96, "light_1")])
     );
-    // The string and nothing else, every time.
-    assert_eq!(string.starts.len(), 3 * 7, "600 ticks hold 6.25 periods");
-    assert_eq!(string.opponent_started, 0);
+    // The string and nothing else, every time. It reaches the opponent by its third round, and hitstop
+    // then costs it a press here and there.
+    let string_only = [name("light_1"), name("light_2"), name("light_3")];
+    assert!(string.starts.iter().all(|(_, started)| string_only.contains(started)), "{:?}", string.starts);
+    assert!(string.starts.len() >= 3 * 6, "600 ticks hold 6.25 periods: {:?}", string.starts);
+    assert!(string.opponent_started > 0, "and the opponent reacts");
 
     let fight = play("dodge-dash");
     assert_eq!(

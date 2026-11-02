@@ -124,6 +124,9 @@ pub(crate) struct Options {
     pub look_dev: Option<Shot>,
     /// `--hud fixed|live`, `--hud-insets` and `--hud-scale`: the combat HUD over the scene (M2 I2).
     pub hud: Option<HudOptions>,
+    /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
+    /// Needs `--look-dev`.
+    pub clip: Option<lookdev::ClipName>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -622,6 +625,14 @@ impl Options {
                         format!("--look-dev expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
+                "--clip" => {
+                    let raw = value("--clip")?;
+                    options.clip = Some(lookdev::ClipName::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<&str> =
+                            lookdev::ClipName::ALL.iter().map(|clip| clip.name()).collect();
+                        format!("--clip expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -795,6 +806,9 @@ impl Options {
             ));
         }
         options.cue = cue.map(|id| CueOption { id, repeat: cue_repeat });
+        if options.clip.is_some() && options.look_dev.is_none() {
+            return Err("--clip plays on the look-dev character: it needs --look-dev".to_owned());
+        }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
             return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
@@ -1095,6 +1109,13 @@ mod tests {
         assert_eq!(parse(&["--look-dev=wide"]).unwrap().0.look_dev, Some(Shot::Wide));
         assert_eq!(parse(&["--look-dev", "face"]).unwrap().0.look_dev, Some(Shot::Face));
         assert!(parse(&["--look-dev", "close"]).unwrap_err().contains("wide, hero, sky"));
+        assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.clip, None);
+        assert_eq!(
+            parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.clip,
+            Some(lookdev::ClipName::Strike)
+        );
+        assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
+        assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());
         assert!(parse(&["--environment", "--look-dev", "sky"]).is_err());
         assert!(parse(&["--look-dev", "wide", "--outline-row"]).is_err());

@@ -146,6 +146,9 @@
 //!   the window's safe area: to try a notch on a frame that has none.
 //! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
 //!   player's UI scale on top of the display's in a window. 1 without it.
+//! - `--clip <name>` (with `--look-dev`): plays that clip on the character instead of holding it,
+//!   looping (M2 N2, `animate.rs`). `strike` is the only one yet. Each `--capture-ticks` is a fixed
+//!   point of it, and `--bench` measures it. The golden scenes `lookdev-strike-*` show it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -249,6 +252,7 @@
 //! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
 //! (spec §5.12, "Sky").
 
+mod animate;
 mod app;
 mod audio;
 mod bench;

@@ -13,7 +13,8 @@
 //!   characters rest in a T-pose, so the stage holds a standing pose ([`held_pose`]): humanoid
 //!   bones turned from rest, the rig's twist and aim constraints followed ([`crate::pose`]), and a
 //!   soft expression. Its figure (head, feet and body capsule, its face's basis) comes from the
-//!   posed skeleton. Its look-dev materials (`content/lookdev/character/`, bound by the VRM's
+//!   posed skeleton. With `--clip` it plays a clip instead ([`ClipName`], [`crate::animate`]), and
+//!   its figure follows the skeleton every frame. Its look-dev materials (`content/lookdev/character/`, bound by the VRM's
 //!   sidecar) say which parts are face, hair and eyes, as MToon doesn't, so the character
 //!   prepass's IDs tell them apart.
 //! - **Shots** ([`Shot`]): a wide establishing shot across the square, a three-quarter hero shot
@@ -53,22 +54,23 @@
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
 
-use sapphire_anim::ArchivedSkeleton;
+use sapphire_anim::{ArchivedSkeleton, CharacterPose};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
-use sapphire_math::{Mat4, Quat, Vec3};
+use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::{FaceExpression, LightKind, LocalLight, MeshHandle, Renderer};
 use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::tod::TodTimeline;
 
+use crate::animate::ClipPlayer;
 use crate::content::Content;
 use crate::environment::{CardPlace, HAZE, MIST};
 use crate::extract::RenderPose;
 use crate::orbit::OrbitCamera;
-use crate::pose::{self, RigJoints, Skeleton};
+use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
 /// The town, by its sidecar's ID (`content/lookdev/town/town.assembly.ron.meta`).
@@ -79,6 +81,33 @@ pub(crate) const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b16
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
 pub(crate) const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
+/// The clips the character can play (`--clip`), by their sidecars' IDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipName {
+    /// A small swing of the right arm (`content/lookdev/character/strike.keypose.ron`).
+    Strike,
+}
+
+impl ClipName {
+    pub const ALL: [Self; 1] = [Self::Strike];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Strike => "strike",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|clip| clip.name() == name)
+    }
+
+    pub fn id(self) -> AssetId {
+        match self {
+            Self::Strike => AssetId::from_text("15af86bb-67b3-4208-bc54-1618aabf450b"),
+        }
+    }
+}
+
 /// The town's sky: the sandbox sky's maps with a teal Milky Way and a larger sun
 /// (`content/lookdev/sky/sky.material.ron`), by its sidecar's ID.
 pub(crate) const SKY: AssetId = AssetId::from_text("8c0e3b8e-9f2a-4d55-b7c1-2f6a4e1d9a73");
@@ -515,25 +544,37 @@ pub(crate) fn held_pose(
     rig: &ArchivedCharacterRig,
     skeleton: &ArchivedSkeleton,
 ) -> Result<(RenderPose, Figure), String> {
+    let (mut pose, joints) = character_pose(mesh, rig, skeleton)?;
+    let rig_joints = RigJoints::new(rig);
+    pose::hold(&mut pose, &rig_joints, &turns());
+    let figure = joints.held(&pose);
+    let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
+    pose.write_palette(&mut palette);
+    Ok((RenderPose { palette, morph_weights: pose.weights().to_vec() }, figure))
+}
+
+/// A clip player for the character as `content` has it now, with the clip's own tracks over its
+/// rest pose and its soft expression. Fails where [`held`] does, or if the clip isn't loaded or was
+/// cooked for another skeleton.
+pub(crate) fn player(content: &Content) -> Result<ClipPlayer, String> {
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+    let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
+    clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
+    let (pose, joints) = character_pose(mesh, rig, skeleton)?;
+    Ok(ClipPlayer::new(pose, joints))
+}
+
+/// The character's pose at rest with its soft expression, and where its figure finds its parts.
+fn character_pose(
+    mesh: &Mesh,
+    rig: &ArchivedCharacterRig,
+    skeleton: &ArchivedSkeleton,
+) -> Result<(CharacterPose, FigureJoints), String> {
     check_counts(rig, skeleton, mesh)?;
     let skin = mesh.skin.as_ref().ok_or("the look-dev character has no skin")?;
-    let skeleton = Skeleton::new(skeleton, skin);
-    let joints = RigJoints::new(rig);
-    let posed = pose::pose(&skeleton, &joints, &turns());
-    let head_joint = joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
-    let head = posed.model_from_joint[head_joint];
-    let (_, head_rotation, head_position) = head.to_scale_rotation_translation();
-    // The head's basis turned by the held pose, from its rest orientation.
-    let rest_head = pose::rest_rotation(&skeleton, head_joint);
-    let face = (head_rotation * rest_head.inverse()).normalize();
-    let feet = Vec3::new(head_position.x, mesh.streams.bounds.min[1].max(0.0), head_position.z);
-    let figure = Figure {
-        head: head_position + face * HEAD_CENTER,
-        feet,
-        body_radius: BODY_RADIUS,
-        face,
-        expression: FACE_EXPRESSION,
-    };
+    let rig_joints = RigJoints::new(rig);
     let mut morph_weights = vec![0.0; mesh.morph_targets.len()];
     let (name, weight) = EXPRESSION;
     if let Some(expression) = rig.expressions.iter().find(|expression| expression.name.as_str() == name) {
@@ -543,7 +584,78 @@ pub(crate) fn held_pose(
             }
         }
     }
-    Ok((RenderPose { palette: posed.palette, morph_weights }, figure))
+    let pose = CharacterPose::new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights);
+    let head = rig_joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
+    let floor = mesh.streams.bounds.min[1].max(0.0);
+    let joints = FigureJoints::new(&pose, &rig_joints, head, floor);
+    Ok((pose, joints))
+}
+
+/// Where a posed character's [`Figure`] finds its parts: what follows the skeleton every frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FigureJoints {
+    head: usize,
+    /// The head's rest rotation in model space, which its face's basis turns from.
+    rest_head: Quat,
+    /// The floor it stands on at rest, in its own space.
+    floor: f32,
+    /// Both feet's joints, and how far above the floor the lower stands at rest. `None` for a rig
+    /// without them, whose feet stay under its head.
+    feet: Option<([usize; 2], f32)>,
+}
+
+impl FigureJoints {
+    fn new(pose: &CharacterPose, rig: &RigJoints, head: usize, floor: f32) -> Self {
+        let feet =
+            rig.joint(HumanBone::LeftFoot).zip(rig.joint(HumanBone::RightFoot)).map(|(left, right)| {
+                let ankle = pose.model()[left].translation.y.min(pose.model()[right].translation.y);
+                ([left, right], ankle - floor)
+            });
+        Self { head, rest_head: pose.rest_rotation(head), floor, feet }
+    }
+
+    /// Joints as a test's small skeleton has them.
+    #[cfg(test)]
+    pub fn for_test(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
+        let ankle = pose.model()[feet[0]].translation.y.min(pose.model()[feet[1]].translation.y);
+        Self { head, rest_head: pose.rest_rotation(head), floor, feet: Some((feet, ankle - floor)) }
+    }
+
+    /// The head's place and its turn from rest, in the character's space.
+    fn head(&self, pose: &CharacterPose) -> (Vec3, Quat) {
+        let (_, rotation, position) = pose.model()[self.head].to_scale_rotation_translation();
+        (position, (rotation * self.rest_head.inverse()).normalize())
+    }
+
+    fn figure(head: Vec3, face: Quat, feet: Vec3) -> Figure {
+        Figure {
+            head: head + face * HEAD_CENTER,
+            feet,
+            body_radius: BODY_RADIUS,
+            face,
+            expression: FACE_EXPRESSION,
+        }
+    }
+
+    /// The figure of a pose held still, its feet under its head: what the look-dev goldens were
+    /// drawn with.
+    pub fn held(&self, pose: &CharacterPose) -> Figure {
+        let (head, face) = self.head(pose);
+        Self::figure(head, face, Vec3::new(head.x, self.floor, head.z))
+    }
+
+    /// The figure of a pose in motion: its head, and its feet between the two feet's joints, risen
+    /// with the lower of them, so the body capsule leans as the character does and leaves the
+    /// ground in a jump.
+    pub fn moving(&self, pose: &CharacterPose) -> Figure {
+        let (head, face) = self.head(pose);
+        let feet = self.feet.map_or(Vec3::new(head.x, self.floor, head.z), |([left, right], ankle)| {
+            let (left, right) = (pose.model()[left].translation, pose.model()[right].translation);
+            let height = (left.y.min(right.y) - ankle).max(self.floor);
+            Vec3::new((left.x + right.x) * 0.5, height, (left.z + right.z) * 0.5)
+        });
+        Self::figure(head, face, feet)
+    }
 }
 
 /// Whether `rig`, `skeleton` and `mesh` were cooked together: the same joints and morph targets,

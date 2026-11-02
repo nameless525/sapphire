@@ -73,7 +73,7 @@ use std::io;
 #[cfg(feature = "dev")]
 use std::sync::Arc;
 
-use sapphire_anim::{ArchivedSkeleton, Skeleton};
+use sapphire_anim::{ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
@@ -339,6 +339,8 @@ pub(crate) struct Content {
     /// The versions of the character's mesh, rig and skeleton the scene last knew of
     /// ([`Self::take_character_changed`]), once there is a rig.
     character_versions: Option<(u32, u32, u32)>,
+    /// The clip the character plays, once asked for (`--clip`).
+    clip: Option<Handle<Clip>>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -393,6 +395,7 @@ impl Content {
             rig: None,
             skeleton: None,
             character_versions: None,
+            clip: None,
             sky_id: sky,
             sky: None,
             server,
@@ -794,6 +797,31 @@ impl Content {
         Ok((cue, sounds))
     }
 
+    /// Loads the clip `id` until it is resident: CPU data, which nothing uploads ([`Self::clip`] reads
+    /// it). It stays loaded from then on.
+    pub fn load_clip(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        let clip = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&clip, |upload| assets.upload(upload, renderer, gpu));
+        self.clip = Some(clip);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the clip didn't load: {error}")))
+    }
+
+    /// The clip [`Self::load_clip`] loaded, and which version of it this is: a new version lands
+    /// behind the same handle.
+    pub fn clip(&self) -> Option<(&ArchivedClip, u32)> {
+        let clip = self.clip.as_ref()?;
+        Some((self.server.get(clip)?, self.server.generation(clip)))
+    }
+
     /// The rig [`Self::load_rig`] loaded.
     pub fn rig(&self) -> Option<&ArchivedCharacterRig> {
         self.rig.as_ref().and_then(|rig| self.server.get(rig))
@@ -957,6 +985,9 @@ mod tests {
 
     /// The test character's skeleton.
     const SKELETON: AssetId = AssetId::from_bytes([0x5e; 16]);
+    /// A clip for the character: its root swings 1.5 m from one side to the other over [`SWING_TICKS`].
+    const SWING: AssetId = AssetId::from_bytes([0x5f; 16]);
+    const SWING_TICKS: u16 = 30;
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
@@ -1008,8 +1039,27 @@ mod tests {
             ),
             packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
             packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
+            packed_with(SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
         ])
         .expect("a pack")
+    }
+
+    /// The root from 0.75 m to the character's right to 0.75 m to its left, a clip for `joints` joints.
+    fn swing(joints: usize) -> Clip {
+        let from = [-0.75, 1.0, 0.0];
+        let to = [0.75, 1.0, 0.0];
+        let range = sapphire_anim::VectorRange::enclosing([from, to]);
+        Clip {
+            name: "swing".into(),
+            skeleton: Some(SKELETON),
+            joint_count: joints as u32,
+            rate: sapphire_assets::clip::DEFAULT_RATE,
+            ticks: SWING_TICKS,
+            translations: vec![sapphire_anim::VectorTrack { joint: 0, count: 2, first: 0, range }],
+            vector_ticks: vec![0, SWING_TICKS],
+            vector_keys: vec![range.encode(from), range.encode(to)],
+            ..Clip::default()
+        }
     }
 
     /// The look-dev stage over a pack in memory, run frame by frame as the app runs it.
@@ -1050,6 +1100,7 @@ mod tests {
                 rig: None,
                 skeleton: None,
                 character_versions: None,
+                clip: None,
                 sky_id: SKY,
                 sky: None,
                 server,
@@ -1091,6 +1142,7 @@ mod tests {
             self.content.update(&mut self.renderer, &self.gpu);
             self.scene.follow_content(&mut self.content);
             self.scene.step();
+            self.scene.animate(&self.content, 1.0);
             let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)));
             self.renderer.prepare(&self.gpu, packet);
             let stats = self.renderer.stats().skinning;
@@ -1101,6 +1153,47 @@ mod tests {
             self.graph.execute(&self.gpu, graph).expect("a valid graph");
             self.scene.end_frame();
             stats
+        }
+
+        /// Plays the swing on the character, framed so its triangle is in view whichever way it swings.
+        fn play_swing(&mut self) {
+            self.content.load_clip(SWING, &mut self.renderer, &self.gpu).expect("the clip");
+            self.scene.play_clip(lookdev::player(&self.content).expect("a player"));
+            self.frame_on_character();
+        }
+
+        /// Frames the character from the front, close enough for its triangle to fill much of the target.
+        fn frame_on_character(&mut self) {
+            *self.scene.camera_mut() =
+                crate::orbit::OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
+        }
+
+        /// One frame as [`Self::frame`] draws it, without a fixed step, read back.
+        fn pixels(&mut self) -> Vec<u8> {
+            let target = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let readback = crate::capture::Readback::new(&self.gpu, SIDE, SIDE);
+            self.content.update(&mut self.renderer, &self.gpu);
+            self.scene.follow_content(&mut self.content);
+            self.scene.animate(&self.content, 1.0);
+            let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)));
+            self.renderer.prepare(&self.gpu, packet);
+            let view = target.create_view(&Default::default());
+            let mut graph = FrameGraph::new();
+            let imported = graph.import_texture("target", &view);
+            self.renderer.record(&mut graph, imported).expect("a view and a target");
+            readback.record(&mut graph, imported);
+            self.graph.execute(&self.gpu, graph).expect("a valid graph");
+            self.scene.end_frame();
+            readback.read(&self.gpu).expect("its pixels")
         }
 
         /// The pack re-cooked, as a watched file or a push hands it over.
@@ -1164,5 +1257,87 @@ mod tests {
         assert_eq!(settled.ignored_poses, 0, "{settled:?}");
         assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "her new palette: {settled:?}");
         assert_eq!(stage.frame().palette_bytes, 0, "held again");
+    }
+
+    /// The pixels of `a` and `b` that differ by more than a little, and their center along x.
+    fn difference(a: &[u8], b: &[u8]) -> (usize, f32) {
+        let (mut count, mut sum) = (0, 0.0);
+        for (index, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+            if a.iter().zip(b).take(3).any(|(a, b)| a.abs_diff(*b) > 8) {
+                count += 1;
+                sum += (index % SIDE as usize) as f32;
+            }
+        }
+        (count, if count > 0 { sum / count as f32 } else { 0.0 })
+    }
+
+    /// Review RC-1 says why a first frame matters: a renderer starts a new instance in its bind pose,
+    /// so a pose that reaches it a frame late shows as a pop to the T-pose. A moved joint moves
+    /// pixels, and the first frame of a clip already draws the clip.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_moved_joint_moves_pixels_from_the_first_frame() {
+        // The bind pose, held (the triangle hangs from the root, which holding doesn't turn).
+        let mut held = Stage::new();
+        held.frame_on_character();
+        let bind = held.pixels();
+        assert_eq!(bind, held.pixels(), "a held pose draws the same");
+
+        // A clip's first frame, with no step before it: 0.75 m to the character's right already.
+        let mut stage = Stage::new();
+        stage.play_swing();
+        let first = stage.pixels();
+        let (moved, _) = difference(&bind, &first);
+        assert!(moved > 16, "the first frame isn't the bind pose: {moved} pixels differ");
+
+        // Half the swing later, back where the bind pose has it: the clip's position, not the
+        // first frame's, and through the skinning that drew it.
+        for _ in 0..SWING_TICKS / 2 {
+            stage.scene.step();
+        }
+        let centered = stage.pixels();
+        let (off, _) = difference(&bind, &centered);
+        assert!(off < moved / 4, "at its bind position by now: {off} pixels off, {moved} before");
+
+        // The swing's far side moved the other way across the target from the first frame.
+        for _ in 0..SWING_TICKS / 2 - 1 {
+            stage.scene.step();
+        }
+        let far = stage.pixels();
+        let (_, toward_first) = difference(&centered, &first);
+        let (_, toward_far) = difference(&centered, &far);
+        assert!(difference(&first, &far).0 > 16, "moved");
+        assert!(
+            (toward_first - toward_far).abs() > 1.0,
+            "the two sides differ across the target: {toward_first} and {toward_far}"
+        );
+
+        // A step with a stopped clock draws the same and skins nothing.
+        stage.scene.world_clock_mut().0.push_scale(sapphire_time::ScaleSource::Debug, 0).expect("room");
+        stage.frame();
+        let frozen = stage.frame();
+        assert_eq!((frozen.skinned, frozen.palette_bytes), (0, 0), "{frozen:?}");
+    }
+
+    /// A clip plays on across a new skeleton, with no frame drawing a palette that doesn't fit.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_clip_plays_on_across_a_new_skeleton() {
+        let mut stage = Stage::new();
+        stage.play_swing();
+        let joints = HumanBone::REQUIRED.len() as u32;
+        let per_joint = stage.frame().palette_bytes / joints;
+        assert!(per_joint > 0);
+        assert_eq!(stage.frame().palette_bytes, joints * per_joint, "moving, so sent each frame");
+
+        stage.recook(0.0, 1);
+        let settled = stage.until((1, 1, 1));
+        assert_eq!(settled.ignored_poses, 0, "{settled:?}");
+        // Its clip came with it, so the character goes on moving with its new palette.
+        for _ in 0..5 {
+            let frame = stage.frame();
+            assert_eq!(frame.ignored_poses, 0, "{frame:?}");
+            assert_eq!(frame.palette_bytes, (joints + 1) * per_joint, "the new palette: {frame:?}");
+        }
     }
 }

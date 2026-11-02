@@ -202,6 +202,10 @@ impl App for SandboxApp {
         if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
+            if let Some(clip) = options.clip {
+                content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
+                scene.play_clip(lookdev::player(&content).map_err(AppInitError::msg)?);
+            }
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -465,6 +469,7 @@ impl SandboxApp {
             // Every frame is extracted and prepared, drawn or not, so the renderer's persistent
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
+            self.scene.animate(&self.content, alpha);
             let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size));
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.

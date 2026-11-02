@@ -197,6 +197,10 @@ impl Stage {
             let fog_cards = (!options.fog_off).then(|| content.fog_cards(&mut renderer, &gpu)).transpose()?;
             let (pose, figure) = crate::lookdev::hold(&mut content, &mut renderer, &gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
+            if let Some(clip) = options.clip {
+                content.load_clip(clip.id(), &mut renderer, &gpu)?;
+                scene.play_clip(crate::lookdev::player(&content).map_err(AppInitError::msg)?);
+            }
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -356,6 +360,7 @@ impl Stage {
         // measures its own way, and fixed steps are run outside this).
         #[cfg(feature = "dev")]
         let mut stopwatch = self.dev.overlay_visible().then(sapphire_time::Stopwatch::start);
+        self.scene.animate(&self.content, alpha);
         let packet = self.scene.frame_packet(alpha, Some((width, height)));
         #[cfg(feature = "dev")]
         let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();

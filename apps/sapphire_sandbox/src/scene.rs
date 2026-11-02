@@ -85,11 +85,13 @@
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
 //! worker; an empty one costs nothing. In `Presentation` the pose cost 2 allocations and about
 //! 8 µs more per frame (`--bench`, M5), so it runs at the head of `Extract`, which runs anyway.
-//! It moves to `Presentation` once animation gives that schedule real work (M2).
+//! A clip's pose (M2 N2, `--clip`) doesn't run in a schedule either: [`Scene::animate`] evaluates it
+//! just before the packet, through a query made once, and costs nothing without a clip.
 //!
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
+use sapphire_anim::{AnimStats, ArchivedClip, evaluate_all};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
 use sapphire_ecs::bevy_ecs::system::SystemState;
@@ -99,7 +101,7 @@ use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
     LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
 };
-use sapphire_time::{ScaleHandle, ScaleSource};
+use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch};
 use sapphire_vfx::VfxBudget;
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{
@@ -109,6 +111,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_eff
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
+use crate::animate::{ClipPlayer, Evaluation};
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::debug_shapes::DebugDrawDemo;
@@ -144,9 +147,25 @@ const HEAD_BODY_RADIUS: f32 = 0.16;
 /// The characters the light rig lights: instances drawn with a [`CharacterLightRig`], and the
 /// rim rig's key, if one is a figure of it.
 type Characters = QueryState<
-    (Entity, &'static CharacterLightRig, &'static RenderTransform, Option<&'static RimKey>),
+    (
+        Entity,
+        &'static CharacterLightRig,
+        &'static RenderTransform,
+        Option<&'static RimKey>,
+        Option<&'static Figure>,
+    ),
     With<RenderMesh>,
 >;
+
+/// The characters playing a clip, with everything that follows their skeletons.
+type Players = QueryState<(
+    &'static mut ClipPlayer,
+    &'static EntityClock,
+    &'static mut RenderPose,
+    &'static mut Figure,
+    &'static mut CharacterLightRig,
+    &'static mut RenderTransform,
+)>;
 
 /// The face rig's heads, each a character lit from its own angles (see [`crate::faces`]).
 type FaceHeads = QueryState<(Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
@@ -161,8 +180,9 @@ type ScreenEffects = SystemState<(ResMut<'static, EffectStack>, Res<'static, Eff
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
 
-/// Where the character's light rig finds its head and body, in the character's own space.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Where the character's light rig finds its head and body, in the character's own space. A
+/// component on a character whose pose moves, which follows its skeleton every frame (M2 N2).
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Figure {
     /// The middle of the head: face and hair GI turn toward a sphere around it, and the light
     /// rig's limits are judged around it.
@@ -316,8 +336,16 @@ pub(crate) struct Scene {
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
-    /// Where the character's light rig finds its head and body.
+    /// Where the character's light rig finds its head and body, for a character without a
+    /// [`Figure`] of its own.
     figure: Figure,
+    /// Whether any character plays a clip ([`Self::play_clip`]). A scene without one does no
+    /// animation work at all, not even a query.
+    animating: bool,
+    /// Made once, like the others.
+    players: Players,
+    /// What animation did in the last frame (rule R9).
+    anim_stats: AnimStats,
     /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
     /// heads' lids and gaze are poses (M1 C6).
     poses: bool,
@@ -400,6 +428,7 @@ impl Scene {
         let heads = ecs.world_mut().query_filtered();
         let screen_effects = SystemState::new(ecs.world_mut());
         let lamps = ecs.world_mut().query();
+        let players = ecs.world_mut().query();
         Self {
             ecs,
             character,
@@ -425,6 +454,9 @@ impl Scene {
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             figure,
+            animating: false,
+            players,
+            anim_stats: AnimStats::default(),
             poses: skinned,
             bounds,
             characters,
@@ -923,9 +955,10 @@ impl Scene {
     /// renderer starts over in their bind pose, sends every pose again with this frame's packet,
     /// so the frame that first draws the new mesh already draws it posed; and a new version of the
     /// look-dev character's mesh, rig or skeleton holds her anew, since her palette indexes their
-    /// joints. While only some have landed she may not fit: she keeps the pose she has, which the
-    /// renderer ignores if the new mesh's palette is another length, until the others land.
-    /// Allocates nothing while nothing changed.
+    /// joints, and gives a clip playing on the character a new pose to play on. While only some have
+    /// landed the character may not fit: it keeps the pose it has, which the renderer ignores if the
+    /// new mesh's palette is another length, until the others land. Allocates nothing while nothing
+    /// changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
@@ -933,12 +966,110 @@ impl Scene {
         }
         if content.take_character_changed() {
             match lookdev::held(content) {
-                Ok((pose, figure)) => self.hold_character(pose, figure),
+                Ok((pose, figure)) => {
+                    self.hold_character(pose, figure);
+                    if self.animating {
+                        self.replace_player(content);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps her pose");
                 }
             }
         }
+    }
+
+    /// Plays a clip on the character from now on, instead of holding it still: from its transform
+    /// as it stands, with its turntable gone, since root motion writes its transform now. The clip
+    /// runs on its clock: hitstop and pause freeze its pose.
+    pub fn play_clip(&mut self, player: ClipPlayer) {
+        self.start_clip(self.character, player);
+    }
+
+    /// Starts `player`'s clip on `entity`, which draws a skinned mesh and is lit by a light rig.
+    fn start_clip(&mut self, entity: Entity, mut player: ClipPlayer) {
+        let figure = self.figure;
+        let world = self.ecs.world_mut();
+        let mut character = world.entity_mut(entity);
+        let start = character.get::<EntityClock>().map_or(0.0, |clock| clock.0.presented_ticks(1.0));
+        let base = character.get::<RenderTransform>().map_or(Mat4::IDENTITY, |transform| transform.0);
+        player.start_at(start, base);
+        let pose = player.render_pose();
+        character.remove::<Turntable>();
+        character.insert((player, pose, figure));
+        self.animating = true;
+        self.extract_poses();
+    }
+
+    /// A clip player for the character's new mesh, rig or skeleton: its clip plays on from where it was.
+    fn replace_player(&mut self, content: &Content) {
+        let replacement = lookdev::player(content);
+        let character = self.character;
+        let Some(mut playing) = self.ecs.world_mut().get_mut::<ClipPlayer>(character) else { return };
+        match replacement {
+            Ok(mut player) => {
+                player.continue_from(&playing);
+                *playing = player;
+            }
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps its clip's pose");
+            }
+        }
+    }
+
+    /// Evaluates every character playing a clip, one job each, for a frame `alpha` of the way from
+    /// the last fixed step to the next: at the position their own clock's presented time gives, so
+    /// a clock that stands still costs nothing and holds the pose. Results reach this frame's packet
+    /// through what extraction reads: each [`RenderPose`], [`RenderTransform`], [`Figure`] and light
+    /// rig (see [`crate::animate`]). Call it just before [`Self::frame_packet`]. A scene that plays
+    /// no clip returns at once. It runs here rather than as a `Presentation` system, which would cost
+    /// allocations and a worker's wake-up per frame (the module docs).
+    pub fn animate(&mut self, content: &Content, alpha: f32) {
+        if self.animating {
+            self.animate_clip(content.clip(), alpha);
+        }
+    }
+
+    /// [`Self::animate`], given the clip.
+    #[cfg(test)]
+    fn animate_if_playing(&mut self, clip: Option<(&ArchivedClip, u32)>, alpha: f32) {
+        if self.animating {
+            self.animate_clip(clip, alpha);
+        }
+    }
+
+    /// [`Self::animate`], with its clip and the clip's version.
+    fn animate_clip(&mut self, clip: Option<(&ArchivedClip, u32)>, alpha: f32) {
+        profiling::scope!("animate");
+        let started = Stopwatch::start();
+        let mut stats = AnimStats::default();
+        if let Some((clip, version)) = clip {
+            let mut jobs = Vec::new();
+            let world = self.ecs.world_mut();
+            for (mut player, clock, render, figure, rig, transform) in self.players.iter_mut(world) {
+                stats.characters += 1;
+                // Cooked for another skeleton, as a new version lands piece by piece: the character
+                // keeps the pose it has.
+                if clip.joint_count.to_native() as usize != player.joint_count() {
+                    continue;
+                }
+                let Some(position) = player.next_position(clip, version, clock.0.presented_ticks(alpha))
+                else {
+                    continue;
+                };
+                stats.evaluated += 1;
+                stats.joints += player.joint_count() as u32;
+                jobs.push(Evaluation { player, render, figure, rig, transform, position });
+            }
+            evaluate_all(&mut jobs, |job| job.run(clip));
+        }
+        stats.time = started.elapsed();
+        self.anim_stats = stats;
+    }
+
+    /// What animation did in the last frame.
+    pub fn anim_stats(&self) -> AnimStats {
+        self.anim_stats
     }
 
     /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
@@ -1198,7 +1329,7 @@ impl Scene {
             light.0.intensity = lamp.intensity * day_night;
         }
         self.ecs.extract();
-        let figure = self.figure;
+        let scene_figure = self.figure;
         let (characters, heads, face_layout, fade) =
             (&mut self.characters, &mut self.heads, self.face_layout, self.fade);
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
@@ -1207,7 +1338,8 @@ impl Scene {
             let Some(camera) = packet.main_view().map(|view| view.camera) else { return };
             let frame = world.resource::<TimeOfDay>().frame();
             let rigs = world.resource::<LightRigLibrary>();
-            for (entity, character, transform, key) in characters.iter(world) {
+            for (entity, character, transform, key, figure) in characters.iter(world) {
+                let figure = figure.copied().unwrap_or(scene_figure);
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
                 // A rim rig figure's key light turns to its angles around it, or for a folded
@@ -1716,6 +1848,397 @@ mod tests {
         scene.hold_character(RenderPose { palette: vec![lifted; 3], morph_weights: vec![0.5] }, taller);
         assert_eq!(frame(&mut scene), (vec![3], Some(taller.head)), "the rig finds her new head");
         assert_eq!(frame(&mut scene).0, Vec::<usize>::new());
+    }
+
+    /// A small humanoid for clips: hips, a spine, a head, and two feet, each a joint of the palette.
+    mod clips {
+        use sapphire_anim::{
+            CharacterPose, Clip, Joint, JointTransform, PackedRotation, RotationTrack, Skeleton, VectorRange,
+            VectorTrack,
+        };
+        use sapphire_assets::AssetId;
+        use sapphire_assets::clip::{DEFAULT_RATE, RootMotion, WeightRange, WeightTrack};
+        use sapphire_assets::mesh::SkinBind;
+        use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+        use sapphire_render::{InstanceId, MeshHandle};
+        use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
+
+        use super::*;
+        use crate::animate::ClipPlayer;
+        use crate::extract::{RenderMesh, RenderPose};
+        use crate::lookdev::FigureJoints;
+
+        const HIPS: [f32; 3] = [0.0, 0.8, 0.0];
+
+        fn skeleton() -> Skeleton {
+            let joint = |name: &str, parent: Option<u16>, translation: [f32; 3]| Joint {
+                name: name.to_owned(),
+                parent,
+                rest: JointTransform { translation, ..JointTransform::IDENTITY },
+            };
+            Skeleton::new(&[
+                joint("hips", None, HIPS),
+                joint("spine", Some(0), [0.0, 0.4, 0.0]),
+                joint("head", Some(1), [0.0, 0.3, 0.0]),
+                joint("left foot", Some(0), [0.1, -0.7, 0.0]),
+                joint("right foot", Some(0), [-0.1, -0.7, 0.0]),
+            ])
+        }
+
+        /// Over 60 ticks: the head turning a quarter about Y, the hips dropping 0.2 m and
+        /// leaning, the second morph target from 0 to 1, and 3 m of root motion.
+        fn clip() -> Clip {
+            let half = core::f32::consts::FRAC_1_SQRT_2;
+            let drop = VectorRange::enclosing([HIPS, [0.0, 0.6, 0.0]]);
+            let root = VectorRange::enclosing([[0.0; 3], [0.0, 0.0, 3.0]]);
+            let weight = WeightRange::enclosing([0.0, 1.0]);
+            Clip {
+                name: "turn".into(),
+                skeleton: Some(AssetId::from_bytes([9; 16])),
+                joint_count: 5,
+                morph_target_count: 2,
+                rate: DEFAULT_RATE,
+                ticks: 60,
+                rotations: vec![
+                    RotationTrack { joint: 1, count: 2, first: 0 },
+                    RotationTrack { joint: 2, count: 2, first: 2 },
+                ],
+                translations: vec![VectorTrack { joint: 0, count: 2, first: 0, range: drop }],
+                weights: vec![WeightTrack { target: 1, count: 2, first: 0, range: weight }],
+                root: Some(RootMotion {
+                    joint: 0,
+                    translation: VectorTrack { joint: 0, count: 2, first: 2, range: root },
+                    rotation: RotationTrack { joint: 0, count: 1, first: 4 },
+                }),
+                rotation_ticks: vec![0, 60, 0, 60, 0],
+                rotation_keys: vec![
+                    PackedRotation::encode([0.0, 0.0, 0.0, 1.0]),
+                    PackedRotation::encode(Quat::from_rotation_x(0.4).to_array()),
+                    PackedRotation::encode([0.0, 0.0, 0.0, 1.0]),
+                    PackedRotation::encode([0.0, half, 0.0, half]),
+                    PackedRotation::encode([0.0, 0.0, 0.0, 1.0]),
+                ],
+                vector_ticks: vec![0, 60, 0, 60],
+                vector_keys: vec![
+                    drop.encode(HIPS),
+                    drop.encode([0.0, 0.6, 0.0]),
+                    root.encode([0.0; 3]),
+                    root.encode([0.0, 0.0, 3.0]),
+                ],
+                weight_ticks: vec![0, 60],
+                weight_keys: vec![weight.encode(0.0), weight.encode(1.0)],
+                ..Clip::default()
+            }
+        }
+
+        fn player() -> ClipPlayer {
+            let bytes = skeleton().to_cooked().expect("cooked");
+            let skeleton = Skeleton::read(&bytes).expect("a valid skeleton");
+            let binds: Vec<SkinBind> = (0..5)
+                .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
+                .collect();
+            let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
+            ClipPlayer::new(pose, FigureJoints::for_test(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
+        }
+
+        fn skeleton_pose_rest() -> CharacterPose {
+            let bytes = skeleton().to_cooked().expect("cooked");
+            let skeleton = Skeleton::read(&bytes).expect("a valid skeleton");
+            CharacterPose::new(skeleton, &[], &[], Vec::new())
+        }
+
+        /// The look-dev stage holding the character still.
+        fn stage() -> Scene {
+            let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+            let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 5], morph_weights: vec![0.25, 0.0] };
+            let figure = Figure {
+                head: Vec3::new(0.0, 1.6, 0.0),
+                feet: Vec3::ZERO,
+                body_radius: 0.16,
+                face: Quat::IDENTITY,
+                expression: FaceExpression::default(),
+            };
+            let town = TownMeshes {
+                town: MeshHandle::from_raw(1),
+                plants: [MeshHandle::from_raw(2); 8],
+                mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+            };
+            scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose, figure });
+            scene
+        }
+
+        /// What one frame's packet says of `id`.
+        #[derive(Clone, Debug, PartialEq)]
+        struct Drawn {
+            palette: Option<Vec<[f32; 12]>>,
+            weights: Option<Vec<f32>>,
+            moved_to: Option<Vec3>,
+            head: Option<Vec3>,
+            forward: Vec3,
+            body: CharacterBody,
+            removed: bool,
+        }
+
+        fn frame(scene: &mut Scene, clip: &ArchivedClip, alpha: f32, id: InstanceId) -> Drawn {
+            scene.animate_clip(Some((clip, 0)), alpha);
+            let packet = scene.frame_packet(alpha, Some((1920, 1080)));
+            let posed = packet.skinned.iter().find(|skinned| skinned.id == id);
+            let palette = posed.map(|skinned| {
+                packet.palette(skinned).expect("in range").iter().map(Affine3A::to_cols_array).collect()
+            });
+            let weights = posed.map(|skinned| packet.morph_weights(skinned).expect("in range").to_vec());
+            let moved_to = packet
+                .instances
+                .changed
+                .iter()
+                .find(|instance| instance.id == id)
+                .map(|instance| instance.transform.transform_point3(Vec3::ZERO));
+            let entry = packet.characters.iter().find(|character| character.id == id);
+            let drawn = Drawn {
+                palette,
+                weights,
+                moved_to,
+                head: entry.and_then(|entry| entry.lighting.gi.head),
+                forward: entry.map_or(Vec3::ZERO, |entry| entry.face.head.forward),
+                body: entry.map_or(CharacterBody::default(), |entry| entry.body),
+                removed: packet.instances.removed.contains(&id),
+            };
+            scene.end_frame();
+            drawn
+        }
+
+        #[test]
+        fn a_clip_poses_the_character_each_frame_and_everything_follows_the_skeleton() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            let id = extract::instance_id(scene.character);
+
+            // The first frame already has the clip's pose, not the pose it was held in.
+            let first = frame(&mut scene, clip, 1.0, id);
+            let palette = first.palette.clone().expect("posed at once");
+            assert_eq!(palette.len(), 5);
+            assert_eq!(first.weights, Some(vec![0.25, 0.0]), "the rest weights, and the track's start");
+            let rest_head = first.head.expect("the light rig finds the head");
+            assert!(first.forward.abs_diff_eq(Vec3::Z, 1e-3), "{}", first.forward);
+
+            for _ in 0..30 {
+                scene.step();
+            }
+            let halfway = frame(&mut scene, clip, 1.0, id);
+            assert_ne!(halfway.palette.clone().expect("posed"), palette, "the pose moved");
+            let weights = halfway.weights.clone().expect("posed");
+            assert_eq!(weights[0], 0.25);
+            assert!((weights[1] - 0.5).abs() < 1e-3, "the track's weight: {weights:?}");
+            // Root motion moves its transform: 1.5 m of the 3 by now.
+            let moved = halfway.moved_to.expect("it moved");
+            assert!(moved.abs_diff_eq(Vec3::new(0.0, 0.0, 1.5), 1e-3), "{moved}");
+            // The head dropped with the hips and turned: the rig's head and the face's basis, in the
+            // world, follow it and the root.
+            let head = halfway.head.expect("the head");
+            assert!((head.z - moved.z).abs() < 0.2, "{head} with the root at {moved}");
+            assert!(head.y < rest_head.y - 0.05, "the head dropped: {head} from {rest_head}");
+            let forward = halfway.forward.normalize();
+            let eighth = Quat::from_rotation_y(core::f32::consts::FRAC_PI_4) * Vec3::Z;
+            let tilt = Quat::from_rotation_x(0.2);
+            let expected = (tilt * eighth).normalize();
+            assert!(forward.abs_diff_eq(expected, 2e-2), "{forward} against {expected}");
+            // The body runs from the feet, under the root, to the head.
+            assert!((halfway.body.top - head).length() < 1e-4, "{:?} to {head}", halfway.body);
+            assert!(
+                (halfway.body.base - Vec3::new(0.0, halfway.body.radius, moved.z)).length() < 0.15,
+                "{:?} with the root at {moved}",
+                halfway.body
+            );
+
+            // Halfway through a step the pose lies halfway between that step's two poses.
+            scene.step();
+            let at = |scene: &mut Scene, alpha: f32| {
+                frame(scene, clip, alpha, id);
+                let character = scene.character;
+                let transform = scene.ecs.world().get::<RenderTransform>(character).expect("placed");
+                transform.0.transform_point3(Vec3::ZERO)
+            };
+            let (before, after) = (at(&mut scene, 0.0), at(&mut scene, 1.0));
+            let middle = at(&mut scene, 0.5);
+            assert!(middle.abs_diff_eq((before + after) * 0.5, 1e-4), "{before} {middle} {after}");
+        }
+
+        /// Hitstop and pause freeze the pose at its clock's time, and cost nothing: the job doesn't
+        /// run, and the pose isn't sent, so the renderer doesn't skin the character either.
+        #[test]
+        fn a_frozen_clock_holds_the_pose() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            let id = extract::instance_id(scene.character);
+            for _ in 0..10 {
+                scene.step();
+            }
+            frame(&mut scene, clip, 1.0, id);
+            assert_eq!(scene.anim_stats().evaluated, 1);
+
+            scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+            // The hitstop's first step: time goes on to where it stopped, at most, whatever alpha.
+            scene.step();
+            let frozen = frame(&mut scene, clip, 0.25, id);
+            assert_eq!(frozen.palette, None, "at the time the last frame drew, it doesn't move");
+            for alpha in [0.0, 0.5, 1.0] {
+                let held = frame(&mut scene, clip, alpha, id);
+                assert_eq!(held.palette, None);
+                assert_eq!(held.moved_to, None);
+                assert_eq!(scene.anim_stats().evaluated, 0);
+                assert_eq!(scene.anim_stats().characters, 1);
+            }
+            for _ in 1..HITSTOP_TICKS {
+                scene.step();
+                assert_eq!(frame(&mut scene, clip, 0.5, id).palette, None, "still frozen");
+            }
+            scene.step();
+            assert!(frame(&mut scene, clip, 1.0, id).palette.is_some(), "the hitstop ended");
+
+            // The world stopping does the same.
+            scene.world_clock_mut().0.push_scale(ScaleSource::Debug, 0).expect("room");
+            scene.step();
+            frame(&mut scene, clip, 1.0, id);
+            scene.step();
+            let paused = frame(&mut scene, clip, 0.5, id);
+            assert_eq!(paused.palette, None);
+            assert_eq!(scene.anim_stats().evaluated, 0);
+        }
+
+        /// A clip's pose and the effects a character owns stop on the same steps: an effect's owner
+        /// step is its clock's last delta (`Scene::step_vfx`), and a delta of 0 is also what holds
+        /// presented time on the clock's latest step. Here a hit from `--vfx hit` starts the hitstop.
+        #[test]
+        fn a_hit_stops_the_pose_on_the_steps_that_stop_the_characters_effects() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            scene.play_vfx(VfxShow::Hit, VfxBudget::DESKTOP_LOW);
+            let id = extract::instance_id(scene.character);
+            let character = scene.character;
+            let mut frozen = 0;
+            for tick in 0..120 {
+                scene.step();
+                let clock = scene.ecs.world().get::<EntityClock>(character).expect("a clock");
+                let step = clock.0.last_delta().as_subticks();
+                let drawn = frame(&mut scene, clip, 1.0, id);
+                assert_eq!(drawn.palette.is_some(), step > 0, "tick {tick}: a step of {step}");
+                assert_eq!(scene.anim_stats().evaluated == 1, step > 0, "tick {tick}");
+                frozen += u32::from(step == 0);
+            }
+            assert!(frozen > 0, "the show's hit landed");
+        }
+
+        /// A character with no clip is never sampled: a scene without any does no animation work,
+        /// and in a scene with one the others keep the pose they have.
+        #[test]
+        fn pose_work_costs_nothing_for_a_character_with_no_clip() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            for _ in 0..3 {
+                scene.step();
+                scene.animate_if_playing(Some((clip, 0)), 1.0);
+                scene.frame_packet(1.0, Some((1920, 1080)));
+                scene.end_frame();
+                assert_eq!(scene.anim_stats(), AnimStats::default(), "no player, no work");
+            }
+
+            // Another character beside this one holds a pose of its own.
+            let still = RenderPose { palette: vec![Affine3A::IDENTITY; 2], morph_weights: Vec::new() };
+            let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: Vec3::Y };
+            let beside = scene.ecs.world_mut().spawn((RenderMesh(MeshHandle::from_raw(0)), still, rig)).id();
+            let beside = extract::instance_id(beside);
+            scene.play_clip(player());
+            assert!(frame(&mut scene, clip, 1.0, beside).palette.is_some(), "its pose, once");
+            for _ in 0..5 {
+                scene.step();
+                assert_eq!(frame(&mut scene, clip, 1.0, beside).palette, None, "held");
+                assert_eq!(scene.anim_stats().characters, 1, "only the one that plays");
+                assert_eq!(scene.anim_stats().evaluated, 1);
+            }
+        }
+
+        /// A character that joins mid-run starts its clip from its own first tick, posed in the
+        /// frame it first draws; one that leaves stops costing anything and is reported gone once.
+        #[test]
+        fn a_character_can_join_and_leave_mid_run() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            let character = extract::instance_id(scene.character);
+            for _ in 0..20 {
+                scene.step();
+            }
+            frame(&mut scene, clip, 1.0, character);
+
+            let clock = scene.ecs.world_mut().resource_mut::<WorldClock>().new_entity_clock();
+            let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: Vec3::Y };
+            let other = scene
+                .ecs
+                .world_mut()
+                .spawn((RenderMesh(MeshHandle::from_raw(0)), RenderTransform::default(), rig, clock))
+                .id();
+            scene.start_clip(other, player());
+            let id = extract::instance_id(other);
+            let joined = frame(&mut scene, clip, 1.0, id);
+            assert_eq!(scene.anim_stats().characters, 2);
+            let weights = joined.weights.clone().expect("posed in its first frame");
+            assert_eq!(weights[1], 0.0, "at its own first tick, not the first character's: {weights:?}");
+            assert_eq!(joined.moved_to, Some(Vec3::ZERO), "drawn from where it stood");
+            for _ in 0..30 {
+                scene.step();
+            }
+            let later = frame(&mut scene, clip, 1.0, id);
+            assert!((later.weights.expect("posed")[1] - 0.5).abs() < 1e-3);
+
+            scene.ecs.world_mut().despawn(other);
+            scene.step();
+            let gone = frame(&mut scene, clip, 1.0, id);
+            assert!(gone.removed, "reported gone");
+            assert_eq!(gone.palette, None);
+            assert_eq!(scene.anim_stats().characters, 1);
+            assert_eq!(scene.anim_stats().evaluated, 1, "the first plays on");
+            scene.step();
+            assert!(!frame(&mut scene, clip, 1.0, id).removed, "once");
+        }
+
+        /// While a new version lands piece by piece, a clip for another skeleton holds the character.
+        #[test]
+        fn a_clip_for_another_skeleton_holds_the_character() {
+            let bytes = Clip { joint_count: 6, ..clip() }.to_cooked().expect("cooked");
+            let other = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            let id = extract::instance_id(scene.character);
+            scene.step();
+            let held = frame(&mut scene, other, 1.0, id);
+            assert_eq!(scene.anim_stats().characters, 1);
+            assert_eq!(scene.anim_stats().evaluated, 0);
+            assert_eq!(held.moved_to, Some(Vec3::ZERO), "added at the place it stood");
+        }
+
+        /// A clip's new version is drawn even by a frozen character.
+        #[test]
+        fn a_new_version_of_the_clip_moves_a_frozen_character() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            scene.step();
+            scene.animate_clip(Some((clip, 0)), 1.0);
+            assert_eq!(scene.anim_stats().evaluated, 1);
+            scene.animate_clip(Some((clip, 0)), 1.0);
+            assert_eq!(scene.anim_stats().evaluated, 0, "drawn already");
+            scene.animate_clip(Some((clip, 1)), 1.0);
+            assert_eq!(scene.anim_stats().evaluated, 1, "the new version");
+        }
     }
 
     #[test]

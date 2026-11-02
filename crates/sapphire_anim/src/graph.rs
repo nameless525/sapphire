@@ -900,8 +900,10 @@ impl GraphPlayer {
             // The last move of a defeated character: it goes on to its clip's end, and stays.
             (Some(_), None) if input.defeated && input.combat.is_none() => {
                 self.adopt_replacement();
-                if let Some(playing) = &mut self.layers.combat {
-                    playing.position += input.ticks - drawn;
+                match &mut self.layers.combat {
+                    Some(playing) => playing.position += input.ticks - drawn,
+                    // The new graph has no clip for it.
+                    None => shortest(&mut decay, self.graph.combat_exit),
                 }
             }
             (Some(_), None) => {

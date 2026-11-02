@@ -102,7 +102,7 @@ fn a_move_too_quick_for_the_steps_reaches_one() {
     let (right, left) = (Stick::new(127, 0), Stick::new(-127, 0));
     const C: Stick = Stick::CENTER;
     type Frame = (Vec<RawInput>, Vec<Stick>);
-    let table: [(&str, Vec<Frame>); 6] = [
+    let table: [(&str, Vec<Frame>); 7] = [
         (
             "inside one frame, at one step a frame",
             vec![(vec![key(e, true), key(e, false)], vec![right]), (vec![], vec![C])],
@@ -126,6 +126,10 @@ fn a_move_too_quick_for_the_steps_reaches_one() {
         (
             "a key held over frames, then let go, is no tap",
             vec![(vec![key(e, true)], vec![right]), (vec![key(e, false)], vec![C, C])],
+        ),
+        (
+            "pressed in a frame with no step, and let go in the next: no step has read it yet",
+            vec![(vec![key(e, true)], vec![]), (vec![key(e, false)], vec![right, C])],
         ),
     ];
     let mut failures = Vec::new();

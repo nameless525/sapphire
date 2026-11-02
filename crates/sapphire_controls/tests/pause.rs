@@ -292,6 +292,16 @@ fn a_stick_reads_its_level_from_the_first_step_after_the_pause() {
     assert!(!rig.controls.is_paused());
     assert_eq!(rig.next().stick, Stick::new(127, 0));
 
+    // Let go during the pause, it reads centred at once: what's held as a pause comes isn't a move still
+    // waiting for a step.
+    rig.frame(&tap(ESCAPE));
+    rig.frame(&[axis(PadAxis::LeftX, 0.0)]);
+    rig.frame(&tap(ESCAPE));
+    rig.frame(&[]);
+    assert_eq!(rig.next().stick, Stick::CENTER);
+    rig.frame(&[axis(PadAxis::LeftX, 1.0)]);
+    assert_eq!(rig.next().stick, Stick::new(127, 0));
+
     // Pushed during the pause, it reads as soon as there's a step too: a stick has no presses.
     let mut rig = Rig::new();
     rig.frame(&tap(ESCAPE));

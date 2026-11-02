@@ -187,7 +187,8 @@ pub struct CombatControls {
     latch: PressLatch,
     /// The latest update's stick, of length at most 1, as the player pushed it.
     stick: Vec2,
-    /// A stick that came and went since the last step: the next one reads it if it reads no other.
+    /// A stick no step has read yet, which came and went or is still there: the next step reads it if
+    /// it reads no other.
     stick_tap: Option<Vec2>,
     paused: bool,
     /// Resuming, once the combat context is back. It takes effect at the next update, and steps
@@ -334,11 +335,13 @@ impl CombatControls {
 
         let movement = self.input.state(self.ids.movement);
         self.stick = raw_stick_of(movement.value());
-        // Started and over inside this update, which keys and on-screen controls can do: no later
-        // value will show it, so a step has to read it from here.
-        if !movement.is_triggered()
-            && let Some(value) = moved
-        {
+        // No later value will show this one if it ends before the next step: it may have started and
+        // ended inside this update, which keys and on-screen controls can do, or this frame may have
+        // no step and the next let go. Held as a pause comes it hasn't ended, and the first step after
+        // the pause reads the real stick.
+        if movement.is_triggered() {
+            self.stick_tap = (!self.paused).then_some(self.stick);
+        } else if let Some(value) = moved {
             self.stick_tap = Some(raw_stick_of(value));
         }
     }

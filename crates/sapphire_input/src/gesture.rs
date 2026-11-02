@@ -2,7 +2,7 @@
 //!
 //! - **Press:** a lone finger down. It ends when the finger lifts, and is cut short when the
 //!   finger moves past the tap slop or a second finger lands.
-//! - **Drag:** a lone finger's movement, in window points with +y up.
+//! - **Drag:** a lone finger's movement, in points with +y up.
 //! - **Pinch:** with two or more fingers, the first two (by landing order) measure their
 //!   spread: each move adds the natural log of the distance ratio, so the sum over any number
 //!   of moves is the log of the total spread.
@@ -59,7 +59,7 @@ pub(crate) struct Gestures {
 }
 
 impl Gestures {
-    /// Feeds one touch event; `position` is in window points, +y down as the screen reports it.
+    /// Feeds one touch event; `position` is in points, +y down as the screen reports it.
     pub fn touch(
         &mut self,
         now: Timestamp,

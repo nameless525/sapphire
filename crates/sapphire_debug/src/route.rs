@@ -35,7 +35,7 @@ use sapphire_platform::{
 
 /// How long two fingers hold still to toggle the overlay.
 pub const HOLD_TIME: Duration = Duration::from_secs(1);
-/// How far, in window coordinates (points on phones), a holding finger may drift.
+/// How far, in points, a holding finger may drift.
 const HOLD_SLOP: f32 = 16.0;
 
 /// What the overlay's last frame says about it.
@@ -99,6 +99,8 @@ pub(crate) struct Router {
     /// frame has said it. Until then no hold is timed: without the size a finger's drift can't
     /// be measured, and a pinch would pass for two fingers holding still.
     window_size: Option<Size>,
+    /// What a window coordinate is in points, which a finger's drift is measured in.
+    points_per_coordinate: f32,
     /// When two still fingers started holding.
     hold_since: Option<Timestamp>,
     /// What the last toggle gesture took, for the overlay to cancel.
@@ -113,6 +115,7 @@ impl Router {
             fingers: [None; MAX_FINGERS],
             pointer: (0.0, 0.0),
             window_size: None,
+            points_per_coordinate: 1.0,
             hold_since: None,
             claimed: Vec::with_capacity(2),
         }
@@ -122,6 +125,11 @@ impl Router {
     /// the frame's events: the toggle gesture measures drift with it. An empty window has none.
     pub fn set_window_size(&mut self, size: Size) {
         self.window_size = Some(size).filter(|size| size.width > 0 && size.height > 0);
+    }
+
+    /// What a window coordinate is in points now. Call it with [`Self::set_window_size`].
+    pub fn set_points_per_coordinate(&mut self, points: f32) {
+        self.points_per_coordinate = points;
     }
 
     /// The fingers the last toggle took from their owners.
@@ -257,12 +265,13 @@ impl Router {
             self.hold_since = None;
             return;
         };
+        let points = self.points_per_coordinate;
         let mut down = self.fingers.iter_mut().flatten().filter(|finger| !finger.control);
         let pair = (down.next(), down.next(), down.next());
         self.hold_since = match pair {
             (Some(a), Some(b), None) if a.owner != Owner::Nobody && b.owner != Owner::Nobody => {
                 for finger in [a, b] {
-                    finger.anchor = scale(&finger.last, size);
+                    finger.anchor = in_points(&finger.last, size, points);
                 }
                 Some(now)
             }
@@ -270,9 +279,9 @@ impl Router {
         };
     }
 
-    /// Where `touch` is in window coordinates, once the window's size is known.
+    /// Where `touch` is in points, once the window's size is known.
     fn position(&self, touch: &TouchEvent) -> Option<(f32, f32)> {
-        self.window_size.map(|size| scale(touch, size))
+        self.window_size.map(|size| in_points(touch, size, self.points_per_coordinate))
     }
 
     fn forget(&mut self) {
@@ -290,9 +299,12 @@ impl Router {
     }
 }
 
-/// A touch's normalized position, in the window coordinates of a window of `size`.
-fn scale(touch: &TouchEvent, size: Size) -> (f32, f32) {
-    (touch.x * size.width as f32, touch.y * size.height as f32)
+/// A touch's normalized position, in points, on a window of `size` window coordinates.
+fn in_points(touch: &TouchEvent, size: Size, points_per_coordinate: f32) -> (f32, f32) {
+    (
+        touch.x * size.width as f32 * points_per_coordinate,
+        touch.y * size.height as f32 * points_per_coordinate,
+    )
 }
 
 fn button_index(button: MouseButton) -> Option<usize> {
@@ -591,6 +603,29 @@ mod tests {
     fn lift(router: &mut Router, ui: &UiState<'_>) {
         router.route(&touch(6000, 1, TouchPhase::Up, 0.5), ui);
         router.route(&touch(6000, 2, TouchPhase::Up, 0.5), ui);
+    }
+
+    /// Two fingers drifting `by` coordinates across a window 2400 wide, for over a second.
+    fn drifting(router: &mut Router, ui: &UiState<'_>, by: f32) -> bool {
+        router.route(&touch(0, 1, TouchPhase::Down, 0.4), ui);
+        router.route(&touch(0, 2, TouchPhase::Down, 0.6), ui);
+        router.route(&touch(500, 1, TouchPhase::Moved, 0.4 + by / 2400.0), ui);
+        let toggled = router.poll(ms(1100));
+        lift(router, ui);
+        toggled
+    }
+
+    /// The drift a hold allows is the same size under a finger on a phone whose coordinates are pixels.
+    #[test]
+    fn a_holds_drift_is_measured_in_points() {
+        let hidden = ui(false, false);
+        let mut router = Router::new(Scancode::GRAVE);
+        router.set_window_size(Size { width: 2400, height: 1080 });
+        router.set_points_per_coordinate(1.0 / 3.0);
+        assert!(drifting(&mut router, &hidden, 30.0), "10 points on a 3x phone is holding still");
+        assert!(!drifting(&mut router, &hidden, 60.0), "20 points isn't");
+        router.set_points_per_coordinate(1.0);
+        assert!(!drifting(&mut router, &hidden, 30.0), "30 points isn't, where a coordinate is one");
     }
 
     #[test]

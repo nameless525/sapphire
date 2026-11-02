@@ -30,7 +30,7 @@ pub enum RawInput {
         button: MouseButton,
         down: bool,
     },
-    /// Pointer movement in window points, +y down.
+    /// Pointer movement in window coordinates, +y down.
     MouseMotion {
         delta: Vec2,
     },
@@ -56,7 +56,7 @@ pub enum RawInput {
         axis: PadAxis,
         value: f32,
     },
-    /// A finger, at `position` in window points with +y down.
+    /// A finger, at `position` in points ([`sapphire_platform::points_per_coordinate`]) with +y down.
     Touch {
         finger: usize,
         phase: TouchPhase,
@@ -86,13 +86,26 @@ pub enum RawInput {
 }
 
 /// Translates platform events, assigning gamepad and finger slots and scaling touches from
-/// normalized coordinates to window points.
-#[derive(Debug, Default)]
+/// normalized coordinates to points.
+#[derive(Debug)]
 pub(crate) struct PlatformAdapter {
-    /// The window's size in window points, which touch positions are scaled to.
+    /// The window's size in window coordinates.
     pub window_size: Vec2,
+    /// What a window coordinate is in points ([`sapphire_platform::points_per_coordinate`]).
+    pub points_per_coordinate: f32,
     pads: [Option<GamepadId>; MAX_GAMEPADS],
     fingers: [Option<FingerId>; MAX_FINGERS],
+}
+
+impl Default for PlatformAdapter {
+    fn default() -> Self {
+        Self {
+            window_size: Vec2::ZERO,
+            points_per_coordinate: 1.0,
+            pads: [None; MAX_GAMEPADS],
+            fingers: [None; MAX_FINGERS],
+        }
+    }
 }
 
 impl PlatformAdapter {
@@ -124,7 +137,8 @@ impl PlatformAdapter {
                 if matches!(touch.phase, TouchPhase::Up | TouchPhase::Canceled) {
                     self.fingers[finger] = None;
                 }
-                let position = touch_position(touch.x, touch.y, self.window_size);
+                let window = self.window_size * self.points_per_coordinate;
+                let position = touch_position(touch.x, touch.y, window);
                 (touch.timestamp, RawInput::Touch { finger, phase: touch.phase, position })
             }
             Event::Gamepad { timestamp, gamepad, event } => {
@@ -181,10 +195,11 @@ fn slot<T: Copy + PartialEq>(slots: &mut [Option<T>], id: T, claim: bool) -> Opt
     Some(free)
 }
 
-/// Touch coordinates are normalized per axis; gestures are measured in window points, or a
-/// wide screen would pinch on a rotation and drag faster one way than the other.
-fn touch_position(x: f32, y: f32, window_size: Vec2) -> Vec2 {
-    Vec2::new(x, y) * window_size
+/// Touch coordinates are normalized per axis; gestures are measured in points, or a wide screen
+/// would pinch on a rotation and drag faster one way than the other, and a dense one would read a
+/// thumb's tap as a drag.
+fn touch_position(x: f32, y: f32, window_points: Vec2) -> Vec2 {
+    Vec2::new(x, y) * window_points
 }
 
 #[cfg(test)]
@@ -202,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn touches_scale_to_window_points() {
+    fn touches_scale_to_points() {
         assert_eq!(touch_position(0.5, 0.25, Vec2::new(1920.0, 1080.0)), Vec2::new(960.0, 270.0));
     }
 

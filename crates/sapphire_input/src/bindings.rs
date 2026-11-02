@@ -124,7 +124,8 @@ impl BindingDesc {
     }
 }
 
-/// Thresholds for the touch gestures. Distances are window points, so they hold across
+/// Thresholds for the touch gestures. Distances are points
+/// ([`points_per_coordinate`](sapphire_platform::points_per_coordinate)), so they hold across
 /// screen densities.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::input"]

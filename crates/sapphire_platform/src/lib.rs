@@ -166,4 +166,6 @@ pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;
 pub use system::{DeviceClass, Os, SystemInfo};
 pub use thermal::ThermalState;
-pub use window::{Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId};
+pub use window::{
+    Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId, points_per_coordinate,
+};

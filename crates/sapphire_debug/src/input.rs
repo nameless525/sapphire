@@ -72,6 +72,11 @@ impl WindowMetrics {
     pub fn pixel_density(&self) -> f32 {
         if self.size.width == 0 { 1.0 } else { self.pixel_size.width as f32 / self.size.width as f32 }
     }
+
+    /// Points per window coordinate, at the OS's own scale with no zoom of the overlay's.
+    pub fn points_per_coordinate(&self) -> f32 {
+        sapphire_platform::points_per_coordinate(self.pixel_density(), self.display_scale)
+    }
 }
 
 /// egui events built from platform events, waiting for the next frame.

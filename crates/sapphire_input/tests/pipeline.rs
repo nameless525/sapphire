@@ -1505,3 +1505,55 @@ fn edge_triggers_on_motion_fire_once_per_run_of_updates_with_motion() {
     rig.update(80);
     assert_eq!(fired(&rig), (1, 0), "a new run");
 }
+
+/// A 3× Android phone's window coordinates are pixels, and an iPhone's are points. A thumb that drifts
+/// by 8 points is the same thumb on both: it's still a tap, it drags as far, and a swipe is as long.
+#[test]
+fn gestures_measure_points_whatever_a_window_coordinate_is() {
+    let bindings = || {
+        map(
+            r#"(name: "tap", kind: Button), (name: "dodge", kind: Button), (name: "orbit", kind: Axis2D)"#,
+            r#"(name: "main", bindings: [
+                (action: "tap", source: Touch(Press), trigger: Tap(seconds: 0.3)),
+                (action: "dodge", source: Touch(Swipe(Right)), trigger: Pressed),
+                (action: "orbit", source: Touch(Drag)),
+            ])"#,
+        )
+    };
+    let tapped = |logged: &[Logged], t| logged.contains(&ev("tap", Triggered, t));
+    // The same 800 × 360 points on both: an iPhone's, and a phone of 2400 × 1080 pixels.
+    for (what, width, height, points) in
+        [("iPhone", 800.0, 360.0, None), ("Android at 3×", 2400.0, 1080.0, Some(1.0 / 3.0))]
+    {
+        let mut phone = Rig::new(bindings(), &["main"]);
+        phone.input.set_window_size(width, height);
+        if let Some(points) = points {
+            phone.input.set_points_per_coordinate(points);
+        }
+        // Across the window by shares, so both land on the same point.
+        let x = |points: f32| 0.5 + points / 800.0;
+
+        phone.platform_touch_at(10, 1, TouchPhase::Down, x(0.0));
+        phone.platform_touch_at(20, 1, TouchPhase::Moved, x(8.0));
+        let logged = phone.update(30);
+        assert!((phone.value("orbit").x - 8.0).abs() < 1e-3, "{what}: {}", phone.value("orbit"));
+        phone.platform_touch_at(40, 1, TouchPhase::Up, x(8.0));
+        let logged = [logged, phone.update(50)].concat();
+        assert!(tapped(&logged, 40), "{what}: 8 points is still a tap: {logged:?}");
+
+        phone.platform_touch_at(100, 1, TouchPhase::Down, x(0.0));
+        phone.platform_touch_at(110, 1, TouchPhase::Moved, x(20.0));
+        phone.platform_touch_at(120, 1, TouchPhase::Up, x(20.0));
+        let logged = phone.update(130);
+        assert!(!tapped(&logged, 120), "{what}: 20 points is a drag: {logged:?}");
+
+        phone.platform_touch_at(1000, 1, TouchPhase::Down, x(0.0));
+        phone.platform_touch_at(1100, 1, TouchPhase::Up, x(50.0));
+        let logged = phone.update(1110);
+        assert!(!logged.contains(&ev("dodge", Triggered, 1100)), "{what}: 50 points is no swipe");
+        phone.platform_touch_at(2000, 1, TouchPhase::Down, x(0.0));
+        phone.platform_touch_at(2100, 1, TouchPhase::Up, x(70.0));
+        let logged = phone.update(2110);
+        assert!(logged.contains(&ev("dodge", Triggered, 2100)), "{what}: 70 points is: {logged:?}");
+    }
+}

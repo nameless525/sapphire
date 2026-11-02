@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 /// | `Key`, `Mouse`, `Pad` | 1 while held | on each change |
 /// | `PadAxis` | stick axes −1..=1, triggers 0..=1 | on each change |
 /// | `PadStick` | both axes of a stick | on each change |
-/// | `MouseMotion` | window points moved since the last update | per update |
+/// | `MouseMotion` | window coordinates moved since the last update | per update |
 /// | `MouseWheel`, `MouseWheelHorizontal` | notches since the last update: + away from the user, + right | per update |
 /// | `Touch(Press)` | 1 while a lone finger rests without dragging | on each change |
-/// | `Touch(Drag)` | window points a lone finger moved since the last update | per update |
+/// | `Touch(Drag)` | points a lone finger moved since the last update | per update |
 /// | `Touch(Pinch)` | the natural log of how much two fingers spread since the last update | per update |
 /// | `Touch(Swipe(direction))` | 1 for an instant when a swipe ends | on each swipe |
 /// | `Virtual(name)` | what the on-screen control injects | on each change |

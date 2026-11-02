@@ -354,6 +354,7 @@ impl DebugOverlay {
         let pixels_per_point = metrics.display_scale.max(0.25) * zoom;
         self.input.set_metrics(&metrics, pixels_per_point);
         self.router.set_window_size(metrics.size);
+        self.router.set_points_per_coordinate(metrics.points_per_coordinate());
         sync_debug_draw();
         let camera = frame.camera.filter(|_| !frame.debug_labels.is_empty());
         self.drawing = self.visible || camera.is_some();

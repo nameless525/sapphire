@@ -173,6 +173,7 @@ impl App for SandboxApp {
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let desktop = info.device_class == DeviceClass::Desktop;
         let mut input = SandboxInput::new(desktop, options.combat_input, window.size())?;
+        input.follow_window(&window);
         if matches!(options.combat, Some(CombatOption::Fight { .. })) {
             input.listen_for_fight_restart()?;
         }
@@ -456,6 +457,7 @@ impl App for SandboxApp {
         let now = platform.now();
         // The HUD's touch zones and animation are on the real clock too. What they read reaches this
         // frame's steps and camera through the bindings, as a pad's does, so they go first.
+        self.input.follow_window(&self.window);
         self.scene.update_hud(now, &self.window, &mut self.input);
         if self.input.update(now) {
             return AppControl::Exit;

@@ -81,8 +81,8 @@ pub(crate) struct SandboxInput {
 }
 
 impl SandboxInput {
-    /// Input from the default bindings, for a window `window_size` points large. `desktop`
-    /// enables the desktop-only context. `combat_input` leaves combat's controls alone with the
+    /// Input from the default bindings, for a window `window_size` coordinates large
+    /// ([`Self::follow_window`] says what those are). `desktop` enables the desktop-only context. `combat_input` leaves combat's controls alone with the
     /// player, without the sandbox's bindings over them.
     pub fn new(desktop: bool, combat_input: bool, window_size: Size) -> Result<Self, AppInitError> {
         let bindings =
@@ -128,6 +128,12 @@ impl SandboxInput {
         })?;
         system.enable_context(context, FIGHT_CONTEXT.1);
         Ok(())
+    }
+
+    /// Reads what `window`'s coordinates are, fresh each frame as the HUD's metrics are, so a tap's slop
+    /// and a drag's rate are the same size on a phone whose coordinates are pixels.
+    pub fn follow_window(&mut self, window: &sapphire_platform::Window) {
+        self.controls.input_mut().set_points_per_coordinate(window.points_per_coordinate());
     }
 
     /// Queues a platform event for the next [`Self::update`].

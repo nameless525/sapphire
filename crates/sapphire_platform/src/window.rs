@@ -246,6 +246,12 @@ impl Window {
         self.raw().map_or(0.0, |raw| unsafe { SDL_GetWindowDisplayScale(raw) })
     }
 
+    /// Points per window coordinate ([`points_per_coordinate`]): what turns a distance on this window
+    /// into one the same size on any screen. 1 once the window is gone.
+    pub fn points_per_coordinate(&self) -> f32 {
+        points_per_coordinate(self.pixel_density(), self.display_scale())
+    }
+
     /// The part of the window, in window coordinates, not covered by notches, rounded
     /// corners or system bars. Equals the whole window on desktop. Re-query after
     /// [`WindowEvent::SafeAreaChanged`](crate::WindowEvent::SafeAreaChanged).
@@ -582,6 +588,18 @@ mod ndk {
     }
 }
 
+/// Points per window coordinate, for a window of this [`Window::pixel_density`] and
+/// [`Window::display_scale`]. A point is `pixels / display scale` on every platform, so a distance
+/// in points is about the same size under a thumb on any screen, while what a window coordinate is
+/// depends on the platform: a point on iOS and a Mac, a pixel on Android, Windows and X11. So this is
+/// 1 on an iPhone or a Retina Mac and a third on a 3× Android phone. A scale that isn't positive, as
+/// a window that's gone reports, reads as 1.
+#[must_use]
+pub fn points_per_coordinate(pixel_density: f32, display_scale: f32) -> f32 {
+    let points = pixel_density / display_scale;
+    if points.is_finite() && points > 0.0 { points } else { 1.0 }
+}
+
 fn to_size(width: c_int, height: c_int) -> Size {
     Size { width: u32::try_from(width).unwrap_or(0), height: u32::try_from(height).unwrap_or(0) }
 }
@@ -695,6 +713,25 @@ mod tests {
 
     fn fake(addr: usize) -> Option<NonNull<c_void>> {
         NonNull::new(ptr::without_provenance_mut(addr))
+    }
+
+    /// As each platform's SDL reports them: density × content scale is the display scale.
+    #[test]
+    fn a_coordinate_is_a_point_on_apple_platforms_and_a_pixel_elsewhere() {
+        let cases = [
+            ("iPhone", 3.0, 3.0, 1.0),
+            ("Retina Mac", 2.0, 2.0, 1.0),
+            ("a Mac at 1x", 1.0, 1.0, 1.0),
+            ("Android at 3x", 1.0, 3.0, 1.0 / 3.0),
+            ("Android at 2.625x, an emulator's 420 dpi", 1.0, 2.625, 1.0 / 2.625),
+            ("Windows at 150%", 1.0, 1.5, 1.0 / 1.5),
+        ];
+        for (what, density, scale, points) in cases {
+            assert_eq!(points_per_coordinate(density, scale), points, "{what}");
+        }
+        for (density, scale) in [(0.0, 0.0), (1.0, 0.0), (0.0, 2.0), (f32::NAN, 2.0), (1.0, f32::NAN)] {
+            assert_eq!(points_per_coordinate(density, scale), 1.0, "{density} over {scale}");
+        }
     }
 
     #[test]

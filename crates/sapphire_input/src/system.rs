@@ -352,10 +352,21 @@ impl InputSystem {
         self.contexts.iter().any(|c| c.id == context)
     }
 
-    /// The window's size in window points, which touches are measured in. Resizes arriving
-    /// through [`handle_event`](Self::handle_event) update it; set it once at startup.
+    /// The window's size in window coordinates. Resizes arriving through
+    /// [`handle_event`](Self::handle_event) update it; set it once at startup.
     pub fn set_window_size(&mut self, width: f32, height: f32) {
         self.adapter.window_size = Vec2::new(width, height);
+    }
+
+    /// What a window coordinate is in points ([`Window::points_per_coordinate`]), which touches are
+    /// measured in, so a tap's slop, a swipe's length and a drag's rate are the same size on any
+    /// screen. 1 until told, as on iOS and a Mac; a window whose coordinates are pixels, as on Android,
+    /// needs it from the start, and again if it moves to another screen. Reading it once a frame is
+    /// cheap enough.
+    ///
+    /// [`Window::points_per_coordinate`]: sapphire_platform::Window::points_per_coordinate
+    pub fn set_points_per_coordinate(&mut self, points: f32) {
+        self.adapter.points_per_coordinate = points;
     }
 
     /// Queues a platform event for the next update. Events that aren't input are ignored,

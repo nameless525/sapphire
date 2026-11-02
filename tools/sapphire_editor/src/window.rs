@@ -226,7 +226,8 @@ impl EditorApp {
                 frame.present();
                 false
             }
-            SurfaceAcquire::Skip(reason) => reason == SkipReason::DeviceLost,
+            // A lost surface stays lost until it's made again from a fresh handle.
+            SurfaceAcquire::Skip(reason) => matches!(reason, SkipReason::DeviceLost | SkipReason::Lost),
         };
         if lost {
             // Everything GPU goes, and egui's textures with it: a new context sends them again.

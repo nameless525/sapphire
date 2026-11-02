@@ -439,7 +439,7 @@ mod tests {
         fn sprites_after(&mut self, owners: &[(OwnerId, f32)]) -> usize {
             self.vfx.advance(&OwnerSteps { world: TICK, owners });
             let mut frame = VfxFrame::default();
-            self.vfx.write_frame(&mut frame);
+            self.vfx.write_frame(&mut frame, 1.0);
             frame.sprites.len()
         }
     }
@@ -589,7 +589,7 @@ mod tests {
             dispatcher.read_tick = None;
             sinks.read(&mut dispatcher, 1, &[event(name, hit)]);
             sinks.vfx.advance(&OwnerSteps { world: TICK, owners: &[] });
-            sinks.vfx.write_frame(&mut frame);
+            sinks.vfx.write_frame(&mut frame, 1.0);
             assert!(!frame.sprites.is_empty(), "{name}");
             middle_z(&frame)
         };

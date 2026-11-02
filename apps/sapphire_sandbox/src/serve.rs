@@ -215,7 +215,7 @@ impl Serving {
             audio.update(dt, stage.scene.sound(), stage.scene.cue_sounds());
             audio.mix(dt);
         }
-        stage.scene.end_cue_frame(dt, &mut ());
+        stage.scene.end_cue_frame(dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.
         match stage.dev.take_capture() {

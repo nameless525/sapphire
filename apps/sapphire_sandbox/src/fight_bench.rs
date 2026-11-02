@@ -451,7 +451,7 @@ impl Run<'_> {
             audio.update(frame_dt, stage.scene.sound(), stage.scene.cue_sounds());
         }
         let audio_time = stopwatch.lap();
-        stage.scene.end_cue_frame(frame_dt, &mut ());
+        stage.scene.end_cue_frame(frame_dt, 1.0, &mut ());
         stage.render(self.view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let cpu = cpu.elapsed();

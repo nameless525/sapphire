@@ -168,10 +168,11 @@ impl Fight {
         );
         self.play_voices_out();
         self.cues.end_frame(FRAME, &mut self.pad);
-        self.vfx.write_frame(&mut self.frame);
+        self.vfx.write_frame(&mut self.frame, 1.0);
         let post = self.screen.resolve(1.0);
         let camera_frame = CameraFrame {
             dt: FRAME,
+            behind: 0.0,
             player: Subject { position: Vec3::ZERO, height: 1.7, radius: 0.35 },
             player_yaw: 0.0,
             target: None,

@@ -667,6 +667,7 @@ impl ArenaActors {
             let radius = profile.radius;
             let frame = CameraFrame {
                 dt: std::mem::take(&mut camera.dt),
+                behind: crate::cues::behind_latest(alpha),
                 player: Subject { position: feet, height: profile.height, radius },
                 player_yaw: self.player.1.yaw(alpha),
                 target: target.map(|position| Subject { position, height: enemy::CROWN, radius }),

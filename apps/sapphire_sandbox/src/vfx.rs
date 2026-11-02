@@ -290,11 +290,12 @@ impl VfxPlayer {
         center + reach * Vec3::new(fraction(0.754_877_7), fraction(0.569_840_3), fraction(0.438_596_6))
     }
 
-    /// Writes the moment's sprites and ribbon points to `frame`, with the time this frame's steps
-    /// and the write itself took: what spec §3.2 budgets. Allocates nothing once `frame` is warm.
-    pub(crate) fn write(&mut self, frame: &mut VfxFrame) {
+    /// Writes the frame's sprites and ribbon points to `frame`, `alpha` of the way from the step before
+    /// the latest to the latest, with the time this frame's steps and the write itself took: what spec
+    /// §3.2 budgets. Allocates nothing once `frame` is warm.
+    pub(crate) fn write(&mut self, frame: &mut VfxFrame, alpha: f32) {
         let stopwatch = Stopwatch::start();
-        self.world.write_frame(frame);
+        self.world.write_frame(frame, alpha);
         frame.stats.simulation = self.stepping + stopwatch.elapsed();
         self.stepping = Duration::ZERO;
     }
@@ -326,7 +327,7 @@ mod tests {
         let mut frame = VfxFrame::default();
         for _ in 0..ticks {
             player.tick();
-            player.write(&mut frame);
+            player.write(&mut frame, 1.0);
         }
         (player, frame)
     }
@@ -363,7 +364,7 @@ mod tests {
             }
         }
         assert_eq!(stopped, Some((HIT_AT, HIT_STOP_TICKS)));
-        player.write(&mut frame);
+        player.write(&mut frame, 1.0);
         assert!(frame.sprites.len() > 26, "the spark, and the dust: {}", frame.sprites.len());
         // On the character's clock the blade and the spark hold; the world's dust moves on.
         let trail = frame.ribbon_points.clone();
@@ -373,7 +374,7 @@ mod tests {
         for _ in 0..HIT_STOP_TICKS {
             assert_eq!(player.step(TICK, 0.0), None);
         }
-        player.write(&mut frame);
+        player.write(&mut frame, 1.0);
         assert_eq!(frame.ribbon_points, trail, "the blade's trail");
         let held: Vec<_> = frame.sprites.iter().filter(|s| s.position.y >= 0.5).copied().collect();
         assert_eq!(held, sparks, "the spark");
@@ -390,7 +391,7 @@ mod tests {
             let (mut particles, mut frames) = (0_u32, 0_u32);
             for tick in 0..300 {
                 player.tick();
-                player.write(&mut frame);
+                player.write(&mut frame, 1.0);
                 if tick >= 120 {
                     particles += frame.stats.particles;
                     frames += 1;
@@ -412,7 +413,7 @@ mod tests {
             let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
                 for _ in 0..240 {
                     player.tick();
-                    player.write(&mut frame);
+                    player.write(&mut frame, 1.0);
                 }
             });
             assert_eq!(counts.allocations, 0, "{show:?}");

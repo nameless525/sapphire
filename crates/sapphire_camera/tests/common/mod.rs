@@ -79,6 +79,7 @@ impl Moment {
     pub fn frame(&self, dt: f32) -> CameraFrame {
         CameraFrame {
             dt,
+            behind: 0.0,
             player: self.player,
             player_yaw: self.player_yaw,
             target: self.target,

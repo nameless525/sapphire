@@ -81,7 +81,7 @@
 //!     &mut random,
 //! );
 //! cues.end_frame(1.0 / 60.0, &mut ()); // `()`: no rumble, as on a phone.
-//! vfx.write_frame(&mut frame);
+//! vfx.write_frame(&mut frame, 1.0); // `alpha`: where the frame draws between its last two steps.
 //! ```
 //!
 //! # When things fire
@@ -92,6 +92,13 @@
 //! rumble wait for the frame: a warmed `sapphire_audio` cue allocates (11 times, kira's per-sound
 //! state), and SDL's call may write to the device. So all of it reaches the player in the frame of the
 //! tick, whichever of its steps the tick was, and `tests/pillar.rs` holds that through a real fight.
+//!
+//! That frame draws where a pose does, `alpha` of the way from the step before to the tick's, so what
+//! starts there reads from where it begins, and each frame after reads `alpha` along its own clock's last
+//! step (`VfxWorld::write_frame`, `EffectStack::resolve`, `CameraFrame::behind`), so nothing leads the
+//! blow (review WA-3). A shake's on the real clock from there, and rises from nothing, so the view moves
+//! on the frame after; sound and rumble have no frames of their own to be read at, and start with the
+//! frame of the tick.
 //!
 //! # Choices a table can change
 //!

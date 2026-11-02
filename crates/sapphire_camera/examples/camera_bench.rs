@@ -110,6 +110,7 @@ fn frame(index: u32, load: Load) -> CameraFrame {
     let (player, enemy) = fighters(t);
     CameraFrame {
         dt,
+        behind: 0.0,
         player,
         player_yaw: 0.5 * t,
         target: if matches!(load, Load::Explore) { None } else { Some(enemy) },

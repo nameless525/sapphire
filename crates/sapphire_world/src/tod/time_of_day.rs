@@ -231,7 +231,8 @@ impl TimeOfDay {
     }
 
     /// Resolves the look for a frame `alpha` of the way from the fixed step before the latest to the
-    /// latest, where transforms draw, seen from `probe` (the camera, or the player), which zone volumes weigh themselves by:
+    /// latest, where transforms draw, seen from `probe` (the camera, or the player), which zone volumes
+    /// weigh themselves by:
     ///
     /// 1. the base timeline at the clock's hour;
     /// 2. each zone volume's timeline at the same hour, over it, by the volume's weight at the

@@ -505,7 +505,7 @@ impl App for SandboxApp {
             audio.update(dt, platform, self.scene.sound(), self.scene.cue_sounds());
         }
         let pad = self.input.active_gamepad();
-        self.scene.end_cue_frame(dt, &mut PadRumble { platform, pad });
+        self.scene.end_cue_frame(dt, steps.alpha, &mut PadRumble { platform, pad });
         self.stages.audio = stopwatch.lap();
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
@@ -580,13 +580,6 @@ impl SandboxApp {
         let camera_yaw = self.scene.camera_heading();
 
         for _ in 0..steps.count {
-            self.read_combat_step(camera_yaw);
-            if let Some(combat) = &self.combat {
-                self.scene.follow_simulation(combat.simulation(), combat.cast());
-                self.scene.show_cues(combat.simulation());
-                self.scene.show_damage(combat.simulation());
-            }
-
             let scene = &mut self.scene;
             #[cfg(feature = "dev")]
             let dev = &mut self.dev;
@@ -602,6 +595,15 @@ impl SandboxApp {
                 "rule R6: the fixed step allocated {} times",
                 allocations.allocations
             );
+
+            // After the scene's own step, as `Stage::step` does: what a cue pushes on the scene's effect
+            // stack begins here, so the step just taken doesn't age it before its first frame.
+            self.read_combat_step(camera_yaw);
+            if let Some(combat) = &self.combat {
+                self.scene.follow_simulation(combat.simulation(), combat.cast());
+                self.scene.show_cues(combat.simulation());
+                self.scene.show_damage(combat.simulation());
+            }
         }
         steps
     }

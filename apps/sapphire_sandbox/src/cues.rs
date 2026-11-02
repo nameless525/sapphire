@@ -12,7 +12,14 @@
 //! - **It reads the simulation and changes nothing in it,** so a replay's checksums still hold, and a
 //!   capture's check still refuses another fight.
 //! - **Its clocks are the simulation's,** for effects and sound, which is what freezes them. The scene's
-//!   effect stack stays on the scene's own world clock, which a fight's slow motion doesn't reach.
+//!   effect stack is on the scene's own world clock, which [`Scene::follow_simulation`] keeps with the
+//!   fight's slow motion, so a screen effect and a spark take the same time.
+//! - **A frame reads them all as it reads a pose** (review WA-3): `alpha` of the way from the step before
+//!   the latest to the latest, each by its own clock, and what began on the latest step from where it
+//!   begins. Shakes stay on the real clock, as the director's do, and start when what's drawn reaches
+//!   their step, so none of it leads the blow.
+//!
+//! [`Scene::follow_simulation`]: crate::scene::Scene::follow_simulation
 
 use std::time::Duration;
 
@@ -26,7 +33,7 @@ use sapphire_gameplay::{CueEvent, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::{GamepadId, Platform};
 use sapphire_render::{PostVariants, VfxFrame};
-use sapphire_time::Stopwatch;
+use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
@@ -36,6 +43,13 @@ const SEED: u64 = 0x5EED;
 /// How a hurtbox's surface maps onto the character's: the test moves' capsule is 0.7 m across and 1.75 m
 /// tall, and the character about half as wide and 1.55 m tall, so a hit on one's edge lands on the other's.
 const ON_THE_CHARACTER: Vec3 = Vec3::new(0.5, 0.88, 0.5);
+
+/// How many seconds a frame `alpha` of the way between its last two steps draws behind the latest:
+/// what a shake fired since the last frame starts from. Not a number draws the step before, as
+/// `presented_ticks` does.
+pub(crate) fn behind_latest(alpha: f32) -> f32 {
+    (1.0 - if alpha >= 0.0 { alpha.min(1.0) } else { 0.0 }) / TICK_HZ as f32
+}
 
 /// Where a fight's cues land.
 pub(crate) enum CueStage<'a> {
@@ -108,8 +122,16 @@ impl CueShow {
     /// The shipped table, within `budget`. An error names a row it can't resolve, and a test holds the
     /// shipped libraries to it.
     pub fn new(budget: VfxBudget, presets: &ScreenLibrary) -> Result<Self, CueTableError> {
-        let table = CueTable::default_table();
-        let effects = VfxLibrary::default_effects();
+        Self::with_table(CueTable::default_table(), VfxLibrary::default_effects(), budget, presets)
+    }
+
+    /// `table`, firing `effects` within `budget`. An error names a row it can't resolve.
+    pub(crate) fn with_table(
+        table: CueTable,
+        effects: VfxLibrary,
+        budget: VfxBudget,
+        presets: &ScreenLibrary,
+    ) -> Result<Self, CueTableError> {
         let tuning = CameraTuning::default_tuning();
         let dispatcher = CueDispatcher::new(&table, &effects, presets, &tuning)?;
         Ok(Self {
@@ -170,10 +192,11 @@ impl CueShow {
         self.stepping += stopwatch.elapsed();
     }
 
-    /// Writes the moment's effects to `frame`, with the time this frame's steps and the write took.
-    pub fn write(&mut self, frame: &mut VfxFrame) {
+    /// Writes the effects to `frame`, `alpha` of the way from the step before the latest to the latest,
+    /// with the time this frame's steps and the write took.
+    pub fn write(&mut self, frame: &mut VfxFrame, alpha: f32) {
         let stopwatch = Stopwatch::start();
-        self.world.write_frame(frame);
+        self.world.write_frame(frame, alpha);
         frame.stats.simulation = self.stepping + stopwatch.elapsed();
         self.stepping = Duration::ZERO;
     }
@@ -187,11 +210,12 @@ impl CueShow {
         }
     }
 
-    /// Ends the frame, `dt` real seconds after the last: forgets its sounds, tells `rumble` what changed,
-    /// and returns where its shakes turn and move the view.
-    pub fn end_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) -> (Vec3, Vec3) {
+    /// Ends the frame's steps, `dt` real seconds after the last frame's, for a frame drawn at `alpha`:
+    /// forgets its sounds, tells `rumble` what changed, and returns where its shakes turn and move the
+    /// view.
+    pub fn end_frame(&mut self, dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) -> (Vec3, Vec3) {
         self.dispatcher.end_frame(dt, rumble);
-        self.shakes.stack.advance(dt);
+        self.shakes.stack.advance(dt, behind_latest(alpha));
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
     }
 
@@ -335,10 +359,15 @@ mod tests {
         let mut director = CameraDirector::new(CameraTuning::default_tuning(), SEED).expect("it's good");
         let mut with_director = run(Some(&mut director));
         assert!(director.take_stats().shakes_fired > 0, "its shakes are the director's");
-        assert_eq!(with_director.end_frame(1.0 / 60.0, &mut ()), (Vec3::ZERO, Vec3::ZERO));
+        let shaken = |show: &mut CueShow| {
+            // A shake reads from where it begins on the frame it fires, and moves the view from the next.
+            let _ = show.end_frame(1.0 / 60.0, 1.0, &mut ());
+            show.end_frame(1.0 / 60.0, 1.0, &mut ())
+        };
+        assert_eq!(shaken(&mut with_director), (Vec3::ZERO, Vec3::ZERO));
 
         let mut plain = run(None);
-        assert_ne!(plain.end_frame(1.0 / 60.0, &mut ()), (Vec3::ZERO, Vec3::ZERO), "the plain view's shake");
+        assert_ne!(shaken(&mut plain), (Vec3::ZERO, Vec3::ZERO), "the plain view's shake");
     }
 
     /// The shipped table resolves against the libraries a scene starts with.

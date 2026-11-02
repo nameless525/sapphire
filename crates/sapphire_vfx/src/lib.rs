@@ -17,9 +17,10 @@
 //! world.spawn(spark, victim, Placement::at(Vec3::new(0.0, 1.0, 0.0)));
 //! world.advance(&OwnerSteps { world: 1.0 / 60.0, owners: &[(victim, 0.0)] });
 //!
-//! // Each frame: what the renderer draws, in `FramePacket::vfx`.
+//! // Each frame: what the renderer draws, in `FramePacket::vfx`, `alpha` of the way from the step
+//! // before the latest to the latest, as poses and transforms draw.
 //! let mut frame = VfxFrame::default();
-//! world.write_frame(&mut frame);
+//! world.write_frame(&mut frame, 0.5);
 //! ```
 //!
 //! # Owns
@@ -35,7 +36,8 @@
 //! - **Clocks** (spec §4.5): every effect runs on one [`OwnerId`]'s clock, through a plain time step
 //!   per owner the caller passes ([`OwnerSteps`]). Hitstop is an owner's step of 0, which freezes
 //!   its particles, emitters and trail exactly where they are, while world effects keep running;
-//!   slow motion is a smaller step.
+//!   slow motion is a smaller step. A frame reads each effect `alpha` of the way along its owner's
+//!   last step ([`VfxWorld::write_frame`]), where poses draw, so an effect never leads the blow.
 //! - **Sword trails** ([`VfxWorld::sample_trail`]): two sockets' samples, taken by the caller at
 //!   sub-tick rate, smoothed by a centripetal Catmull-Rom spline through each socket's path (the
 //!   `trail` module has why that one), the strip's width, color, opacity and bright core following

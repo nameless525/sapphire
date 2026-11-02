@@ -85,7 +85,7 @@ struct Slot {
     rng: Rng,
     /// Seconds on the owner's clock since it spawned.
     age: f32,
-    /// This step's time on the owner's clock.
+    /// This step's time on the owner's clock, which a frame reads back along ([`VfxWorld::write_frame`]).
     step: f32,
     /// No more emission or samples; it ends when what it holds has.
     stopped: bool,
@@ -437,17 +437,23 @@ impl VfxWorld {
         }
     }
 
-    /// Writes this moment's sprites and ribbon points into `frame`, replacing what it held, keeping
-    /// its vectors' capacity. Allocates nothing once `frame` has held as much.
-    pub fn write_frame(&mut self, frame: &mut VfxFrame) {
+    /// Writes the frame `alpha` of the way from the step before the latest to the latest into `frame`,
+    /// replacing what it held, keeping its vectors' capacity: where transforms and poses draw (spec
+    /// §4.5, review WA-3), each effect by its own owner's last step, so a frozen owner's hold exactly and
+    /// nothing leads the pose it accents. A particle born on the latest step, or a trail that only just
+    /// began, reads from where it begins, whatever the `alpha`. Allocates nothing once `frame` has held as
+    /// much.
+    pub fn write_frame(&mut self, frame: &mut VfxFrame, alpha: f32) {
         profiling::scope!("VfxWorld::write_frame");
+        // Written so that NaN draws the previous state, as `presented_ticks` does.
+        let unplayed = 1.0 - if alpha >= 0.0 { alpha.min(1.0) } else { 0.0 };
         frame.clear();
         frame.sprites.reserve(self.particles.len());
         for particle in &self.particles {
             let slot = &self.slots[usize::from(particle.slot)];
             let Some(effect) = self.library.effect(EffectId(slot.effect)) else { continue };
             let Some(emitter) = effect.emitters.get(usize::from(particle.emitter)) else { continue };
-            frame.sprites.push(sprite(particle, emitter));
+            frame.sprites.push(sprite(particle, emitter, unplayed * slot.step));
         }
         let mut ribbons = 0;
         for slot in self.slots.iter().filter(|slot| slot.live) {
@@ -461,7 +467,7 @@ impl VfxWorld {
                 desc,
                 self.rings[index],
                 &self.samples[start..start + MAX_TRAIL_SAMPLES],
-                slot.age,
+                slot.age - unplayed * slot.step,
                 self.budget,
                 &mut frame.ribbon_points,
                 &mut self.dropped_ribbon_points,
@@ -584,9 +590,12 @@ fn cone(axis: Vec3, spread: f32, rng: &mut Rng) -> Vec3 {
     axis * z + (x_axis * angle.cos() + y_axis * angle.sin()) * across
 }
 
-/// `particle` as its emitter's curves show it at its age.
-fn sprite(particle: &Particle, emitter: &EmitterDesc) -> VfxSprite {
-    let t = particle.age / particle.lifetime;
+/// `particle` as its emitter's curves show it at its age, `behind` seconds of its owner's clock before
+/// its latest step. It moved in a straight line over that step, so this is where it was, and no further
+/// back than its birth.
+fn sprite(particle: &Particle, emitter: &EmitterDesc, behind: f32) -> VfxSprite {
+    let behind = behind.min(particle.age);
+    let t = (particle.age - behind) / particle.lifetime;
     let half_width = emitter.size.sample(t) * particle.size;
     let (axis, half_length) = match emitter.facing {
         Facing::Camera { .. } => (Vec3::ZERO, half_width),
@@ -595,9 +604,9 @@ fn sprite(particle: &Particle, emitter: &EmitterDesc) -> VfxSprite {
         }
     };
     VfxSprite {
-        position: particle.position,
+        position: particle.position - particle.velocity * behind,
         axis,
-        rotation: particle.rotation,
+        rotation: particle.rotation - particle.spin * behind,
         half_width,
         half_length,
         color: emitter.color.sample_vec3(t),
@@ -609,9 +618,10 @@ fn sprite(particle: &Particle, emitter: &EmitterDesc) -> VfxSprite {
     }
 }
 
-/// Appends the strip of a trail's samples to `points`, smoothed between them, its look by each
-/// point's age at the effect's `age`, as far as the budget's cap leaves room: a ribbon over it loses
-/// its oldest stretches. Returns whether it drew.
+/// Appends the strip of a trail's samples up to the effect's `age` to `points`, smoothed between them,
+/// its look by each point's age then, as far as the budget's cap leaves room: a ribbon over it loses its
+/// oldest stretches. A frame that falls between two samples ends the strip there, on the spline the next
+/// frame will draw, so the head stays with the blade. Returns whether it drew.
 fn write_ribbon(
     desc: &TrailDesc,
     ring: TrailRing,
@@ -626,8 +636,22 @@ fn write_ribbon(
         return false;
     }
     let sample = |place: usize| samples[(usize::from(ring.oldest) + place) % usize::from(ring.capacity)];
+    // The samples this frame has reached, and how far into the stretch after them it has got.
+    let reached = (0..len).rev().find(|&place| sample(place).time <= age).map_or(0, |place| place + 1);
+    if reached == 0 {
+        return false;
+    }
+    let head = (reached < len).then(|| {
+        let (from, to) = (sample(reached - 1), sample(reached));
+        ((age - from.time) / (to.time - from.time).max(f32::MIN_POSITIVE)).clamp(0.0, 1.0)
+    });
+    let head = head.filter(|&share| share > 0.0);
+    let stretches = reached - 1 + usize::from(head.is_some());
+    if stretches == 0 {
+        return false;
+    }
     let subdivisions = budget.trail_subdivisions.max(1) as usize;
-    let wanted = (len - 1) * subdivisions + 1;
+    let wanted = stretches * subdivisions + 1;
     let room = (budget.max_ribbon_points as usize).saturating_sub(points.len());
     if room < 2 {
         *dropped += wanted as u64;
@@ -663,7 +687,9 @@ fn write_ribbon(
             ends,
         }
     };
-    for place in lost..len - 1 {
+    // Where the strip ends: the last sample it reached, or partway along the stretch after it.
+    let mut end = sample(reached - 1);
+    for place in lost..stretches {
         let (a, b) = (sample(place), sample(place + 1));
         // Beyond either end the path goes on as it was going: the sample before its first reflected.
         let before = if place > 0 {
@@ -678,13 +704,16 @@ fn write_ribbon(
         };
         let bases = Segment::new(before.base, a.base, b.base, after.base);
         let tips = Segment::new(before.tip, a.tip, b.tip, after.tip);
+        let reach = if place + 1 == reached { head.unwrap_or(1.0) } else { 1.0 };
         for step in 0..subdivisions {
-            let u = step as f32 / subdivisions as f32;
+            let u = step as f32 / subdivisions as f32 * reach;
             let time = a.time + (b.time - a.time) * u;
             points.push(point(bases.at(u), tips.at(u), time, false));
         }
+        if place + 1 == reached {
+            end = TrailSample { base: bases.at(reach), tip: tips.at(reach), time: age };
+        }
     }
-    let newest = sample(len - 1);
-    points.push(point(newest.base, newest.tip, newest.time, true));
+    points.push(point(end.base, end.tip, end.time, true));
     true
 }

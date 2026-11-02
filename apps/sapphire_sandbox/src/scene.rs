@@ -393,6 +393,8 @@ pub(crate) struct Scene {
     arena: Option<Box<ArenaActors>>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
     view_cut: bool,
+    /// A fight's slow motion on the scene's world clock, while it runs: how slow, and its scale there.
+    fight_slow_motion: Option<(u32, ScaleHandle)>,
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
     /// Which party member the character draws as, with `--party`.
@@ -539,6 +541,7 @@ impl Scene {
             blade: None,
             arena: None,
             view_cut: false,
+            fight_slow_motion: None,
             fighters_posed: false,
             party_looks: None,
             figure,
@@ -1619,8 +1622,10 @@ impl Scene {
     }
 
     /// Takes the arena's actors from `simulation`, after a step of it: nothing without `--arena`.
-    /// `cast` is its scenario's, the player first.
+    /// `cast` is its scenario's, the player first. Whatever the stage, the scene's world clock takes up
+    /// the fight's slow motion, as the simulation's does from its next step.
     pub fn follow_simulation(&mut self, simulation: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
+        self.follow_slow_motion(simulation);
         if let Some(arena) = &mut self.arena {
             let fought = arena.fight_time();
             arena.follow(simulation, cast);
@@ -1631,6 +1636,30 @@ impl Scene {
         }
         if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
             self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Keeps the scene's world clock with a fight's slow motion (M2 G4), the only scale a simulation puts
+    /// on its world, so what the scene's clock times (screen effects, time of day, the wind and everything
+    /// else on `FramePacket::time_seconds`) stays with the fighters and the effects on theirs.
+    fn follow_slow_motion(&mut self, simulation: &Simulation) {
+        let clock = &simulation.world().resource::<WorldClock>().0;
+        let slowed = clock.scales().find(|scale| scale.source == ScaleSource::PerfectDodge);
+        let slowed = slowed.map(|scale| scale.per_mille);
+        if slowed == self.fight_slow_motion.map(|(per_mille, _)| per_mille) {
+            return;
+        }
+        let mut clock = self.ecs.world_mut().resource_mut::<WorldClock>();
+        if let Some((_, handle)) = self.fight_slow_motion.take() {
+            clock.0.pop_scale(handle);
+        }
+        if let Some(per_mille) = slowed {
+            match clock.0.push_scale(ScaleSource::PerfectDodge, per_mille) {
+                Ok(handle) => self.fight_slow_motion = Some((per_mille, handle)),
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, %error, "the scene misses a fight's slow motion")
+                }
+            }
         }
     }
 
@@ -1940,11 +1969,12 @@ impl Scene {
         self.cues.as_ref().map_or(CueSounds::NONE, CueShow::sounds)
     }
 
-    /// Ends a frame of a fight's cues, `dt` real seconds after the last, after the audio system took
-    /// [`Self::cue_sounds`]: tells `rumble` what changed, and shakes the camera for the frame to come.
-    pub fn end_cue_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) {
+    /// Ends a frame's steps of a fight's cues, `dt` real seconds after the last frame's, for a frame drawn
+    /// at `alpha`, after the audio system took [`Self::cue_sounds`]: tells `rumble` what changed, and
+    /// shakes the camera for the frame to come.
+    pub fn end_cue_frame(&mut self, dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) {
         let Some(cues) = &mut self.cues else { return };
-        let (turn, offset) = cues.end_frame(dt, rumble);
+        let (turn, offset) = cues.end_frame(dt, alpha, rumble);
         // With a director on, its own frame has the shakes, and a turn its roll.
         if self.arena.as_mut().is_none_or(|arena| arena.director().is_none()) {
             self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
@@ -1990,9 +2020,9 @@ impl Scene {
     /// must see.
     ///
     /// `alpha` means one thing (review WA-3): `alpha` of the way from the previous fixed step to the
-    /// latest, for transforms, poses and clocks alike (time of day, cutscenes, screen effects,
-    /// `FramePacket::time_seconds`). So an effect stays with the pose it accents, and shown time
-    /// never steps back on entering pause or slow motion.
+    /// latest, for transforms, poses and clocks alike (time of day, cutscenes, screen effects, effects'
+    /// particles and trails, `FramePacket::time_seconds`). So an effect stays with the pose it accents,
+    /// and shown time never steps back on entering pause or slow motion.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.aspect = drawable_aspect(target_size).unwrap_or(self.aspect);
         self.ecs.presentation(alpha);
@@ -2014,10 +2044,10 @@ impl Scene {
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             if let Some(vfx) = vfx {
-                vfx.write(&mut packet.vfx);
+                vfx.write(&mut packet.vfx, alpha);
             }
             if let Some(cues) = cues {
-                cues.write(&mut packet.vfx);
+                cues.write(&mut packet.vfx, alpha);
             }
             let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
@@ -2359,6 +2389,8 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 }
 
 #[cfg(test)]
+mod clock_tests;
+#[cfg(test)]
 mod spring_tests;
 
 #[cfg(test)]
@@ -2419,9 +2451,13 @@ mod tests {
         for _ in 0..=hit {
             scene.step();
         }
-        let before = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        // The hit's own step, which a frame draws up to the end of; what freezes holds there.
+        let on_its_way = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        scene.end_frame();
+        let before = scene.frame_packet(1.0, Some((1, 1))).vfx.clone();
         scene.end_frame();
         assert!(!before.ribbon_points.is_empty() && !before.sprites.is_empty(), "the trail and the spark");
+        assert!(on_its_way.ribbon_points.len() < before.ribbon_points.len(), "the blade's still on its way");
         let spun = angle(&scene);
         // Five of its six ticks, which the world's dust goes on through.
         for _ in 0..5 {
@@ -2557,7 +2593,7 @@ mod tests {
     }
 
     /// The arena's stage with stand-in meshes, framed by `shot`, and the figure it holds the character by.
-    fn arena_stage(shot: ArenaShot) -> (Scene, Figure) {
+    pub(super) fn arena_stage(shot: ArenaShot) -> (Scene, Figure) {
         let plain = MeshHandle::from_raw(1);
         let town = TownMeshes {
             town: plain,
@@ -4209,8 +4245,8 @@ mod tests {
     }
 
     /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
-    /// screen effect and shakes the camera, the frames before it draw none of them, and the simulation
-    /// still reaches its recorded checksums.
+    /// screen effect and fires its shake, which moves the view from the next, the frames before it draw
+    /// none of them, and the simulation still reaches its recorded checksums.
     #[test]
     fn a_fights_first_hit_reaches_the_frame_it_lands_in() {
         let mut combat = recorded_fight();
@@ -4225,7 +4261,7 @@ mod tests {
             combat.step(&mut crate::combat::no_bindings);
             scene.show_cues(combat.simulation());
             let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
             let shaken = view_at(&scene) != still;
             let packet = scene.frame_packet(1.0, Some((640, 360)));
             let (spark, effects) = (!packet.vfx.is_empty(), packet.post.effects);
@@ -4233,7 +4269,10 @@ mod tests {
             if hit {
                 assert!(spark, "the hit's spark");
                 assert_ne!(effects, sapphire_render::PostEffects::NONE, "the hit's screen effect");
-                assert!(shaken, "the hit's shake");
+                assert!(!shaken, "its shake is fired, and reads from where it begins, which is nothing");
+                scene.step();
+                scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
+                assert!(view_at(&scene) != still, "the hit's shake, a frame on");
                 landed = true;
                 break;
             }
@@ -4257,7 +4296,7 @@ mod tests {
                 combat.step(&mut crate::combat::no_bindings);
                 let ((), fired) = sapphire_core::alloc::count_in_scope(|| {
                     scene.show_cues(combat.simulation());
-                    scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+                    scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
                 });
                 allocations += fired.allocations;
                 let _ = scene.frame_packet(1.0, Some((640, 360)));
@@ -4278,7 +4317,7 @@ mod tests {
             scene.step();
             combat.step(&mut crate::combat::no_bindings);
             scene.show_cues(combat.simulation());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0, &mut ());
             let packet = scene.frame_packet(1.0, Some((640, 360)));
             assert!(packet.vfx.is_empty());
             assert_eq!(packet.post.effects, sapphire_render::PostEffects::NONE);

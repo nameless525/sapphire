@@ -57,7 +57,7 @@ pub struct Shake {
 impl Shake {
     /// The weight at `age` seconds: up over the attack, down to exactly 0 at the end.
     fn envelope(&self, age: f32) -> f32 {
-        if age >= self.duration {
+        if age <= 0.0 || age >= self.duration {
             return 0.0;
         }
         if age < self.attack {
@@ -82,7 +82,10 @@ pub struct NamedShake {
 struct Layer {
     shake: Shake,
     strength: f32,
+    /// Seconds since what it accents was drawn, or still to go before that (below zero).
     age: f32,
+    /// Fired since the last [`ShakeStack::advance`], which starts it.
+    fresh: bool,
     phases: [f32; PHASES],
 }
 
@@ -98,6 +101,7 @@ impl Layer {
         },
         strength: 0.0,
         age: 0.0,
+        fresh: false,
         phases: [0.0; PHASES],
     };
 
@@ -161,7 +165,7 @@ impl ShakeStack {
             *phase = self.rng.unit_f32() * std::f32::consts::TAU;
         }
         let strength = if strength.is_finite() { strength.max(0.0) } else { 0.0 };
-        let layer = Layer { shake, strength, age: 0.0, phases };
+        let layer = Layer { shake, strength, age: 0.0, fresh: true, phases };
         if self.count < MAX_SHAKES {
             self.layers[self.count] = layer;
             self.count += 1;
@@ -179,12 +183,16 @@ impl ShakeStack {
         true
     }
 
-    /// Ages every shake, and drops those that ended.
-    pub fn advance(&mut self, dt: f32) {
+    /// Ages every shake by `dt` real seconds, and drops those that ended. A shake fired since the last
+    /// call doesn't age: it starts `behind` seconds from now, how far this frame draws behind the latest
+    /// fixed step ([`CameraFrame::behind`](crate::CameraFrame::behind)). So it begins when what's drawn gets
+    /// to the step that fired it, and a hit's shake never leads the blow (review WA-3).
+    pub fn advance(&mut self, dt: f32, behind: f32) {
         let mut kept = 0;
         for index in 0..self.count {
             let mut layer = self.layers[index];
-            layer.age += dt;
+            layer.age = if layer.fresh { -behind } else { layer.age + dt };
+            layer.fresh = false;
             if layer.age < layer.shake.duration {
                 self.layers[kept] = layer;
                 kept += 1;
@@ -233,7 +241,7 @@ mod tests {
         stack.fire(THUMP, 1.0);
         (0..frames)
             .map(|_| {
-                stack.advance(dt);
+                stack.advance(dt, 0.0);
                 stack.sample(&tuning())
             })
             .collect()
@@ -246,12 +254,38 @@ mod tests {
         assert_ne!(first, run(8, 20, 1.0 / 60.0));
     }
 
+    /// Review WA-3. A hit's frame draws up to a tick before the step that landed it, so its shake starts
+    /// when what's drawn gets there, on the real clock from then on: the frame it's fired draws none of
+    /// it, and each frame after is as old as the time since.
+    #[test]
+    fn a_shake_starts_when_the_frame_reaches_its_step() {
+        const TICK: f32 = 1.0 / 60.0;
+        let age = |stack: &ShakeStack| stack.layers[0].age;
+        let mut stack = ShakeStack::new(1);
+        stack.fire(THUMP, 1.0);
+        // A quarter of the way between the step before and the step it fired on.
+        stack.advance(TICK, 0.75 * TICK);
+        assert_eq!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO), "what it accents isn't there yet");
+        // The next frame, a whole refresh on, is a quarter of a tick past that step, whatever the time
+        // this frame gave. A later frame at another share of its step is the time between them on.
+        stack.advance(TICK, 0.75 * TICK);
+        assert!((age(&stack) - 0.25 * TICK).abs() < 1e-6, "{}", age(&stack));
+        assert_ne!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
+        stack.advance(0.5 * TICK, 0.0);
+        assert!((age(&stack) - 0.75 * TICK).abs() < 1e-6, "{}", age(&stack));
+        // A frame drawn at the latest step reads it from its very start.
+        let mut stack = ShakeStack::new(1);
+        stack.fire(THUMP, 1.0);
+        stack.advance(TICK, 0.0);
+        assert_eq!(age(&stack), 0.0);
+    }
+
     #[test]
     fn its_path_doesnt_depend_on_the_frame_rate() {
         let at_60 = run(7, 20, 1.0 / 60.0);
         let at_120 = run(7, 40, 1.0 / 120.0);
         for (frame, sample) in at_60.iter().enumerate() {
-            let other = at_120[frame * 2 + 1];
+            let other = at_120[frame * 2];
             assert!(sample.0.abs_diff_eq(other.0, 1e-4), "{frame}: {sample:?} vs {other:?}");
             assert!(sample.1.abs_diff_eq(other.1, 1e-4), "{frame}: {sample:?} vs {other:?}");
         }
@@ -259,15 +293,18 @@ mod tests {
 
     #[test]
     fn it_rises_from_nothing_and_ends_at_nothing() {
+        assert_eq!(THUMP.envelope(-0.01), 0.0);
         assert_eq!(THUMP.envelope(0.0), 0.0);
         assert!((THUMP.envelope(THUMP.attack) - 1.0).abs() < 1e-6);
         assert_eq!(THUMP.envelope(THUMP.duration), 0.0);
         let mut stack = ShakeStack::new(1);
         stack.fire(THUMP, 1.0);
-        stack.advance(0.2);
+        stack.advance(0.2, 0.0);
+        assert_eq!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO), "on the frame it was fired");
+        stack.advance(0.2, 0.0);
         assert_ne!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
         assert_eq!(stack.playing(), 1);
-        stack.advance(0.21);
+        stack.advance(0.21, 0.0);
         assert_eq!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
         assert_eq!(stack.playing(), 0);
     }
@@ -278,7 +315,8 @@ mod tests {
             let mut stack = ShakeStack::new(3);
             stack.set_setting(setting);
             stack.fire(THUMP, 1.0);
-            stack.advance(0.05);
+            stack.advance(0.0, 0.0);
+            stack.advance(0.05, 0.0);
             stack.sample(&tuning())
         };
         let (full, half) = (sample(1.0), sample(0.5));
@@ -295,10 +333,11 @@ mod tests {
             let mut stack = ShakeStack::new(3);
             stack.set_setting(setting);
             stack.fire(THUMP, 1.0);
-            stack.advance(1.0);
+            stack.advance(1.0, 0.0);
             stack.set_setting(1.0);
             stack.fire(THUMP, 1.0);
-            stack.advance(0.05);
+            stack.advance(0.0, 0.0);
+            stack.advance(0.05, 0.0);
             stack.sample(&tuning())
         };
         assert_eq!(later(0.0), later(1.0));
@@ -312,12 +351,12 @@ mod tests {
             assert!(!stack.fire(if index == 3 { THUMP } else { long }, 40.0));
         }
         assert_eq!(stack.playing(), MAX_SHAKES);
-        stack.advance(0.1);
+        stack.advance(0.1, 0.0);
         assert!(stack.fire(long, 40.0), "the eighth place is taken");
         assert_eq!(stack.playing(), MAX_SHAKES);
         assert_eq!(stack.layers[3].shake.duration, 2.0, "the one nearest its end made way");
         let (rotation, translation) = {
-            stack.advance(0.02);
+            stack.advance(0.02, 0.0);
             stack.sample(&tuning())
         };
         assert!(rotation.abs().max_element() <= 0.05, "{rotation}");

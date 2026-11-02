@@ -173,7 +173,7 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
                 },
             );
             cues.advance_effects(sim, &mut vfx);
-            vfx.write_frame(&mut sinks.frame);
+            vfx.write_frame(&mut sinks.frame, 1.0);
         });
         let mut dispatch = timer.elapsed();
 

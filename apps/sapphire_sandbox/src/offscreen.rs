@@ -401,8 +401,8 @@ impl Stage {
     /// each step here is a frame's worth, as it is on any tier that draws every tick.
     pub fn step(&mut self) {
         self.fixed_step();
-        // No sound and no pad here: a frame's end is all that's left of them.
-        self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, &mut ());
+        // No sound and no pad here: a frame's end is all that's left of them. Frames here draw the latest step.
+        self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, 1.0, &mut ());
     }
 
     /// One fixed step and nothing of the frame's: for a frame that takes several, or asks what the steps

@@ -14,7 +14,8 @@ use sapphire_render::PostEffects;
 use support::Fight;
 
 /// At the fight's first hit, every sink goes from nothing to firing in one frame, the same one in which
-/// hitstop starts.
+/// hitstop starts. The shake is fired there, and reads from where it begins, which is nothing, so it moves
+/// the view from the next frame: a frame draws up to a tick before the step the blow lands on (review WA-3).
 #[test]
 fn one_hit_reaches_every_sink_in_one_frame() {
     let mut fight = Fight::new("fight");
@@ -39,11 +40,13 @@ fn one_hit_reaches_every_sink_in_one_frame() {
     assert!(hit.screen_layers > 0, "the screen effect was pushed: {hit:?}");
     assert_ne!(hit.post, Some(PostEffects::NONE), "and post draws it");
     assert_eq!(hit.shakes, 1, "the shake: {hit:?}");
-    assert!(hit.view_moved, "and the view moved");
+    assert!(!hit.view_moved, "from nothing: {hit:?}");
     assert_eq!(hit.voices, 1, "the sound started on the mixer: {hit:?}");
     assert_eq!(hit.rumbles, 1, "the pad was told: {hit:?}");
     assert_eq!(hit.in_hitstop, 2, "and both fighters froze: {hit:?}");
     assert_eq!(fight.cues.stats().unmatched, 0);
+    let next = fight.frame(1).expect("the fight goes on");
+    assert!(next.view_moved, "the frame after, the view moved: {next:?}");
 }
 
 /// Not just the first: every frame of a whole fight with a hit in it fires all of them, and nothing fires

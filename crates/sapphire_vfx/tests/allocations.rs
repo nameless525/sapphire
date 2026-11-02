@@ -63,7 +63,8 @@ fn stepping_spawning_and_resolving_allocate_nothing_once_warmed() {
             {
                 world.stop(blade);
             }
-            world.write_frame(frame);
+            // Between two samples, where a frame's strip ends on a stretch of its own.
+            world.write_frame(frame, 0.5);
             tick += 1;
         }
     };
@@ -91,7 +92,7 @@ fn a_new_world_needs_only_its_frames_capacity() {
         }
         for _ in 0..8 {
             world.advance(&OwnerSteps { world: TICK, owners: &[] });
-            world.write_frame(&mut frame);
+            world.write_frame(&mut frame, 1.0);
         }
     });
     assert_eq!(counts.allocations, 0);

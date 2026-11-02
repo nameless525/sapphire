@@ -61,7 +61,7 @@ fn world_of(effects: Vec<Effect>, budget: VfxBudget) -> VfxWorld {
 
 fn frame_of(world: &mut VfxWorld) -> VfxFrame {
     let mut frame = VfxFrame::default();
-    world.write_frame(&mut frame);
+    world.write_frame(&mut frame, 1.0);
     frame
 }
 
@@ -142,6 +142,119 @@ fn a_frozen_owner_holds_its_effects_while_others_run() {
     let was = by_owner(&after, Vec3::X);
     assert!(by_owner(&thawed, Vec3::X).iter().zip(&was).all(|(a, b)| a.position != b.position));
     assert_ne!(thawed.ribbon_points, after.ribbon_points, "its trail ages again");
+}
+
+/// A burst whose one particle flies up at 6 m/s and turns, with no gravity, drag or spin of chance.
+fn flying() -> Effect {
+    let mut effect = burst(1);
+    let emitter = &mut effect.emitters[0];
+    emitter.lifetime = (10.0, 10.0);
+    emitter.motion = Motion { speed: (6.0, 6.0), spread: 0.0, ..emitter.motion };
+    emitter.facing = Facing::Camera { spin: (3.0, 3.0) };
+    effect
+}
+
+fn drawn(world: &mut VfxWorld, alpha: f32) -> Vec<VfxSprite> {
+    let mut frame = VfxFrame::default();
+    world.write_frame(&mut frame, alpha);
+    frame.sprites
+}
+
+/// Review WA-3: a frame reads a particle `alpha` of the way from the step before the latest to the
+/// latest, as it reads a transform, so a particle that keeps its own last step never leads a pose.
+#[test]
+fn a_frame_draws_a_particle_between_its_last_two_steps() {
+    let mut world = world_of(vec![flying()], VfxBudget::DESKTOP_LOW);
+    world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+    world.advance(&ALL_RUN);
+    // Its first step: it's only just born, so it reads from there at every alpha.
+    let born = drawn(&mut world, 1.0)[0];
+    assert_eq!(born.position, Vec3::ZERO);
+    for alpha in [0.0, 0.25, 0.5] {
+        assert_eq!(drawn(&mut world, alpha)[0], born, "alpha {alpha}");
+    }
+    world.advance(&ALL_RUN);
+    let latest = drawn(&mut world, 1.0)[0];
+    assert!((latest.position.y - 6.0 * TICK).abs() < 1e-5, "{}", latest.position);
+    assert_eq!(drawn(&mut world, 0.0)[0].position, born.position, "where the last frame's step left it");
+    assert!((drawn(&mut world, 0.0)[0].rotation - born.rotation).abs() < 1e-5);
+    let halfway = drawn(&mut world, 0.5)[0];
+    assert!((halfway.position.y - 3.0 * TICK).abs() < 1e-5, "{}", halfway.position);
+    assert!((halfway.rotation - (born.rotation + latest.rotation) * 0.5).abs() < 1e-5);
+    assert!(latest.alpha < halfway.alpha && halfway.alpha < born.alpha, "it ages along the step too");
+    assert_eq!(drawn(&mut world, f32::NAN)[0], drawn(&mut world, 0.0)[0], "not a number: the step before");
+    assert_eq!(drawn(&mut world, 2.0)[0], latest, "and never past the latest");
+}
+
+/// Each effect reads back along its own owner's step: hitstop holds it to the bit at every alpha, and a
+/// slower owner's frame covers less ground. On the step it freezes it's still on its way there.
+#[test]
+fn a_frame_reads_each_effect_by_its_owners_last_step() {
+    let owner = OwnerId(1);
+    let mut world = world_of(vec![flying()], VfxBudget::DESKTOP_LOW);
+    world.spawn(EffectId(0), owner, Placement::default()).expect("spawned");
+    world.advance(&ALL_RUN);
+    world.advance(&ALL_RUN);
+    let before = drawn(&mut world, 0.75)[0];
+    world.advance(&OwnerSteps { world: TICK, owners: &[(owner, 0.0)] });
+    let held = drawn(&mut world, 1.0)[0];
+    assert!(before.position.y < held.position.y, "the frame before was still on its way");
+    for alpha in [0.0, 0.25, 0.5] {
+        assert_eq!(drawn(&mut world, alpha)[0], held, "frozen, at alpha {alpha}");
+    }
+    let slow = TICK * 0.2;
+    world.advance(&OwnerSteps { world: TICK, owners: &[(owner, slow)] });
+    let (from, to) = (drawn(&mut world, 0.0)[0], drawn(&mut world, 1.0)[0]);
+    assert_eq!(from.position, held.position, "it thaws from where it held");
+    assert!((to.position.y - held.position.y - 6.0 * slow).abs() < 1e-5, "{}", to.position);
+}
+
+/// A frame between two steps ends the strip between two samples, on the spline the next frame draws
+/// through them, so the head stays with the blade and doesn't jump when the next step arrives.
+#[test]
+fn a_frame_ends_a_trail_where_the_frame_is() {
+    let budget = VfxBudget { trail_subdivisions: 4, ..VfxBudget::DESKTOP_HIGH };
+    let mut world = world_of(vec![trail(48)], budget);
+    let blade = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+    let arc = |angle: f32, reach: f32| Vec3::new(angle.cos() * reach, angle.sin() * reach, 0.0);
+    for tick in 0..6 {
+        world.advance(&ALL_RUN);
+        for sub in 0..4 {
+            let angle = (tick * 4 + sub) as f32 * 0.05;
+            let ago = TICK * (3 - sub) as f32 / 4.0;
+            world.sample_trail(blade, arc(angle, 0.3), arc(angle, 1.2), ago);
+        }
+    }
+    let points = |world: &mut VfxWorld, alpha: f32| {
+        let mut frame = VfxFrame::default();
+        world.write_frame(&mut frame, alpha);
+        frame.ribbon_points
+    };
+    let whole = points(&mut world, 1.0);
+    let newest = (5 * 4 + 3) as f32 * 0.05;
+    let last = whole[whole.len() - 1];
+    assert!(last.ends && last.tip.abs_diff_eq(arc(newest, 1.2), 1e-5), "{}", last.tip);
+    // A tick's four samples ago is the step before's last: an exact sample again.
+    let before = points(&mut world, 0.0);
+    let head = before[before.len() - 1];
+    assert!(head.ends && head.tip.abs_diff_eq(arc(newest - 0.2, 1.2), 1e-3), "{}", head.tip);
+    assert_eq!(before.len(), whole.len() - 4 * 4, "four stretches of four points fewer");
+    assert!(before[..before.len() - 1].iter().all(|point| !point.ends));
+    // Halfway: halfway along that step's arc, between two samples, and still on it.
+    let halfway = points(&mut world, 0.5);
+    let head = halfway[halfway.len() - 1];
+    assert!(head.ends && head.tip.abs_diff_eq(arc(newest - 0.1, 1.2), 2e-3), "{}", head.tip);
+    assert!(before.len() < halfway.len() && halfway.len() < whole.len());
+    // What's behind the head is the same strip it will be at the latest step: shifted in age, not place.
+    for (a, b) in before.iter().zip(&whole).take(before.len() - 1) {
+        assert!(a.tip.abs_diff_eq(b.tip, 1e-2), "{} {}", a.tip, b.tip);
+        assert!(a.alpha >= b.alpha, "younger at the frame before");
+    }
+    // A trail frozen holds its head at every alpha.
+    world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+    let held = points(&mut world, 0.25);
+    assert_eq!(held, points(&mut world, 1.0));
+    assert_eq!(held.len(), whole.len());
 }
 
 #[test]

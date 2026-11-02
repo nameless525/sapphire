@@ -48,6 +48,10 @@ pub struct CameraFrame {
     /// don't touch it, and 0 while the game is paused, which holds everything. Never the OS clock read
     /// here (rule R2): the app has it from its frame loop.
     pub dt: f32,
+    /// How many seconds this frame draws behind the latest fixed step: `1 - alpha` of a tick, as poses and
+    /// transforms do. It places a shake fired since the last frame, so it starts when what's drawn gets
+    /// to the step that fired it ([`ShakeStack::advance`]) and then runs on `dt`.
+    pub behind: f32,
     pub player: Subject,
     /// Which way the player faces, in radians from +Z toward +X: what recentring turns behind.
     pub player_yaw: f32,
@@ -479,7 +483,7 @@ impl CameraDirector {
             self.heading = forward.x.atan2(forward.z);
         }
 
-        self.shakes.advance(dt);
+        self.shakes.advance(dt, frame.behind);
         let (turn, offset) = self.shakes.sample(&self.tuning.shakes);
         if offset != Vec3::ZERO {
             let moved = pose.rotation * Vec3::new(-offset.x, offset.y, offset.z);
@@ -502,6 +506,9 @@ impl CameraDirector {
         let mut clean = *frame;
         if !clean.dt.is_finite() || clean.dt < 0.0 {
             clean.dt = 0.0;
+        }
+        if !clean.behind.is_finite() || clean.behind < 0.0 {
+            clean.behind = 0.0;
         }
         if !clean.look.is_finite() || clean.dt <= 0.0 {
             clean.look = Vec2::ZERO;

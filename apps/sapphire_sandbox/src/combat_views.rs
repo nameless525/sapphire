@@ -1048,8 +1048,9 @@ mod tests {
             let shape = BodyShape::Sphere { radius: 0.2 };
             world.add_body(BodyDesc { id, shape, pose: Pose::at(center), groups }).unwrap();
         };
-        body(hurtbox(actor, 0), chest);
-        body(hurtbox(actor, 1), head);
+        // Numbered past what the test set's fighter places for itself, which a step moves.
+        body(hurtbox(actor, 1), chest);
+        body(hurtbox(actor, 2), head);
         // Nobody's: no live actor owns it.
         body(hurtbox(ActorId::from_raw(7).unwrap(), 0), Vec3::X);
         sim.set_physics_world(world).unwrap();

@@ -356,7 +356,8 @@ impl EffectLibrary {
     }
 
     /// Sapphire's sample effects (`default_effects.ron` beside this crate's manifest), compiled in:
-    /// `hit_spark`, `sword_trail` and `dust_puff`. Their colors and curves are starting points for
+    /// `hit_spark`, `sword_trail` and `dust_puff`, and what a fight's cues play (M2 E3): `cut_spark`,
+    /// `break_ring`, `heavy_spark` and `finish_burst`. Their colors and curves are starting points for
     /// art direction.
     pub fn default_effects() -> Self {
         Self::from_ron(DEFAULT_EFFECTS).expect("the shipped effects are checked by this module's tests")
@@ -578,7 +579,18 @@ mod tests {
     fn the_shipped_effects_are_valid_and_named() {
         let library = EffectLibrary::default_effects();
         let names: Vec<&str> = library.names().collect();
-        assert_eq!(names, ["hit_spark", "sword_trail", "dust_puff"]);
+        assert_eq!(
+            names,
+            [
+                "hit_spark",
+                "sword_trail",
+                "dust_puff",
+                "cut_spark",
+                "break_ring",
+                "heavy_spark",
+                "finish_burst"
+            ]
+        );
         let trail = library.find("sword_trail").and_then(|id| library.effect(id)).expect("its trail");
         assert!(trail.trail.is_some());
         assert!(library.find("nothing").is_none());

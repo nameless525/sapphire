@@ -23,7 +23,7 @@
             (
                 cue: "hit_landed",
                 weight: Some(Light),
-                effects: [(effect: "hit_spark")],
+                effects: [(effect: "cut_spark")],
                 sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
                 shake: Some((preset: "hit_light")),
                 screen: Some((preset: "light_hit")),
@@ -32,7 +32,7 @@
             (
                 cue: "hit_landed",
                 weight: Some(Medium),
-                effects: [(effect: "hit_spark")],
+                effects: [(effect: "cut_spark")],
                 sounds: ["f330373e-0979-47c3-bef2-3d150fd62eff"], // hit_medium
                 shake: Some((preset: "hit_light", strength: 1.8)),
                 screen: Some((preset: "medium_hit")),
@@ -64,7 +64,7 @@
             ),
             (
                 cue: "hit_spin",
-                effects: [(effect: "hit_spark")],
+                effects: [(effect: "cut_spark")],
                 sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
                 shake: Some((preset: "hit_light", strength: 0.7)),
                 rumble: Some((low: 0.1, high: 0.3, seconds: 0.05)),
@@ -73,7 +73,7 @@
             // screen effects stack, and the later one shows over the earlier.
             (
                 cue: "poise_broken",
-                effects: [(effect: "heavy_spark"), (effect: "dust_puff", at: Feet)],
+                effects: [(effect: "break_ring"), (effect: "dust_puff", at: Feet)],
                 sounds: ["88ffc1b9-2961-4f2a-91c3-dd22c453310d"], // poise_break
                 shake: Some((preset: "hit_heavy", strength: 1.3)),
                 screen: Some((preset: "poise_break")),

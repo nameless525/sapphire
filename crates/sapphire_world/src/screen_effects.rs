@@ -19,7 +19,8 @@
 //!   presets of one to eight layers that a push starts together, checked however they are made.
 //!   [`EffectLibrary::default_effects`] (`default_screen_effects.ron`) is compiled in until packs
 //!   carry it, and development builds hot reload it (A8): a sample preset per effect, and
-//!   `impact_frame`, all of them at once. [`EffectLibrary::post_variants`] (and
+//!   `impact_frame`, all of them at once, and combat's hits and dodges (M2 E3), which
+//!   `sapphire_cues`' table pushes. [`EffectLibrary::post_variants`] (and
 //!   [`EffectPreset::post_variants`]) name the post pipeline variants the presets draw through,
 //!   which a game has the renderer prewarm at load
 //!   ([`Renderer::prewarm_post`](sapphire_render::Renderer::prewarm_post)), so a preset's first

@@ -51,7 +51,20 @@ fn the_sample_presets_load_and_round_trip() {
     let names: Vec<&str> = library.names().collect();
     assert_eq!(
         names,
-        ["radial_blur", "chromatic_aberration", "inversion", "duotone", "speed_lines", "impact_frame"]
+        [
+            "radial_blur",
+            "chromatic_aberration",
+            "inversion",
+            "duotone",
+            "speed_lines",
+            "impact_frame",
+            "light_hit",
+            "medium_hit",
+            "heavy_hit",
+            "poise_break",
+            "finish",
+            "perfect_dodge",
+        ]
     );
     let kinds = |name: &str| -> Vec<EffectKind> {
         let preset = library.preset(library.find(name).expect("shipped")).expect("in the library");

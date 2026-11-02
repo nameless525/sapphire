@@ -393,6 +393,8 @@ pub(crate) struct Scene {
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
     arena: Option<ArenaActors>,
+    /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
+    view_cut: bool,
     /// What poses them.
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
@@ -537,6 +539,7 @@ impl Scene {
             enemy: None,
             blade: None,
             arena: None,
+            view_cut: false,
             fighters_posed: false,
             party_looks: None,
             figure,
@@ -1614,7 +1617,12 @@ impl Scene {
     /// `cast` is its scenario's, the player first.
     pub fn follow_simulation(&mut self, simulation: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
         if let Some(arena) = &mut self.arena {
+            let fought = arena.fight_time();
             arena.follow(simulation, cast);
+            // A clock that went back is a new fight, and everything stands somewhere else: the frame
+            // draws nothing of the last one. A party's swap needs none of this, since who comes in
+            // stands where the one who left stood, and the camera goes on.
+            self.view_cut |= arena.fight_time() < fought;
         }
         if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
             self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
@@ -1993,6 +2001,7 @@ impl Scene {
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let probe_hours = &self.probe_hours;
         let (vfx, cues) = (&mut self.vfx, &mut self.cues);
+        let view_cut = &mut self.view_cut;
         if let Some(aspect) = drawable_aspect(target_size) {
             self.view_aspect = aspect;
         }
@@ -2006,7 +2015,8 @@ impl Scene {
             }
             let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
-                packet.views.push(ViewData::new(camera.camera_data(aspect)));
+                let cut = std::mem::take(view_cut);
+                packet.views.push(ViewData { cut, ..ViewData::new(camera.camera_data(aspect)) });
             }
             let probe = camera.eye();
             let clock = &world.resource::<WorldClock>().0;
@@ -2533,6 +2543,79 @@ mod tests {
         assert_eq!(allocations, 0, "rule R6");
     }
 
+    /// The arena's stage with stand-in meshes, framed by `shot`, and the figure it holds the character by.
+    fn arena_stage(shot: ArenaShot) -> (Scene, Figure) {
+        let plain = MeshHandle::from_raw(1);
+        let town = TownMeshes {
+            town: plain,
+            plants: [plain; lookdev::Plant::ALL.len()],
+            mountains: [plain; lookdev::MOUNTAINS.len()],
+        };
+        let figure = Figure { head: Vec3::new(0.0, 1.45, 0.0), ..Figure::MANNEQUIN };
+        let pose = RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] };
+        let look = LookDev { town, fog_cards: None, pose, figure };
+        let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
+        let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
+        let ground = ArenaGround::new(set).expect("the stage stands on it");
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+        let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
+        let held = enemy::Held {
+            pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
+            figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
+            blade: blade_in_model,
+            hand: 0,
+        };
+        scene.spawn_arena(Arena { enemy, held, shot, look, ground });
+        (scene, figure)
+    }
+
+    /// A new fight stands everyone somewhere else, so the renderer hears of it once: temporal AA drops
+    /// what it drew of the last fight, and velocity counts the camera as unmoved. A swap, which stands
+    /// someone new in the same place with the camera going on, isn't a cut.
+    #[test]
+    fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
+        use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario, find_script};
+
+        let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+        let cut_of = |scene: &mut Scene| {
+            let cut = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").cut;
+            scene.end_frame();
+            cut
+        };
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
+        assert!(!cut_of(&mut scene), "a first frame has nothing to drop");
+        let mut first = Recording::new(scenario, scenario.config).expect("sets up");
+        let cast = first.cast().to_vec();
+        let mut source = arena_walk;
+        for _ in 0..80 {
+            first.step(&mut source).expect("short");
+            scene.follow_simulation(first.simulation(), &cast);
+        }
+        assert!(!cut_of(&mut scene), "a fight going on");
+
+        let mut next = Recording::new(scenario, scenario.config).expect("sets up");
+        next.step(&mut source).expect("short");
+        scene.follow_simulation(next.simulation(), &cast);
+        // A frame with no target draws no view, and leaves the cut for the one that does.
+        let _ = scene.frame_packet(1.0, None);
+        scene.end_frame();
+        assert!(cut_of(&mut scene), "the new fight's first view");
+        assert!(!cut_of(&mut scene), "and only that");
+
+        let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
+        let mut swapping = Recording::new(party, party.config).expect("sets up");
+        let cast = swapping.cast().to_vec();
+        let mut source = find_script("party-swap").expect("listed").actions;
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
+        for _ in 0..240 {
+            swapping.step(&mut source).expect("short");
+            scene.follow_simulation(swapping.simulation(), &cast);
+            assert!(!cut_of(&mut scene), "tick {}", swapping.simulation().tick());
+        }
+        assert!(swapping.simulation().party().swaps() > 0, "it swapped");
+    }
+
     /// The arena stands its two actors where the simulation has them, and no turntable moves them:
     /// at their spawn points before a replay moves them, then each step's position, and the camera
     /// follows the player. Moved or not, its town is the look-dev stage's, on its day.
@@ -2541,32 +2624,7 @@ mod tests {
         use sapphire_gameplay::arena::spawns;
         use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
 
-        let build = |shot: ArenaShot| {
-            let plain = MeshHandle::from_raw(1);
-            let town = TownMeshes {
-                town: plain,
-                plants: [plain; lookdev::Plant::ALL.len()],
-                mountains: [plain; lookdev::MOUNTAINS.len()],
-            };
-            let figure = Figure { head: Vec3::new(0.0, 1.45, 0.0), ..Figure::MANNEQUIN };
-            let pose = RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] };
-            let look = LookDev { town, fog_cards: None, pose, figure };
-            let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
-            let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
-            let ground = ArenaGround::new(set).expect("the stage stands on it");
-            let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-            let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
-            let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
-            let held = enemy::Held {
-                pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
-                figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-                blade: blade_in_model,
-                hand: 0,
-            };
-            scene.spawn_arena(Arena { enemy, held, shot, look, ground });
-            (scene, figure)
-        };
-        let (mut scene, figure) = build(ArenaShot::Follow);
+        let (mut scene, figure) = arena_stage(ArenaShot::Follow);
         assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the look-dev stage's day");
         assert!(scene.ecs.world().get::<Turntable>(scene.character).is_none());
 
@@ -2615,7 +2673,7 @@ mod tests {
         assert!(eye.z > walked.z, "the camera came with it: {eye}");
 
         // The director's view is the frame's and the stick's, behind the player and framing both.
-        let (mut scene, _) = build(ArenaShot::Director);
+        let (mut scene, _) = arena_stage(ArenaShot::Director);
         let player = spawns.player.position();
         let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera;
         let eye = view.position;
@@ -2636,7 +2694,7 @@ mod tests {
         scene.end_frame();
         assert_ne!(scene.camera_heading(), heading);
         // With another shot it takes nothing, and the plain camera's heading is the one.
-        let (mut scene, _) = build(ArenaShot::Follow);
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
         assert!(!scene.drive_arena_camera(1.0, sapphire_math::Vec2::ZERO, 0.0));
         assert_eq!(scene.camera_heading(), scene.camera().heading());
     }

@@ -384,7 +384,7 @@ fn a_foot_bearing_weight_stays_put() {
         ("light_1", L, 0, 11),
         ("light_1", R, 11, 34),
         ("light_2", R, 0, 11),
-        ("light_2", L, 11, 30),
+        ("light_2", L, 11, 36),
         ("light_3", R, 0, 9),
         ("light_3", L, 19, 52),
         ("dash_attack", L, 14, 34),

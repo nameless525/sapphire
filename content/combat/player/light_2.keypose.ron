@@ -249,17 +249,17 @@
                 RightFoot: (x: -10.2, y: 10, z: 13.4),
             }),
 
-            // Left alone, the back foot comes up and the blade comes down to the middle.
-            (tick: 32, hips: (0.01, -0.09, -0.01), pose: {
+            // Left alone, the back foot comes up, the body draws back over it and the blade comes down.
+            (tick: 32, root: (0, 0, 0.5), hips: (0.01, -0.09, -0.01), pose: {
                 Hips: (x: 6, y: -22, z: 1),
                 Spine: (x: 3, z: 1),
                 Chest: (x: 3, y: 2, z: 1),
                 UpperChest: (x: 1, y: 2),
                 Neck: (x: -5.4, y: 8.2, z: -2.9),
                 Head: (x: -7.6, y: 11.2, z: -4.2),
-                LeftUpperLeg: (x: -24.4, y: 36.3, z: 4.8),
-                LeftLowerLeg: (x: 49.6),
-                LeftFoot: (x: -26.7, y: -3.8, z: -7.5),
+                LeftUpperLeg: (x: -35.4, y: 36.3, z: 2.4),
+                LeftLowerLeg: (x: 52.2),
+                LeftFoot: (x: -19.9, y: -2.2, z: -6),
                 RightUpperLeg: (x: -20.8, y: 11.2, z: -7.4),
                 RightLowerLeg: (x: 56.3),
                 RightFoot: (x: -32.9, y: 3.4, z: 3.7),
@@ -272,7 +272,7 @@
             }),
 
             // Ready again.
-            (tick: 36, ease: Out, hips: (0.012, -0.056, -0.012), pose: {
+            (tick: 36, ease: Out, root: (0, 0, 0.45), hips: (0.012, -0.056, -0.012), pose: {
                 Hips: (x: 4, y: -20),
                 Spine: (x: 2, y: 6),
                 Chest: (x: 2, y: 6),

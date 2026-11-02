@@ -443,10 +443,14 @@ pub(crate) enum Shot {
     /// camera frames them: both whole, from a little above, the pavilion and the gate wall behind
     /// (M2 O4).
     Enemy,
+    /// The whole character on a long lens, framed by the waist (M2 O3), with room for a swing over
+    /// the head and a stride's width either way, so a move can be read from any `--view`.
+    Body,
 }
 
 impl Shot {
-    pub const ALL: [Self; 6] = [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face, Self::Enemy];
+    pub const ALL: [Self; 7] =
+        [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face, Self::Enemy, Self::Body];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -456,6 +460,7 @@ impl Shot {
             Self::Street => "street",
             Self::Face => "face",
             Self::Enemy => "enemy",
+            Self::Body => "body",
         }
     }
 
@@ -463,7 +468,7 @@ impl Shot {
     /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
-            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy => Vec3::ZERO,
+            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body => Vec3::ZERO,
             Self::Street => STREET,
         }
     }
@@ -482,6 +487,7 @@ impl Shot {
             Self::Street => (Vec3::new(0.2, 2.4, -6.0), 6.0, -4.0, 10.0, 55.0),
             Self::Face => (Vec3::new(0.0, 1.43, 0.0), -16.0, 2.0, 0.8, 28.0),
             Self::Enemy => (Vec3::new(-0.95, 0.98, 0.1), 14.0, 5.0, 5.6, 36.0),
+            Self::Body => (Vec3::new(0.0, 0.85, 0.0), 30.0, 4.0, 3.8, 32.0),
         };
         OrbitCamera::shot(target, yaw.to_radians(), pitch.to_radians(), distance, fov.to_radians())
     }

@@ -134,12 +134,13 @@
 //!   along it), lit by the ambient probe grid the cooker baked for both (M1 W5) in place of the
 //!   ambient hemisphere, seen through a longer lens turned to the arcade. Implies
 //!   `--environment`.
-//! - `--look-dev wide|hero|sky|street|face`: the look-dev town (M1 X1, `lookdev.rs`): pixiv's
+//! - `--look-dev wide|hero|sky|street|face|body`: the look-dev town (M1 X1, `lookdev.rs`): pixiv's
 //!   VRM sample in place of the mannequin, held standing in a Jinzhou-style town square of the
 //!   assembly's parametric buildings in the environment family, with its fog cards and lamps,
 //!   every landed feature on, seen from an authored shot: `wide` across the square, `hero` a
 //!   three-quarter shot of the character, `sky` low and looking up past her, `street` her
-//!   standing in the street out of the square, `face` a close-up of her face and shoulders. A
+//!   standing in the street out of the square, `face` a close-up of her face and shoulders, `body`
+//!   the whole character for reading a move (M2 O3, the `lookdev-move-*` golden scenes). A
 //!   scene of its own, not a `--stage` layout: it replaces the character and the ground under
 //!   it, so `--stage`, `--environment`, `--probes`, `--foliage`, `--outline-row`, `--faces`,
 //!   `--rim-rig` and `--hard-edges` can't join it. `--time-of-day` and `--day-length` run its

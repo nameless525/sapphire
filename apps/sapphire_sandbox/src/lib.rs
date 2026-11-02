@@ -148,7 +148,8 @@
 //!   player's UI scale on top of the display's in a window. 1 without it.
 //! - `--clip <name>` (with `--look-dev`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). `strike` is the only one yet. Each `--capture-ticks` is a fixed
-//!   point of it, and `--bench` measures it. The golden scenes `lookdev-strike-*` show it.
+//!   point of it, and `--bench` measures it. `--clip-in-place` leaves its root motion out, for a
+//!   shot that frames the character close. The golden scenes `lookdev-strike-*` show it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded

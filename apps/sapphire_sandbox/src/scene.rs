@@ -55,6 +55,9 @@
 //!   [`Figure`] it makes, where the light rig finds the character's head, body and face
 //!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of her mesh or rig under a
 //!   running app holds her anew ([`Scene::follow_content`]).
+//!   `--clip` plays a clip on the character instead (M2 N2, [`Scene::play_clip`],
+//!   [`crate::animate`]): a [`ClipPlayer`] rewrites its pose and [`Figure`] each frame its clock
+//!   has moved.
 //! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
 //!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
@@ -955,27 +958,27 @@ impl Scene {
     /// renderer starts over in their bind pose, sends every pose again with this frame's packet,
     /// so the frame that first draws the new mesh already draws it posed; and a new version of the
     /// look-dev character's mesh, rig or skeleton holds her anew, since her palette indexes their
-    /// joints, and gives a clip playing on the character a new pose to play on. While only some have
-    /// landed the character may not fit: it keeps the pose it has, which the renderer ignores if the
-    /// new mesh's palette is another length, until the others land. Allocates nothing while nothing
-    /// changed.
+    /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
+    /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
+    /// ignores if the new mesh's palette is another length, until the others land. Allocates nothing
+    /// while nothing changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
         }
-        if content.take_character_changed() {
+        let clip_changed = content.take_clip_changed();
+        let character_changed = content.take_character_changed();
+        if character_changed {
             match lookdev::held(content) {
-                Ok((pose, figure)) => {
-                    self.hold_character(pose, figure);
-                    if self.animating {
-                        self.replace_player(content);
-                    }
-                }
+                Ok((pose, figure)) => self.hold_character(pose, figure),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps her pose");
                 }
             }
+        }
+        if self.animating && (character_changed || clip_changed) {
+            self.replace_player(content);
         }
     }
 
@@ -1048,9 +1051,7 @@ impl Scene {
             let world = self.ecs.world_mut();
             for (mut player, clock, render, figure, rig, transform) in self.players.iter_mut(world) {
                 stats.characters += 1;
-                // Cooked for another skeleton, as a new version lands piece by piece: the character
-                // keeps the pose it has.
-                if clip.joint_count.to_native() as usize != player.joint_count() {
+                if !player.fits(clip, &render) {
                     continue;
                 }
                 let Some(position) = player.next_position(clip, version, clock.0.presented_ticks(alpha))

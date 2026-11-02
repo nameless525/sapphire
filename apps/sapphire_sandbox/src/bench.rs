@@ -86,7 +86,7 @@ pub(crate) fn run(
     let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
     let mut anim = Vec::with_capacity(cpu.capacity());
-    let mut anim_evaluated = 0_u64;
+    let (mut anim_evaluated, mut anim_joints) = (0_u64, 0_u64);
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -120,6 +120,7 @@ pub(crate) fn run(
             let stats = stage.scene.anim_stats();
             anim.push(stats.time);
             anim_evaluated += u64::from(stats.evaluated);
+            anim_joints += u64::from(stats.joints);
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -185,6 +186,7 @@ pub(crate) fn run(
         anim_us_p99 = format_args!("{:.2}", micros(anim_percentile(99))),
         anim_us_max = format_args!("{:.2}", micros(anim_percentile(100))),
         anim_poses_per_frame = format_args!("{:.2}", anim_evaluated as f64 / f64::from(frames)),
+        anim_joints_per_frame = format_args!("{:.1}", anim_joints as f64 / f64::from(frames)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),

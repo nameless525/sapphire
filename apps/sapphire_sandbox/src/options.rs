@@ -127,6 +127,9 @@ pub(crate) struct Options {
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev`.
     pub clip: Option<lookdev::ClipName>,
+    /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
+    /// shot framed it. Needs `--clip`.
+    pub clip_in_place: bool,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -633,6 +636,7 @@ impl Options {
                         format!("--clip expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
+                "--clip-in-place" => options.clip_in_place = true,
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -808,6 +812,9 @@ impl Options {
         options.cue = cue.map(|id| CueOption { id, repeat: cue_repeat });
         if options.clip.is_some() && options.look_dev.is_none() {
             return Err("--clip plays on the look-dev character: it needs --look-dev".to_owned());
+        }
+        if options.clip_in_place && options.clip.is_none() {
+            return Err("--clip-in-place needs --clip".to_owned());
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
@@ -1116,6 +1123,9 @@ mod tests {
         );
         assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
         assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));
+        let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
+        assert!(parse(&in_place).unwrap().0.clip_in_place);
+        assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
         assert!(parse(&["--look-dev", "sky", "--stage", "floor"]).is_err());
         assert!(parse(&["--environment", "--look-dev", "sky"]).is_err());
         assert!(parse(&["--look-dev", "wide", "--outline-row"]).is_err());

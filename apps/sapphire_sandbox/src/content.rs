@@ -339,8 +339,10 @@ pub(crate) struct Content {
     /// The versions of the character's mesh, rig and skeleton the scene last knew of
     /// ([`Self::take_character_changed`]), once there is a rig.
     character_versions: Option<(u32, u32, u32)>,
-    /// The clip the character plays, once asked for (`--clip`).
+    /// The clip the character plays, once asked for (`--clip`), and the version the scene last
+    /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
+    clip_version: u32,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -396,6 +398,7 @@ impl Content {
             skeleton: None,
             character_versions: None,
             clip: None,
+            clip_version: 0,
             sky_id: sky,
             sky: None,
             server,
@@ -808,6 +811,7 @@ impl Content {
         let clip = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&clip, |upload| assets.upload(upload, renderer, gpu));
+        self.clip_version = self.server.generation(&clip);
         self.clip = Some(clip);
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
@@ -820,6 +824,13 @@ impl Content {
     pub fn clip(&self) -> Option<(&ArchivedClip, u32)> {
         let clip = self.clip.as_ref()?;
         Some((self.server.get(clip)?, self.server.generation(clip)))
+    }
+
+    /// Whether the clip has a new version since the last call or since [`Self::load_clip`], which a
+    /// character's player may have to be made again for. Always false without a clip.
+    pub fn take_clip_changed(&mut self) -> bool {
+        let version = self.clip.as_ref().map_or(0, |clip| self.server.generation(clip));
+        std::mem::replace(&mut self.clip_version, version) != version
     }
 
     /// The rig [`Self::load_rig`] loaded.
@@ -1101,6 +1112,7 @@ mod tests {
                 skeleton: None,
                 character_versions: None,
                 clip: None,
+                clip_version: 0,
                 sky_id: SKY,
                 sky: None,
                 server,

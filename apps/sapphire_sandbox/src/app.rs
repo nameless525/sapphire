@@ -204,7 +204,8 @@ impl App for SandboxApp {
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
-                scene.play_clip(lookdev::player(&content).map_err(AppInitError::msg)?);
+                let player = lookdev::player(&content).map_err(AppInitError::msg)?;
+                scene.play_clip(player.with_root_motion(!options.clip_in_place));
             }
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`

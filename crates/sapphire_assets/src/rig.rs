@@ -1,6 +1,6 @@
 //! Character rigs (`.srig`, M1 A6): what a character source says about its skeleton and face
-//! beyond the mesh, kept for animation (`sapphire_anim`, M2) to read. Nothing simulates or
-//! applies it yet.
+//! beyond the mesh, kept for animation (`sapphire_anim`) to read. Its constraints run after every
+//! pose since M2 N2; nothing simulates its springs or applies its expressions and look-at yet.
 //!
 //! A [`CharacterRig`] holds, in VRM 1.0's model (the pipeline migrates VRM 0.x into it):
 //!

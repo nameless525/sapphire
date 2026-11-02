@@ -37,6 +37,8 @@ pub(crate) struct ClipPlayer {
     start: f64,
     /// Where the entity stood then, which root motion goes on top of.
     base: Mat4,
+    /// Whether its transform follows the clip's root motion.
+    root_motion: bool,
     /// The position and clip version last evaluated: `None` before the first.
     drawn: Option<(u32, u32)>,
 }
@@ -44,7 +46,13 @@ pub(crate) struct ClipPlayer {
 impl ClipPlayer {
     /// A clip player for a character with this `pose`, its figure found by `joints`.
     pub fn new(pose: CharacterPose, joints: FigureJoints) -> Self {
-        Self { pose, joints, start: 0.0, base: Mat4::IDENTITY, drawn: None }
+        Self { pose, joints, start: 0.0, base: Mat4::IDENTITY, root_motion: true, drawn: None }
+    }
+
+    /// This player, moving its entity by the clip's root motion or not (`--clip-in-place`).
+    #[must_use]
+    pub fn with_root_motion(self, root_motion: bool) -> Self {
+        Self { root_motion, ..self }
     }
 
     /// Starts the clip now: at `ticks` on the entity's clock, with the entity at `base`.
@@ -59,11 +67,21 @@ impl ClipPlayer {
     pub fn continue_from(&mut self, other: &Self) {
         self.start = other.start;
         self.base = other.base;
+        self.root_motion = other.root_motion;
     }
 
     /// How many joints its pose has.
     pub fn joint_count(&self) -> usize {
         self.pose.joint_count()
+    }
+
+    /// Whether it can play `clip` into `render`. Neither holds for a moment when a new version of
+    /// the character or the clip lands before the others: the character keeps the pose it has until
+    /// they fit, and the frame's other players go on.
+    pub fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
+        clip.joint_count.to_native() as usize == self.pose.joint_count()
+            && render.palette.len() == self.pose.palette_len()
+            && render.morph_weights.len() == self.pose.weights().len()
     }
 
     /// What the character's pose looks like now, in the shape its [`RenderPose`] takes.
@@ -119,7 +137,7 @@ impl Evaluation<'_> {
         let figure = player.joints.moving(&player.pose);
         *self.figure = figure;
         self.rig.head = figure.head;
-        if let Some(root) = root_motion(clip, self.position) {
+        if let Some(root) = root_motion(clip, self.position).filter(|_| player.root_motion) {
             self.transform.set_if_neq(RenderTransform(player.base * root.to_mat4()));
         }
     }

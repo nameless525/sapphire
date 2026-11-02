@@ -61,8 +61,6 @@
 //!   sequencer track (M3) giving one character of a shot a rig of its own.
 //! - **Cast shadows (R4):** how much of the environment's cast shadow a preset lets reach a
 //!   character, if cutscenes need close-ups free of dappled shade.
-//! - **The head from the skeleton:** characters' heads from their head bones once animation
-//!   poses them (M2); [`CharacterLightRig::head`] is fixed in the entity's space until then.
 //! - **Presets as content** loaded from packs (A4), and pushed by live link (A9) through
 //!   [`LightRigLibrary::from_ron`] as desktop hot reload already reloads this crate's document in
 //!   development builds (A8); characters keep their [`LightRigId`]s, and an ID past a shorter
@@ -227,7 +225,8 @@ impl Default for LightRigGi {
 pub struct CharacterLightRig {
     pub rig: LightRigId,
     /// The center of the head in the entity's own space: the sphere face and hair GI normals
-    /// turn toward, and the point the key's limits are judged around.
+    /// turn toward, and the point the key's limits are judged around. Whatever poses a character
+    /// keeps it current from its head bone (the sandbox's clip player does, M2 N2).
     pub head: Vec3,
 }
 

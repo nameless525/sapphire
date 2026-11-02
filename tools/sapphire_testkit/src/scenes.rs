@@ -142,7 +142,11 @@ pub struct Scene {
 /// so nothing earlier needs pinning), over the look-dev stage, pinned as its scenes are but with 4×
 /// MSAA in place of temporal AA, which needs no warm-up frames: the backdrop is a backdrop. Their
 /// `--size`, after the runner's, sets each one's aspect ratio.
-pub fn scenes() -> [Scene; 106] {
+///
+/// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier
+/// scene plays one, and a character without a clip is never sampled) and pin what the look-dev
+/// scenes pin.
+pub fn scenes() -> [Scene; 111] {
     [
         Scene {
             name: "turntable-start",
@@ -2202,6 +2206,129 @@ pub fn scenes() -> [Scene; 106] {
                 "off",
                 "--capture-frames",
                 "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
+        // hero shot's dusk, every landed feature on, at fixed ticks through the swing, each drawn
+        // playing up to its tick so temporal AA's history is a player's. Here the anticipation's
+        // end: the character has sunk and drawn the right arm back, and turned at the spine.
+        Scene {
+            name: "lookdev-strike-anticipation",
+            args: &[
+                "--capture-ticks",
+                "14",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "15",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Three ticks into the strike, its fastest stretch: the arm crosses about 100 px a tick
+        // at 1080p and the root motion carries the character at the camera. Lines stay on the arm,
+        // nothing trails on the wall behind it, and the sleeve folds as its weights make it.
+        Scene {
+            name: "lookdev-strike-fast",
+            args: &[
+                "--capture-ticks",
+                "17",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The strike's mark, the arm at full reach past its target and the hips forward.
+        Scene {
+            name: "lookdev-strike-mark",
+            args: &[
+                "--capture-ticks",
+                "20",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Settling back to the first pose, a slow arm: lines and shading hold under long history.
+        Scene {
+            name: "lookdev-strike-settle",
+            args: &[
+                "--capture-ticks",
+                "40",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The face in place (`--clip-in-place`) at midday at the strike's mark, the head turned 22°:
+        // the face's SDF shadow, the bangs' shadow, the eye layers and the hair follow the head, as a
+        // stale `CharacterFace` wouldn't.
+        Scene {
+            name: "lookdev-strike-face",
+            args: &[
+                "--capture-ticks",
+                "20",
+                "--look-dev",
+                "face",
+                "--clip",
+                "strike",
+                "--clip-in-place",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
             ],
             thresholds: Thresholds::default(),
         },

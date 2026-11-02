@@ -2009,6 +2009,8 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - **A cancel:** `InputSystem::cancel_virtual` zeroes a control and judges it under `Abort::Release`, as a canceled touch is. `inject` of zero is a player letting go, which a `Tap` binding takes for a tap. Losing focus or the foreground lets go of everything as ever.
   - **The route** is `game_event`: a landing while paused goes to the bindings, so a tap ends the pause, and everything else goes to the HUD first. Zones update at the frame's top, before input and the steps, so a tick reads this frame's thumb.
   - **Tests:** `crates/sapphire_controls/tests/touch.rs` from a fake phone's fingers to `TickActions`, and the sandbox's `app::touch_tests` from the platform's event through the app's own functions to a real fight's actors and a replay's checksum, under a turned camera. No window in either.
+- **As built (M2 review, a fight in a desktop's window):**
+  - **The pointer:** a played fight holds it through `Window::set_relative_mouse`, so the mouse goes on turning the camera past the screen's edges and a click can't land outside: on a desktop, unpaused and focused, and never while the `dev` overlay is up (`PointerState` in the sandbox's `app.rs`). A pause is how a player gets it back. `look` reads `MouseMotion`'s `dx` and `dy`, which keep their units in this mode. Nothing else reads a position but the overlay, which has the pointer back by then: the HUD's zones take touches alone. By SDL 3.4.18's source the setting belongs to the window and acts on keyboard focus: `SDL_SetKeyboardFocus` lets the pointer go on a loss and takes it again on a return with the setting still on. Only a window can show how it feels.
 
 ### 5.19 `sapphire_nav` (L3)
 

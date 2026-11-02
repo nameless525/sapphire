@@ -379,6 +379,15 @@ impl Combat {
         }
     }
 
+    /// Whether someone's playing this through the bindings, rather than a file or a script driving it.
+    pub fn is_played(&self) -> bool {
+        match &self.mode {
+            Mode::Replaying { .. } => false,
+            Mode::Recording { script, .. } => script.is_none(),
+            Mode::Fighting(fight) => fight.script.is_none(),
+        }
+    }
+
     /// The actors the scenario's input drives, the player first.
     pub fn cast(&self) -> &[ActorId] {
         match &self.mode {
@@ -990,6 +999,26 @@ mod tests {
         combat.step(&mut neutral);
         combat.keep_so_far();
         assert!(!scratch.0.exists());
+    }
+
+    #[test]
+    fn only_the_bindings_count_as_someone_playing() {
+        let fight = |script: Option<&str>| {
+            Combat::new(&CombatOption::Fight { script: script.map(str::to_owned), party: false })
+                .expect("sets up")
+        };
+        assert!(fight(None).is_played());
+        assert!(!fight(Some("idle")).is_played());
+
+        let played = Scratch::new("played-by-someone");
+        assert!(recording(&played.0, None).is_played());
+        let scripted = Scratch::new("played-by-a-script");
+        let mut combat = recording(&scripted.0, Some("idle"));
+        assert!(!combat.is_played());
+        combat.step(&mut no_bindings);
+        combat.finish().expect("writes");
+        let file = CombatOption::Replay { path: scripted.0.clone(), to_end: true };
+        assert!(!Combat::new(&file).expect("reads").is_played());
     }
 
     fn recording(path: &Path, script: Option<&str>) -> Combat {

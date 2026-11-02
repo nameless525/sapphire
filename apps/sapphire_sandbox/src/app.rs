@@ -82,6 +82,8 @@ pub struct SandboxApp {
     audio: Option<SandboxAudio>,
     /// `--record`: a simulation that takes a tick with each fixed step, played by the bindings.
     combat: Option<Combat>,
+    /// Whether the window last held the pointer for a fight.
+    pointer_held: bool,
 
     real: RealClock,
     driver: FixedStepDriver,
@@ -372,6 +374,7 @@ impl App for SandboxApp {
             input,
             audio,
             combat,
+            pointer_held: false,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
             background_pause: None,
@@ -456,6 +459,7 @@ impl App for SandboxApp {
         if self.input.update(now) {
             return AppControl::Exit;
         }
+        self.follow_pointer();
         self.stages.input = stopwatch.lap();
         if self.suspended {
             self.steady = false;
@@ -551,7 +555,54 @@ fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
     }
 }
 
+/// What decides who has the pointer this frame.
+#[derive(Clone, Copy, Debug)]
+struct PointerState {
+    /// A desktop's window: a phone has no pointer to hold.
+    desktop: bool,
+    /// Someone's playing a fight here. A script needs no mouse, and whoever's watching it may want theirs.
+    played: bool,
+    /// In a pause the player may want the rest of their screen, so that's how they get the pointer back.
+    paused: bool,
+    /// The keyboard's focus is here.
+    focused: bool,
+    /// The `dev` overlay is up, which has nothing to click with otherwise.
+    overlay: bool,
+}
+
+impl PointerState {
+    fn of(input: &SandboxInput, combat: Option<&Combat>, focused: bool, overlay: bool) -> Self {
+        Self {
+            desktop: input.desktop(),
+            played: combat.is_some_and(Combat::is_played),
+            paused: input.is_paused(),
+            focused,
+            overlay,
+        }
+    }
+
+    /// Whether the fight holds the pointer: the mouse turns its camera, which a cursor reaching the
+    /// screen's edge would stop, and a click off the window would leave the fight.
+    fn holds(self) -> bool {
+        self.desktop && self.played && self.focused && !self.paused && !self.overlay
+    }
+}
+
 impl SandboxApp {
+    /// Gives a fight the pointer or takes it back, as [`PointerState`] says, once for each change.
+    fn follow_pointer(&mut self) {
+        #[cfg(feature = "dev")]
+        let overlay = self.dev.overlay_visible();
+        #[cfg(not(feature = "dev"))]
+        let overlay = false;
+        let focused = self.window.has_keyboard_focus();
+        let held = PointerState::of(&self.input, self.combat.as_ref(), focused, overlay).holds();
+        if held != self.pointer_held {
+            self.pointer_held = held;
+            self.window.set_relative_mouse(held);
+        }
+    }
+
     /// Runs this frame's fixed steps, none while paused. Queued input lands on the first of them
     /// (rule R3), and the steps themselves must not allocate (rule R6).
     fn simulate(&mut self, frame_time: Duration) -> FixedSteps {
@@ -1454,6 +1505,27 @@ mod tests {
         };
         assert_eq!(SandboxApp::METADATA.identifier, field("bundle-id"));
         assert_eq!(SandboxApp::METADATA.name, field("display-name"));
+    }
+
+    /// A desktop's fight, played, unpaused and focused, with no overlay up: take any of those away and
+    /// the pointer goes back.
+    #[test]
+    fn only_a_played_fight_on_a_desktop_holds_the_pointer() {
+        for bits in 0..32_u32 {
+            let bit = |at: u32| bits & (1 << at) != 0;
+            let (desktop, played, paused, focused, overlay) = (bit(0), bit(1), bit(2), bit(3), bit(4));
+            let state = PointerState { desktop, played, paused, focused, overlay };
+            assert_eq!(state.holds(), desktop && played && !paused && focused && !overlay, "{state:?}");
+        }
+    }
+
+    /// The overlay is a dev tool over a fight someone's still playing: it can't wait for a pause.
+    #[test]
+    fn the_overlay_wins_the_pointer() {
+        let playing =
+            PointerState { desktop: true, played: true, paused: false, focused: true, overlay: false };
+        assert!(playing.holds());
+        assert!(!PointerState { overlay: true, ..playing }.holds());
     }
 
     /// Review PA-004: memory warnings trim the asset cache on iOS, and nowhere else: Android

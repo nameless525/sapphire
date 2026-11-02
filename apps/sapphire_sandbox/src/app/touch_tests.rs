@@ -14,7 +14,7 @@ use sapphire_platform::{
 use sapphire_render::MeshHandle;
 use sapphire_ui::{HudLayout, Insets, UiMetrics};
 
-use super::game_event;
+use super::{PointerState, game_event};
 use crate::combat::Combat;
 use crate::hud::{HudMode, HudOptions, SandboxHud};
 use crate::input::{PLAYER, SandboxInput};
@@ -60,6 +60,27 @@ impl Rig {
         Self::new(
             Combat::new(&CombatOption::Fight { script: None, party: false }).expect("the scenario starts"),
         )
+    }
+
+    /// A fight in a desktop's window, with the bindings the app gives one.
+    fn desktop(combat: Combat) -> Self {
+        let mut rig = Self::new(combat);
+        let size = sapphire_platform::Size { width: SIZE.x as u32, height: SIZE.y as u32 };
+        rig.input = SandboxInput::new(true, true, size).expect("the default bindings");
+        rig.input.listen_for_fight_restart().expect("the context");
+        rig.frame();
+        rig
+    }
+
+    /// A fight someone's playing in a desktop's window.
+    fn desktop_fight() -> Self {
+        let fight = CombatOption::Fight { script: None, party: false };
+        Self::desktop(Combat::new(&fight).expect("the scenario starts"))
+    }
+
+    /// Whether the fight holds the pointer in a focused window with no overlay up.
+    fn holds_pointer(&self) -> bool {
+        PointerState::of(&self.input, Some(&self.combat), true, false).holds()
     }
 
     /// Turns the view by this much, settled: the stick must follow it.
@@ -271,6 +292,33 @@ fn the_keyboard_and_the_mouse_play_a_fight_under_the_huds_zones() {
     rig.key(1, Scancode::R, true);
     rig.frame();
     assert!(rig.input.take_actions().restart_fight);
+}
+
+/// The pause is how a desktop's player gets their pointer back, and leaving it takes it again.
+#[test]
+fn a_played_fight_holds_a_desktops_pointer_outside_the_pause() {
+    let mut rig = Rig::desktop_fight();
+    assert!(rig.holds_pointer());
+    rig.key(1, Scancode::ESCAPE, true);
+    rig.key(2, Scancode::ESCAPE, false);
+    rig.frame();
+    assert!(rig.input.is_paused());
+    assert!(!rig.holds_pointer());
+    rig.key(1, Scancode::ESCAPE, true);
+    rig.key(2, Scancode::ESCAPE, false);
+    rig.frame();
+    // Steps start again at the update after the one that read the key.
+    rig.frame();
+    assert!(!rig.input.is_paused());
+    assert!(rig.holds_pointer());
+}
+
+/// A phone has no pointer and a script has no use for one.
+#[test]
+fn a_phone_and_a_script_leave_the_pointer_alone() {
+    assert!(!Rig::fight().holds_pointer());
+    let script = CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    assert!(!Rig::desktop(Combat::new(&script).expect("the scenario starts")).holds_pointer());
 }
 
 #[test]

@@ -19,19 +19,21 @@ use sdl3_sys::keyboard::{
     SDL_TextInputActive,
 };
 use sdl3_sys::metal::{SDL_Metal_CreateView, SDL_Metal_DestroyView, SDL_Metal_GetLayer};
+use sdl3_sys::mouse::SDL_SetWindowRelativeMouseMode;
 use sdl3_sys::properties::{
     SDL_CreateProperties, SDL_DestroyProperties, SDL_GetNumberProperty, SDL_GetPointerProperty,
     SDL_PropertiesID, SDL_SetBooleanProperty, SDL_SetNumberProperty,
 };
 use sdl3_sys::rect::SDL_Rect;
 use sdl3_sys::video::{
-    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowDisplayScale, SDL_GetWindowID,
+    SDL_CreateWindow, SDL_DestroyWindow, SDL_GetWindowDisplayScale, SDL_GetWindowFlags, SDL_GetWindowID,
     SDL_GetWindowPixelDensity, SDL_GetWindowProperties, SDL_GetWindowSafeArea, SDL_GetWindowSize,
     SDL_GetWindowSizeInPixels, SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER,
     SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, SDL_PROP_WINDOW_WIN32_HWND_POINTER,
     SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, SDL_PROP_WINDOW_X11_DISPLAY_POINTER,
     SDL_PROP_WINDOW_X11_SCREEN_NUMBER, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, SDL_WINDOW_FULLSCREEN,
-    SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_METAL, SDL_WINDOW_RESIZABLE, SDL_Window,
+    SDL_WINDOW_HIGH_PIXEL_DENSITY, SDL_WINDOW_INPUT_FOCUS, SDL_WINDOW_METAL, SDL_WINDOW_RESIZABLE,
+    SDL_Window,
 };
 
 use crate::app::RunId;
@@ -193,6 +195,32 @@ impl Window {
         // leaves them at zero.
         unsafe { SDL_GetWindowSize(raw, &mut w, &mut h) };
         to_size(w, h)
+    }
+
+    /// Whether the keyboard's focus is here, as SDL last heard it; `false` once the window is gone.
+    pub fn has_keyboard_focus(&self) -> bool {
+        // SAFETY: the window is live.
+        self.raw().is_some_and(|raw| (unsafe { SDL_GetWindowFlags(raw) } & SDL_WINDOW_INPUT_FOCUS).0 != 0)
+    }
+
+    /// Asks for the pointer, or gives it back. While this is on and the window has the keyboard's
+    /// focus the cursor hides and holds still, and [`Event::MouseMotion`](crate::Event::MouseMotion)'s
+    /// `dx` and `dy` go on past the screen's edges, in the units they always had.
+    ///
+    /// It's a setting of the window, and SDL acts on it by focus: losing focus lets the pointer go
+    /// at once, and coming back takes it again if the setting is still on. Turning it off puts the
+    /// cursor back where the last position said. SDL ends it when it quits.
+    pub fn set_relative_mouse(&self, on: bool) {
+        let Some(raw) = self.raw() else { return };
+        // SAFETY: the window is live and this is the main thread.
+        if !unsafe { SDL_SetWindowRelativeMouseMode(raw, on) } {
+            tracing::warn!(
+                target: LOG_TARGET,
+                on,
+                error = %sdl::last_error(),
+                "SDL_SetWindowRelativeMouseMode failed"
+            );
+        }
     }
 
     /// The drawable size in pixels: the size to configure the swapchain with.
@@ -764,6 +792,8 @@ mod tests {
         assert_eq!((window.pixel_density(), window.display_scale()), (0.0, 0.0));
         assert_eq!(window.safe_area(), Rect::default());
         assert!(!window.is_text_input_active());
+        assert!(!window.has_keyboard_focus());
+        window.set_relative_mouse(true);
         window.start_text_input(TextInputKind::Prose);
         window.set_text_input_area(Rect::default(), 0);
         window.stop_text_input();

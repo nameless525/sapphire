@@ -346,8 +346,11 @@ fn due(formed: &Formed, table: &ActorTable, actors: &Query<'_, '_, Member<'_>>) 
             true
         }
         Some((clock, _, _, _, ring, ..)) => {
-            let can_leave = clock.0.last_delta() != SimDuration::ZERO && leaving.ready_at <= clock.0.now();
-            if !can_leave || !ring.iter().any(|press| press.name == SWAP_INTENT) {
+            let now = clock.0.now();
+            let can_leave = clock.0.last_delta() != SimDuration::ZERO && leaving.ready_at <= now;
+            // The ring lets go of what's expired later in the step, so a press can still be here on the
+            // first tick it can't fire.
+            if !can_leave || !ring.iter().any(|press| press.name == SWAP_INTENT && press.expires_at > now) {
                 return Due::Nothing;
             }
             false

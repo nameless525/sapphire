@@ -385,6 +385,32 @@ fn a_press_during_the_cooldown_lasts_its_buffer() {
     assert_eq!(f.move_name(c), Some(SWAP_IN_MOVE));
 }
 
+/// The buffer's ends, where the cooldown ends with them: a press 12 ticks old has run out, as for any
+/// other intent, and one tick younger fires on its last.
+#[test]
+fn a_press_that_runs_out_as_the_cooldown_ends_doesnt_swap() {
+    let tuning = PartyTuning { swap_cooldown: 30, rest: 0 };
+    let mut f = fight(8.0, tuning);
+    let [_, b, _] = f.members;
+    f.press(Buttons::SWAP); // `b` can leave 30 ticks on.
+    f.steps(17);
+    f.press(Buttons::SWAP); // 12 ticks before it can.
+    f.steps(11);
+    assert_eq!((f.active(), f.presses_in_ring(b)), (b, 1), "on its last tick, with the cooldown running");
+    f.steps(1);
+    assert_eq!((f.active(), f.presses_in_ring(b)), (b, 0), "the cooldown's over, and so is the press");
+
+    let mut f = fight(8.0, tuning);
+    let [_, b, c] = f.members;
+    f.press(Buttons::SWAP);
+    f.steps(18);
+    f.press(Buttons::SWAP); // 11 ticks before it can.
+    f.steps(10);
+    assert_eq!(f.active(), b);
+    f.steps(1);
+    assert_eq!(f.active(), c, "on the press's last tick");
+}
+
 /// A press goes to the next member in slot order who's rested, round the party, and waits if nobody is.
 #[test]
 fn a_press_goes_to_the_next_rested_member() {

@@ -40,6 +40,13 @@
 //! says how to fill it. During a transition's decay the visible pose is off from them by what's left
 //! of the offset, as `docs/m2-plan.md` §3 accepts; [`GraphPlayer::target`] is the pose without it.
 //!
+//! # A defeat
+//!
+//! A defeated actor's move ends and nothing more starts, so without more a character would get up when
+//! it did. [`GraphInput::defeated`] keeps the last move: it plays on to its clip's end and stays there,
+//! breathing and blink stopped, a cut or not. Past the end, with nothing decaying, it's a frozen clock's
+//! case, so a body on the floor costs nothing.
+//!
 //! # Replacing a graph
 //!
 //! [`GraphPlayer::replace`] takes a new binding for live tuning (T2) and takes effect at the next

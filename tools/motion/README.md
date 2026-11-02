@@ -4,6 +4,8 @@
 
 `player.moves.ron` holds the moves' numbers, and **they're tuned in the file**, in the timeline editor (`cargo xtask editor`) or by hand. This tool wrote its first draft and rewrites it only when asked with `--write-numbers`, which refuses to replace a file changed since it last wrote it. Nothing here can throw tuning away without `--force`.
 
+Its fighter's `movement` section, how the character moves, was never this tool's. `--write-numbers` carries over what the file holds, word for word, forced or not, writes today's numbers only into a file with none, and leaves the section out of the digest, so tuning it is no edit to refuse.
+
 It's plain Python 3 with no dependencies, and it writes nothing unless told to.
 
 ```
@@ -23,7 +25,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 | `pose.py` | Solves a key's legs and arms by inverse kinematics, samples between keys as `sapphire_pipeline::keypose` does, checks a move (feet under the ground, slipping feet, the blade through the body, joint turns) and writes the `.keypose.ron`. |
 | `frames.py` | `player.moves.ron` as `--write-numbers` writes it: frame data, cancel windows, hits, combat numbers and cues. `swap_in`, a party's assist, is frames on the dash attack's clip, with no key-pose document of its own. |
 | `player.moves.written` | The digest of what `--write-numbers` last wrote, which tells it whether anything has changed the file since. |
-| `test_writing.py` | Holds who writes what: `python3 -B -m unittest discover -s tools/motion -p 'test_*.py'`. |
+| `test_writing.py` | Holds who writes what, `movement` included: `python3 -B -m unittest discover -s tools/motion -p 'test_*.py'`. |
 | `rig.py` | Reads the character's rest skeleton from its VRM, so nothing derived from it is committed. |
 | `sheet.py` | Writes the key-pose documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
 

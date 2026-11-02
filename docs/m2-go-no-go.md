@@ -66,10 +66,9 @@ After the packages were done, five agents who hadn't built the code reviewed it:
 
 ## The evidence against
 
-**Some tuning is code, and code means a restart.** The report's bar also named `subsecond` hot-patching, and spec §7.2 planned it with a `sapphire_dylib`. **Neither was built.** So what isn't data needs a rebuild and a new fight. The build itself turned out to be the smaller part, once the rehearsal measured it: a one-line edit takes 76–152 s under `--release`, which has thin LTO and no incremental compilation, and 1.4–5.5 s under the new `--incremental`, which has neither limit, costs about 0.3 ms more CPU on a 16.7 ms frame and plays to the same checksums (Apple M5, load 7–33). From the command to a fight taking input, with no window, is 3.6–4.2 s after the edit against 1.3–2.4 s with none. A script language's reload might keep the fight going, though nobody has measured one here. These are code today:
+**Some tuning is code, and code means a restart.** The report's bar also named `subsecond` hot-patching, and spec §7.2 planned it with a `sapphire_dylib`. **Neither was built.** So what isn't data needs a rebuild and a new fight. The build itself turned out to be the smaller part, once the rehearsal measured it: a one-line edit takes 76–152 s under `--release`, which has thin LTO and no incremental compilation, and 1.4–5.5 s under the new `--incremental`, which has neither limit, costs about 0.3 ms more CPU on a 16.7 ms frame and plays to the same checksums (Apple M5, load 7–33). From the command to a fight taking input, with no window, is 3.6–4.2 s after the edit against 1.3–2.4 s with none. A script language's reload might keep the fight going, though nobody has measured one here. These are code today: hair's swing limits, target choice, HUD and touch layout, bindings and sparks.
 
-- **How the character moves:** run speed, acceleration, turn rate and jump (`ControllerProfile`). It's the likeliest thing review 1 wants to change, and it moves every replay's checksum too. Making it data is small: the struct already deserializes, and no document names it yet.
-- Hair's swing limits, target choice, HUD and touch layout, bindings and sparks.
+How the character moves was the first of that list and the likeliest thing review 1 wants to change, so it's no longer on it: run speed, acceleration, turn rate, jump and the rest are each fighter's `movement`, in its document, and a save reaches the next step (below).
 
 If you find yourself in those files and the restart is what hurts, that's a real strike, and it's fixable in Rust before it decides anything.
 
@@ -88,7 +87,7 @@ If you find yourself in those files and the restart is what hurts, that's a real
 | It's fun or close, and tuning felt quick | **Carry on.** Run the phone's tests when one exists, and start M3 |
 | It isn't fun, and tuning data was quick | **Don't take the off-ramp yet.** Tune for a session, then look at what's wrong. Motion quality means an animator or a bought pack (plan §6, §7), and would be as wrong in Godot |
 | Tuning data felt slow | Say what was slow. Finding the right field is the editor and the sheet, and fixable. If it's the loop, it contradicts the numbers above, and that's worth seeing |
-| What you want to tune is code (movement, hair, targeting) | Move it into documents and try again before deciding. It's small work: a row at a time |
+| What you want to tune is code (hair, targeting) | Move it into documents and try again before deciding. It's small work, a row at a time, as movement's was |
 | It's fine, but you want an editor for M3 | That's the off-ramp's real case, and it doesn't rest on this slice. It deserves its own spike before M3 starts: gdext driving the headless `Simulation`, with a wgpu viewport inside Godot |
 | The window doesn't open, or the fight misbehaves on a desktop | A bug, and it says nothing yet. Keep the log, and try again after the fix |
 | A phone fails exit test 4 | Decide by how much. Read which row grew against spec §3.5, and walk spec §6.3's ladder first. Failing outright at Mobile-Low threatens the mobile-first plan under either engine |
@@ -97,7 +96,7 @@ If you find yourself in those files and the restart is what hurts, that's a real
 
 **Carry on in Rust, once you've played it and it isn't wrong for reasons the engine owns.** This is a recommendation, not a finding, and it comes from the agents who built the thing: the test the gate exists for hasn't run, and an agent can't run it. What rests on evidence is narrower. Nothing measured points at the off-ramp, the data loop beats its bar by a wide margin, and the simulation has properties worth keeping under either answer. The review doesn't move it: nothing it found is a reason to leave Rust, and all of it was fixed in Rust within the pass. It does lower how much "built and green" should reassure you.
 
-One change is worth making if review 1 finds the movement wrong: move `ControllerProfile` into a document, so what you're likeliest to want to change first doesn't start the fight over.
+**The one change this recommended ahead of review 1 is done, rather than waiting for review 1 to find the movement wrong.** A fighter's controller numbers live in its move-set document, `player.moves.ron` and `warrior.moves.ron` hold today's values to edit, and saving `run_speed` moves the next step of a running fight. A real file write reaches the step after it in a median of 136 ms (p90 144, most 149, of 25 saves, and 135–139 ms as a fresh process's first edit), most of that hot reload's 100 ms debounce, on an offscreen fight at Desktop-Low, 1280×720, on this M5 at load 6–7, and the speed it logs there is one tick's change from the old number. So what you're likeliest to want to change first doesn't start the fight over. With today's numbers no fight changed: every replay's per-tick checksums stayed the same.
 
 ## Notes on the evidence
 

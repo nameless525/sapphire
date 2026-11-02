@@ -87,7 +87,7 @@ To fight something that hardly fights back, for reviews 1 and 2: in [warrior.mov
 
 The plan's question: **run around the square on a gamepad. Do moving and the camera feel good?**
 
-Try: run the square's whole floor, stop dead, reverse, run into the pavilion's posts and along a wall, walk by half tilt, jump. Circle the enemy with your thumb off the right stick. Lock on and circle again. Run behind the tree and the stalls so the view has to find you.
+Try: run the square's whole floor, stop dead, reverse, run into the pavilion's posts and along a wall, walk by half tilt, jump. Circle the enemy with your thumb off the right stick. Lock on and circle again. Run behind the tree and the stalls so the view has to find you. **Then try changing `run_speed` while you fight:** in [player.moves.ron](../content/combat/player/player.moves.ron)'s `movement`, make it 7.5 and save. The next step moves by it, with no restart.
 
 Pillars: 1 (responsive), 5 (camera), 6 (alive: hair and the look in motion).
 
@@ -133,13 +133,13 @@ Every row below ran against a running offscreen fight on 2026-11-02, except wher
 
 | Route | What you do | Time to see it | What says it worked |
 |---|---|---|---|
-| **Save** | Save the file | About 0.13 s, plus waiting for the next attempt | The log's `… reloaded`, then `the next attempt plays the new moves` for a move |
+| **Save** | Save the file | About 0.13 s, plus waiting for the next attempt. A fighter's `movement` waits for no attempt: 136 ms to the next step | The log's `… reloaded`, then `the next attempt plays the new moves` for a move and `the next step moves by the new numbers` for `movement` |
 | **Push** (a phone) | `cargo xtask link push <file>` | The tool's `(in N ms)`, 6–26 ms here, plus the next attempt | The tool's reply |
 | **Cook** | Save, then `cargo xtask content` | 0.8–1.5 s for the cook, then about 0.15 s | The log's `asset swapped in` |
 | **Restart** | Stop, and run the command again, which cooks | 1.3–2.4 s to a fight with no window, plus a cook's 1–2 s if anything changed | A new fight |
-| **Rebuild** | Stop, and run the command again, which builds | 3.6–4.2 s for a one-line `run_speed` edit under `--incremental`, of which 2.1 s is the build. That build is 1.4–5.5 s by what's edited. Under `--release` it's 76–152 s | A new fight |
+| **Rebuild** | Stop, and run the command again, which builds | 3.6–4.2 s for a one-line edit under `--incremental`, of which 2.1 s is the build (measured on `run_speed` in `profile.rs`, when that was still code). That build is 1.4–5.5 s by what's edited. Under `--release` it's 76–152 s | A new fight |
 
-A move in progress finishes on what it started with. A bad document changes nothing, and the log, or `link push`'s non-zero exit, names the move and the track. That includes a misspelt field (`cancles:` is refused by name, and doesn't compile as a move with no such track), a root key or knockback past 1,000 m, and a shape under 1 mm. A cook that started before your last save doesn't undo it: where the app has the file, what lands is the file over the cook's tables. `cargo xtask link status` lists each document's edits and what each fighter is playing, with its revision and windows.
+A move in progress finishes on what it started with. A bad document changes nothing, and the log, or `link push`'s non-zero exit, names the move and the track. That includes a misspelt field (`cancles:` is refused by name, and doesn't compile as a move with no such track), a root key or knockback past 1,000 m, a shape under 1 mm, and a `movement` number past what a character can use (`run_speed: 600` is refused by file and name, saying its limits). A cook that started before your last save doesn't undo it: where the app has the file, what lands is the file over the cook's tables. `cargo xtask link status` lists each document's edits and what each fighter is playing, with its revision and windows.
 
 ### Moves
 
@@ -157,6 +157,10 @@ A move in progress finishes on what it started with. A bad document changes noth
 | The perfect dodge's slowdown | `perfect_dodge`'s `slow_motion` (`per_mille` must divide 1,000,000) and `counter`'s `ticks` and `allow` |
 | Damage and how long a fight lasts | `attack`'s `damage` and `poise`, `fighter`'s `health`, `poise`, `poise_refill` |
 | What a hit does to someone | `fighter`'s `reactions`, and those moves' own numbers (`flinch`, `stagger`, `knockdown`, `dazed`; for the warrior `stagger_light`, `stagger_heavy`, `knockdown`) |
+| It's too slow or too quick to get going, to stop or to turn | `fighter`'s `movement`: `run_speed`, `walk_speed`, `acceleration`, `deceleration`, `turn_rate_degrees`. The next step moves by them. Far from the run clip's 5.9 m/s, the feet slide until `locomotion`'s `samples` and `rate` in the character's graph follow |
+| A jump is wrong | `movement`'s `jump_speed`, `gravity`, `air_acceleration`, `max_fall_speed`, `coyote_ticks`. A character in the air finishes that arc under the new gravity, unless that's so light the arc would clear the walls, and its new jump speed waits for its next jump. A jump may reach 2.5 m, and a run and a jump together may be thrown 4 m up by a curb: past that it's refused, saying to raise `gravity` |
+| What the feet take, or what it bumps into | `movement`'s `slope_limit_degrees`, `step_height`, `ground_snap`, `stance_radius`, `max_slide_speed`, and its capsule's `height`, `radius`, `skin`, around feet that stay where they stand |
+| The enemy moves wrong | The same `movement`, in `warrior.moves.ron`. Its `brain`'s `pace` says how far it tilts the stick |
 | The enemy is too quick, or too slow to come | `brain`'s `patience`, `rest`, `recover`, `spacing`, `pace` |
 | It picks the wrong attack | `brain`'s `attacks`: `weight`, `reach`, `against`, `recent` |
 | It's easy to interrupt | `armour: [(from: 0, to: 24, threshold: 20)]` on the move. The swipe has none, and that's why mashing wins |
@@ -181,7 +185,6 @@ A move in progress finishes on what it started with. A bad document changes noth
 | How a sound plays | [content/audio/](../content/audio/)`<name>.cue.ron`: `volume_db`, `pitch`, `attenuation`, `sounds` | Restart: the mixer holds what it decoded at launch |
 | Which sound a hit plays | `default_cues.ron`'s `sounds`, by a cue's ID. A cue already loaded is a Save. One that wasn't loaded at launch is refused live, keeping what fires, because only the table's cues load then, so it's a Restart | Save or Restart |
 | Sparks and trails | [default_effects.ron](../crates/sapphire_vfx/default_effects.ron): compiled in, with no reload | Rebuild |
-| Run speed, acceleration, turning, jump | [profile.rs](../crates/sapphire_gameplay/src/controller/profile.rs), `ControllerProfile::default()`: `run_speed`, `walk_speed`, `acceleration`, `deceleration`, `turn_rate_degrees`, `jump_speed`, `gravity`. **Code, not data,** and the likeliest complaint of review 1. Moves every replay's checksum, so finish with `cargo xtask replay --update` | Rebuild |
 | Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale`. Compiled in | Rebuild |
 | Hair's swing and limits | `SpringTuning::ACTION` in [springs.rs](../crates/sapphire_anim/src/springs.rs): `root_inertia`, `anchor_inertia`, `swing_limit`, `bend_limit` | Rebuild |
 | HUD layout, colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs). `--hud live --hud-scale <n>` and `--hud live --hud-insets l,t,r,b` on the command | Rebuild |
@@ -191,7 +194,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 
 - **Save edits are in the working tree.** Commit them, or `git checkout` them.
 - **After tuning the player's moves,** rewrite the simulation's cooked copy and the replays: `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, then `cargo xtask replay --update`. A test fails saying so if it's forgotten. A `dev` build's fight already starts from a newer cook, so nothing looks wrong until then.
-- **Any tuning of a fight's moves or the warrior moves replays' checksums:** `cargo xtask replay --update`, read what moved, and commit. x86-64's come from CI's artifact ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), so it costs two CI rounds.
+- **Any tuning of a fight's moves or the warrior, its `movement` included, moves replays' checksums:** `cargo xtask replay --update`, read what moved, and commit. x86-64's come from CI's artifact ([development-iteration.md](development-iteration.md), "Filling in x86-64's checksums"), so it costs two CI rounds.
 
 ### The timeline editor
 
@@ -473,7 +476,8 @@ Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other age
 | 1 | `cargo xtask bundle --platform macos --incremental --features dev` | Builds and bundles. Not launched, since that opens a window |
 | 2 | The desktop's commands as written, with a private address: `cargo xtask run … --offscreen --size 1280x720 --arena --fight --script attempts`, then `cargo xtask link status`, `push /tmp/tune/player.moves.ron` and `capture` | Quality tier Desktop-High. Push 16 ms, `since_ms` 415. Capture 145 ms |
 | 2 | A restart: `cargo xtask run --platform desktop --incremental --features dev -- --offscreen --size 640x360 --tier desktop-low --arena --fight --script fight-back`, from the command to a `status` reply, nothing changed | 1.3–1.8 s, and 2.0–2.4 s under `--release`. A window adds whatever it adds. The fight ended on the same checksum as `--release`'s, `0dfb07dd0da45a9c`. Load about 8 |
-| 2 | A rebuild, the same command after `run_speed: 6.0` became `6.5` in `profile.rs` | 3.6–4.2 s from the command to a `status` reply. The fight's checksum moved to `65ed657c12a51555`, and went back when the edit was undone. Load about 7 |
+| 2 | A rebuild, the same command after `run_speed: 6.0` became `6.5` in `profile.rs`, when it was code | 3.6–4.2 s from the command to a `status` reply. The fight's checksum moved to `65ed657c12a51555`, and went back when the edit was undone. Load about 7 |
+| 2 | That edit since it moved into a document: a real save of `run_speed` in `player.moves.ron`, Desktop-Low at 1280×720, `--offscreen --arena --fight --script laps`, write to the log's `the next step moves by the new numbers` | Median 136 ms, p90 144, most 149 over 25 saves that flipped 6.0 and 8.5 while running, and 135–139 ms as a fresh process's first edit. About 100 ms of it is hot reload's debounce, and take to step is a median of 14.6 ms. The first step logs a speed of 7.5 m/s either way, one tick's change from the old number. Longest frame 23.6 ms. Load 6–7 |
 | 2 | One-line edits to what the sheet calls Rebuild, the build alone | `--incremental`: 1.4 s (the HUD's margin), 1.7 s (a spring's limit), 2.1 s (run speed), 2.8 s (a function in the renderer), 4.1 and 5.5 s (a function added to `sapphire_core` and to `sapphire_math`, 19 and 22 crates). Load about 10. A plain debug build: 1.3–2.1 s on doc comments and small edits. `--release`: 76–152 s with 4 build jobs, load 17–33. First builds after a cook: 130 s, 94 s and 147 s with 4 jobs |
 | 2 | One whole fight on those three builds (`--bench 1 --tier desktop-low --size 1920x1080 --arena --replay tests/replays/arena-fight-won.sreplay --cues --hud live --blade on --time-of-day 10`), alternating, least of 3 rounds after a discarded one | CPU frame p50 0.54 ms `--release`, 0.82 ms `--incremental`, 1.44 ms debug. GPU frame p50 5.14, 4.90 and 8.30 ms, p99 7.94, 7.10 and 14.99 ms. Load 7–13 |
 | 4 | Its Android command as written, no `dev`, on the emulator | 8.5 minutes, 19 fights, one checksum (`0dfb07dd0da45a9c`), no allocation in a step. `live_bytes` 21.35–21.43 MB, PSS 168.7 MB, `thermal=Nominal` throughout. Load reached 328 and fps fell as low as 4.4 for it, then came back to 30, so it times nothing. The tool exits 1 at `force-stop`, as it should for a killed process |

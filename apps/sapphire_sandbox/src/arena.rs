@@ -401,11 +401,13 @@ impl ArenaCamera {
         Self { director, dt: 0.0, look: Vec2::ZERO, zoom: 0.0 }
     }
 
-    /// Behind the player again and settled, for a new fight, whatever rigs are on.
+    /// Behind the player again and settled, for a new fight, whatever rigs are on, with no shake of the
+    /// last one.
     fn start_over(&mut self) {
         let pitch = self.director.tuning().explore.pitch;
         self.director.look_from(spawns().player.yaw(), pitch);
         self.director.cut();
+        self.director.stop_shakes();
     }
 }
 

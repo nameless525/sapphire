@@ -396,6 +396,12 @@ impl CombatHud {
         self.damage[slot] = Some(DamageNumber { value, kind, position, born: self.now });
     }
 
+    /// Takes every damage number off at once: the fight they came from is over.
+    pub fn clear_damage(&mut self) {
+        self.damage = [None; MAX_DAMAGE_NUMBERS];
+        self.next_damage = 0;
+    }
+
     /// Appends this frame's HUD to `list`, naming its atlas and viewport. Allocates nothing once
     /// the list's vector has grown to hold a frame.
     pub fn draw(&self, layout: &HudLayout, actions: &TouchActions, list: &mut UiDrawList) -> HudStats {

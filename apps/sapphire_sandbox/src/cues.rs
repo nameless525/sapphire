@@ -233,6 +233,17 @@ impl CueShow {
         self.dispatcher.stats()
     }
 
+    /// A new fight: what the last one set going ends here, rather than playing out over ground its
+    /// actors have left. Every screen effect goes, `--post-effect`'s among them. A rumble stops at the
+    /// next [`Self::end_frame`], which has a pad to tell. A sound rings out: the mixer has no way to stop
+    /// one, and the longest is a second or so.
+    pub fn start_over(&mut self, screen: &mut EffectStack) {
+        self.world.clear();
+        self.shakes.stack.clear();
+        self.dispatcher.release_rumble();
+        screen.clear();
+    }
+
     /// Takes `presets`, or says why not: the table names a preset they don't have. Nothing changes then,
     /// and the caller keeps its presets too.
     #[cfg(any(test, feature = "dev"))]

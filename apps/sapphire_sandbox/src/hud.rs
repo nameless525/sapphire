@@ -162,6 +162,14 @@ impl SandboxHud {
         }
     }
 
+    /// A new fight: the last one's numbers go with it. Offscreen they'd otherwise stay until the new
+    /// fight's clock caught up with when they were born. A fixed frame's are its own.
+    pub fn start_over(&mut self) {
+        if self.options.mode == HudMode::Live {
+            self.hud.clear_damage();
+        }
+    }
+
     /// A platform event: whether the touch zones took it, which the rest of the input then never
     /// sees. Only live mode takes touches.
     pub fn handle_event(&mut self, event: &Event) -> bool {

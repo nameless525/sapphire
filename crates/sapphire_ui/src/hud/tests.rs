@@ -339,6 +339,23 @@ fn damage_numbers_past_the_limit_replace_the_oldest() {
 }
 
 #[test]
+fn clearing_takes_the_numbers_off_and_a_new_one_shows() {
+    let actions = TouchActions::default();
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let mut hud = CombatHud::new();
+    hud.update(ms(0), &HudValues::default(), &actions);
+    for value in 0..MAX_DAMAGE_NUMBERS as u32 + 3 {
+        hud.spawn_damage(value, Vec2::new(100.0, 100.0), DamageKind::Heavy);
+    }
+    hud.clear_damage();
+    let mut list = UiDrawList::default();
+    assert_eq!(hud.draw(&layout, &actions, &mut list).damage_numbers, 0);
+    hud.spawn_damage(7, Vec2::new(100.0, 100.0), DamageKind::Normal);
+    let mut list = UiDrawList::default();
+    assert_eq!(hud.draw(&layout, &actions, &mut list).damage_numbers, 1);
+}
+
+#[test]
 fn the_cooldown_sweep_and_its_seconds_show_until_the_skill_is_ready_then_it_flashes() {
     let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
     let actions = TouchActions::default();

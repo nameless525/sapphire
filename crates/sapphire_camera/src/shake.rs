@@ -158,6 +158,11 @@ impl ShakeStack {
         self.count
     }
 
+    /// Stops everything playing, at once. The next shake's noise goes on from where the last one's left off.
+    pub fn clear(&mut self) {
+        self.count = 0;
+    }
+
     /// Starts a shake, and says if another had to make way for it.
     pub fn fire(&mut self, shake: Shake, strength: f32) -> bool {
         let mut phases = [0.0; PHASES];
@@ -245,6 +250,22 @@ mod tests {
                 stack.sample(&tuning())
             })
             .collect()
+    }
+
+    #[test]
+    fn clearing_stops_what_plays_and_the_next_shake_still_fires() {
+        let mut stack = ShakeStack::new(7);
+        stack.fire(THUMP, 1.0);
+        stack.advance(0.0, 0.0);
+        stack.advance(0.05, 0.0);
+        assert_ne!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
+        stack.clear();
+        assert_eq!(stack.playing(), 0);
+        assert_eq!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
+        stack.fire(THUMP, 1.0);
+        stack.advance(0.0, 0.0);
+        stack.advance(0.05, 0.0);
+        assert_ne!(stack.sample(&tuning()), (Vec3::ZERO, Vec3::ZERO));
     }
 
     #[test]

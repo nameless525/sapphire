@@ -1641,7 +1641,15 @@ impl Scene {
             // A clock that went back is a new fight, and everything stands somewhere else: the frame
             // draws nothing of the last one. A party's swap needs none of this, since who comes in
             // stands where the one who left stood, and the camera goes on.
-            self.view_cut |= arena.fight_time() < fought;
+            if arena.fight_time() < fought {
+                self.view_cut = true;
+                if let Some(cues) = &mut self.cues {
+                    cues.start_over(&mut self.ecs.world_mut().resource_mut::<EffectStack>());
+                }
+                if let Some(hud) = &mut self.hud {
+                    hud.start_over();
+                }
+            }
         }
         if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
             self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
@@ -4289,6 +4297,62 @@ mod tests {
         }
         assert!(landed, "the fight's first hit comes within 200 ticks");
         combat.check().expect("a fight fired is the fight recorded");
+    }
+
+    /// What a fight set going ends with it. A spark in the air, a screen effect, a shake and a hit's number
+    /// all belong to where the last fight's actors stood, so the new fight's first frame, the one the
+    /// view cuts on, shows none of them.
+    #[test]
+    fn a_new_fight_shows_nothing_the_last_one_set_going() {
+        use crate::hud::{HudMode, HudOptions};
+
+        let option = crate::options::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+        let mut combat = crate::combat::Combat::new(&option).expect("sets up");
+        let cast = combat.cast().to_vec();
+        let (mut scene, _) = arena_stage(ArenaShot::Director);
+        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
+        scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
+        let step = |scene: &mut Scene, combat: &mut crate::combat::Combat| {
+            combat.step(&mut crate::combat::no_bindings);
+            scene.follow_simulation(combat.simulation(), &cast);
+            scene.show_cues(combat.simulation());
+            scene.show_damage(combat.simulation());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+        };
+        // How far the view's right has left level, whether the frame draws no effects, its screen
+        // effects, and the numbers its HUD draws.
+        let frame = |scene: &mut Scene| {
+            scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
+            let packet = scene.frame_packet(1.0, Some((640, 360)));
+            let view = packet.main_view().expect("a view").camera.view;
+            let shown = (view.inverse().x_axis.y.abs(), packet.vfx.is_empty(), packet.post.effects);
+            let (hud, _) = scene.hud().expect("set").last_frame();
+            scene.end_frame();
+            (shown, hud.damage_numbers)
+        };
+        while !combat.simulation().cues().any(|cue| cue.hit.is_some()) {
+            let _ = frame(&mut scene);
+            step(&mut scene, &mut combat);
+            assert!(combat.simulation().tick() < 2000, "someone lands a hit by now");
+        }
+        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
+        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
+        director.fire_shake(finish, 1.0);
+        let ((_, empty, effects), numbers) = frame(&mut scene);
+        assert!(!empty, "the spark's up");
+        assert_ne!(effects, sapphire_render::PostEffects::NONE, "the screen effect's up");
+        assert!(numbers > 0, "the number's up");
+        let most = (0..6).map(|_| frame(&mut scene).0.0).fold(0.0_f32, f32::max);
+        assert!(most > 1e-3, "the shake's up: {most}");
+
+        combat.restart();
+        step(&mut scene, &mut combat);
+        assert_eq!(combat.simulation().tick(), 1, "the new fight's first step");
+        let ((tilt, empty, effects), numbers) = frame(&mut scene);
+        assert!(empty, "no spark of the last fight");
+        assert_eq!(effects, sapphire_render::PostEffects::NONE, "no screen effect of the last fight");
+        assert!(tilt < 1e-5, "no shake of the last fight: {tilt}");
+        assert_eq!(numbers, 0, "no number of the last fight");
     }
 
     /// A step's firing allocates nothing once a whole fight has warmed it (rule R6). The simulation's

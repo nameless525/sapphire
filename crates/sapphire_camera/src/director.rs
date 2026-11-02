@@ -369,6 +369,12 @@ impl CameraDirector {
         self.cut_pending = true;
     }
 
+    /// Stops every shake at once: what fired them is gone, as when a fight starts over. [`Self::cut`]
+    /// leaves them playing, since a change of shot in the middle of a fight doesn't end a hit.
+    pub fn stop_shakes(&mut self) {
+        self.shakes.clear();
+    }
+
     /// Fires a shake (see the `shake` module for E3's interface). `strength` scales this firing; the
     /// player's setting scales them all. An ID from another tuning, past this one's list, does nothing.
     pub fn fire_shake(&mut self, id: ShakeId, strength: f32) {

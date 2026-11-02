@@ -136,6 +136,12 @@ impl RumbleMixer {
         }
     }
 
+    /// Lets go of everything from here on, for a caller with no sink to hand: the next
+    /// [`Self::update`] tells the sink, along with whatever has started since.
+    pub fn release(&mut self) {
+        self.count = 0;
+    }
+
     /// Lets go of everything at once: the app lost focus or the foreground.
     pub fn stop(&mut self, sink: &mut dyn RumbleSink) {
         self.count = 0;
@@ -174,6 +180,25 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn a_released_rumble_stops_at_the_next_update_and_a_new_one_takes_over() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.5, 0.25, 1.0));
+        mixer.update(FRAME, &mut pad);
+        mixer.release();
+        assert_eq!(mixer.playing(), 0);
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0, [(0.5, 0.25, 1.0), (0.0, 0.0, 0.0)], "the pad hears it stop");
+
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.5, 0.25, 1.0));
+        mixer.update(FRAME, &mut pad);
+        mixer.release();
+        mixer.start(pulse(0.1, 0.2, 0.5));
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0, [(0.5, 0.25, 1.0), (0.1, 0.2, 0.5)]);
     }
 
     #[test]

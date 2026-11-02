@@ -326,6 +326,12 @@ impl CueDispatcher {
         self.mixer.stop(rumble);
     }
 
+    /// Stops any rumble by the next [`Self::end_frame`], which has a pad to tell: a fight started over
+    /// in a step, which doesn't.
+    pub fn release_rumble(&mut self) {
+        self.mixer.release();
+    }
+
     /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored).
     pub fn set_rumble_setting(&mut self, setting: f32) {
         self.mixer.set_setting(setting);

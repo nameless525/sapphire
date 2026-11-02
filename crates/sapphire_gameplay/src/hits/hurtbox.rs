@@ -84,10 +84,12 @@ impl HurtboxId {
     ///
     /// Call it for each of an actor's hurtboxes in
     /// [`CombatSet::Movement`](crate::CombatSet::Movement), after the actor's own movement, so
-    /// [`CombatSet::Hits`](crate::CombatSet::Hits) reads this tick's. `shape` is the hurtbox's own, or
-    /// what a move's hurtbox track says while its window is open: `HurtboxState::Off` is `None`, and
-    /// `HurtboxState::Shape` is `Some`. Allocates nothing within the world's body capacity, which has to
-    /// allow for these besides the capsules. A shape or pose the world refuses leaves it as it was.
+    /// [`CombatSet::Hits`](crate::CombatSet::Hits) reads this tick's. [`published_hurtbox`] gives
+    /// `shape` from what the actor's moves published. Allocates nothing within the world's body
+    /// capacity, which has to allow for these besides the capsules. A shape or pose the world refuses
+    /// leaves it as it was.
+    ///
+    /// [`published_hurtbox`]: super::published_hurtbox
     pub fn set(
         self,
         world: &mut PhysicsWorld,

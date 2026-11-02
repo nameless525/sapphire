@@ -4,16 +4,19 @@
 //! Distances here are worked out by hand in each test's comments. World space is metres, Y up, with
 //! a root's yaw turning its +Z toward +X.
 
+mod support;
+
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use sapphire_core::Name;
 use sapphire_gameplay::{
-    ActorId, ActorTransform, HitEvent, HitQuery, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS,
-    MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_SUB_STEPS, OwnerStep, SubStep, VolumeSweep,
-    remove_hurtboxes, volume_pose,
+    ActorActions, ActorId, ActorSpawn, ActorTable, ActorTransform, Buttons, HitEvent, HitQuery, HurtboxId,
+    MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_SUB_STEPS,
+    MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep, hit_shape,
+    published_hurtbox, remove_hurtboxes, volume_pose,
 };
 use sapphire_math::{Vec3, det};
-use sapphire_moves::{BakedPath, PathSample};
+use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample, Span, Stretch};
 use sapphire_physics::{
     ColliderId, Group, GroupMask, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape,
 };
@@ -127,30 +130,6 @@ fn assert_close(actual: f32, expected: f32) {
 #[track_caller]
 fn assert_near(actual: Vec3, expected: Vec3) {
     assert!(actual.abs_diff_eq(expected, 2e-3), "{actual} is not {expected}");
-}
-
-/// M2 G2's `Span::sweep` on a clock's readings, which is what a real move's `ActiveVolume::from` and
-/// `to` are: the part of a window's arc (from tick `open` to tick `close - 1`) that a stretch of the
-/// clock covers, or `None` if the window isn't live on it. Here so a window's tests read as a move
-/// drives them.
-fn window(
-    open: u32,
-    close: u32,
-    previous: Option<SimDuration>,
-    reading: SimDuration,
-) -> Option<(SimDuration, SimDuration)> {
-    let (start, end, arc_end) = (
-        ticks(u64::from(open)).as_subticks(),
-        ticks(u64::from(close)).as_subticks(),
-        ticks(u64::from(close.saturating_sub(1))).as_subticks(),
-    );
-    let first = previous.map_or(0, |time| time.as_subticks().saturating_add(1));
-    let last = reading.as_subticks();
-    if !(start <= last && (last < end || first <= arc_end)) {
-        return None;
-    }
-    let along = |time: u64| sub(time.clamp(start, arc_end));
-    Some((along(previous.map_or(start, SimDuration::as_subticks)), along(last)))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -860,7 +839,8 @@ fn x_of_hits(world: &PhysicsWorld, open: u32, close: u32, per_mille: u32) -> Vec
         if reading > ticks(20) {
             break;
         }
-        let Some((from, to)) = window(open, close, previous, reading) else { continue };
+        let window = Span { from: open, to: close };
+        let Some((from, to)) = window.sweep(Stretch::read(previous, reading)) else { continue };
         let mut volume = clocked(&path, SPHERE, previous, reading);
         volume.from = from;
         volume.to = to;
@@ -883,7 +863,7 @@ fn a_window_opening_this_tick_cant_reach_back() {
     // A big step whose last tick lies in the window: at 3×, readings 3 and 6 both pass ticks a
     // window starting at tick 5 doesn't want. The step ending at tick 6 starts from tick 5.
     let path = path_through(&(0..=20).map(|tick| Vec3::new(tick as f32, 1.0, 0.0)).collect::<Vec<_>>());
-    let (from, to) = window(5, 9, Some(ticks(3)), ticks(6)).unwrap();
+    let (from, to) = Span { from: 5, to: 9 }.sweep(Stretch::read(Some(ticks(3)), ticks(6))).unwrap();
     assert_eq!((from, to), (ticks(5), ticks(6)));
     let mut volume = clocked(&path, SPHERE, Some(ticks(3)), ticks(6));
     volume.from = from;
@@ -946,7 +926,8 @@ fn a_window_opening_and_closing_inside_one_step_still_counts() {
     assert_eq!(x_of_hits(&world, 2, 6, 8000), [] as [f32; 0], "after it");
 
     // A one-tick window at 8× is one instant: the path doesn't move through it, but it's tested.
-    assert_eq!(window(2, 3, Some(ticks(0)), ticks(8)), Some((ticks(2), ticks(2))));
+    let one_tick = Span { from: 2, to: 3 }.sweep(Stretch::read(Some(ticks(0)), ticks(8)));
+    assert_eq!(one_tick, Some((ticks(2), ticks(2))));
     let mut world = empty_world();
     add_target(&mut world, 2, 0, Shape::Sphere { radius: 0.05 }, Vec3::new(2.1, 1.0, 0.0));
     assert_eq!(x_of_hits(&world, 2, 3, 8000).len(), 1, "on that instant");
@@ -1945,4 +1926,357 @@ fn a_turning_sub_step_counts_what_turning_moved() {
     assert_eq!(walked.len(), 2);
     assert_close(walked[0].motion, 0.1);
     assert_close(walked[1].motion, 0.1);
+}
+
+// ---- Through a real step: what moves publish, joined by the adapter ----
+
+const BODY: Name = Name::new("body");
+const ARMOUR: Name = Name::new("armour");
+
+/// Every actor's own hurtbox: a sphere at chest height, a metre up its root.
+const OWN: Shape = Shape::Sphere { radius: 0.1 };
+const CHEST: PathSample = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
+
+/// Moves written to make distances easy to work out by hand.
+const DUEL: &str = r#"(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            (name: "lunge", button: Light, buffer: 1),
+            (name: "hold", button: Heavy, buffer: 1),
+            (name: "duck", button: Dodge, buffer: 1),
+            (name: "change", button: Skill, buffer: 1),
+            (name: "pull", button: Ultimate, buffer: 1),
+        ],
+        neutral: [
+            (intent: "lunge", move: "lunge"),
+            (intent: "hold", move: "hold"),
+            (intent: "duck", move: "duck"),
+            (intent: "change", move: "change"),
+            (intent: "pull", move: "pull"),
+        ],
+        moves: [
+            (
+                // A blade held at z = 0.5 in the root's space, carried by the root 0.125 m a tick from
+                // tick 4 to tick 12. Its arc stops at tick 11, with the root at 0.875.
+                name: "lunge",
+                startup: 4,
+                active: 8,
+                recovery: 8,
+                motion: (
+                    root: [(at: 4, offset: (0.0, 0.0, 0.0)), (at: 12, offset: (0.0, 0.0, 1.0))],
+                    paths: [(
+                        name: "blade",
+                        keys: [(at: 0, offset: (0.0, 1.0, 0.5)), (at: 20, offset: (0.0, 1.0, 0.5))],
+                    )],
+                ),
+                hitboxes: [(name: "cut", from: 4, to: 12, path: "blade", shape: Capsule(radius: 0.1, length: 0.4))],
+            ),
+            (
+                // A sphere held still a metre in front, for two thirds of a second, and another out of
+                // anyone's reach overhead, published first.
+                name: "hold",
+                startup: 2,
+                active: 40,
+                recovery: 2,
+                motion: (
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [(at: 0, offset: (0.0, 1.0, 1.0)), (at: 44, offset: (0.0, 1.0, 1.0))],
+                        ),
+                        (
+                            name: "overhead",
+                            keys: [(at: 0, offset: (0.0, 9.0, 1.0)), (at: 44, offset: (0.0, 9.0, 1.0))],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "high", from: 2, to: 42, path: "overhead", shape: Sphere(radius: 0.2)),
+                    (name: "poke", from: 2, to: 42, path: "blade", shape: Sphere(radius: 0.2)),
+                ],
+            ),
+            (
+                // Stands still, and can't be hit on ticks 0 to 6.
+                name: "duck",
+                startup: 1,
+                active: 6,
+                recovery: 30,
+                invulnerable: [(from: 0, to: 7)],
+            ),
+            (
+                // Its hurtbox goes on ticks 1 to 3, is a two-metre sphere on ticks 4 to 7, and is its
+                // own again after.
+                name: "change",
+                startup: 1,
+                active: 10,
+                recovery: 10,
+                hurtboxes: [
+                    (name: "body", from: 1, to: 4, state: Off),
+                    (name: "body", from: 4, to: 8, state: Shape(Sphere(radius: 2.0))),
+                ],
+            ),
+            (
+                // Comes in from z = 3 at 0.1 m a tick, with its window open only from z = 1.5, on tick
+                // 15, to z = 1.1, on tick 19.
+                name: "pull",
+                startup: 15,
+                active: 5,
+                recovery: 10,
+                motion: (
+                    paths: [(
+                        name: "blade",
+                        keys: [(at: 0, offset: (0.0, 1.0, 3.0)), (at: 30, offset: (0.0, 1.0, 0.0))],
+                    )],
+                ),
+                hitboxes: [(name: "tug", from: 15, to: 20, path: "blade", shape: Sphere(radius: 0.05))],
+            ),
+        ],
+    ),
+)"#;
+
+fn duel_moves() -> MoveSet {
+    MoveSetDocument::parse(DUEL).unwrap().compile().unwrap()
+}
+
+/// An attacker at the origin facing +Z, and a target `reach` metres in front of it, both able to play
+/// [`DUEL`], the attacker's clock at this rate.
+fn duel(reach: f32, per_mille: u32) -> (Simulation, ActorId, ActorId) {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(duel_moves()));
+    let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).unwrap();
+    let position = Vec3::new(0.0, 0.0, reach);
+    let target = sim.spawn(ActorSpawn { position, moves, ..ActorSpawn::default() }).unwrap();
+    support::join_moves_to_hits(&mut sim, BODY, OWN, CHEST);
+    sim.step(&TickActions::NEUTRAL);
+    if per_mille != 1000 {
+        sim.clock_mut(attacker).unwrap().0.push_scale(ScaleSource::Debug, per_mille).unwrap();
+    }
+    (sim, attacker, target)
+}
+
+/// One step of both actors pressing these.
+fn press(attacker: (ActorId, Buttons), target: (ActorId, Buttons)) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    for (actor, buttons) in [attacker, target] {
+        actions.set(actor, ActorActions { buttons, stick: Stick::CENTER }).unwrap();
+    }
+    actions
+}
+
+/// Everything hit in `steps` steps, after the attacker presses `button` on the first of them.
+fn hits_of(
+    sim: &mut Simulation,
+    attacker: ActorId,
+    target: ActorId,
+    button: Buttons,
+    steps: u32,
+) -> Vec<HitEvent> {
+    let mut found = Vec::new();
+    sim.step(&press((attacker, button), (target, Buttons::NONE)));
+    found.extend_from_slice(sim.hits().events());
+    for _ in 1..steps {
+        sim.step(&TickActions::NEUTRAL);
+        found.extend_from_slice(sim.hits().events());
+    }
+    found
+}
+
+#[test]
+fn a_published_swing_hits_once_where_its_root_carried_it() {
+    // The blade's surface is at z = 0.6 plus the root, and the target's surface at 1.15 - 0.1 = 1.05,
+    // out of the path's own reach: they meet with the root at 0.45, which is tick 4 + 0.45 / 0.125.
+    let (mut sim, attacker, target) = duel(1.15, 1000);
+    let found = hits_of(&mut sim, attacker, target, Buttons::LIGHT, 40);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let hit = found[0];
+    assert_eq!((hit.attacker, hit.target, hit.hurtbox), (attacker, target, 0));
+    assert_eq!((hit.instance, hit.group, hit.volume, hit.volley), (1, Name::new("cut"), 0, 0));
+    assert!(hit.at.as_subticks().abs_diff(7600) <= 2, "at {:?}", hit.at);
+    assert_near(hit.point, Vec3::new(0.0, 1.0, 1.05));
+    assert_near(hit.normal, Vec3::new(0.0, 0.0, -1.0));
+
+    // The same run gives the same hits and the same state.
+    let (mut again, attacker_again, target_again) = duel(1.15, 1000);
+    assert_eq!(hits_of(&mut again, attacker_again, target_again, Buttons::LIGHT, 40), found);
+    assert_eq!(again.checksum(), sim.checksum());
+}
+
+#[test]
+fn each_playing_of_a_move_hits_anew() {
+    // `hold` leaves the root alone, so its sphere rests on the target's chest for all its 44 ticks.
+    // That's one hit for each playing, from the volume published second.
+    let (mut sim, attacker, target) = duel(1.0, 1000);
+    let first = hits_of(&mut sim, attacker, target, Buttons::HEAVY, 50);
+    let second = hits_of(&mut sim, attacker, target, Buttons::HEAVY, 50);
+    let summary =
+        |hits: &[HitEvent]| hits.iter().map(|hit| (hit.instance, hit.group, hit.volume)).collect::<Vec<_>>();
+    assert_eq!(summary(&first), [(1, Name::new("poke"), 1)]);
+    assert_eq!(summary(&second), [(2, Name::new("poke"), 1)]);
+}
+
+#[test]
+fn a_published_window_cant_reach_back() {
+    for per_mille in [500, 1000, 3000, 7000] {
+        // The path passes z = 2 at tick 10, before the window opens.
+        let (mut sim, attacker, target) = duel(2.0, per_mille);
+        assert_eq!(hits_of(&mut sim, attacker, target, Buttons::ULTIMATE, 60), [], "at {per_mille}‰");
+
+        // It passes z = 1.3 at tick 17, inside it. The sphere touches the chest from 0.15 m away.
+        let (mut sim, attacker, target) = duel(1.3, per_mille);
+        let found = hits_of(&mut sim, attacker, target, Buttons::ULTIMATE, 60);
+        assert_eq!(found.len(), 1, "at {per_mille}‰: {found:?}");
+        assert!(found[0].at.as_subticks().abs_diff(15500) <= 3, "at {per_mille}‰: {:?}", found[0].at);
+    }
+}
+
+#[test]
+fn a_published_swing_reaches_as_far_at_any_speed() {
+    // With the root at 0.45, on the even part of its motion: the same time into the move, as long as
+    // the step that gets there lies wholly on that part. 7× doesn't, and hits a little later.
+    for per_mille in [500, 1000, 2000, 3000, 4000, 5000] {
+        let (mut sim, attacker, target) = duel(1.15, per_mille);
+        let found = hits_of(&mut sim, attacker, target, Buttons::LIGHT, 60);
+        assert_eq!(found.len(), 1, "at {per_mille}‰: {found:?}");
+        assert!(found[0].at.as_subticks().abs_diff(7600) <= 3, "at {per_mille}‰: {:?}", found[0].at);
+    }
+    for per_mille in [7000, 11000] {
+        let (mut sim, attacker, target) = duel(1.15, per_mille);
+        assert_eq!(hits_of(&mut sim, attacker, target, Buttons::LIGHT, 60).len(), 1, "at {per_mille}‰");
+    }
+
+    // With the root at 0.85, near the arc's end. 5× blends across the root's stop at tick 12, which
+    // is a straight line across a bend, and falls short of this: see `OwnerStep::root_at`.
+    for per_mille in [500, 1000, 2000, 3000, 4000] {
+        let (mut sim, attacker, target) = duel(1.55, per_mille);
+        let found = hits_of(&mut sim, attacker, target, Buttons::LIGHT, 60);
+        assert_eq!(found.len(), 1, "at {per_mille}‰: {found:?}");
+        assert!(found[0].at.as_subticks().abs_diff(10800) <= 3, "at {per_mille}‰: {:?}", found[0].at);
+    }
+
+    // With the root at 0.9, past the arc's end at tick 11, though not past the root's own travel: a
+    // step reading past the arc's end takes only its share of the root's motion.
+    for per_mille in [500, 1000, 2000, 3000, 4000, 5000, 7000] {
+        let (mut sim, attacker, target) = duel(1.6, per_mille);
+        let found = hits_of(&mut sim, attacker, target, Buttons::LIGHT, 60);
+        assert_eq!(found, [], "at {per_mille}‰");
+    }
+}
+
+#[test]
+fn an_invulnerable_target_takes_the_hit_when_its_window_closes() {
+    // The attacker's held sphere and the target's chest overlap from the window's first tick. On its
+    // own that's a hit at once.
+    let (mut sim, attacker, target) = duel(1.0, 1000);
+    let found = hits_of(&mut sim, attacker, target, Buttons::HEAVY, 10);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].at, ticks(2));
+    assert_eq!(found[0].travel, 0.0);
+
+    // Ducking on the same step, it isn't, for as long as the window lasts, and the hit it was spared
+    // still lands: nothing spent it.
+    let (mut sim, attacker, target) = duel(1.0, 1000);
+    sim.step(&press((attacker, Buttons::HEAVY), (target, Buttons::DODGE)));
+    let mut invulnerable_steps = 0;
+    let mut landed = Vec::new();
+    for _ in 0..30 {
+        let view = sim.actor(target).unwrap().moves;
+        if view.windows.invulnerable {
+            invulnerable_steps += 1;
+            assert_eq!(sim.hits().events(), [], "at {:?}", view.current.map(|mv| mv.elapsed));
+        } else {
+            landed.extend_from_slice(sim.hits().events());
+            if !sim.hits().events().is_empty() {
+                assert_eq!(view.current.unwrap().elapsed, ticks(7));
+            }
+        }
+        sim.step(&TickActions::NEUTRAL);
+    }
+    assert_eq!(invulnerable_steps, 7);
+    assert_eq!(landed.len(), 1, "{landed:?}");
+    assert_eq!(landed[0].target, target);
+}
+
+#[test]
+fn a_frozen_attacker_sweeps_nothing_it_published() {
+    // The target comes out of its duck at tick 7 with the attacker's clock stopped from its tick 3.
+    let (mut sim, attacker, target) = duel(1.0, 1000);
+    sim.step(&press((attacker, Buttons::HEAVY), (target, Buttons::DODGE)));
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    let reached = sim.actor(attacker).unwrap().moves.current.unwrap().elapsed;
+    assert_eq!(reached, ticks(3));
+    const FROZEN: u16 = 12;
+    sim.clock_mut(attacker).unwrap().0.apply_hitstop(FROZEN);
+
+    let swept = sim.hits().stats().frozen_skips;
+    let mut still = 0;
+    let mut landed = Vec::new();
+    for _ in 0..30 {
+        sim.step(&TickActions::NEUTRAL);
+        landed.extend_from_slice(sim.hits().events());
+        let view = sim.actor(attacker).unwrap().moves;
+        if view.current.unwrap().elapsed == reached {
+            still += 1;
+            assert_eq!(view.volumes.len(), 2, "a frozen move goes on publishing");
+            assert!(landed.is_empty(), "hit while frozen: {landed:?}");
+        }
+    }
+    assert_eq!(still, u64::from(FROZEN));
+    assert_eq!(sim.hits().stats().frozen_skips - swept, 2 * u64::from(FROZEN));
+    assert_eq!(landed.len(), 1, "{landed:?}");
+    assert_eq!(landed[0].at, reached, "it picks up where it stopped");
+}
+
+#[test]
+fn what_moves_publish_is_what_a_hurtbox_becomes() {
+    let (mut sim, attacker, target) = duel(5.0, 1000);
+    let entity = sim.world().resource::<ActorTable>().entity(target).unwrap();
+    let output = |sim: &Simulation| *sim.world().get::<MoveOutput>(entity).unwrap();
+
+    assert_eq!(published_hurtbox(BODY, OWN, &output(&sim)), Some(OWN), "with no move playing");
+
+    sim.step(&press((attacker, Buttons::NONE), (target, Buttons::SKILL)));
+    let mut seen = Vec::new();
+    for _ in 0..12 {
+        let now = output(&sim);
+        let tick = sim.actor(target).unwrap().moves.current.unwrap().tick();
+        let expected = match tick {
+            1..=3 => None,
+            4..=7 => Some(Shape::Sphere { radius: 2.0 }),
+            _ => Some(OWN),
+        };
+        assert_eq!(published_hurtbox(BODY, OWN, &now), expected, "tick {tick}");
+        assert_eq!(published_hurtbox(ARMOUR, OWN, &now), Some(OWN), "another's, at tick {tick}");
+        seen.push(tick);
+        sim.step(&TickActions::NEUTRAL);
+    }
+    assert_eq!(seen, (0..12).collect::<Vec<_>>());
+
+    // Invulnerable, none of its hurtboxes are there, whatever they're called.
+    let (mut sim, attacker, target) = duel(5.0, 1000);
+    let entity = sim.world().resource::<ActorTable>().entity(target).unwrap();
+    sim.step(&press((attacker, Buttons::NONE), (target, Buttons::DODGE)));
+    let now = *sim.world().get::<MoveOutput>(entity).unwrap();
+    assert!(now.windows.invulnerable);
+    assert_eq!(published_hurtbox(BODY, OWN, &now), None);
+    assert_eq!(published_hurtbox(ARMOUR, OWN, &now), None);
+}
+
+#[test]
+fn a_moves_shapes_become_a_querys_on_the_same_axis() {
+    use sapphire_moves::Shape as MoveShape;
+    assert_eq!(hit_shape(MoveShape::Sphere { radius: 0.3 }), Shape::Sphere { radius: 0.3 });
+    // A move's capsule says how far apart its end spheres are, and a query's says half that.
+    assert_eq!(
+        hit_shape(MoveShape::Capsule { radius: 0.25, length: 0.9 }),
+        Shape::Capsule { half_height: 0.45, radius: 0.25 }
+    );
+    assert_eq!(hit_shape(MoveShape::Capsule { radius: 0.25, length: 0.0 }), Shape::Sphere { radius: 0.25 });
+    assert_eq!(
+        hit_shape(MoveShape::Box { half_extents: [0.1, 0.2, 0.3] }),
+        Shape::Box { half_extents: Vec3::new(0.1, 0.2, 0.3) }
+    );
 }

@@ -18,7 +18,8 @@
 //! - The move system (M2 G2): [`IntentRing`], the intents waiting on an actor's own clock; the `moves`
 //!   module's cancels and moves, on [`sapphire_moves::MoveSet`]s from [`MoveLibrary`]; what a move
 //!   publishes ([`MoveOutput`], [`MoveRead`]); and [`CueQueue`], presentation's events.
-//! - [`HitQuery`], which sweeps moves' hit volumes against hurtboxes, over plain inputs.
+//! - [`HitQuery`], which sweeps moves' hit volumes against hurtboxes, over plain inputs that
+//!   [`HitQuery::sweep_published`] and [`published_hurtbox`] make from what moves publish.
 //!
 //! The controller and the system that runs hit queries arrive with M2's other G packages, each in its
 //! [`CombatSet`]. Until then [`CombatSet::Movement`] applies a move's root motion directly (the
@@ -127,8 +128,8 @@ pub use checksum::StateHasher;
 pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue};
 pub use hits::{
     HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS,
-    MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, SubStep,
-    VolumeSweep, remove_hurtboxes, volume_pose,
+    MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, PublishedMoves,
+    SubStep, VolumeSweep, hit_shape, published_hurtbox, remove_hurtboxes, volume_pose,
 };
 pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};

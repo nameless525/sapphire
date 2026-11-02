@@ -63,6 +63,10 @@ impl OwnerStep {
     /// step: exact at both ends, and held outside them, so a window opening part of the way through
     /// a big step takes its share of the root's motion. Yaw blends as unwrapped radians, so a turn past
     /// a half turn stays one.
+    ///
+    /// A step of one tick is exact, since tables are linear between ticks. A step covering several is a
+    /// straight line across what they did, so a root that starts or stops inside one is off by how far
+    /// its table leaves that line. 5× across the end of a root's 7.5 m/s motion falls 7.5 cm short.
     #[must_use]
     pub fn root_at(&self, time: SimDuration) -> ActorTransform {
         let (reading, time) = (self.reading.as_subticks(), time.as_subticks());

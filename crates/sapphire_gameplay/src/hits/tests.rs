@@ -155,3 +155,40 @@ fn a_book_stays_sorted_and_refuses_when_full() {
     book.retire(actor(2), 3);
     assert_eq!(book.entries.len(), 4, "already done");
 }
+
+/// A step's reading is the running move's, for that move's volumes. A volume left from a move cut off
+/// this step gets its own end, and doesn't read the time of the move that replaced it.
+#[test]
+fn only_the_running_moves_volumes_read_the_clock() {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = sim.add_move_set(crate::replay::test_moves().unwrap());
+    let id = sim.spawn(crate::ActorSpawn { moves: Some(moves), ..crate::ActorSpawn::default() }).unwrap();
+    sim.step(&crate::TickActions::NEUTRAL);
+    let entity = sim.world().resource::<crate::ActorTable>().entity(id).unwrap();
+    sim.ecs_mut().world_mut().get_mut::<crate::MoveRunner>(entity).unwrap().force(Name::new("light_1"));
+    for _ in 0..6 {
+        sim.step(&crate::TickActions::NEUTRAL);
+    }
+
+    let current = sim.actor(id).unwrap().moves.current.unwrap();
+    assert!(current.elapsed > SimDuration::from_ticks(3), "{:?}", current.elapsed);
+    let volume = |serial| crate::ActiveVolume {
+        at: current.at,
+        serial,
+        name: Name::new("swing"),
+        path: Name::new("blade"),
+        shape: sapphire_moves::Shape::Sphere { radius: 0.1 },
+        from: SimDuration::from_ticks(1),
+        to: SimDuration::from_ticks(2),
+        start: PathSample::IDENTITY,
+        end: PathSample::IDENTITY,
+    };
+
+    let runner = *sim.world().get::<crate::MoveRunner>(entity).unwrap();
+    assert_eq!(published::move_reading(&runner, &volume(current.serial)), current.elapsed);
+    assert_eq!(published::move_reading(&runner, &volume(current.serial - 1)), SimDuration::from_ticks(2));
+
+    // And with nothing left running.
+    let idle = crate::MoveRunner::default();
+    assert_eq!(published::move_reading(&idle, &volume(current.serial)), SimDuration::from_ticks(2));
+}

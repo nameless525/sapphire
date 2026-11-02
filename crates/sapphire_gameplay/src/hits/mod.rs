@@ -2,15 +2,16 @@
 //! tick, swept so nothing tunnels, and deduped per hit group.
 //!
 //! Owns [`HitQuery`], its [`HitEvent`]s and its records, [`VolumeSweep`] and the sub-step rule
-//! ([`VolumeSweep::walk`]), and [`HurtboxId`]. It takes plain inputs and reads no ECS state, so
-//! whatever publishes a move's active volumes (M2 G2) feeds it, and a test can too. [`HitQuery`]'s docs
-//! say how it behaves.
+//! ([`VolumeSweep::walk`]), and [`HurtboxId`]. It takes plain inputs and reads no ECS state, so a test
+//! can feed it as well as M2 G2's published moves, which [`HitQuery::sweep_published`] and
+//! [`published_hurtbox`] turn into those inputs. [`HitQuery`]'s docs say how it behaves.
 //!
 //! Doesn't own: which volumes are active on a tick, or a move's hurtbox track (M2 G2); damage, poise,
 //! reactions, hitstop or cues (M2 G3); debug views (M2 T1).
 
 mod book;
 mod hurtbox;
+mod published;
 #[cfg(test)]
 mod tests;
 mod volume;
@@ -25,6 +26,7 @@ use sapphire_time::SimDuration;
 
 use self::book::Book;
 pub use self::hurtbox::{HurtboxId, MAX_HURTBOXES, remove_hurtboxes};
+pub use self::published::{PublishedMoves, hit_shape, published_hurtbox};
 pub use self::volume::{MAX_SAG, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, SubStep, VolumeSweep, volume_pose};
 use crate::actors::ActorId;
 use crate::checksum::StateHasher;
@@ -126,6 +128,7 @@ pub struct HitStats {
 ///
 /// 1. [`Self::sweep`] for each active volume, by [`ActorId`], then instance, then volume index. Each
 ///    makes its casts ([`VolumeSweep::walk`] states the rule) and notes what they touched.
+///    [`Self::sweep_published`] does this for all an actor's moves published.
 /// 2. [`Self::finish_step`] once, even with nothing swept. It puts the contacts in order, applies the
 ///    hit groups and fills [`Self::events`], which [`CombatSet::Resolve`](crate::CombatSet::Resolve)
 ///    reads. They stay there until the next step's `finish_step`.
@@ -142,8 +145,9 @@ pub struct HitStats {
 /// # Hurtboxes
 ///
 /// They're bodies in `Group::Hurtbox`, in the [`PhysicsWorld`], with [`HurtboxId`]s for IDs. A move's
-/// hurtbox track sets them with [`HurtboxId::set`] in [`CombatSet::Movement`](crate::CombatSet::Movement),
-/// which runs before `Hits`, and the physics world applies a pose at once, so a sweep reads this
+/// hurtbox track sets them with [`HurtboxId::set`], through [`published_hurtbox`], in
+/// [`CombatSet::Movement`](crate::CombatSet::Movement), which runs before `Hits`, and the physics world
+/// applies a pose at once, so a sweep reads this
 /// tick's. A target is tested only where it stands now: a target and a swing crossing each other in
 /// one tick meet or miss by the target's end pose. An attacker never touches its own hurtboxes.
 ///

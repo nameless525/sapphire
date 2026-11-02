@@ -14,8 +14,9 @@ use sapphire_gameplay::replay::{
     melee_buttons,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, HitQuery, HurtboxId, INTENT_RING_LEN,
-    MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep, WarpTarget, remove_hurtboxes,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, HitQuery, HurtboxId,
+    INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep, WarpTarget,
+    remove_hurtboxes,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
@@ -412,4 +413,42 @@ fn a_simulations_hit_state_hashes_without_allocating() {
     let (checksum, counts) = alloc::count_in_scope(|| sim.checksum());
     assert_ne!(checksum, 0);
     assert_eq!(counts.allocations, 0);
+}
+
+/// The join with moves, in a real step: published hurtboxes and sweeps, through a fight's worth of
+/// the test content's moves, with hits landing.
+#[test]
+fn sweeping_what_moves_publish_does_not_allocate() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    const BODY: Name = Name::new("body");
+    const OWN: Shape = Shape::Sphere { radius: 0.4 };
+    let chest = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
+
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(slice()));
+    let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
+    let position = Vec3::new(0.0, 0.0, 1.6);
+    let target = sim.spawn(ActorSpawn { position, yaw: 3.0, moves }).expect("room");
+
+    support::join_moves_to_hits(&mut sim, BODY, OWN, chest);
+
+    // The schedule builds and the hurtboxes go in the world on the first step, which is setup.
+    sim.step(&TickActions::NEUTRAL);
+    let mut landed = 0;
+    for tick in 0..240_u64 {
+        let buttons = if tick % 40 == 0 { Buttons::LIGHT } else { Buttons::NONE };
+        let dodge = if tick % 90 == 45 { Buttons::DODGE } else { Buttons::NONE };
+        let actions = {
+            let mut actions = TickActions::NEUTRAL;
+            actions.set(attacker, ActorActions { buttons, ..ActorActions::default() }).expect("room");
+            actions.set(target, ActorActions { buttons: dodge, ..ActorActions::default() }).expect("room");
+            actions
+        };
+        let ((), counts) = alloc::count_in_scope(|| sim.step(&actions));
+        assert_eq!(counts.allocations, 0, "tick {tick}");
+        landed += sim.hits().events().len();
+    }
+    assert!(landed > 0, "nothing landed, so nothing was tested");
 }

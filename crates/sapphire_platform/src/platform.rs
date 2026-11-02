@@ -220,6 +220,12 @@ impl Platform {
         crate::audio_session::activate()
     }
 
+    /// How hot the OS says the device is running (spec §6.3). It asks the OS, a binder call on
+    /// Android, so read it every few seconds rather than every frame.
+    pub fn thermal_state(&self) -> crate::ThermalState {
+        crate::thermal::current()
+    }
+
     /// A human-readable name for a key under the current layout (for rebinding UI and
     /// prompts), or an empty string if it has none.
     pub fn key_name(&self, key: Keycode) -> String {

@@ -145,6 +145,7 @@ mod pacing;
 mod platform;
 mod sdl;
 mod system;
+mod thermal;
 mod window;
 
 #[doc(hidden)]
@@ -164,4 +165,5 @@ pub use pacing::{PacingSource, PacingStats};
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;
 pub use system::{DeviceClass, Os, SystemInfo};
+pub use thermal::ThermalState;
 pub use window::{Rect, Size, SurfaceHandle, TextInputKind, Window, WindowDesc, WindowId};

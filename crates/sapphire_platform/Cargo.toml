@@ -45,7 +45,7 @@ sdl3-sys = { workspace = true, features = [
 # callbacks at the target frame rate, and the Objective-C class it calls.
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2.workspace = true
-objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString", "NSNotification", "NSDictionary", "NSValue", "NSOperation", "NSError", "block2"] }
+objc2-foundation = { workspace = true, features = ["NSRunLoop", "NSString", "NSNotification", "NSDictionary", "NSValue", "NSOperation", "NSError", "NSProcessInfo", "block2"] }
 # The audio session (M2 E1, `audio_session.rs`), which cpal's iOS host expects an app to set up.
 objc2-avf-audio.workspace = true
 block2.workspace = true

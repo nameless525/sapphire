@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use sapphire_platform::{FramePacing, PacingStats};
+use sapphire_platform::{FramePacing, PacingStats, ThermalState};
 use sapphire_rhi::SkipReason;
 
 use crate::LOG_TARGET;
@@ -79,6 +79,7 @@ impl FrameStats {
         presented: bool,
         stages: &Stages,
         pacing: &FramePacing,
+        thermal: impl FnOnce() -> ThermalState,
     ) {
         if presented {
             self.presented += 1;
@@ -94,7 +95,8 @@ impl FrameStats {
             return;
         }
 
-        let allocations = sapphire_core::alloc::stats().total_allocations;
+        let heap = sapphire_core::alloc::stats();
+        let allocations = heap.total_allocations;
         let frames = self.frames.max(1);
         let seconds = self.window.as_secs_f64();
         let average_ms = seconds * 1e3 / f64::from(frames);
@@ -125,6 +127,9 @@ impl FrameStats {
             skipped = self.skipped,
             sim_dropped_ms = self.dropped.as_millis(),
             allocs_per_frame = (allocations - self.allocations_at_start) / u64::from(frames),
+            live_bytes = heap.live_bytes,
+            // What exit test 4's soak reads: whether the OS says it's throttling (spec §6.3).
+            thermal = ?thermal(),
             "frame stats",
         );
         *self = Self {

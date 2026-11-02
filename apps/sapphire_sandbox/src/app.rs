@@ -530,7 +530,8 @@ impl App for SandboxApp {
         }
 
         self.scene.end_frame();
-        self.stats.record(frame_time, steps.dropped, presented, &self.stages, &pacing);
+        self.stats
+            .record(frame_time, steps.dropped, presented, &self.stages, &pacing, || platform.thermal_state());
         profiling::finish_frame!();
         self.frame_limit_control().unwrap_or(AppControl::Continue)
     }

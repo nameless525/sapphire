@@ -42,11 +42,15 @@
 //!
 //! # Overhead
 //!
-//! Each allocation does three relaxed atomic read-modify-writes and one relaxed load on a single
-//! cache-line-aligned block, plus one thread-local `Cell` update; each deallocation does one
-//! relaxed atomic subtraction. Uncontended that is a few nanoseconds per call. When many threads
-//! allocate at once the shared cache line bounces between cores and the cost can reach tens of
-//! nanoseconds per call, which is why shipping builds use the bare allocator.
+//! Each allocation does four relaxed atomic read-modify-writes on a cache-line-aligned shard of
+//! the counters, plus one thread-local `Cell` update; each deallocation does one relaxed atomic
+//! subtraction. A few nanoseconds per call, however many threads allocate: where its stack is
+//! picks a thread's shard, so threads rarely share one. [`stats`] sums the shards.
+//!
+//! One set of counters for the whole process cost far more than that. Ten threads building
+//! pipelines through naga, which allocates throughout, spent most of their time passing its cache
+//! line around: creating a renderer took 47 ms on the job pool, against 35 ms one after another
+//! and 8 ms without shared counters, for 6 times the CPU (an M5, warm shader cache).
 //!
 //! # Targets without native thread-local storage
 //!
@@ -115,7 +119,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: the caller guarantees `ptr` came from this allocator with `layout`.
         unsafe { self.inner.dealloc(ptr, layout) };
-        COUNTERS.live_bytes.fetch_sub(layout.size(), Relaxed);
+        record_dealloc(layout.size());
     }
 
     #[inline]
@@ -125,40 +129,87 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         let new_ptr = unsafe { self.inner.realloc(ptr, layout, new_size) };
         if !new_ptr.is_null() {
             // A realloc may move the block, so it counts as an allocation for rule R6.
-            COUNTERS.live_bytes.fetch_sub(layout.size(), Relaxed);
+            record_dealloc(layout.size());
             record_alloc(new_size);
         }
         new_ptr
     }
 }
 
-/// Process-wide counters, on their own cache line (128 bytes covers Apple Silicon) so that
-/// unrelated statics never share it.
+/// log2 of the shards: enough that a process's few dozen threads rarely meet.
+const SHARD_BITS: u32 = 6;
+
+/// log2 of the stretch of address space that picks a shard: half a megabyte, about the smallest
+/// stack a thread gets, so two threads' stacks don't fall into one stretch.
+const STACK_STRETCH_BITS: u32 = 19;
+
+/// A thread's new bytes between looks at the total for [`PEAK_LIVE_BYTES`], so the peak can trail
+/// the truth by this much per thread. Summing the shards reads other threads' cache lines, which
+/// is what the shards are there to avoid, so it mustn't come often: a frame allocates less than
+/// this in all.
+const PEAK_CHECK_BYTES: usize = 1 << 20;
+
+/// One shard of the process-wide counters, on its own cache line (128 bytes covers Apple
+/// Silicon). Only their sums mean anything: a block freed on another thread comes off that
+/// thread's shard, so one shard's `live_bytes` can go below zero, and wraps.
 #[repr(align(128))]
-struct Counters {
+struct Shard {
     allocations: AtomicU64,
     bytes_allocated: AtomicU64,
     live_bytes: AtomicUsize,
-    peak_live_bytes: AtomicUsize,
+    /// Bytes allocated through this shard since it last looked at the total.
+    since_peak_check: AtomicUsize,
 }
 
-static COUNTERS: Counters = Counters {
-    allocations: AtomicU64::new(0),
-    bytes_allocated: AtomicU64::new(0),
-    live_bytes: AtomicUsize::new(0),
-    peak_live_bytes: AtomicUsize::new(0),
-};
+static SHARDS: [Shard; 1 << SHARD_BITS] = [const {
+    Shard {
+        allocations: AtomicU64::new(0),
+        bytes_allocated: AtomicU64::new(0),
+        live_bytes: AtomicUsize::new(0),
+        since_peak_check: AtomicUsize::new(0),
+    }
+}; 1 << SHARD_BITS];
+
+/// The highest total any look at it has seen; [`stats`] adds what the total is now.
+#[repr(align(128))]
+struct PeakLiveBytes(AtomicUsize);
+
+static PEAK_LIVE_BYTES: PeakLiveBytes = PeakLiveBytes(AtomicUsize::new(0));
+
+/// The shard for this thread, by where its stack is, since a thread-local isn't safe here on every
+/// target (see the module docs). A frame's address stays in one stretch of the stack or moves
+/// to the next as calls nest, and a change of shard costs nothing but the odd shared line.
+#[inline]
+fn shard_index() -> usize {
+    let on_the_stack = 0u8;
+    let stretch = std::ptr::from_ref(&on_the_stack).addr() >> STACK_STRETCH_BITS;
+    // Fibonacci hashing: stacks often sit at even spacings, which it spreads furthest apart.
+    ((stretch as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (u64::BITS - SHARD_BITS)) as usize
+}
 
 #[inline]
 fn record_alloc(size: usize) {
-    COUNTERS.allocations.fetch_add(1, Relaxed);
-    COUNTERS.bytes_allocated.fetch_add(size as u64, Relaxed);
-    let live = COUNTERS.live_bytes.fetch_add(size, Relaxed).wrapping_add(size);
-    // Load first: the peak rarely moves, and a load does not take the line exclusively.
-    if live > COUNTERS.peak_live_bytes.load(Relaxed) {
-        COUNTERS.peak_live_bytes.fetch_max(live, Relaxed);
+    let shard = &SHARDS[shard_index()];
+    shard.allocations.fetch_add(1, Relaxed);
+    shard.bytes_allocated.fetch_add(size as u64, Relaxed);
+    shard.live_bytes.fetch_add(size, Relaxed);
+    if shard.since_peak_check.fetch_add(size, Relaxed).saturating_add(size) >= PEAK_CHECK_BYTES {
+        shard.since_peak_check.store(0, Relaxed);
+        PEAK_LIVE_BYTES.0.fetch_max(live_bytes(), Relaxed);
     }
     per_thread::record(size);
+}
+
+#[inline]
+fn record_dealloc(size: usize) {
+    SHARDS[shard_index()].live_bytes.fetch_sub(size, Relaxed);
+}
+
+/// The shards' live bytes, summed. Read while other threads allocate, a block moving between
+/// shards can make the sum come out below the truth, even below zero, which reads as zero.
+fn live_bytes() -> usize {
+    let sum = SHARDS.iter().fold(0usize, |sum, shard| sum.wrapping_add(shard.live_bytes.load(Relaxed)));
+    sum.cast_signed().max(0).cast_unsigned()
 }
 
 /// Whether [`thread_counts`] and [`AllocScope`] count only the current thread on this target.
@@ -175,27 +226,29 @@ pub struct AllocStats {
     pub total_bytes: u64,
     /// Bytes currently allocated.
     pub live_bytes: usize,
-    /// Highest `live_bytes` since startup or the last [`reset_peak`].
+    /// Highest `live_bytes` since startup or the last [`reset_peak`], to within a megabyte per
+    /// allocating thread (a look at the total for every megabyte a thread allocates).
     pub peak_live_bytes: usize,
 }
 
-/// A snapshot of the process-wide counters.
+/// A snapshot of the process-wide counters: the shards' sums.
 ///
-/// Each field is read separately with relaxed ordering, so a snapshot taken while other threads
-/// allocate is approximate (for example `peak_live_bytes` may briefly trail `live_bytes`).
+/// Each shard's fields are read separately with relaxed ordering, so a snapshot taken while other
+/// threads allocate is approximate. Exact when they're quiet, however it was split among threads.
 #[must_use]
 pub fn stats() -> AllocStats {
-    AllocStats {
-        total_allocations: COUNTERS.allocations.load(Relaxed),
-        total_bytes: COUNTERS.bytes_allocated.load(Relaxed),
-        live_bytes: COUNTERS.live_bytes.load(Relaxed),
-        peak_live_bytes: COUNTERS.peak_live_bytes.load(Relaxed),
+    let mut stats = AllocStats { live_bytes: live_bytes(), ..AllocStats::default() };
+    for shard in &SHARDS {
+        stats.total_allocations += shard.allocations.load(Relaxed);
+        stats.total_bytes += shard.bytes_allocated.load(Relaxed);
     }
+    stats.peak_live_bytes = PEAK_LIVE_BYTES.0.load(Relaxed).max(stats.live_bytes);
+    stats
 }
 
 /// Resets the peak to the current live bytes, for example at the start of a level.
 pub fn reset_peak() {
-    COUNTERS.peak_live_bytes.store(COUNTERS.live_bytes.load(Relaxed), Relaxed);
+    PEAK_LIVE_BYTES.0.store(live_bytes(), Relaxed);
 }
 
 /// Whether a [`CountingAllocator`] is the global allocator.
@@ -205,11 +258,11 @@ pub fn reset_peak() {
 /// find out.
 #[must_use]
 pub fn is_installed() -> bool {
-    if COUNTERS.allocations.load(Relaxed) == 0 {
+    if stats().total_allocations == 0 {
         // `black_box` stops the optimizer from removing the allocation.
         drop(std::hint::black_box(Box::new(0u8)));
     }
-    COUNTERS.allocations.load(Relaxed) > 0
+    stats().total_allocations > 0
 }
 
 /// Allocation counts for one thread (or, where [`PER_THREAD_COUNTS`] is `false`, the process).
@@ -309,9 +362,7 @@ mod per_thread {
 // Targets without native TLS: see the module docs for why thread-locals are off limits here.
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))]
 mod per_thread {
-    use std::sync::atomic::Ordering::Relaxed;
-
-    use super::{AllocCounts, COUNTERS};
+    use super::{AllocCounts, stats};
 
     pub(super) const SUPPORTED: bool = false;
 
@@ -319,10 +370,8 @@ mod per_thread {
     pub(super) fn record(_size: usize) {}
 
     pub(super) fn current() -> AllocCounts {
-        AllocCounts {
-            allocations: COUNTERS.allocations.load(Relaxed),
-            bytes: COUNTERS.bytes_allocated.load(Relaxed),
-        }
+        let stats = stats();
+        AllocCounts { allocations: stats.total_allocations, bytes: stats.total_bytes }
     }
 }
 
@@ -347,5 +396,26 @@ mod tests {
         // This unit-test binary keeps the default allocator, so even the probe goes uncounted.
         assert!(!is_installed());
         assert!(!is_installed(), "probing must not change the answer");
+    }
+
+    #[test]
+    fn threads_find_shards_of_their_own() {
+        // Held until all have looked, so no thread's stack is reused for the next.
+        const THREADS: usize = 16;
+        let barrier = std::sync::Barrier::new(THREADS);
+        let shards: std::collections::HashSet<usize> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let shard = shard_index();
+                        barrier.wait();
+                        shard
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|thread| thread.join().expect("thread")).collect()
+        });
+        // Evenly spaced stacks all differ; random ones would share a few (about 2 of 16 in 64).
+        assert!(shards.len() >= 10, "{THREADS} threads on {} shards", shards.len());
     }
 }

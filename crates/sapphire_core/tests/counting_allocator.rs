@@ -63,6 +63,21 @@ fn other_threads_are_not_counted() {
 }
 
 #[test]
+fn process_stats_add_up_across_threads() {
+    // Each thread counts on a shard of its own, so this frees on another shard than it allocated.
+    const SIZE: usize = 1 << 24;
+    let before = alloc::stats();
+    let block = black_box(vec![0u8; SIZE]);
+    let during = alloc::stats();
+    std::thread::spawn(move || drop(block)).join().expect("thread");
+    let after = alloc::stats();
+    // Other tests allocate concurrently, but nowhere near this.
+    assert!(during.live_bytes >= before.live_bytes + SIZE / 2, "{before:?} {during:?}");
+    assert!(after.live_bytes + SIZE / 2 <= during.live_bytes, "{during:?} {after:?}");
+    assert!(after.total_bytes >= during.total_bytes, "{during:?} {after:?}");
+}
+
+#[test]
 fn process_stats_track_live_and_peak() {
     let before = alloc::stats();
     let block = black_box(vec![0u8; 1 << 20]);
@@ -71,6 +86,7 @@ fn process_stats_track_live_and_peak() {
     assert!(during.total_bytes >= before.total_bytes + (1 << 20));
     assert!(during.peak_live_bytes >= 1 << 20);
     drop(block);
+    assert!(alloc::stats().peak_live_bytes >= 1 << 20, "the peak remembers the block");
     alloc::reset_peak();
     // Other tests allocate concurrently, but nowhere near the megabyte just freed.
     assert!(alloc::stats().peak_live_bytes < during.peak_live_bytes);

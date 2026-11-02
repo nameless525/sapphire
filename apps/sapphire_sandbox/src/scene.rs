@@ -1623,7 +1623,7 @@ impl Scene {
     }
 
     /// Poses the character as [`Self::play_fighters`] does, with no arena to fight in, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "dev"))]
     pub fn pose_as_fighter(&mut self, driver: GraphDriver) {
         let figure = self.figure;
         self.ecs.world_mut().entity_mut(self.character).insert((driver, figure));

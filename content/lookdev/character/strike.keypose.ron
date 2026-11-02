@@ -1,0 +1,52 @@
+// A small swing of the right arm: what a key-pose document is, kept in every cook so the format
+// stays honest (M2 N1). A key says what changes; what it doesn't name stays where the key before
+// left it. Ticks are 60 a second. Turns are degrees in the character's rest space, about each bone's
+// own joint, X then Y then Z. The character faces +Z, and her right arm rests along -X.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 60,
+        keys: [
+            // Standing, as the look-dev stage holds her.
+            (tick: 0, pose: {
+                LeftUpperArm: (y: -4, z: -76),
+                RightUpperArm: (y: 4, z: 76),
+                LeftLowerArm: (y: -10),
+                RightLowerArm: (y: 10),
+                LeftHand: (x: 10),
+                RightHand: (x: 10),
+                Head: (x: 4, y: -10),
+            }),
+
+            // Anticipation: she sinks and draws the arm back, leaving fast and arriving slowly.
+            (tick: 14, ease: Out, hips: (0, -0.03, -0.02), pose: {
+                Spine: (y: -14),
+                RightUpperArm: (y: -50, z: 50),
+                RightLowerArm: (y: 60),
+                Head: (x: 4, y: 4),
+            }),
+
+            // The strike: six ticks, past the mark and back, carried forward by root motion.
+            (tick: 20, ease: Overshoot(0.15), root: (0, 0, 0.35), hips: (0, -0.05, 0.03), pose: {
+                Spine: (y: 20),
+                RightUpperArm: (y: 40, z: 62),
+                RightLowerArm: (y: 8),
+                Head: (x: 4, y: -22),
+            }),
+
+            // Held for a beat, a little of the motion still going.
+            (tick: 28, ease: Linear, root: (0, 0, 0.38), pose: {
+                Spine: (y: 22),
+            }),
+
+            // Settling back to the first pose, with a step's worth of travel kept.
+            (tick: 52, root: (0, 0, 0.42), hips: (0, 0, 0), pose: {
+                Spine: (y: 0),
+                RightUpperArm: (y: 4, z: 76),
+                RightLowerArm: (y: 10),
+                Head: (x: 4, y: -10),
+            }),
+        ],
+    ),
+)

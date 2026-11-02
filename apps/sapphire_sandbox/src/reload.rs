@@ -8,10 +8,11 @@
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
 //!   versions within the frame's upload budget, in place, and the scene poses what a replaced mesh
 //!   starts over ([`Scene::follow_content`]);
-//! - WGSL files whose text changed on disk replace those files in the newest sources the
-//!   renderer was asked for, so live link's pushes of other files keep their text, and build the
-//!   renderer's pipelines again off the frame thread, which swaps them in once they are all
-//!   built, or keeps the ones it has if they don't compile (`shader_edits.rs`);
+//! - WGSL files whose text changed on disk since hot reload's last swap replace those files in
+//!   the newest sources the renderer was asked for, so live link's pushes of other files keep
+//!   their text, and build the renderer's pipelines again off the frame thread, which swaps them
+//!   in once they are all built, or keeps the ones it has if they don't compile, and they are
+//!   built again with the next save (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
 //!   scene runs on ([`Scene::replace_day`]);
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
@@ -154,6 +155,9 @@ pub(crate) struct Reload {
     /// The shader files as hot reload last read them: compiled in until one changes on disk, as
     /// `HotReload` starts.
     shaders_read: ShaderSources,
+    /// The shader files whose text changed on disk since one of hot reload's requests was last
+    /// swapped in: every request takes all of them from the disk.
+    shaders_changed: Vec<ShaderFile>,
     /// Edits of the shaders swapped in.
     shader_rebuilds: u32,
     reloaded_documents: u32,
@@ -172,6 +176,7 @@ impl Reload {
             watching: String::new(),
             documents: Vec::new(),
             shaders_read: ShaderSources::compiled_in(),
+            shaders_changed: Vec::new(),
             shader_rebuilds: 0,
             reloaded_documents: 0,
             errors: Vec::new(),
@@ -226,6 +231,11 @@ impl Reload {
     /// of those that failed, which replace the last change's.
     pub fn shaders_answered(&mut self, answered: &mut Answered) {
         self.shader_rebuilds += answered.reloaded;
+        // Swapped in, so they are in use. Requests are made after answers are taken, and an answer
+        // covers the requests before it, so none newer can be waiting here with other files.
+        if answered.reloaded > 0 {
+            self.shaders_changed.clear();
+        }
         if !answered.reload_errors.is_empty() {
             self.errors = std::mem::take(&mut answered.reload_errors);
         }
@@ -300,26 +310,32 @@ impl Reload {
     }
 
     /// Asks `renderer`, through `shaders`, to build the files of `read` (every shader file, as
-    /// hot reload read them from disk) that changed since the last reading, on top of the newest
-    /// sources asked for (`ShaderEdits::base`). Taken whole, `read` would put back the disk's
-    /// text of files live link pushed, and the push would still be answered as applied.
+    /// hot reload read them from disk) that changed since one of hot reload's requests was last
+    /// swapped in, on top of the newest sources asked for (`ShaderEdits::base`). A failed
+    /// request's files stay among them, so an edit across files saved a build apart lands whole
+    /// with its last save (review DV-1). Taken whole, `read` would put back the disk's text of
+    /// files live link pushed, and the push would still be answered as applied.
     pub(crate) fn request_shaders(
         &mut self,
         read: ShaderSources,
         renderer: &mut Renderer,
         shaders: &mut ShaderEdits,
     ) {
-        let mut sources = None;
         for file in ShaderFile::ALL {
-            if read.get(file) != self.shaders_read.get(file) {
-                sources.get_or_insert_with(|| shaders.base(renderer)).set(file, read.get(file).to_owned());
+            if read.get(file) != self.shaders_read.get(file) && !self.shaders_changed.contains(&file) {
+                self.shaders_changed.push(file);
             }
         }
         self.shaders_read = read;
-        // A file saved with the text it had changes nothing.
-        if let Some(sources) = sources {
-            shaders.request(renderer, sources, Origin::HotReload);
+        // A file saved with the text it had changes nothing, but tries a failed edit again.
+        if self.shaders_changed.is_empty() {
+            return;
         }
+        let mut sources = shaders.base(renderer);
+        for &file in &self.shaders_changed {
+            sources.set(file, self.shaders_read.get(file).to_owned());
+        }
+        shaders.request(renderer, sources, Origin::HotReload);
     }
 
     /// What the overlay shows.

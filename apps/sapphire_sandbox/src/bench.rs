@@ -91,6 +91,7 @@ pub(crate) fn run(
     // And spring bones' within it, and the sub-steps they ran.
     let mut springs = Vec::with_capacity(cpu.capacity());
     let mut spring_substeps = 0_u64;
+    let mut anim_ik = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -128,6 +129,7 @@ pub(crate) fn run(
             springs.push(stats.spring_time);
             spring_substeps += u64::from(stats.spring_substeps);
             anim_teleports = stats.teleports;
+            anim_ik += u64::from(stats.ik);
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -193,6 +195,8 @@ pub(crate) fn run(
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
         clip = ?options.clip,
         anim_graph = ?options.graph,
+        ik = ?options.ik.as_ref().map(|ik| ik.ground),
+        anim_ik_per_frame = format_args!("{:.2}", anim_ik as f64 / f64::from(frames)),
         anim_us_p50 = format_args!("{:.2}", micros(anim_percentile(50))),
         anim_us_p99 = format_args!("{:.2}", micros(anim_percentile(99))),
         anim_us_max = format_args!("{:.2}", micros(anim_percentile(100))),

@@ -23,6 +23,9 @@
 //!   after a clip holds, until it has stopped. Their time is the pose's too, presented time, so hair
 //!   never leads the body. They sleep off screen and past the tier's distance ([`SpringView`]), and
 //!   coming back starts from the pose. `--springs off` leaves them out.
+//! - **IK** ([`IkDriver`], `--ik on`, M2 N4) runs between sampling and `finish`, so the rig's helpers
+//!   and the springs follow it, and everything [`Figure`] reads does too. It has a say in what's
+//!   evaluated at all.
 
 use std::time::Duration;
 
@@ -38,6 +41,7 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_world::light_rig::CharacterLightRig;
 
 use crate::extract::{RenderPose, RenderTransform};
+use crate::ik::IkDriver;
 use crate::lookdev::FigureJoints;
 use crate::scene::Figure;
 
@@ -130,6 +134,8 @@ pub(crate) struct ClipPlayer {
     springs_on: bool,
     /// Loops whose first frame jumped the character back ([`Self::teleports`]).
     teleports: u32,
+    /// Its IK, with `--ik on`.
+    ik: Option<IkDriver>,
 }
 
 impl ClipPlayer {
@@ -146,6 +152,7 @@ impl ClipPlayer {
             springs: None,
             springs_on: true,
             teleports: 0,
+            ik: None,
         }
     }
 
@@ -165,6 +172,27 @@ impl ClipPlayer {
     #[must_use]
     pub fn with_root_motion(self, root_motion: bool) -> Self {
         Self { root_motion, ..self }
+    }
+
+    /// This player, solving IK over its clip.
+    #[must_use]
+    pub fn with_ik(self, ik: IkDriver) -> Self {
+        Self { ik: Some(ik), ..self }
+    }
+
+    /// Its IK, for whatever drives it.
+    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+        self.ik.as_mut()
+    }
+
+    /// Whether it solves IK.
+    pub fn has_ik(&self) -> bool {
+        self.ik.is_some()
+    }
+
+    /// Its pose, as of its last evaluation.
+    pub fn pose(&self) -> &CharacterPose {
+        &self.pose
     }
 
     /// Starts the clip now: at `ticks` on the entity's clock, with the entity at `base`.
@@ -237,10 +265,17 @@ impl ClipPlayer {
         (position.rem_euclid(end) as f32, position.div_euclid(end) as i64)
     }
 
-    /// The position to evaluate at `ticks` for `clip` at `version`, or `None` if that is what the
-    /// character already draws, so nothing need move. A loop's first frame teleports the character
-    /// back to where the clip started, if root motion moved it, so its springs start over.
-    pub fn next_position(&mut self, clip: &ArchivedClip, version: u32, ticks: f64) -> Option<f32> {
+    /// The position to evaluate at `ticks` for `clip` at `version`, with the character at
+    /// `transform`, or `None` if that is what the character already draws, so nothing need move. A
+    /// loop's first frame teleports the character back to where the clip started, if root motion moved
+    /// it, so its springs and its IK start over.
+    pub fn next_position(
+        &mut self,
+        clip: &ArchivedClip,
+        version: u32,
+        ticks: f64,
+        transform: Mat4,
+    ) -> Option<f32> {
         let (position, lap) = self.position(clip, ticks);
         if lap != self.lap {
             self.lap = lap;
@@ -249,10 +284,14 @@ impl ClipPlayer {
                 if let Some(springs) = &mut self.springs {
                     springs.reset();
                 }
+                if let Some(ik) = &mut self.ik {
+                    ik.reset();
+                }
             }
         }
         let drawing = Some((position.to_bits(), version));
-        if self.drawn == drawing {
+        let solve = self.ik.as_mut().is_some_and(|ik| ik.wants_evaluation(ticks, transform));
+        if self.drawn == drawing && !solve {
             return None;
         }
         self.drawn = drawing;
@@ -306,13 +345,16 @@ impl Evaluation<'_> {
         let player = &mut *self.player;
         if let Some(position) = self.position {
             player.pose.sample(clip, position);
+            if let Some(root) = root_motion(clip, position).filter(|_| player.root_motion) {
+                self.transform.set_if_neq(RenderTransform(player.base * root.to_mat4()));
+            }
+            if let Some(ik) = &mut player.ik {
+                ik.solve(&mut player.pose, self.transform.0);
+            }
             player.pose.finish();
             let figure = player.joints.moving(&player.pose);
             *self.figure = figure;
             self.rig.head = figure.head;
-            if let Some(root) = root_motion(clip, position).filter(|_| player.root_motion) {
-                self.transform.set_if_neq(RenderTransform(player.base * root.to_mat4()));
-            }
         }
         if let Some(springs) = &mut player.springs {
             let started = Stopwatch::start();

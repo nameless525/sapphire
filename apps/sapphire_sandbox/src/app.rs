@@ -217,12 +217,14 @@ impl App for SandboxApp {
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
-                let player = lookdev::player(&content).map_err(AppInitError::msg)?;
-                scene.play_clip(
-                    player
-                        .with_root_motion(!options.clip_in_place)
-                        .with_springs_on(options.springs != Some(false)),
-                );
+                let mut player = lookdev::player(&content)
+                    .map_err(AppInitError::msg)?
+                    .with_root_motion(!options.clip_in_place)
+                    .with_springs_on(options.springs != Some(false));
+                if let (Some(ik), Some(block)) = (&options.ik, renderer.ik_block) {
+                    player = scene.start_ik(ik, block, &content, player).map_err(AppInitError::msg)?;
+                }
+                scene.play_clip(player);
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
             if let Some(script) = options.graph {
@@ -1058,6 +1060,8 @@ pub(crate) struct SceneRenderer {
     sword: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StageMeshes>,
+    /// The stone block IK's ground is built of, with `--ik on`.
+    ik_block: Option<MeshHandle>,
     /// The zone's sky material.
     sky: MaterialHandle,
 }
@@ -1103,6 +1107,9 @@ impl Scene {
         }
         if let Some(meshes) = renderer.stage {
             self.set_stage_meshes(meshes);
+        }
+        if let Some(block) = renderer.ik_block {
+            self.set_ik_block_mesh(block);
         }
         if let Some(town) = renderer.town {
             self.set_town_mesh(town);
@@ -1154,6 +1161,7 @@ struct SceneMeshes {
     enemy: Option<EnemyMeshes>,
     sword: Option<MeshHandle>,
     stage: Option<StageMeshes>,
+    ik_block: Option<MeshHandle>,
 }
 
 /// A renderer drawing into `format` targets with `settings`, holding the character, which
@@ -1211,6 +1219,7 @@ pub(crate) fn create_renderer(
             }
             None => None,
         };
+        let ik_block = options.ik.as_ref().map(|_| stage::upload_block(&mut renderer)).transpose()?;
         let sky = content.sky_material(&mut renderer, gpu)?;
         let meshes = SceneMeshes {
             stalk,
@@ -1228,6 +1237,7 @@ pub(crate) fn create_renderer(
             enemy,
             sword,
             stage,
+            ik_block,
         };
         Ok((character, character_bounds, meshes, sky))
     });
@@ -1256,6 +1266,7 @@ pub(crate) fn create_renderer(
                 enemy,
                 sword,
                 stage,
+                ik_block,
             } = meshes;
             Ok(SceneRenderer {
                 renderer,
@@ -1276,6 +1287,7 @@ pub(crate) fn create_renderer(
                 enemy,
                 sword,
                 stage,
+                ik_block,
                 sky,
             })
         }

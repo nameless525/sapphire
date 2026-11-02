@@ -12,9 +12,12 @@ use crate::ik::look::{EyeDrive, EyeRig, LookBones, RangeMap};
 use crate::ik::solve::TwoBone;
 
 /// How a look's turn shares out down the neck: whichever of these the rig has, top down. A rig
-/// without a neck, as KayKit's has none, shares it among what it has.
-const LOOK_SHARES: [(HumanBone, f32); 3] =
-    [(HumanBone::UpperChest, 0.15), (HumanBone::Neck, 0.3), (HumanBone::Head, 0.55)];
+/// without an upper chest or a neck, as KayKit's has neither, shares it among what it has.
+const LOOK_SHARES: [(&[HumanBone], f32); 3] = [
+    (&[HumanBone::UpperChest, HumanBone::Chest], 0.15),
+    (&[HumanBone::Neck], 0.3),
+    (&[HumanBone::Head], 0.55),
+];
 
 /// A rig's bones as IK reads them. See the [module docs](self).
 #[derive(Clone, Debug, PartialEq)]
@@ -170,7 +173,7 @@ fn look_bones(
 ) -> Option<LookBones> {
     let present: Vec<(usize, f32)> = LOOK_SHARES
         .iter()
-        .filter_map(|&(wanted, share)| Some((bone(wanted)?, share)))
+        .filter_map(|&(wanted, share)| Some((wanted.iter().find_map(|&wanted| bone(wanted))?, share)))
         .collect();
     let total: f32 = present.iter().map(|&(_, share)| share).sum();
     let (top, _) = *present.first()?;

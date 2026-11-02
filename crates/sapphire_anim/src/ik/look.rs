@@ -203,9 +203,10 @@ impl LookAt {
             return;
         }
 
-        let look = body_turn * Quat::from_scaled_axis(Vec3::new(self.gaze.x, self.gaze.y, 0.0)) * Vec3::Z;
-        let forward = pose.rotation(head) * self.bones.rest_head.inverse() * Vec3::Z;
-        let (axis, angle) = weighted(Quat::from_rotation_arc(forward, look), self.fade).to_axis_angle();
+        let look = Quat::from_scaled_axis(Vec3::new(self.gaze.x, self.gaze.y, 0.0)) * Vec3::Z;
+        let forward = body_turn.inverse() * pose.rotation(head) * self.bones.rest_head.inverse() * Vec3::Z;
+        let turn = body_turn * level_turn(forward, look) * body_turn.inverse();
+        let (axis, angle) = weighted(turn, self.fade).to_axis_angle();
         for &(joint, share, place) in &self.bones.chain {
             pose.turn(usize::from(joint), Quat::from_axis_angle(axis, angle * share));
             pose.refresh(&self.bones.path[usize::from(place) + 1..]);
@@ -304,6 +305,21 @@ fn swing_of(direction: Vec3) -> Vec2 {
     Vec2::new(-direction.y, direction.x) * (sine.atan2(direction.z) / sine)
 }
 
+/// The turn from unit `from` to unit `to` as a neck makes it, with no lean of its own: back along
+/// `from`'s pitch and yaw, then out along `to`'s. The shortest arc between them would tilt the head
+/// on a diagonal, by half the product of the yaw and the pitch, as nothing looking at something does.
+fn level_turn(from: Vec3, to: Vec3) -> Quat {
+    let angles = |direction: Vec3| {
+        (direction.x.atan2(direction.z), direction.y.atan2(Vec2::new(direction.x, direction.z).length()))
+    };
+    let (from_yaw, from_pitch) = angles(from);
+    let (to_yaw, to_pitch) = angles(to);
+    (Quat::from_rotation_y(to_yaw)
+        * Quat::from_rotation_x(from_pitch - to_pitch)
+        * Quat::from_rotation_y(-from_yaw))
+    .normalize()
+}
+
 /// An eye's yaw (positive toward +X) and pitch (positive up) for the unit `direction` in the head's
 /// frame, falling away past `hold` as the head's gaze does.
 fn eye_angles(direction: Vec3, hold: f32) -> Vec2 {
@@ -364,6 +380,20 @@ mod tests {
         assert_eq!(swing_of(Vec3::NEG_Z), Vec2::ZERO);
         assert!(swing_toward(FRAC_PI_4, 0.0).y > 0.0, "a positive yaw swings about +Y");
         assert!(swing_toward(0.0, 0.3).x < 0.0, "up swings against +X");
+    }
+
+    #[test]
+    fn a_level_turn_gets_there_without_leaning() {
+        let direction = |yaw: f32, pitch: f32| Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch) * Vec3::Z;
+        for (from, to) in [((0.0, 0.0), (0.9, 0.3)), ((0.2, -0.1), (-0.7, 0.4)), ((-0.5, 0.2), (-0.5, 0.2))] {
+            let (start, end) = (direction(from.0, from.1), direction(to.0, to.1));
+            let turn = level_turn(start, end);
+            assert!((turn * start).abs_diff_eq(end, 1e-5), "{from:?} to {to:?}");
+            // What had no lean, level across, has none after.
+            let across = Quat::from_rotation_y(from.0) * Vec3::X;
+            assert!((turn * across).y.abs() < 1e-5, "{from:?} to {to:?}: {}", turn * across);
+        }
+        assert!(level_turn(Vec3::Z, Vec3::Z).abs_diff_eq(Quat::IDENTITY, 1e-6));
     }
 
     #[test]

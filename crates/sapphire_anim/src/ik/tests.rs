@@ -459,6 +459,18 @@ fn the_head_looks_at_a_target_within_its_limits() {
     }
 }
 
+/// Looking up and to the side, a head doesn't lean: its ear-to-ear line stays level.
+#[test]
+fn a_diagonal_look_keeps_the_head_level() {
+    let (mut pose, mut ik) = character();
+    settle(&mut pose, &mut ik, Vec3::new(3.0, 2.8, 2.5));
+    let (_, rotation, _) = pose.model()[HEAD].to_scale_rotation_translation();
+    let turn = rotation * pose.rest_rotation(HEAD).inverse();
+    let across = turn * Vec3::X;
+    assert!((turn * Vec3::Z).y > 0.2, "it looks up");
+    assert!(across.y.abs() < 0.02, "it leans: {across}");
+}
+
 #[test]
 fn the_limits_hold_past_the_shoulder() {
     let (mut pose, mut ik) = character();
@@ -831,7 +843,8 @@ fn ik_edge_cases_snapshot() {
     let mut lines = Vec::new();
     let mut record = |name: &str, pose: &CharacterPose| {
         let at = |joint: usize| Vec3::from(pose.model()[joint].translation);
-        let round = |v: Vec3| v.to_array().map(|value| (value * 1000.0).round() / 1000.0);
+        // Adding zero takes the sign off a rounded -0.
+        let round = |v: Vec3| v.to_array().map(|value| (value * 1000.0).round() / 1000.0 + 0.0);
         lines.push(format!(
             "{name}: hips {:?} left foot {:?} right foot {:?} head {:?}",
             round(at(HIPS)),

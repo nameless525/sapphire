@@ -200,6 +200,8 @@ pub struct AnimStats {
     /// How many times these characters have jumped rather than moved, all told: what secondary motion
     /// starts over for ([`GraphPlayer::teleports`](crate::GraphPlayer::teleports)).
     pub teleports: u32,
+    /// Poses evaluated that solved IK.
+    pub ik: u32,
     /// Wall time of the whole of it, the jobs and handing their results over.
     pub time: Duration,
 }

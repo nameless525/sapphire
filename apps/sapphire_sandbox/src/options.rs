@@ -120,7 +120,7 @@ pub(crate) struct Options {
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
-    /// `--look-dev wide|hero|sky|street|face|enemy|body`: the look-dev town (M1 X1) with the VRM
+    /// `--look-dev wide|hero|sky|street|face|enemy|body|full`: the look-dev town (M1 X1) with the VRM
     /// character standing in it, seen from that shot; `enemy` adds the enemy (M2 O4). A scene of its own rather
     /// than a `--stage` layout: it replaces the character and the ground the other scenes put under
     /// it, so it excludes `--stage`,
@@ -148,6 +148,10 @@ pub(crate) struct Options {
     pub arena: Option<ArenaShot>,
     /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
     pub graph: Option<GraphScript>,
+    /// `--ik on|off` (off by default), `--ik-ground flat|step|slope`, `--ik-look x,y,z|orbit`: solves IK
+    /// over the clip (M2 N4, [`crate::ik`]), the character standing on that ground and looking there.
+    /// Needs `--clip`.
+    pub ik: Option<crate::ik::IkOptions>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -487,6 +491,7 @@ impl Options {
         let mut serve = false;
         let (mut cue, mut cue_repeat) = (None, None);
         let (mut capture_frames, mut capture_step) = (None, None);
+        let (mut ik, mut ik_ground, mut ik_look) = (false, None, None);
         let (mut faces, mut face_layout) = (false, None);
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
@@ -699,6 +704,23 @@ impl Options {
                         let names: Vec<&str> = GraphScript::ALL.iter().map(|script| script.name()).collect();
                         format!("--graph expects one of {}, got {raw:?}", names.join(", "))
                     })?);
+                }
+                "--ik" => {
+                    ik = match value("--ik")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--ik expects on or off, got {other:?}")),
+                    };
+                }
+                "--ik-ground" => {
+                    let raw = value("--ik-ground")?;
+                    ik_ground = Some(crate::ik::IkGround::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<_> = crate::ik::IkGround::ALL.iter().map(|ground| ground.name()).collect();
+                        format!("--ik-ground expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
+                }
+                "--ik-look" => {
+                    ik_look = Some(crate::ik::IkLook::parse(&value("--ik-look")?)?);
                 }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
@@ -939,6 +961,14 @@ impl Options {
         if options.springs.is_some() && options.clip.is_none() && options.graph.is_none() {
             return Err("--springs runs under a clip or a graph: it needs --clip or --graph".to_owned());
         }
+        if ik && options.clip.is_none() {
+            return Err("--ik solves over a clip: it needs --clip".to_owned());
+        }
+        if !ik && (ik_ground.is_some() || ik_look.is_some()) {
+            return Err("--ik-ground and --ik-look need --ik on".to_owned());
+        }
+        options.ik =
+            ik.then(|| crate::ik::IkOptions { ground: ik_ground.unwrap_or_default(), look: ik_look });
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
             return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
@@ -1390,6 +1420,27 @@ mod tests {
         );
         assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
         assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));
+        let solving = ["--look-dev", "hero", "--clip", "strike", "--ik", "on"];
+        assert_eq!(parse(&solving).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "off"]).unwrap().0.ik, None);
+        assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.ik, None, "off by default");
+        let on_a_slope = [
+            "--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-ground", "slope", "--ik-look", "1,1.5,2",
+        ];
+        assert_eq!(
+            parse(&on_a_slope).unwrap().0.ik,
+            Some(crate::ik::IkOptions {
+                ground: crate::ik::IkGround::Slope,
+                look: Some(crate::ik::IkLook::Point(sapphire_math::Vec3::new(1.0, 1.5, 2.0))),
+            })
+        );
+        assert!(parse(&["--look-dev", "hero", "--ik", "on"]).unwrap_err().contains("--clip"));
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "maybe"]).is_err());
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik-ground", "step"]).unwrap_err().contains("--ik on"));
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-ground", "hill"]).is_err());
+        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "1,2"]).is_err());
+        let orbit = ["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "orbit"];
+        assert_eq!(parse(&orbit).unwrap().0.ik.and_then(|ik| ik.look), Some(crate::ik::IkLook::Orbit));
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));

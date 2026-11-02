@@ -97,6 +97,11 @@ impl OrbitCamera {
         self
     }
 
+    /// Moves what it looks at up by `height`, for a subject standing higher than the shot framed it.
+    pub fn raise_target(&mut self, height: f32) {
+        self.target.y += height;
+    }
+
     /// The camera's default angles, as a rotation turning +Z toward it: what a model facing +Z
     /// turns by to face the camera, upright.
     pub fn facing_rotation(&self) -> Quat {

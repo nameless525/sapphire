@@ -183,6 +183,12 @@
 //!   character from a scripted input (M2 N3, `anim_graph.rs`): `stand`, `walk`, `run`, `strafe`, `back`,
 //!   `jump`, `cancel`, `hitstop`, `flinch` or `cut`, at fixed ticks, with a controller and a simulation
 //!   beside it. The golden scenes `lookdev-graph-*` show it.
+//! - `--ik on|off` (with `--clip`; off by default): solves IK over the clip (M2 N4, `ik.rs`): feet
+//!   on the ground under them, by casts through `sapphire_physics`, and a look. `--ik-ground
+//!   flat|step|slope` stands the character on a test bed of stone blocks, where the controller's
+//!   capsule would rest. `--ik-look <x>,<y>,<z>|orbit` is where it looks: a place in the world, up
+//!   from where it stands, or something circling it, crossing behind. The golden scenes
+//!   `lookdev-ik-*` show them.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -323,6 +329,7 @@ mod faces;
 mod foliage;
 mod garments;
 mod hud;
+mod ik;
 mod input;
 mod layers;
 #[cfg(feature = "dev")]

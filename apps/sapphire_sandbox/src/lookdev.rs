@@ -57,7 +57,7 @@
 
 use std::sync::Arc;
 
-use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, SpringBones};
+use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -446,11 +446,13 @@ pub(crate) enum Shot {
     /// The whole character on a long lens, framed by the waist (M2 O3), with room for a swing over
     /// the head and a stride's width either way, so a move can be read from any `--view`.
     Body,
+    /// The whole character, head to feet, close enough to read where its feet stand (M2 N4).
+    Full,
 }
 
 impl Shot {
-    pub const ALL: [Self; 7] =
-        [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face, Self::Enemy, Self::Body];
+    pub const ALL: [Self; 8] =
+        [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face, Self::Enemy, Self::Body, Self::Full];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -461,6 +463,7 @@ impl Shot {
             Self::Face => "face",
             Self::Enemy => "enemy",
             Self::Body => "body",
+            Self::Full => "full",
         }
     }
 
@@ -468,7 +471,7 @@ impl Shot {
     /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
-            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body => Vec3::ZERO,
+            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body | Self::Full => Vec3::ZERO,
             Self::Street => STREET,
         }
     }
@@ -488,6 +491,7 @@ impl Shot {
             Self::Face => (Vec3::new(0.0, 1.43, 0.0), -16.0, 2.0, 0.8, 28.0),
             Self::Enemy => (Vec3::new(-0.95, 0.98, 0.1), 14.0, 5.0, 5.6, 36.0),
             Self::Body => (Vec3::new(0.0, 0.85, 0.0), 30.0, 4.0, 3.8, 32.0),
+            Self::Full => (Vec3::new(0.0, 0.82, 0.0), -18.0, 6.0, 3.6, 32.0),
         };
         OrbitCamera::shot(target, yaw.to_radians(), pitch.to_radians(), distance, fov.to_radians())
     }
@@ -683,6 +687,13 @@ pub(crate) fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
     let springs = SpringBones::new(rig, &pose);
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
+}
+
+/// What IK reads of the character as `content` has it now, for `pose`, a pose of it.
+pub(crate) fn ik_rig(content: &Content, pose: &CharacterPose) -> Result<IkRig, String> {
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    Ok(IkRig::from_cooked(pose, rig, mesh.streams.bounds.min[1].max(0.0)))
 }
 
 /// The character's pose at rest with its soft expression, and where its figure finds its parts.

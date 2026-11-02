@@ -111,6 +111,7 @@ use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_physics::PhysicsWorld;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
     LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
@@ -141,6 +142,7 @@ use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::garments;
 use crate::hud::SandboxHud;
+use crate::ik::{IkControls, IkDriver, IkGround, IkLook, IkOptions};
 use crate::input::SimActions;
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
@@ -406,6 +408,11 @@ pub(crate) struct Scene {
     spring_quality: SpringQuality,
     /// The shape of the last frame drawn, which [`Self::animate`] reads before this frame's.
     aspect: f32,
+    /// The ground IK casts for, and the blocks drawn for it, with `--ik on`.
+    ik_ground: Option<Arc<PhysicsWorld>>,
+    ik_blocks: Vec<Entity>,
+    /// What the character looks at, and how high it stands, with `--ik-look`.
+    ik_look: Option<(IkLook, f32)>,
     /// Whether `Extract` writes poses: with `--skinned`, a posed character or the face rig, whose
     /// heads' lids and gaze are poses (M1 C6).
     poses: bool,
@@ -529,6 +536,9 @@ impl Scene {
             anim_stats: AnimStats::default(),
             spring_quality: SpringQuality::DESKTOP,
             aspect: 16.0 / 9.0,
+            ik_ground: None,
+            ik_blocks: Vec::new(),
+            ik_look: None,
             poses: skinned,
             bounds,
             characters,
@@ -1095,14 +1105,58 @@ impl Scene {
         self.extract_poses();
     }
 
-    /// A clip player for the character's new mesh, rig or skeleton: its clip plays on from where it was.
+    /// Sets the character up for IK (`--ik on`, [`crate::ik`]): the ground's blocks drawn with `block`,
+    /// and the character standing on them where the controller's capsule would. Call it before
+    /// [`Self::play_clip`], whose root motion starts from where the character stands, and give the
+    /// player it returns to that.
+    pub fn start_ik(
+        &mut self,
+        options: &IkOptions,
+        block: MeshHandle,
+        content: &Content,
+        player: ClipPlayer,
+    ) -> Result<ClipPlayer, String> {
+        let ground = Arc::new(options.ground.world());
+        let height = IkGround::stand(&ground, 0.0, 0.0);
+        let world = self.ecs.world_mut();
+        self.ik_blocks =
+            options.ground.blocks().into_iter().map(|place| world.spawn((RenderMesh(block), RenderTransform(place))).id()).collect();
+        if let Some(mut transform) = world.get_mut::<RenderTransform>(self.character) {
+            transform.0 = Mat4::from_translation(Vec3::new(0.0, height, 0.0)) * transform.0;
+        }
+        world.resource_mut::<OrbitCamera>().raise_target(height);
+        let driver =
+            IkDriver::new(lookdev::ik_rig(content, player.pose())?, ground.clone(), IkControls::default());
+        self.ik_ground = Some(ground);
+        self.ik_look = options.look.map(|look| (look, height));
+        Ok(player.with_ik(driver))
+    }
+
+    /// Sets the mesh the IK ground's blocks draw again: after GPU device loss.
+    pub fn set_ik_block_mesh(&mut self, mesh: MeshHandle) {
+        for &block in &self.ik_blocks {
+            self.ecs.world_mut().entity_mut(block).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// A clip player for the character's new mesh, rig or skeleton: its clip plays on from where it was,
+    /// with what its IK was told.
     fn replace_player(&mut self, content: &Content) {
         let replacement = lookdev::player(content);
         let character = self.character;
+        let ground = self.ik_ground.clone();
         let Some(mut playing) = self.ecs.world_mut().get_mut::<ClipPlayer>(character) else { return };
         match replacement {
             Ok(mut player) => {
                 player.continue_from(&playing);
+                if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls())) {
+                    match lookdev::ik_rig(content, player.pose()) {
+                        Ok(rig) => player = player.with_ik(IkDriver::new(rig, ground, controls)),
+                        Err(error) => {
+                            tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
+                        }
+                    }
+                }
                 *playing = player;
             }
             Err(error) => {
@@ -1248,7 +1302,11 @@ impl Scene {
                     continue;
                 }
                 let ticks = clock.0.presented_ticks(alpha);
-                let position = player.next_position(clip, version, ticks);
+                if let (Some(ik), Some((look, height))) = (player.ik_mut(), self.ik_look) {
+                    let target = Some(look.at(ticks, height));
+                    ik.set_controls(IkControls { look_target: target, ..ik.controls() });
+                }
+                let position = player.next_position(clip, version, ticks, transform.0);
                 let springs_run = player.springs_run(&view, &transform, &figure);
                 if position.is_none() && !(springs_run && player.springs_due(ticks, &transform)) {
                     continue;
@@ -1256,6 +1314,7 @@ impl Scene {
                 if position.is_some() {
                     stats.evaluated += 1;
                     stats.joints += player.joint_count() as u32;
+                    stats.ik += u32::from(player.has_ik());
                 }
                 jobs.push(Evaluation {
                     player,
@@ -2996,6 +3055,154 @@ mod tests {
             let paused = frame(&mut scene, clip, 0.5, id);
             assert_eq!(paused.palette, None);
             assert_eq!(scene.anim_stats().evaluated, 0);
+        }
+
+        /// [`player`], looking at `target` over its clip, its head's joints turning with its neck.
+        fn looking_player(target: Vec3) -> ClipPlayer {
+            let plain = player();
+            let bones = [
+                (sapphire_assets::rig::HumanBone::Hips, 0),
+                (sapphire_assets::rig::HumanBone::Neck, 1),
+                (sapphire_assets::rig::HumanBone::Head, 2),
+            ];
+            let rig = sapphire_anim::IkRig::new(plain.pose(), &bones, Vec3::ZERO, None, 0.0);
+            let ground = Arc::new(IkGround::Flat.world());
+            let controls = IkControls { look_target: Some(target), ..IkControls::default() };
+            plain.with_ik(IkDriver::new(rig, ground, controls))
+        }
+
+        /// Tells the character's IK to look at `target`.
+        fn look_at(scene: &mut Scene, target: Vec3) {
+            let character = scene.character;
+            let world = scene.ecs.world_mut();
+            let mut player = world.get_mut::<ClipPlayer>(character).expect("it plays");
+            let ik = player.ik_mut().expect("it solves IK");
+            let controls = ik.controls();
+            ik.set_controls(IkControls { look_target: Some(target), ..controls });
+        }
+
+        /// The character's head joint's rotation, as its pose last had it.
+        fn head_turn(scene: &Scene) -> Quat {
+            let player = scene.ecs.world().get::<ClipPlayer>(scene.character).expect("it plays");
+            let (_, rotation, _) = player.pose().model()[2].to_scale_rotation_translation();
+            rotation
+        }
+
+        /// Hitstop's rule holds with IK on: a frozen clock evaluates nothing and sends nothing, however
+        /// the target moves, and when it thaws the head takes up the new target at its limited speed
+        /// rather than having snapped behind the freeze's back.
+        #[test]
+        fn a_frozen_clock_holds_ik_however_its_target_moves() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(looking_player(Vec3::new(3.0, 1.6, 3.0)));
+            let id = extract::instance_id(scene.character);
+            for _ in 0..30 {
+                scene.step();
+                frame(&mut scene, clip, 1.0, id);
+                assert_eq!(scene.anim_stats().ik, 1);
+            }
+            scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+            scene.step();
+            frame(&mut scene, clip, 0.25, id);
+            let held = head_turn(&scene);
+            for tick in 1..HITSTOP_TICKS {
+                look_at(&mut scene, Vec3::new(-3.0 - tick as f32, 1.6, -1.0));
+                scene.step();
+                let drawn = frame(&mut scene, clip, 0.5, id);
+                assert_eq!(drawn.palette, None, "tick {tick}: still frozen, nothing sent");
+                assert_eq!(scene.anim_stats().evaluated, 0, "tick {tick}: nothing evaluated");
+                assert_eq!(scene.anim_stats().ik, 0);
+                assert_eq!(head_turn(&scene), held, "tick {tick}");
+            }
+            scene.step();
+            assert!(frame(&mut scene, clip, 1.0, id).palette.is_some(), "the hitstop ended");
+            let settings = sapphire_anim::LookSettings::default();
+            // At most a tick's worth of the head's speed, though the clip turned the head as well.
+            let turned = head_turn(&scene).angle_between(held);
+            assert!(turned < settings.rate / 60.0 + 0.06, "it turned {turned} rad on thawing");
+        }
+
+        /// A held position skips evaluation until a clock's running target has something new to say:
+        /// a clip of no ticks costs nothing, then follows a moving target, then costs nothing again.
+        #[test]
+        fn a_target_moving_under_a_held_position_has_its_own_key() {
+            let held = Clip {
+                name: "held".into(),
+                skeleton: Some(AssetId::from_bytes([9; 16])),
+                joint_count: 5,
+                morph_target_count: 2,
+                rate: DEFAULT_RATE,
+                ticks: 0,
+                ..Clip::default()
+            };
+            let bytes = held.to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(looking_player(Vec3::new(3.0, 1.6, 3.0)));
+            let id = extract::instance_id(scene.character);
+            let mut last = 1;
+            for _ in 0..240 {
+                scene.step();
+                frame(&mut scene, clip, 1.0, id);
+                last = scene.anim_stats().evaluated;
+            }
+            assert_eq!(last, 0, "settled on its target, with nothing to do");
+            assert_eq!(frame(&mut scene, clip, 1.0, id).palette, None);
+            look_at(&mut scene, Vec3::new(-3.0, 1.6, 3.0));
+            scene.step();
+            assert!(frame(&mut scene, clip, 1.0, id).palette.is_some(), "the target moved");
+            assert_eq!(scene.anim_stats().evaluated, 1);
+            for _ in 0..240 {
+                scene.step();
+                frame(&mut scene, clip, 1.0, id);
+                last = scene.anim_stats().evaluated;
+            }
+            assert_eq!(last, 0, "settled again");
+        }
+
+        /// IK that has nothing to do leaves a clip's palette exactly as it would be with no IK at all.
+        #[test]
+        fn ik_with_no_weight_draws_the_same_bytes_as_none() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let run = |player: ClipPlayer| {
+                let mut scene = stage();
+                scene.play_clip(player);
+                let id = extract::instance_id(scene.character);
+                let mut palettes = Vec::new();
+                for _ in 0..10 {
+                    scene.step();
+                    palettes.push(frame(&mut scene, clip, 0.5, id).palette);
+                }
+                palettes
+            };
+            let mut weightless = looking_player(Vec3::new(3.0, 1.6, 3.0));
+            let ik = weightless.ik_mut().expect("it solves IK");
+            ik.set_controls(IkControls { feet: 0.0, look: 0.0, ..ik.controls() });
+            assert_eq!(run(weightless), run(player()));
+        }
+
+        /// The character's figure, which its light rig and face read, follows what IK did.
+        #[test]
+        fn a_figure_follows_the_solved_head() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let id_of = |scene: &Scene| extract::instance_id(scene.character);
+            let run = |player: ClipPlayer| {
+                let mut scene = stage();
+                scene.play_clip(player);
+                let id = id_of(&scene);
+                for _ in 0..30 {
+                    scene.step();
+                    frame(&mut scene, clip, 1.0, id);
+                }
+                *scene.ecs.world().get::<Figure>(scene.character).expect("it moves")
+            };
+            let plain = run(player());
+            let looking = run(looking_player(Vec3::new(3.0, 1.6, 1.0)));
+            assert!(looking.face.angle_between(plain.face) > 0.3, "{:?} against {:?}", looking.face, plain.face);
         }
 
         /// A clip's pose and the effects a character owns stop on the same steps: an effect's owner

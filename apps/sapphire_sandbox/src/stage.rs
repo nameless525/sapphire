@@ -125,6 +125,12 @@ pub(crate) fn upload_figure(renderer: &mut Renderer, character: &Mesh) -> Result
     upload(renderer, &split_pedestal(character).0)
 }
 
+/// Uploads the pillar's stone box alone, for whatever else wants a block of the stage's stone
+/// (`crate::ik`).
+pub(crate) fn upload_block(renderer: &mut Renderer) -> Result<MeshHandle, AppInitError> {
+    upload(renderer, &pillar_mesh())
+}
+
 /// Uploads `mesh` with its embedded materials, as cooked.
 pub(crate) fn upload(renderer: &mut Renderer, mesh: &Mesh) -> Result<MeshHandle, AppInitError> {
     let bytes = mesh.to_cooked().map_err(AppInitError::msg)?;

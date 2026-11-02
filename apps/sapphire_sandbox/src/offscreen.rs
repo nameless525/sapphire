@@ -208,12 +208,15 @@ impl Stage {
             scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer, &gpu)?;
-                let player = crate::lookdev::player(&content).map_err(AppInitError::msg)?;
-                scene.play_clip(
-                    player
-                        .with_root_motion(!options.clip_in_place)
-                        .with_springs_on(options.springs != Some(false)),
-                );
+                let mut player = crate::lookdev::player(&content)
+                    .map_err(AppInitError::msg)?
+                    .with_root_motion(!options.clip_in_place)
+                    .with_springs_on(options.springs != Some(false));
+                if let Some(ik) = &options.ik {
+                    let block = crate::stage::upload_block(&mut renderer)?;
+                    player = scene.start_ik(ik, block, &content, player).map_err(AppInitError::msg)?;
+                }
+                scene.play_clip(player);
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
             if let Some(script) = options.graph {

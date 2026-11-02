@@ -1110,6 +1110,18 @@ mod tests {
         assert_ne!(crate::meta::sub_asset_id(vrm, crate::cook::SKELETON), rig);
     }
 
+    /// The sandbox plays the character's clips by these IDs (`sapphire_sandbox`'s `lookdev::ClipName`),
+    /// derived from their owners' sidecars, each retargeted onto the character.
+    #[test]
+    fn the_sandboxs_clip_ids_are_the_retargeted_clips() {
+        let id = |text: &str| sapphire_assets::AssetId::from_text(text);
+        let clip = |source: &str, name: &str| {
+            crate::meta::sub_asset_id(id(source), &format!("clip/{name}@6f8a81b6-29c4-485f-b161-847b001d561f"))
+        };
+        assert_eq!(clip("9a29e8c0-f131-4ea4-98b9-04879740413d", "Idle_A"), id("6b4e5ae0-0c05-80d3-bda2-609783ba3529"));
+        assert_eq!(clip("2bb6b794-55db-42cf-921a-c0638eed48ca", "Walking_A"), id("6f525ada-9116-8806-b516-45652e10cade"));
+    }
+
     #[test]
     fn maps_regenerate_byte_for_byte() {
         assert_eq!(files().unwrap(), files().unwrap());

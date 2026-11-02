@@ -66,7 +66,11 @@ pub use graph::{
     ClipSource, CombatInput, GraphBindError, GraphBinding, GraphInput, GraphPlayer, GraphStats,
     LocomotionInput, ReactionInput,
 };
-pub use ik::{AimGoal, SolvePose, TwoBone, TwoBoneGoal, aim, two_bone};
+pub use ik::{
+    AimGoal, ArmBones, CharacterIk, EyeDrive, EyeRig, FeetInput, FootGround, FootPlacement, FootProbe,
+    FootSettings, Grip, GroundHit, Hand, HeldWeapon, IkInput, IkRig, LegBones, LookAt, LookBones, LookInput,
+    LookSettings, RangeMap, SolvePose, TwoBone, TwoBoneGoal, WeaponPlace, aim, two_bone,
+};
 pub use model::{Bind, local_to_model, palette};
 pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
 pub use sapphire_math::Transform;

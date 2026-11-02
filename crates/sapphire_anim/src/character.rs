@@ -10,6 +10,7 @@ use sapphire_assets::skeleton::{ArchivedSkeleton, NO_PARENT};
 use sapphire_math::{Affine3A, Quat, Transform};
 
 use crate::constraints::Constraints;
+use crate::ik::SolvePose;
 use crate::model::{self, Bind};
 use crate::sample;
 
@@ -139,6 +140,18 @@ impl CharacterPose {
 
     pub fn weights_mut(&mut self) -> &mut [f32] {
         &mut self.weights
+    }
+
+    /// The view of this pose that solvers work through ([`crate::two_bone`], [`crate::aim`]), between
+    /// sampling and [`Self::finish`]. Nothing in it is up to date until it's refreshed
+    /// ([`SolvePose::refresh`]), except what the last `finish` left.
+    pub fn solving(&mut self) -> SolvePose<'_> {
+        SolvePose::new(&self.parents, &mut self.locals, &mut self.model)
+    }
+
+    /// [`Self::solving`], with the morph weights being made beside it.
+    pub(crate) fn solving_with_weights(&mut self) -> (SolvePose<'_>, &mut [f32]) {
+        (SolvePose::new(&self.parents, &mut self.locals, &mut self.model), &mut self.weights)
     }
 
     /// Runs the rig's constraints, then local-to-model. Allocates nothing.

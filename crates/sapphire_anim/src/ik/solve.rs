@@ -112,6 +112,14 @@ impl<'a> SolvePose<'a> {
         self.turn(joint, turn);
     }
 
+    /// Turns `joint`'s local rotation by `turn`, given in the frame its parent has at rest, whose
+    /// rotation in the model's space is `parent_rest`: a turn in rest model space, as VRM's eye bones
+    /// take theirs, whatever the joint's own axes. Touches nothing in `model`.
+    pub fn turn_at_rest(&mut self, joint: usize, parent_rest: Quat, turn: Quat) {
+        let local = &mut self.locals[joint];
+        local.rotation = (parent_rest.inverse() * turn * parent_rest * local.rotation).normalize();
+    }
+
     /// Moves `joint` by `by`, in the model's space. Its parent must be up to date. Only `joint` itself
     /// is kept up to date.
     pub fn translate(&mut self, joint: usize, by: Vec3) {
@@ -202,7 +210,10 @@ pub fn two_bone(pose: &mut SolvePose<'_>, chain: TwoBone, goal: &TwoBoneGoal) ->
     let direction = if distance > TINY { to_target / distance } else { (c - a).normalize_or(along_upper) };
 
     // How far the chain will reach: softly out to the bones' length, and no nearer than they fold.
-    let reach = soften(distance, upper_length + lower_length, goal.soften)
+    // What the pose already reaches is never softened, so a target where the end already is moves
+    // nothing, and a solve fading in starts from the pose.
+    let length = upper_length + lower_length;
+    let reach = soften(distance, length, goal.soften.max((c - a).length() / length))
         .max((upper_length - lower_length).abs() + TINY);
 
     // Bend the middle joint until the ends are that far apart, in the plane the pose bends in.
@@ -468,7 +479,7 @@ mod tests {
         for step in 1..1000 {
             let distance = 0.9 + 0.003 * step as f32;
             let eased = soften(distance, 1.0, 0.9);
-            assert!(eased < 1.0, "it never gets there: {distance} gave {eased}");
+            assert!(eased <= 1.0, "it never passes the bones' length: {distance} gave {eased}");
             assert!(eased >= last, "it keeps going");
             assert!(eased - last < 0.0031, "and never faster than the target");
             last = eased;

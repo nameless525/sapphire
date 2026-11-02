@@ -6,9 +6,10 @@
 use std::alloc::System;
 
 use sapphire_anim::{
-    CharacterPose, Clip, Joint, JointMask, JointTransform, PackedRotation, RotationTrack, Skeleton,
-    SpringBones, SpringFrame, Substeps, VectorRange, VectorTrack, add, blend, local_to_model, make_delta,
-    root_motion, sample,
+    CharacterPose, Clip, FeetInput, FootGround, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
+    JointTransform, LookInput, PackedRotation, RotationTrack, Skeleton, SpringBones, SpringFrame, Substeps,
+    Transform, VectorRange, VectorTrack, WeaponPlace, add, blend, local_to_model, make_delta, root_motion,
+    sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, RootMotion};
@@ -19,6 +20,8 @@ use sapphire_assets::rig::{
 };
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+
+mod humanoid;
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -201,6 +204,65 @@ fn updating_springs_allocates_nothing_once_they_are_made() {
                 &SpringFrame { world_from_model: world, ticks: f64::from(frame), pose_moved: moved, active },
             );
             sum += work.substeps as f32 + pose.model()[15].translation.y;
+        }
+        sum
+    });
+    assert!(sum.is_finite());
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+}
+
+/// Every stage of IK at once, with a moving target and changing ground, frame after frame.
+#[test]
+fn solving_ik_allocates_nothing_once_it_is_made() {
+    let (skeleton, bones) = humanoid::humanoid(100);
+    let bytes = skeleton.to_cooked().expect("cooked");
+    let cooked = Skeleton::read(&bytes).expect("a valid skeleton");
+    let mut pose = CharacterPose::new(cooked, &[], &[], Vec::new());
+    let mut ik = humanoid::ik(&pose, &bones);
+    let world = Affine3A::from_translation(Vec3::new(1.0, 0.2, -1.0));
+    let weapon = HeldWeapon {
+        place: WeaponPlace::Joint { joint: 19, offset: Affine3A::from_translation(Vec3::X * 0.1) },
+        main: Hand::Right,
+        main_grip: None,
+        off_grip: Some(Grip {
+            on_weapon: Transform::from_translation(Vec3::new(-0.3, 0.0, 0.1)),
+            in_hand: Transform::from_translation(Vec3::X * 0.05),
+            pole: Some(Vec3::NEG_Y),
+            weight: 1.0,
+        }),
+    };
+    let (sum, counts) = alloc::count_in_scope(|| {
+        let mut sum = 0.0;
+        for frame in 0..600_u32 {
+            let time = frame as f32 / 60.0;
+            pose.reset();
+            ik.prepare(&mut pose);
+            let probes = ik.foot_probes(&mut pose, &world).expect("it has feet");
+            let tilt = Vec3::new((time * 2.0).sin() * 0.4, 1.0, 0.0).normalize();
+            let hit = |at: Vec3| {
+                Some(GroundHit { point: Vec3::new(at.x, 0.1 * (time * 3.0).sin(), at.z), normal: tilt })
+            };
+            let input = IkInput {
+                dt: 1.0 / 60.0,
+                world_from_model: world,
+                feet: FeetInput {
+                    weight: if frame % 200 < 150 { 1.0 } else { 0.0 },
+                    ground: [
+                        FootGround { ankle: hit(probes[0].ankle), ball: probes[0].ball.and_then(hit) },
+                        FootGround { ankle: hit(probes[1].ankle), ball: probes[1].ball.and_then(hit) },
+                    ],
+                },
+                look: LookInput {
+                    target: Some(Vec3::new(4.0 * time.sin(), 1.5, 4.0 * time.cos())),
+                    weight: if frame % 300 < 250 { 1.0 } else { 0.0 },
+                },
+                weapon: Some(weapon),
+            };
+            ik.solve(&mut pose, &input);
+            pose.finish();
+            sum += pose.model()[5].translation.y;
         }
         sum
     });

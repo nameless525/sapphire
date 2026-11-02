@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sapphire_anim::{
-    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, GraphBinding, GraphInput,
-    GraphPlayer, Joint, JointMask, JointTransform, LocomotionInput, PackedRotation, RotationTrack, Skeleton,
-    Transform, VectorRange, VectorTrack, add, blend, make_delta, sample,
+    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, FeetInput, FootGround, Grip,
+    GraphBinding, GraphInput, GraphPlayer, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
+    JointTransform, LocomotionInput, LookInput, PackedRotation, RotationTrack, Skeleton, Transform,
+    VectorRange, VectorTrack, WeaponPlace, add, blend, make_delta, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::DEFAULT_RATE;
@@ -22,6 +23,8 @@ use sapphire_assets::mesh::SkinBind;
 use sapphire_assets::rig::{AimAxis, Axis, Constraint, ConstraintKind};
 use sapphire_core::Name;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
+
+mod humanoid;
 
 /// The look-dev VRM has about this many joints, hair and helpers among them.
 const JOINTS: usize = 128;
@@ -234,5 +237,109 @@ fn a_character_frame_step_by_step() {
     println!(
         "against one clip's sample {sampled:.1}, finish {finish:.1}, palette {write:.1}: a frame {frame:.1} µs, a heavy \
          graph's {layered:.1} µs; budgets 1,500 µs on Desktop-Low and 3,000 µs on Mobile-Low"
+    );
+}
+
+/// IK's stages on a humanoid of the same size, every stage working: feet on a slope, a moving look
+/// target, a two-handed weapon. Ground casts are the caller's, so `sapphire_physics` times them.
+#[test]
+#[ignore = "prints what IK costs; run it in release"]
+fn ik_stage_by_stage() {
+    let (skeleton, bones) = humanoid::humanoid(JOINTS - 21);
+    let bytes = skeleton.to_cooked().expect("cooked");
+    let cooked = Skeleton::read(&bytes).expect("a valid skeleton");
+    let mut pose = CharacterPose::new(cooked, &[], &[], Vec::new());
+    let mut ik = humanoid::ik(&pose, &bones);
+    let world = Affine3A::from_translation(Vec3::new(1.0, 0.04, -1.0));
+    let normal = Vec3::new(-0.5, 0.866, 0.0);
+    let hit = |at: Vec3| {
+        let height = 0.04 + (at.x - 1.0) * 0.5 / 0.866;
+        Some(GroundHit { point: Vec3::new(at.x, height, at.z), normal })
+    };
+    let weapon = HeldWeapon {
+        place: WeaponPlace::Joint { joint: 19, offset: Affine3A::from_translation(Vec3::X * 0.1) },
+        main: Hand::Right,
+        main_grip: None,
+        off_grip: Some(Grip {
+            on_weapon: Transform::from_translation(Vec3::new(-0.3, 0.0, 0.1)),
+            in_hand: Transform::from_translation(Vec3::X * 0.05),
+            pole: None,
+            weight: 1.0,
+        }),
+    };
+    let rest = pose.rest().to_vec();
+    let ground = |pose: &mut CharacterPose, ik: &sapphire_anim::CharacterIk| {
+        let probes = ik.foot_probes(pose, &world).expect("it has feet");
+        let foot = |side: usize| FootGround {
+            ankle: hit(probes[side].ankle),
+            ball: probes[side].ball.and_then(hit),
+        };
+        [foot(0), foot(1)]
+    };
+    let none = IkInput {
+        dt: 1.0 / 60.0,
+        world_from_model: world,
+        feet: FeetInput::default(),
+        look: LookInput::default(),
+        weapon: None,
+    };
+    let target = |position: f32| Vec3::new(4.0 * position.sin(), 1.5, 4.0 * position.cos());
+
+    println!("{JOINTS} joints, as a character's, IK reading the 21 of them that are its body:");
+    let plain = time("the pose alone: reset and finish", |_| {
+        pose.locals_mut().copy_from_slice(&rest);
+        pose.finish();
+        black_box(pose.model());
+    });
+    let prepare = time("what IK reads, up to date", |_| {
+        pose.locals_mut().copy_from_slice(&rest);
+        ik.prepare(&mut pose);
+        black_box(pose.model());
+    });
+    let feet = time("feet on a slope", |_| {
+        pose.locals_mut().copy_from_slice(&rest);
+        ik.prepare(&mut pose);
+        let ground = ground(&mut pose, &ik);
+        ik.solve(&mut pose, &IkInput { feet: FeetInput { weight: 1.0, ground }, ..none });
+        black_box(pose.locals());
+    });
+    ik.reset();
+    let look = time("a look at a moving target", |position| {
+        pose.locals_mut().copy_from_slice(&rest);
+        ik.prepare(&mut pose);
+        let look = LookInput { target: Some(target(position * 0.1)), weight: 1.0 };
+        ik.solve(&mut pose, &IkInput { look, ..none });
+        black_box(pose.locals());
+    });
+    ik.reset();
+    let hands = time("the off hand on a carried weapon", |_| {
+        pose.locals_mut().copy_from_slice(&rest);
+        ik.prepare(&mut pose);
+        ik.solve(&mut pose, &IkInput { weapon: Some(weapon), ..none });
+        black_box(pose.locals());
+    });
+    ik.reset();
+    let all = time("all of it, then finish", |position| {
+        pose.locals_mut().copy_from_slice(&rest);
+        ik.prepare(&mut pose);
+        let ground = ground(&mut pose, &ik);
+        ik.solve(
+            &mut pose,
+            &IkInput {
+                feet: FeetInput { weight: 1.0, ground },
+                look: LookInput { target: Some(target(position * 0.1)), weight: 1.0 },
+                weapon: Some(weapon),
+                ..none
+            },
+        );
+        pose.finish();
+        black_box(pose.model());
+    });
+    println!(
+        "reads {prepare:.2}; feet {:.2}, look {:.2}, hands {:.2} over them; whole {:.2} µs over the plain pose's {plain:.2}",
+        feet - prepare,
+        look - prepare,
+        hands - prepare,
+        all - plain,
     );
 }

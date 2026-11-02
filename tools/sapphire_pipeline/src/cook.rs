@@ -69,7 +69,9 @@
 //!   [`audio`]). A cue holds its sounds' IDs, so it reads none of their contents, but they must be
 //!   sounds of the tree.
 //! - **Move sets** cook `.moves.ron` documents → `.smoves` (M2 G2, [`moves`]): frame data and tables
-//!   the simulation reads, checked by move and track. Self-contained.
+//!   the simulation reads, checked by move and track. A move that names a clip reads what that clip's
+//!   own cook read, its source and its rig (M2 N1), so a set cooks after every clip, and its key depends
+//!   on their keys.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -100,7 +102,7 @@ use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
-use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet};
+use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_reflect::Versioned;
 
 use crate::assembly::{self, AssemblyError};
@@ -110,7 +112,7 @@ use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
-use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget};
+use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
@@ -122,7 +124,7 @@ use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
-use crate::moves::{self, MoveSetCookError};
+use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
 use crate::{bake, optimize};
@@ -668,11 +670,14 @@ pub fn cook_dir(
     }
     // Materials read the cooked textures they reference, so everything else cooks first; clips,
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
-    // them; probe grids read cooked meshes and their materials, so they cook last.
+    // them, and move sets read clips' keys, so those go before move sets; probe grids read cooked
+    // meshes and their materials, so they cook last.
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].is_material());
+    let (move_sets, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&index| plan[index].is_move_set());
     let (rig_readers, others): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].reads_rigs());
     let mut sources: HashMap<AssetId, &SourceAsset> = HashMap::new();
@@ -681,7 +686,7 @@ pub fn cook_dir(
     }
     let clip_sources = ClipSources::default();
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
-    for index in others.into_iter().chain(rig_readers).chain(materials).chain(probe_grids) {
+    for index in others.into_iter().chain(rig_readers).chain(move_sets).chain(materials).chain(probe_grids) {
         let assets = Assets {
             plan: &plan,
             by_id: &by_id,
@@ -973,6 +978,10 @@ impl Planned {
         matches!(self.asset.meta.importer, ImportSettings::ProbeGrid(_))
     }
 
+    fn is_move_set(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::MoveSet(_))
+    }
+
     /// Whether its cook reads skeletons or rigs that other assets cook.
     fn reads_rigs(&self) -> bool {
         let importer = &self.asset.meta.importer;
@@ -1008,6 +1017,10 @@ struct RigSource<'a> {
     names: Option<&'a BTreeMap<HumanBone, String>>,
     /// The source's own mesh, whose morph targets a key-pose document names.
     mesh: Option<&'a CookedAsset>,
+    /// The source the skeleton is cooked from, as it's read.
+    importer: &'a ImportSettings,
+    /// That source's ID.
+    owner: AssetId,
 }
 
 impl RigSource<'_> {
@@ -1108,6 +1121,8 @@ impl<'a> Assets<'a> {
                 .map(|clips| &clips.humanoid)
                 .filter(|names| !names.is_empty()),
             mesh: source.meta.importer.mesh().and_then(|_| self.cooked(id)),
+            importer: &owner_source.meta.importer,
+            owner,
         })
     }
 
@@ -1116,6 +1131,124 @@ impl<'a> Assets<'a> {
         let id = id.ok_or(KeyPoseError::NoRig)?;
         self.rig_source(id).filter(RigSource::has_map).ok_or(KeyPoseError::UnknownRig { id })
     }
+
+    /// The clip a move names ([`moves`]), by what its document says.
+    fn clip_of_move(&self, clip: &ClipMotionDocument) -> Result<&'a Planned, BakeError> {
+        let id_of = |field, text: &str| {
+            text.parse::<AssetId>().map_err(|_| BakeError::NotAnId { field, text: text.to_owned() })
+        };
+        let source_id = id_of("source", &clip.source)?;
+        let rig = clip.rig.as_deref().map(|text| id_of("rig", text)).transpose()?;
+        let source = self.sources.get(&source_id).ok_or(BakeError::UnknownSource { id: source_id })?;
+        let id = match &source.meta.importer {
+            ImportSettings::KeyPose(settings) => {
+                if clip.name.is_some() {
+                    return Err(BakeError::NameOnKeyPose);
+                }
+                match rig.filter(|rig| Some(*rig) != settings.rig) {
+                    Some(rig) => meta::sub_asset_id(source_id, &format!("rig/{rig}")),
+                    None => source_id,
+                }
+            }
+            importer if importer.clips().is_some() => {
+                let name = clip.name.as_deref().ok_or(BakeError::NoName)?;
+                match rig {
+                    Some(rig) => meta::sub_asset_id(source_id, &format!("clip/{name}@{rig}")),
+                    None => meta::sub_asset_id(source_id, &format!("clip/{name}")),
+                }
+            }
+            _ => return Err(BakeError::NotAClipSource { id: source_id }),
+        };
+        self.get(id).ok_or(BakeError::NotCooked { source_id })
+    }
+
+    /// The rig the clip of `planned` is for.
+    fn rig_of_clip(&self, planned: &Planned) -> Option<RigSource<'a>> {
+        let importer = &planned.asset.meta.importer;
+        let id = match (&planned.part, importer) {
+            (Part::KeyPose { rig, .. }, _) => *rig,
+            (_, ImportSettings::KeyPose(settings)) => settings.rig?,
+            (Part::Clip { target: Some(entry), .. }, _) => importer.clips()?.retarget[*entry].target,
+            (Part::Clip { target: None, .. }, _) => planned.asset.meta.id,
+            _ => return None,
+        };
+        self.rig_source(id)
+    }
+}
+
+/// Whether a source's numbers come through `ufbx`'s C: see [`BakeError::FbxSource`].
+fn is_fbx(importer: &ImportSettings) -> bool {
+    matches!(importer, ImportSettings::Fbx(_) | ImportSettings::FbxClips(_))
+}
+
+/// A move's tables, baked from the clip it names.
+fn move_tables(clip: &ClipMotionDocument, assets: &Assets<'_>) -> Result<BakedTables, BakeError> {
+    let planned = assets.clip_of_move(clip)?;
+    let SourceAsset { path, meta } = &planned.asset;
+    if is_fbx(&meta.importer) {
+        return Err(BakeError::FbxSource { id: meta.id });
+    }
+    let rig = assets.rig_of_clip(planned).ok_or(BakeError::NotCooked { source_id: meta.id })?;
+    if is_fbx(rig.importer) {
+        return Err(BakeError::FbxSource { id: rig.owner });
+    }
+    let bytes = fs::read(path).map_err(BakeError::Read)?;
+    let samples = clip_samples(planned, &bytes, assets).map_err(Box::new)?;
+    let skeleton = samples.skeleton.as_ref().ok_or_else(|| Box::new(ClipCookError::NoSkeleton))?;
+    let map = rig.map(skeleton).map_err(Box::new)?;
+    let cooked = |error: KeyPoseError| Box::new(ClipCookError::KeyPose(error));
+    let constraints = match rig.rig {
+        Some(rig) => {
+            let bytes = read_cooked(rig).map_err(|error| cooked(KeyPoseError::Read(error)))?;
+            CharacterRig::from_cooked(&bytes).map_err(|error| cooked(KeyPoseError::Rig(error)))?.constraints
+        }
+        None => Vec::new(),
+    };
+    moves::bake(
+        clip,
+        &TableInput { sampled: &samples.sampled, skeleton, map: map.as_ref(), constraints: &constraints },
+    )
+}
+
+/// What a clip's cook and a move's bake both start from: its samples, and the rig they index.
+struct ClipSamples {
+    sampled: SampledClip,
+    skeleton: Option<Skeleton>,
+    /// What the clip names as its skeleton.
+    skeleton_id: Option<AssetId>,
+    morph_defaults: Vec<f32>,
+}
+
+impl ClipSamples {
+    /// What the clip's cook reduces against.
+    fn target(&self) -> ClipTarget<'_> {
+        ClipTarget {
+            skeleton: self.skeleton_id.zip(self.skeleton.as_ref()),
+            morph_defaults: &self.morph_defaults,
+        }
+    }
+}
+
+/// The samples of the clip `planned`, whose source's contents are `bytes`.
+fn clip_samples(planned: &Planned, bytes: &[u8], assets: &Assets<'_>) -> Result<ClipSamples, ClipCookError> {
+    let SourceAsset { path, meta } = &planned.asset;
+    if let Part::Clip { index, target, .. } = &planned.part {
+        let clips = meta.importer.clips().ok_or(ClipCookError::NoSkeleton)?;
+        let input = ClipInput {
+            path,
+            bytes,
+            importer: &meta.importer,
+            clips,
+            index: *index,
+            skeleton: planned.skeleton,
+        };
+        return source_samples(&input, target.map(|entry| &clips.retarget[entry]), assets);
+    }
+    let ImportSettings::KeyPose(settings) = &meta.importer else {
+        return Err(ClipCookError::NoSkeleton);
+    };
+    let rig = if let Part::KeyPose { rig, .. } = &planned.part { Some(*rig) } else { settings.rig };
+    key_pose_samples(path, bytes, rig, assets)
 }
 
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
@@ -1292,7 +1425,7 @@ fn cook_source(
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
-        ImportSettings::MoveSet(_) => moves::cook(bytes)
+        ImportSettings::MoveSet(_) => moves::cook(bytes, |clip| move_tables(clip, assets))
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
     }
 }
@@ -1305,15 +1438,29 @@ fn cook_key_pose(
     rig: Option<AssetId>,
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, ClipCookError> {
+    let samples = key_pose_samples(path, bytes, rig, assets)?;
+    written_clip(&clip::cook(&samples.sampled, &samples.target(), &settings.error))
+}
+
+/// The samples of the document in `bytes`, for the rig of source `rig`.
+fn key_pose_samples(
+    path: &Path,
+    bytes: &[u8],
+    rig: Option<AssetId>,
+    assets: &Assets<'_>,
+) -> Result<ClipSamples, ClipCookError> {
     let document = keypose::read(bytes)?;
     let source = assets.key_pose_rig(rig)?;
     let joints = source.read_skeleton()?;
     let map = source.map(&joints)?.ok_or(KeyPoseError::NotHumanoid)?;
     let targets = morph_targets_of(&document, source.mesh)?;
     let sampled = keypose::sample(&document, &keypose::stem(path), &joints, &map, &targets)?;
-    let defaults: Vec<f32> = targets.iter().map(|target| target.default_weight).collect();
-    let target = ClipTarget { skeleton: Some((source.skeleton_id, &joints)), morph_defaults: &defaults };
-    written_clip(&clip::cook(&sampled, &target, &settings.error))
+    Ok(ClipSamples {
+        sampled,
+        skeleton: Some(joints),
+        skeleton_id: Some(source.skeleton_id),
+        morph_defaults: targets.iter().map(|target| target.default_weight).collect(),
+    })
 }
 
 /// The morph targets a document's weights name on `mesh`: none if it names no weights or there is
@@ -1367,13 +1514,23 @@ struct ClipInput<'a> {
     skeleton: Option<AssetId>,
 }
 
-/// Cooks animation `input.index` for the source's own rig, or for `retarget`'s. The file imports
-/// once for all its clips ([`ClipSources`]).
+/// Cooks animation `input.index` for the source's own rig, or for `retarget`'s.
 fn cook_clip(
     input: &ClipInput<'_>,
     retarget: Option<&retarget::RetargetSettings>,
     assets: &Assets<'_>,
 ) -> Result<Vec<u8>, ClipCookError> {
+    let samples = source_samples(input, retarget, assets)?;
+    written_clip(&clip::cook(&samples.sampled, &samples.target(), &input.clips.error))
+}
+
+/// The samples of animation `input.index`, for the source's own rig or for `retarget`'s. The file
+/// imports once for all its clips ([`ClipSources`]).
+fn source_samples(
+    input: &ClipInput<'_>,
+    retarget: Option<&retarget::RetargetSettings>,
+    assets: &Assets<'_>,
+) -> Result<ClipSamples, ClipCookError> {
     let source = assets.clip_sources.get(input.path, input.bytes, input.importer)?;
     let sampled = source.sample(input.index, input.clips)?;
     let joints = (!source.joints.is_empty()).then(|| Skeleton::new(&source.joints));
@@ -1383,19 +1540,19 @@ fn cook_clip(
                 let shared = assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?;
                 let skeleton = shared.read_skeleton()?;
                 let remap = joint_remap(&source.joints, &skeleton)?;
-                let target = ClipTarget {
-                    skeleton: Some((shared.skeleton_id, &skeleton)),
-                    morph_defaults: &source.morph_defaults,
-                };
-                written_clip(&clip::cook(&remap_tracks(sampled, &remap), &target, &input.clips.error))
+                Ok(ClipSamples {
+                    sampled: remap_tracks(sampled, &remap),
+                    skeleton: Some(skeleton),
+                    skeleton_id: Some(shared.skeleton_id),
+                    morph_defaults: source.morph_defaults.clone(),
+                })
             }
-            None => {
-                let target = ClipTarget {
-                    skeleton: input.skeleton.zip(joints.as_ref()),
-                    morph_defaults: &source.morph_defaults,
-                };
-                written_clip(&clip::cook(&sampled, &target, &input.clips.error))
-            }
+            None => Ok(ClipSamples {
+                sampled,
+                skeleton: joints,
+                skeleton_id: input.skeleton,
+                morph_defaults: source.morph_defaults.clone(),
+            }),
         };
     };
     let joints = joints.ok_or(ClipCookError::NoSkeleton)?;
@@ -1417,8 +1574,12 @@ fn cook_clip(
             follow: retarget.follow.clone(),
         },
     )?;
-    let target = ClipTarget { skeleton: Some((target_rig.skeleton_id, &target_joints)), morph_defaults: &[] };
-    written_clip(&clip::cook(&retargeted, &target, &input.clips.error))
+    Ok(ClipSamples {
+        sampled: retargeted,
+        skeleton: Some(target_joints),
+        skeleton_id: Some(target_rig.skeleton_id),
+        morph_defaults: Vec::new(),
+    })
 }
 
 /// The humanoid map a source retargets from, on its own joints: a VRMA's, its sidecar's, or the
@@ -1606,11 +1767,9 @@ fn source_dependencies(
                 })
                 .collect()
         }
-        // Images, collider documents and move sets are self-contained: a move set's tables are in its
-        // document.
-        ImportSettings::Texture(_) | ImportSettings::Colliders(_) | ImportSettings::MoveSet(_) => {
-            Ok(Vec::new())
-        }
+        // Images and collider documents are self-contained.
+        ImportSettings::Texture(_) | ImportSettings::Colliders(_) => Ok(Vec::new()),
+        ImportSettings::MoveSet(_) => Ok(move_set_dependencies(bytes, assets)),
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -1666,6 +1825,24 @@ fn source_dependencies(
         // The importer never opens the files an FBX names.
         ImportSettings::FbxClips(_) => Ok(Vec::new()),
     }
+}
+
+/// The clips a move set's document names and their rigs, by their own keys. A document that doesn't
+/// read, or a clip that doesn't resolve, keys nothing here: its cook fails by move and track, with
+/// everything else wrong with the document.
+fn move_set_dependencies(bytes: &[u8], assets: &Assets<'_>) -> Vec<Dependency> {
+    let Ok(document) = moves::read(bytes) else { return Vec::new() };
+    let mut dependencies = Vec::new();
+    for clip in document.moves.iter().filter_map(|mv| mv.motion.clip.as_ref()) {
+        let Ok(planned) = assets.clip_of_move(clip) else { continue };
+        if let Some(cooked) = assets.cooked(planned.id) {
+            dependencies.push(Dependency::Asset { id: cooked.id, key: cooked.key });
+        }
+        if let Some(rig) = assets.rig_of_clip(planned) {
+            dependencies.extend(rig.dependencies("move"));
+        }
+    }
+    dependencies
 }
 
 /// The pieces an assembly at `path` places: files it reads, by the path it names them with.
@@ -2954,3 +3131,5 @@ mod clip_tests;
 
 #[cfg(test)]
 mod animation_tests;
+#[cfg(test)]
+mod move_tests;

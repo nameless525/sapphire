@@ -15,6 +15,8 @@ path = "src/main.rs"
 sapphire_assets.workspace = true
 # Collider documents' checks and cooked format. Plain data: the tool links no collision library.
 sapphire_colliders.workspace = true
+# Names of a move's baked paths.
+sapphire_core.workspace = true
 # The probe bake lights the sky as the renderer relights it (`sky::sky_radiance`), under time of
 # day's keys (M1 W5). Neither crate embeds a shader or the default day, so editing those rebuilds
 # nothing here: the bake reads the default day's file itself (`probes::default_day_path`).
@@ -52,8 +54,12 @@ ufbx.workspace = true
 vrm-spec.workspace = true
 
 [dev-dependencies]
-# Spring bones on the character itself, with no GPU and no cook (`tests/character_springs.rs`).
+# Spring bones on the character itself, with no GPU and no cook (`tests/character_springs.rs`), and a
+# move's tables against the pose on screen. Tests only, like the next: the cooker itself links neither
+# (`[cooker]` in xtask/layers.toml looks at normal dependencies).
 sapphire_anim.workspace = true
+# A move's tables played in the simulation.
+sapphire_gameplay.workspace = true
 
 [lints]
 workspace = true

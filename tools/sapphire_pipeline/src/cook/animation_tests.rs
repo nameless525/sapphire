@@ -27,8 +27,8 @@ use crate::test_util::{TempDir, read_aligned};
 
 const OWNER: AssetId = AssetId::from_bytes([0x90; 16]);
 const FOLLOWER: AssetId = AssetId::from_bytes([0x91; 16]);
-const CHARACTER: AssetId = AssetId::from_bytes([0x92; 16]);
-const HUMAN: AssetId = AssetId::from_bytes([0x93; 16]);
+pub(super) const CHARACTER: AssetId = AssetId::from_bytes([0x92; 16]);
+pub(super) const HUMAN: AssetId = AssetId::from_bytes([0x93; 16]);
 
 fn output_names(report: &CookReport) -> Vec<String> {
     let name = |asset: &CookedAsset| asset.output.file_name().unwrap().to_string_lossy().into_owned();
@@ -115,7 +115,7 @@ fn rig_in_another_order(arm_at: [f32; 3], extra: &str, arm_parent_is_hips: bool)
     writer.to_glb()
 }
 
-fn clips_of(settings: ClipSettings) -> ImportSettings {
+pub(super) fn clips_of(settings: ClipSettings) -> ImportSettings {
     ImportSettings::GltfClips(settings)
 }
 
@@ -421,7 +421,7 @@ fn the_enemys_mesh_rests_where_it_was_modeled_on_the_clips_skeleton() {
 }
 
 /// A humanoid in a skinned file, as KayKit's are: a mesh brings every joint in, moved or not.
-fn human_with_a_mesh() -> Vec<u8> {
+pub(super) fn human_with_a_mesh() -> Vec<u8> {
     let mut writer = vrma_files::vrma();
     let geometry = Geometry {
         positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -466,7 +466,7 @@ fn human_map() -> BTreeMap<HumanBone, String> {
     .collect()
 }
 
-fn to_the_character(names: &[&str]) -> ClipSettings {
+pub(super) fn to_the_character(names: &[&str]) -> ClipSettings {
     ClipSettings {
         humanoid: human_map(),
         retarget: vec![RetargetSettings {
@@ -655,7 +655,7 @@ fn a_source_sharing_a_rig_retargets_by_the_owners_map() {
     assert_eq!(clip.status, CookStatus::Cooked);
 }
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(super) fn fixture(name: &str) -> Vec<u8> {
     fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fbx").join(name)).unwrap()
 }
 

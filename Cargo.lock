@@ -3171,6 +3171,8 @@ dependencies = [
  "sapphire_anim",
  "sapphire_assets",
  "sapphire_colliders",
+ "sapphire_core",
+ "sapphire_gameplay",
  "sapphire_look",
  "sapphire_math",
  "sapphire_moves",

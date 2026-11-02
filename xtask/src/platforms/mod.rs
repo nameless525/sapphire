@@ -185,6 +185,9 @@ pub fn host_build_env() -> anyhow::Result<Vec<(&'static str, OsString)>> {
 #[derive(Debug, Default)]
 pub struct Options {
     pub release: bool,
+    /// Build the app in the `tools` profile: optimized, with no LTO, and incremental, so a one-line
+    /// edit relinks in seconds where `release` takes minutes. Desktops only.
+    pub incremental: bool,
     /// Cargo features to build the app with (`--features dev` for the debug overlay).
     pub features: Vec<String>,
     /// Use this prebuilt executable instead of building the app.
@@ -204,6 +207,7 @@ pub struct Options {
 /// Assembles an installable bundle and returns its path.
 pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     check_device_options(platform, options)?;
+    check_build_options(platform, options)?;
     match platform {
         Platform::Desktop => desktop::bundle(app, options),
         Platform::MacOs => macos::bundle(app, options),
@@ -217,6 +221,7 @@ pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Resul
 pub fn run(platform: Platform, app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     ensure!(!options.show || platform == Platform::IosSim, "--show applies only to --platform ios-sim");
     check_device_options(platform, options)?;
+    check_build_options(platform, options)?;
     match platform {
         Platform::Desktop => desktop::run(app, options, args),
         Platform::MacOs => macos::run(app, options, args),
@@ -237,6 +242,19 @@ fn check_device_options(platform: Platform, options: &Options) -> anyhow::Result
     Ok(())
 }
 
+/// Fails if `--incremental` is given with `--release`, which is another build, or for a phone, whose
+/// builds go through Gradle or signing and should be what a player runs.
+fn check_build_options(platform: Platform, options: &Options) -> anyhow::Result<()> {
+    if options.incremental {
+        ensure!(!options.release, "--incremental and --release are different builds: pick one");
+        ensure!(
+            matches!(platform, Platform::Desktop | Platform::MacOs),
+            "--incremental applies only to --platform desktop and macos"
+        );
+    }
+    Ok(())
+}
+
 /// The app's executable: `--exe` if given, else a fresh cargo build for `target` with the
 /// extra environment `env`.
 fn executable(
@@ -254,7 +272,11 @@ fn executable(
             &CargoBuild {
                 package: &app.package,
                 target,
-                profile: BuildProfile::app(options.release),
+                profile: if options.incremental {
+                    BuildProfile::Tools
+                } else {
+                    BuildProfile::app(options.release)
+                },
                 features: &options.features,
                 env,
             },
@@ -314,6 +336,18 @@ pub fn test_app() -> App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_incremental_build_is_a_desktops_and_isnt_a_release() {
+        let options = |release| Options { incremental: true, release, ..Options::default() };
+        assert!(check_build_options(Platform::Desktop, &options(false)).is_ok());
+        assert!(check_build_options(Platform::MacOs, &options(false)).is_ok());
+        assert!(check_build_options(Platform::Android, &options(false)).is_err());
+        assert!(check_build_options(Platform::Ios, &options(false)).is_err());
+        assert!(check_build_options(Platform::IosSim, &options(false)).is_err());
+        assert!(check_build_options(Platform::Desktop, &options(true)).is_err());
+        assert!(check_build_options(Platform::Android, &Options::default()).is_ok());
+    }
 
     #[test]
     fn parses_platforms() {

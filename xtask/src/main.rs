@@ -35,7 +35,7 @@ Commands:
       target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
-  bundle --platform <platform> [--release] [--features <list>] [--exe <path>]
+  bundle --platform <platform> [--release | --incremental] [--features <list>] [--exe <path>]
       [--identity <name> --profile <file>]
       Cook, build and assemble the app for <platform> under target/<platform>/:
         desktop   SapphireSandbox/ with the executable and content/ (any host)
@@ -44,7 +44,7 @@ Commands:
         ios       SapphireSandbox.app for devices, signed with --identity and --profile
                   (ad hoc without them, which no device installs)
         android   SapphireSandbox.apk, debug-signed (Gradle)
-  run --platform <platform> [--release] [--features <list>] [--exe <path>] [--dry-run]
+  run --platform <platform> [--release | --incremental] [--features <list>] [--exe <path>] [--dry-run]
       [--show] [--identity <name> --profile <file> --device <name>] [-- <app args>]
       Cook, build and launch, with the app's output streamed here:
         desktop   runs the build in place with SAPPHIRE_CONTENT_DIR set (any host)
@@ -103,6 +103,8 @@ Commands:
 Options:
   --locked       Pass --locked to every cargo command xtask runs, and fail the content
                  cook on a source without a committed .meta sidecar (CI).
+  --incremental  desktop, macos: build the app optimized, with no LTO and incrementally (the
+                 tools profile), so a one-line edit rebuilds in seconds, not minutes.
   --features <list>
                  Build the app with these Cargo features (comma-separated), such as `dev`
                  for the debug overlay.
@@ -195,6 +197,7 @@ fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)>
     let features = args.value::<String>("--features")?.unwrap_or_default();
     let options = Options {
         release: args.flag("--release"),
+        incremental: args.flag("--incremental"),
         features: features.split(',').map(str::trim).filter(|f| !f.is_empty()).map(str::to_owned).collect(),
         exe: args.value::<PathBuf>("--exe")?,
         identity: args.value::<String>("--identity")?,

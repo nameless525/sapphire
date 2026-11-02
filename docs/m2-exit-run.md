@@ -174,7 +174,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 | A screen effect's look | [default_screen_effects.ron](../crates/sapphire_world/default_screen_effects.ron): `light_hit`, `medium_hit`, `heavy_hit`, `poise_break`, `finish`, `perfect_dodge`, `skill_flash` | Save |
 | The light and hour | [lookdev_day.ron](../content/lookdev/lookdev_day.ron), and `--time-of-day <hours>` on the command | Save |
 | A cut's blend, a reaction's blend, walk and run blending | [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron): `combat`'s `decay`, `exit`, each move's `decay`, `locomotion`'s `samples`, `smoothing`, `rate`, `transitions`. It takes effect at the next state's start | Save or push (134 ms and 7 ms, on 7a28c828) |
-| The same on the enemy | [warrior.animgraph.ron](../content/combat/enemy/warrior.animgraph.ron), the same fields | Cook. A save isn't watched, and a push is refused by name |
+| The same on the enemy | [warrior.animgraph.ron](../content/combat/enemy/warrior.animgraph.ron), the same fields | Save or push (12 ms) |
 | A move's pose, and what's seen when | [moves.py](../tools/motion/moves.py), by [its README](../tools/motion/README.md): `--write`, read a sheet with `sheet.py`, then cook. A cook rebakes the move's tables | Cook |
 | Walk, run, strafe or a reaction's clip | The pack's sidecars under [kaykit_character_animations](../content/third_party/kaykit_character_animations/): a `retarget:` entry's `adjust`, `gain`, `follow` | Cook |
 | A material | `content/combat/enemy/`, `content/lookdev/character/materials/` | Cook |
@@ -365,7 +365,7 @@ cargo xtask link push content/combat/player/player.moves.ron
 
 `cargo xtask link watch content/combat/player/player.moves.ron` pushes each save, which is the real loop. A document needs no cook, so a phone's cooked pack stays as it is, and a phone keeps its edits only until it restarts: a relaunch through `cargo xtask run` cooks the saved file in.
 
-A change that needs a cook (the enemy's graph, a pose): `cargo xtask content --cook mobile`, then `cargo xtask link push`, which sends only what changed. Add both to the number.
+A change that needs a cook (a pose, a material): `cargo xtask content --cook mobile`, then `cargo xtask link push`, which sends only what changed. Add both to the number.
 
 ### What to record
 
@@ -492,8 +492,8 @@ Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5. These ran bef
 |---|---|
 | A save of `character.animgraph.ron` in `--arena --fight --script attempts` | Reloaded in 134 ms: `character's animation graph, from the next state's start` |
 | A push of the same | Exit 0 in 7 ms, with the same reply |
-| A push of `warrior.animgraph.ron` | Exit 1: `only character.animgraph.ron takes edits, and a cook brings any other graph` |
-| A save of `warrior.animgraph.ron` | Nothing, in 4 s |
+| A push of `warrior.animgraph.ron` | Then exit 1, refused by name. Since the review's leftovers, exit 0 in 12 ms: `enemy's animation graph, from the next state's start` |
+| A save of `warrior.animgraph.ron` | Then nothing, in 4 s. Since the leftovers, reloaded with the same line |
 | A save of `player.moves.ron` with `cancles:` | Refused in 123 ms, naming the line, the field and `MoveDocument` |
 | `--capture … --arena --hud live --hud-paused --capture-ticks 30` | The veil and the two-bar mark in the frame's middle, read from the picture |
 | `--script fight-back`, one fight | The same checksum as on 410cf24b, `0dfb07dd0da45a9c` |
@@ -513,7 +513,7 @@ A last check of this page against the code ran the first command with `--dry-run
 ### What it found
 
 - **Nothing read the OS's thermal state,** so exit test 4 had nothing to read on an iPhone. `Platform::thermal_state` is new, and `frame stats` now carries `thermal` and `live_bytes`.
-- **A fight's graphs had no document route.** On 410cf24b the docs and the tool's usage said a saved graph reached a running fight, and it reached only `--graph`'s show. The tuning review found the same thing and gave the character's graph a route. `warrior.animgraph.ron` stays cook-only.
+- **A fight's graphs had no document route.** On 410cf24b the docs and the tool's usage said a saved graph reached a running fight, and it reached only `--graph`'s show. The tuning review found the same thing and gave the character's graph a route, and `warrior.animgraph.ron` has one since the review's leftovers.
 - **`patience` stops at 3,600 ticks,** so the dummy swings about once a minute, and doesn't stand idle for good as a first draft of this file said.
 - **A timing script locks onto `attempts`' beat.** The first harness pushed at a fixed spacing and read 195 ms every round. Rounds here are spaced at random, so they sample the wait.
 - **`link watch` pushes a named document twice** when the device lists it too. The second is "the same moves", and harmless.

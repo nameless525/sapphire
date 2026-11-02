@@ -24,8 +24,8 @@
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
 //!   variants the new presets draw through, unless they lose a preset a fight's cue table pushes;
-//! - an edited fight's document (M2 T2, `tuning.rs`): its moves and fighter, the camera's tuning, the
-//!   character's graph or the cue table (M2 E3, if the names it holds are all there), each playing on the
+//! - an edited fight's document (M2 T2, `tuning.rs`): its moves and fighter, the camera's tuning, a
+//!   fighter's graph or the cue table (M2 E3, if the names it holds are all there), each playing on the
 //!   next attempt. A new `.smoves` from a pack does the same.
 //!
 //! On by default in `dev` builds; `--no-hot-reload` turns it off. Phones build no file watching
@@ -84,8 +84,8 @@ pub(crate) enum Document {
     /// The camera's tuning (`default_camera.ron`, M2 T2): it replaces the director's, if there is one and
     /// it's in range.
     Camera,
-    /// The character's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the
-    /// next state's start, if it checks and binds.
+    /// A fighter's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the next
+    /// state's start, if it checks and binds.
     Graph,
 }
 

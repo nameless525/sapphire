@@ -75,9 +75,7 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
-use sapphire_anim::{
-    AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton,
-};
+use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::Mesh;
@@ -367,16 +365,37 @@ fn keeping_held(
 struct HeldGraph {
     graph: Handle<AnimGraph>,
     clips: Vec<(AssetId, Handle<Clip>)>,
+    /// The graph live tuning took as a document, over the cooked one until that has a new version.
+    #[cfg(feature = "dev")]
+    live: Option<LiveGraph>,
 }
 
 impl HeldGraph {
     /// Takes handles on the clips it names now, [keeping](keeping_held) those it held.
     fn hold_clips(&mut self, server: &mut AssetServer) -> Result<(), LoadError> {
-        let Some(graph) = server.get(&self.graph) else { return Ok(()) };
-        let ids: Vec<AssetId> = graph.clip_ids().collect();
+        let Some(ids) = self.clip_ids(server) else { return Ok(()) };
         let clips = ids.into_iter().map(|id| Ok((id, server.load_with(id, LoadPriority::Critical)?)));
         self.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &self.clips);
         Ok(())
+    }
+
+    /// The clips it names now, once it's resident.
+    fn clip_ids(&self, server: &AssetServer) -> Option<Vec<AssetId>> {
+        #[cfg(feature = "dev")]
+        if let Some(live) = &self.live {
+            return Some(live.graph.clips.iter().map(|clip| clip.id).collect());
+        }
+        Some(server.get(&self.graph)?.clip_ids().collect())
+    }
+
+    /// The graph a character binds: the one live tuning took, or the cooked one.
+    fn document(&self, server: &AssetServer) -> Result<AnimGraph, String> {
+        #[cfg(feature = "dev")]
+        if let Some(live) = &self.live {
+            return Ok(live.graph.clone());
+        }
+        let graph = server.get(&self.graph).ok_or("its cooked graph isn't resident")?;
+        graph.to_owned_graph().map_err(|error| error.to_string())
     }
 
     /// Its clips, as a frame's evaluation reads them. Allocates nothing.
@@ -445,9 +464,6 @@ pub(crate) struct Content {
     /// The graph the enemy plays, with `--arena`.
     enemy_graph: Option<HeldGraph>,
     graph_version: u32,
-    /// The graph live tuning took as a document, over the cooked one until that has a new version.
-    #[cfg(feature = "dev")]
-    live_graph: Option<LiveGraph>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -457,6 +473,14 @@ pub(crate) struct Content {
     /// platform's.
     #[cfg(feature = "dev")]
     live_packs: Arc<LivePacks>,
+}
+
+/// Whose graph a document is (M2 T2): each binds against its own skeleton.
+#[cfg(feature = "dev")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GraphOwner {
+    Character,
+    Enemy,
 }
 
 /// A graph live tuning took as a document (M2 T2).
@@ -538,8 +562,6 @@ impl Content {
             graph: None,
             enemy_graph: None,
             graph_version: 0,
-            #[cfg(feature = "dev")]
-            live_graph: None,
             sky_id,
             sky: None,
             server,
@@ -970,15 +992,20 @@ impl Content {
         enemy::driver(skin, skeleton, Arc::new(binding), ground).map_err(AppInitError::msg)
     }
 
-    /// The enemy's graph as it stands, bound to the enemy.
+    /// The enemy's graph as it stands, bound to the enemy: the one live tuning took, or the cooked one.
     pub fn enemy_binding(&self) -> Result<GraphBinding, AppInitError> {
+        let held =
+            self.enemy_graph.as_ref().ok_or_else(|| AppInitError::msg("the enemy's graph isn't loaded"))?;
+        let graph = held.document(&self.server).map_err(AppInitError::msg)?;
+        self.enemy_binding_of(&graph).map_err(AppInitError::msg)
+    }
+
+    /// [`Self::enemy_binding`], for `graph` rather than the one it holds.
+    pub fn enemy_binding_of(&self, graph: &AnimGraph) -> Result<GraphBinding, String> {
         let skeleton = self.enemy_skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton));
-        let graph = self.enemy_graph.as_ref().and_then(|graph| self.server.get(&graph.graph));
-        let (Some(skeleton), Some(graph)) = (skeleton, graph) else {
-            return Err(AppInitError::msg("the enemy's graph isn't loaded"));
-        };
-        let graph = graph.to_owned_graph().map_err(AppInitError::msg)?;
-        GraphBinding::new(&graph, skeleton, None, 0, &self.enemy_graph_clips()).map_err(AppInitError::msg)
+        let skeleton = skeleton.ok_or("the enemy's skeleton isn't loaded")?;
+        GraphBinding::new(graph, skeleton, None, 0, &self.enemy_graph_clips())
+            .map_err(|error| error.to_string())
     }
 
     /// Loads the arena's colliders until they're resident, and builds what the stage stands on from
@@ -1144,7 +1171,12 @@ impl Content {
         let graph = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&graph, |upload| assets.upload(upload, renderer, gpu));
-        let mut held = HeldGraph { graph, clips: Vec::new() };
+        let mut held = HeldGraph {
+            graph,
+            clips: Vec::new(),
+            #[cfg(feature = "dev")]
+            live: None,
+        };
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
@@ -1156,47 +1188,41 @@ impl Content {
     /// Takes handles on the clips the graphs name now, which they keep loaded as their dependencies: a
     /// new version may name others. Allocates, so only when [`Self::take_graph_changed`] says so.
     pub fn hold_graph_clips(&mut self) -> Result<(), LoadError> {
-        if let Some(held) = &mut self.enemy_graph {
+        for held in [&mut self.enemy_graph, &mut self.graph].into_iter().flatten() {
             held.hold_clips(&mut self.server)?;
         }
-        let Some(held) = &mut self.graph else { return Ok(()) };
-        #[cfg(feature = "dev")]
-        if let Some(live) = &self.live_graph {
-            let ids = live.graph.clips.iter().map(|clip| clip.id);
-            let clips = ids.map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
-            held.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &held.clips);
-            return Ok(());
-        }
-        held.hold_clips(&mut self.server)?;
         Ok(())
-    }
-
-    /// The graph [`Self::load_graph`] loaded.
-    pub fn graph(&self) -> Option<&ArchivedAnimGraph> {
-        self.graph.as_ref().and_then(|held| self.server.get(&held.graph))
     }
 
     /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
     pub fn graph_document(&self) -> Result<AnimGraph, String> {
-        #[cfg(feature = "dev")]
-        if let Some(live) = &self.live_graph {
-            return Ok(live.graph.clone());
-        }
-        let graph = self.graph().ok_or("the character's graph isn't loaded")?;
-        graph.to_owned_graph().map_err(|error| error.to_string())
+        let held = self.graph.as_ref().ok_or("the character's graph isn't loaded")?;
+        held.document(&self.server)
     }
 
-    /// Loads the clips an edited graph names, until they're resident, keeping those a graph still playing
-    /// reads while there's room: it goes on until its next state's start. Fails on a clip nothing cooked,
-    /// keeping what's held.
+    /// The graph the enemy binds, for hot reload's tests.
+    #[cfg(all(test, feature = "dev"))]
+    pub fn enemy_graph_document(&self) -> Result<AnimGraph, String> {
+        let held = self.enemy_graph.as_ref().ok_or("the enemy's graph isn't loaded")?;
+        held.document(&self.server)
+    }
+
+    /// Loads the clips an edited graph of `owner`'s names, until they're resident, keeping those a graph
+    /// still playing reads while there's room: it goes on until its next state's start. Fails on a clip
+    /// nothing cooked, keeping what's held.
     #[cfg(feature = "dev")]
     pub fn hold_clips_of(
         &mut self,
+        owner: GraphOwner,
         graph: &AnimGraph,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), String> {
-        let current = self.graph.as_ref().map_or(&[][..], |held| held.clips.as_slice());
+        let owned = match owner {
+            GraphOwner::Character => &mut self.graph,
+            GraphOwner::Enemy => &mut self.enemy_graph,
+        };
+        let current = owned.as_ref().map_or(&[][..], |held| held.clips.as_slice());
         let mut held = Vec::with_capacity(graph.clips.len());
         for clip in &graph.clips {
             if let Some(found) = current.iter().find(|(id, _)| *id == clip.id) {
@@ -1211,18 +1237,24 @@ impl Content {
             held.push((clip.id, handle));
         }
         let held = keeping_held(held, current);
-        if let Some(current) = &mut self.graph {
+        if let Some(current) = owned {
             current.clips = held;
         }
         self.graph_version = self.graph_versions();
         Ok(())
     }
 
-    /// Binds characters to `graph` from now on, until the cooked graph has a new version.
+    /// Binds `owner` to `graph` from now on, until the cooked graph has a new version.
     #[cfg(feature = "dev")]
-    pub fn set_live_graph(&mut self, graph: AnimGraph) {
-        let cooked = self.graph.as_ref().map_or(0, |held| self.server.generation(&held.graph));
-        self.live_graph = Some(LiveGraph { graph, cooked });
+    pub fn set_live_graph(&mut self, owner: GraphOwner, graph: AnimGraph) {
+        let owned = match owner {
+            GraphOwner::Character => &mut self.graph,
+            GraphOwner::Enemy => &mut self.enemy_graph,
+        };
+        if let Some(held) = owned {
+            let cooked = self.server.generation(&held.graph);
+            held.live = Some(LiveGraph { graph, cooked });
+        }
     }
 
     /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
@@ -1249,11 +1281,12 @@ impl Content {
     pub fn take_graph_changed(&mut self) -> bool {
         let version = self.graph_versions();
         #[cfg(feature = "dev")]
-        if let Some(live) = &self.live_graph
-            && self.graph.as_ref().is_some_and(|held| self.server.generation(&held.graph) != live.cooked)
-        {
-            // A cook of the document came after it: that's the graph now.
-            self.live_graph = None;
+        for held in [&mut self.graph, &mut self.enemy_graph].into_iter().flatten() {
+            let cooked = self.server.generation(&held.graph);
+            if held.live.as_ref().is_some_and(|live| live.cooked != cooked) {
+                // A cook of the document came after it: that's the graph now.
+                held.live = None;
+            }
         }
         std::mem::replace(&mut self.graph_version, version) != version
     }
@@ -2146,6 +2179,43 @@ mod tests {
         assert!(!stage.scene.arena_mut().expect("an arena").has_cut_waiting(1), "it's heard");
     }
 
+    /// An edited graph for the enemy, as the next test's for the character: it binds against the enemy's
+    /// own skeleton, leaves the character's alone, and stays what binds until a pack brings another.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        stage.frame();
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+
+        // The character's clip is for the character's joints.
+        let error = scene
+            .replace_graph_document(GraphOwner::Enemy, swing_graph(4), content, renderer, gpu)
+            .expect_err("another skeleton's clip");
+        assert!(error.contains("swing"), "{error}");
+        assert!(!scene.enemy_graph_player().expect("playing").has_replacement());
+
+        let mut edited = swing_graph(4);
+        edited.resolve(|_| ENEMY_SWING);
+        scene.replace_graph_document(GraphOwner::Enemy, edited, content, renderer, gpu).expect("it binds");
+        assert!(scene.enemy_graph_player().expect("playing").has_replacement());
+        assert_eq!(content.enemy_graph_document().expect("a graph").combat.decay, 4);
+        assert_eq!(content.graph_document().expect("a graph").combat.decay, 5, "the character's stays");
+        assert!(!content.take_graph_changed(), "its own clips are nothing new");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 0, 9));
+        stage.content.remount(PACK).expect("the new pack");
+        for _ in 0..1000 {
+            stage.frame();
+            if stage.content.enemy_graph_document().expect("a graph").combat.decay == 9 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the cook of the document should win over the edit it came after");
+    }
+
     /// An edited graph over live link (M2 T2): it binds at once and waits for the next state's start like
     /// a new version from a pack, it stays what binds until one comes, and one that can't bind leaves
     /// everything as it was.
@@ -2160,11 +2230,15 @@ mod tests {
 
         let mut missing = swing_graph(4);
         missing.resolve(|_| AssetId::from_bytes([9; 16]));
-        let error = scene.replace_graph_document(missing, content, renderer, gpu).expect_err("no such clip");
+        let error = scene
+            .replace_graph_document(GraphOwner::Character, missing, content, renderer, gpu)
+            .expect_err("no such clip");
         assert!(error.contains("swing"), "{error}");
         assert!(!scene.graph_player().expect("playing").has_replacement());
 
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("it binds");
+        scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect("it binds");
         assert!(scene.graph_player().expect("playing").has_replacement());
         assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
         assert!(scene.graph_player().expect("playing").has_replacement());
@@ -2306,7 +2380,7 @@ mod tests {
         stage.scene.pose_as_fighter(driver);
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
         scene
-            .replace_graph_document(swing_graph(4), content, renderer, gpu)
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
             .expect("a fighter plays a graph");
         assert!(scene.graph_player().expect("playing").has_replacement());
         assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);

@@ -131,6 +131,8 @@ use crate::audio::SceneSound;
 use crate::blade::{self, HeldBlade};
 use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
+#[cfg(feature = "dev")]
+use crate::content::GraphOwner;
 use crate::cues::{CueShow, CueSounds, CueStage};
 use crate::debug_shapes::DebugDrawDemo;
 use crate::enemy::{self, EnemyMeshes};
@@ -1267,30 +1269,42 @@ impl Scene {
         }
     }
 
-    /// Takes an edited graph (M2 T2): its clips loaded, bound against this character, and from then on
-    /// what binds it, until a pack brings another. It takes effect at the next state's start
+    /// Takes an edited graph (M2 T2): its clips loaded, bound against `owner`, and from then on what binds
+    /// it, until a pack brings another. It takes effect at the next state's start
     /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
     pub fn replace_graph_document(
         &mut self,
+        owner: GraphOwner,
         graph: sapphire_anim::AnimGraph,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &sapphire_rhi::GpuContext,
     ) -> Result<(), String> {
-        let character = self.character;
-        let posed = self.graph_show.is_some() || self.fighters_posed;
-        if !posed || self.ecs.world().get::<GraphDriver>(character).is_none() {
-            return Err("no character here plays a graph: `--look-dev <shot> --graph <script>` and \
-                        `--arena --fight` have one"
-                .to_owned());
-        }
-        content.hold_clips_of(&graph, renderer, gpu)?;
-        let binding = lookdev::graph_binding_of(content, &graph)?;
-        content.set_live_graph(graph);
-        if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) {
+        let (entity, posed, none) = match owner {
+            GraphOwner::Character => (
+                Some(self.character),
+                self.graph_show.is_some() || self.fighters_posed,
+                "no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` \
+                 have one",
+            ),
+            GraphOwner::Enemy => (
+                self.enemy.map(|(warrior, _)| warrior),
+                self.fighters_posed && !self.enemy_waits,
+                "no enemy here plays a graph: `--arena --fight` has one",
+            ),
+        };
+        let playing = entity.filter(|&entity| posed && self.ecs.world().get::<GraphDriver>(entity).is_some());
+        let Some(entity) = playing else { return Err(none.to_owned()) };
+        content.hold_clips_of(owner, &graph, renderer, gpu)?;
+        let binding = match owner {
+            GraphOwner::Character => lookdev::graph_binding_of(content, &graph)?,
+            GraphOwner::Enemy => content.enemy_binding_of(&graph)?,
+        };
+        content.set_live_graph(owner, graph);
+        if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(entity) {
             playing.player.replace(Arc::new(binding));
         }
         Ok(())

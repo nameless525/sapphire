@@ -532,14 +532,14 @@ impl ArenaActors {
         self.ground.share()
     }
 
-    /// Tells `fighter`'s graph to cut, for tests of when it hears.
-    #[cfg(test)]
+    /// Tells `fighter`'s graph to cut, for hot reload's tests of when it hears.
+    #[cfg(all(test, feature = "dev"))]
     pub fn cut_next(&mut self, fighter: usize) {
         self.signals[fighter].cut = true;
     }
 
     /// Whether `fighter`'s graph has yet to hear of a cut.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "dev"))]
     pub fn has_cut_waiting(&self, fighter: usize) -> bool {
         self.signals[fighter].cut
     }

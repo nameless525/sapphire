@@ -234,8 +234,8 @@ fn rig_joints(skeleton: &ArchivedSkeleton) -> Result<RigJoints, String> {
     Ok(RigJoints::of_bones(bones))
 }
 
-/// Every joint name the warrior's rig needs, the hand slot last: for test rigs.
-#[cfg(test)]
+/// Every joint name the warrior's rig needs, the hand slot last: for hot reload's test rigs.
+#[cfg(all(test, feature = "dev"))]
 pub(crate) fn joint_names() -> Vec<&'static str> {
     BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain([HAND_SLOT]).collect()
 }

@@ -1780,7 +1780,8 @@ impl MeshModules {
             | Program::Temporal
             | Program::Shadows
             | Program::Ambient
-            | Program::DebugView => unreachable!("not a mesh program"),
+            | Program::DebugView
+            | Program::DebugDraw => unreachable!("not a mesh program"),
         }
     }
 

@@ -177,6 +177,8 @@ pub(crate) struct Built {
     pub ambient: u32,
     /// The debug views' own pipelines, once a view was shown.
     pub debug_views: Option<u32>,
+    /// Debug draw's pipeline, once a frame had lines.
+    pub debug_draw: bool,
 }
 
 /// A build: the sources, the programs that changed, and each changed program's owners' steps
@@ -196,6 +198,7 @@ pub(crate) struct Job {
     pub shadows: Option<Step<ShadowPipelines>>,
     pub ambient: Option<Step<AmbientPipelines>>,
     pub debug_views: Option<Step<RebuiltViews>>,
+    pub debug_draw: Option<Step<wgpu::RenderPipeline>>,
 }
 
 /// What a build built, for `Renderer::swap_pipelines`.
@@ -209,6 +212,7 @@ pub(crate) struct Rebuilt {
     pub shadows: Option<ShadowPipelines>,
     pub ambient: Option<AmbientPipelines>,
     pub debug_views: Option<RebuiltViews>,
+    pub debug_draw: Option<wgpu::RenderPipeline>,
     pub update: ShaderUpdate,
 }
 
@@ -242,6 +246,7 @@ impl Job {
             shadows,
             ambient,
             debug_views,
+            debug_draw,
         } = self;
         for &program in &changed {
             if cancel.is_set() {
@@ -263,6 +268,7 @@ impl Job {
         let shadows = run(shadows, &sources, cancel);
         let ambient = run(ambient, &sources, cancel);
         let debug_views = run(debug_views, &sources, cancel);
+        let debug_draw = run(debug_draw, &sources, cancel);
         if cancel.is_set() {
             return None;
         }
@@ -277,7 +283,8 @@ impl Job {
             + u32::from(skinning.is_some())
             + shadows.as_ref().map_or(0, ShadowPipelines::count)
             + ambient.as_ref().map_or(0, AmbientPipelines::count)
-            + debug_views.as_ref().map_or(0, RebuiltViews::count);
+            + debug_views.as_ref().map_or(0, RebuiltViews::count)
+            + u32::from(debug_draw.is_some());
         Some(Ok(Rebuilt {
             mesh: mesh.map(|(mesh, _)| mesh),
             sky,
@@ -288,6 +295,7 @@ impl Job {
             shadows,
             ambient,
             debug_views,
+            debug_draw,
             update: ShaderUpdate { programs: changed.len() as u32, pipelines },
         }))
     }

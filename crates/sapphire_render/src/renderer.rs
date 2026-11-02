@@ -14,6 +14,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_assets::probes::ArchivedProbeGrid;
+use sapphire_core::debug_draw::DebugLine;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +22,7 @@ use crate::ambient::{Ambient, AmbientOcclusion, AmbientStats, GtaoInputs, Reflec
 use crate::buffer;
 use crate::character_prepass::{CharacterPrepassStats, CharacterPrepassTargets};
 use crate::characters::Characters;
+use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
 use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
@@ -373,6 +375,8 @@ pub struct RenderStats {
     pub ambient: AmbientStats,
     /// The debug view shown and what the views built (M1 F5, [`Renderer::set_debug_view`]).
     pub debug_view: DebugViewStats,
+    /// The frame's debug draws (M2 T1, [`FramePacket::debug`]).
+    pub debug_draw: DebugDrawPassStats,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -463,6 +467,9 @@ pub struct Renderer {
     /// The debug views' pipelines and passes, made by the first frame that shows one: `None` until
     /// then, so a renderer that never shows one builds nothing for them.
     debug_views: Option<Box<DebugViews>>,
+    /// Debug draw's pipeline and buffers, made by the first frame with lines: `None` until then,
+    /// so a renderer that never draws any builds nothing for them.
+    debug_draw: Option<Box<DebugDraw>>,
     labels: bool,
     layouts: Layouts,
     pipelines: Pipelines,
@@ -781,6 +788,7 @@ impl Renderer {
             outline_distance: 1.0,
             debug_view: DebugView::Off,
             debug_views: None,
+            debug_draw: None,
             labels: gpu.label("").is_some(),
             layouts,
             pipelines,
@@ -1255,6 +1263,10 @@ impl Renderer {
             debug_views: has(Program::DebugView)
                 .then(|| self.debug_views.as_ref().map(|views| views.rebuild()))
                 .flatten(),
+            // None until a frame had lines.
+            debug_draw: has(Program::DebugDraw)
+                .then(|| self.debug_draw.as_ref().map(|draw| draw.rebuild()))
+                .flatten(),
             changed,
         }
     }
@@ -1271,6 +1283,7 @@ impl Renderer {
             shadows: self.shadows.pipelines_built(),
             ambient: self.ambient.pipelines_built(),
             debug_views: self.debug_views.as_ref().map(|views| views.pipelines_built()),
+            debug_draw: self.debug_draw.is_some(),
         }
     }
 
@@ -1330,8 +1343,19 @@ impl Renderer {
     /// Replaces every rebuilt owner's pipelines, all at once, and builds from `sources` from now
     /// on.
     fn swap_pipelines(&mut self, rebuilt: Rebuilt, sources: ShaderSources) -> ShaderUpdate {
-        let Rebuilt { mesh, sky, post, temporal, clusters, skinning, shadows, ambient, debug_views, update } =
-            rebuilt;
+        let Rebuilt {
+            mesh,
+            sky,
+            post,
+            temporal,
+            clusters,
+            skinning,
+            shadows,
+            ambient,
+            debug_views,
+            debug_draw,
+            update,
+        } = rebuilt;
         if let Some(mesh) = mesh {
             self.pipelines = mesh;
         }
@@ -1358,6 +1382,9 @@ impl Renderer {
         }
         if let (Some(debug), Some(views)) = (debug_views, self.debug_views.as_mut()) {
             views.set_pipelines(debug);
+        }
+        if let (Some(pipeline), Some(draw)) = (debug_draw, self.debug_draw.as_mut()) {
+            draw.set_pipeline(pipeline);
         }
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
@@ -1571,6 +1598,17 @@ impl Renderer {
         }
         self.stats.debug_view =
             self.debug_views.as_ref().map_or_else(DebugViewStats::default, |views| views.stats());
+        // Debug draw (M2 T1): a comparison while a frame has no lines.
+        let lines = &packet.debug.lines;
+        if !lines.is_empty() && packet.main_view().is_some() {
+            self.checked_build(|renderer| renderer.prepare_debug_draw(lines));
+        } else if let Some(draw) = &mut self.debug_draw {
+            draw.skip();
+        }
+        self.stats.debug_draw = self.debug_draw.as_ref().map_or_else(
+            || debug_draw::stats_without_pass(&packet.debug),
+            |draw| draw.stats(packet.debug.stats),
+        );
     }
 
     /// Finds out whether the last prepared frame ran, before anything of this frame is prepared.
@@ -1612,6 +1650,15 @@ impl Renderer {
         let (list, path, indices) =
             (self.scene.draw_list(), self.settings.light_path, self.meshes.index_end());
         views.prepare(self.debug_view, &self.pipelines, list, &self.lights, (path, indices));
+    }
+
+    /// Readies the frame's debug lines, making the pass's state with the first frame that has any.
+    fn prepare_debug_draw(&mut self, lines: &[DebugLine]) {
+        let draw = self.debug_draw.get_or_insert_with(|| {
+            let cache = self.pipeline_cache.as_ref();
+            Box::new(DebugDraw::new(&self.device, self.color_format, &self.shaders, cache))
+        });
+        draw.prepare(&self.device, &self.queue, lines);
     }
 
     /// The GPU half of a frame: adds the frame's uploads, the skinning pass, the prepasses, the
@@ -1766,6 +1813,7 @@ impl Renderer {
             ref mut temporal,
             ref mut uploads,
             ref debug_views,
+            ref debug_draw,
             ref frame_ran,
             ..
         } = *self;
@@ -1830,6 +1878,11 @@ impl Renderer {
         let debug_upload = debug_view.map(|views| {
             Box::new((views.view_uniforms(), ViewUniforms::new(&camera, size, clip_from_world, [0.0; 2])))
         });
+        // Debug draw (M2 T1): over everything, through the same unjittered view. Boxed for the
+        // same reason.
+        let debug_draw = debug_draw.as_deref().filter(|draw| draw.has_lines());
+        let debug_draw_upload =
+            debug_draw.map(|draw| (draw, Box::new(DebugDrawUniforms::new(&camera, size, output))));
 
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
@@ -1857,6 +1910,9 @@ impl Renderer {
             if let Some(debug_upload) = &debug_upload {
                 let (buffer, view) = &**debug_upload;
                 upload(uploads, ctx.encoder, buffer, bytemuck::bytes_of(view));
+            }
+            if let Some((draw, uniforms)) = &debug_draw_upload {
+                draw.upload(uploads, ctx.encoder, uniforms);
             }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
@@ -2151,6 +2207,10 @@ impl Renderer {
                 labels,
             };
             views.record(graph, frame);
+        }
+        // Debug draws last, over the frame and any debug view; the overlay draws over them.
+        if let Some(draw) = debug_draw {
+            draw.record(graph, target, targets.depth, labels);
         }
         Some(targets)
     }

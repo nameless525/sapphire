@@ -10,6 +10,7 @@ mod ambient;
 mod character;
 mod character_shading;
 mod cutouts;
+mod debug_draw;
 mod debug_view;
 mod environment;
 mod eyes;

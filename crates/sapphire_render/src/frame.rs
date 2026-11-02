@@ -27,6 +27,8 @@
 //!   pose: a range of [`FramePacket::palettes`] (its skinning palette) and of
 //!   [`FramePacket::morph_weights`]. An animated character sends one every frame; one that holds
 //!   still (hitstop, pause) sends none and keeps its last pose, which costs nothing to draw.
+//! - **Debug draws** ([`FramePacket::debug`], M2 T1) are rewritten whole every frame, and empty
+//!   unless development tools turned them on.
 //!
 //! Packets live in a [`FramePacketRing`] of three, the in-flight depth of the pipelined frame:
 //! one being extracted, one being rendered, one spare so neither side waits. A packet's vectors
@@ -37,6 +39,7 @@ use std::ops::Range;
 
 use glam::camera::rh::{proj::directx, view};
 use glam::{Affine3A, Mat4, Quat, Vec3};
+use sapphire_core::debug_draw::DebugDrawList;
 use sapphire_look::{
     AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
     SkyGradient, SkyLayers,
@@ -52,8 +55,8 @@ const RING_SIZE: usize = 3;
 /// # Later milestones
 ///
 /// The packet grows with the systems that feed it (spec §4.6): VFX spawns and emitter
-/// parameters, the UI draw list, and debug draws (dev builds). Shadow cascades (R4) and UI 3D
-/// insets add views after the main camera.
+/// parameters and the UI draw list. Shadow cascades (R4) and UI 3D insets add views after the main
+/// camera.
 ///
 /// One scene constant is carried for the package that will read it and drawn from nothing yet:
 /// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
@@ -150,6 +153,10 @@ pub struct FramePacket {
     /// This frame's morph target weights, back to back: each
     /// [`SkinnedInstance::morph_weights`] is a range of it.
     pub morph_weights: Vec<f32>,
+    /// This frame's debug draws (M2 T1; the [`debug_draw`](crate::debug_draw) module): lines and
+    /// labels as plain data, rewritten whole every frame, and empty in a build that never enables
+    /// drawing (spec §5.20).
+    pub debug: DebugDrawList,
 }
 
 impl FramePacket {
@@ -209,6 +216,7 @@ impl FramePacket {
             skinned,
             palettes,
             morph_weights,
+            debug,
         } = self;
         *number = frame;
         views.clear();
@@ -235,6 +243,7 @@ impl FramePacket {
         skinned.clear();
         palettes.clear();
         morph_weights.clear();
+        debug.clear();
     }
 }
 
@@ -267,6 +276,7 @@ impl Default for FramePacket {
             skinned: Vec::new(),
             palettes: Vec::new(),
             morph_weights: Vec::new(),
+            debug: DebugDrawList::default(),
         }
     }
 }

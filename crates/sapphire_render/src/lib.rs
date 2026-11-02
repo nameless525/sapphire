@@ -109,6 +109,9 @@
 //!   Each replays the main pass through copies of its own pipelines into a depth and stencil (or
 //!   the characters' values) it reads, and draws over the frame after post. Off, the default,
 //!   builds and draws nothing.
+//! - Debug draw ([`debug_draw`], M2 T1): the packet's lines as thick screen-space lines over the
+//!   frame, depth-tested in the shader against the scene prepass's depth or on top. A frame with
+//!   none builds and draws nothing.
 //!
 //! # Does not own
 //!
@@ -759,7 +762,7 @@
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
 //!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
 //!   M1 W4). The [`FramePacket`] grows with the systems that
-//!   feed it: VFX, UI and debug draws, plus UI-inset views (shadow views are the renderer's own,
+//!   feed it: VFX and UI, plus UI-inset views (shadow views are the renderer's own,
 //!   derived from the key light).
 //! - **Skinning** (see the `skinning` module): skinning only visible instances, at their
 //!   selected LOD's prefix, with posed bounds from their joints; exact normals for
@@ -836,6 +839,7 @@ mod bounds;
 mod buffer;
 mod character_prepass;
 mod characters;
+pub mod debug_draw;
 pub mod debug_view;
 mod draw;
 mod environment;
@@ -866,6 +870,7 @@ pub use ambient::{
     AmbientOcclusion, AmbientStats, GtaoSettings, MAX_PROBE_KEYS, ProbeKeys, ReflectionSettings,
 };
 pub use character_prepass::CharacterPrepassStats;
+pub use debug_draw::DebugDrawPassStats;
 pub use debug_view::{DebugView, DebugViewStats};
 pub use environment::{EnvironmentSettings, EnvironmentSpecular, ProbeLookup};
 pub use fog::FogStats;

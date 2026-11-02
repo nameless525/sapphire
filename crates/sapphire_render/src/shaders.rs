@@ -3,8 +3,8 @@
 //! `materials.wgsl` (the material families' blocks, which the passes' material bindings name)
 //! followed by the files it uses, its own last, joined by newlines; WESL imports are to replace
 //! the concatenation (spec §5.12, and the crate docs' later milestones). The post passes share
-//! `post.wgsl`, and compute skinning has `skinning.wgsl`, temporal AA `temporal.wgsl`; all three
-//! stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
+//! `post.wgsl`, and compute skinning has `skinning.wgsl`, temporal AA `temporal.wgsl` and debug
+//! draw `debug_draw.wgsl`; all four stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
 //! a scene pass. The ambient passes (M1 W5) join `ambient.wgsl`, which the environment and
 //! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program.
 //!
@@ -28,7 +28,7 @@
 //! from [`ShaderSources`], to hand a rebuild of what it has built to `Renderer::shader_job` as
 //! an owned step a worker runs (`shader_builds::Step`), and to count what it has built in
 //! `Renderer::built`, as the mesh pipelines, the sky, post, temporal AA, the light clusters,
-//! skinning, the shadows, the ambient passes and the debug views do.
+//! skinning, the shadows, the ambient passes, the debug views and debug draw do.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -76,10 +76,12 @@ pub enum ShaderFile {
     /// The renderer's debug views' passes over the frame, their replays' stand-in fragment stage and
     /// the wireframe's line indices (M1 F5).
     DebugView,
+    /// Debug draw's lines over the frame (M2 T1).
+    DebugDraw,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -99,6 +101,7 @@ impl ShaderFile {
         Self::Probes,
         Self::Occlusion,
         Self::DebugView,
+        Self::DebugDraw,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -123,6 +126,7 @@ impl ShaderFile {
             Self::Probes => "probes.wgsl",
             Self::Occlusion => "occlusion.wgsl",
             Self::DebugView => "debug_view.wgsl",
+            Self::DebugDraw => "debug_draw.wgsl",
         }
     }
 
@@ -153,6 +157,7 @@ impl ShaderFile {
             Self::Probes => include_str!("../shaders/probes.wgsl"),
             Self::Occlusion => include_str!("../shaders/occlusion.wgsl"),
             Self::DebugView => include_str!("../shaders/debug_view.wgsl"),
+            Self::DebugDraw => include_str!("../shaders/debug_draw.wgsl"),
         }
     }
 
@@ -187,10 +192,12 @@ pub(crate) enum Program {
     /// The debug views' passes over the frame, their replays' stand-in fragment stage and the
     /// wireframe's line indices (M1 F5).
     DebugView,
+    /// Debug draw's lines over the frame (M2 T1), which stand alone.
+    DebugDraw,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -205,6 +212,7 @@ impl Program {
         Self::Foliage,
         Self::Ambient,
         Self::DebugView,
+        Self::DebugDraw,
     ];
 
     /// Its files, in order.
@@ -225,6 +233,7 @@ impl Program {
             Self::Foliage => &[F::Frame, F::Materials, F::Lights, F::Ambient, F::Foliage],
             Self::Ambient => &[F::Frame, F::Materials, F::Ambient, F::Probes, F::Occlusion],
             Self::DebugView => &[F::Frame, F::Materials, F::Lights, F::DebugView],
+            Self::DebugDraw => &[F::DebugDraw],
         }
     }
 
@@ -245,6 +254,7 @@ impl Program {
             Self::Foliage => "foliage",
             Self::Ambient => "ambient",
             Self::DebugView => "debug view",
+            Self::DebugDraw => "debug draw",
         }
     }
 
@@ -562,7 +572,7 @@ mod tests {
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 14] = [
+    const PASSES: [(Program, &[&str]); 15] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -656,6 +666,7 @@ mod tests {
                 "cs_debug_lines",
             ],
         ),
+        (Program::DebugDraw, &["vs_debug_line", "fs_debug_line"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
@@ -1014,6 +1025,7 @@ mod tests {
             (Program::Ambient, "SkyLight", crate::ambient::SKY_LIGHT_BYTES as usize),
             (Program::DebugView, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::DebugView, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::DebugDraw, "DebugDrawUniforms", size_of::<crate::debug_draw::DebugDrawUniforms>()),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);

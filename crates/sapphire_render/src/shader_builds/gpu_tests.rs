@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use glam::Vec3;
+use sapphire_core::debug_draw::{Color, DebugLine, Depth};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 use super::{Gate, ShaderOutcome, ShaderRequest};
@@ -74,6 +75,8 @@ struct Harness {
     graph: GraphExecutor,
     packets: FramePacketRing,
     target: wgpu::Texture,
+    /// Debug draw's lines, over every frame.
+    lines: Vec<DebugLine>,
 }
 
 impl Harness {
@@ -91,7 +94,8 @@ impl Harness {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        Self { gpu, renderer, graph: GraphExecutor::new(), packets: FramePacketRing::new(), target }
+        let lines = Vec::new();
+        Self { gpu, renderer, graph: GraphExecutor::new(), packets: FramePacketRing::new(), target, lines }
     }
 
     /// Holds the renderer's builds before they build, until the gate returned is opened.
@@ -112,6 +116,7 @@ impl Harness {
             ground: Vec3::new(0.1, 0.4, 0.1),
         };
         packet.post = post;
+        packet.debug.lines.extend_from_slice(&self.lines);
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
         let view = self.target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -334,6 +339,38 @@ fn pipelines_built_during_a_build_are_built_again_from_its_sources() {
     // The inversion draws through the edited post without building anything on the frame.
     assert!(harness.render_with(inverted()) == edited_inversion);
     assert_eq!(harness.renderer.stats().post.first_use_builds, 0);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn debug_draws_pipeline_built_during_a_build_is_built_again_from_its_sources() {
+    let anchor = "return vec4<f32>(in.color.rgb, in.color.a * coverage);";
+    let green = "return vec4<f32>(0.0, 1.0, 0.0, coverage);";
+    let sources = edited(&ShaderSources::compiled_in(), ShaderFile::DebugDraw, anchor, green);
+    // Across the frame, on top, so it shows over the sky.
+    let (from, to) = (Vec3::new(-1.0, 0.0, -2.0), Vec3::new(1.0, 0.0, -2.0));
+    let line = DebugLine { from, to, color: Color::RED, depth: Depth::OnTop };
+    let mut harness = Harness::new();
+    harness.lines.push(line);
+    let before = harness.render();
+    let after = reference(&mut harness, &sources, &before);
+    assert!(before != after);
+
+    // A renderer that has never drawn a line builds nothing for this request, and while it builds,
+    // a first frame with a line builds the pipeline from the shaders in use. The build lacks it, so
+    // it starts again and lands with it, and the lines take the edit.
+    let mut harness = Harness::new();
+    harness.render();
+    let gate = harness.hold();
+    let request = harness.renderer.request_shader_sources(sources);
+    harness.lines.push(line);
+    assert!(harness.render() == before);
+    gate.open();
+    let outcome = harness.until_answered(&before, &after);
+    assert_eq!(outcome.request, request);
+    assert_eq!(outcome.result.expect("built"), ShaderUpdate { programs: 1, pipelines: 1 });
+    let stats = harness.renderer.stats();
+    assert_eq!((stats.shader_builds.started, stats.shader_builds.restarted), (2, 1));
 }
 
 #[test]

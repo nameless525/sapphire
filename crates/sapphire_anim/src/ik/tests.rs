@@ -331,8 +331,8 @@ fn the_weight_fades_feet_off_and_on_with_no_jump() {
         reached = true;
     }
     assert!(reached);
-    // Off at the end of a fade means the clip's own pose, bit for bit.
-    for _ in 0..20 {
+    // Off at the end of a fade, once the hips are home, means the clip's own pose, bit for bit.
+    for _ in 0..60 {
         step(&mut pose, &mut ik, world, 0.0, &ground);
     }
     let solved = bits(&pose);
@@ -946,4 +946,93 @@ fn a_body_lying_down_plants_no_feet_and_looks_at_nothing() {
     let foot = world_position(&pose, world, LEFT_FOOT).y;
     assert!(foot > ANKLE + 0.05, "the foot stands on the raised ground: {foot}");
     assert!(head_forward(&pose).x > 0.1, "and the head looks: {}", head_forward(&pose));
+}
+
+/// The hips ease more slowly than the fade goes, so they still have some way to come when it ends, and
+/// they come the rest of the way rather than jumping there.
+#[test]
+fn the_hips_come_home_after_a_fade_with_no_jump() {
+    let (mut pose, mut ik) = character();
+    let world = Affine3A::IDENTITY;
+    let ground = |probe: Vec3| Some(GroundHit { point: Vec3::new(probe.x, -0.18, probe.z), normal: Vec3::Y });
+    for _ in 0..60 {
+        step(&mut pose, &mut ik, world, 1.0, &ground);
+    }
+    let settled = pose.model()[HIPS].translation.y;
+    assert!(settled < 0.75, "they went down with the feet: {settled}");
+    let mut hips = settled;
+    let mut foot = world_position(&pose, world, LEFT_FOOT);
+    for tick in 0..60 {
+        step(&mut pose, &mut ik, world, 0.0, &ground);
+        let now = pose.model()[HIPS].translation.y;
+        assert!((now - hips).abs() < 0.02, "the hips jumped {} m on tick {tick}", now - hips);
+        hips = now;
+        let now = world_position(&pose, world, LEFT_FOOT);
+        assert!(now.distance(foot) < 0.03, "the foot jumped {} m on tick {tick}", now.distance(foot));
+        foot = now;
+    }
+    assert!(ik.feet().expect("it has feet").is_settled());
+    let solved = bits(&pose);
+    pose.reset();
+    pose.finish();
+    assert_eq!(solved, bits(&pose), "and it ends as no solve at all");
+}
+
+/// A driver skips a character that says it's settled, which mustn't strand the hips on their way home.
+#[test]
+fn hips_on_their_way_home_are_not_settled() {
+    let (mut pose, mut ik) = character();
+    let world = Affine3A::IDENTITY;
+    let ground = |probe: Vec3| Some(GroundHit { point: Vec3::new(probe.x, -0.18, probe.z), normal: Vec3::Y });
+    for _ in 0..60 {
+        step(&mut pose, &mut ik, world, 1.0, &ground);
+    }
+    let feet = |ik: &CharacterIk| ik.feet().expect("it has feet").clone();
+    while feet(&ik).fade() > 0.0 {
+        step(&mut pose, &mut ik, world, 0.0, &ground);
+    }
+    assert!(!feet(&ik).is_settled(), "the fade has ended, and the hips haven't");
+}
+
+/// Feet coming back while the hips are still on their way home don't pull the hips anywhere at once.
+#[test]
+fn feet_fading_back_in_as_the_hips_come_home_ease_them() {
+    let (mut pose, mut ik) = character();
+    let world = Affine3A::IDENTITY;
+    let ground = |probe: Vec3| Some(GroundHit { point: Vec3::new(probe.x, -0.18, probe.z), normal: Vec3::Y });
+    for _ in 0..60 {
+        step(&mut pose, &mut ik, world, 1.0, &ground);
+    }
+    while ik.feet().expect("it has feet").fade() > 0.0 {
+        step(&mut pose, &mut ik, world, 0.0, &ground);
+    }
+    let mut hips = pose.model()[HIPS].translation.y;
+    assert!(hips < 0.89, "they're still on their way: {hips}");
+    for tick in 0..30 {
+        step(&mut pose, &mut ik, world, 1.0, &ground);
+        let now = pose.model()[HIPS].translation.y;
+        assert!((now - hips).abs() < 0.03, "the hips jumped {} m on tick {tick}", now - hips);
+        hips = now;
+    }
+}
+
+/// A cut forgets the hips' way home with everything else about the ground.
+#[test]
+fn a_cut_ends_the_hips_way_home() {
+    let (mut pose, mut ik) = character();
+    let world = Affine3A::IDENTITY;
+    let ground = |probe: Vec3| Some(GroundHit { point: Vec3::new(probe.x, -0.18, probe.z), normal: Vec3::Y });
+    for _ in 0..60 {
+        step(&mut pose, &mut ik, world, 1.0, &ground);
+    }
+    while ik.feet().expect("it has feet").fade() > 0.0 {
+        step(&mut pose, &mut ik, world, 0.0, &ground);
+    }
+    ik.reset();
+    step(&mut pose, &mut ik, world, 0.0, &ground);
+    let solved = bits(&pose);
+    pose.reset();
+    pose.finish();
+    assert_eq!(solved, bits(&pose), "off after a cut is no solve at all");
+    assert!(ik.feet().expect("it has feet").is_settled());
 }

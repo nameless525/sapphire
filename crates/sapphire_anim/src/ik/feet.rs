@@ -223,12 +223,15 @@ impl FootPlacement {
     #[must_use]
     pub fn is_settled(&self) -> bool {
         self.fade == self.fade_goal
-            && (self.fade == 0.0
-                || (self.drop == self.drop_goal
+            && if self.fade == 0.0 {
+                self.drop == 0.0
+            } else {
+                self.drop == self.drop_goal
                     && self.feet.iter().all(|foot| match foot.goal {
                         Some(goal) => foot.presence == 1.0 && foot.plane == goal,
                         None => foot.presence == 0.0,
-                    })))
+                    })
+            }
     }
 
     /// Forgets the ground, for a cut or a teleport: what's under the feet next is taken at once.
@@ -259,14 +262,20 @@ impl FootPlacement {
         dt: f32,
     ) {
         self.fade_goal = input.weight.clamp(0.0, 1.0);
+        // The hips ease more slowly than the fade goes, so they outlast it: off means they're home too.
         if self.fade == 0.0 && self.fade_goal == 0.0 {
-            return;
+            if !self.started {
+                self.drop = 0.0;
+            }
+            if self.drop == 0.0 {
+                return;
+            }
         }
         // A character just started stands on the ground at once. One fading back in has been off, so
         // it takes what's there now rather than easing from wherever it left the ground, while the
         // fade itself still eases.
         let fresh = !self.started;
-        let snap = fresh || self.fade == 0.0;
+        let snap = fresh || (self.fade == 0.0 && self.fade_goal > 0.0);
         self.started = true;
         self.fade = if fresh {
             self.fade_goal
@@ -334,7 +343,7 @@ impl FootPlacement {
         if !snap && dt > 0.0 && rise.abs() > self.settings.pop_speed * dt {
             self.drop = (self.drop - rise / scale).clamp(-self.settings.max_drop, self.settings.max_raise);
         }
-        self.drop = if snap {
+        self.drop = if fresh || (snap && self.drop == 0.0) {
             self.drop_goal
         } else {
             let ease = 1.0 - 0.5f32.powf(dt / self.settings.hips_half_life.max(1e-4));

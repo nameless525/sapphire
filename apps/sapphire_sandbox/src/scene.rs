@@ -70,8 +70,7 @@
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
 //!   then writes the instances that changed, the lights and the poses that changed into the
-//!   frame's packet (see [`crate::extract`]). The stalk's systems are added only with `--skinned`,
-//!   since each system in `Extract` costs an allocation per frame (below).
+//!   frame's packet (see [`crate::extract`]). The stalk's systems are added only with `--skinned`.
 //! - **Each frame's packet** starts with the main view and the scene constants, which
 //!   [`Scene::frame_packet`] copies whole: they are a few resources, small and new every frame.
 //!   Time of day resolves the scene constants, with the camera's position as its zone volumes'
@@ -87,13 +86,12 @@
 //!   rig figure's key turned to its angles, and each face rig head lit from its own angles (or by
 //!   its GI alone, in the GI layouts), its body a sphere around it. The characters other than the
 //!   face rig's heads take the scene's fade (M1 C7, [`Fade`]): whole, a fixed opacity (`--fade`),
-//!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`). Both
-//!   run there rather than as `Extract` systems, which would cost an allocation a frame each.
+//!   or the proximity fade by the camera's distance to their bodies (`--proximity-fade`).
 //!
 //! `Presentation` has no systems yet. Posing is presentation work, but a multi-threaded
 //! schedule that has systems costs an allocation per run plus one per system, and wakes a
 //! worker; an empty one costs nothing. In `Presentation` the pose cost 2 allocations and about
-//! 8 µs more per frame (`--bench`, M5), so it runs at the head of `Extract`, which runs anyway.
+//! 8 µs more per frame (`--bench`, M5), so it runs at the head of `Extract`, on the calling thread.
 //! A clip's pose (M2 N2, `--clip`) doesn't run in a schedule either: [`Scene::animate`] evaluates it
 //! just before the packet, through a query made once, and costs nothing without a clip.
 //!

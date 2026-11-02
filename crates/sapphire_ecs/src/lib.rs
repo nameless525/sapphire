@@ -19,18 +19,24 @@
 //!
 //! # Executors
 //!
-//! - The fixed schedules, [`Startup`] and [`Cleanup`] run single-threaded on the calling
-//!   (simulation) thread. Combat runs in a chained order there by design (spec §4.4), and rule
-//!   R6's zero-allocation check measures that thread.
-//! - [`Presentation`] and [`Extract`] are wide passes (animation, culling, extraction) and run on
-//!   the multi-threaded executor. [`Ecs::new`] starts `sapphire_jobs` first, so the executor finds
-//!   the engine's compute pool instead of creating its own (spec §4.3: one task pool).
+//! - The fixed schedules, [`Startup`], [`Extract`] and [`Cleanup`] run single-threaded on the
+//!   calling (simulation) thread. Combat runs in a chained order there by design (spec §4.4), and
+//!   rule R6's zero-allocation check measures that thread. Extraction's systems are chained too,
+//!   so the width of a multi-threaded executor could only cost it (below).
+//! - [`Presentation`] is a wide pass and runs on the multi-threaded executor. [`Ecs::new`] starts
+//!   `sapphire_jobs` first, so the executor finds the engine's compute pool instead of creating
+//!   its own (spec §4.3: one task pool).
 //!
 //! Measured in the sandbox (M1 F1, Apple M5, release): running the seven schedules costs about
 //! 6–8 µs per frame. The fixed step allocates nothing (tested). The multi-threaded executor
 //! allocates once per parallel schedule run plus once per system it runs (each is a spawned
 //! task), and wakes a worker; a schedule with no systems costs nothing (M1 F3). That counts
 //! toward the process-wide allocation budget, not rule R6.
+//!
+//! Waking a worker is what moved [`Extract`] off that executor (M2 Z1): under load the frame's
+//! thread can wait for a worker the OS has descheduled. Across a fight at Mobile-Low, with the
+//! Mac's load at 12–22, the packet's median fell from 61 to 36 µs, its worst from 19 ms to
+//! 0.27 ms, and the frame's allocations by 5.
 //!
 //! # Change detection
 //!
@@ -146,7 +152,7 @@ impl Ecs {
         }
         world.add_schedule(single_threaded(FixedPost.intern()));
         world.add_schedule(Schedule::new(Presentation));
-        world.add_schedule(Schedule::new(Extract));
+        world.add_schedule(single_threaded(Extract.intern()));
         world.add_schedule(single_threaded(Cleanup.intern()));
         world.schedule_scope(FixedFirst, |_, schedule| {
             schedule.configure_sets((SimSet::Input, SimSet::Clocks).chain());
@@ -290,6 +296,31 @@ mod tests {
             .collect();
         assert_eq!(ecs.world().resource::<Log>().0, expected);
         assert_eq!(ecs.world().resource::<Interpolation>().alpha, 0.5);
+    }
+
+    #[test]
+    fn extraction_stays_on_the_calling_thread() {
+        // A multi-threaded executor would wake a worker for each run, and the frame would wait
+        // for it. Many runs, because that executor's calling thread can take a task as well.
+        #[derive(Resource, Default)]
+        struct Threads(Vec<std::thread::ThreadId>);
+        let mut ecs = Ecs::new();
+        ecs.world_mut().insert_resource(Threads::default());
+        ecs.add_systems(
+            Extract,
+            (
+                |mut seen: ResMut<'_, Threads>| seen.0.push(std::thread::current().id()),
+                |mut seen: ResMut<'_, Threads>| seen.0.push(std::thread::current().id()),
+            )
+                .chain(),
+        );
+        ecs.startup();
+        for _ in 0..64 {
+            ecs.extract();
+        }
+        let threads = &ecs.world().resource::<Threads>().0;
+        assert_eq!(threads.len(), 128);
+        assert!(threads.iter().all(|thread| *thread == std::thread::current().id()));
     }
 
     #[test]

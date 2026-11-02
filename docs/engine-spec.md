@@ -228,7 +228,7 @@ Audio       │ (the audio backend's own mixer callback)                        
 - **Resources** hold global services: the camera director, combat message queue, streaming state and encounter director.
 - **Messages** carry queued side effects. Observers are used only for lifecycle hooks.
 - **Hierarchy** (bevy's `ChildOf`) is only for attachments such as weapons on bones and VFX on sockets.
-- **Ordering.** Combat systems run in an explicit chained order inside the fixed step. Parallelism goes to wide passes such as animation, culling and extraction.
+- **Ordering.** Combat systems run in an explicit chained order inside the fixed step. Parallelism goes to wide passes such as animation and culling; extraction's systems are chained on the calling thread (§4.6).
 
 ### 4.5 Clock domains
 
@@ -284,6 +284,7 @@ pub struct FramePacket {
   - The renderer must prepare every packet, in order, or deltas are lost; debug builds check the frame numbers. The sandbox therefore extracts and prepares every frame, drawn or not, and a packet with no view draws nothing. `RemovedComponents` needs this too: it keeps a removal only until the second `Cleanup` after it.
   - In the sandbox, an entity draws while it has a `RenderMesh`, which requires a `RenderTransform`. `Changed` on either (which includes additions) writes a change, `RemovedComponents` writes a removal, and IDs are entity bits. Removals apply first, so an instance removed and added again in one frame survives; unknown IDs are ignored. Poses are written with `set_if_neq`, so an entity that holds still costs nothing: the spinning turntable is one changed instance per frame, and none during hitstop. A renderer that starts empty (after device loss) is sent every instance.
   - The multi-threaded executor allocates once per run of a schedule that has systems plus once per system, and wakes a worker. Posing in the otherwise empty `Presentation` measured 2 more allocations and about 8 µs more per frame, so the sandbox poses at the head of `Extract` until animation gives `Presentation` real work.
+  - `Extract` itself runs on the calling thread since M2 Z1. Its systems are chained, so a multi-threaded executor could only cost it: under load the frame waited for a descheduled worker. Across a fight at Mobile-Low, with the Mac's load at 12–22, the packet's median fell from 61 to 36 µs, its worst from 19 ms to 0.27 ms, and the frame's allocations by 5 (§3.5).
   - Cost against M1 F2 (sandbox `--bench 3000`, Apple M5, release): CPU p50 unchanged at about 30 µs per frame, allocations unchanged at 70.1 per frame and 2 KB fewer bytes allocated. Rebuilding the draw list never allocated (its vectors were reused); the saving is the draw-record upload, and it pays for the second `Extract` system.
 - **As built (M2 I2, `FramePacket::ui`):** a `UiDrawList`: the viewport in points, the atlas as an `Arc` compared by pointer, so a new renderer uploads it again with no work from the app, and the quads. The packet reset clears the quads and keeps their capacity.
 - **As built (M1 R5, `FramePacket::lights`):**

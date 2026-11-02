@@ -139,6 +139,9 @@ const FLARE_STREAK: u32 = 3u;
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // The largest finite f16, as temporal.wgsl has it: scene color can hold infinities.
 const COLOR_MAX: f32 = 65504.0;
+// The most light a bloom level takes: f11's largest, which f16 holds too. Past what its format
+// holds, a backend may store infinity.
+const BLOOM_MAX: f32 = 65024.0;
 // FSR 1's RCAS limit, 1/4 - 1/16: the strongest negative lobe sharpening uses.
 const RCAS_LIMIT: f32 = 0.1875;
 
@@ -223,10 +226,11 @@ fn down_taps(uv: vec2<f32>) -> DownTaps {
     return taps;
 }
 
-// A prefilter tap exposed, its infinities at the ceiling, where the threshold's division stays
-// finite (temporal AA's resolve does the same).
+// A prefilter tap exposed and held to the ceiling, where the threshold's division stays finite and
+// a level can store the light at any exposure. `PostUniforms::new` keeps exposure positive and
+// finite, so an infinity stays one until the clamp, never NaN.
 fn exposed_tap(color: vec3<f32>) -> vec3<f32> {
-    return min(color, vec3<f32>(COLOR_MAX)) * post.composite.x;
+    return min(color * post.composite.x, vec3<f32>(BLOOM_MAX));
 }
 
 // Exposure and the threshold, then the tap's Karis weight, 1 / (1 + brightness).
@@ -243,11 +247,11 @@ fn world_at(uv: vec2<f32>) -> f32 {
 }
 
 // `prefilter_tap` where `world` of the pixel is the world's: the rest takes the characters'
-// threshold and strength.
+// threshold and strength. A strength above 1 can carry the light past the ceiling again.
 fn character_tap(color: vec3<f32>, world: f32, weight: f32) -> vec4<f32> {
     let exposed = exposed_tap(color);
     let character = soft_threshold(exposed, post.character_bloom) * post.character_bloom.w;
-    let bright = mix(character, bloom_threshold(exposed), saturate(world));
+    let bright = min(mix(character, bloom_threshold(exposed), saturate(world)), vec3<f32>(BLOOM_MAX));
     let karis = weight / (1.0 + max3(bright));
     return vec4<f32>(bright * karis, karis);
 }
@@ -422,9 +426,10 @@ fn scene_tap(position: vec2<f32>, uv: vec2<f32>, offset: vec2<f32>) -> vec3<f32>
     return textureLoad(texture0, pixel, 0).rgb;
 }
 
-// Exposed light compressed by its luma into [0, 1), where sharpening works, and back.
+// Exposed light compressed by its luma into [0, 1), where sharpening works, and back. Infinities
+// take the largest finite color first, as in temporal.wgsl, or the division is NaN.
 fn compress(color: vec3<f32>) -> vec3<f32> {
-    let exposed = max(color, vec3<f32>(0.0)) * post.composite.x;
+    let exposed = clamp(color, vec3<f32>(0.0), vec3<f32>(COLOR_MAX)) * post.composite.x;
     return exposed / (1.0 + dot(exposed, LUMA));
 }
 

@@ -5,8 +5,9 @@
 //! into a pooled transient:
 //!
 //! 1. **Bloom prefilter** (½ size): exposure, a soft-knee threshold (the characters' own, M1 P2)
-//!    and a Karis average. Each tap takes scene color's ceiling, f16's largest, before exposure:
-//!    an infinity would make the threshold NaN, which the chain spreads over the frame.
+//!    and a Karis average. Each tap stops at a ceiling once exposed, the most light both of the
+//!    levels' formats hold: an infinity would make the threshold NaN, which the chain spreads over
+//!    the frame, and a backend may store light past its format's range as infinity.
 //! 2. **Bloom down** (¼ to 1/32): dual-filter downsamples (Bjørge, SIGGRAPH 2015), a 4×4
 //!    footprint from five bilinear taps.
 //! 3. **Bloom up** (1/16 back to ½): tent upsamples, each replacing `scatter` of the down
@@ -1022,6 +1023,19 @@ mod tests {
         assert_eq!(uniforms.frame[3], 1.0, "sharpening is at most 1");
         let all = bytemuck::cast_slice::<PostUniforms, f32>(std::slice::from_ref(&uniforms));
         assert!(all.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn the_exposure_multiplier_is_positive_and_finite() {
+        // `post.wgsl`'s `exposed_tap` relies on it: an infinity times it stays an infinity, never
+        // NaN, until the clamp.
+        for exposure in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, 1e9, -1e9, 0.0] {
+            let params = PostParams { exposure, ..PostParams::default() };
+            let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
+            let multiplier = uniforms.composite[0];
+            let range = 2f32.powi(-16)..=2f32.powi(16);
+            assert!(range.contains(&multiplier), "{exposure} EV multiplies by {multiplier}");
+        }
     }
 
     #[test]

@@ -387,31 +387,34 @@ fn diffusion_glows_wider_than_bloom_softly_and_only_above_its_threshold() {
 #[ignore = "needs a GPU"]
 fn bloom_taps_stay_finite_on_infinite_scene_color() {
     // Scene color can hold infinities, and `soft_threshold`'s inf / inf is NaN (own review RS2-2).
-    // Each tap takes the ceiling, the largest finite scene color, as temporal AA does. The inputs
-    // reach the shader through a buffer, so no compiler can fold them: without the guard Metal
-    // returns NaN here in spite of its fast math, and CI's lavapipe job runs this too.
+    // Each tap stops at the ceiling once exposed, so what bloom's levels store stays finite in
+    // either format at any exposure, and at a strength above 1. The inputs reach the shader through
+    // a buffer, so no compiler can fold them: without the guard Metal returns NaN here in spite of
+    // its fast math, and CI's lavapipe job runs this too.
     let sources = ShaderSources::compiled_in();
     let wgsl = sources.get(ShaderFile::Post);
     let infinite = f32::INFINITY;
-    // `COLOR_MAX`, f16's largest.
-    let ceiling = 65504.0;
-    let inputs = [
-        [infinite, infinite, infinite, 1.0],
-        [ceiling, ceiling, ceiling, 1.0],
-        [infinite, 1.0, 0.0, 4.0],
-        [ceiling, 1.0, 0.0, 4.0],
-    ];
+    // `BLOOM_MAX`, f11's largest.
+    let ceiling = 65024.0;
     let taps = [
         ("the world's", "prefilter_tap(input.rgb, input.a)"),
         ("a character's", "character_tap(input.rgb, 0.0, input.a)"),
         ("a character's edge", "character_tap(input.rgb, 0.5, input.a)"),
         ("the world's, in the character mask's variant", "character_tap(input.rgb, 1.0, input.a)"),
     ];
-    for exposure in [-1.0, 0.0, 0.9] {
+    for exposure in [-1.0, 0.0, 0.9, 3.0] {
+        // What this exposure takes exactly to the ceiling.
+        let at_ceiling = ceiling / 2f32.powf(exposure);
+        let inputs = [
+            [infinite, infinite, infinite, 1.0],
+            [at_ceiling, at_ceiling, at_ceiling, 1.0],
+            [infinite, 1.0, 0.0, 4.0],
+            [at_ceiling, 1.0, 0.0, 4.0],
+        ];
         let params = PostParams {
             exposure,
             bloom: BloomParams { threshold: 1.0, knee: 0.5, intensity: 1.0, scatter: 0.7 },
-            character_bloom: CharacterBloom { threshold: 1.5, strength: 0.5 },
+            character_bloom: CharacterBloom { threshold: 1.5, strength: 4.0 },
             ..passthrough()
         };
         let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
@@ -421,10 +424,52 @@ fn bloom_taps_stay_finite_on_infinite_scene_color() {
             for (result, input) in results.iter().zip(inputs) {
                 let finite = result.iter().all(|c| c.is_finite());
                 assert!(finite, "{tap} at {exposure} EV: {input:?} gives {result:?}");
+                // Light × Karis over Karis: what a level of such taps stores, within rounding.
+                let stored = result[0].max(result[1]).max(result[2]) / result[3];
+                assert!(stored <= ceiling * 1.000_01, "{tap} at {exposure} EV: {input:?} stores {stored}");
             }
             for pair in results.chunks(2) {
                 let same = pair[0].iter().zip(pair[1]).all(|(a, b)| (a - b).abs() <= 1e-4 * b.abs());
                 assert!(same, "{tap} at {exposure} EV: infinity is the ceiling: {pair:?}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn sharpening_stays_finite_on_infinite_scene_color() {
+    // Sharpening's `compress` had the same inf / inf (own review RS2-5), which left an infinite
+    // surface black. It takes scene color's largest finite value first, as temporal AA's does.
+    // Through a buffer, as above: without the guard Metal returns NaN here too.
+    let sources = ShaderSources::compiled_in();
+    let wgsl = sources.get(ShaderFile::Post);
+    let infinite = f32::INFINITY;
+    // `COLOR_MAX`, f16's largest.
+    let ceiling = 65504.0;
+    let inputs = [
+        [infinite, infinite, infinite, 1.0],
+        [ceiling, ceiling, ceiling, 1.0],
+        [infinite, 1.0, 0.0, 1.0],
+        [ceiling, 1.0, 0.0, 1.0],
+    ];
+    let steps = [
+        ("compress", "vec4<f32>(compress(input.rgb), 1.0)"),
+        ("expand", "vec4<f32>(expand(compress(input.rgb)), 1.0)"),
+    ];
+    for exposure in [-1.0, 0.0, 0.9, 16.0] {
+        let params = PostParams { exposure, sharpening: 0.5, ..passthrough() };
+        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
+        for (step, expression) in steps {
+            let bytes = bytemuck::bytes_of(&uniforms);
+            let results = evaluate_on_gpu(wgsl, Some(bytes), expression, &inputs);
+            for (result, input) in results.iter().zip(inputs) {
+                let finite = result.iter().all(|c| c.is_finite());
+                assert!(finite, "{step} at {exposure} EV: {input:?} gives {result:?}");
+            }
+            for pair in results.chunks(2) {
+                let same = pair[0].iter().zip(pair[1]).all(|(a, b)| (a - b).abs() <= 1e-4 * b.abs());
+                assert!(same, "{step} at {exposure} EV: infinity is the ceiling: {pair:?}");
             }
         }
     }
@@ -445,7 +490,12 @@ fn infinite_scene_color_blooms_without_a_black_block() {
         ("no AA", RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() }),
     ];
     let emissions = [(1e6, 1.0), (f32::MAX, 2.0)];
-    let character_blooms = [CharacterBloom::NEUTRAL, CharacterBloom { threshold: 1.5, strength: 0.3 }];
+    // The prefilter's two variants, and the composite's sharpening variant (own review RS2-5).
+    let variants = [
+        (CharacterBloom::NEUTRAL, 0.0),
+        (CharacterBloom { threshold: 1.5, strength: 0.3 }, 0.0),
+        (CharacterBloom::NEUTRAL, 0.5),
+    ];
     for (path, settings) in paths {
         for (emission, scale) in emissions {
             let mut harness = Harness::new(settings, size);
@@ -458,10 +508,11 @@ fn infinite_scene_color_blooms_without_a_black_block() {
                 let plain = PostParams { exposure, ..passthrough() };
                 let image = harness.render_frames(1, plain, |packet| packet.emission_scale = scale);
                 let floor = image[0];
-                for character_bloom in character_blooms {
+                for (character_bloom, sharpening) in variants {
                     let post = PostParams {
                         bloom: BloomParams { threshold: 1.0, knee: 0.5, intensity: 0.5, scatter: 0.7 },
                         character_bloom,
+                        sharpening,
                         ..plain
                     };
                     let image = harness.render_frames(1, post, |packet| packet.emission_scale = scale);
@@ -469,8 +520,8 @@ fn infinite_scene_color_blooms_without_a_black_block() {
                     assert_eq!(
                         dark.count(),
                         0,
-                        "{path}, emission {emission} × {scale}, {exposure} EV, {character_bloom:?}: \
-                         pixels darker than the sky {floor:?}"
+                        "{path}, emission {emission} × {scale}, {exposure} EV, {character_bloom:?}, \
+                         sharpening {sharpening}: pixels darker than the sky {floor:?}"
                     );
                 }
             }

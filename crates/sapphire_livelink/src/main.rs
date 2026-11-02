@@ -319,6 +319,21 @@ fn packs_in(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(packs)
 }
 
+/// Each file of `paths` once, however its path is spelled: one named twice would be pushed twice per
+/// save, which the device counts as two edits. A path that doesn't resolve stands for itself.
+fn each_once(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut seen = Vec::new();
+    let mut once = Vec::new();
+    for path in paths {
+        let file = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !seen.contains(&file) {
+            seen.push(file);
+            once.push(path);
+        }
+    }
+    once
+}
+
 /// `watch`: pushes what changes, `extra` documents among it, reconnecting when the device goes
 /// away.
 fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> anyhow::Result<()> {
@@ -353,7 +368,7 @@ fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> an
     let mut documents: Vec<(WatchId, OsString, PathBuf)> = Vec::new();
     let engine = [sources::default_day(), sources::default_light_rigs(), sources::default_screen_effects()];
     let fight = status.documents.iter().map(|document| sources::repository_file(&document.source));
-    for path in engine.into_iter().chain(fight).chain(extra) {
+    for path in each_once(engine.into_iter().chain(fight).chain(extra)) {
         let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().context("a document is a file")?.to_owned();
         documents.push((watcher.watch(dir)?, name, path.clone()));
@@ -626,6 +641,25 @@ mod tests {
         let result = with_device(outcome, move |address| push_file(address, path));
         let _ = std::fs::remove_file(&file);
         result.unwrap();
+    }
+
+    /// A document named on the command line is often one the device already listed, under another
+    /// spelling of its path. Watched twice it's pushed twice per save, and the device counts two edits.
+    #[test]
+    fn a_document_named_twice_is_watched_once() {
+        let dir = std::env::temp_dir().join(format!("sapphire_livelink_once_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("a.moves.ron");
+        std::fs::write(&file, "").unwrap();
+        let other = dir.join("b.moves.ron");
+        std::fs::write(&other, "").unwrap();
+        let spelled_otherwise = dir.join("sub").join("..").join("a.moves.ron");
+        let not_here = dir.join("not_here.moves.ron");
+
+        let paths = [file.clone(), other.clone(), spelled_otherwise, file.clone(), not_here.clone()];
+        let once = each_once(paths);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(once, [file, other, not_here]);
     }
 
     /// `watch` logs what `Item::push` returns and goes on: on the same connection, since only a

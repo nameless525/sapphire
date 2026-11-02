@@ -516,7 +516,7 @@ A last check of this page against the code ran the first command with `--dry-run
 - **A fight's graphs had no document route.** On 410cf24b the docs and the tool's usage said a saved graph reached a running fight, and it reached only `--graph`'s show. The tuning review found the same thing and gave the character's graph a route, and `warrior.animgraph.ron` has one since the review's leftovers.
 - **`patience` stops at 3,600 ticks,** so the dummy swings about once a minute, and doesn't stand idle for good as a first draft of this file said.
 - **A timing script locks onto `attempts`' beat.** The first harness pushed at a fixed spacing and read 195 ms every round. Rounds here are spaced at random, so they sample the wait.
-- **`link watch` pushes a named document twice** when the device lists it too. The second is "the same moves", and harmless.
+- **`link watch` pushed a named document twice** when the device listed it too. For moves the second was "the same moves", and harmless, but a graph, the camera's tuning and the cue table have no such check, so one save counted as two edits in `link status`. It's watched once since the review's leftovers.
 - **The attempt line doesn't always name the edited move.** It names the first move to start on the new data, 86 times in 124 rounds the edited one. The numbers here are to that line.
 - **Fights after an edit end on another checksum,** because they start from the edit, and a relaunch goes back to the cook. Compare checksums only across fights with no edit.
 - **A one-line edit took 76–152 s under `--release`,** with its thin LTO and no incremental compilation. `cargo xtask run --incremental` is new, and the sheet's commands use it.

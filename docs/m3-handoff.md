@@ -201,7 +201,6 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - `apps/sapphire_sandbox/src/scene.rs`: `Scene`'s extract runs two `resource_scope`s a frame (lines 2090 and 2139), which R6 doesn't reach, outside a step.
   - [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs)'s `arena_fight` compiles documents at every start: a fight's restart takes 4.3–6.5 ms and about 6,000 allocations (§3.5). A game would hold its tables.
   - `gpu-tests-warp.yml` doesn't run the app's replay tests.
-  - `__pycache__` isn't ignored for `tools/motion`; its tests are written to run with `python3 -B`.
 
 ### Carried from M2's handoff, unchanged
 

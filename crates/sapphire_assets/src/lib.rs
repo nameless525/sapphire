@@ -65,10 +65,10 @@
 //!
 //! # Later milestones
 //!
-//! - Assets moving from one mounted pack to another (group packs, M2): today the pack they left
-//!   reports them removed, and the other's remount doesn't take them over. (Live link needed no
-//!   overlay mounts to push only what changed: its source serves the new pack whole, assembled on
-//!   the device from the changed assets it received and the rest of the pack it had.)
+//! - Group packs (M2): an asset is in one mounted pack only, so today it moves between packs by a
+//!   remount of the pack it left and then of the pack it moved to, in that order. (Live link
+//!   needed no overlay mounts to push only what changed: its source serves the new pack whole,
+//!   assembled on the device from the changed assets it received and the rest of the pack it had.)
 //! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
 //!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
 //! - Memory-mapped packs, so raw blocks are read in place; unmounting packs at zone changes;

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::mesh::ArchivedSlotMaterial;
 use crate::pack::PackReader;
 use crate::rig::CharacterRig;
 
@@ -326,6 +327,225 @@ fn a_new_renderer_gets_the_new_version_of_an_asset_reloading() {
     );
     assert_eq!(server.take_changes().len(), 2);
     settle(&mut server, |_| panic!("nothing more to upload"));
+}
+
+/// A new renderer's uploader: it starts empty, and a mesh's slots resolve through what it holds
+/// by then, or the upload is refused, as the sandbox's refuses one
+/// (`Renderer::upload_slot_materials`).
+#[derive(Default)]
+struct NewRenderer {
+    held: Uploaded,
+    /// An asset it refuses.
+    refuses: Option<AssetId>,
+}
+
+impl NewRenderer {
+    fn upload(&mut self, upload: Upload<'_>) -> Result<(), UploadError> {
+        if self.refuses == Some(upload.id()) {
+            return Err("out of memory".into());
+        }
+        if let Some(mesh) = upload.get::<Mesh>() {
+            for slot in mesh.materials.iter() {
+                if let ArchivedSlotMaterial::Asset(material) = &slot.material
+                    && !self.held.iter().any(|(_, id, _)| id == material)
+                {
+                    return Err(format!("slot {} names material {material}, not uploaded", slot.name).into());
+                }
+            }
+        }
+        self.held.push((upload.kind(), upload.id(), upload.generation()));
+        Ok(())
+    }
+}
+
+const NEW_MATERIAL: u8 = 4;
+
+/// The character's pack, with its mesh's new version on a new material.
+fn pack_with_mesh_on_new_material() -> Vec<u8> {
+    write_pack(vec![
+        packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7)),
+        packed(id(MATERIAL), AssetKind::Material, &same_material()),
+        packed(id(NEW_MATERIAL), AssetKind::Material, &material_bytes(None)),
+        packed(id(MESH), AssetKind::Mesh, &mesh_bytes(id(NEW_MATERIAL))),
+    ])
+    .unwrap()
+}
+
+/// The character's mesh after a reload of it failed: its new version names a new material, which
+/// the renderer refused. It stays ready with the version it had.
+fn mesh_whose_reload_failed() -> (AssetServer, Arc<MemoryPackSource>, Handle<Mesh>) {
+    let (mut server, source) = serve(character(), unlimited());
+    let (mesh, _) = loaded_character(&mut server);
+    source.insert("shared", pack_with_mesh_on_new_material());
+    assert_eq!(server.remount("shared").unwrap().reloading, 1);
+    settle(&mut server, |upload| {
+        assert_ne!(upload.id(), id(MESH), "its new version waits on the material");
+        Err("out of memory".into())
+    });
+    assert!(matches!(
+        &server.take_changes()[..],
+        [AssetChange::ReloadFailed { kind: AssetKind::Mesh, error: LoadError::Dependency { .. }, .. }]
+    ));
+    assert_eq!((server.state(&mesh), server.generation(&mesh)), (LoadState::Ready, 0));
+    // The refused material went with its last user.
+    assert_eq!(
+        server.take_unloaded().iter().map(|unloaded| unloaded.id).collect::<Vec<_>>(),
+        [id(NEW_MATERIAL)]
+    );
+    (server, source, mesh)
+}
+
+#[test]
+fn a_new_renderer_after_a_failed_reload_gets_the_new_version_as_a_new_generation() {
+    let (mut server, _source, mesh) = mesh_whose_reload_failed();
+    // The pack no longer holds the version the mesh has, and its new material loads this time.
+    server.reupload_all();
+    let mut renderer = NewRenderer::default();
+    server.finish(&mesh, |upload| renderer.upload(upload)).unwrap();
+    let sent = |wanted: AssetId| renderer.held.iter().position(|&(_, id, _)| id == wanted);
+    assert!(
+        sent(id(NEW_MATERIAL)).unwrap() < sent(id(MESH)).unwrap(),
+        "the material it names first: {:?}",
+        renderer.held
+    );
+    assert_eq!(
+        renderer.held[sent(id(MESH)).unwrap()],
+        (AssetKind::Mesh, id(MESH), 1),
+        "an app that keeps its old renderer replaces the version it has"
+    );
+    assert_eq!(server.generation(&mesh), 1);
+    assert!(server.take_changes().iter().any(|change| matches!(
+        change,
+        AssetChange::Reloaded { id: reloaded, kind: AssetKind::Mesh, generation: 1, .. } if *reloaded == id(MESH)
+    )));
+
+    // Its old dependencies went with its old version. `reupload_all` asked for them too, so their
+    // reads may still land, but nothing else is on its way.
+    settle(&mut server, |upload| {
+        assert!(
+            [id(TEXTURE), id(MATERIAL)].contains(&upload.id()),
+            "nothing more to upload: {:?}",
+            upload.id()
+        );
+        Ok(())
+    });
+    server.update();
+    server.unload_unused();
+    let mut unloaded: Vec<AssetId> = server.take_unloaded().iter().map(|unloaded| unloaded.id).collect();
+    unloaded.sort();
+    assert_eq!(unloaded, [id(TEXTURE), id(MATERIAL)]);
+    assert_eq!(server.stats().assets, 2, "the mesh and its new material");
+}
+
+#[test]
+fn a_new_version_refused_again_fails_with_the_reason_and_is_a_new_generation_when_it_loads() {
+    let (mut server, _source, mesh) = mesh_whose_reload_failed();
+    server.reupload_all();
+    let mut renderer = NewRenderer { refuses: Some(id(NEW_MATERIAL)), ..NewRenderer::default() };
+    let error = LoadError::Dependency { id: id(MESH), dependency: id(NEW_MATERIAL) };
+    assert_eq!(server.finish(&mesh, |upload| renderer.upload(upload)), Err(error.clone()));
+    assert_eq!(server.state(&mesh), LoadState::Failed(error));
+    assert!(
+        !renderer.held.iter().any(|&(_, held, _)| held == id(MESH)),
+        "never sent without its material: {:?}",
+        renderer.held
+    );
+    assert_eq!(server.generation(&mesh), 0);
+
+    // Tried again, it is still other bytes than the version an old renderer holds.
+    server.load::<Mesh>(id(MESH)).unwrap();
+    let mut renderer = NewRenderer::default();
+    server.finish(&mesh, |upload| renderer.upload(upload)).unwrap();
+    assert_eq!(renderer.held.last(), Some(&(AssetKind::Mesh, id(MESH), 1)));
+    assert_eq!(server.generation(&mesh), 1);
+}
+
+#[test]
+fn a_new_version_that_cant_be_read_after_a_failed_reload_fails_with_the_reason() {
+    let (mut server, source) = serve(character(), unlimited());
+    let (mesh, _) = loaded_character(&mut server);
+    let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
+    source.insert("shared", corrupt(character_pack(9, &same_material()), id(TEXTURE)));
+    server.remount("shared").unwrap();
+    settle(&mut server, |_| Ok(()));
+    assert_eq!(server.stats().reload_failures, 1);
+    server.reupload_all();
+    let mut renderer = NewRenderer::default();
+    assert!(server.finish(&mesh, |upload| renderer.upload(upload)).is_err());
+    let error = LoadError::Pack(PackError::BlockHash { id: id(TEXTURE), block: 0 });
+    assert_eq!(server.state(&texture), LoadState::Failed(error));
+}
+
+#[test]
+fn a_texture_refused_once_reaches_a_new_renderer_as_a_new_generation_and_its_material_rebinds() {
+    let (mut server, source) = serve(character(), unlimited());
+    let (mesh, _) = loaded_character(&mut server);
+    let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
+    let new_version = texture_bytes(8, 8, 9);
+    let pack = |extra: Option<PackAsset>| {
+        let mut assets = vec![
+            packed(id(TEXTURE), AssetKind::Texture, &new_version),
+            packed(id(MATERIAL), AssetKind::Material, &same_material()),
+            packed(id(MESH), AssetKind::Mesh, &mesh_bytes(id(MATERIAL))),
+        ];
+        assets.extend(extra);
+        write_pack(assets).unwrap()
+    };
+    source.insert("shared", pack(None));
+    server.remount("shared").unwrap();
+    settle(&mut server, |_| Err("out of memory".into()));
+    assert_eq!(server.generation(&texture), 0);
+
+    server.reupload_all();
+    let mut uploads = Vec::new();
+    server
+        .finish(&mesh, |upload| {
+            if let Some(texture) = upload.get::<TextureAsset>() {
+                assert_eq!(texture.levels[0][0], 9);
+            }
+            uploads.push((upload.kind(), upload.id(), upload.generation()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        uploads,
+        [
+            (AssetKind::Texture, id(TEXTURE), 1),
+            (AssetKind::Material, id(MATERIAL), 1),
+            (AssetKind::Mesh, id(MESH), 0)
+        ]
+    );
+    assert_eq!(server.generation(&texture), 1);
+    // The slot knows the version it holds now: its size counts, and another change in the pack
+    // doesn't load it again.
+    assert_eq!(server.stats().resident[AssetKind::Texture.index()], new_version.len() as u64);
+    source.insert("shared", pack(Some(packed(id(9), AssetKind::Texture, &texture_bytes(4, 4, 1)))));
+    assert_eq!(server.remount("shared").unwrap(), RemountReport { changed: 1, removed: 0, reloading: 0 });
+}
+
+#[test]
+fn a_kept_version_goes_to_a_new_renderer_as_it_is_after_a_failed_reload() {
+    // A material keeps its bytes, so the version it has can still be sent.
+    let (mut server, source) = serve(character(), unlimited());
+    let (mesh, _) = loaded_character(&mut server);
+    let material: Handle<Material> = server.load(id(MATERIAL)).unwrap();
+    let old = server.get(&material).unwrap().params().to_vec();
+    source.insert("shared", character_pack(7, &tinted_material()));
+    server.remount("shared").unwrap();
+    settle(&mut server, |_| Err("out of memory".into()));
+    assert_eq!(server.stats().reload_failures, 1);
+    server.reupload_all();
+    let mut uploads = Vec::new();
+    server.finish(&mesh, recording(&mut uploads)).unwrap();
+    assert_eq!(
+        uploads,
+        [
+            (AssetKind::Texture, id(TEXTURE), 0),
+            (AssetKind::Material, id(MATERIAL), 0),
+            (AssetKind::Mesh, id(MESH), 0)
+        ]
+    );
+    assert_eq!(server.get(&material).unwrap().params(), old, "the old version, as generation 0");
 }
 
 #[test]

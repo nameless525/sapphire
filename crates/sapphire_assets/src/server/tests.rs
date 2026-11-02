@@ -9,6 +9,7 @@ use crate::pack::{Codec, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 
 mod lifetime;
+mod moves;
 mod reload;
 
 fn id(n: u8) -> AssetId {

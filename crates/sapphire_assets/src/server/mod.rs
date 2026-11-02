@@ -269,7 +269,8 @@ struct Slot {
     /// The server's own reference: while its count is 1, nothing else uses the asset.
     handle: UntypedHandle,
     /// Where it is: a mount, and its entry in the mount's table of contents, which a remount
-    /// moves to the new table's, or `None` once its pack no longer holds it (hot reload).
+    /// moves to the new table's, or `None` once its pack no longer holds it (hot reload), until a
+    /// pack mounted or remounted later holds it: that pack's mount takes it over.
     mount: u32,
     entry: Option<u32>,
     /// The size and hash of the version `state` holds or is loading.
@@ -294,7 +295,8 @@ struct Slot {
     /// It has been ready: the app holds a version of it.
     loaded: bool,
     /// The version `state` loads replaces one the app holds, so uploading it is a new
-    /// generation: a reload that [`AssetServer::reupload_all`] took over.
+    /// generation: a reload that [`AssetServer::reupload_all`] took over. It stays set through a
+    /// failure, since what is tried again still isn't what the app holds.
     replaces: bool,
     /// A new version on its way while the asset stays ready with the one it has (hot reload).
     /// Only a ready asset has one.
@@ -360,7 +362,8 @@ struct Completion {
 ///   queue. A failed dependency fails it. Children are therefore always on the GPU before the
 ///   assets that use them. A dependency must be of a lower kind ([`AssetKind::may_depend_on`]), so
 ///   no pack, however malformed, can make chains deep or circular. A failed asset stays failed
-///   until it is loaded again, which tries it and its failed dependencies again.
+///   until it is loaded again, which tries it and its failed dependencies again, or until a pack
+///   mounted or remounted may have fixed it ([hot reload](AssetServer#hot-reload)).
 /// - **Upload.** [`AssetServer::upload`] hands queued assets to the app's uploader, in order,
 ///   until the frame's budget is spent ([`AssetBudgets::upload_per_frame`]; one asset always goes,
 ///   however large). The uploader gets plain cooked data ([`Upload`]) and calls the renderer, which
@@ -409,9 +412,19 @@ struct Completion {
 ///   when a dependency is replaced.
 /// - A new version that fails (a corrupt or invalid asset, a missing dependency, a refused
 ///   upload) is dropped and reported ([`AssetChange::ReloadFailed`]); the asset keeps the version
-///   it had. An asset its pack no longer holds keeps its version too
-///   ([`AssetChange::Removed`]), until nothing uses it. Unused cached assets that changed are
-///   unloaded rather than reloaded, and assets still loading start again from the new pack.
+///   it had, though a new renderer gets the new version if the asset kept no bytes, since its pack
+///   holds no other ([`AssetServer::reupload_all`]). An asset its pack no longer holds keeps its
+///   version too ([`AssetChange::Removed`]), until nothing uses it. Unused cached assets that
+///   changed are unloaded rather than reloaded, and assets still loading start again from the new
+///   pack.
+/// - An asset that left its pack moves to the next pack mounted or remounted that holds it, as
+///   the same kind, and is compared with its entry there as a remount compares any asset. So an
+///   asset moves between mounted packs by remounting the pack it left, then the pack it moved
+///   to; the other order is refused, since an asset may be in one mounted pack only
+///   ([`MountError::Duplicate`]), and the refused pack stays as it was mounted.
+/// - A failed asset of another pack, still in use, that failed on a dependency a pack mounted or
+///   remounted now holds loads again, with the failed assets that depend on it. One that failed
+///   for itself (a refused upload, a corrupt block) waits for its own pack's remount or a load.
 ///
 /// # Threading
 ///
@@ -494,7 +507,9 @@ impl AssetServer {
 
     /// Mounts the pack called `name` ([`crate::pack::file_name`] in the source): reads and checks its
     /// header and table of contents, blocking until they are read, and makes its assets loadable.
-    /// An asset may be in one mounted pack only.
+    /// An asset may be in one mounted pack only. Loaded assets that lost their pack and that this
+    /// one holds move to it, and failed assets that need what it holds load again (see
+    /// [hot reload](AssetServer#hot-reload)).
     pub fn mount(&mut self, name: &str) -> Result<(), MountError> {
         profiling::scope!("AssetServer::mount");
         if self.is_mounted(name) {
@@ -508,14 +523,17 @@ impl AssetServer {
         let mount = self.mounts.len() as u32;
         self.index
             .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
+        let toc = Arc::new(toc);
+        self.mounts.push(Mount { name: name.to_owned(), file, toc: toc.clone() });
+        let reloading = self.settle_mount(mount, &toc);
         tracing::info!(
             target: LOG_TARGET,
             pack = name,
             assets = toc.entries().len(),
             bytes = toc.header().file_len(),
+            reloading,
             "pack mounted"
         );
-        self.mounts.push(Mount { name: name.to_owned(), file, toc: Arc::new(toc) });
         Ok(())
     }
 
@@ -643,6 +661,8 @@ impl AssetServer {
             Ok(children) => {
                 self.set_children(key, children);
                 let slot = &mut self.slots[key];
+                // Other bytes than the last version's are a new generation for an app holding it.
+                slot.replaces |= slot.loaded && slot.hash != entry.hash;
                 (slot.size, slot.hash) = (entry.size, entry.hash);
                 self.request_read(key);
             }
@@ -882,8 +902,10 @@ impl AssetServer {
     /// renderer, after device loss or a quality-tier change. Assets that kept their bytes are
     /// queued from them; the others are read and decoded again. An asset with a new version on
     /// its way (hot reload) is sent that one instead, as its next generation, since its pack may
-    /// no longer hold the version it has; one its pack no longer holds at all fails, unless it
-    /// kept its bytes.
+    /// no longer hold the version it has. So is one whose new version failed to load and that
+    /// kept no bytes: its pack holds only the new version, which loads as any new version does,
+    /// dependencies first, and if it fails again the asset fails, with the reason. One its pack
+    /// no longer holds at all fails, unless it kept its bytes.
     pub fn reupload_all(&mut self) {
         self.upload_queue.clear();
         let keys: Vec<SlotKey> = self.slots.keys().collect();
@@ -896,11 +918,12 @@ impl AssetServer {
                 self.promote(key);
             } else if slot.data.is_some() {
                 slot.state = SlotState::Waiting;
-            } else if slot.entry.is_none() {
+            } else if let Some(entry) = slot.entry {
+                let entry = self.mounts[slot.mount as usize].toc.entries()[entry as usize];
+                if entry.hash == slot.hash { self.request_read(key) } else { self.resolve(key) }
+            } else {
                 let id = slot.handle.id();
                 self.fail(key, LoadError::Removed(id));
-            } else {
-                self.request_read(key);
             }
         }
         for key in keys {
@@ -1089,7 +1112,6 @@ impl AssetServer {
         tracing::warn!(target: LOG_TARGET, id = %slot.handle.id(), kind = %slot.handle.kind(), %error, "asset failed to load");
         slot.state = SlotState::Failed(error);
         slot.data = None;
-        slot.replaces = false;
         self.failures += 1;
         // A failed asset has no version to replace.
         self.cancel_next(key);

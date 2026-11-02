@@ -2,13 +2,14 @@
 //! handles. [`AssetServer`]'s docs ("Hot reload") describe what an app sees; this file holds the
 //! server's half.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sapphire_serialize::cooked::AlignedVec;
 
 use super::handle::{SlotKey, UntypedHandle};
 use super::{
-    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, SlotState, Version, error_chain,
+    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, Slot, SlotState, Version, error_chain,
 };
 use crate::pack::{Entry, Toc};
 use crate::{Asset, AssetId, AssetKind};
@@ -23,8 +24,8 @@ pub enum AssetChange {
     /// Its new version didn't load: the asset keeps the version it has.
     ReloadFailed { id: AssetId, kind: AssetKind, error: LoadError },
     /// Its pack no longer holds it, or holds an asset of another kind under its ID. It keeps the
-    /// version it has until nothing uses it, but can't be read again: a new renderer gets it
-    /// only if its kind keeps its bytes.
+    /// version it has until nothing uses it, but can't be read again until a pack holds it again:
+    /// a new renderer gets it only if its kind keeps its bytes.
     Removed { id: AssetId, kind: AssetKind },
 }
 
@@ -35,7 +36,8 @@ pub struct RemountReport {
     pub changed: u32,
     /// Assets the pack held before and doesn't now.
     pub removed: u32,
-    /// Loaded assets now loading a new version, or loading again from the new pack.
+    /// Loaded assets now loading a new version, or loading again from the new pack, and failed
+    /// assets of other packs loading again because of it.
     pub reloading: u32,
 }
 
@@ -62,6 +64,16 @@ pub(super) enum NextStage {
     Queued,
 }
 
+/// The dependency the asset in `slot` failed on, if that is why it failed.
+fn failed_dependency(slot: &Slot) -> Option<AssetId> {
+    match slot.state {
+        SlotState::Failed(
+            LoadError::Dependency { dependency, .. } | LoadError::DependencyKind { dependency, .. },
+        ) => Some(dependency),
+        _ => None,
+    }
+}
+
 impl AssetServer {
     /// Reads mounted pack `name` again, after its file changed (see
     /// [hot reload](AssetServer#hot-reload)): checks it as [`Self::mount`] does, makes its table of
@@ -71,6 +83,10 @@ impl AssetServer {
     /// unloaded instead; assets it no longer holds keep the version they have. The pack's earlier
     /// file is closed. A pack that fails to mount keeps the version that was mounted, and an
     /// unchanged one changes nothing.
+    ///
+    /// **Order:** an asset may be in one mounted pack only, so when an asset moves from one mounted
+    /// pack to another, remount the pack it left first. Remounting the pack it moved to first
+    /// fails with [`MountError::Duplicate`], and has to be done again after the other.
     pub fn remount(&mut self, name: &str) -> Result<RemountReport, MountError> {
         profiling::scope!("AssetServer::remount");
         let mount = self
@@ -102,37 +118,7 @@ impl AssetServer {
         self.index.retain(|_, &mut (other, _)| other != mount);
         self.index
             .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
-        let keys: Vec<SlotKey> =
-            self.slots.iter().filter(|(_, slot)| slot.mount == mount).map(|(key, _)| key).collect();
-        // Every asset of the pack moves to its new entry before any load starts, so a load that
-        // reaches a dependency (a failed one, tried again) finds it where the new pack holds it.
-        let mut moved = Vec::with_capacity(keys.len());
-        for key in keys {
-            let slot = &mut self.slots[key];
-            let (id, kind) = (slot.handle.id(), slot.handle.kind());
-            let found = toc.entries().binary_search_by(|entry| entry.id.cmp(&id)).ok();
-            let found_kind = found.map(|index| toc.entries()[index].kind);
-            slot.entry = found.filter(|_| found_kind == Some(kind)).map(|index| index as u32);
-            moved.push((key, found_kind));
-        }
-        for &(key, found_kind) in &moved {
-            // Loading one asset never unloads another, but stay safe against it.
-            let Some(slot) = self.slots.get(key) else { continue };
-            if slot.entry.is_none() {
-                self.gone(key, found_kind);
-            } else if self.relocate(key, &toc) {
-                report.reloading += 1;
-            }
-        }
-        // New versions waiting on one that was dropped (an edit undone, an asset gone from the
-        // pack, a reload that couldn't start) go on with the version it has.
-        for &(key, _) in &moved {
-            if self.slots.get(key).is_some_and(|slot| slot.next.is_none()) {
-                for parent in self.parents(key) {
-                    self.try_queue_next(parent);
-                }
-            }
-        }
+        report.reloading = self.settle_mount(mount, &toc);
         // Reads still queued for the earlier file are superseded, so their failures are ignored.
         self.source.close(old_file);
         tracing::info!(
@@ -144,6 +130,88 @@ impl AssetServer {
             "pack remounted"
         );
         Ok(report)
+    }
+
+    /// Brings loaded assets in line with mount `mount`, whose table of contents is now `toc`:
+    /// the mount's assets move to their entries there, assets that left their packs and that `toc`
+    /// holds join them, and what changed starts loading. Returns how many assets are now loading
+    /// a new version, or loading again.
+    pub(super) fn settle_mount(&mut self, mount: u32, toc: &Toc) -> u32 {
+        // An ID under another kind isn't this asset: `gone` reported it when it left.
+        let keys: Vec<SlotKey> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| {
+                slot.mount == mount
+                    || (slot.entry.is_none()
+                        && toc.find(slot.handle.id()).is_some_and(|entry| entry.kind == slot.handle.kind()))
+            })
+            .map(|(key, _)| key)
+            .collect();
+        // Every asset of the pack moves to its new entry before any load starts, so a load that
+        // reaches a dependency (a failed one, tried again) finds it where the new pack holds it.
+        let mut moved = Vec::with_capacity(keys.len());
+        for key in keys {
+            let slot = &mut self.slots[key];
+            let (id, kind) = (slot.handle.id(), slot.handle.kind());
+            slot.mount = mount;
+            let found = toc.entries().binary_search_by(|entry| entry.id.cmp(&id)).ok();
+            let found_kind = found.map(|index| toc.entries()[index].kind);
+            slot.entry = found.filter(|_| found_kind == Some(kind)).map(|index| index as u32);
+            moved.push((key, found_kind));
+        }
+        // Found before any load starts: the loads below retry some of them, but not all they hold up.
+        let failed_on_this_pack: Vec<SlotKey> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| failed_dependency(slot).is_some_and(|id| toc.find(id).is_some()))
+            .map(|(key, _)| key)
+            .collect();
+        let mut reloading = 0;
+        for &(key, found_kind) in &moved {
+            // Loading one asset never unloads another, but stay safe against it.
+            let Some(slot) = self.slots.get(key) else { continue };
+            if slot.entry.is_none() {
+                self.gone(key, found_kind);
+            } else if self.relocate(key, toc) {
+                reloading += 1;
+            }
+        }
+        // New versions waiting on one that was dropped (an edit undone, an asset gone from the
+        // pack, a reload that couldn't start) go on with the version it has.
+        for &(key, _) in &moved {
+            if self.slots.get(key).is_some_and(|slot| slot.next.is_none()) {
+                for parent in self.parents(key) {
+                    self.try_queue_next(parent);
+                }
+            }
+        }
+        reloading + self.retry_dependents(mount, failed_on_this_pack)
+    }
+
+    /// Tries again the assets in `pending`, which failed on a dependency mount `mount` now holds,
+    /// and those that failed above them: only assets of other packs that are still in use, since
+    /// the mount's own were tried as they moved. Returns how many it tried.
+    fn retry_dependents(&mut self, mount: u32, mut pending: Vec<SlotKey>) -> u32 {
+        let mut seen = HashSet::new();
+        let mut retried = 0;
+        while let Some(key) = pending.pop() {
+            if !seen.insert(key) {
+                continue;
+            }
+            let Some(slot) = self.slots.get(key) else { continue };
+            // On through assets no longer failed too: a load may have retried one, not those above.
+            pending.extend_from_slice(&slot.parents);
+            if slot.mount != mount
+                && slot.entry.is_some()
+                && slot.users() > 0
+                && failed_dependency(slot).is_some()
+            {
+                self.resolve(key);
+                retried += 1;
+            }
+        }
+        retried
     }
 
     /// How many new versions replaced `handle`'s asset since it loaded (hot reload), and times a
@@ -169,15 +237,13 @@ impl AssetServer {
     /// its mount's new table of contents. Returns whether it is now loading a new version, or
     /// loading again.
     fn relocate(&mut self, key: SlotKey, toc: &Toc) -> bool {
-        let slot = &mut self.slots[key];
+        let slot = &self.slots[key];
         let entry = toc.entries()[slot.entry.expect("only assets the new pack holds are relocated") as usize];
         let changed = entry.hash != slot.hash;
         match slot.state {
             SlotState::Loading | SlotState::Waiting | SlotState::Queued => {
                 if changed {
-                    // Sent again to a new renderer, other bytes are a new generation for an app
-                    // that keeps the old one. Its dependencies may differ too.
-                    slot.replaces |= slot.loaded;
+                    // Its dependencies may differ too.
                     self.resolve(key);
                 } else if slot.state == SlotState::Loading {
                     // The same bytes, but the read in flight is of the file about to close.
@@ -213,11 +279,9 @@ impl AssetServer {
             }
             SlotState::Failed(_) => {
                 // A failed asset that something still wants loads again: the new pack may have
-                // fixed it or what it depends on, or hold it again. Other bytes are a new
-                // generation for an app that holds a version from before it failed.
+                // fixed it or what it depends on, or hold it again.
                 let retry = slot.users() > 0;
                 if retry {
-                    slot.replaces = slot.loaded && changed;
                     self.resolve(key);
                 }
                 retry

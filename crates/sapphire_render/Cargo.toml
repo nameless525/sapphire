@@ -40,6 +40,10 @@ png.workspace = true
 pollster.workspace = true
 # Cooks the textures the GPU tests upload. Tools may be dev-dependencies (xtask check-layers).
 sapphire_pipeline.workspace = true
+# The interface's GPU tests draw the real HUD and drive its touch zones; dev-dependencies are exempt
+# from layering (the crates depend on neither at run time).
+sapphire_platform.workspace = true
+sapphire_ui.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

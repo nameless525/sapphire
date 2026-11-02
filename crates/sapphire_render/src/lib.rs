@@ -117,6 +117,9 @@
 //!   every transparent surface: over temporal AA's resolved frame, which its history never sees, or
 //!   at the end of the main pass without it. A frame with none builds and draws nothing, and a
 //!   game prewarms their pipelines at load ([`Renderer::prewarm_vfx`]).
+//! - The on-screen interface's draw (`ui`, M2 I2): the packet's [`UiDrawList`], quads over a
+//!   distance field atlas, instanced in one pass after post and any debug view, under debug draw. A
+//!   frame with no quads builds and draws nothing, so existing frames are unchanged.
 //!
 //! # Does not own
 //!
@@ -873,6 +876,7 @@ mod skinning;
 mod sky;
 pub mod temporal;
 pub mod texture;
+mod ui;
 pub mod vfx;
 mod view_cull;
 
@@ -907,8 +911,8 @@ pub use renderer::{
 };
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
-    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
-    VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
+    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, UiAtlas,
+    UiDrawList, UiQuad, VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
@@ -916,6 +920,7 @@ pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 pub use temporal::{HistoryReset, TemporalStats};
+pub use ui::{UI_PASS, UiStats};
 pub use vfx::VfxRenderStats;
 pub use view_cull::ViewCullingStats;
 

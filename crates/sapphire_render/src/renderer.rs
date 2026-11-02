@@ -3,7 +3,7 @@
 //! character, environment and foliage surfaces per surface variant, the characters' outlines,
 //! their eyes through hair, the sky, then transparent surfaces and fog cards), lit by each
 //! character's light rig (or, for the world, the sun) under the frame's shadows, ambient light,
-//! local lights and fog, then post-processing into the target.
+//! local lights and fog, then post-processing into the target, and the on-screen interface over it.
 
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,7 @@ use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::GpuTexture;
+use crate::ui::{Ui, UiStats};
 use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
@@ -380,6 +381,8 @@ pub struct RenderStats {
     pub debug_draw: DebugDrawPassStats,
     /// The frame's effects (M2 E2), and what the simulation that made them reported.
     pub vfx: VfxRenderStats,
+    /// The on-screen interface's quads and what it built (M2 I2).
+    pub ui: UiStats,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -518,6 +521,8 @@ pub struct Renderer {
     /// Skinned and morphed instances' outputs and the pass that writes them.
     skinning: Skinning,
     post: PostProcess,
+    /// The on-screen interface over the finished frame (M2 I2).
+    ui: Ui,
     /// Temporal AA's history and passes, with [`RenderSettings::temporal`].
     temporal: Option<Temporal>,
     uploads: wgpu::util::StagingBelt,
@@ -785,6 +790,7 @@ impl Renderer {
             post_variants = ?settings.post_variants,
             "renderer created"
         );
+        let ui = Ui::new(&device, color_format, gpu.pipeline_cache().cloned(), gpu.label("").is_some());
         let mut renderer = Self {
             builds: ShaderBuilds::default(),
             device,
@@ -822,6 +828,7 @@ impl Renderer {
             scene_bind_groups,
             skinning,
             post,
+            ui,
             temporal,
             uploads,
             prepared: None,
@@ -1277,6 +1284,7 @@ impl Renderer {
                 .flatten(),
             // Only those built so far: none before the first effect.
             vfx: has(Program::Vfx).then(|| self.vfx.rebuild()).flatten(),
+            ui: has(Program::Ui).then(|| self.ui.rebuild()).flatten(),
             changed,
         }
     }
@@ -1295,6 +1303,7 @@ impl Renderer {
             debug_views: self.debug_views.as_ref().map(|views| views.pipelines_built()),
             debug_draw: self.debug_draw.is_some(),
             vfx: self.vfx.pipelines_built(),
+            ui: self.ui.pipeline_built(),
         }
     }
 
@@ -1366,6 +1375,7 @@ impl Renderer {
             debug_views,
             debug_draw,
             vfx,
+            ui,
             update,
         } = rebuilt;
         if let Some(mesh) = mesh {
@@ -1400,6 +1410,9 @@ impl Renderer {
         }
         if let Some(vfx) = vfx {
             self.vfx.set_pipelines(vfx);
+        }
+        if let Some(ui) = ui {
+            self.ui.set_pipeline(ui);
         }
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
@@ -1538,6 +1551,13 @@ impl Renderer {
             self.scene.draw_list(),
             self.characters.table(),
         );
+
+        // The interface's pipeline with its first quads. On a lost device nothing draws.
+        if !self.device_lost {
+            self.checked_build(|renderer| renderer.ui.prepare_pipeline(&packet.ui, &renderer.shaders));
+            self.ui.prepare(queue, &packet.ui);
+        }
+        self.stats.ui = self.ui.stats();
 
         // Without a main view the frame has nothing to draw.
         let lights = self.lights.uniforms();
@@ -1849,6 +1869,7 @@ impl Renderer {
             ref debug_views,
             ref debug_draw,
             ref frame_ran,
+            ref ui,
             ..
         } = *self;
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
@@ -1920,6 +1941,7 @@ impl Renderer {
         let debug_draw = debug_draw.as_deref().filter(|draw| draw.has_lines());
         let debug_draw_upload =
             debug_draw.map(|draw| (draw, Box::new(DebugDrawUniforms::new(&camera, size, output))));
+        let ui_upload = ui.uploads();
 
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
@@ -1953,6 +1975,9 @@ impl Renderer {
             }
             if let Some(vfx_upload) = &vfx_upload {
                 vfx_upload.write(uploads, ctx.encoder);
+            }
+            if let Some(ui_upload) = &ui_upload {
+                ui_upload.write(uploads, ctx.encoder);
             }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
@@ -2267,7 +2292,9 @@ impl Renderer {
             };
             views.record(graph, frame);
         }
-        // Debug draws last, over the frame and any debug view; the overlay draws over them.
+        // The interface, over the frame and any debug view (M2 I2).
+        ui.record(graph, target);
+        // Debug draws last, over all of it; the overlay draws over them.
         if let Some(draw) = debug_draw {
             draw.record(graph, target, targets.depth, labels);
         }

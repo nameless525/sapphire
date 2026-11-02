@@ -492,6 +492,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Light lists", lists);
         debug_view(ui, &render.debug_view);
         row(ui, "Debug draw", debug_draw_text(&render.debug_draw));
+        if render.ui.pipelines > 0 {
+            let atlas = render.ui.atlas_bytes / 1024;
+            row(ui, "Interface", format!("{} quads, {atlas} KiB atlas", render.ui.quads));
+        }
         row(
             ui,
             "Character rigs",

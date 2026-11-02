@@ -1782,7 +1782,8 @@ impl MeshModules {
             | Program::Ambient
             | Program::DebugView
             | Program::DebugDraw
-            | Program::Vfx => unreachable!("not a mesh program"),
+            | Program::Vfx
+            | Program::Ui => unreachable!("not a mesh program"),
         }
     }
 

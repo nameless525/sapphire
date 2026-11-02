@@ -181,6 +181,8 @@ pub(crate) struct Built {
     /// Debug draw's pipeline, once a frame had lines.
     pub debug_draw: bool,
     pub vfx: u32,
+    /// The interface's pipeline, once a frame drew quads.
+    pub ui: bool,
 }
 
 /// A build: the sources, the programs that changed, and each changed program's owners' steps
@@ -202,6 +204,7 @@ pub(crate) struct Job {
     pub debug_views: Option<Step<RebuiltViews>>,
     pub debug_draw: Option<Step<wgpu::RenderPipeline>>,
     pub vfx: Option<Step<VfxPipelines>>,
+    pub ui: Option<Step<wgpu::RenderPipeline>>,
 }
 
 /// What a build built, for `Renderer::swap_pipelines`.
@@ -217,6 +220,7 @@ pub(crate) struct Rebuilt {
     pub debug_views: Option<RebuiltViews>,
     pub debug_draw: Option<wgpu::RenderPipeline>,
     pub vfx: Option<VfxPipelines>,
+    pub ui: Option<wgpu::RenderPipeline>,
     pub update: ShaderUpdate,
 }
 
@@ -252,6 +256,7 @@ impl Job {
             debug_views,
             debug_draw,
             vfx,
+            ui,
         } = self;
         for &program in &changed {
             if cancel.is_set() {
@@ -275,6 +280,7 @@ impl Job {
         let debug_views = run(debug_views, &sources, cancel);
         let debug_draw = run(debug_draw, &sources, cancel);
         let vfx = run(vfx, &sources, cancel);
+        let ui = run(ui, &sources, cancel);
         if cancel.is_set() {
             return None;
         }
@@ -291,7 +297,8 @@ impl Job {
             + ambient.as_ref().map_or(0, AmbientPipelines::count)
             + debug_views.as_ref().map_or(0, RebuiltViews::count)
             + u32::from(debug_draw.is_some())
-            + vfx.as_ref().map_or(0, VfxPipelines::count);
+            + vfx.as_ref().map_or(0, VfxPipelines::count)
+            + u32::from(ui.is_some());
         Some(Ok(Rebuilt {
             mesh: mesh.map(|(mesh, _)| mesh),
             sky,
@@ -304,6 +311,7 @@ impl Job {
             debug_views,
             debug_draw,
             vfx,
+            ui,
             update: ShaderUpdate { programs: changed.len() as u32, pipelines },
         }))
     }

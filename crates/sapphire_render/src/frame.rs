@@ -20,6 +20,8 @@
 //!   this frame's camera and time of day, which changes whenever either moves, and its face
 //!   ([`CharacterFace`], M1 C3): the head's pose and the expression weights, which animation
 //!   moves.
+//! - **The on-screen interface** is rewritten whole every frame too ([`UiDrawList`], M2 I2): a few
+//!   dozen quads, which `sapphire_ui` paints into the packet's own vector.
 //! - **Instances are deltas.** The renderer keeps every instance in a persistent GPU scene, so a
 //!   packet carries only the instances added, changed or removed since the previous one. The
 //!   renderer must therefore see every packet, in order (see [`crate::Renderer::prepare`]).
@@ -42,7 +44,7 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_core::debug_draw::DebugDrawList;
 use sapphire_look::{
     AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
-    SkyGradient, SkyLayers, VfxFrame,
+    SkyGradient, SkyLayers, UiDrawList, VfxFrame,
 };
 
 use crate::{MaterialHandle, MeshHandle, ProbeKeys};
@@ -54,8 +56,8 @@ const RING_SIZE: usize = 3;
 ///
 /// # Later milestones
 ///
-/// The packet grows with the systems that feed it (spec §4.6): the UI draw list. Shadow cascades
-/// (R4) and UI 3D insets add views after the main camera.
+/// The packet grows with the systems that feed it (spec §4.6). Shadow cascades (R4) and UI 3D insets
+/// add views after the main camera.
 ///
 /// One scene constant is carried for the package that will read it and drawn from nothing yet:
 /// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
@@ -160,6 +162,9 @@ pub struct FramePacket {
     /// values the renderer draws without knowing an emitter, a curve or an owner's clock (rule
     /// R4). Empty, the default, costs nothing: see the [`vfx`](crate::vfx) module.
     pub vfx: VfxFrame,
+    /// The on-screen interface, drawn over the finished frame (M2 I2, the `ui` module): rewritten
+    /// whole every frame, like the lights. Left empty, nothing of it is built or drawn.
+    pub ui: UiDrawList,
 }
 
 impl FramePacket {
@@ -221,6 +226,7 @@ impl FramePacket {
             morph_weights,
             debug,
             vfx,
+            ui,
         } = self;
         *number = frame;
         views.clear();
@@ -249,6 +255,7 @@ impl FramePacket {
         morph_weights.clear();
         debug.clear();
         vfx.clear();
+        ui.reset();
     }
 }
 
@@ -283,6 +290,7 @@ impl Default for FramePacket {
             morph_weights: Vec::new(),
             debug: DebugDrawList::default(),
             vfx: VfxFrame::default(),
+            ui: UiDrawList::default(),
         }
     }
 }

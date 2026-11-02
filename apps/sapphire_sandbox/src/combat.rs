@@ -37,9 +37,10 @@
 //! that starts it over does the same at once ([`Combat::restart`]). A new fight is a new [`Simulation`],
 //! from the same first tick: nothing carries over, and a script plays it exactly as it played the one
 //! before. That's what the app's own test leans on (`tests/replays.rs`): each fight's checksum in the log
-//! is the one a headless run of the same script reaches at that tick. Making one allocates, between steps,
-//! outside what rule R6 counts ([`read_bindings`]'s caller keeps it so). A script plays one in a window
-//! too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
+//! is the one a headless run of the same script reaches at that tick. Only the player's hands outlast a
+//! fight, so a button still down from the last one reads as up until it lets go. Making one allocates,
+//! between steps, outside what rule R6 counts ([`read_bindings`]'s caller keeps it so). A script plays one
+//! in a window too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
 
 use std::fs;
 use std::io::Write;
@@ -50,7 +51,7 @@ use sapphire_gameplay::replay::{
     Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario, checksums_file_name, find_scenario,
     find_script,
 };
-use sapphire_gameplay::{ActorId, Simulation, TickActions};
+use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 
@@ -118,6 +119,10 @@ struct LiveFight {
     fell_at: Option<u64>,
     /// How many fights there have been, this one included.
     fights: u32,
+    /// The player's buttons as the bindings last read them.
+    held: Buttons,
+    /// What of them was down as this fight began and hasn't let go since.
+    held_over: Buttons,
 }
 
 impl LiveFight {
@@ -128,13 +133,26 @@ impl LiveFight {
     ) -> Result<Self, String> {
         let (sim, cast) =
             live.start(scenario, scenario.config).map_err(|error| format!("--fight: {error}"))?;
-        Ok(Self { scenario, live, sim, cast, script, fell_at: None, fights: 1 })
+        Ok(Self {
+            scenario,
+            live,
+            sim,
+            cast,
+            script,
+            fell_at: None,
+            fights: 1,
+            held: Buttons::NONE,
+            held_over: Buttons::NONE,
+        })
     }
 
     /// One tick, and whatever it ended. Returns whether it asked `bindings`.
     fn step(&mut self, bindings: &mut dyn ActionSource) -> bool {
         let asks = self.script.is_none();
-        let actions = action_source(&mut self.script, bindings).actions(self.sim.tick(), &self.cast);
+        let mut actions = action_source(&mut self.script, bindings).actions(self.sim.tick(), &self.cast);
+        if asks {
+            self.hide_held_over(&mut actions);
+        }
         self.sim.step(&actions);
         let tick = self.sim.tick();
         match self.fell_at {
@@ -143,6 +161,19 @@ impl LiveFight {
             _ => {}
         }
         asks
+    }
+
+    /// Takes out of a played tick what's been held since before this fight. A simulation reads a press as
+    /// a button down that wasn't on the tick before, and a new one has no tick before, so to it a button
+    /// held across the restart is a press nobody made. The stick is a level, so a thumb walks straight on.
+    fn hide_held_over(&mut self, actions: &mut TickActions) {
+        let Some(&player) = self.cast.first() else { return };
+        let mut read = actions.get(player);
+        self.held = read.buttons;
+        // What's in `held_over` and still down: `Buttons` has no intersection.
+        self.held_over = self.held_over.minus(self.held_over.minus(read.buttons));
+        read.buttons = read.buttons.minus(self.held_over);
+        actions.set(player, read).expect("the bindings just gave this actor a place");
     }
 
     /// A party falls with its last member: until then, a fall only brings in the next.
@@ -165,6 +196,7 @@ impl LiveFight {
             Ok((sim, cast)) => {
                 (self.sim, self.cast) = (sim, cast);
                 self.fights += 1;
+                self.held_over = self.held;
             }
             Err(error) => tracing::error!(target: LOG_TARGET, %error, "the fight can't start over"),
         }

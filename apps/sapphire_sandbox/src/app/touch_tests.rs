@@ -275,6 +275,42 @@ fn a_tap_ends_the_pause_and_a_thumb_held_through_it_still_lifts() {
     assert!(rig.frame(), "the second Back leaves");
 }
 
+/// A new fight is a new simulation, whose first tick has nothing before it, so to it whatever's held is a
+/// press unless something says otherwise. A thumb held through the restart walks on, and a held attack
+/// doesn't swing: it has to be let go and pressed again, as on the way back from the pause.
+#[test]
+fn a_held_attack_doesnt_swing_when_the_fight_starts_over() {
+    let mut rig = Rig::fight();
+    rig.push_stick(THUMB, Vec2::new(0.0, 1.0));
+    rig.touch(3, OTHER_THUMB, TouchPhase::Down, rig.layout.attack.center);
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.running(), Some(sapphire_core::Name::new("light_1")));
+
+    rig.combat.restart();
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.sim().tick(), 1, "a new fight");
+    assert_eq!(rig.running(), None, "held across the restart, it isn't pressed again");
+    assert_ne!(rig.read().stick, Stick::CENTER, "and the walk goes on");
+    for _ in 0..5 {
+        rig.frame();
+        rig.step();
+        assert_eq!(rig.running(), None, "still held");
+    }
+
+    // Let go and pressed again, it's a press.
+    let attack = rig.layout.attack.center;
+    rig.touch(1, OTHER_THUMB, TouchPhase::Up, attack);
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.running(), None);
+    rig.touch(1, OTHER_THUMB, TouchPhase::Down, attack);
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.running(), Some(sapphire_core::Name::new("light_1")));
+}
+
 /// The frame after the tap that ended a pause, the steps are about to run and the combat context is back,
 /// so a thumb landing then is the fight's. The pause no longer wants it.
 #[test]

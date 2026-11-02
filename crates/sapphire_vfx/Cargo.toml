@@ -1,0 +1,28 @@
+[package]
+name = "sapphire_vfx"
+description = "Sapphire's effects simulation: emitters with modules and curves as documents, CPU particles and sword trails on their owners' clocks, resolved into plain data the renderer draws."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The `TypePath` derive on the effect library finds the crate by this name (see sapphire_reflect).
+bevy_reflect.workspace = true
+glam.workspace = true
+profiling.workspace = true
+# What the simulation resolves into: the plain sprites and ribbon points the renderer draws, so
+# this crate has no edge to it (rule R4).
+sapphire_look.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The counting allocator (`tests/allocations.rs`).
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

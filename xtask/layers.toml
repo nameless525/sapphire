@@ -57,6 +57,9 @@ sapphire_physics = { kind = "runtime", layer = 3 }
 # Audio backends, cue playback and clock-aware mixing (spec §5.15). Plain data in, no ECS or
 # renderer. Its cooked formats are `sapphire_assets`', so the cooker links no mixer.
 sapphire_audio = { kind = "runtime", layer = 3 }
+# Effects' documents and CPU simulation, beside the renderer rather than above it: they meet only
+# in the plain sprites and ribbon points `sapphire_look` holds (rule R4), so neither links the other.
+sapphire_vfx = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 sapphire_gameplay = { kind = "runtime", layer = 4 }

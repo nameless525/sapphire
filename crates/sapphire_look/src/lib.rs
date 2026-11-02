@@ -24,6 +24,8 @@
 //!   ray ([`Fog::ray`]), with the constants the shaders share.
 //! - **Post-processing's input** ([`post`]): exposure, bloom, the tone curve and grades, the
 //!   vignette, the compositing layers and combat's screen effects ([`PostParams`]).
+//! - **The frame's effects** ([`vfx`]): the sprites and ribbon points `sapphire_vfx` resolves and
+//!   the renderer draws ([`VfxFrame`]), and the shapes of their generated map ([`VfxShape`]).
 //!
 //! # Does not own
 //!
@@ -44,6 +46,7 @@ pub mod fog;
 pub mod light;
 pub mod post;
 pub mod sky;
+pub mod vfx;
 
 pub use fog::{Fog, FogLayer, FogRay, HeightFog};
 pub use light::{
@@ -56,3 +59,4 @@ pub use post::{
     PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
+pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

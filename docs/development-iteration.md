@@ -86,7 +86,7 @@ cargo xtask replay --update
 
 ## Tuning a fight
 
-Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron`, under `--graph` `character.animgraph.ron` and, with `--cues`, `default_cues.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. A fight's own graphs come from a cook: save, then `cargo xtask content`. [m2-exit-run.md](m2-exit-run.md), "What changes what", has every route. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
+Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron`, `character.animgraph.ron` and, with `--cues`, `default_cues.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. [m2-exit-run.md](m2-exit-run.md), "What changes what", has every route. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
 
 - A move in progress finishes on what it started with, and the next start reads the edit. The log says `the next attempt plays the new moves`, and `cargo xtask link status` shows each fighter's revision and windows.
 - A bad document changes nothing, and its issues name the move and the track. The next good one works.

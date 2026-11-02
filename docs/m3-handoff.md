@@ -2,11 +2,12 @@
 
 What M3 inherits from M2, for whoever starts M3. It's a map, as [m2-handoff.md](m2-handoff.md) was: each item gets a line or two and a pointer to where the detail lives, the spec ([engine-spec.md](engine-spec.md)) by section, the plan ([m2-plan.md](m2-plan.md)) by package ID, or the code.
 
-Written at M2's close (Z3, 2026-11-02), on the line at Z1 (#147) with WA-3 landing beside it. Counts are as of then. **M3 has no go-ahead:** spec §10 makes M2 the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. If the answer is the off-ramp, "What M3 builds on" below is the list of Rust systems that stay.
+Written at M2's close (Z3, 2026-11-02), on the review line's top, f8fa8f3f, with Z1, WA-3 and five reviews under it. Counts are as of then, and the exit tests' numbers come from 410cf24b ([m2-exit-run.md](m2-exit-run.md), "Rehearsal"). **M3 has no go-ahead:** spec §10 makes M2 the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. If the answer is the off-ramp, "What M3 builds on" below is the list of Rust systems that stay.
 
 ## Where M2 stands
 
 - **Built, with nothing judged by a person** (spec §10, "M2 status"). Every package but the feel reviews (Z2) has landed or is landing.
+- **Reviewed by agents who hadn't built it:** 31 bugs fixed ([m2-go-no-go.md](m2-go-no-go.md), "What the review found"). What they left open is below, under the device checks and the deferred list.
 - **Exit test 1 (feel):** nobody has played the fight. The window's fight loop has run on an emulator and a simulator, and never on a desktop. [m2-exit-run.md](m2-exit-run.md) has the sheet for the three reviews.
 - **Exit test 2 (iteration):** holds on the desktop, an emulator and a simulator. A phone is owed.
 - **Exit test 3 (determinism):** CI enforces it on every pull request, on three OSes.
@@ -18,14 +19,16 @@ Nothing here has been run, for want of the device. [m2-exit-run.md](m2-exit-run.
 
 ### M2's
 
+- **A desktop's window, by hand:** the mouse at the look scale of −0.008, no jump after capture or resume, the cursor's warp and return, focus around Cmd-Tab, minimize and clicking away, a trackpad's fingers and the HUD's zones, the veil, and Windows raw input and X11 and Wayland relative mode ([m2-exit-run.md](m2-exit-run.md), "The pointer and focus"). A live resize and a zero-size window were read, not run; fresh runs passed from 1×1 to 3456×2234 with the window's format.
 - **A gamepad on a desktop:** the window's first run on a desktop, `PadRumble` and `stop_rumble` on a real pad, `SDL_RumbleGamepad` on any pad, and whether Zenless Zone Zero's layout, written from memory in [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron), is right.
 - **Sound, on any speaker:** nobody has heard a cue. Which sound suits which hit, the `step` and `skid` sounds, and levels (plan E3).
 - **A phone, touch:** the layout and sizes under thumbs, the stick's feel, press-to-swing latency at 30 fps, the view's drag rate, the speaker, real calls and alarms, and the OS's edge swipes ([m2-exit-run.md](m2-exit-run.md), "What only a phone can show"). iOS has never had a touch: `simctl` can't inject one.
+- **A phone, the pause's tap (plausible, not made to fail):** `GestureSettings::tap_slop` is 10 window points ([bindings.rs](../crates/sapphire_input/src/bindings.rs), line 144), and Android's are pixels, about 3.3 dp on a 3× phone, so a tap may read as a drag and leave Back as the only exit. Scale gesture positions by the display's scale.
 - **A phone, exit test 4:** Mobile-Low held at 30 fps, thermally throttled, after 15 minutes of combat, on an iPhone 12 and a Snapdragon 865-class phone, with every row of spec §3.5 read there.
 - **A phone, exit test 2:** a saved move on the next attempt in under 5 s over live link.
 - **A phone, the rest of §3.5's list:** parallel recording's stalls on a phone's core mix, memory on a 4 GB phone, the composite at native output on a tile GPU, the audio callback at real-time priority, a first launch's cold pipeline caches.
-- **Audio on a phone:** latency, AAudio's fast path and MMAP, audio focus, real calls and Siri, route changes such as headphones, and iOS's `Ambient` session with the player's music on and the silent switch (spec §5.15).
-- **The timeline editor's window has never opened** on any OS: drag feel, 8-point handles, tick snapping, layout, 60 Hz playback, real keyboards, Close and Quit ([development-iteration.md](development-iteration.md), "The timeline editor"). It has no resize cursor or clipboard, because `sapphire_platform` has neither.
+- **Audio on a phone:** latency, AAudio's fast path and MMAP, audio focus, real calls and Siri, route changes such as headphones, and iOS's `Ambient` session with the player's music on and the silent switch (spec §5.15). Three plausible gaps in [audio_session.rs](../crates/sapphire_platform/src/audio_session.rs), none made to fail: nothing re-applies `Ambient` after a media services reset, since `prepare` (line 53) runs once; an interruption's `Ended` whose `activate()` fails leaves `INTERRUPTED` true with no retry until the next background trip (`observe_interruptions`, line 92); Android's `prepare` is behind a `Once` (line 132), so a second call after a failed first returns Ok and cpal then panics, which nothing reaches today.
+- **The timeline editor's window has never opened** on any OS: drag feel, 8-point handles, tick snapping, layout, 60 Hz playback, real keyboards, Close and Quit ([development-iteration.md](development-iteration.md), "The timeline editor"). It has no cursor icons or clipboard, because `sapphire_platform` has neither and [window.rs](../tools/sapphire_editor/src/window.rs) drops egui's `platform_output`, so Cmd+V won't paste into the address box. Two of the review's fixes there, a lost surface and pending textures at exit, were made by reading. A surface that stays lost now rebuilds the GPU stack on each pass, with no pacing, and egui may log "Detected a linear framebuffer", probably only a warning.
 - **`xcrun devicectl device copy from`,** to fetch a recording from an iPhone, is untried.
 - **End-to-end latency:** spec §4.2 asks for it in M2. Nothing has measured a press to a change on glass. Pillar 1's "3 ticks" is measured in the simulation (plan G1, O3).
 - **A crash nobody cleared:** an emulator died once on its own hang watchdog during a relaunch under load, and six relaunches didn't repeat it (plan I3). The Windows stack fix (`.cargo/config.toml`'s 8 MiB main thread, `sapphire_jobs`' 4 MiB workers) rests on what the dumps showed, not on a proof: three crashes in two CI rounds before it (`lookdev-strike-springs-mark`, `effects-impact-frame`, `lookdev-clip-idle`) and none since.
@@ -55,7 +58,7 @@ These items in [m2-handoff.md](m2-handoff.md) are closed, and don't carry:
 - **Debug-draw API, hitbox and intent views, replay recorder** (T1). The entity inspector stays open.
 - **Combat replays on every pull request** (D2).
 - **Android Back:** decided in I1. It opens the pause, and leaves from it.
-- **`alpha` means two things (WA-3):** fixed by its own PR, landing beside this one.
+- **`alpha` means two things (WA-3):** fixed. Every clock a frame reads interpolates as transforms do (spec §4.5), and 110 of the 142 Metal goldens moved for it.
 - **A second character:** G7's party is recolors of the one character, so Seed-san wasn't needed. A real second character is still M3's call.
 
 ## What M3 builds on
@@ -138,6 +141,20 @@ The arena is the one example ([arena.rs](../apps/sapphire_sandbox/src/arena.rs),
 
 Zones replace most of this: a stage can't yet be chosen by data.
 
+### Rules the reviews made
+
+Each has a test holding it, and each binds what M3 adds.
+
+- **Every struct in a move document denies unknown fields** ([document.rs](../crates/sapphire_moves/src/document.rs)), so `cancles:` is refused by name in a save, a push and a cook. A new struct in the format needs `deny_unknown_fields` too.
+- **`MAX_MOVE_REACH`** (1,000 m, [set.rs](../crates/sapphire_moves/src/set.rs), line 32): a root key or knockback past it is an issue naming the move. A finite 1e30 m used to overflow the controller.
+- **`MIN_SHAPE_EXTENT`** (1 mm, the same file, line 36): a document's shape under what the physics world takes is an issue. A test holds the two limits together.
+- **A defeat takes the stick** for good, as a running move does ([movement.rs](../crates/sapphire_gameplay/src/movement.rs), line 61). Anything that walks a fallen character needs its own road.
+- **`LiveMoves::start` sets up on the edit** ([tuning.rs](../crates/sapphire_gameplay/src/replay/tuning.rs), line 70): a setup sees edited sets as revision 0, so a brain's first wait and the RNG stream match a build with the edit in its document. A setup can refuse an edit, as a party does a set with no swap, and may not assert what a saved document needn't have.
+- **Clocks (WA-3, spec §4.5):** a new clock a frame reads goes `alpha` of the way along its own last step, as transforms do. The section lists what's deliberately on another clock, and `scene::clock_tests` holds the rule through recorded fights.
+- **A fight starting over ends what the last one set going** (sparks, screen effects, shakes, rumble, damage numbers), when the fight's clock goes back. A held button stays hidden until it lets go.
+- **A live cue table can't name a sound nobody loaded** (`CueTable::check_sounds`, spec §5.29), and a cook that started before a save leaves the save playing where the app has the file.
+- **`PointerState`** ([app.rs](../apps/sapphire_sandbox/src/app.rs), line 572) decides who has a desktop's pointer, and `focus_lost` pauses only a played fight, so scripts and replays keep their checksums.
+
 ## Everything deferred
 
 ### Named by the plan as not in M2
@@ -152,16 +169,17 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - `SpringTuning::ACTION` ([springs.rs](../crates/sapphire_anim/src/springs.rs)), `IkControls` ([ik.rs](../apps/sapphire_sandbox/src/ik.rs)), `TargetingWeights` ([targeting.rs](../crates/sapphire_gameplay/src/targeting.rs)).
   - The HUD's and touch controls' layout ([hud.rs](../crates/sapphire_ui/src/hud.rs), [touch.rs](../crates/sapphire_ui/src/touch.rs)).
   - `combat_bindings.ron` and `default_effects.ron` are data, compiled in, with no reload route. `VfxWorld::set_library` is the hook; nothing calls it for a fight. `VfxWorld` has no `set_budget`.
-- **A fight's graphs have no document route:** `Scene::replace_graph_document` serves `--graph` alone, so in a fight a graph comes through a cook (under 2 s, measured in the exit run's rehearsal). It works, and the message says so; two graphs by file name would close it.
-- **Sound isn't hot-reloaded:** the mixer holds what it decoded at startup, and a table naming a cue the fight didn't load at launch drops it (`AudioStats::dropped_unknown`).
-- **G1:** no per-move `Ground | Flight` field (every move is a `strike`), and no teleport API. Capsules block but don't push. Spec §5.22.
+- **The enemy's graph has no document route:** `warrior.animgraph.ron` comes through a cook (under 2 s, measured in the exit run's rehearsal), and a push is refused by name. The character's takes a save and a push in a real fight. A live copy like `Content`'s `live_graph` for `enemy_graph`, plus a `Scene` route, is about 40 lines, and a test stage can now stand two fighters in the arena.
+- **Sound isn't hot-reloaded:** the mixer holds what it decoded at startup, and a live table naming a sound not loaded then is refused. A sound already playing rings out across a restart, because the mixer can't stop a voice (longest in `content/` is 1.94 s); a voice stop on `AudioBackend` ([backend.rs](../crates/sapphire_audio/src/backend.rs), line 131) would do it. A stream rebuild keeps its state at Running, so cues queue and play in a small burst. A NaN emitter or listener position would poison a bus: no route to one was found, and it isn't hardened.
+- **Input, marginal:** an analog trigger held through focus loss reads its first jitter on return as a new press. `read_touch` ([controls.rs](../crates/sapphire_controls/src/controls.rs), line 269) pushes after the pump's events, so a thumb press and Back in one frame apply after the pause.
+- **G1:** no per-move `Ground | Flight` field (every move is a `strike`), and no teleport API. Capsules block but don't push. Spec §5.22. A jump pressed in a freeze is lost, because the raw button's edge is read once ([mod.rs](../crates/sapphire_gameplay/src/controller/mod.rs), line 460) and `step_controller` returns early on a frozen clock ([step.rs](../crates/sapphire_gameplay/src/controller/step.rs), line 57). It's rare: a frozen character that isn't in a move. When jump matters, make it an intent; `ControllerDrive::jump` is the seam.
 - **D3:** statics are fixed once built, a box can't `move_and_collide`, a document's meshes are inline, and there are no dynamic bodies or triggers. A `parry3d` upgrade re-pins `tests/checksum.rs` and reruns `tests/allocations.rs`.
 - **D4:** a target crossing a swing inside a tick is judged by its end pose. A step of several ticks blends a root in a straight line (at 5×, 7.5 cm short across the end of a 7.5 m/s motion). G3's `rearm` and `blocked_by` are authored only in the test moves so far.
 - **G3:** no factions, so everyone hits everyone. A defeated actor's capsule stays as an obstacle. The ability system above resolve waits for a fight that needs it (spec §5.22).
 - **G6:** one enemy, steering directly with no navigation. Its target is a fixed foe, with no director of several enemies.
-- **G7:** no HUD slot for party members (`Simulation::party_ready_in` is what one would read), no touch button for swap, and recolors made at load.
+- **G7:** no HUD slot for party members (`Simulation::party_ready_in` is what one would read), no touch button for swap, and recolors made at load. A decision from the review: once someone saves away `swap_in`, a running party fight goes on, and the next fight won't start until it's restored, as a build with that document would do.
 - **G5:** sequencer takeovers are a pose slot with nothing driving it. Soft lock's `TargetingWeights::TOUCH` exists and nothing uses it: [arena.rs](../apps/sapphire_sandbox/src/arena.rs) always passes `SOFT_LOCK`, which makes no difference with one enemy.
-- **N3:** `Jump_Start` and the side dodges cook and aren't played. The arena's two fighters animate in turn on one thread, with no list and no allocation, and a crowd would want `evaluate_all`'s jobs with a retained list ([scene.rs](../apps/sapphire_sandbox/src/scene.rs), `animate_fighters`). `--clip`'s path still allocates a `Vec` a frame. Breathing adds on top of O2's `idle`, which may already breathe: nobody has judged whether that doubles.
+- **N3:** `Jump_Start` and the side dodges cook and aren't played. The arena's two fighters animate in turn on one thread, with no list and no allocation, and a crowd would want `evaluate_all`'s jobs with a retained list ([scene.rs](../apps/sapphire_sandbox/src/scene.rs), `animate_fighters`). `--clip`'s path still allocates a `Vec` a frame. Breathing adds on top of O2's `idle`, which may already breathe: nobody has judged whether that doubles. Two dev-only gaps from the review, in [scene.rs](../apps/sapphire_sandbox/src/scene.rs): a new enemy skeleton or joint count has no path back, because `replace_graph` rebuilds only the player's driver, so the enemy holds a stale pose until relaunch (`driver.fits`, line 1384; nothing panics). And `arena.graph_input` (line 1379) spends `cut` and `landed` before that check skips the fighter.
 - **N4:** no get-up clip, so a knockdown rises by a decay alone. Hands on a weapon are tested, and the graph's grip hasn't been looked at.
 - **N5:** a clip's root-motion loop teleports with no view cut, which may leave a one-frame velocity streak (unverified). Limits beat colliders, so an arm can pass through a strand by up to 7.2 cm. Springs have no floor, so hair passes through paving. `AnimStats` isn't in the overlay.
 - **O2's verdicts, owed to a person:** walk plain and 0.72 m/s at 1× against the controller's 2 m/s; strafes hold the body turned 60°; side dodges stiff; `Jump_Idle` holds its arms out; both idles and deaths written without an animator; the run over-splits its legs.
@@ -171,7 +189,8 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 - **Camera framing nobody has judged:** the player out of sight behind a tree after a 3 s push, the enemy filling the frame beside a stall, the enemy between camera and player, a view through the pavilion. The plain follow camera can sit inside a stall late in a fight (only goldens use it).
 - **The sword** stands straight up from a fallen hand.
 - **Balance:** mashing `light` still wins in 13–15 s with 220–280 of 300 health left (G6). Armour on the swipe is the next lever. Light hits can cut a swipe's wind-up, by design so far.
-- **Phone UX:** an iPhone has no Back, so no pause or leave by touch. The pause has no visuals. Nothing auto-pauses on return from the background. A pad's stick up and a finger's drag up go opposite ways. The launcher icon opens the default scene, not the fight.
+- **The HUD:** damage numbers keep floating in a pause, on the real clock, as documented. `Scene::show_damage` ([scene.rs](../apps/sapphire_sandbox/src/scene.rs), line 2272) has no tick guard, so a recording stopped at `MAX_TICKS` (4 hours) would show its last step's hits again if that tick landed one.
+- **Phone UX:** an iPhone has no Back, so no pause or leave by touch. Nothing auto-pauses on return from the background. A pad's stick up and a finger's drag up go opposite ways. The launcher icon opens the default scene, not the fight.
 - **Z1's recommendations:**
   - Decide parallel recording against one encoder on a phone (`PARALLEL_MIN_PASSES`, [executor.rs](../crates/sapphire_render/src/graph/executor.rs)).
   - Give §3.3's post row a screen-effects share.
@@ -180,11 +199,11 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - Add footprint to the windowed `frame stats` (Z3 added live heap, not footprint).
 - **CPU rows move together** by ×2.6–3 between runs on identical code, and nobody has shown why (spec §3.5). `sim_dropped_ms` read 33–199 on rebuilds under load. Paused captures differ on 0.6% of pixels, also unexplained.
 - **Smaller code notes:**
-  - `apps/sapphire_sandbox/src/scene.rs`: `Scene`'s extract runs two `resource_scope`s a frame (lines 2017 and 2067), which R6 doesn't reach, outside a step.
+  - `apps/sapphire_sandbox/src/scene.rs`: `Scene`'s extract runs two `resource_scope`s a frame (lines 2090 and 2139), which R6 doesn't reach, outside a step.
   - [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs)'s `arena_fight` compiles documents at every start: a fight's restart takes 4.3–6.5 ms and about 6,000 allocations (§3.5). A game would hold its tables.
   - `gpu-tests-warp.yml` doesn't run the app's replay tests.
   - `__pycache__` isn't ignored for `tools/motion`; its tests are written to run with `python3 -B`.
-- **`scenes/costs.rs`** wants refreshing from three CI runs once WA-3 and the last goldens land (the orchestrator has that).
+- **`scenes/costs.rs`** wants refreshing from three CI runs on the tree with WA-3 and the review in it (the orchestrator has that).
 
 ### Carried from M2's handoff, unchanged
 
@@ -203,6 +222,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 ## Known limits and risks
 
 - **Feel is unknown.** All of M2 could be well built and still not fun. This is the largest risk, and [m2-go-no-go.md](m2-go-no-go.md) is about it.
+- **More bugs are likely.** The review found 31 past every gate, and nobody can say how many are left. Its fuzz (51,678 swaps and the rest, in [m2-go-no-go.md](m2-go-no-go.md)) ran on arm64 only. The two windows nobody has opened are the likeliest place.
 - **No phone has run anything,** after three milestones. Every mobile number is an M5 at the Mobile tiers' settings, the iOS Simulator or the Android emulator. §3's budgets are still proposals.
 - **Motion without an animator** (plan §6). The player's moves are solved from poses set by target, the enemy's and locomotion's are retargeted chibi clips, and nobody has said whether they're good enough to judge the fight by. The fallback is a commissioned animator or a bought pack, and a pack that bars redistribution can't go in a public repo.
 - **Tools and scenes are single-example:** one character, one enemy, one stage, one set of moves. What's data today has one consumer, so "authored with no Rust changes" is untested.

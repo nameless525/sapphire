@@ -18,7 +18,7 @@ M2 ends when its four exit tests are answered ([m2-plan.md](m2-plan.md) §1): on
 cargo xtask run --platform desktop --incremental --features dev -- --arena --fight 2>&1 | tee target/review.log
 ```
 
-That cooks, builds, opens a window and starts a fight. In a window `--fight` turns on the cues, the live HUD, the sword and combat's bindings. It starts over 4 s after someone falls. A first build takes about 4 minutes. `dev` is what brings hot reload, live link and the overlay, and what an edit below needs. `--incremental` is an optimized build with no LTO, so an edit to code rebuilds in seconds, not minutes, for about 0.3 ms more CPU in a frame on the same fight ("What changes what"). `--release` is what the numbers elsewhere were taken on, and plays the same fight to the same checksum.
+That cooks, builds, opens a window and starts a fight. In a window `--fight` turns on the cues, the live HUD, the sword and combat's bindings. It starts over 4 s after someone falls. On launch the pointer is captured, the cursor hides and the mouse turns the camera: "The pointer and focus" below says how to get it back. A first build takes about 4 minutes. `dev` is what brings hot reload, live link and the overlay, and what an edit below needs. `--incremental` is an optimized build with no LTO, so an edit to code rebuilds in seconds, not minutes, for about 0.3 ms more CPU in a frame on the same fight ("What changes what"). `--release` is what the numbers elsewhere were taken on, and plays the same fight to the same checksum.
 
 If the pad isn't seen (`cargo xtask run` starts a bare binary), try `--platform macos`, which starts an app bundle and points it at the same cook. **Not run:** an agent may not open a window, so neither command has run as written, and the desktop window's loop has never run at all. I3 ran the same loop on an emulator and a simulator, and found a panic there that a debug window would have hit, fixed since. If it misbehaves, that's the first finding: keep the log.
 
@@ -29,19 +29,42 @@ From [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron), by 
 | Verb | What it does here | Pad | Keyboard and mouse |
 |---|---|---|---|
 | Move | 2 m/s at half tilt, 6 m/s from 0.9 of a tilt | Left stick | W A S D |
-| Look | Turn the view. It drifts back behind you | Right stick | Arrow keys, mouse |
+| Look | Turn the view. It drifts back behind you | Right stick | Mouse, arrow keys |
+| Zoom | The camera's distance | None | Wheel |
 | Light | The three-hit string, and the dash attack out of a dodge | West (X, Square) | J, left button |
 | Dodge | A leap back. The first 100 ms are the perfect dodge | South (A, Cross) | Left Shift |
 | Skill | Two hits, safe to start | North (Y, Triangle) | E |
 | Lock-on | Hold the line to the enemy | Right stick press | L, middle button |
 | Jump | The controller's jump | Left shoulder | Space |
-| Swap | With `--party` only | Right shoulder | Tab |
-| Heavy, ultimate | Bound, with no move on them yet | East, right trigger | K, Q |
+| Swap | With `--party` only. The HUD's health trail starts over for whoever comes in | Right shoulder | Tab |
+| Heavy | Bound, with no move on it yet | East (B, Circle) | K, right button |
+| Ultimate | Bound, with no move on it yet | Right trigger | Q |
 | Start over | A new fight now | D-pad down | R |
-| Pause | Stops the steps. A second press resumes | Start | Esc, P |
-| Leave | From the pause | Back | Backspace |
+| Pause | Stops the steps, shows a veil and a two-bar mark, and frees the cursor | Start | Esc, P |
+| Resume | From the pause. It takes the pointer again | Start, East | Esc, P |
+| Leave | Opens the pause, and a second press in the pause leaves | Back | Backspace |
 
-The `` ` `` key shows the overlay, whose combat panel has the intent buffer, the move's windows and a timeline. `--debug-overlay=combat` starts with it on.
+In `dev` builds the `` ` `` key toggles the overlay, whose combat panel has the intent buffer, the move's windows and a timeline. `--debug-overlay=combat` starts with it on.
+
+### The pointer and focus
+
+A fight someone's playing in a desktop's window holds the pointer, so the mouse goes on turning the camera past the screen's edges and a click can't land outside.
+
+- **Getting the pointer back:** Esc or P pauses, shows a veil and a two-bar mark, and frees the cursor. Esc or P resumes and captures it again. Backspace opens the pause too, and Backspace in the pause leaves. Cmd-Q quits at any time, and the window's close button works once paused.
+- **Going elsewhere:** Cmd-Tab or clicking away pauses a played fight. Coming back with a click does nothing: no swing, no resume, and the cursor stays free until Esc or P. A button held through Esc doesn't swing as the fight resumes, and the next press does.
+- **`--script`** neither captures the pointer nor pauses on focus loss, so a scripted fight goes on behind other windows and its checksum holds. The same goes for a replay and a recording a script drives.
+- **The overlay:** the pointer is free while it's up.
+- **Launched without focus:** a fight runs with no capture and no pause until it's focused.
+
+**Check these by hand, because only a real window can show them.** Tests hold what decides all of this with no window, and what SDL 3.4.18 does with it comes from reading its source:
+
+- How the mouse feels at the look scale of −0.008 radians a point ([combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron)).
+- No jump on the first motion after capture or resume.
+- The cursor's warp to the centre, and its return on release.
+- `FocusLost` and `FocusGained` around Cmd-Tab, minimize and clicking away. The log's `pause paused=true` says a pause began.
+- A MacBook trackpad's fingers staying out of the HUD's zones. A desktop shows the on-screen stick and buttons only once a finger has landed, so if they appear when a finger rests on the pad, desktops need to ignore touches.
+- How the veil looks. `--hud live --hud-paused` with `--capture` draws it with no window.
+- When those machines exist: Windows raw input, and X11 and Wayland relative mode.
 
 ### What to write down
 
@@ -49,6 +72,7 @@ The `` ` `` key shows the overlay, whose combat panel has the intent buffer, the
 - For each review below, each question's answer in your own words. "The hit feels late" is enough. Numbers aren't needed: the table under "What changes what" turns words into fields.
 - Anything you wanted to change and couldn't, and how long each change you did make took. That's what the off-ramp asks about.
 - `target/review.log`. Each hit, each fight's result and any error is in it, and `frame stats` every 2 s.
+- Anything wrong on the list under "The pointer and focus".
 
 ## The feel reviews (Z2)
 
@@ -89,7 +113,7 @@ Pillars: 2 (readable), 3 (impact), 4 (cancels and dodges), 6.
 
 The plan's question: **fight the enemy, and try tuning a move yourself.** `git checkout` the dummy first.
 
-Fight for ten minutes. Win and lose. Dodge its overhead on purpose, which is the telegraphed one: a perfect dodge slows the world and a press answers with the dash attack. Then change something you didn't like, by the routes below, and play the next attempt. Do at least one change by hand in a text editor and one in the timeline editor.
+Fight for ten minutes. Win and lose. Dodge its overhead on purpose, which is the telegraphed one: a perfect dodge slows the world and a press answers with the dash attack. Then change something you didn't like, by the routes below, and play the next attempt. Going to your editor pauses the fight, and Esc or P ends the pause. Do at least one change by hand in a text editor and one in the timeline editor.
 
 Pillars: all of 1 to 6.
 
@@ -102,7 +126,7 @@ Then go on to [m2-go-no-go.md](m2-go-no-go.md).
 
 ## What changes what
 
-Every row below ran against a running offscreen fight on 2026-11-02, except where it says it can't. Times are from the rehearsal (release `dev`, Apple M5, load average 11–30).
+Every row below ran against a running offscreen fight on 2026-11-02, except where it says it can't. Times are from the rehearsal on 410cf24b unless a row says otherwise (release `dev`, Apple M5, load average 11–30).
 
 **How each route reaches a running fight:**
 
@@ -114,7 +138,7 @@ Every row below ran against a running offscreen fight on 2026-11-02, except wher
 | **Restart** | Stop, and run the command again, which cooks | 1.3–2.4 s to a fight with no window, plus a cook's 1–2 s if anything changed | A new fight |
 | **Rebuild** | Stop, and run the command again, which builds | 3.6–4.2 s for a one-line edit under `--incremental`, of which 1.4–5.5 s is the build. Under `--release` the build alone is 76–152 s | A new fight |
 
-A move in progress finishes on what it started with. A bad document changes nothing, and the log, or `link push`'s non-zero exit, names the move and the track. `cargo xtask link status` lists each document's edits and what each fighter is playing, with its revision and windows.
+A move in progress finishes on what it started with. A bad document changes nothing, and the log, or `link push`'s non-zero exit, names the move and the track. That includes a misspelt field (`cancles:` is refused by name, and doesn't compile as a move with no such track), a root key or knockback past 1,000 m, and a shape under 1 mm. A cook that started before your last save doesn't undo it: where the app has the file, what lands is the file over the cook's tables. `cargo xtask link status` lists each document's edits and what each fighter is playing, with its revision and windows.
 
 ### Moves
 
@@ -148,12 +172,13 @@ A move in progress finishes on what it started with. A bad document changes noth
 | Rumble | The same rows' `rumble: (low, high, seconds)` | Save. Only a pad can judge |
 | A screen effect's look | [default_screen_effects.ron](../crates/sapphire_world/default_screen_effects.ron): `light_hit`, `medium_hit`, `heavy_hit`, `poise_break`, `finish`, `perfect_dodge`, `skill_flash` | Save |
 | The light and hour | [lookdev_day.ron](../content/lookdev/lookdev_day.ron), and `--time-of-day <hours>` on the command | Save |
-| A cut's blend, a reaction's blend, walk and run blending | [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron): `combat`'s `decay`, `exit`, each move's `decay`, `locomotion`'s `samples`, `smoothing`, `rate`, `transitions`. The warrior's is [warrior.animgraph.ron](../content/combat/enemy/warrior.animgraph.ron) | Cook. A fight refuses a graph saved or pushed as a document |
+| A cut's blend, a reaction's blend, walk and run blending | [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron): `combat`'s `decay`, `exit`, each move's `decay`, `locomotion`'s `samples`, `smoothing`, `rate`, `transitions`. It takes effect at the next state's start | Save or push (134 ms and 7 ms, on f8fa8f3f) |
+| The same on the enemy | [warrior.animgraph.ron](../content/combat/enemy/warrior.animgraph.ron), the same fields | Cook. A save isn't watched, and a push is refused by name |
 | A move's pose, and what's seen when | [moves.py](../tools/motion/moves.py), by [its README](../tools/motion/README.md): `--write`, read a sheet with `sheet.py`, then cook. A cook rebakes the move's tables | Cook |
 | Walk, run, strafe or a reaction's clip | The pack's sidecars under [kaykit_character_animations](../content/third_party/kaykit_character_animations/): a `retarget:` entry's `adjust`, `gain`, `follow` | Cook |
 | A material | `content/combat/enemy/`, `content/lookdev/character/materials/` | Cook |
 | How a sound plays | [content/audio/](../content/audio/)`<name>.cue.ron`: `volume_db`, `pitch`, `attenuation`, `sounds` | Restart: the mixer holds what it decoded at launch |
-| Which sound a hit plays | `default_cues.ron`'s `sounds`, by a cue's ID. A cue the table already names is a Save; one it doesn't name yet is a Restart, because only the table's cues load at launch | Save or Restart |
+| Which sound a hit plays | `default_cues.ron`'s `sounds`, by a cue's ID. A cue already loaded is a Save. One that wasn't loaded at launch is refused live, keeping what fires, because only the table's cues load then, so it's a Restart | Save or Restart |
 | Sparks and trails | [default_effects.ron](../crates/sapphire_vfx/default_effects.ron): compiled in, with no reload | Rebuild |
 | Run speed, acceleration, turning, jump | [profile.rs](../crates/sapphire_gameplay/src/controller/profile.rs), `ControllerProfile::default()`: `run_speed`, `walk_speed`, `acceleration`, `deceleration`, `turn_rate_degrees`, `jump_speed`, `gravity`. **Code, not data,** and the likeliest complaint of review 1. Moves every replay's checksum, so finish with `cargo xtask replay --update` | Rebuild |
 | Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale`. Compiled in | Rebuild |
@@ -175,7 +200,7 @@ With a fight running in another terminal, on the default port:
 cargo xtask editor content/combat/player/player.moves.ron
 ```
 
-It opens a window, and **nobody has opened it**. Drag a window's ends or body, or a cue, tick by tick. Space plays from the frame you're on, with the real simulation and a dummy. Cmd+S saves and pushes, and the side panel shows what it replaced or what the device refused. [development-iteration.md](development-iteration.md), "The timeline editor", has every key and the list of what no test can show. If it won't open, the text file and a save do the same job. With no window: `cargo run -p sapphire_editor -- <file> --capture <png> --move light_1 --tick 8 --content target/content/desktop`.
+It opens a window, and **nobody has opened it**. Drag a window's ends or body, or a cue, tick by tick. Space plays from the frame you're on, with the real simulation and a dummy. Cmd+S saves and pushes, and the side panel shows what it replaced or what the device refused. [development-iteration.md](development-iteration.md), "The timeline editor", has every key and the list of what no test can show. With no file named, or one that won't open, its list holds the repository's documents, and picking from that list with edits open asks first. If it won't open, the text file and a save do the same job. With no window: `cargo run -p sapphire_editor -- <file> --capture <png> --move light_1 --tick 8 --content target/content/desktop`.
 
 ### A recorded session joins the replay suite
 
@@ -216,7 +241,7 @@ That cooks, builds, installs and launches it, and streams the app's log until it
 
 Two traps. A recording's name is refused if it's already there: the app opens, logs `it exists; delete it first to replace it` and closes, looking like a crash. So name each session (`fight-2.sreplay`), or `adb shell run-as dev.sapphire.sandbox rm cache/fight.sreplay`. And the launcher's icon starts the app with no arguments, so that's the sandbox's own scene and not a fight: rerun the command, or start it again with `adb shell am start` and its `sapphire.args` as [m1-exit-run.md](m1-exit-run.md) does.
 
-Back opens the pause: a tap ends it, and Back again leaves.
+Back opens the pause: a tap ends it, and Back again leaves. A pause shows a veil and a two-bar mark here as on a desktop.
 
 ### iPhone
 
@@ -272,6 +297,7 @@ An emulator's touches arrive as exact coordinates in perfect time, so none of th
 - **The stick's feel:** its 60-point radius, a thumb's resting drift and how far a thumb actually travels, and the 2 m/s walk against the 6 m/s run a full push gives.
 - **Latency to a thumb:** a press to a swing on the screen, in a 30 fps fight. The emulator's frame timing says nothing about a phone.
 - **The view's drag rate:** 0.006 radians a point, I2's number. A drag up looks up while a pad's stick up looks down.
+- **The pause's tap on a dense screen:** `tap_slop` is 10 window points, and Android's are pixels, about 3.3 dp on a 3× phone, so a tap may read as a drag, leaving Back as the only way out of a pause. The review read this and couldn't make it fail with no phone.
 - **Haptics and sound:** there are no phone haptics, by choice. Whether a fight reads without them, how cues sound through a phone's speaker, and iOS's Ambient session with the player's music on and the silent switch.
 - **Real interruptions:** a real call, an alarm, the iOS control center and the Android gesture navigation's edge swipes, whose touches the OS takes back in its own timing. The emulator proved `CANCEL` and the shade, and the simulator can't inject touches at all.
 - **Heat and memory:** a fight throttled after 15 minutes against Mobile-Low's budgets (below), and whether a phone with little memory raises warnings mid-fight.
@@ -336,7 +362,7 @@ cargo xtask link push content/combat/player/player.moves.ron
 
 `cargo xtask link watch content/combat/player/player.moves.ron` pushes each save, which is the real loop. A document needs no cook, so a phone's cooked pack stays as it is, and a phone keeps its edits only until it restarts: a relaunch through `cargo xtask run` cooks the saved file in.
 
-A change that needs a cook (a graph, a pose): `cargo xtask content --cook mobile`, then `cargo xtask link push`, which sends only what changed. Add both to the number.
+A change that needs a cook (the enemy's graph, a pose): `cargo xtask content --cook mobile`, then `cargo xtask link push`, which sends only what changed. Add both to the number.
 
 ### What to record
 
@@ -421,7 +447,7 @@ Phone model, OS, build commit, room temperature, on charge or not. A line every 
 
 ## Rehearsal
 
-Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on Z3's branch. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
+Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on 410cf24b, which is before WA-3's clocks and the review's fixes. Those numbers weren't taken again. The second table says what ran on f8fa8f3f, the review's top. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
 
 ### What ran
 
@@ -437,7 +463,7 @@ Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other age
 | 2 | `link push` to the emulator, Mobile-Low, `adb forward` to a private port | Over 20 rounds: median 259 ms, p90 704, most 906 (the first edit after launch). Tool median 28 ms, most 51. 30 fps |
 | 2 | `cargo xtask link watch content/combat/player/player.moves.ron` on the emulator | Save to attempt 517, 270, 489 and 504 ms |
 | 2 | `link push` to the simulator, Mobile-Low, on a private port | Over 16 rounds: median 357 ms, p90 657, most 843. Tool median 21 ms, most 41. Load 110–190. `link capture` of 2622×1206 took 361 ms |
-| 2 | A cook, then a push, on the emulator (`cargo xtask content --cook mobile`, `link push`, a graph) | 1.35 s and 0.13 s, 1.0 KB sent |
+| 2 | A cook, then a push, on the emulator (`cargo xtask content --cook mobile`, `link push`, the enemy's graph) | 1.35 s and 0.13 s, 1.0 KB sent |
 | 1, 2 | Every Save and Cook row of "What changes what", on a running fight at 640×360 | The times in those tables. Load 20–30 |
 | 1 | `cargo xtask bundle --platform macos --incremental --features dev` | Builds and bundles. Not launched, since that opens a window |
 | 2 | The desktop's commands as written, with a private address: `cargo xtask run … --offscreen --size 1280x720 --arena --fight --script attempts`, then `cargo xtask link status`, `push /tmp/tune/player.moves.ron` and `capture` | Quality tier Desktop-High. Push 16 ms, `since_ms` 415. Capture 145 ms |
@@ -453,9 +479,24 @@ Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other age
 | 1 | The dummy recipe under `--script fight-back` | After 75 s the player has 240 of 300 and the warrior 3,886 of 5,000 |
 | 1 | `sapphire_editor content/combat/player/player.moves.ron --capture <png>` | The timeline and the clay figure draw on the real moves. On the CPU, with no window |
 
+### What ran on the review's tree (f8fa8f3f)
+
+Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5.
+
+| What | Saw |
+|---|---|
+| A save of `character.animgraph.ron` in `--arena --fight --script attempts` | Reloaded in 134 ms: `character's animation graph, from the next state's start` |
+| A push of the same | Exit 0 in 7 ms, with the same reply |
+| A push of `warrior.animgraph.ron` | Exit 1: `only character.animgraph.ron takes edits, and a cook brings any other graph` |
+| A save of `warrior.animgraph.ron` | Nothing, in 4 s |
+| A save of `player.moves.ron` with `cancles:` | Refused in 123 ms, naming the line, the field and `MoveDocument` |
+| `--capture … --arena --hud live --hud-paused --capture-ticks 30` | The veil and the two-bar mark in the frame's middle, read from the picture |
+| `--script fight-back`, one fight | The same checksum as on 410cf24b, `0dfb07dd0da45a9c` |
+| `cargo xtask replay` | 11 replays pass, on the `fight` and `party-swap` checksums the review moved |
+
 ### What didn't run, and why
 
-- **Any desktop window,** because agents may not open one. So `cargo xtask run --platform desktop` and `--platform macos` without `--offscreen`, `--arena --record` in a window, the pause, the overlay's keys and everything in the three reviews.
+- **Any desktop window,** because agents may not open one. So `cargo xtask run --platform desktop` and `--platform macos` without `--offscreen`, `--arena --record` in a window, the pointer's capture, the pause on losing focus, the veil on a real window, the overlay's keys and everything in the three reviews.
 - **A gamepad, rumble, sound.** No pad is attached, and nobody can listen.
 - **`cargo xtask editor`,** whose window nobody has opened.
 - **A phone,** which doesn't exist here. So `cargo xtask run --platform ios`, `iproxy`, `devicectl`, Xcode's gauges, and any thumb on the touch controls.
@@ -465,7 +506,7 @@ Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other age
 ### What it found
 
 - **Nothing read the OS's thermal state,** so exit test 4 had nothing to read on an iPhone. `Platform::thermal_state` is new, and `frame stats` now carries `thermal` and `live_bytes`.
-- **A fight's graphs have no document route.** The docs and the tool's usage said a saved graph reached a running fight. It reaches only `--graph`'s show, and a push to a fight was refused with a message that didn't say what to do. The message, the usage and the docs now say a fight's graphs come from a cook, and a cook works in under 2 s. Adding a route wasn't worth it this late.
+- **A fight's graphs had no document route.** On 410cf24b the docs and the tool's usage said a saved graph reached a running fight, and it reached only `--graph`'s show. The tuning review found the same thing and gave the character's graph a route. `warrior.animgraph.ron` stays cook-only.
 - **`patience` stops at 3,600 ticks,** so the dummy swings about once a minute, and doesn't stand idle for good as a first draft of this file said.
 - **A timing script locks onto `attempts`' beat.** The first harness pushed at a fixed spacing and read 195 ms every round. Rounds here are spaced at random, so they sample the wait.
 - **`link watch` pushes a named document twice** when the device lists it too. The second is "the same moves", and harmless.

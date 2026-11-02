@@ -1275,6 +1275,8 @@ mod tests {
     const SWING_TICKS: u16 = 30;
     /// A graph for the character that plays [`SWING`].
     const GRAPH: AssetId = AssetId::from_bytes([0x60; 16]);
+    /// A cooked set of moves, as the graph show plays.
+    const MOVES: AssetId = AssetId::from_bytes([0x61; 16]);
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
@@ -1283,6 +1285,16 @@ mod tests {
     }
 
     fn pack_with_decay(x: f32, extra: usize, decay: u32) -> Vec<u8> {
+        pack_of(x, extra, decay, 0)
+    }
+
+    /// The first pack, with `strike` so many ticks longer in its cooked moves.
+    #[cfg(feature = "dev")]
+    fn pack_with_moves(longer_by: u32) -> Vec<u8> {
+        pack_of(0.0, 0, 5, longer_by)
+    }
+
+    fn pack_of(x: f32, extra: usize, decay: u32, recovery: u32) -> Vec<u8> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
         let joints: Vec<Joint> = (0..count)
@@ -1337,8 +1349,17 @@ mod tests {
                 &swing_graph(decay).to_cooked().expect("cooked"),
                 vec![SWING],
             ),
+            packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
         ])
         .expect("a pack")
+    }
+
+    /// The graph show's moves as a cook makes them, with `strike` so many ticks longer.
+    fn show_moves(longer_by: u32) -> sapphire_moves::MoveSet {
+        let text = include_str!("../../../content/lookdev/character/show.moves.ron");
+        let mut document = sapphire_moves::MoveSetDocument::parse(text).expect("parses");
+        document.moves[0].recovery += longer_by;
+        document.compile().expect("compiles")
     }
 
     /// The swing, looping. Its decay is all that tells one version from another.
@@ -1617,6 +1638,82 @@ mod tests {
         assert!(waiting, "the new version reached the character");
         let stats = stage.frame();
         assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+    }
+
+    /// An edited graph over live link (M2 T2): it binds at once and waits for the next state's start like
+    /// a new version from a pack, it stays what binds until one comes, and one that can't bind leaves
+    /// everything as it was.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn an_edited_graph_waits_for_the_next_states_start_until_a_pack_replaces_it() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+
+        let mut missing = swing_graph(4);
+        missing.resolve(|_| AssetId::from_bytes([9; 16]));
+        let error = scene.replace_graph_document(missing, content, renderer, gpu).expect_err("no such clip");
+        assert!(error.contains("swing"), "{error}");
+        assert!(!scene.graph_player().expect("playing").has_replacement());
+
+        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("it binds");
+        assert!(scene.graph_player().expect("playing").has_replacement());
+        assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
+        assert!(scene.graph_player().expect("playing").has_replacement());
+        assert!(!content.take_graph_changed(), "its own clips are nothing new");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 0, 9));
+        stage.content.remount(PACK).expect("the new pack");
+        for _ in 0..1000 {
+            stage.frame();
+            if stage.content.graph_document().expect("a graph").combat.decay == 9 {
+                return;
+            }
+        }
+        panic!("the cook of the document should win over the edit it came after");
+    }
+
+    /// A cooked set's new version reaches the simulation that plays its document (M2 T2), which is how
+    /// moves that name clips get there, and bytes that didn't change make no new revision.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_cooked_set_reaches_the_fight() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        let handle = stage.content.hold_move_set(MOVES).expect("in the pack");
+        let mut tuning = crate::tuning::LiveTuning::following("show.moves.ron", handle);
+        let revision = |stage: &Stage| {
+            let show = stage.scene.graph_show().expect("a show");
+            let set = show.simulation().actor(show.cast()[0]).expect("alive").moves.set.expect("a set");
+            show.simulation().move_library().current_revision(set)
+        };
+        let frames = |stage: &mut Stage, tuning: &mut crate::tuning::LiveTuning, want: u32| {
+            for _ in 0..1000 {
+                stage.frame();
+                let changes = stage.content.take_changes();
+                let fight = crate::tuning::Fight { combat: None, scene: &mut stage.scene };
+                let errors = tuning.follow_packs(&changes, &stage.content, fight);
+                assert_eq!(errors, Vec::<String>::new());
+                if revision(stage) == Some(want) {
+                    return;
+                }
+            }
+            panic!("still at {:?}", revision(stage));
+        };
+        for _ in 0..10 {
+            stage.frame();
+        }
+        assert_eq!(revision(&stage), Some(0));
+
+        stage.source.insert(PACK, pack_with_moves(4));
+        stage.content.remount(PACK).expect("the new pack");
+        frames(&mut stage, &mut tuning, 1);
+        let show = stage.scene.graph_show().expect("a show");
+        let set = show.simulation().actor(show.cast()[0]).expect("alive").moves.set.expect("a set");
+        assert!(show.simulation().move_library().is_current(set, &show_moves(4)));
     }
 
     /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the

@@ -486,17 +486,23 @@ jobs:
       - name: Replays in the app (dev sandbox, offscreen)
         if: runner.os == 'Linux'
         run: cargo test --package sapphire_sandbox --features dev --locked --test replays -- --ignored --test-threads=1
+      # An edit of a move reaches a running fight's next attempt, over live link and through hot
+      # reload, and a bad one changes nothing (m2-plan T2, exit test 2).
+      - name: Live tuning (dev sandbox, offscreen)
+        if: runner.os == 'Linux'
+        run: cargo test --package sapphire_sandbox --features dev --locked --test live_tuning -- --ignored --test-threads=1
       # One feature graph reuses the dev sandbox's dependencies for the CLI too; building
       # the CLI separately compiled another renderer/hot-reload variant in this job.
       - name: Build the dev sandbox and the live-link tool
         if: runner.os == 'Linux'
         run: |
           cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
-      # The dev sandbox offscreen on a private port: the tool reads its status, sets a cvar,
-      # captures a frame and pushes a document that doesn't parse, which the app must refuse and
-      # count while it goes on drawing. A pack pushed and then touched on disk must be told of,
-      # and `r.tier` must make a new renderer. Then it must quit cleanly on SIGTERM. `--frames`
-      # bounds a run that the quit never reaches, and the step's limit everything else.
+      # The dev sandbox offscreen on a private port, with a fight running: the tool reads its
+      # status, sets a cvar, captures a frame and pushes a document that doesn't parse, which the
+      # app must refuse and count while it goes on drawing, and an edit of the fight's moves, which
+      # it must take. A pack pushed and then touched on disk must be told of, and `r.tier` must
+      # make a new renderer. Then it must quit cleanly on SIGTERM, writing the fight's recording.
+      # `--frames` bounds a run that the quit never reaches, and the step's limit everything else.
       - name: Live-link smoke (dev sandbox, offscreen)
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -506,7 +512,8 @@ jobs:
           mkdir -p "$out"
           addr=127.0.0.1:47811
           SAPPHIRE_CONTENT_DIR="$PWD/target/content/desktop" target/debug/sapphire_sandbox --offscreen \
-            --size 640x360 --frames 36000 --live-link "$addr" > "$out/sandbox.log" 2>&1 &
+            --size 640x360 --frames 36000 --live-link "$addr" --record "$out/session.sreplay" \
+            --scenario duel --script attempts > "$out/sandbox.log" 2>&1 &
           app=$!
           trap 'kill -KILL "$app" 2>/dev/null || true' EXIT
           link() { timeout 120 target/debug/sapphire_livelink --addr "$addr" "$@"; }
@@ -535,6 +542,11 @@ jobs:
           link status 2> "$out/status-after.log"
           cat "$out/status-after.log"
           grep -q ", 1 refused," "$out/status-after.log"
+          sed 's/startup: 5,/startup: 6,/' crates/sapphire_moves/test_content/slice.moves.ron > "$out/slice.moves.ron"
+          link push "$out/slice.moves.ron"
+          link status 2> "$out/status-tuned.log"
+          cat "$out/status-tuned.log"
+          grep -q "slice.moves.ron (moves): 1 edits" "$out/status-tuned.log"
           logged() {
             for attempt in $(seq 240); do
               if grep -q "$1" "$out/sandbox.log"; then return 0; fi
@@ -559,6 +571,7 @@ jobs:
             echo "::error::the dev sandbox exited with $code"
             exit 1
           fi
+          test -s "$out/session.sreplay"
       - name: Upload the live-link smoke's logs
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

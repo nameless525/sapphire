@@ -138,6 +138,15 @@ impl LiveTuning {
         Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), cooked }
     }
 
+    /// Following only this cooked set of this document, for tests of a pack's route.
+    #[cfg(test)]
+    pub fn following(document: &'static str, handle: Handle<MoveSet>) -> Self {
+        let path = format!("content/{document}");
+        let source = Source { path, document: Document::Moves, edits: 0 };
+        let cooked = vec![CookedSet { document, handle }];
+        Self { moves: LiveMoves::default(), sources: vec![source], waiting: Vec::new(), cooked }
+    }
+
     /// What hot reload watches for it: each document, and each `--watch-document`, by its file's name.
     pub fn watched(&self, options: &Options) -> Vec<(Document, PathBuf)> {
         let own = self.sources.iter().map(|source| (source.document, sources::repository_file(&source.path)));

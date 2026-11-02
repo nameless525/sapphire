@@ -440,7 +440,7 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     let log = log_of(&output);
     assert!(!log.contains("the replay ended early"), "{log}");
     assert_eq!(log.matches("replay reached its recorded checksums").count(), 3, "{log}");
-    for row in ["row=\"cpu frame\"", "row=\"simulation\"", "row=\"animation and ik\"", "row=\"gpu frame\""] {
+    for row in ["row=\"cpu frame\"", "row=\"simulation\"", "row=\"animation and ik\""] {
         assert!(log.contains(row), "{row}: {log}");
     }
 
@@ -458,6 +458,11 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     }
     for row in rows.iter().filter(|row| row[phase] != "first") {
         assert_eq!(row[step_allocations], "0", "rule R6, at tick {}", row[tick]);
+    }
+    // A row needs frames, and an adapter with no timestamps has no timed ones.
+    let timed = column("gpu_timed");
+    if rows.iter().any(|row| row[timed] == "1") {
+        assert!(log.contains("row=\"gpu frame\""), "{log}");
     }
 }
 

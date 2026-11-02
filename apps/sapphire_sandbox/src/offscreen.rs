@@ -370,6 +370,15 @@ impl Stage {
         self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, &mut ());
     }
 
+    /// The latest step's hits as the HUD's numbers, for a fight an agent runs with no golden behind it:
+    /// captures leave them out, so `arena-fight-hit` keeps its frame.
+    #[cfg(feature = "dev")]
+    pub fn show_damage(&mut self) {
+        if let Some(combat) = &self.combat {
+            self.scene.show_damage(combat.simulation());
+        }
+    }
+
     /// An error if a replay has left its recorded checksums so far.
     pub fn check_combat(&self) -> Result<(), AppInitError> {
         self.combat.as_ref().map_or(Ok(()), Combat::check).map_err(AppInitError::msg)

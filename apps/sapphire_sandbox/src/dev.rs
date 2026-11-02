@@ -231,6 +231,11 @@ impl DevTools {
         self.overlay.handle_event(event, &mut |event| game(event));
     }
 
+    /// The HUD's stick or a button holds this finger: the overlay's two-finger hold doesn't count it.
+    pub fn claim_touch(&mut self, finger: sapphire_platform::FingerId, now: Timestamp) {
+        self.overlay.claim_touch(finger, now);
+    }
+
     /// Starts the frame at `now` on the platform clock: the overlay's time-driven toggle
     /// gesture, before the input update.
     pub fn poll(&mut self, now: Timestamp, game: &mut dyn FnMut(&Event)) {

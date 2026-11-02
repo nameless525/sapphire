@@ -157,6 +157,7 @@ impl Serving {
         self.follow_tier();
         let stage = &mut self.stage;
         stage.step();
+        stage.show_damage();
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.
         match stage.dev.take_capture() {

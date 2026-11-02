@@ -12,10 +12,13 @@
 //!   next fixed step consumes, so an input lands on a tick rather than whenever the OS delivered
 //!   it (spec §4.2 step 1, rule R3), and replays stay deterministic.
 //! - **Combat's controls** sit under the sandbox's contexts, so the sandbox's bindings take whatever
-//!   source they share, and with `--combat-input` the sandbox's are off. Their ticks drive a
-//!   recording's simulation under `--record`, and otherwise nothing yet, since there's no fight to
-//!   play: dev builds log them. Their pause stops the fixed steps in every build, and Android's Back
-//!   opens it and then leaves through it.
+//!   source they share, and with `--combat-input` the sandbox's are off. Their ticks drive a fight or
+//!   a recording's simulation, and otherwise nothing: dev builds log them. Their pause stops the fixed
+//!   steps in every build, and Android's Back opens it and then leaves through it.
+//! - **Touch reaches them through the HUD's zones:** each frame, before its input is judged,
+//!   [`SandboxInput::read_touch`] takes what the zones read, so the stick, the buttons and the camera's
+//!   drag go through combat's bindings like any other device. While paused a landing skips the zones
+//!   (`app::game_event`), because tapping is a phone's way out of the pause.
 
 use std::time::Duration;
 
@@ -25,6 +28,7 @@ use sapphire_input::{ActionEventKind, ActionId, InputMap};
 use sapphire_math::Vec2;
 use sapphire_platform::{AppInitError, Event, Size, Timestamp};
 use sapphire_time::{FixedStepDriver, FixedSteps};
+use sapphire_ui::TouchActions;
 
 use crate::LOG_TARGET;
 use crate::orbit::OrbitCamera;
@@ -72,6 +76,8 @@ pub(crate) struct SandboxInput {
     queued: SimActions,
     /// The pause as last logged.
     paused: bool,
+    /// A device whose player has more than a screen to touch.
+    desktop: bool,
 }
 
 impl SandboxInput {
@@ -110,7 +116,7 @@ impl SandboxInput {
             }
         }
         system.set_window_size(window_size.width as f32, window_size.height as f32);
-        Ok(Self { controls, actions, queued: SimActions::default(), paused: false })
+        Ok(Self { controls, actions, queued: SimActions::default(), paused: false, desktop })
     }
 
     /// Listens for the key that starts `--fight`'s fight over, in a context of its own: pausing takes
@@ -127,6 +133,22 @@ impl SandboxInput {
     /// Queues a platform event for the next [`Self::update`].
     pub fn handle_event(&mut self, event: &Event) {
         self.controls.handle_event(event);
+    }
+
+    /// What the HUD's touch zones read for this frame, before [`Self::update`]: as of `now`, the same
+    /// time that gets.
+    pub fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
+        self.controls.read_touch(touch, now);
+    }
+
+    /// Whether the steps are stopped.
+    pub fn is_paused(&self) -> bool {
+        self.controls.is_paused()
+    }
+
+    /// Whether this device's player has more than a screen to touch.
+    pub fn desktop(&self) -> bool {
+        self.desktop
     }
 
     /// Processes the frame's input as of `now` (the platform clock) and queues the simulation

@@ -259,6 +259,12 @@ impl Recording {
         &self.tracked.sim
     }
 
+    /// The replay as far as it's got, for a file that outlives a process: it goes on recording.
+    #[must_use]
+    pub fn so_far(&self) -> Replay {
+        self.recorder.clone().finish()
+    }
+
     /// The finished replay, and what the run did.
     #[must_use]
     pub fn finish(self) -> (Replay, Played) {
@@ -283,6 +289,28 @@ mod tests {
             recording.step(&mut source).unwrap();
         }
         recording.finish()
+    }
+
+    /// What a recording holds so far is what it would have finished with at that tick, and asking changes
+    /// nothing about the rest.
+    #[test]
+    fn a_recording_so_far_is_a_whole_replay_of_those_ticks() {
+        let mut recording = Recording::new(melee(), melee().config).unwrap();
+        let mut source = melee_sweep;
+        for _ in 0..100 {
+            recording.step(&mut source).unwrap();
+        }
+        let so_far = recording.so_far();
+        assert_eq!(so_far.ticks(), 100);
+        let (replay, _) = record(100, melee_sweep);
+        assert_eq!(so_far.encode(), replay.encode());
+
+        for _ in 0..100 {
+            recording.step(&mut source).unwrap();
+        }
+        let (whole, _) = recording.finish();
+        let (replay, _) = record(200, melee_sweep);
+        assert_eq!(whole.encode(), replay.encode());
     }
 
     #[test]

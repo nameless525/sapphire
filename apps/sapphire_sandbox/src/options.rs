@@ -436,7 +436,12 @@ impl Options {
 
     /// Whether the character holds the player's sword: as `--blade` says, and on `--look-dev body`.
     pub fn blade(&self) -> bool {
-        let fighting = matches!(self.combat, Some(CombatOption::Fight { .. }));
+        // A fight, or the arena's recording of someone playing one.
+        let fighting = match self.combat {
+            Some(CombatOption::Fight { .. }) => true,
+            Some(CombatOption::Record { script: None, .. }) => self.arena.is_some(),
+            _ => false,
+        };
         self.blade.unwrap_or(self.look_dev == Some(Shot::Body) || fighting)
     }
 
@@ -1107,12 +1112,11 @@ impl Options {
                 return Err("--fight needs --script without a window: no one's there to play".to_owned());
             }
             // The sandbox's own bindings would take the dodge and the heavy off a pad.
-            // Someone's there to play it, so it's all on: the bars, the sparks and the sound.
-            Some(CombatOption::Fight { script: None, .. }) => {
-                options.combat_input = true;
-                options.cues = options.vfx.is_none() && options.cue.is_none();
-                let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-                options.hud.get_or_insert(live);
+            // Someone's there to play it, so it's all on: the bars, the zones, the sparks and the sound.
+            // A recording in the arena is the same fight, written down.
+            Some(CombatOption::Fight { script: None, .. }) => options.play_in_a_window(),
+            Some(CombatOption::Record { script: None, .. }) if options.arena.is_some() => {
+                options.play_in_a_window();
             }
             _ => {}
         }
@@ -1140,6 +1144,23 @@ impl Options {
             None => None,
         };
         Ok((options, unknown))
+    }
+
+    /// A `--record` path with no directory of its own goes under `dir`: a phone's cache.
+    pub fn record_under(&mut self, dir: &std::path::Path) {
+        if let Some(CombatOption::Record { path, .. }) = &mut self.combat
+            && path.is_relative()
+        {
+            *path = dir.join(&*path);
+        }
+    }
+
+    /// What a fight someone plays in a window takes without being asked: see where it's called.
+    fn play_in_a_window(&mut self) {
+        self.combat_input = true;
+        self.cues = self.vfx.is_none() && self.cue.is_none();
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        self.hud.get_or_insert(live);
     }
 
     /// An error if a `--capture` or `--bench` run was given arguments it doesn't know. Scripts
@@ -1712,6 +1733,45 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    /// A phone's app runs from nowhere it can write: a path of its own stands, and any other goes under
+    /// the cache, which is what can be fetched from a phone.
+    #[test]
+    fn a_recording_on_a_phone_goes_under_its_cache() {
+        let recorded = |path: &str| {
+            let (mut options, _) = parse(&["--arena", "--record", path, "--scenario", "s"]).unwrap();
+            options.record_under(std::path::Path::new("/cache"));
+            match options.combat {
+                Some(CombatOption::Record { path, .. }) => path,
+                _ => panic!("a recording"),
+            }
+        };
+        assert_eq!(recorded("touch.sreplay"), PathBuf::from("/cache/touch.sreplay"));
+        assert_eq!(recorded("/data/touch.sreplay"), PathBuf::from("/data/touch.sreplay"));
+    }
+
+    /// A recording in the arena is the same fight as `--fight`, written down: a phone has no other way to
+    /// keep a session, and no keyboard to pass flags from. Elsewhere it stays as it was.
+    #[test]
+    fn a_recording_in_the_arena_is_a_fight_someone_plays() {
+        let args = ["--arena", "--record", "a.sreplay", "--scenario", "arena-fight"];
+        let (played, unknown) = parse(&args).unwrap();
+        assert!(unknown.is_empty(), "{unknown:?}");
+        assert!(played.combat_input && played.cues && played.blade());
+        assert_eq!(played.hud.map(|hud| hud.mode), Some(HudMode::Live));
+        played.refuse_offscreen().expect("Android's windowed app can record too");
+        assert!(!parse(&[&args[..], &["--blade", "off"]].concat()).unwrap().0.blade());
+
+        let (plain, _) = parse(&["--record", "a.sreplay", "--scenario", "melee"]).unwrap();
+        assert!(!plain.combat_input && !plain.cues && !plain.blade());
+        assert_eq!(plain.hud, None);
+
+        // A script needs no one, and draws what it did.
+        let scripted = ["--capture", "x", "--arena", "--record", "a", "--scenario", "s", "--script", "p"];
+        let (scripted, _) = parse(&scripted).unwrap();
+        assert!(!scripted.combat_input && !scripted.cues && !scripted.blade());
+        assert_eq!(scripted.hud, None);
     }
 
     /// A fight has no file: in a window whoever's there plays it on combat's bindings alone, and

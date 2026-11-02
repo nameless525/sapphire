@@ -1866,6 +1866,15 @@ impl Scene {
         debug_draw::end_step();
     }
 
+    /// Runs the schedules of a fixed step once, when everything's spawned and before the first step
+    /// anything holds to rule R6. A query learns of the archetypes made since it last ran when it next
+    /// runs, and its lists can grow there: a town's and a fight's spawns are enough to, which made the
+    /// first step of every debug build's window fail its count. It costs the clocks one tick and
+    /// plays no show, and captures don't call it, so their frames stay as they were.
+    pub fn warm_fixed_step(&mut self) {
+        self.ecs.fixed_step();
+    }
+
     /// Turns debug draw on and draws `demo` from now on (`--debug-draw`).
     pub fn set_debug_draw_demo(&mut self, demo: DebugDrawDemo) {
         debug_draw::set_enabled(true);
@@ -2135,13 +2144,57 @@ impl Scene {
         self.hud.as_mut().is_some_and(|hud| hud.handle_event(event))
     }
 
-    /// The HUD's frame on the real clock, where a window has its metrics: the camera follows its
-    /// drag.
-    pub fn update_hud(&mut self, now: sapphire_platform::Timestamp, window: &sapphire_platform::Window) {
+    /// Whether the HUD's stick or a button holds this finger.
+    #[cfg(feature = "dev")]
+    pub fn hud_holds_control(&self, finger: sapphire_platform::FingerId) -> bool {
+        self.hud.as_ref().is_some_and(|hud| hud.holds_control(finger))
+    }
+
+    /// The HUD's frame on the real clock, where a window has its metrics: what its touch zones read
+    /// goes to `input`, before that judges the frame.
+    pub fn update_hud(
+        &mut self,
+        now: sapphire_platform::Timestamp,
+        window: &sapphire_platform::Window,
+        input: &mut crate::input::SandboxInput,
+    ) {
         let Some(hud) = &mut self.hud else { return };
-        let orbit = hud.update(now, window);
-        if orbit != sapphire_math::Vec2::ZERO && !self.drive_arena_camera(0.0, orbit, 0.0) {
-            self.camera_mut().rotate(orbit.x, orbit.y);
+        let metrics = hud.metrics_of(window);
+        hud.follow_devices(input.desktop(), input.active_gamepad().is_some());
+        self.read_touch(now, metrics, input);
+    }
+
+    /// What the HUD's touch zones read this frame, on a frame of `metrics`, to `input`.
+    pub fn read_touch(
+        &mut self,
+        now: sapphire_platform::Timestamp,
+        metrics: sapphire_ui::UiMetrics,
+        input: &mut crate::input::SandboxInput,
+    ) {
+        let Some(hud) = &mut self.hud else { return };
+        if let Some(touch) = hud.update(now, metrics) {
+            input.read_touch(touch, now);
+        }
+    }
+
+    /// The hits `sim`'s latest step landed, as the HUD's numbers.
+    pub fn show_damage(&mut self, sim: &Simulation) {
+        let Some(hud) = &mut self.hud else { return };
+        let camera = self.ecs.world().resource::<OrbitCamera>().camera_data(self.view_aspect);
+        let view_projection = camera.proj * camera.view;
+        for cue in sim.cues() {
+            let Some(hit) = crate::hud::landed(&cue) else { continue };
+            hud.show_hit(hit.damage, hit.point, hit.weight, view_projection);
+            // So a run on a device can be read from its log, as the HUD's buttons are.
+            tracing::info!(
+                target: LOG_TARGET,
+                tick = cue.tick,
+                attacker = ?cue.actor,
+                target_actor = ?hit.target,
+                damage = hit.damage,
+                outcome = ?hit.outcome,
+                "hit landed"
+            );
         }
     }
 
@@ -2397,6 +2450,55 @@ mod tests {
             scene.end_frame();
         }
         assert_eq!(allocations, 0, "rule R6");
+    }
+
+    /// A town's and a fight's spawns make more shapes of entity than a query's lists start with. The
+    /// first step after them is what `SandboxApp` warms: without it, a debug build's window panicked on
+    /// its first frame (found on the iOS simulator, I3), because nothing that counted steps had spawned
+    /// this much.
+    #[test]
+    fn a_window_warms_its_steps_once_everything_is_spawned() {
+        #[derive(Component)]
+        struct Shape<const N: u8>;
+        fn spawn_every_shape(scene: &mut Scene) {
+            for bits in 0u8..64 {
+                let clock = scene.world_clock_mut().new_entity_clock();
+                let mut entity = scene.ecs.world_mut().spawn(clock);
+                if bits & 1 != 0 {
+                    entity.insert(Shape::<0>);
+                }
+                if bits & 2 != 0 {
+                    entity.insert(Shape::<1>);
+                }
+                if bits & 4 != 0 {
+                    entity.insert(Shape::<2>);
+                }
+                if bits & 8 != 0 {
+                    entity.insert(Shape::<3>);
+                }
+                if bits & 16 != 0 {
+                    entity.insert(Shape::<4>);
+                }
+                if bits & 32 != 0 {
+                    entity.insert(Shape::<5>);
+                }
+            }
+        }
+
+        let mut cold = scene();
+        spawn_every_shape(&mut cold);
+        let ((), first) = sapphire_core::alloc::count_in_scope(|| cold.step());
+        assert!(first.allocations > 0, "the case this exists for has gone: {first:?}");
+
+        let mut warmed = scene();
+        spawn_every_shape(&mut warmed);
+        warmed.warm_fixed_step();
+        let ((), steps) = sapphire_core::alloc::count_in_scope(|| {
+            for _ in 0..60 {
+                warmed.step();
+            }
+        });
+        assert_eq!(steps.allocations, 0, "rule R6");
     }
 
     #[test]

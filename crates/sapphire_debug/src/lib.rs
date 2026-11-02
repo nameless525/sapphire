@@ -93,15 +93,15 @@
 //! # Toggling
 //!
 //! The `` ` `` key (the one below Esc, by position), a two-finger hold of one second on touch
-//! screens, or the bar's Hide button. Both gestures belong to neither the overlay nor the game.
+//! screens, or the bar's Hide button. Both gestures belong to neither the overlay nor the game. A finger
+//! on one of the game's on-screen controls doesn't count toward the hold
+//! ([`DebugOverlay::claim_touch`]), so playing never toggles it.
 //!
 //! # Later milestones
 //!
 //! - The rest of spec §5.20: the entity inspector over `sapphire_reflect`.
 //! - Clipboard copy and paste once the platform has a clipboard API; IME composition previews;
 //!   cursor shapes; gamepad navigation of the panels; saving panel layout in `user://`.
-//! - On-screen controls (M3) will claim their fingers before the overlay's two-finger hold
-//!   counts them.
 
 mod budget;
 mod combat;

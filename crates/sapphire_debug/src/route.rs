@@ -18,7 +18,8 @@
 //!   the window's size to measure their drift in. The fingers of a hold that toggles are
 //!   taken from whoever had them: the game gets a cancel for each of its own
 //!   (`TouchPhase::Canceled`, which fires nothing a release would), and their remaining events go
-//!   nowhere.
+//!   nowhere. A finger on one of the game's on-screen controls isn't counted at all
+//!   (`Router::claim_touch`): a thumb resting on a stick and another on a button are playing.
 //! - Everything else (window, lifecycle, gamepad events) reaches the game, and window events the
 //!   overlay too.
 //!
@@ -71,6 +72,8 @@ struct Finger {
     owner: Owner,
     /// Its latest event, to cancel it with.
     last: TouchEvent,
+    /// The game's on-screen controls hold it, so the toggle doesn't count it.
+    control: bool,
     /// Where it was when the hold began, in window coordinates.
     anchor: (f32, f32),
 }
@@ -189,7 +192,7 @@ impl Router {
         }
         self.hold_since = None;
         for (slot, finger) in self.fingers.iter_mut().enumerate() {
-            if let Some(finger) = finger {
+            if let Some(finger) = finger.as_mut().filter(|finger| !finger.control) {
                 self.claimed.push(Claimed { slot, owner: finger.owner, touch: finger.last });
                 finger.owner = Owner::Nobody;
             }
@@ -210,7 +213,8 @@ impl Router {
                 let over = ui.visible && position.is_some_and(|(x, y)| (ui.covers)(x, y));
                 let owner = if over { Owner::Overlay } else { Owner::Game };
                 let anchor = position.unwrap_or_default();
-                self.fingers[free] = Some(Finger { id: touch.finger, owner, last: *touch, anchor });
+                self.fingers[free] =
+                    Some(Finger { id: touch.finger, owner, control: false, last: *touch, anchor });
                 self.rearm_hold(touch.timestamp);
                 free
             }
@@ -219,7 +223,7 @@ impl Router {
         };
         let finger = self.fingers[slot].as_mut().expect("the slot is taken");
         finger.last = *touch;
-        let owner = finger.owner;
+        let (owner, control) = (finger.owner, finger.control);
         // Without the window's size no hold is being timed, so there is no drift to measure.
         let drifted = position.is_some_and(|(x, y)| {
             let (dx, dy) = (x - finger.anchor.0, y - finger.anchor.1);
@@ -227,21 +231,33 @@ impl Router {
         });
         if matches!(touch.phase, TouchPhase::Up | TouchPhase::Canceled) {
             self.fingers[slot] = None;
-            self.rearm_hold(touch.timestamp);
-        } else if drifted {
+            if !control {
+                self.rearm_hold(touch.timestamp);
+            }
+        } else if drifted && !control {
             self.hold_since = None;
         }
         Route { finger: Some(slot), ..Self::to(owner, ui) }
     }
 
-    /// Starts timing a hold if exactly two fingers are down and neither was claimed yet, from
-    /// where they are now, once the window's size is known.
+    /// The game's on-screen controls hold this finger until it lifts: the toggle stops counting it,
+    /// and a hold doesn't take it. Other fingers still can toggle, on whatever isn't a control.
+    pub fn claim_touch(&mut self, finger: FingerId, now: Timestamp) {
+        let held = self.fingers.iter_mut().flatten().find(|held| held.id == finger);
+        if let Some(held) = held.filter(|held| !held.control) {
+            held.control = true;
+            self.rearm_hold(now);
+        }
+    }
+
+    /// Starts timing a hold if exactly two fingers no control holds are down and neither was claimed
+    /// yet, from where they are now, once the window's size is known.
     fn rearm_hold(&mut self, now: Timestamp) {
         let Some(size) = self.window_size else {
             self.hold_since = None;
             return;
         };
-        let mut down = self.fingers.iter_mut().flatten();
+        let mut down = self.fingers.iter_mut().flatten().filter(|finger| !finger.control);
         let pair = (down.next(), down.next(), down.next());
         self.hold_since = match pair {
             (Some(a), Some(b), None) if a.owner != Owner::Nobody && b.owner != Owner::Nobody => {
@@ -503,6 +519,55 @@ mod tests {
         // Lifting the third leaves a fresh pair, which may hold.
         router.route(&touch(2000, 3, TouchPhase::Up, 0.3), &hidden);
         assert!(router.poll(ms(3000)));
+    }
+
+    fn finger_id(finger: u64) -> FingerId {
+        FingerId::new(TouchDeviceId::from_raw(1), finger)
+    }
+
+    /// A thumb on a stick and another on a button, held still and for as long as you like, are playing:
+    /// the game's controls claim them, and the toggle never counts them. Two other fingers still toggle,
+    /// and take only themselves.
+    #[test]
+    fn fingers_on_the_games_controls_never_toggle() {
+        let fresh = router;
+        let mut router = fresh();
+        let hidden = ui(false, false);
+        let (stick, button, camera, spare) = (1, 2, 3, 4);
+        router.route(&touch(1, stick, TouchPhase::Down, 0.1), &hidden);
+        router.claim_touch(finger_id(stick), ms(1));
+        router.route(&touch(2, button, TouchPhase::Down, 0.9), &hidden);
+        router.claim_touch(finger_id(button), ms(2));
+        assert!(!router.poll(ms(5000)), "playing");
+
+        // A third and a fourth finger make a pair, and a thumb working its stick doesn't disturb them.
+        router.route(&touch(5000, camera, TouchPhase::Down, 0.5), &hidden);
+        router.route(&touch(5001, spare, TouchPhase::Down, 0.6), &hidden);
+        let moved = router.route(&touch(5500, stick, TouchPhase::Moved, 0.2), &hidden);
+        assert!(moved.game, "the stick's still the game's");
+        assert!(!router.poll(ms(5900)), "not yet");
+        assert!(router.poll(ms(6100)), "held for a second");
+        let taken: Vec<_> = router.take_claimed().map(|claimed| claimed.touch.finger).collect();
+        assert_eq!(taken, [finger_id(camera), finger_id(spare)], "and the controls keep theirs");
+        assert!(router.route(&touch(6200, stick, TouchPhase::Moved, 0.25), &hidden).game);
+        assert!(!router.route(&touch(6200, camera, TouchPhase::Moved, 0.5), &hidden).game);
+
+        // A claim that comes after the pair formed stops its hold, and one for nobody does nothing.
+        let mut router = fresh();
+        router.route(&touch(1, stick, TouchPhase::Down, 0.1), &hidden);
+        router.route(&touch(2, camera, TouchPhase::Down, 0.5), &hidden);
+        router.claim_touch(finger_id(stick), ms(3));
+        router.claim_touch(finger_id(9), ms(3));
+        assert!(!router.poll(ms(5000)));
+
+        // Its lift leaves the rest as they were.
+        let mut router = fresh();
+        router.route(&touch(1, stick, TouchPhase::Down, 0.1), &hidden);
+        router.claim_touch(finger_id(stick), ms(1));
+        router.route(&touch(10, camera, TouchPhase::Down, 0.5), &hidden);
+        router.route(&touch(20, spare, TouchPhase::Down, 0.6), &hidden);
+        router.route(&touch(900, stick, TouchPhase::Up, 0.1), &hidden);
+        assert!(router.poll(ms(1100)), "the hold began at 20 ms");
     }
 
     /// A pinch: two fingers spreading for 1.1 s, each moving 0.33 of the window's width.

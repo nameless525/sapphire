@@ -65,7 +65,9 @@
 //! - **Effects and cues (E2, E3, in):** `--cues` fires a fight's cues where the simulation has its
 //!   actors (`crate::cues::CueStage::Actors`), and `--vfx` draws over whatever scene is up.
 //! - **The HUD (I2, in):** `--hud live` shows what [`ArenaActors::hud_values`] reads of the fighters.
-//!   Its touch zones reach no `TickActions` yet: a fight is played on a pad or a keyboard.
+//! - **Touch (I3, in):** the HUD's zones reach `TickActions` through combat's bindings
+//!   (`sapphire_controls::CombatControls::read_touch`), so a fight in a window is played on touch, a
+//!   pad or a keyboard (`docs/m2-exit-run.md` has a phone's run).
 
 use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;

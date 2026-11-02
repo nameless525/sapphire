@@ -8,7 +8,7 @@ use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_core::debug_draw::DebugLabel;
 use sapphire_input::DeviceKind;
-use sapphire_platform::{Event, FramePacing, Scancode, Timestamp, TouchEvent, TouchPhase};
+use sapphire_platform::{Event, FingerId, FramePacing, Scancode, Timestamp, TouchEvent, TouchPhase};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
 use sapphire_render::{CameraData, CharacterInstance, RenderStats};
@@ -263,6 +263,12 @@ impl DebugOverlay {
         if route.game {
             game(event);
         }
+    }
+
+    /// The game's on-screen controls hold this finger until it lifts: the two-finger hold stops counting
+    /// it, so playing never toggles the overlay.
+    pub fn claim_touch(&mut self, finger: FingerId, now: Timestamp) {
+        self.router.claim_touch(finger, now);
     }
 
     /// Checks the time-driven toggle gesture (a two-finger hold) at `now`. Call it once per

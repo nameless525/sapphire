@@ -111,12 +111,17 @@ impl App for SandboxApp {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let (options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        let (mut options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         options.refuse_offscreen().map_err(AppInitError::msg)?;
         if !unknown.is_empty() {
             tracing::warn!(target: LOG_TARGET, ?unknown, "ignoring unknown arguments");
         }
         let info = *platform.system_info();
+        // A phone's app has no working directory to speak of, and its cache is what `run-as` and
+        // `devicectl` can fetch from.
+        if info.device_class != DeviceClass::Desktop {
+            options.record_under(platform.cache_dir());
+        }
         tracing::info!(target: LOG_TARGET, version = Self::METADATA.version, ?info, ?options, "starting");
 
         let window = platform
@@ -323,8 +328,16 @@ impl App for SandboxApp {
             (None, None) => None,
         };
         if let Some(hud) = options.hud {
-            scene.set_hud(crate::hud::SandboxHud::new(hud));
+            scene.set_hud(match &combat {
+                Some(_) => crate::hud::SandboxHud::for_fight(hud),
+                None => crate::hud::SandboxHud::new(hud),
+            });
         }
+        // Its bars read the fighters from the first frame, with no step yet.
+        if let Some(combat) = &combat {
+            scene.follow_simulation(combat.simulation(), combat.cast());
+        }
+        scene.warm_fixed_step();
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &mut content)?;
         #[cfg(feature = "dev")]
@@ -380,6 +393,14 @@ impl App for SandboxApp {
         self.dev.handle_event(event, &mut |event| game_event(scene, input, event));
         #[cfg(not(feature = "dev"))]
         game_event(scene, input, event);
+        // A thumb on the stick and another on a button are playing, not holding two fingers still.
+        #[cfg(feature = "dev")]
+        if let Event::Touch(touch) = event
+            && touch.phase == sapphire_platform::TouchPhase::Down
+            && scene.hud_holds_control(touch.finger)
+        {
+            self.dev.claim_touch(touch.finger, touch.timestamp);
+        }
         match event {
             Event::Quit { .. } => return AppControl::Exit,
             Event::Window { event, .. } => match *event {
@@ -423,7 +444,16 @@ impl App for SandboxApp {
             let (scene, input) = (&mut self.scene, &mut self.input);
             self.dev.poll(platform.now(), &mut |event| game_event(scene, input, event));
         }
-        if self.input.update(platform.now()) {
+        #[cfg(feature = "dev")]
+        if crate::cvars::take_device_loss() {
+            tracing::warn!(target: LOG_TARGET, "losing the GPU device, as debug.lose_device asks");
+            self.gpu.device().destroy();
+        }
+        let now = platform.now();
+        // The HUD's touch zones and animation are on the real clock too. What they read reaches this
+        // frame's steps and camera through the bindings, as a pad's does, so they go first.
+        self.scene.update_hud(now, &self.window, &mut self.input);
+        if self.input.update(now) {
             return AppControl::Exit;
         }
         self.stages.input = stopwatch.lap();
@@ -463,8 +493,6 @@ impl App for SandboxApp {
         self.stages.simulation = stopwatch.lap();
         self.stages.fixed_steps = steps.count;
 
-        // The HUD's touch zones and animation are on the real clock too.
-        self.scene.update_hud(platform.now(), &self.window);
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
         let mut camera = self.scene.camera_mut();
@@ -516,9 +544,13 @@ impl App for SandboxApp {
 }
 
 /// An event for the game: the HUD's touch zones take what lands on them, and the game's input gets
-/// the rest. Losing focus or the foreground reaches both.
+/// the rest. Losing focus or the foreground reaches both. While paused a landing is the pause's, since
+/// a tap is how a phone gets out of it, and the zones keep only the fingers they already hold: a thumb
+/// that was on the stick when the pause came still has to lift.
 fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
-    if !scene.hud_event(event) {
+    let pauses_landing = input.is_paused()
+        && matches!(event, Event::Touch(touch) if touch.phase == sapphire_platform::TouchPhase::Down);
+    if pauses_landing || !scene.hud_event(event) {
         input.handle_event(event);
     }
 }
@@ -552,6 +584,7 @@ impl SandboxApp {
             if let Some(combat) = &self.combat {
                 self.scene.follow_simulation(combat.simulation(), combat.cast());
                 self.scene.show_cues(combat.simulation());
+                self.scene.show_damage(combat.simulation());
             }
 
             let scene = &mut self.scene;
@@ -723,6 +756,9 @@ impl SandboxApp {
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
+                if let Some(combat) = &self.combat {
+                    combat.keep_so_far();
+                }
                 let pad = self.input.active_gamepad();
                 self.scene.stop_rumble(&mut PadRumble { platform, pad });
                 if let Some(audio) = &mut self.audio {
@@ -754,7 +790,12 @@ impl SandboxApp {
                     self.rebuild_surface();
                 }
             }
-            LifecycleEvent::Terminating => self.save_pipeline_cache(),
+            LifecycleEvent::Terminating => {
+                self.save_pipeline_cache();
+                if let Some(combat) = &self.combat {
+                    combat.keep_so_far();
+                }
+            }
             LifecycleEvent::LowMemory if trims_for_memory_warnings(Os::CURRENT) => self.trim_memory(),
             LifecycleEvent::DidEnterBackground
             | LifecycleEvent::WillEnterForeground
@@ -1391,6 +1432,9 @@ fn surface_target(handle: &SurfaceHandle) -> Result<SurfaceTarget, HandleError> 
         display: handle.display_handle()?.as_raw(),
     })
 }
+
+#[cfg(test)]
+mod touch_tests;
 
 #[cfg(test)]
 mod tests {

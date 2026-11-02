@@ -12,7 +12,9 @@
 //! [`ActionSource`]: a named script, with `--capture` or `--bench`, or in the windowed app the
 //! bindings of whoever's playing, on any platform (`--record <file> --scenario <name>`). So the file
 //! holds what was played, with each stick turned by the camera it was played under, and it's written
-//! when the app quits. Everything before that is in memory, so a killed process leaves no file.
+//! when the app quits, and as far as it's got whenever the app leaves the foreground
+//! ([`Combat::keep_so_far`]), since a phone kills what's in the background without saying so and an
+//! iPhone's app never quits. Only what came after the last of those is lost to a killed process.
 //!
 //! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window,
 //! and with `--script`, `--offscreen` runs one for hot reload and live link.
@@ -441,6 +443,25 @@ impl Combat {
         }
     }
 
+    /// Writes what a recording of someone playing holds so far, for an app that may never come back from
+    /// where it's going. A failure is logged and the fight goes on: there's no one to tell, and the next
+    /// try, or the end, may do better. Nothing else has a file to keep.
+    pub fn keep_so_far(&self) {
+        let Mode::Recording { recording, script: None, .. } = &self.mode else { return };
+        let replay = recording.so_far();
+        match write_replay(&self.path, &replay) {
+            Ok(bytes) => tracing::info!(
+                target: LOG_TARGET,
+                path = %self.path.display(),
+                ticks = replay.ticks(),
+                bytes,
+                checksum = %format_args!("{:016x}", recording.simulation().checksum()),
+                "kept the recording so far",
+            ),
+            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the recording so far wasn't kept"),
+        }
+    }
+
     /// Ends the run: checks a replay, or writes a recording, and logs where it got to.
     pub fn finish(self) -> Result<(), String> {
         self.check()?;
@@ -497,13 +518,12 @@ impl Combat {
                 }
                 let (replay, played) = recording.finish();
                 log_gate(&played);
-                let bytes = replay.encode();
-                fs::write(&path, &bytes).map_err(|error| format!("--record {}: {error}", path.display()))?;
+                let bytes = write_replay(&path, &replay)?;
                 tracing::info!(
                     target: LOG_TARGET,
                     path = %path.display(),
                     ticks = replay.ticks(),
-                    bytes = bytes.len(),
+                    bytes,
                     checksum = %format_args!("{:016x}", played.trail.end()),
                     allocations = played.stats.allocations,
                     "recorded a replay",
@@ -627,6 +647,17 @@ pub(crate) fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn Acti
     }
 }
 
+/// Writes `replay` to `path` beside itself first, so a process killed mid-write leaves the last whole
+/// file standing. Returns how many bytes it took.
+fn write_replay(path: &Path, replay: &Replay) -> Result<usize, String> {
+    let fail = |error: std::io::Error| format!("--record {}: {error}", path.display());
+    let bytes = replay.encode();
+    let partial = path.with_extension("partial");
+    fs::write(&partial, &bytes).map_err(fail)?;
+    fs::rename(&partial, path).map_err(fail)?;
+    Ok(bytes.len())
+}
+
 /// A script by name.
 fn script_actions(name: &str) -> Result<ScriptActions, String> {
     find_script(name).map(|script| script.actions).ok_or_else(|| {
@@ -636,8 +667,13 @@ fn script_actions(name: &str) -> Result<ScriptActions, String> {
 }
 
 /// Rule R6, beside a renderer. The replay suite is the gate; here it's a finding to look at, since a
-/// profiling build's zones may allocate where a plain one doesn't.
+/// profiling build's zones may allocate where a plain one doesn't. Android counts per process, so a step
+/// there takes in whatever other threads did meanwhile, and a shader build's say nothing of the step:
+/// the same file played headlessly answers it.
 fn log_gate(played: &Played) {
+    if !sapphire_core::alloc::PER_THREAD_COUNTS {
+        return;
+    }
     if let Err(error) = played.allocation_gate() {
         tracing::warn!(target: LOG_TARGET, %error, "the fixed step allocated");
     }
@@ -691,6 +727,40 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.0);
         }
+    }
+
+    /// A phone may kill what's in the background with no word, and an iPhone's app never quits, so
+    /// leaving the foreground writes the file as far as it's got. The end writes the whole of it, and a
+    /// script's recording, which any run can make again, keeps nothing.
+    #[test]
+    fn a_recording_someone_plays_keeps_what_it_has_when_the_app_leaves() {
+        let scratch = Scratch::new("keeps");
+        let mut combat = recording(&scratch.0, None);
+        let mut neutral = no_bindings;
+        for _ in 0..30 {
+            combat.step(&mut neutral);
+        }
+        combat.keep_so_far();
+        let at_30 = combat.simulation().checksum();
+        let kept = Replay::decode(&fs::read(&scratch.0).expect("kept")).expect("a whole file");
+        assert_eq!(kept.ticks(), 30);
+        assert!(!scratch.0.with_extension("partial").exists(), "nothing's left beside it");
+        let mut player = Player::new(kept, SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.finish().trail.end(), at_30, "what it kept plays to where it was");
+
+        // And it goes on, as if nothing had happened.
+        for _ in 0..30 {
+            combat.step(&mut neutral);
+        }
+        combat.finish().expect("written");
+        assert_eq!(Replay::decode(&fs::read(&scratch.0).expect("written")).expect("reads").ticks(), 60);
+
+        let scratch = Scratch::new("scripted");
+        let mut combat = recording(&scratch.0, Some("idle"));
+        combat.step(&mut neutral);
+        combat.keep_so_far();
+        assert!(!scratch.0.exists());
     }
 
     fn recording(path: &Path, script: Option<&str>) -> Combat {

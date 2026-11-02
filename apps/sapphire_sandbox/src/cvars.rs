@@ -27,9 +27,28 @@ static SHARPENING: Cvar<f32> = Cvar::with_range(
     "The player's sharpening: 0 is off, 1 full RCAS (spec §5.12 says where it helps).",
 );
 
+#[cfg(feature = "dev")]
+static LOSE_DEVICE: Cvar<bool> = Cvar::new(
+    "debug.lose_device",
+    false,
+    "Destroys the GPU device once, on the windowed app's next frame, so recovery can be tried on a device \
+     that won't lose one when asked. Reads false again after.",
+);
+
 /// Every sandbox cvar, for the app's registry.
 #[cfg(feature = "dev")]
-pub(crate) static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 2] = [&FILTER_STRENGTH, &SHARPENING];
+pub(crate) static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 3] =
+    [&FILTER_STRENGTH, &SHARPENING, &LOSE_DEVICE];
+
+/// Whether the device is to be lost now, once for each time it's asked.
+#[cfg(feature = "dev")]
+pub(crate) fn take_device_loss() -> bool {
+    let asked = LOSE_DEVICE.get();
+    if asked {
+        LOSE_DEVICE.reset();
+    }
+    asked
+}
 
 /// The player's color-filter strength, 0 to 1 (`PostParams::filter_strength`), until a settings
 /// screen (M3).

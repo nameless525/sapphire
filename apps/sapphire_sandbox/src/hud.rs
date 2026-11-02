@@ -3,12 +3,16 @@
 //! - **`fixed`:** one frozen frame, the same on any device: synthetic touches on a made-up clock put
 //!   a thumb on the stick and another dragging the attack, with a hit landing and numbers in the
 //!   air. What the golden scenes capture. Real touches go to the app as if there were no HUD.
-//! - **`live`:** real touches through the zones, on `Platform::now`. With a fight on (`--arena`), its
-//!   bars are the fighters' ([`SandboxHud::show_fight`]), offscreen too, where the fight's own time is
-//!   its clock. With none, no gameplay stands behind the zones, so a stand-in shows that input arrives:
-//!   the attack spends the enemy's bars and throws a number, a held attack a heavier one, the dodge spends
-//!   the player's, the skill starts a cooldown, and the camera's drag orbits. Every button event and each
-//!   second's stick and camera are logged, so a run on a device can be read from its log.
+//! - **`live`:** real touches through the zones, on `Platform::now`. The zones say what the fingers did
+//!   ([`SandboxHud::update`]), and the frame's input takes that through combat's bindings
+//!   (`SandboxInput::read_touch`), so a press and a drag reach a tick and the camera by the road a pad
+//!   takes. With a fight on (`--arena`, [`SandboxHud::for_fight`]), its bars are the fighters'
+//!   ([`SandboxHud::show_fight`]) and its numbers the hits that landed ([`SandboxHud::show_hit`]),
+//!   offscreen too, where the fight's own time is its clock. With none, no gameplay stands behind the
+//!   zones, so a stand-in shows that input arrives: the attack spends the enemy's bars and throws a
+//!   number, a held attack a heavier one, the dodge spends the player's and the skill starts a cooldown.
+//!   Every button event and each second's stick and camera are logged, so a run on a device can be read
+//!   from its log.
 //!
 //! The renderer sees only the packet's draw list (rule R4). Offscreen modes have no window: their
 //! metrics come from the target and `--hud-scale`, and `--hud-insets` makes up what a notch would
@@ -16,12 +20,14 @@
 
 use std::time::Duration;
 
-use sapphire_math::Vec2;
+use sapphire_gameplay::{CueEvent, DEFEATED, HitCue, POISE_BROKEN};
+use sapphire_math::{Mat4, Vec2, Vec3};
+use sapphire_moves::Weight;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, Window};
 use sapphire_time::Stopwatch;
 use sapphire_ui::{
     Atlas, Button, ButtonEventKind, CombatHud, DamageKind, FighterValues, HudLayout, HudStats, HudValues,
-    Insets, SkillValues, TouchControls, UiDrawList, UiMetrics,
+    Insets, SkillValues, TouchActions, TouchControls, UiDrawList, UiMetrics,
 };
 
 use crate::LOG_TARGET;
@@ -53,8 +59,6 @@ impl Default for HudOptions {
 
 /// The fixed frame's moment on its made-up clock.
 const FIXED_NOW: u64 = 1460;
-/// Radians per point the camera's drag orbits, as the default bindings' touch drag does.
-const CAMERA_PER_POINT: f32 = -0.006;
 /// How long the live skill cools down.
 const LIVE_COOLDOWN: Duration = Duration::from_secs(6);
 /// How often live mode logs the stick and camera.
@@ -76,22 +80,11 @@ struct LiveValues {
     enemy_poise: f32,
     cooldown_until: Option<Timestamp>,
     hits: u32,
-    /// The camera's drag since it was last logged.
-    camera_logged: Vec2,
-    logged_at: Timestamp,
 }
 
 impl Default for LiveValues {
     fn default() -> Self {
-        Self {
-            player_hp: 1.0,
-            enemy_hp: 1.0,
-            enemy_poise: 1.0,
-            cooldown_until: None,
-            hits: 0,
-            camera_logged: Vec2::ZERO,
-            logged_at: Timestamp::default(),
-        }
+        Self { player_hp: 1.0, enemy_hp: 1.0, enemy_poise: 1.0, cooldown_until: None, hits: 0 }
     }
 }
 
@@ -104,13 +97,19 @@ pub(crate) struct SandboxHud {
     hud: CombatHud,
     values: HudValues,
     now: Timestamp,
-    live: LiveValues,
-    /// What a fight says of its fighters, in place of the stand-in's numbers.
+    /// What stands behind the zones with no fight on. A fight has none, so nothing in one can read it.
+    stand_in: Option<LiveValues>,
+    /// The camera's drag since it was last logged.
+    camera_logged: Vec2,
+    logged_at: Timestamp,
+    /// What a fight says of its fighters.
     fight: Option<HudValues>,
     /// A window's metrics this frame, read by [`Self::update`]; offscreen frames have none.
     window_metrics: Option<UiMetrics>,
     /// The metrics the layout was made for.
     metrics: Option<UiMetrics>,
+    /// A finger has landed on the zones.
+    touched: bool,
     last_stats: HudStats,
     last_cost: Duration,
 }
@@ -136,19 +135,28 @@ impl SandboxHud {
             atlas,
             values: HudValues::default(),
             now: Timestamp::default(),
-            live: LiveValues::default(),
+            stand_in: Some(LiveValues::default()),
+            camera_logged: Vec2::ZERO,
+            logged_at: Timestamp::default(),
             fight: None,
             window_metrics: None,
             metrics: None,
+            touched: false,
             last_stats: HudStats::default(),
             last_cost: Duration::ZERO,
         }
+    }
+
+    /// The HUD of a fight, which never reads a stand-in, from its first frame on.
+    pub fn for_fight(options: HudOptions) -> Self {
+        Self { stand_in: None, ..Self::new(options) }
     }
 
     /// What the fight says of its fighters this frame, `time` into it: live mode shows it. Offscreen
     /// there's no other clock.
     pub fn show_fight(&mut self, values: HudValues, time: Duration) {
         self.fight = Some(values);
+        self.stand_in = None;
         if self.window_metrics.is_none() && self.options.mode == HudMode::Live {
             self.now = Timestamp::from_nanos(time.as_nanos() as u64);
         }
@@ -160,47 +168,47 @@ impl SandboxHud {
         self.options.mode == HudMode::Live && self.controls.handle_event(event)
     }
 
-    /// Live mode's frame on the real clock, before the packet: the window's metrics, the touch zones
-    /// and the stand-in. Returns the camera's orbit, in radians.
-    pub fn update(&mut self, now: Timestamp, window: &Window) -> Vec2 {
+    /// Whether this finger holds the stick or a button.
+    #[cfg(feature = "dev")]
+    pub fn holds_control(&self, finger: FingerId) -> bool {
+        self.options.mode == HudMode::Live && self.controls.holds_control(finger)
+    }
+
+    /// `window`'s metrics, as this HUD draws on it.
+    pub fn metrics_of(&self, window: &Window) -> UiMetrics {
         let mut metrics = UiMetrics::of_window(window, self.options.scale);
         if let Some(insets) = self.options.insets {
             metrics.insets = insets;
         }
+        metrics
+    }
+
+    /// Who's holding what, for whether the on-screen controls show. A pad in use takes them away and a
+    /// finger brings them back, and a desktop shows them only once a finger has landed. A pad merely
+    /// connected changes nothing: the iOS simulator reports one nobody holds, and with no controls and
+    /// no pad there'd be no way to play. Nothing that doesn't ask has them hidden.
+    pub fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
+        let touching = self.controls.fingers() > 0;
+        self.touched |= touching;
+        self.hud.show_controls(touching || (!pad_in_hands && (!desktop || self.touched)));
+    }
+
+    /// Live mode's frame on the real clock, before the frame's input is judged: the window's metrics,
+    /// the touch zones and the stand-in. Returns what the zones read, which that input takes; a fixed
+    /// frame has none, since its touches are made up.
+    pub fn update(&mut self, now: Timestamp, metrics: UiMetrics) -> Option<&TouchActions> {
         self.window_metrics = Some(metrics);
         if self.options.mode != HudMode::Live {
-            return Vec2::ZERO;
+            return None;
         }
         self.now = now;
         self.relayout(metrics);
         let actions = self.controls.update(now);
-        let camera = actions.camera_delta;
-        self.live.camera_logged += camera;
+        self.camera_logged += actions.camera_delta;
         for event in &actions.events {
-            let enemy = self.layout.metrics.size * Vec2::new(0.5, 0.42);
-            let stand_in = self.fight.is_none();
-            match (event.button, event.kind) {
-                (Button::Attack, ButtonEventKind::Pressed) if stand_in => {
-                    self.live.hits += 1;
-                    self.live.enemy_hp = wrapped(self.live.enemy_hp - 0.06);
-                    self.live.enemy_poise = wrapped(self.live.enemy_poise - 0.11);
-                    let value = 240 + self.live.hits * 37 % 900;
-                    self.hud.spawn_damage(value, enemy, DamageKind::Normal);
-                }
-                (Button::Attack, ButtonEventKind::Held) if stand_in => {
-                    let value = 2400 + self.live.hits * 311 % 4000;
-                    self.hud.spawn_damage(value, enemy + Vec2::new(0.0, -24.0), DamageKind::Heavy);
-                }
-                (Button::Dodge, ButtonEventKind::Pressed) if stand_in => {
-                    self.live.player_hp = wrapped(self.live.player_hp - 0.09);
-                }
-                (Button::Skill, ButtonEventKind::Pressed)
-                    if stand_in && self.live.cooldown_until.is_none() =>
-                {
-                    self.live.cooldown_until =
-                        Some(Timestamp::from_nanos(now.as_nanos() + LIVE_COOLDOWN.as_nanos() as u64));
-                }
-                _ => {}
+            if let Some(stand_in) = &mut self.stand_in {
+                let enemy = self.layout.metrics.size * Vec2::new(0.5, 0.42);
+                stand_in.take(event.button, event.kind, now, enemy, &mut self.hud);
             }
             tracing::info!(
                 target: LOG_TARGET,
@@ -211,22 +219,33 @@ impl SandboxHud {
                 "hud button"
             );
         }
-        if now.saturating_duration_since(self.live.logged_at) >= LOG_EVERY {
+        if now.saturating_duration_since(self.logged_at) >= LOG_EVERY {
             let stick = actions.stick;
-            if stick.active || self.live.camera_logged != Vec2::ZERO {
+            if stick.active || self.camera_logged != Vec2::ZERO {
                 tracing::info!(
                     target: LOG_TARGET,
                     stick = %stick.value,
                     thumb = %stick.thumb,
-                    camera = %self.live.camera_logged,
+                    camera = %self.camera_logged,
                     fingers = self.controls.fingers(),
                     "hud touch"
                 );
             }
-            self.live.camera_logged = Vec2::ZERO;
-            self.live.logged_at = now;
+            self.camera_logged = Vec2::ZERO;
+            self.logged_at = now;
         }
-        camera * CAMERA_PER_POINT
+        Some(self.controls.actions())
+    }
+
+    /// A hit that landed: its number where `view_projection` puts `point`, if that's in front of the
+    /// camera. Only live mode shows them: a fixed frame's numbers are its own.
+    pub fn show_hit(&mut self, damage: u32, point: Vec3, weight: Weight, view_projection: Mat4) {
+        if self.options.mode != HudMode::Live {
+            return;
+        }
+        let Some(position) = on_screen(point, view_projection, self.layout.metrics.size) else { return };
+        let kind = if weight == Weight::Heavy { DamageKind::Heavy } else { DamageKind::Normal };
+        self.hud.spawn_damage(damage, position, kind);
     }
 
     /// Whatever else the frame needs, then this frame's HUD into `list`.
@@ -244,9 +263,11 @@ impl SandboxHud {
                 self.now = ms(FIXED_NOW);
             }
             HudMode::Live => {
-                self.values = match self.fight {
-                    Some(values) => values,
-                    None => self.live_values(),
+                self.values = match (self.fight, &mut self.stand_in) {
+                    (Some(values), _) => values,
+                    (None, Some(stand_in)) => stand_in.values(self.now),
+                    // A fight that hasn't said anything yet: the app tells its HUD before the first frame.
+                    (None, None) => HudValues::default(),
                 };
             }
         }
@@ -263,32 +284,6 @@ impl SandboxHud {
     /// What the last frame's draw cost, for the bench and the stats overlay (rule R9).
     pub fn last_frame(&self) -> (HudStats, Duration) {
         (self.last_stats, self.last_cost)
-    }
-
-    fn live_values(&mut self) -> HudValues {
-        let cooldown = match self.live.cooldown_until {
-            Some(until) if until > self.now => {
-                let left = until.saturating_duration_since(self.now);
-                (left.as_secs_f32() / LIVE_COOLDOWN.as_secs_f32(), Some(left.as_secs() as u32 + 1))
-            }
-            _ => {
-                self.live.cooldown_until = None;
-                (0.0, None)
-            }
-        };
-        HudValues {
-            player: FighterValues {
-                hp: self.live.player_hp,
-                poise: 0.7,
-                hp_points: Some((self.live.player_hp * 6480.0) as u32),
-            },
-            enemy: Some(FighterValues {
-                hp: self.live.enemy_hp,
-                poise: self.live.enemy_poise,
-                hp_points: None,
-            }),
-            skill: SkillValues { cooldown: cooldown.0, seconds: cooldown.1 },
-        }
     }
 
     /// A new layout, if the metrics moved. A fixed frame poses itself again on it.
@@ -345,6 +340,76 @@ impl SandboxHud {
     }
 }
 
+impl LiveValues {
+    /// A button's edge, on the stand-in: what no gameplay is there to do.
+    fn take(
+        &mut self,
+        button: Button,
+        kind: ButtonEventKind,
+        now: Timestamp,
+        enemy: Vec2,
+        hud: &mut CombatHud,
+    ) {
+        match (button, kind) {
+            (Button::Attack, ButtonEventKind::Pressed) => {
+                self.hits += 1;
+                self.enemy_hp = wrapped(self.enemy_hp - 0.06);
+                self.enemy_poise = wrapped(self.enemy_poise - 0.11);
+                hud.spawn_damage(240 + self.hits * 37 % 900, enemy, DamageKind::Normal);
+            }
+            (Button::Attack, ButtonEventKind::Held) => {
+                let value = 2400 + self.hits * 311 % 4000;
+                hud.spawn_damage(value, enemy + Vec2::new(0.0, -24.0), DamageKind::Heavy);
+            }
+            (Button::Dodge, ButtonEventKind::Pressed) => self.player_hp = wrapped(self.player_hp - 0.09),
+            (Button::Skill, ButtonEventKind::Pressed) if self.cooldown_until.is_none() => {
+                self.cooldown_until =
+                    Some(Timestamp::from_nanos(now.as_nanos() + LIVE_COOLDOWN.as_nanos() as u64));
+            }
+            _ => {}
+        }
+    }
+
+    /// What it shows at `now`.
+    fn values(&mut self, now: Timestamp) -> HudValues {
+        let cooldown = match self.cooldown_until {
+            Some(until) if until > now => {
+                let left = until.saturating_duration_since(now);
+                (left.as_secs_f32() / LIVE_COOLDOWN.as_secs_f32(), Some(left.as_secs() as u32 + 1))
+            }
+            _ => {
+                self.cooldown_until = None;
+                (0.0, None)
+            }
+        };
+        HudValues {
+            player: FighterValues {
+                hp: self.player_hp,
+                poise: 0.7,
+                hp_points: Some((self.player_hp * 6480.0) as u32),
+            },
+            enemy: Some(FighterValues { hp: self.enemy_hp, poise: self.enemy_poise, hp_points: None }),
+            skill: SkillValues { cooldown: cooldown.0, seconds: cooldown.1 },
+        }
+    }
+}
+
+/// The hit this cue says landed, once for each hit: what a broken guard or a defeat publishes after a
+/// hit's own cue carries the same hit, and doesn't land it again.
+pub(crate) fn landed(cue: &CueEvent) -> Option<HitCue> {
+    cue.hit.filter(|_| cue.cue != POISE_BROKEN && cue.cue != DEFEATED)
+}
+
+/// Where `point` draws in a frame `size` points large, +y down, if it's in front of the camera. It may
+/// be off the frame's edge: a number that starts there floats in.
+fn on_screen(point: Vec3, view_projection: Mat4, size: Vec2) -> Option<Vec2> {
+    let clip = view_projection * point.extend(1.0);
+    (clip.w > 0.0).then(|| {
+        let ndc = Vec2::new(clip.x, clip.y) / clip.w;
+        Vec2::new((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5) * size
+    })
+}
+
 /// `value`, but starting over from full once it has run out: a stand-in's bars never stay empty.
 fn wrapped(value: f32) -> f32 {
     if value <= 0.0 { 1.0 } else { value }
@@ -371,6 +436,113 @@ mod tests {
         hud.draw((640, 360), &mut list);
         assert_eq!(hud.values, values);
         assert_eq!(hud.now, ms(2000));
+    }
+
+    fn touch(id: u64, phase: TouchPhase, at_ms: u64, position: Vec2, size: Vec2) -> Event {
+        Event::Touch(sapphire_platform::TouchEvent {
+            timestamp: ms(at_ms),
+            window: sapphire_platform::WindowId::from_raw(1),
+            finger: finger(id),
+            phase,
+            x: position.x / size.x,
+            y: position.y / size.y,
+            pressure: 1.0,
+        })
+    }
+
+    /// A fight's HUD has no stand-in to read, from before its first values on: a press throws no number,
+    /// and its bars are what the fight says or nothing.
+    #[test]
+    fn a_fights_hud_reads_no_stand_in_from_its_first_frame() {
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        let mut hud = SandboxHud::for_fight(live);
+        let metrics = UiMetrics::new(Vec2::new(900.0, 400.0), Insets::default());
+        assert!(hud.update(ms(1), metrics).is_some());
+        let attack = hud.layout.attack.center;
+        assert!(hud.handle_event(&touch(1, TouchPhase::Down, 2, attack, metrics.size)));
+        // Past its hold, whose number is the stand-in's too.
+        assert!(hud.update(ms(500), metrics).is_some_and(|touch| touch.button(Button::Attack).held));
+        let mut list = UiDrawList::default();
+        hud.draw((900, 400), &mut list);
+        assert_eq!(hud.last_frame().0.damage_numbers, 0);
+        assert_eq!(hud.values, HudValues::default());
+
+        // The stand-in stops at a fight's first word, on a HUD that started without one.
+        let mut hud = SandboxHud::new(live);
+        hud.show_fight(HudValues::default(), Duration::ZERO);
+        assert!(hud.stand_in.is_none());
+    }
+
+    /// The numbers are hits, where the camera sees them: the middle of the frame for what it looks at,
+    /// +y down, nothing for what's behind it.
+    #[test]
+    fn a_hit_shows_its_number_where_the_camera_sees_it() {
+        let camera = sapphire_render::CameraData::look_at(
+            Vec3::new(0.0, 1.0, 5.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::Y,
+            1.0,
+            900.0 / 400.0,
+            0.05,
+        );
+        let view_projection = camera.proj * camera.view;
+        let size = Vec2::new(900.0, 400.0);
+        let middle = on_screen(Vec3::new(0.0, 1.0, 0.0), view_projection, size).expect("in front");
+        assert!(middle.distance(size * 0.5) < 1e-3, "{middle}");
+        let above = on_screen(Vec3::new(0.0, 2.0, 0.0), view_projection, size).expect("in front");
+        assert!(above.y < middle.y && above.x == middle.x, "{above}");
+        let right = on_screen(Vec3::new(1.0, 1.0, 0.0), view_projection, size).expect("in front");
+        assert!(right.x > middle.x, "{right}");
+        assert_eq!(on_screen(Vec3::new(0.0, 1.0, 9.0), view_projection, size), None, "behind");
+
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        let mut hud = SandboxHud::for_fight(live);
+        let metrics = UiMetrics::new(size, Insets::default());
+        let _ = hud.update(ms(1), metrics);
+        hud.show_hit(30, Vec3::new(0.0, 1.0, 0.0), Weight::Light, view_projection);
+        hud.show_hit(80, Vec3::new(0.0, 2.0, 0.0), Weight::Heavy, view_projection);
+        hud.show_hit(80, Vec3::new(0.0, 1.0, 9.0), Weight::Heavy, view_projection);
+        let mut list = UiDrawList::default();
+        hud.draw((900, 400), &mut list);
+        assert_eq!(hud.last_frame().0.damage_numbers, 2, "and none from behind");
+
+        // A fixed frame's numbers are its own.
+        let mut fixed = SandboxHud::new(HudOptions::default());
+        fixed.draw((640, 360), &mut list);
+        let before = fixed.last_frame().0.damage_numbers;
+        fixed.show_hit(30, Vec3::new(0.0, 1.0, 0.0), Weight::Light, view_projection);
+        fixed.draw((640, 360), &mut list);
+        assert_eq!(fixed.last_frame().0.damage_numbers, before);
+    }
+
+    /// A pad takes the on-screen controls away (spec §6.6), and a desktop shows them only once a finger
+    /// has landed. The bars stay, and nothing that doesn't ask has them hidden: captures draw them.
+    #[test]
+    fn the_on_screen_controls_follow_who_is_holding_what() {
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        let metrics = UiMetrics::new(Vec2::new(900.0, 400.0), Insets::default());
+        let quads = |hud: &mut SandboxHud| {
+            let mut list = UiDrawList::default();
+            hud.draw((900, 400), &mut list);
+            hud.last_frame().0.quads
+        };
+        let mut hud = SandboxHud::for_fight(live);
+        let _ = hud.update(ms(1), metrics);
+        let whole = quads(&mut hud);
+
+        hud.follow_devices(false, false);
+        assert_eq!(quads(&mut hud), whole, "a phone");
+        hud.follow_devices(false, true);
+        let bars = quads(&mut hud);
+        assert!(bars > 0 && bars < whole, "a phone with a pad in use: {bars} of {whole}");
+        hud.follow_devices(true, false);
+        assert_eq!(quads(&mut hud), bars, "a desktop no finger has touched");
+
+        let attack = hud.layout.attack.center;
+        assert!(hud.handle_event(&touch(1, TouchPhase::Down, 2, attack, metrics.size)));
+        hud.follow_devices(true, true);
+        let _ = hud.update(ms(3), metrics);
+        assert!(quads(&mut hud) >= whole, "a finger down shows them, pad or no pad");
     }
 
     /// A fixed frame stays the same frame, whatever's going on behind it.

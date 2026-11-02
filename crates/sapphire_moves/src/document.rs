@@ -48,6 +48,7 @@ impl fmt::Display for Issue {
 /// A document of moves. See the [crate docs](crate) for the format.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
 #[type_path = "sapphire::moves"]
+#[serde(deny_unknown_fields)]
 pub struct MoveSetDocument {
     /// The kinds of intent this set's windows speak of.
     pub intents: Vec<IntentDocument>,
@@ -71,6 +72,7 @@ impl Versioned for MoveSetDocument {
 
 /// A kind of intent. See [`IntentDef`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IntentDocument {
     pub name: String,
     /// The button that presses it. A brain presses intents without one.
@@ -175,6 +177,7 @@ pub struct BrainRiseDocument {
 
 /// An intent starting a move. See [`Allow`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AllowDocument {
     pub intent: String,
     /// The move it starts.
@@ -191,6 +194,7 @@ fn is_buffered(mode: &CancelMode) -> bool {
 
 /// One move. Its length is its three phases, end to end.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MoveDocument {
     pub name: String,
     pub startup: u32,
@@ -221,6 +225,7 @@ pub struct MoveDocument {
 
 /// A window with nothing else to say: open on ticks `from` to `to − 1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpanDocument {
     pub from: u32,
     pub to: u32,
@@ -228,6 +233,7 @@ pub struct SpanDocument {
 
 /// A hit volume. See [`Hitbox`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HitboxDocument {
     pub name: String,
     pub from: u32,
@@ -271,6 +277,7 @@ fn is_zero(value: &u16) -> bool {
 
 /// A hurtbox change. See [`HurtboxChange`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HurtboxDocument {
     pub name: String,
     pub from: u32,
@@ -340,6 +347,7 @@ pub struct CounterDocument {
 
 /// A cancel window. See [`CancelWindow`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CancelDocument {
     pub from: u32,
     pub to: u32,
@@ -348,6 +356,7 @@ pub struct CancelDocument {
 
 /// A warp window. See [`WarpWindow`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WarpDocument {
     pub from: u32,
     pub to: u32,
@@ -361,6 +370,7 @@ pub struct WarpDocument {
 
 /// A cue. See [`Cue`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CueDocument {
     pub name: String,
     pub at: u32,
@@ -377,6 +387,7 @@ pub struct CueDocument {
 /// [`root`]: Self::root
 /// [`paths`]: Self::paths
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MotionDocument {
     /// The clip this move plays, and what its tables take from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +410,7 @@ impl MotionDocument {
 /// than by the ID a cook derives from them. They are text here because this crate knows nothing of
 /// assets: the cook reads them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClipMotionDocument {
     /// The sidecar ID of a key-pose document or an animation source.
     pub source: String,
@@ -436,6 +448,7 @@ impl RootSource {
 
 /// A named hit path along a joint of the clip's skeleton: a socket, with an offset. See [`BakedPath`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClipPathDocument {
     pub name: String,
     pub follows: Follows,
@@ -460,6 +473,7 @@ pub enum Follows {
 
 /// The root at one tick. See [`RootSample`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootKey {
     pub at: u32,
     /// Metres from the root at the move's first tick, in that root's space: +Z is forward.
@@ -472,6 +486,7 @@ pub struct RootKey {
 
 /// A named hit path, keyed. See [`BakedPath`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathDocument {
     pub name: String,
     pub keys: Vec<PathKey>,
@@ -479,6 +494,7 @@ pub struct PathDocument {
 
 /// A path at one tick. See [`PathSample`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathKey {
     pub at: u32,
     /// Metres from the root at this tick, in that root's space.
@@ -1478,6 +1494,55 @@ mod tests {
         assert!(dodge_intent.priority > light_intent.priority);
         assert_eq!(light_intent.buffer(), SimDuration::from_ticks(12));
         assert_eq!(MOVE_SET_EXTENSION, "smoves");
+    }
+
+    /// A misspelt track would otherwise read as no track at all: `cancles:` plays a move nothing can
+    /// cancel out of and answers `as revision 2`, with nothing anywhere to say what went.
+    #[test]
+    fn a_field_the_format_has_no_name_for_is_refused() {
+        for (field, typo) in [
+            ("neutral:", "neutarl:"),
+            ("fighter: (", "figther: ("),
+            ("cancels:", "cancles:"),
+            ("hitboxes:", "hitbox:"),
+            ("attack: (", "atack: ("),
+            ("invulnerable:", "invulnerables:"),
+            ("hurtboxes:", "hurtbox:"),
+            ("cues:", "cue:"),
+            ("root:", "roots:"),
+        ] {
+            assert!(SLICE.contains(field), "the test content has no `{field}`");
+            let error = MoveSetDocument::parse(&SLICE.replacen(field, typo, 1))
+                .expect_err(&format!("`{typo}` should be refused"));
+            let name = typo.split(':').next().unwrap();
+            assert!(error.to_string().contains(name), "`{typo}` isn't named in: {error}");
+        }
+        for (place, field) in [
+            ("buffer:", "bufferr: 1, buffer:"),
+            ("startup:", "startp: 1, startup:"),
+            ("from:", "form: 1, from:"),
+            ("(intent:", "(intnet: \"x\", intent:"),
+        ] {
+            assert!(SLICE.contains(place), "the test content has no `{place}`");
+            let name = field.split(':').next().unwrap().trim_start_matches('(');
+            let error = MoveSetDocument::parse(&SLICE.replacen(place, field, 1))
+                .expect_err(&format!("`{name}` should be refused"));
+            assert!(error.to_string().contains(name), "`{name}` isn't named in: {error}");
+        }
+    }
+
+    /// Everything the repository ships still reads, since the fields above are refused.
+    #[test]
+    fn every_document_shipped_parses() {
+        for text in [
+            SLICE,
+            include_str!("../test_content/party.moves.ron"),
+            include_str!("../../../content/combat/player/player.moves.ron"),
+            include_str!("../../../content/combat/enemy/warrior.moves.ron"),
+            include_str!("../../../content/lookdev/character/show.moves.ron"),
+        ] {
+            MoveSetDocument::parse(text).expect("a shipped document");
+        }
     }
 
     #[test]

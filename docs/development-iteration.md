@@ -16,6 +16,7 @@ same `CARGO_TARGET_DIR`.
 - The recorded combat replays: `cargo xtask replay [--replay <name>]`. They need no GPU, and the suite itself takes about 20 ms. See [Replays](#replays).
 - The same replays beside the renderer: `cargo xtask content`, then `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`.
 - The combat views and the overlay's recorder: `cargo test -p sapphire_sandbox --lib combat`, and with `--features dev -- --include-ignored` for what the panel is shown. The panel itself, clicks included: `cargo test -p sapphire_debug --lib combat::`.
+- Live tuning: `cargo test -p sapphire_gameplay --lib replay::tuning`, and through a real sandbox `cargo xtask content`, then `cargo test -p sapphire_sandbox --features dev --test live_tuning -- --ignored --test-threads=1`. See [Tuning a fight](#tuning-a-fight).
 - Combat's controls, driven by synthetic input: `cargo test -p sapphire_input -p sapphire_controls --locked`. Their cost: `cargo run --release -p sapphire_controls --example update_bench`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
@@ -70,6 +71,16 @@ The next run's Linux and Windows jobs compare against that one file, which is wh
 `--replay <file>` and `--record <file> --scenario <name> --script <name>` go with `--capture` or `--bench`: the simulation takes a tick with each fixed step, beside the renderer. A replay is held to the recorded checksums beside its file, and a capture of one that has left them isn't written. A capture stops at the replay's end unless `--capture-ticks` picks an earlier tick. A bench goes on past the end, and says so, so give it a replay long enough for its frames (60 of warm-up, its own, and 240 timed).
 
 `--record <file> --scenario <name>`, with no `--script`, `--capture` or `--bench`, records a fight someone plays: the windowed app's simulation takes each fixed step's input from combat's bindings (`sapphire_controls::ControlsSource`, through `combat::action_source` in the sandbox), turned by the camera's yaw, so the file carries world directions and no camera. A pause records nothing, since no steps run. The file is written when the app quits, so a killed process leaves none. On Android, give an absolute path inside the app's own directory (`/data/user/0/dev.sapphire.sandbox/files/<name>.sreplay`) and fetch it with `adb exec-out run-as dev.sapphire.sandbox cat files/<name>.sreplay`.
+
+## Tuning a fight
+
+Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron` and `character.animgraph.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
+
+- A move in progress finishes on what it started with, and the next start reads the edit. The log says `the next attempt plays the new moves`, and `cargo xtask link status` shows each fighter's revision and windows.
+- A bad document changes nothing, and its issues name the move and the track. The next good one works.
+- A move that names a clip takes new windows and phases with no cook. Its length is its clip's, and a change to the `clip` block needs `cargo xtask content`, then hot reload's remount or `cargo xtask link push`.
+- A recording ends its file at the first edit that changes something, and the fight goes on: a replay can only answer for what it recorded. A fight started afterwards starts from the edit, and its file says so through its hash.
+- To try it with no window: `--offscreen --record <file> --scenario duel --script attempts`, which presses LIGHT every half second.
 
 ## Build profiles and content
 

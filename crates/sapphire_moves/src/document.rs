@@ -957,6 +957,40 @@ impl MoveSetDocument {
         self.compile_with(|_| Ok(None))
     }
 
+    /// [`Self::compile`] where there are no clips to bake from, as in a running app (M2 T2): a move that
+    /// names a clip reads the tables its clip gave it in `running`, the set this document last became.
+    /// So windows, how a move's length divides into phases and the keys laid over a clip all take effect
+    /// with no cook, in the bytes a cook of this document makes.
+    ///
+    /// A move's length is its clip's, so changing it is the same issue a cook gives, and a new move or path
+    /// says only a cook can bake it. What this can't see is an edit of a `clip` block itself, or a move's
+    /// root keys taken away, since a running set holds what they made and not what they say: a cook is
+    /// what brings those, as a new `.smoves`.
+    pub fn compile_over(&self, running: &MoveSet) -> Result<MoveSet, MoveSetError> {
+        self.compile_with(|mv| {
+            let Some(clip) = &mv.motion.clip else { return Ok(None) };
+            let Some((_, was)) = running.find(Name::intern(&mv.name)) else {
+                return Err("this names a clip and the running moves don't have it: only a cook can bake it"
+                    .to_owned());
+            };
+            let path = |path: &ClipPathDocument| {
+                was.tables.path(Name::intern(&path.name)).cloned().ok_or_else(|| {
+                    format!("the running moves don't have path `{}`: only a cook can bake it", path.name)
+                })
+            };
+            let paths = clip.paths.iter().map(path).collect::<Result<Vec<_>, _>>()?;
+            BakedTables::new(was.tables.root_samples().to_vec(), paths)
+                .map(Some)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Whether any of its moves names a clip.
+    #[must_use]
+    pub fn names_clips(&self) -> bool {
+        self.moves.iter().any(|mv| mv.motion.clip.is_some())
+    }
+
     /// [`Self::compile`], asking `tables` for each move's tables first: a cook that bakes them from
     /// a clip, or a test with a fixture. A move it answers `Ok(None)` for bakes from its keys, and an
     /// `Err` is an issue on that move's `motion`, reported with the rest.
@@ -2079,6 +2113,57 @@ mod tests {
         assert_eq!(issues[0].track, "motion");
         assert!(issues[0].to_string().contains("swing"), "{}", issues[0]);
         assert!(issues[0].message.contains("only a cook"), "{}", issues[0]);
+    }
+
+    /// Over the set it last became, a document of clips needs no cook for what its clips don't hold, and
+    /// makes the bytes a cook would. What only a cook can do says so (M2 T2).
+    #[test]
+    fn a_running_set_answers_for_its_clips() {
+        let cook =
+            |document: &MoveSetDocument| document.compile_with(|_| Ok(Some(baked(10)))).expect("cooks");
+        let bytes = |set: &MoveSet| set.to_cooked().expect("writes").into_vec();
+        let running = cook(&from_a_clip());
+        assert_eq!(bytes(&from_a_clip().compile_over(&running).expect("the same")), bytes(&running));
+
+        let mut later = from_a_clip();
+        later.moves[0].startup = 3;
+        later.moves[0].recovery = 4;
+        later.moves[0].hitboxes[0].from = 3;
+        later.moves[0].motion.paths[0].keys[0].offset = [0.0, 0.7, 1.0];
+        assert_eq!(bytes(&later.compile_over(&running).expect("no cook needed")), bytes(&cook(&later)));
+
+        // Keys beside the clip's root take over from it, as in a cook.
+        let mut rooted = from_a_clip();
+        rooted.moves[0].motion.root = vec![RootKey { at: 10, offset: [0.0, 0.0, 2.0], yaw: 0.0 }];
+        assert_eq!(bytes(&rooted.compile_over(&running).expect("no cook needed")), bytes(&cook(&rooted)));
+
+        let issue = |document: &MoveSetDocument| {
+            let Err(MoveSetError::Invalid(issues)) = document.compile_over(&running) else {
+                panic!("compiled")
+            };
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].track, "motion");
+            issues[0].to_string()
+        };
+        let mut longer = from_a_clip();
+        longer.moves[0].recovery += 1;
+        assert!(issue(&longer).contains("the clip is 10 ticks long"), "{}", issue(&longer));
+
+        let mut new_path = from_a_clip();
+        let clip = new_path.moves[0].motion.clip.as_mut().expect("a clip");
+        clip.paths[0].name = "off_hand".to_owned();
+        new_path.moves[0].hitboxes[0].path = "off_hand".to_owned();
+        assert!(issue(&new_path).contains("path `off_hand`: only a cook"), "{}", issue(&new_path));
+
+        let mut new_move = from_a_clip();
+        new_move.moves[0].name = "sweep".to_owned();
+        new_move.neutral[0].target = "sweep".to_owned();
+        assert!(issue(&new_move).contains("only a cook"), "{}", issue(&new_move));
+
+        let mut keyed = from_a_clip();
+        keyed.moves[0].motion.clip = None;
+        keyed.moves[0].hitboxes.remove(0);
+        assert!(keyed.compile_over(&running).is_ok(), "keys need no clip");
     }
 
     /// A move plays its clip tick for tick, so nothing retimes it: a clip of another length is the

@@ -54,4 +54,4 @@ pub use script::{
     ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, SCRIPTS, Script, arena_walk, attempts,
     find_script, melee_sweep,
 };
-pub use tuning::{LiveMoves, compile_document};
+pub use tuning::{LiveMoves, LiveSet, compile_document};

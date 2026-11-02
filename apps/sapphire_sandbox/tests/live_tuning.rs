@@ -181,11 +181,7 @@ fn a_window_past_the_end() -> String {
 
 /// `light_1`, as the player's next attempt plays it, at this revision.
 fn light_at(status: &DeviceStatus, revision: u32) -> Option<MoveAttempt> {
-    status
-        .attempts
-        .iter()
-        .find(|attempt| attempt.name == "light_1" && attempt.revision == revision)
-        .cloned()
+    status.attempts.iter().find(|attempt| attempt.name == "light_1" && attempt.revision == revision).cloned()
 }
 
 /// The brief's test: an edited move, pushed, plays on a following attempt, a bad one changes nothing and

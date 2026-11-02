@@ -1238,7 +1238,9 @@ impl Scene {
     ) -> Result<(), String> {
         let character = self.character;
         if self.graph_show.is_none() || self.ecs.world().get::<GraphDriver>(character).is_none() {
-            return Err("no character here plays a graph: `--look-dev <shot> --graph <script>` has one".to_owned());
+            return Err(
+                "no character here plays a graph: `--look-dev <shot> --graph <script>` has one".to_owned()
+            );
         }
         content.hold_clips_of(&graph, renderer, gpu)?;
         let binding = lookdev::graph_binding_of(content, &graph)?;

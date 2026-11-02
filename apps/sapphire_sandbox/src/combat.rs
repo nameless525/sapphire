@@ -27,9 +27,9 @@ use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, LiveMoves, Played, Player, RecordedTrail,
     Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
 };
+use sapphire_gameplay::{ActorId, Simulation, TickActions};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
-use sapphire_gameplay::{ActorId, Simulation, TickActions};
 
 use crate::LOG_TARGET;
 use crate::options::{CaptureFrames, CombatOption};
@@ -135,8 +135,8 @@ impl Combat {
                 })
             })
             .transpose()?;
-        let recording =
-            Recording::tuned(scenario, scenario.config, live).map_err(|error| format!("--record: {error}"))?;
+        let recording = Recording::tuned(scenario, scenario.config, live)
+            .map_err(|error| format!("--record: {error}"))?;
         let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }

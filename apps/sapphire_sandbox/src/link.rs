@@ -157,8 +157,18 @@ impl Link {
     pub fn update(&mut self, changes: &[AssetChange], frame: LinkFrame<'_>) {
         self.tracker.record(changes);
         let Some(link) = &self.link else { return };
-        let LinkFrame { content, renderer, gpu, scene, mut combat, tuning, cvars, shaders: edits, frame, frame_time } =
-            frame;
+        let LinkFrame {
+            content,
+            renderer,
+            gpu,
+            scene,
+            mut combat,
+            tuning,
+            cvars,
+            shaders: edits,
+            frame,
+            frame_time,
+        } = frame;
         for push in std::iter::from_fn(|| link.poll()).take(PUSHES_PER_FRAME) {
             profiling::scope!("live link");
             match push {

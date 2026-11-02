@@ -1168,7 +1168,10 @@ impl Content {
 
     /// A cooked set of moves [`Self::hold_move_set`] holds, if it's loaded.
     #[cfg(feature = "dev")]
-    pub fn move_set(&self, set: &Handle<sapphire_moves::MoveSet>) -> Option<&sapphire_moves::ArchivedMoveSet> {
+    pub fn move_set(
+        &self,
+        set: &Handle<sapphire_moves::MoveSet>,
+    ) -> Option<&sapphire_moves::ArchivedMoveSet> {
         self.server.get(set)
     }
 

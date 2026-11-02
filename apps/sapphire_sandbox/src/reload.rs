@@ -170,7 +170,10 @@ impl Document {
                 renderer.prewarm_post(scene.effect_variants());
                 Ok(self.name().to_owned())
             }
-            Self::Moves => tuning.moves_document(origin, text, Fight { combat, scene }),
+            Self::Moves => {
+                let cooked = tuning.cooked_set(origin, content);
+                tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })
+            }
             Self::Camera => tuning.camera_document(text, scene),
             Self::Graph => tuning.graph_document(text, content, scene, renderer, gpu),
         }
@@ -317,12 +320,7 @@ impl Reload {
     /// Applies what changed since the last frame; `changes` are the asset server's since then.
     /// New shader sources go to the renderer through `shaders`, which answers them once they are
     /// swapped in. Allocates nothing while nothing changed.
-    pub fn update(
-        &mut self,
-        changes: &[AssetChange],
-        frame: DocumentFrame<'_>,
-        shaders: &mut ShaderEdits,
-    ) {
+    pub fn update(&mut self, changes: &[AssetChange], frame: DocumentFrame<'_>, shaders: &mut ShaderEdits) {
         let DocumentFrame { content, renderer, gpu, scene, mut combat, tuning } = frame;
         let Some(hot) = &mut self.hot else { return };
         // Reloads land frames after their pack changed, so they are told of as they come: the

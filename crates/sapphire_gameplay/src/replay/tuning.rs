@@ -15,13 +15,29 @@ use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
 use crate::simulation::{SimConfig, Simulation};
 
+/// What an edited document became.
+#[derive(Clone, Debug)]
+pub struct LiveSet {
+    pub set: MoveSet,
+    /// Its moves name clips, whose motion stays what `running` had: an edit of a `clip` block waits for a
+    /// cook. A person should be told.
+    pub motion_as_cooked: bool,
+}
+
 /// What an edited document compiles to on a running app. A failure's text names the move and the track,
 /// and keeping what's playing is the caller's whole job then.
 ///
-/// A move that names a clip fails here with an issue saying only a cook can bake it: a device has no
-/// clips to bake from, so such a document reaches a fight as its cook's `.smoves` instead, through a pack.
-pub fn compile_document(text: &str) -> Result<MoveSet, MoveSetError> {
-    MoveSetDocument::parse(text)?.compile()
+/// `running` is the set this document last became, if there is one. A device has no clips to bake from, so
+/// a move that names a clip reads its tables there ([`MoveSetDocument::compile_over`]): a saved window
+/// needs no cook, and is the bytes a cook of it makes. With no `running`, or for a new move or path, the
+/// issue says only a cook can bake it, and its `.smoves` comes through a pack.
+pub fn compile_document(text: &str, running: Option<&MoveSet>) -> Result<LiveSet, MoveSetError> {
+    let document = MoveSetDocument::parse(text)?;
+    let set = match running {
+        Some(running) => document.compile_over(running)?,
+        None => document.compile()?,
+    };
+    Ok(LiveSet { set, motion_as_cooked: document.names_clips() })
 }
 
 /// The newest edit of each document that has been edited since the app started: what a new fight starts
@@ -258,9 +274,30 @@ mod tests {
             root: sapphire_moves::RootSource::Clip,
             paths: Vec::new(),
         });
-        let error = compile_document(&document.to_text().expect("writes")).expect_err("no clips here");
-        let error = error.to_string();
+        let text = document.to_text().expect("writes");
+        let error = compile_document(&text, None).expect_err("no clips here").to_string();
         assert!(error.contains("track `motion`") && error.contains("only a cook"), "{error}");
+
+        // Over what its cook made it says where its motion came from.
+        let cooked = document.compile_with(|mv| {
+            let ticks = mv.ticks() as usize;
+            let root = vec![sapphire_moves::RootSample::ZERO; ticks + 1];
+            mv.motion
+                .clip
+                .as_ref()
+                .map(|_| sapphire_moves::BakedTables::new(root, Vec::new()))
+                .transpose()
+                .map_err(|error| error.to_string())
+        });
+        let cooked = cooked.expect("a cook");
+        let live = compile_document(&text, Some(&cooked)).expect("no cook needed");
+        assert!(live.motion_as_cooked);
+        assert_eq!(
+            live.set.to_cooked().expect("writes").as_slice(),
+            cooked.to_cooked().expect("writes").as_slice()
+        );
+        let plain = slower_document().to_text().expect("writes");
+        assert!(!compile_document(&plain, Some(&cooked)).expect("keys").motion_as_cooked);
     }
 
     /// A document's issues name the move and the track: it's what a person hears from `link push`.
@@ -268,10 +305,10 @@ mod tests {
     fn a_bad_document_says_which_move_and_track() {
         let mut document = slower_document();
         document.moves[0].hitboxes[0].to = 400;
-        let error = compile_document(&document.to_text().expect("writes")).expect_err("a bad window");
+        let error = compile_document(&document.to_text().expect("writes"), None).expect_err("a bad window");
         let error = error.to_string();
         assert!(error.contains("move `light_1`, track `hitboxes`"), "{error}");
-        assert!(compile_document("(not a document").is_err());
+        assert!(compile_document("(not a document", None).is_err());
     }
 
     /// Holds every scenario's `documents` to what its setup loads: right files, right order, so a push is
@@ -285,7 +322,7 @@ mod tests {
             assert_eq!(library.set_count(), scenario.documents.len(), "{}", scenario.name);
             for path in scenario.documents {
                 let text = std::fs::read_to_string(root.join(path)).expect(path);
-                let set = compile_document(&text).expect(path);
+                let set = compile_document(&text, None).expect(path).set;
                 let id = scenario.set_of(document_file_name(path)).expect(path);
                 assert!(library.is_current(id, &set), "{}: {path}", scenario.name);
             }

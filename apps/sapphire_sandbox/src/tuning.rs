@@ -4,9 +4,10 @@
 //! - **Moves and fighters** (`.moves.ron`): the document compiles on the device, its issues naming the
 //!   move and the track, and replaces its set in whichever simulation plays it, by file name. A running
 //!   move keeps the revision it started with, the next start reads the new one, and a fighter takes its
-//!   numbers at once. A document whose moves name clips can't compile where there are no clips to bake
-//!   from: its cook's `.smoves` comes through a pack instead ([`LiveTuning::follow_packs`]), by asset ID,
-//!   with `cargo xtask content` and hot reload's remount or `cargo xtask link push`.
+//!   numbers at once. There are no clips to bake from here, so a move that names one reads the tables its
+//!   last cook gave it, and a move's windows change with no cook. Its length is its clip's, and an edit of
+//!   its clip is a cook's to bring, through a pack ([`LiveTuning::follow_packs`]), by asset ID, with
+//!   `cargo xtask content` and hot reload's remount or `cargo xtask link push`. The reply says so.
 //! - **The camera** (`default_camera.ron`): the director's tuning, whose goals ease to the new numbers.
 //! - **The animation graph** (`.animgraph.ron`): bound against what's loaded, it takes effect at the next
 //!   state's start ([`sapphire_anim::GraphPlayer::replace`]). Its pack's route was N3's, and still works.
@@ -169,10 +170,31 @@ impl LiveTuning {
         &self.moves
     }
 
-    /// Takes an edited document of moves. Says what became of it, or why what's playing stays.
-    pub fn moves_document(&mut self, origin: &str, text: &str, fight: Fight<'_>) -> Result<String, String> {
-        let set = compile_document(text).map_err(|error| error_chain(&error))?;
-        self.take_moves(document_file_name(origin), set, fight)
+    /// What a cook made of this document, if it's one that a cook makes.
+    pub fn cooked_set(&self, origin: &str, content: &Content) -> Option<MoveSet> {
+        let document = document_file_name(origin);
+        let cooked = self.cooked.iter().find(|cooked| cooked.document == document)?;
+        content.move_set(&cooked.handle)?.to_owned_set().ok()
+    }
+
+    /// Takes an edited document of moves, with what its moves that name clips read their tables from: the
+    /// newest edit, or else `cooked`. Says what became of it, or why what's playing stays.
+    pub fn moves_document(
+        &mut self,
+        origin: &str,
+        text: &str,
+        cooked: Option<&MoveSet>,
+        fight: Fight<'_>,
+    ) -> Result<String, String> {
+        let document = document_file_name(origin);
+        let running = self.moves.latest(document).or(cooked);
+        let live = compile_document(text, running).map_err(|error| error_chain(&error))?;
+        let taken = self.take_moves(document, live.set, fight)?;
+        Ok(if live.motion_as_cooked {
+            format!("{taken}; its clips' motion stays as last cooked, which only a cook changes")
+        } else {
+            taken
+        })
     }
 
     /// Gives every simulation that plays `document` its new set. Nothing unknown gets as far as a set, so a
@@ -298,7 +320,11 @@ impl LiveTuning {
         let owner = |source: &Source| source.document.name().to_owned();
         self.sources
             .iter()
-            .map(|source| LiveDocument { source: source.path.clone(), owner: owner(source), edits: source.edits })
+            .map(|source| LiveDocument {
+                source: source.path.clone(),
+                owner: owner(source),
+                edits: source.edits,
+            })
             .collect()
     }
 
@@ -443,7 +469,7 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let mut take = |tuning: &mut LiveTuning, combat: &mut Combat, name: &str, text: &str| {
-            tuning.moves_document(name, text, Fight { combat: Some(combat), scene: &mut scene })
+            tuning.moves_document(name, text, None, Fight { combat: Some(combat), scene: &mut scene })
         };
 
         let reply = take(&mut tuning, &mut combat, SLICE_FILE, &slower_text()).expect("a good document");
@@ -469,7 +495,8 @@ mod tests {
         // The next good one works.
         let mut good = MoveSetDocument::parse(&slower_text()).expect("parses");
         good.moves[0].recovery += 1;
-        let reply = take(&mut tuning, &mut combat, SLICE_FILE, &good.to_text().expect("writes")).expect("good");
+        let reply =
+            take(&mut tuning, &mut combat, SLICE_FILE, &good.to_text().expect("writes")).expect("good");
         assert!(reply.contains("revision 2"), "{reply}");
 
         // And an attempt plays it, which the first frame on it says.
@@ -499,10 +526,72 @@ mod tests {
             .moves_document(
                 SLICE_FILE,
                 &slower_text(),
+                None,
                 Fight { combat: Some(&mut replay), scene: &mut scene },
             )
             .expect_err("it plays what it recorded");
         assert!(error.contains("replay"), "{error}");
+    }
+
+    /// Moves that name clips, as a real character's do: a saved window plays with no cook, on the tables
+    /// the cook baked, and the reply says what it left alone. With no cook behind it, it's refused.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn an_edit_of_moves_with_clips_reads_the_tables_a_cook_baked() {
+        use sapphire_moves::{BakedTables, ClipMotionDocument, MoveDocument, RootSample, RootSource};
+
+        let with_a_clip = |text: &str| {
+            let mut document = MoveSetDocument::parse(text).expect("parses");
+            let light = document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("there");
+            light.motion.root.clear();
+            light.motion.clip = Some(ClipMotionDocument {
+                source: "6d321a52-1aed-4279-bc32-a177b8fd81d4".to_owned(),
+                name: None,
+                rig: None,
+                root: RootSource::Clip,
+                paths: Vec::new(),
+            });
+            document
+        };
+        let cook = |document: &MoveSetDocument| {
+            let tables = |mv: &MoveDocument| {
+                let root = vec![RootSample::ZERO; mv.ticks() as usize + 1];
+                let baked = BakedTables::new(root, Vec::new()).map_err(|error| error.to_string())?;
+                Ok(mv.motion.clip.as_ref().map(|_| baked))
+            };
+            document.compile_with(tables).expect("a cook")
+        };
+        let cooked =
+            cook(&with_a_clip(include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron")));
+        let edited = with_a_clip(&slower_text());
+        let text = edited.to_text().expect("writes");
+
+        let scratch = Scratch::new("clips");
+        let mut combat = recording(&scratch.0);
+        let mut scene = scene();
+        let mut tuning = tuning();
+        let error = tuning
+            .moves_document(SLICE_FILE, &text, None, Fight { combat: Some(&mut combat), scene: &mut scene })
+            .expect_err("nothing to read its motion from");
+        assert!(error.contains("only a cook"), "{error}");
+
+        let reply = tuning
+            .moves_document(
+                SLICE_FILE,
+                &text,
+                Some(&cooked),
+                Fight { combat: Some(&mut combat), scene: &mut scene },
+            )
+            .expect("no cook needed");
+        assert!(reply.contains("as revision 1") && reply.contains("as last cooked"), "{reply}");
+        let set = combat.plays(SLICE_FILE).expect("it plays this");
+        assert!(combat.simulation().move_library().is_current(set, &cook(&edited)));
+
+        // A later edit reads the last, with no cook handed over.
+        let reply = tuning
+            .moves_document(SLICE_FILE, &text, None, Fight { combat: Some(&mut combat), scene: &mut scene })
+            .expect("it has the tables now");
+        assert!(reply.contains("still revision 1"), "{reply}");
     }
 
     /// A recording that crossed an edit says so when it's saved, and the file holds what came before.
@@ -517,7 +606,12 @@ mod tests {
             combat.step(&mut no_bindings);
         }
         tuning
-            .moves_document(SLICE_FILE, &slower_text(), Fight { combat: Some(&mut combat), scene: &mut scene })
+            .moves_document(
+                SLICE_FILE,
+                &slower_text(),
+                None,
+                Fight { combat: Some(&mut combat), scene: &mut scene },
+            )
             .expect("a good document");
         for _ in 0..20 {
             combat.step(&mut no_bindings);
@@ -537,7 +631,7 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let reply = tuning
-            .moves_document(SLICE_FILE, &slower_text(), Fight { combat: None, scene: &mut scene })
+            .moves_document(SLICE_FILE, &slower_text(), None, Fight { combat: None, scene: &mut scene })
             .expect("a good document");
         assert!(reply.contains("next fight"), "{reply}");
         let dir = std::env::temp_dir().join(format!("sapphire-tuning-{}-next", std::process::id()));
@@ -550,8 +644,8 @@ mod tests {
             .and_then(|scenario| scenario.set_of(SLICE_FILE))
             .expect("its set");
         let library = fight.simulation().move_library();
-        let edited = compile_document(&slower_text()).expect("compiles");
-        assert!(library.is_current(set, &edited));
+        let edited = compile_document(&slower_text(), None).expect("compiles");
+        assert!(library.is_current(set, &edited.set));
         assert_eq!(library.current_revision(set), Some(0));
         recorder.discard(&mut combat);
         let _ = std::fs::remove_dir_all(&dir);

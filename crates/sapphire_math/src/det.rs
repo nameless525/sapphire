@@ -6,14 +6,15 @@
 //! iOS, Android, Linux on ARM) reproduces every other aarch64 run, and every x86_64 build
 //! (Windows, Linux, Steam Deck) every x86_64 run. Replay checksums are recorded per
 //! architecture. Bit-identical results *across* architectures are a non-goal until lockstep
-//! netcode needs them.
+//! netcode needs them, except for what a bake writes (see "Guidance" below).
 //!
 //! Two things break cross-architecture equality today:
 //! - **glam's SIMD types.** `Vec3A`, `Vec4`, `Quat`, `Mat4` and `Affine3A` use NEON on aarch64
 //!   and SSE2 on x86_64, and the two backends sum horizontal products in a different order
 //!   (`Quat::dot` is `(x + y) + (z + w)` on NEON and `(x + z) + (y + w)` on SSE2), and the NEON
-//!   quaternion product uses fused multiply-adds where SSE2 rounds twice. The last bit of a dot
-//!   product, a normalization or a rotation then differs between architectures.
+//!   quaternion product uses fused multiply-adds where SSE2 rounds twice, and `normalize`
+//!   multiplies by the length's reciprocal on NEON where SSE2 divides by the length. The last bit of
+//!   a dot product, a normalization or a rotation then differs between architectures.
 //! - **The platform C math library.** `f32::sin` and friends call glibc, Apple's libm, Bionic or
 //!   the MSVC CRT, which round differently in the last bit or two, even on one architecture.
 //!   One differing bit in a hit angle or a knockback curve diverges a replay within a few
@@ -39,9 +40,13 @@
 //! - **The simulation's crates are held to it:** their `clippy.toml` bans `std`'s functions and
 //!   glam's helpers that reach them, with this module named as the way out, and `cargo xtask
 //!   check-layers` holds those crates to that list (`[simulation]` in `xtask/layers.toml`).
+//! - **Anything that bakes into cooked data must match across architectures,** because one replay
+//!   file holds one hash of the move data for all of them: a cook uses scalar [`Vec3`] and `f32`
+//!   with this module, never `Vec3A`, `Vec4` or `Quat` arithmetic. The simulation's `clippy.toml` bans
+//!   the named methods that differ, and a test pins the test content's hash (M2 G2). It can't ban
+//!   `Quat`'s operators, so `quat * vec` in a bake is still caught only by that test.
 //! - Simulation state that will one day need to match across architectures (anything lockstep
-//!   netcode would exchange) should use scalar [`Vec3`] and `f32` with this module rather than
-//!   `Vec3A`, `Quat` and `Affine3A` arithmetic. This is advice for now, not enforced. Everything
+//!   netcode would exchange) should do the same. This is advice for now, not enforced. Everything
 //!   here works on scalars inside, so it agrees across architectures itself, and its [`Quat`]
 //!   results are plain values whatever the backend.
 
@@ -197,12 +202,24 @@ fn quat_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
 /// The weighted sum of two quaternions, renormalized, in scalar arithmetic.
 #[inline]
 fn quat_blend(a: [f32; 4], a_weight: f32, b: [f32; 4], b_weight: f32) -> Quat {
-    let blend: [f32; 4] = std::array::from_fn(|i| a[i] * a_weight + b[i] * b_weight);
-    let length = quat_dot(blend, blend).sqrt();
+    quat_unit(std::array::from_fn(|i| a[i] * a_weight + b[i] * b_weight))
+}
+
+/// Four components at unit length, in scalar arithmetic: the identity if they have no length.
+#[inline]
+fn quat_unit(q: [f32; 4]) -> Quat {
+    let length = quat_dot(q, q).sqrt();
     if length == 0.0 {
         return Quat::IDENTITY;
     }
-    Quat::from_array(blend.map(|component| component / length))
+    Quat::from_array(q.map(|component| component / length))
+}
+
+/// `q` at unit length, with the same bits on every architecture, which [`Quat::normalize`] doesn't
+/// have (see the module docs). A `q` with no length gives the identity.
+#[must_use]
+pub fn quat_normalize(q: Quat) -> Quat {
+    quat_unit(q.to_array())
 }
 
 /// `from` and `to` as arrays, with `to` flipped into `from`'s hemisphere, so a blend takes the
@@ -386,6 +403,56 @@ mod tests {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
     use super::*;
+
+    /// What glam 0.33's two backends compute for `Quat::normalize`, written out in scalars.
+    fn neon_normalize(q: [f32; 4]) -> [f32; 4] {
+        let [x, y, z, w] = q;
+        let recip = 1.0 / ((x * x + y * y) + (z * z + w * w)).sqrt();
+        q.map(|component| component * recip)
+    }
+
+    fn sse2_normalize(q: [f32; 4]) -> [f32; 4] {
+        let [x, y, z, w] = q;
+        let length = ((x * x + z * z) + (y * y + w * w)).sqrt();
+        q.map(|component| component / length)
+    }
+
+    /// Rows the two backends disagree on, with what [`quat_normalize`] must give on every target. The
+    /// first is a rotation from the test content, which differs by the reciprocal alone. The second
+    /// also differs by the order of the sum, so all three answers are different.
+    const NORMALIZED: [([f32; 4], [u32; 4]); 2] = [
+        ([0.0, 0.3826834, 0.0, 0.9238795], [0, 0x3ec3_ef15, 0, 0x3f6c_835f]),
+        ([0.9, 0.05, -0.3, 0.31], [0x3f66_8fbc, 0x3d4c_f18b, 0xbe99_b528, 0x3e9e_d4cb]),
+    ];
+
+    #[test]
+    fn quat_normalize_has_one_answer_on_every_architecture() {
+        let bits = |q: [f32; 4]| q.map(f32::to_bits);
+        for (q, expected) in NORMALIZED {
+            assert_eq!(bits(quat_normalize(Quat::from_array(q)).to_array()), expected, "{q:?}");
+            assert_ne!(
+                bits(neon_normalize(q)),
+                bits(sse2_normalize(q)),
+                "this row can't tell them apart: {q:?}"
+            );
+        }
+        assert_eq!(quat_normalize(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)), Quat::IDENTITY);
+    }
+
+    /// The module docs' account of `Quat::normalize` holds for the glam this builds against, on
+    /// whichever backend this runs. If an upgrade fails this, read its source again: the bans and the
+    /// docs say why it can't reach a bake.
+    #[test]
+    fn glams_normalize_does_what_the_docs_say() {
+        for (q, _) in NORMALIZED {
+            let glam = Quat::from_array(q).normalize().to_array();
+            if cfg!(target_arch = "aarch64") {
+                assert_eq!(glam, neon_normalize(q), "{q:?}");
+            } else if cfg!(target_arch = "x86_64") {
+                assert_eq!(glam, sse2_normalize(q), "{q:?}");
+            }
+        }
+    }
 
     #[test]
     fn exact_identities() {

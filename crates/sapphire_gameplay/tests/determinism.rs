@@ -109,6 +109,22 @@ fn the_tick_count_is_in_the_checksum() {
     assert_eq!(sim.tick(), 1);
 }
 
+/// One replay file holds one hash of the move data for every architecture, so a document must cook
+/// to the same bytes on all of them, unlike per-tick checksums, which may differ. CI's `Test` job holds
+/// this one constant on Linux, Windows and macOS. If only some of them fail, something on the bake's
+/// path has reached glam's SIMD types or a C math library (see `sapphire_math::det`), and that's the
+/// bug: don't record a value per architecture. If all of them fail, the test content or the format
+/// changed: update this and run `cargo xtask replay --update`.
+#[test]
+fn the_test_contents_hash_is_the_same_on_every_architecture() {
+    let mut sim = Simulation::new(SimConfig::default());
+    sim.add_move_set(replay::test_moves().expect("compiles"));
+    let hash = sim.tables_hash();
+    assert_eq!(hash, TEST_CONTENT_HASH, "the test content's hash is {hash:#x}");
+}
+
+const TEST_CONTENT_HASH: u64 = 0x44a9_4f1c_eb7b_d542;
+
 #[test]
 fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {
     let (mut a, actors) = world(7);

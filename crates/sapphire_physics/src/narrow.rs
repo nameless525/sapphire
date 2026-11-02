@@ -517,6 +517,10 @@ mod tests {
         let wall = cube(Vec3::new(100.0, 100.0, half_thickness));
         let mover = Core::point(radius);
         for case in 0..4000 {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "a test's random turn: its last bit matters to nothing"
+            )]
             let rotation =
                 Quat::from_xyzw(unit() - 0.5, unit() - 0.5, unit() - 0.5, unit() - 0.5).normalize();
             let (across, up, face) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);

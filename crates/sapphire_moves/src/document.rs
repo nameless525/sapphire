@@ -420,9 +420,9 @@ fn keyed_path(keys: &[PathKey], tick: u32) -> PathSample {
     PathSample { translation: lerp3(a.offset, b.offset, t), rotation: rotation.to_array() }
 }
 
-/// A keyed rotation at exactly unit length, as a blend's is.
+/// A keyed rotation at exactly unit length, as a blend's is, in the same bits on every architecture.
 fn normalized(rotation: [f32; 4]) -> [f32; 4] {
-    Quat::from_array(rotation).normalize().to_array()
+    det::quat_normalize(Quat::from_array(rotation)).to_array()
 }
 
 impl MoveSetDocument {
@@ -454,7 +454,8 @@ impl MoveSetDocument {
 
     /// [`Self::compile`], asking `tables` for each move's tables first: a cook that bakes them from
     /// a clip, or a test with a fixture. A move it answers `None` for bakes from its keys. Wherever
-    /// tables come from, the hit paths named must be in them.
+    /// tables come from, the hit paths named must be in them, and they must have the same bits on
+    /// every architecture: see the [crate docs](crate).
     pub fn compile_with(
         &self,
         mut tables: impl FnMut(&MoveDocument) -> Option<BakedTables>,

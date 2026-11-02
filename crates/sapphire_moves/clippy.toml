@@ -173,6 +173,37 @@ disallowed-methods = [
     { path = "sapphire_math::spring::SpringDamper::update", reason = "uses std's exp: needs a pinned spring" },
     { path = "sapphire_math::color::srgb_to_linear", reason = "uses std's powf: presentation's, not the simulation's" },
     { path = "sapphire_math::color::linear_to_srgb", reason = "uses std's powf: presentation's, not the simulation's" },
+
+    # glam's SIMD types round differently per architecture: NEON multiplies by a length's reciprocal where SSE2
+    # divides by it, and they sum a dot product's terms in a different order. One replay file holds one hash of the
+    # move data for all architectures, and one of these in a bake moved it (M2 G2). Operators such as `quat * vec`
+    # can't be banned by path, so `the_test_contents_hash_is_the_same_on_every_architecture` is the real guard.
+    { path = "glam::Quat::normalize", reason = "its last bit differs by architecture: use sapphire_math::det::quat_normalize" },
+    { path = "glam::Quat::lerp", reason = "its last bit differs by architecture: use sapphire_math::det::quat_nlerp" },
+    { path = "glam::Quat::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Quat::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::try_normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_or", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_or_zero", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::normalize_and_length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::lerp", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec4::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::try_normalize", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_or", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_or_zero", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::normalize_and_length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::lerp", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::dot", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length_squared", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
+    { path = "glam::Vec3A::length_recip", reason = "its last bit differs by architecture: write it out in scalars, or use Vec3" },
 ]
 disallowed-types = [
     # Randomly seeded per process, so their iteration order differs between runs of a replay.

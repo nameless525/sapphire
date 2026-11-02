@@ -70,6 +70,14 @@
 //! assert_eq!(set.moves()[0].ticks(), 20);
 //! ```
 //!
+//! # One document, one set of bytes
+//!
+//! A document cooks to the same bytes on every architecture, because one replay file holds one hash
+//! of the move data for all of them. So [`MoveSetDocument::compile`] works in scalars and
+//! `sapphire_math::det`, never through glam's SIMD types, whose last bit differs between NEON and
+//! SSE2. This crate's `clippy.toml` bans the methods that differ, and
+//! `sapphire_gameplay`'s `the_test_contents_hash_is_the_same_on_every_architecture` pins the result.
+//!
 //! # How a track meets a clock
 //!
 //! Frame data is in ticks, and an owner's clock runs in whole sub-ticks at any speed, frozen or many

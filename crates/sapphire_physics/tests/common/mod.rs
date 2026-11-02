@@ -62,7 +62,9 @@ pub fn statics() -> Vec<StaticCollider> {
     for x in 0..14 {
         for z in 0..14 {
             let half = Vec3::new(rng.range(0.4, 1.2), rng.range(0.3, 1.8), rng.range(0.4, 1.2));
-            // A turn about Y as a normalized quaternion, so no sine goes into the scene.
+            // A turn about Y as a normalized quaternion, so no sine goes into the scene. Its checksum
+            // is pinned per architecture, so glam's backends may differ here.
+            #[allow(clippy::disallowed_methods, reason = "this scene's checksum is per architecture")]
             let rotation = Quat::from_xyzw(0.0, rng.range(-0.38, 0.38), 0.0, 0.92).normalize();
             let position = Vec3::new(
                 (x as f32 - 6.5) * 4.0 + rng.range(-0.5, 0.5),

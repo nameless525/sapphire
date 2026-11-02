@@ -5,9 +5,10 @@
 //! every run: move sets first, then spawns.
 //!
 //! One replay file holds one [`tables_hash`](Simulation::tables_hash) for every architecture, so a
-//! scenario's move sets must come out byte for byte the same on every OS: from a document, as
-//! [`test_moves`] does, or from committed cooked bytes, and through pinned math if a setup computes
-//! anything. Anything else a run depends on belongs in that hash too.
+//! scenario's move sets must come out byte for byte the same on every architecture: from a document,
+//! as [`test_moves`] does, or from committed cooked bytes, and in scalars and `sapphire_math::det` if
+//! a setup computes anything, never through glam's SIMD types. Anything else a run depends on belongs
+//! in that hash too.
 
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;

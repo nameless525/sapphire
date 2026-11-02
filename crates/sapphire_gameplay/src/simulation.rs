@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use bevy_ecs::schedule::SystemSet;
+use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::system::SystemState;
 use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
@@ -129,6 +130,22 @@ impl Simulation {
         let resolve = SystemState::new(ecs.world_mut());
         let stats = SimStats { budget: config.step_budget, ..SimStats::default() };
         Self { ecs, resolve, stats }
+    }
+
+    /// Adds a system to a [`CombatSet`], for a world built to test the simulation itself, such as the
+    /// one that shows replays' allocation gate bites. What a real fight runs goes in [`Self::new`].
+    /// It rebuilds the schedule here, so that isn't paid inside the next step.
+    pub fn add_combat_system<M>(
+        &mut self,
+        set: CombatSet,
+        system: impl IntoScheduleConfigs<ScheduleSystem, M>,
+    ) {
+        self.ecs.add_systems(FixedCombat, system.in_set(set));
+        self.ecs.world_mut().schedule_scope(FixedCombat, |world, schedule| {
+            if let Err(error) = schedule.initialize(world) {
+                panic!("the combat schedule doesn't build: {}", error.to_string(schedule.graph(), world));
+            }
+        });
     }
 
     /// Loads baked tables for actors to follow, between steps. IDs count up from the first table

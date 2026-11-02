@@ -11,6 +11,8 @@
 //!   in the fixed step allocates nothing.
 //! - [`StateHasher`], which hashes state as canonical bytes, and [`SimRng`], the seeded randomness.
 //! - [`SimStats`], its counters against the budget (rule R9).
+//! - [`replay`]: recorded runs as files, the scenarios they start from and the checksums they must
+//!   reach, a tick at a time, for a headless runner and an app alike (spec §9, gates 2 and 4).
 //!
 //! The controller, moves, hits and cameras arrive with M2's G packages. Until then the crate's
 //! systems are a drill (`drill`) that exercises the rest: a button makes an actor follow a baked
@@ -46,7 +48,7 @@
 //!   `clippy.toml` bans `std`'s and glam's helpers that reach them, and `HashMap`s.
 //! - **Randomness comes from [`SimRng`],** seeded from the config.
 //! - **No heap allocation inside [`Simulation::step`]** (rule R6): pools for actors, fixed queues
-//!   for side effects, tested from the first tick.
+//!   for side effects, tested from the first tick, and the replay suite fails if a step ever does.
 //! - **State that can change a result goes in [`Simulation::checksum`],** which reads canonical
 //!   bytes with [`StateHasher`]: a new component adds itself to the `checksum` module's loop.
 //!
@@ -89,6 +91,7 @@ mod actors;
 mod checksum;
 mod drill;
 mod motion;
+pub mod replay;
 mod simulation;
 mod stats;
 

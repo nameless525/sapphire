@@ -7,7 +7,11 @@ mod support;
 use std::alloc::System;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_gameplay::{ActorSpawn, Buttons, SimConfig, Simulation, TickActions};
+use sapphire_ecs::prelude::*;
+use sapphire_gameplay::replay::{
+    Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated, drill, find_script,
+};
+use sapphire_gameplay::{ActorId, ActorSpawn, Buttons, CombatSet, SimConfig, Simulation, TickActions};
 use support::{curve, script, world};
 
 #[global_allocator]
@@ -76,4 +80,79 @@ fn checksums_do_not_allocate() {
     let (checksum, counts) = alloc::count_in_scope(|| sim.checksum());
     assert_ne!(checksum, 0);
     assert_eq!(counts.allocations, 0);
+}
+
+/// A recording of the sweep script from the drill's scenario.
+fn recorded(ticks: u32) -> Replay {
+    let scenario = &SCENARIOS[0];
+    let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
+    let mut source = find_script("drill-sweep").expect("listed").actions;
+    for _ in 0..ticks {
+        recording.step(&mut source).expect("short");
+    }
+    recording.finish().0
+}
+
+/// Spec §9's gate 4, as a player sees it: every tick of a replay, the file's cursor and the
+/// checksums around each step included.
+#[test]
+fn a_replay_runs_with_no_allocation_in_any_step() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let mut player = Player::new(recorded(2000), SCENARIOS).expect("starts");
+    let ((), counts) = alloc::count_in_scope(|| {
+        // Past where a trail's reserved room would run out, it's the trail that grows, outside the
+        // step. This run stays within it, so the whole of a tick costs nothing.
+        while player.step() {}
+    });
+    assert_eq!(counts.allocations, 0, "2000 ticks allocated {} times", counts.allocations);
+    let played = player.finish();
+    assert_eq!(played.allocation_gate(), Ok(()));
+    assert_eq!(played.stats.allocations, 0);
+    assert_eq!(played.stats.steps, 2000);
+}
+
+/// The world's own system, added the way a scenario can: it allocates from its 40th run.
+fn allocates_from_the_40th_step(mut runs: Local<'_, u32>) {
+    *runs += 1;
+    if *runs >= 40 {
+        std::hint::black_box(Vec::<u8>::with_capacity(64));
+    }
+}
+
+fn nothing() {}
+
+fn with_an_allocating_system(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cast = drill(sim)?;
+    sim.add_combat_system(CombatSet::Moves, allocates_from_the_40th_step);
+    Ok(cast)
+}
+
+fn with_a_system_that_does_nothing(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cast = drill(sim)?;
+    sim.add_combat_system(CombatSet::Moves, nothing);
+    Ok(cast)
+}
+
+/// The gate bites: a step that allocates fails the run, and names the first tick that did.
+#[test]
+fn the_allocation_gate_bites_a_step_that_allocates() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenarios = [Scenario { setup: with_an_allocating_system, ..SCENARIOS[0] }];
+    let mut player = Player::new(recorded(100), &scenarios).expect("starts");
+    player.run_to_end();
+    let played = player.finish();
+    let failure = played.allocation_gate().expect_err("a step allocated");
+    assert_eq!(failure, StepAllocated { first_tick: 40, allocations: 61 });
+    assert!(failure.to_string().contains("first at tick 40"), "{failure}");
+
+    // The same world without the allocation passes, so it's the allocation it bit on, and adding a
+    // system costs its first step nothing.
+    let scenarios = [Scenario { setup: with_a_system_that_does_nothing, ..SCENARIOS[0] }];
+    let mut player = Player::new(recorded(100), &scenarios).expect("starts");
+    player.run_to_end();
+    assert_eq!(player.finish().allocation_gate(), Ok(()));
 }

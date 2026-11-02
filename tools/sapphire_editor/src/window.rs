@@ -124,6 +124,14 @@ impl App for EditorApp {
     }
 }
 
+impl Drop for EditorApp {
+    fn drop(&mut self) {
+        // Frames that couldn't draw, a covered window's say, leave texture changes here, and in debug builds
+        // egui panics on dropping any it thinks are lost.
+        self.textures.clear();
+    }
+}
+
 impl EditorApp {
     fn new(options: Options, window: Window, device: Device) -> Self {
         Self {

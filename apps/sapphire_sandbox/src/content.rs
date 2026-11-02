@@ -1475,7 +1475,7 @@ mod tests {
     use super::*;
     use crate::anim_graph::{GraphScript, GraphShow};
     use crate::lookdev::Shot;
-    use crate::scene::{LookDev, Scene};
+    use crate::scene::{Arena, LookDev, Scene};
 
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     const SIDE: u32 = 32;
@@ -1601,6 +1601,10 @@ mod tests {
             ),
             packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
             packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
+            // The enemy, on the same skeleton and clips, for what a fight loads.
+            packed_with(enemy::WARRIOR, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![SKELETON]),
+            packed(enemy::BLADE, AssetKind::Mesh, &triangle(x).to_cooked().expect("cooked")),
+            packed_with(enemy::GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
         ])
         .expect("a pack")
     }
@@ -1735,6 +1739,37 @@ mod tests {
             let driver = lookdev::graph_driver(&self.content).expect("a driver");
             self.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
             self.frame_on_character();
+        }
+
+        /// Stands a fight's two fighters in the arena, each playing its graph.
+        fn play_fighters(&mut self) {
+            let enemy = self.content.enemy(&mut self.renderer, &self.gpu).expect("the enemy");
+            self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
+            self.content.load_enemy_graph(&mut self.renderer, &self.gpu).expect("the enemy's graph");
+            let (mesh, bounds) =
+                self.content.character(&mut self.renderer, &self.gpu).expect("the character");
+            let (pose, figure) = lookdev::hold(&mut self.content, &mut self.renderer, &self.gpu)
+                .expect("the character's pose");
+            let bytes = triangle(0.0).to_cooked().expect("cooked");
+            let plain = Mesh::read(&bytes).expect("a valid mesh");
+            let materials = self.renderer.upload_embedded_materials(plain).expect("materials");
+            let plain = self.renderer.upload_mesh(plain, &materials).expect("a mesh");
+            let town = TownMeshes {
+                town: plain,
+                plants: Plant::ALL.map(|_| plain),
+                mountains: lookdev::MOUNTAINS.map(|_| plain),
+            };
+            let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 0 };
+            let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
+            let set = ColliderSet::read(&cooked).expect("it reads");
+            let ground = arena::ArenaGround::new(set).expect("the stage stands on it");
+            let shot = arena::ArenaShot::Follow;
+            let look = LookDev { town, fog_cards: None, pose, figure };
+            let mut scene = Scene::with_character(mesh, bounds, false);
+            scene.spawn_arena(Arena { enemy, held, shot, look, ground });
+            let driver = || lookdev::graph_driver(&self.content).expect("a driver");
+            scene.play_fighters(driver(), driver());
+            self.scene = scene;
         }
 
         /// Frames the character from the front, close enough for its triangle to fill much of the target.
@@ -1898,6 +1933,31 @@ mod tests {
         }
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's still waiting");
         assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
+    }
+
+    /// A pack with a new character and a new graph for the enemy, as a cook that touches both makes: the
+    /// player's driver starts over for its new joints, and the enemy's graph still binds.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_character_and_a_new_enemy_graph_in_one_pack_reach_the_enemy_too() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        for _ in 0..3 {
+            stage.frame();
+        }
+        assert!(!stage.scene.enemy_graph_player().expect("playing").has_replacement());
+
+        stage.source.insert(PACK, pack_with_decay(0.5, 0, 9));
+        stage.content.remount(PACK).expect("the new pack");
+        let mut waiting = false;
+        for _ in 0..1000 {
+            stage.frame();
+            waiting = stage.scene.enemy_graph_player().expect("playing").has_replacement();
+            if waiting {
+                break;
+            }
+        }
+        assert!(waiting, "the enemy's new graph reached it");
     }
 
     /// An edited graph over live link (M2 T2): it binds at once and waits for the next state's start like

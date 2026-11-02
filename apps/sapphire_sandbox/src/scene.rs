@@ -1098,7 +1098,7 @@ impl Scene {
         }
         let graph_changed = content.take_graph_changed();
         if (self.graph_show.is_some() || self.fighters_posed) && (character_changed || graph_changed) {
-            self.replace_graph(content, character_changed);
+            self.replace_graph(content, character_changed, graph_changed);
         }
     }
 
@@ -1296,7 +1296,7 @@ impl Scene {
     /// doesn't bind leaves what's playing alone until something else lands.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
-    fn replace_graph(&mut self, content: &mut Content, character_changed: bool) {
+    fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {
         if let Err(error) = content.hold_graph_clips() {
             tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
         }
@@ -1330,7 +1330,8 @@ impl Scene {
                 }
             }
         }
-        if !self.fighters_posed || character_changed {
+        // A new character is the player's alone, and may have come in the same frame as a new graph.
+        if !self.fighters_posed || !graph_changed {
             return;
         }
         let Some(enemy) = self.enemy.map(|(warrior, _)| warrior) else { return };
@@ -1541,6 +1542,13 @@ impl Scene {
     #[cfg(all(test, feature = "dev"))]
     pub fn graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
         self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
+    }
+
+    /// The enemy's graph player, for hot reload's tests.
+    #[cfg(all(test, feature = "dev"))]
+    pub fn enemy_graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
+        let (warrior, _) = self.enemy?;
+        self.ecs.world().get::<GraphDriver>(warrior).map(|driver| &driver.player)
     }
 
     /// What animation did in the last frame.

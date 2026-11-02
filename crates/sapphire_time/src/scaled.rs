@@ -121,6 +121,14 @@ impl ScaledClock {
         self.ticks
     }
 
+    /// This clock's time to draw, in ticks with a fraction: `alpha` of the way from its previous
+    /// fixed step to its latest, where transforms draw (spec §4.5). A clock that didn't advance on
+    /// its latest step (a pause, a stopped world) gives exactly [`Self::now`], whatever `alpha`.
+    #[must_use]
+    pub fn presented_ticks(&self, alpha: f32) -> f64 {
+        crate::sim_time::presented_ticks(self.now, self.last_delta, alpha)
+    }
+
     /// Feeds this clock's whole state to `sink` as little-endian bytes, as
     /// [`LocalClock::write_canonical`] does: the next entity clock's id included.
     pub fn write_canonical(&self, sink: &mut impl FnMut(&[u8])) {

@@ -264,13 +264,14 @@ impl EffectStack {
         self.stats.depth = self.len as u32;
     }
 
-    /// The effects to draw `alpha` of the way from the last fixed step to the next: each layer's
-    /// envelope at its time (interpolated like everything drawn), blended over the layers under
-    /// it, bottom to top, so the latest push shows over what was playing by its weight, kind by
-    /// kind. [`PostEffects::NONE`] when nothing plays. Allocates nothing, and costs well under a
+    /// The effects to draw `alpha` of the way from the fixed step before the latest to the latest:
+    /// each layer's envelope at its time (interpolated like the transforms drawn with it; a layer
+    /// pushed on the latest step is at its start), blended over the layers under it, bottom to top,
+    /// so the latest push shows over what was playing by its weight, kind by kind.
+    /// [`PostEffects::NONE`] when nothing plays. Allocates nothing, and costs well under a
     /// microsecond for a full stack.
     ///
-    /// Every push shows: a layer past its end by this frame's time that no frame has drawn (a frame
+    /// Every push shows: a layer past its end by the latest step that no frame has drawn (a frame
     /// can run more fixed steps than an impact frame lasts) draws here, once, at its envelope's
     /// peak, and the next step drops it. The tail of its fall would hide the hit as surely as
     /// losing it would. Only a stack without frames skips this (see the module docs, "The stack").
@@ -285,16 +286,19 @@ impl EffectStack {
                 EffectClock::World => world_step,
                 EffectClock::Real => real_step,
             };
-            let time =
-                if instance.held { instance.time } else { instance.time + alpha.clamp(0.0, 1.0) * step };
-            let end = instance.layer.end(instance.released);
-            let overdue = !instance.held && !instance.shown && time >= end;
-            let weight = if overdue {
-                instance.layer.envelope.peak(instance.released)
+            let time = if instance.held {
+                instance.time
             } else {
-                instance.layer.envelope.weight(time, instance.released)
+                (instance.time - (1.0 - alpha.clamp(0.0, 1.0)) * step).max(-instance.layer.delay)
             };
-            instance.shown |= overdue || weight > 0.0;
+            let end = instance.layer.end(instance.released);
+            let ended = !instance.held && instance.time >= end;
+            let weight = match (ended, instance.shown) {
+                (true, false) => instance.layer.envelope.peak(instance.released),
+                (true, true) => 0.0,
+                (false, _) => instance.layer.envelope.weight(time, instance.released),
+            };
+            instance.shown |= ended || weight > 0.0;
             self.weights[at] = weight;
             if weight > 0.0 {
                 active += 1;

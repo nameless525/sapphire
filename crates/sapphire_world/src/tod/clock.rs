@@ -1,12 +1,8 @@
 //! [`TodClock`]: time of day's own clock domain (spec §4.5).
 
-use sapphire_time::{
-    LocalClock, SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, ScaledClock, SimDuration, SimTime, TICK_HZ,
-};
+use sapphire_time::{LocalClock, SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, ScaledClock, SimTime, TICK_HZ};
 
 use sapphire_tod::DAY_HOURS;
-
-const SUBTICKS_PER_SECOND: f64 = (SUBTICKS_PER_TICK as u64 * TICK_HZ as u64) as f64;
 
 /// The time of day, as a clock domain of its own (spec §4.5): a [`LocalClock`] issued by the
 /// world clock, so pause, slow motion and cinematic scales on the world reach it, plus scales of
@@ -40,10 +36,12 @@ impl TodClock {
         self.clock.tick(world);
     }
 
-    /// The hour, `0 ≤ hours < 24`, `alpha` of the way from the last fixed step to the next (as
-    /// presentation interpolates everything it draws).
+    /// The hour, `0 ≤ hours < 24`, `alpha` of the way from the fixed step before the latest to the
+    /// latest, where transforms draw ([`LocalClock::presented_ticks`]); 1 is the latest. A jump
+    /// ([`Self::set_hours`]) shows at once: time never reads from before its anchor.
     pub fn hours(&self, alpha: f32) -> f32 {
-        let elapsed = seconds(self.clock.now() - self.anchor) + f64::from(alpha) * self.step_seconds();
+        let anchor = self.anchor.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK);
+        let elapsed = ((self.clock.presented_ticks(alpha) - anchor) / f64::from(TICK_HZ)).max(0.0);
         let hours = wrap(self.anchor_hours + elapsed * self.hours_per_second) as f32;
         // Rounding to f32 can land on 24 itself, which is the next midnight.
         if hours >= DAY_HOURS { 0.0 } else { hours }
@@ -65,7 +63,7 @@ impl TodClock {
     /// Runs a day in `seconds` of this clock's time from the current hour, or stops the cycle
     /// with `None` (or a length that isn't positive and finite).
     pub fn set_day_length(&mut self, seconds: Option<f32>) {
-        let now = self.hours(0.0);
+        let now = self.hours(1.0);
         self.anchor = self.clock.now();
         self.anchor_hours = f64::from(now);
         self.hours_per_second = match seconds {
@@ -107,15 +105,6 @@ impl TodClock {
     pub fn clock(&self) -> &LocalClock {
         &self.clock
     }
-
-    /// Seconds the last fixed step advanced this clock.
-    pub(crate) fn step_seconds(&self) -> f64 {
-        seconds(self.clock.last_delta())
-    }
-}
-
-fn seconds(duration: SimDuration) -> f64 {
-    duration.as_subticks() as f64 / SUBTICKS_PER_SECOND
 }
 
 fn wrap(hours: f64) -> f64 {
@@ -143,11 +132,11 @@ mod tests {
     fn without_a_cycle_the_hour_is_exactly_what_was_set() {
         let (mut world, mut tod) = clock(10.0);
         run(&mut world, &mut tod, 600);
-        assert_eq!(tod.hours(0.0), 10.0);
+        assert_eq!(tod.hours(1.0), 10.0);
         assert_eq!(tod.hours(0.7), 10.0);
         assert_eq!(tod.day_length(), None);
-        assert_eq!(clock(-1.0).1.hours(0.0), 23.0, "wrapped into the day");
-        assert_eq!(clock(48.5).1.hours(0.0), 0.5);
+        assert_eq!(clock(-1.0).1.hours(1.0), 23.0, "wrapped into the day");
+        assert_eq!(clock(48.5).1.hours(1.0), 0.5);
     }
 
     #[test]
@@ -157,19 +146,20 @@ mod tests {
         tod.set_day_length(Some(24.0));
         assert_eq!(tod.day_length(), Some(24.0));
         run(&mut world, &mut tod, 30);
-        assert!((tod.hours(0.0) - 23.5).abs() < 1e-5);
+        assert!((tod.hours(1.0) - 23.5).abs() < 1e-5);
         // Interpolated between steps: one tick is 1/60 hour here.
-        assert!((tod.hours(0.5) - (23.5 + 0.5 / 60.0)).abs() < 1e-5);
+        assert!((tod.hours(0.5) - (23.5 - 0.5 / 60.0)).abs() < 1e-5);
+        assert!((tod.hours(0.0) - (23.5 - 1.0 / 60.0)).abs() < 1e-5);
         run(&mut world, &mut tod, 60);
-        assert!((tod.hours(0.0) - 0.5).abs() < 1e-5, "past midnight: {}", tod.hours(0.0));
+        assert!((tod.hours(1.0) - 0.5).abs() < 1e-5, "past midnight: {}", tod.hours(1.0));
         // Changing the length keeps the hour.
         tod.set_day_length(Some(48.0));
-        assert!((tod.hours(0.0) - 0.5).abs() < 1e-5);
+        assert!((tod.hours(1.0) - 0.5).abs() < 1e-5);
         run(&mut world, &mut tod, 60);
-        assert!((tod.hours(0.0) - 1.0).abs() < 1e-5);
+        assert!((tod.hours(1.0) - 1.0).abs() < 1e-5);
         tod.set_day_length(None);
         run(&mut world, &mut tod, 60);
-        assert!((tod.hours(0.0) - 1.0).abs() < 1e-5, "stopped");
+        assert!((tod.hours(1.0) - 1.0).abs() < 1e-5, "stopped");
     }
 
     #[test]
@@ -187,9 +177,47 @@ mod tests {
         tod.set_paused(false);
         world.push_scale(ScaleSource::PerfectDodge, 500).expect("room");
         run(&mut world, &mut tod, 60);
-        assert!((tod.hours(0.0) - 6.5).abs() < 1e-5, "slow motion slows it: {}", tod.hours(0.0));
+        assert!((tod.hours(1.0) - 6.5).abs() < 1e-5, "slow motion slows it: {}", tod.hours(1.0));
         tod.set_hours(18.0);
-        assert_eq!(tod.hours(0.0), 18.0);
+        assert_eq!(tod.hours(1.0), 18.0);
+    }
+
+    #[test]
+    fn a_jump_shows_at_once_and_the_hour_runs_on_from_there() {
+        let (mut world, mut tod) = clock(6.0);
+        tod.set_day_length(Some(24.0));
+        run(&mut world, &mut tod, 30);
+        tod.set_hours(18.0);
+        // The frames left before the next step aren't drawn at an hour before the jump's.
+        for alpha in [0.0, 0.5, 1.0] {
+            assert_eq!(tod.hours(alpha), 18.0, "alpha {alpha}");
+        }
+        run(&mut world, &mut tod, 1);
+        assert_eq!(tod.hours(0.0), 18.0, "the step the jump came before");
+        assert!((tod.hours(1.0) - (18.0 + 1.0 / 60.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_shown_hour_never_steps_back_entering_a_pause_or_slow_motion() {
+        let (mut world, mut tod) = clock(6.0);
+        tod.set_day_length(Some(24.0));
+        run(&mut world, &mut tod, 10);
+        let mut shown = tod.hours(0.9);
+        let pause = world.push_scale(ScaleSource::Pause, 0).expect("room");
+        run(&mut world, &mut tod, 1);
+        for alpha in [0.0, 0.5, 1.0] {
+            let hours = tod.hours(alpha);
+            assert!(hours >= shown, "paused at alpha {alpha}: {hours} after {shown}");
+            shown = hours;
+        }
+        assert_eq!(tod.hours(0.0), tod.hours(1.0), "and it holds there");
+        world.pop_scale(pause);
+        run(&mut world, &mut tod, 10);
+        shown = tod.hours(0.9);
+        world.push_scale(ScaleSource::PerfectDodge, 100).expect("room");
+        run(&mut world, &mut tod, 1);
+        let slowed = tod.hours(0.0);
+        assert!(slowed >= shown - 1e-6, "slowed: {slowed} after {shown}");
     }
 
     #[test]
@@ -199,9 +227,9 @@ mod tests {
         tod.set_day_length(Some(24.0 * 60.0));
         run(&mut world, &mut tod, 432_000);
         assert!(
-            (tod.hours(0.0) - 0.0).abs() < 1e-4 || (tod.hours(0.0) - 24.0).abs() < 1e-4,
+            (tod.hours(1.0) - 0.0).abs() < 1e-4 || (tod.hours(1.0) - 24.0).abs() < 1e-4,
             "{}",
-            tod.hours(0.0)
+            tod.hours(1.0)
         );
     }
 }

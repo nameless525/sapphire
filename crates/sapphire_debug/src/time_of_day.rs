@@ -705,16 +705,16 @@ mod tests {
             assert_eq!(counts.allocations, 0);
         }
         assert_eq!(controls, TodControls::default(), "applied requests are cleared");
-        assert_eq!(tod.clock().hours(0.0), 18.0);
+        assert_eq!(tod.clock().hours(1.0), 18.0);
         assert!(tod.clock().is_paused());
         world.tick();
         tod.tick(&world);
-        assert_eq!(tod.clock().hours(0.0), 18.0, "paused");
+        assert_eq!(tod.clock().hours(1.0), 18.0, "paused");
         controls.set_paused(false);
         controls.apply(&mut tod);
         world.tick();
         tod.tick(&world);
-        assert!(tod.clock().hours(0.0) > 18.0, "running: a day in 24 s");
+        assert!(tod.clock().hours(1.0) > 18.0, "running: a day in 24 s");
     }
 
     #[test]

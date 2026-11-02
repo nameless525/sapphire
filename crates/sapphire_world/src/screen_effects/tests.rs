@@ -236,9 +236,56 @@ fn layers_play_on_their_clocks() {
     world.tick();
     fading.tick(&world);
     let at = |alpha: f32, fading: &mut EffectStack| fading.resolve(alpha).radial_blur.strength;
-    let (now, next) = (at(0.0, &mut fading), at(1.0, &mut fading));
+    let (previous, latest) = (at(0.0, &mut fading), at(1.0, &mut fading));
     let between = at(0.5, &mut fading);
-    assert!(now > between && between > next, "{now} {between} {next}");
+    assert!(previous > between && between > latest, "{previous} {between} {latest}");
+}
+
+#[test]
+fn shown_time_never_steps_back_entering_a_pause_or_slow_motion() {
+    // Review WA-3: clocks ran up to a tick ahead of the latest step, by the last step's delta. When
+    // that delta shrank, on a pause or into slow motion, what was shown stepped back.
+    let (mut world, mut stack) = stack();
+    stack.push(&preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.0, 2.0))]));
+    run(&mut world, &mut stack, 30);
+    let mut shown = stack.resolve(0.9).radial_blur.strength;
+
+    let pause = world.push_scale(ScaleSource::Pause, 0).expect("room");
+    run(&mut world, &mut stack, 1);
+    for alpha in [0.0, 0.5, 1.0] {
+        let strength = stack.resolve(alpha).radial_blur.strength;
+        assert!(strength <= shown, "paused, alpha {alpha}: {strength} after {shown}");
+        shown = strength;
+    }
+    assert_eq!(stack.resolve(0.0).radial_blur.strength, stack.resolve(1.0).radial_blur.strength);
+    world.pop_scale(pause);
+
+    run(&mut world, &mut stack, 30);
+    shown = stack.resolve(0.9).radial_blur.strength;
+    world.push_scale(ScaleSource::PerfectDodge, 100).expect("room");
+    run(&mut world, &mut stack, 1);
+    let slowed = stack.resolve(0.0).radial_blur.strength;
+    assert!(slowed <= shown, "slowed: {slowed} after {shown}");
+}
+
+#[test]
+fn a_push_shows_from_its_start_whatever_the_alpha() {
+    let (mut world, mut stack) = stack();
+    run(&mut world, &mut stack, 10);
+    stack.push(&preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 1.0, 0.0))]));
+    // Pushed on the latest step: there's no step before it to draw from.
+    for alpha in [0.0, 0.5, 1.0] {
+        assert!(close(stack.resolve(alpha).radial_blur.strength, 0.2), "alpha {alpha}");
+    }
+    // One with a delay waits that delay out, however early in a step the frame falls.
+    let (mut world, mut stack) = self::stack();
+    let delayed = EffectLayer { delay: 0.5, ..blur(0.1, [0.5, 0.5], pulse(0.0, 0.5, 0.0)) };
+    run(&mut world, &mut stack, 10);
+    stack.push(&preset(&[delayed]));
+    for alpha in [0.0, 0.5, 1.0] {
+        assert_eq!(stack.resolve(alpha), PostEffects::NONE, "alpha {alpha}");
+    }
+    assert_eq!(stack.len(), 1);
 }
 
 #[test]
@@ -247,10 +294,10 @@ fn layers_start_after_their_delay_and_end_by_themselves() {
     let delayed = EffectLayer { delay: 0.5, ..blur(0.1, [0.5, 0.5], pulse(0.0, 0.5, 0.0)) };
     stack.push(&preset(&[delayed]));
     run(&mut world, &mut stack, 15);
-    assert_eq!(stack.resolve(0.0), PostEffects::NONE, "still waiting");
+    assert_eq!(stack.resolve(1.0), PostEffects::NONE, "still waiting");
     assert_eq!((stack.stats().depth, stack.stats().active), (1, 0));
     run(&mut world, &mut stack, 30);
-    assert!(close(stack.resolve(0.0).radial_blur.strength, 0.1));
+    assert!(close(stack.resolve(1.0).radial_blur.strength, 0.1));
     assert_eq!(stack.stats().active, 1);
     run(&mut world, &mut stack, 30);
     assert!(stack.is_empty(), "ended a second after the push");
@@ -281,7 +328,7 @@ fn a_sustained_layer_released_in_its_delay_never_shows() {
             assert_eq!((stack.len(), stack.stats().depth), (1, 1), "{clock:?}, attack {attack}: cancelled");
             stack.release(handle);
             assert_eq!(stack.len(), 1, "releasing again changes nothing");
-            assert_eq!(stack.resolve(0.0).speed_lines.opacity, 1.0, "the pulse plays on");
+            assert_eq!(stack.resolve(1.0).speed_lines.opacity, 1.0, "the pulse plays on");
             for step in 0..90 {
                 run(&mut world, &mut stack, 1);
                 let blur = stack.resolve(0.5).radial_blur;
@@ -297,12 +344,12 @@ fn a_sustained_layer_released_in_its_delay_never_shows() {
     let sustain = Envelope::Sustain { attack: 0.4, release: 0.5 };
     let handle = stack.push(&preset(&[EffectLayer { delay: 0.5, ..blur(0.1, [0.5, 0.5], sustain) }]));
     run(&mut world, &mut stack, 42);
-    let before = stack.resolve(0.0).radial_blur.strength;
+    let before = stack.resolve(1.0).radial_blur.strength;
     assert!(close(before, 0.05), "{before}");
     stack.release(handle);
-    assert!(close(stack.resolve(0.0).radial_blur.strength, before), "falls from where it was");
+    assert!(close(stack.resolve(1.0).radial_blur.strength, before), "falls from where it was");
     run(&mut world, &mut stack, 15);
-    let falling = stack.resolve(0.0).radial_blur.strength;
+    let falling = stack.resolve(1.0).radial_blur.strength;
     assert!(close(falling, 0.025), "halfway down: {falling}");
     run(&mut world, &mut stack, 16);
     assert!(stack.is_empty(), "ended with its release");
@@ -321,7 +368,7 @@ fn later_pushes_show_over_earlier_ones_kind_by_kind() {
     };
     stack.push(&preset(&[rising, lines]));
     run(&mut world, &mut stack, 15);
-    let effects = stack.resolve(0.0);
+    let effects = stack.resolve(1.0);
     let blur = effects.radial_blur;
     assert!(close(blur.strength, 0.2 * 0.75 + 0.1 * 0.25), "{blur:?}");
     // Its center moves by its share of the result: 0.025 of 0.175.
@@ -329,7 +376,7 @@ fn later_pushes_show_over_earlier_ones_kind_by_kind() {
     assert!(blur.center.abs_diff_eq(Vec2::new(0.25 + 0.5 * share, 0.5), 1e-4), "{blur:?}");
     assert_eq!(effects.speed_lines.opacity, 1.0, "another kind, untouched by the blurs");
     run(&mut world, &mut stack, 60);
-    let top = stack.resolve(0.0).radial_blur;
+    let top = stack.resolve(1.0).radial_blur;
     assert!(
         close(top.strength, 0.1) && top.center.abs_diff_eq(Vec2::new(0.75, 0.5), 1e-5),
         "the top replaces: {top:?}"
@@ -339,7 +386,7 @@ fn later_pushes_show_over_earlier_ones_kind_by_kind() {
     let (mut world, mut stack) = self::stack();
     stack.push(&preset(&[rising]));
     run(&mut world, &mut stack, 6);
-    let alone = stack.resolve(0.0).radial_blur;
+    let alone = stack.resolve(1.0).radial_blur;
     assert!(alone.strength > 0.0 && alone.center == Vec2::new(0.75, 0.5), "{alone:?}");
 }
 
@@ -349,7 +396,7 @@ fn colors_and_masks_blend_and_centers_follow_the_push() {
     let library = EffectLibrary::default_effects();
     let impact = library.preset(library.find("impact_frame").expect("shipped")).expect("there");
     stack.push_at(impact, Vec2::new(0.3, 0.6));
-    let effects = stack.resolve(0.0);
+    let effects = stack.resolve(1.0);
     assert_eq!(effects.duotone.coverage, EffectCoverage::WORLD, "characters keep their colors");
     assert_eq!(effects.duotone.amount, 1.0);
     assert_eq!(effects.duotone.dark, Vec3::new(0.005, 0.004, 0.012));
@@ -371,7 +418,7 @@ fn speed_lines_are_redrawn_at_their_rate() {
     // Up to just before a second: 0.1 s a drawing.
     for _ in 0..59 {
         run(&mut world, &mut stack, 1);
-        let seed = stack.resolve(0.0).speed_lines.seed;
+        let seed = stack.resolve(1.0).speed_lines.seed;
         if seeds.last() != Some(&seed) {
             seeds.push(seed);
         }
@@ -383,7 +430,7 @@ fn speed_lines_are_redrawn_at_their_rate() {
     let (_, mut two) = self::stack();
     two.push(&preset(&[lines]));
     two.push(&preset(&[lines]));
-    assert_ne!(one.resolve(0.0).speed_lines.seed, two.resolve(0.0).speed_lines.seed);
+    assert_ne!(one.resolve(1.0).speed_lines.seed, two.resolve(1.0).speed_lines.seed);
 }
 
 #[test]
@@ -404,7 +451,7 @@ fn a_full_stack_drops_what_has_least_time_left() {
     assert_eq!(stack.stats().dropped, 2);
     let after = ends(&stack);
     assert_eq!((after[0], after[STACK_CAPACITY - 1], after.len()), (2.0, 20.0, STACK_CAPACITY));
-    assert!(close(stack.resolve(0.0).radial_blur.strength, 0.3), "the latest shows on top");
+    assert!(close(stack.resolve(1.0).radial_blur.strength, 0.3), "the latest shows on top");
     // Sustained layers that weren't released stay; held ones too.
     stack.clear();
     for _ in 0..STACK_CAPACITY {
@@ -508,7 +555,7 @@ fn an_effect_drawn_before_it_ended_owes_no_frame() {
     let (mut world, mut stack) = stack();
     stack.push(&preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.05, 0.0))]));
     run(&mut world, &mut stack, 1);
-    assert!(close(stack.resolve(0.0).radial_blur.strength, 0.2));
+    assert!(close(stack.resolve(1.0).radial_blur.strength, 0.2));
     run(&mut world, &mut stack, 4);
     assert!(stack.is_empty(), "gone with the step that ended it");
     assert_eq!(stack.resolve(0.5), PostEffects::NONE);
@@ -611,7 +658,7 @@ fn sustained_layers_wait_for_their_release_and_handles_stop_and_hold() {
     assert_eq!(stack.len(), 1, "the hit ended; the charge holds");
     stack.release(charge);
     run(&mut world, &mut stack, 15);
-    assert!(close(stack.resolve(0.0).radial_blur.strength, 0.05), "halfway down its release");
+    assert!(close(stack.resolve(1.0).radial_blur.strength, 0.05), "halfway down its release");
     run(&mut world, &mut stack, 16);
     assert!(stack.is_empty());
 

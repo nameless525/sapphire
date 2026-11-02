@@ -114,7 +114,7 @@ use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
     LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
 };
-use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch};
+use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_vfx::VfxBudget;
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{
@@ -1338,7 +1338,7 @@ impl Scene {
     }
 
     /// Evaluates every character playing a clip, one job each, for a frame `alpha` of the way from
-    /// the last fixed step to the next: at the position their own clock's presented time gives, so
+    /// the previous fixed step to the latest: at the position their own clock's presented time gives, so
     /// a clock that stands still costs nothing and holds the pose. Results reach this frame's packet
     /// through what extraction reads: each [`RenderPose`], [`RenderTransform`], [`Figure`] and light
     /// rig (see [`crate::animate`]). Call it just before [`Self::frame_packet`]. A scene that plays
@@ -1989,11 +1989,10 @@ impl Scene {
     /// pass `None`; their packets have no view but still carry instance deltas, which the renderer
     /// must see.
     ///
-    /// `alpha` means two things today (review WA-3). Transforms draw `alpha` of the way from the
-    /// previous fixed step to the latest, so up to a tick behind. Clocks (time of day, cutscenes,
-    /// screen effects, `FramePacket::time_seconds`) run `alpha` of the last step past the latest,
-    /// so up to a tick ahead, and step back when that delta shrinks, on entering pause or slow
-    /// motion. See `docs/m2-handoff.md`.
+    /// `alpha` means one thing (review WA-3): `alpha` of the way from the previous fixed step to the
+    /// latest, for transforms, poses and clocks alike (time of day, cutscenes, screen effects,
+    /// `FramePacket::time_seconds`). So an effect stays with the pose it accents, and shown time
+    /// never steps back on entering pause or slow motion.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.aspect = drawable_aspect(target_size).unwrap_or(self.aspect);
         self.ecs.presentation(alpha);
@@ -2028,8 +2027,7 @@ impl Scene {
             let probe = camera.eye();
             let clock = &world.resource::<WorldClock>().0;
             // Interpolated like everything else drawn this frame.
-            packet.time_seconds =
-                clock.now().as_secs_f64() + f64::from(alpha) * f64::from(clock.last_delta().as_secs_f32());
+            packet.time_seconds = clock.presented_ticks(alpha) / f64::from(TICK_HZ);
             world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
             // The probe grid's bounce keys for the hour (M1 W5): none without a grid.
             packet.probe_keys = world.resource::<TimeOfDay>().probe_keys(probe_hours);
@@ -2366,7 +2364,6 @@ mod spring_tests;
 #[cfg(test)]
 mod tests {
     use sapphire_render::InstanceId;
-    use sapphire_time::TICK_HZ;
 
     use super::*;
 
@@ -3957,13 +3954,50 @@ mod tests {
     }
 
     #[test]
+    fn shown_time_is_where_transforms_draw_and_never_steps_back() {
+        // Review WA-3: clocks ran up to a tick ahead of the latest step, by the last step's delta,
+        // so when that delta shrank, on a pause or into slow motion, shown time stepped back.
+        fn shown(scene: &mut Scene, alpha: f32) -> f64 {
+            let seconds = scene.frame_packet(alpha, Some((1920, 1080))).time_seconds;
+            scene.end_frame();
+            seconds
+        }
+        let tick = 1.0 / f64::from(TICK_HZ);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let mut scene = scene();
+        for _ in 0..10 {
+            scene.step();
+        }
+        assert!(close(shown(&mut scene, 1.0), 10.0 * tick), "the latest step");
+        assert!(close(shown(&mut scene, 0.0), 9.0 * tick), "the one before");
+        assert!(close(shown(&mut scene, 0.5), 9.5 * tick));
+
+        let before = shown(&mut scene, 0.9);
+        let pause = scene.world_clock_mut().0.push_scale(ScaleSource::Pause, 0).expect("room");
+        scene.step();
+        for alpha in [0.0, 0.5, 1.0] {
+            let paused = shown(&mut scene, alpha);
+            assert!(paused >= before, "paused at alpha {alpha}: {paused} after {before}");
+            assert!(close(paused, 10.0 * tick), "and it holds on the latest step: {paused}");
+        }
+        scene.world_clock_mut().0.pop_scale(pause);
+
+        scene.step();
+        let before = shown(&mut scene, 0.9);
+        scene.world_clock_mut().0.push_scale(ScaleSource::PerfectDodge, 100).expect("room");
+        scene.step();
+        let slowed = shown(&mut scene, 0.0);
+        assert!(slowed >= before, "slowed: {slowed} after {before}");
+    }
+
+    #[test]
     fn time_of_day_runs_on_the_world_clock() {
         let mut scene = scene();
         scene.set_day(18.0, Some(24.0));
         for _ in 0..TICK_HZ {
             scene.step();
         }
-        let hours = |scene: &Scene| scene.time_of_day().clock().hours(0.0);
+        let hours = |scene: &Scene| scene.time_of_day().clock().hours(1.0);
         assert!((hours(&scene) - 19.0).abs() < 1e-4, "an hour a second");
         let packet = scene.frame_packet(1.0, Some((1920, 1080)));
         assert!(packet.day_night > 0.0, "past sunset");

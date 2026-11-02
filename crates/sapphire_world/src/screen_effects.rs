@@ -82,8 +82,10 @@
 //! every combatant instead), or a scale source of the stack's own, which M2 decides with the
 //! freeze.
 //!
-//! Every layer's time is interpolated `alpha` of the way to the next fixed step when resolved,
-//! as presentation interpolates everything it draws; held layers aren't.
+//! Every layer's time is interpolated when resolved, `alpha` of the way from the fixed step before
+//! the latest to the latest, where transforms draw, so an effect stays with the pose it accents; held
+//! layers aren't. A layer ends at the step that reaches its end, so it may lose up to a tick of its
+//! tail; one no frame has drawn gets its frame first (below).
 //!
 //! # Later milestones
 //!

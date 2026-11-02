@@ -325,6 +325,39 @@ fn a_zone_grade_over_a_time_blend_keeps_the_two_heaviest_luts() {
 }
 
 #[test]
+fn a_cutscene_is_drawn_where_transforms_are_and_never_before_its_start() {
+    let (mut world, mut tod) = time_of_day(DAY);
+    let shot = TodCutscene::new(
+        4.0,
+        1.0,
+        1.0,
+        None,
+        vec![TodKey { exposure: Some(1.0), ..key(0.0) }, TodKey { exposure: Some(2.0), ..key(4.0) }],
+        None,
+    )
+    .expect("valid");
+    tod.play_cutscene(Arc::new(shot));
+    tod.seek_cutscene(1.0);
+    world.tick();
+    tod.tick(&world);
+    let (seconds, step) = (tod.cutscene().expect("playing").1, 1.0 / 60.0);
+    assert!((seconds - (1.0 + step)).abs() < 1e-5, "{seconds}");
+    // Fully blended in from 1 s, so the blend can't tell these apart; the exposure key can.
+    let at = |tod: &mut TimeOfDay, alpha: f32| tod.resolve(Vec3::ZERO, alpha).look.exposure;
+    let (previous, between, latest) = (at(&mut tod, 0.0), at(&mut tod, 0.5), at(&mut tod, 1.0));
+    assert!(previous < between && between < latest, "{previous} {between} {latest}");
+    assert!((latest - (1.0 + seconds / 4.0)).abs() < 1e-3, "{latest}");
+    assert!((previous - (1.0 + 1.0 / 4.0)).abs() < 1e-3, "the step before: {previous}");
+
+    // A track that only just began reads from its start, whatever the frame's alpha.
+    tod.play_cutscene(Arc::new(
+        TodCutscene::new(4.0, 0.0, 0.0, None, vec![TodKey { exposure: Some(1.0), ..key(0.0) }], None)
+            .expect("valid"),
+    ));
+    assert_eq!(at(&mut tod, 0.0), at(&mut tod, 1.0));
+}
+
+#[test]
 fn cutscenes_blend_in_and_out() {
     let (mut world, mut tod) = time_of_day(DAY);
     let base = *tod.resolve(Vec3::ZERO, 0.0);
@@ -344,7 +377,7 @@ fn cutscenes_blend_in_and_out() {
     for _ in 0..300 {
         world.tick();
         tod.tick(&world);
-        let frame = *tod.resolve(Vec3::ZERO, 0.0);
+        let frame = *tod.resolve(Vec3::ZERO, 1.0);
         weights.push(tod.stats().cutscene_weight);
         assert_eq!(frame.hours, DAY, "the world's clock is untouched");
         if let Some((_, seconds)) = tod.cutscene()
@@ -366,7 +399,7 @@ fn cutscenes_blend_in_and_out() {
     // Partway in, the look is a crossfade of the two.
     tod.play_cutscene(Arc::new(shot));
     tod.seek_cutscene(0.5);
-    let partway = *tod.resolve(Vec3::ZERO, 0.0);
+    let partway = *tod.resolve(Vec3::ZERO, 1.0);
     let weight = tod.stats().cutscene_weight;
     assert!(weight > 0.0 && weight < 1.0);
     assert_eq!(partway.look.day_night, sunset.day_night * weight);

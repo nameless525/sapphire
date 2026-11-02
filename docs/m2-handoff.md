@@ -214,7 +214,6 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 - **Pinned dependencies** (wgpu 30, SDL 3.4.18) each need a deliberate upgrade (above).
 - **M2 is the go/no-go gate.** If tuning still feels slow, the off-ramp moves gameplay and tools to Godot with gdext and keeps the Rust systems (spec §10).
 - **Small limits the M1 reviews left.** None shows in today's content, and each is cheap to pick up when its feature arrives:
-  - **`alpha` means two things (WA-3):** transforms draw up to a tick behind the latest step, while clocks (time of day, cutscenes, screen effects, `FramePacket::time_seconds`) run up to a tick ahead. So screen effects lead the pose they accent by up to a tick, and shown time steps back on entering pause or slow motion. Making clocks interpolate moves time-dependent goldens for little visible gain, so it waits for M2's animation, its first real consumer.
   - **A fade under a nearer surface (RS2-4):** a fading character's outline mask code survives under a nearer, non-fading two-sided character drawn after it, so TAA and GTAO read the wrong code there. It needs a dissolving character behind another.
   - **Panic reports (PN-5):** dumps are capped within a run but text reports aren't; a recovering panic loop can grow them until the next run's pruning.
   - **Assets:** `gone` repeats `Removed` on remounts, and a `Ready` parent whose child failed to reload isn't retried across packs.

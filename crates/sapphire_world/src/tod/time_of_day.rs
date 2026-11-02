@@ -129,7 +129,7 @@ impl TimeOfDay {
     pub fn new(timeline: TodTimeline, clock: LocalClock, hours: f32) -> Result<Self, TodError> {
         check_complete(&timeline)?;
         let clock = TodClock::new(clock, hours);
-        let hours = clock.hours(0.0);
+        let hours = clock.hours(1.0);
         let frame = TodFrame { hours, look: timeline.evaluate(hours), shot_rig: None };
         Ok(Self {
             timeline,
@@ -230,8 +230,8 @@ impl TimeOfDay {
         }
     }
 
-    /// Resolves the look for a frame `alpha` of the way from the last fixed step to the next,
-    /// seen from `probe` (the camera, or the player), which zone volumes weigh themselves by:
+    /// Resolves the look for a frame `alpha` of the way from the fixed step before the latest to the
+    /// latest, where transforms draw, seen from `probe` (the camera, or the player), which zone volumes weigh themselves by:
     ///
     /// 1. the base timeline at the clock's hour;
     /// 2. each zone volume's timeline at the same hour, over it, by the volume's weight at the
@@ -250,7 +250,9 @@ impl TimeOfDay {
         let mut shot_rig = None;
         let mut probe_hours = [(hours, 1.0), (0.0, 0.0)];
         if let Some(playback) = &self.cutscene {
-            let seconds = (playback.seconds + f64::from(alpha) * self.world_step) as f32;
+            // Interpolated like the clock, and a track never reads from before its start.
+            let behind = f64::from(1.0 - alpha.clamp(0.0, 1.0)) * self.world_step;
+            let seconds = (playback.seconds - behind).max(0.0) as f32;
             let track = &playback.track;
             cutscene_weight = track.weight(seconds);
             if cutscene_weight > 0.0 {

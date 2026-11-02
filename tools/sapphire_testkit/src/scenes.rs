@@ -154,7 +154,7 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
 /// replay on it.
-pub fn scenes() -> [Scene; 134] {
+pub fn scenes() -> [Scene; 136] {
     [
         Scene {
             name: "turntable-start",
@@ -2442,6 +2442,74 @@ pub fn scenes() -> [Scene; 134] {
                 "off",
                 "--capture-frames",
                 "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // IK (M2 N4) on a 30° slope across the character's stance, the clip's stance on flat ground
+        // under it: the soles lie on the slope with no gap under the round foot, the hips have come
+        // down for the lower foot and no bone stretches, and the head and eyes look over at a place
+        // up the slope to the camera's right.
+        Scene {
+            name: "lookdev-ik-slope",
+            args: &[
+                "--springs",
+                "off",
+                "--capture-ticks",
+                "14",
+                "--look-dev",
+                "full",
+                "--clip",
+                "strike",
+                "--clip-in-place",
+                "--ik",
+                "on",
+                "--ik-ground",
+                "slope",
+                "--ik-look",
+                "2,1.5,2.5",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "15",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Standing with one foot on an 18 cm step and the other on the paving below it, looking down
+        // and away: that knee bends to take the height, the other leg keeps its pose.
+        Scene {
+            name: "lookdev-ik-step",
+            args: &[
+                "--springs",
+                "off",
+                "--capture-ticks",
+                "14",
+                "--look-dev",
+                "full",
+                "--clip",
+                "strike",
+                "--clip-in-place",
+                "--ik",
+                "on",
+                "--ik-ground",
+                "step",
+                "--ik-look",
+                "-2,1.2,2.5",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "15",
                 "--capture-step",
                 "1",
             ],

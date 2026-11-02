@@ -1,10 +1,5 @@
-//! One character's pose, as a frame evaluates it: the rig data it reads, copied out of its assets
-//! once, and the buffers each step writes, so evaluating allocates nothing.
-//!
-//! A frame's order: [`CharacterPose::sample`] a clip (or write [`CharacterPose::locals_mut`] from a
-//! graph, blending with this crate's functions), then [`CharacterPose::finish`] runs the rig's
-//! constraints and local-to-model, and [`CharacterPose::write_palette`] fills what the renderer
-//! reads. [`evaluate_all`] gives each character its own job.
+//! One character's pose, as a frame evaluates it, allocating nothing, and [`evaluate_all`], which
+//! gives each character its own job.
 
 use std::time::Duration;
 
@@ -18,7 +13,12 @@ use crate::constraints::Constraints;
 use crate::model::{self, Bind};
 use crate::sample;
 
-/// One character's pose. See the [module docs](self).
+/// One character's pose: the rig data it reads, copied out of its assets once, and the buffers each
+/// step writes.
+///
+/// A frame's order: [`Self::sample`] a clip (or write [`Self::locals_mut`] from a graph, blending with
+/// this crate's functions), then [`Self::finish`] runs the rig's constraints and local-to-model, and
+/// [`Self::write_palette`] fills what the renderer reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CharacterPose {
     parents: Vec<u16>,

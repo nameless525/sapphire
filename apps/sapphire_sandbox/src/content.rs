@@ -1274,7 +1274,7 @@ mod tests {
     /// The pixels of `a` and `b` that differ by more than a little, and their center along x.
     fn difference(a: &[u8], b: &[u8]) -> (usize, f32) {
         let (mut count, mut sum) = (0, 0.0);
-        for (index, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+        for (index, (a, b)) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).enumerate() {
             if a.iter().zip(b).take(3).any(|(a, b)| a.abs_diff(*b) > 8) {
                 count += 1;
                 sum += (index % SIDE as usize) as f32;

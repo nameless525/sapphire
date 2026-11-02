@@ -101,6 +101,8 @@ pub struct Editor {
     notice: Option<Notice>,
     last_poll: f64,
     quit: Quit,
+    /// A document picked with edits unsaved: the top bar asks first.
+    opening: Option<PathBuf>,
 }
 
 /// Where leaving stands.
@@ -148,6 +150,7 @@ impl Editor {
             notice: None,
             last_poll: 0.0,
             quit: Quit::No,
+            opening: None,
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -155,8 +158,18 @@ impl Editor {
         editor
     }
 
-    /// Opens a document. On failure what's open stays open, and the notice says why.
+    /// A document was picked: it opens at once, unless that would lose edits, and then the top bar asks.
+    pub fn request_open(&mut self, path: &Path) {
+        if self.file.as_ref().is_some_and(MovesFile::is_dirty) {
+            self.opening = Some(path.to_owned());
+        } else {
+            self.open(path);
+        }
+    }
+
+    /// Opens a document, over any edits here. On failure what's open stays open, and the notice says why.
     pub fn open(&mut self, path: &Path) {
+        self.opening = None;
         match MovesFile::open(path) {
             Ok(file) => {
                 self.open_path = path.display().to_string();
@@ -793,7 +806,7 @@ impl Editor {
                 }
             });
             if let Some(path) = open {
-                self.open(&path);
+                self.request_open(&path);
             }
 
             let has_file = self.file.is_some();
@@ -863,6 +876,28 @@ impl Editor {
                 }
                 if ui.button("Keep editing").clicked() {
                     self.quit = Quit::No;
+                }
+            });
+        }
+        if let Some(path) = self.opening.clone() {
+            ui.horizontal(|ui| {
+                ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
+                if ui.button("Save and open").clicked()
+                    && let Some(file) = &mut self.file
+                {
+                    match file.save() {
+                        Ok(()) => self.open(&path),
+                        Err(error) => {
+                            self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
+                            self.opening = None;
+                        }
+                    }
+                }
+                if ui.button("Open without saving").clicked() {
+                    self.open(&path);
+                }
+                if ui.button("Keep editing").clicked() {
+                    self.opening = None;
                 }
             });
         }

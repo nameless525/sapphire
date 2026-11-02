@@ -590,6 +590,67 @@ fn closing_with_unsaved_edits_asks_first() {
     assert_eq!(fs::read_to_string(&path).expect("the file"), text_of(&harness));
 }
 
+/// Picking a document in the list with edits here asks first, as closing does, and each answer does what
+/// it says. The list holds the open file too, and picking that would read it over the edits.
+#[test]
+fn opening_a_document_with_unsaved_edits_asks_first() {
+    let dir = TestDir::new("open_dirty");
+    dir.write("Cargo.toml", "");
+    fs::create_dir_all(dir.0.join("content")).expect("a folder");
+    let path = dir.write("content/player.moves.ron", PLAYER);
+    let other = dir.write("content/warrior.moves.ron", WARRIOR);
+    let name_of = |harness: &Harness<'static, Editor>| harness.state().file().expect("a file").file_name();
+    let mut harness = self::harness(&path);
+    harness.run_steps(3);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..11", 4);
+    drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
+    let edited = text_of(&harness);
+    assert_ne!(edited, PLAYER);
+
+    for picked in ["warrior.moves.ron", "player.moves.ron"] {
+        harness.get_by_value("player.moves.ron *").click();
+        harness.run_steps(2);
+        harness.get_by_label(picked).click();
+        harness.run_steps(2);
+        assert_eq!(text_of(&harness), edited, "picking {picked} lost the edits");
+        harness.get_by_label("Keep editing").click();
+        harness.run_steps(2);
+        assert_eq!(name_of(&harness), "player.moves.ron");
+        assert_eq!(text_of(&harness), edited, "keep editing kept them");
+        assert!(harness.query_by_label("Keep editing").is_none());
+    }
+
+    harness.get_by_value("player.moves.ron *").click();
+    harness.run_steps(2);
+    harness.get_by_label("warrior.moves.ron").click();
+    harness.run_steps(2);
+    harness.get_by_label("Save and open").click();
+    harness.run_steps(2);
+    assert_eq!(name_of(&harness), "warrior.moves.ron");
+    assert_eq!(fs::read_to_string(&path).expect("the file"), edited, "saved");
+
+    // With nothing to lose it opens at once, and the answer that throws edits away does so.
+    harness.state_mut().open(&path);
+    harness.run_steps(2);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..12", 5);
+    drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
+    assert_ne!(text_of(&harness), edited);
+    harness.get_by_value("player.moves.ron *").click();
+    harness.run_steps(2);
+    harness.get_by_label("warrior.moves.ron").click();
+    harness.run_steps(2);
+    harness.get_by_label("Open without saving").click();
+    harness.run_steps(2);
+    assert_eq!(name_of(&harness), "warrior.moves.ron");
+    assert_eq!(text_of(&harness), fs::read_to_string(&other).expect("the file"));
+    assert_eq!(fs::read_to_string(&path).expect("the file"), edited, "not saved");
+    harness.get_by_value("warrior.moves.ron").click();
+    harness.run_steps(2);
+    harness.get_by_label("player.moves.ron").click();
+    harness.run_steps(2);
+    assert_eq!(name_of(&harness), "player.moves.ron", "nothing to lose, so nothing to ask");
+}
+
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real
 /// protocol over a real socket: what it replaced is shown, what it refused is shown by move and track with
 /// the edit kept, and the attempts on the device show up too. `tests/sandbox_push.rs` does the same with a

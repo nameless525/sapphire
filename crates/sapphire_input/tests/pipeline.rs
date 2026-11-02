@@ -395,6 +395,43 @@ fn higher_contexts_consume_their_sources() {
 }
 
 #[test]
+fn a_context_coming_back_sees_no_press_in_what_is_still_held() {
+    // Pausing with a button down, or the key that closes a menu still down as play returns: the
+    // button isn't pressed again until it lets go. A plain `Down` reads the level instead, which is
+    // what a stick wants.
+    let map = map(
+        r#"(name: "attack", kind: Button), (name: "walk", kind: Button)"#,
+        r#"(name: "play", bindings: [
+            (action: "attack", source: Key(J), trigger: DownFromPress),
+            (action: "walk", source: Key(W)),
+        ]), (name: "menu", bindings: [])"#,
+    );
+    let mut rig = Rig::new(map, &["play"]);
+    let play = rig.input.map().context("play").expect("play");
+    rig.key(1, Scancode::J, true);
+    rig.key(2, Scancode::W, true);
+    assert_eq!(
+        rig.update(16),
+        [
+            ev("attack", Started, 1),
+            ev("attack", Triggered, 1),
+            ev("walk", Started, 2),
+            ev("walk", Triggered, 2),
+        ]
+    );
+
+    rig.input.disable_context(play);
+    assert_eq!(rig.update(32), [ev("attack", Completed, 16), ev("walk", Completed, 16)]);
+    rig.input.enable_context(play, 0);
+    assert_eq!(rig.update(48), [ev("walk", Started, 32), ev("walk", Triggered, 32)], "only the level");
+
+    rig.key(50, Scancode::J, false);
+    assert_eq!(rig.update(64), [], "nothing to release");
+    rig.key(70, Scancode::J, true);
+    assert_eq!(rig.update(80), [ev("attack", Started, 70), ev("attack", Triggered, 70)], "a real press");
+}
+
+#[test]
 fn context_switches_ignore_held_presses_and_complete_what_they_remove() {
     let map = map(
         r#"(name: "pause", kind: Button), (name: "close", kind: Button), (name: "walk", kind: Button)"#,

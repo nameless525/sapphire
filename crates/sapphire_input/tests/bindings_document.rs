@@ -44,6 +44,7 @@ fn everything() -> InputBindings {
         ..BindingDesc::new("charge", Source::Key(Key::J))
     });
     for trigger in [
+        Trigger::DownFromPress,
         Trigger::Pressed,
         Trigger::Released,
         Trigger::Tap { seconds: 0.2 },

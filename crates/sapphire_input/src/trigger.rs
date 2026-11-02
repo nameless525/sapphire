@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// | Trigger | Ongoing | Triggered |
 /// |---|---|---|
 /// | `Down` | — | while actuated |
+/// | `DownFromPress` | — | while actuated, from a press made while the binding is active |
 /// | `Pressed` | — | once, when actuation starts |
 /// | `Released` | while actuated | once, when actuation ends |
 /// | `Hold` | until held `seconds` | from then until released |
@@ -22,6 +23,11 @@ use serde::{Deserialize, Serialize};
 /// "Once" means a pulse: the action triggers and completes at the same instant. A tap or
 /// double tap held too long cancels instead. Chords are the binding's `chord` field: an action
 /// that must be triggered for the binding to fire at all.
+///
+/// An input already held when a binding becomes active (its context was enabled, or a rebind) reads
+/// as nothing to every trigger but `Down` until it lets go. So `Down` suits levels, such as a stick
+/// that should keep moving across a menu, and `DownFromPress` suits verbs: the button that closed
+/// the menu isn't also an attack, and one held through a pause isn't pressed again.
 ///
 /// A motion source (mouse motion, wheel, drag, pinch) is actuated in each update that gave its
 /// binding motion, so its edges are where runs of such updates begin and end: `Pressed` on
@@ -35,6 +41,7 @@ use serde::{Deserialize, Serialize};
 pub enum Trigger {
     #[default]
     Down,
+    DownFromPress,
     Pressed,
     Released,
     Hold {
@@ -61,6 +68,7 @@ impl Trigger {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TriggerSpec {
     Down,
+    DownFromPress,
     Pressed,
     Released,
     Hold(u64),
@@ -72,6 +80,7 @@ impl TriggerSpec {
     pub fn compile(trigger: Trigger) -> Result<Self, &'static str> {
         Ok(match trigger {
             Trigger::Down => Self::Down,
+            Trigger::DownFromPress => Self::DownFromPress,
             Trigger::Pressed => Self::Pressed,
             Trigger::Released => Self::Released,
             Trigger::Hold { seconds } => Self::Hold(nanos(seconds)?),
@@ -204,7 +213,7 @@ pub(crate) fn evaluate(
     let released = falling && abort == Abort::No;
     let held = since(now, memory.pressed_at);
     match spec {
-        TriggerSpec::Down => {
+        TriggerSpec::Down | TriggerSpec::DownFromPress => {
             if actuated {
                 Fire::TRIGGERED
             } else {
@@ -290,7 +299,7 @@ pub(crate) fn deadline(spec: TriggerSpec, memory: &Memory) -> Option<Timestamp> 
                 memory.armed_at.map(|at| after(at, window))
             }
         }
-        TriggerSpec::Down | TriggerSpec::Pressed | TriggerSpec::Released => None,
+        TriggerSpec::Down | TriggerSpec::DownFromPress | TriggerSpec::Pressed | TriggerSpec::Released => None,
     }
 }
 
@@ -317,6 +326,26 @@ mod tests {
     #[test]
     fn down_follows_actuation() {
         assert_eq!(run(Trigger::Down, &[(0, true), (10, true), (20, false)]), [T, T, I]);
+    }
+
+    #[test]
+    fn down_from_press_follows_a_press_but_not_what_was_held_on_entry() {
+        let from_press = Trigger::DownFromPress;
+        assert_eq!(run(from_press, &[(0, true), (10, true), (20, false), (30, true)]), [T, T, I, T]);
+
+        // Held as the binding became active: ignored until it lets go, then a press like any other.
+        let spec = TriggerSpec::compile(from_press).expect("valid");
+        let mut memory = Memory::entering(true);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(10), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, false, ms(20), Abort::No), I);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(30), Abort::No), T);
+        assert_eq!(deadline(spec, &memory), None, "time alone never changes it");
+
+        // `Down` reads the level from the start: the difference between them.
+        let spec = TriggerSpec::compile(Trigger::Down).expect("valid");
+        let mut memory = Memory::entering(true);
+        assert_eq!(evaluate(spec, &mut memory, true, ms(0), Abort::No), T);
     }
 
     #[test]

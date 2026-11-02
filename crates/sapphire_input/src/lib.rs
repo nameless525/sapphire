@@ -10,9 +10,9 @@
 //!   whose actions consume their sources hides those sources from every lower context.
 //! - **Modifiers** ([`Modifier`]): axial and radial dead zones, response curves, negation,
 //!   scaling, swizzles, and scaling by the update's length.
-//! - **Triggers** ([`Trigger`]): down, pressed, released, hold, tap and double tap, plus chords
-//!   (a binding's `chord`: another action that must be triggered). A chord also blocks the
-//!   unchorded bindings of its source while it is held, so `Ctrl+S` doesn't fire `S`.
+//! - **Triggers** ([`Trigger`]): down, down from a press, pressed, released, hold, tap and double
+//!   tap, plus chords (a binding's `chord`: another action that must be triggered). A chord also
+//!   blocks the unchorded bindings of its source while it is held, so `Ctrl+S` doesn't fire `S`.
 //! - **Touch gestures** ([`Gesture`]): press (so taps, double taps and long presses come from
 //!   the triggers), one-finger drag, two-finger pinch, and swipes by direction. On-screen
 //!   controls inject their values ([`InputSystem::inject`]) into [`Source::Virtual`]s, which
@@ -27,7 +27,8 @@
 //! # Does not own
 //!
 //! - Device access and event timestamps: `sapphire_platform`.
-//! - Intents: gameplay turns action events into intents in the fixed step (M2's intent buffer).
+//! - Turning actions into a tick's input: `sapphire_controls`, which sits above this crate and the
+//!   simulation. Intents are `sapphire_gameplay`'s, from that input, in the fixed step.
 //! - On-screen controls' layout and drawing, and routing touches to them: `sapphire_ui` (M2 I2),
 //!   whose touch zones take a finger before this crate's gestures can see it.
 //! - Persisting rebinds: user settings (`sapphire_save`, M3). [`InputSystem::bindings`] is the
@@ -80,7 +81,6 @@
 //!
 //! - Rumble and trigger rumble as cues (M2, with `sapphire_audio`'s cue system); DualSense LEDs
 //!   and gyro, and gamepad touchpads.
-//! - An ECS resource and the intent buffer hand-off, with `sapphire_gameplay` (M2).
 //! - Persisted rebinds and accessibility options, such as hold-to-toggle (spec §6.8), with user
 //!   settings (M3); glyph tables with the UI (M3).
 //! - Hot reload of bindings documents with the asset pipeline (A8): [`InputBindings`] already

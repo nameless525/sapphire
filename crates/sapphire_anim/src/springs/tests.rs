@@ -882,6 +882,32 @@ fn motion_survives_a_new_version_of_the_character() {
     assert_eq!(new.frame(strike, 34.0), SpringWork { substeps: 0, wrote_pose: true }, "settles");
 }
 
+/// A new version can swap one of a chain's colliders for one the old version hadn't, on a joint it
+/// already placed: the same joints swing the same way, with more colliders to place.
+#[test]
+fn a_new_version_with_another_collider_keeps_running() {
+    let sphere = |radius| ColliderShape::Sphere { offset: [0.0; 3], radius };
+    let collider = |radius| RigCollider { joint: ARM as u16, shape: sphere(radius) };
+    let with = |colliders: Vec<RigCollider>, listed: Vec<u32>| CharacterRig {
+        colliders,
+        collider_groups: vec![ColliderGroup { name: "arm".into(), colliders: listed }],
+        ..collided(sphere(0.06))
+    };
+    let mut old = Character::new(&with(vec![collider(0.06), collider(0.07)], vec![0, 1]), Substeps::One);
+    for tick in 0..34 {
+        old.frame(fast_pass, f64::from(tick));
+    }
+    let mut new = Character::new(
+        &with(vec![collider(0.06), collider(0.07), collider(0.08)], vec![0, 2]),
+        Substeps::One,
+    );
+    new.springs.continue_from(&old.springs);
+    for tick in 34..40 {
+        new.frame(fast_pass, f64::from(tick));
+    }
+    assert!(new.world_of(TIP).is_finite());
+}
+
 /// A tier change keeps a tail's place and its speed, so hair doesn't jump.
 #[test]
 fn a_new_substep_count_keeps_the_motion() {

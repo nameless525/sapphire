@@ -929,7 +929,10 @@ impl SpringBones {
     /// Takes over `other`'s motion for a new version of the character: its tails and clock, when it
     /// swings the same joints the same way. Otherwise this settles at its next update.
     pub fn continue_from(&mut self, other: &Self) {
-        let same = self.steps == other.steps && self.anchors == other.anchors;
+        let same = self.steps == other.steps
+            && self.anchors == other.anchors
+            && self.colliders.len() == other.colliders.len()
+            && self.centers.len() == other.centers.len();
         if !same || other.settling {
             self.set_substeps(other.substeps);
             self.reset();

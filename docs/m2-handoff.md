@@ -137,7 +137,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 ### Gameplay, world and tools
 
 - **The combat slice:** the combat core, party, camera director, one enemy AI, audio (Q8: `kira`, plan §3) and touch controls (spec §10; §5.15, §5.22).
-- **Hit-stop:** it freezes the combatants' clocks, and M2 pushes a hit's screen effect preset in the step that applies it. A finish freeze decides whether effects then need a clock of their own (spec §5.21, P3's note).
+- **Hit-stop:** it freezes the combatants' clocks, and M2 pushes a hit's screen effect preset in the step that applies it. G3 settled the finish freeze: it stops every actor's clock and leaves the world's running, so effects need no clock of their own (spec §5.22).
 - **Spawning in the fixed step** allocates, so gameplay spawns need pre-sized pools (spec §5.6, rule R6).
 - **Zones** (M3) are to place the look-dev town as culled instances instead of one mesh (spec §5.21; §5.27, X1 part 1's "Later milestones").
 - **Wind and weather per zone and hour:** `FramePacket::wind` and `weather` are plumbed, but nothing resolves them per zone and no shader reads the weather (spec §4.6).

@@ -378,12 +378,38 @@ pub(crate) fn validate(program: Program, sources: &ShaderSources) -> Result<naga
     Ok(module)
 }
 
+/// Whether `program`, compiled in, keeps wgpu's bound on every loop (see [`module`]). Without it
+/// these two move four Metal goldens by one or two pixels of one code value, where Metal's fast
+/// math rounds an unrolled sum differently, so they keep it until those goldens are next
+/// re-baselined. It costs them much of the gain: 9 to 13% of the look-dev town's GPU frame on an
+/// M5 without it on any program, on every shot and tier.
+const fn keeps_loop_bound(program: Program) -> bool {
+    matches!(program, Program::AnimeCharacter | Program::Environment)
+}
+
 /// `program`'s shader module, from `sources`.
+///
+/// Compiled-in files build without wgpu's bound on every loop, a counter it adds so that no shader
+/// can loop forever, which a backend's compiler may treat as undefined behavior. It's meant for
+/// shaders nobody has read, and it keeps Metal from unrolling and more: GTAO takes 9 to 18% less
+/// without it on an M5, and the look-dev town's whole GPU frame about 3%. Edited files keep it,
+/// since a slip in one mustn't hang a device while its author is working, so a pushed shader's
+/// timings read a little high. wgpu's bounds and integer division checks stay on everywhere; they
+/// cost about 1%.
 pub(crate) fn module(device: &wgpu::Device, program: Program, sources: &ShaderSources) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    let desc = wgpu::ShaderModuleDescriptor {
         label: Some(program.name()),
         source: wgpu::ShaderSource::Wgsl(sources.program(program).into()),
-    })
+    };
+    if keeps_loop_bound(program) || !sources.is_compiled_in() {
+        return device.create_shader_module(desc);
+    }
+    let mut checks = wgpu::ShaderRuntimeChecks::checked();
+    checks.force_loop_bounding = false;
+    // SAFETY: the one check turned off asks that no shader loops forever, and every loop in the
+    // compiled-in files runs a counter to a bound or halves a range (`every_loop_ends` below
+    // holds them to that).
+    unsafe { device.create_shader_module_trusted(desc, checks) }
 }
 
 /// Where a batch of pipelines builds. With an empty shader cache, on an app's first launch, each
@@ -728,6 +754,75 @@ mod tests {
 
     fn validate_sources(program: Program, sources: &ShaderSources) -> ShaderError {
         super::validate(program, sources).expect_err("a broken source")
+    }
+
+    /// Whether `body` changes the variable `name`, other than reading it.
+    fn assigns(body: &str, name: &str) -> bool {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        body.match_indices(name).any(|(at, _)| {
+            let after = body[at + name.len()..].trim_start();
+            !body[..at].ends_with(is_word)
+                && !after.starts_with(is_word)
+                && ["=", "+=", "-=", "*=", "/=", "<<=", ">>=", "++", "--"]
+                    .iter()
+                    .any(|operator| after.starts_with(operator) && !after.starts_with("=="))
+        })
+    }
+
+    /// [`module`] turns off wgpu's loop bound on the compiled-in files, which asks that none of
+    /// them can loop forever. So every `for` must move one counter toward its bound, in its header
+    /// alone, and any other loop is listed here with why it ends.
+    #[test]
+    fn every_loop_ends() {
+        // `cs_skinning`'s binary search for a workgroup's job: `high - low` halves each time.
+        const OTHER_LOOPS: [(ShaderFile, usize); 1] = [(ShaderFile::Skinning, 1)];
+        for file in ShaderFile::ALL {
+            let name = file.file_name();
+            let code: String = file
+                .compiled_in()
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let others = OTHER_LOOPS.iter().find(|(other, _)| *other == file).map_or(0, |(_, count)| *count);
+            assert_eq!(code.matches("loop {").count(), others, "{name}'s other loops");
+            assert!(!code.contains("while "), "{name} has a `while` loop");
+            for (at, _) in code.match_indices("for (") {
+                let header = &code[at + "for (".len()..];
+                let end = header.find(") {").expect("a `for` header ends in `) {`");
+                let clauses: Vec<&str> = header[..end].split(';').map(str::trim).collect();
+                let [init, condition, update] = clauses[..] else {
+                    panic!("{name}: `for ({})`", &header[..end]);
+                };
+                let counter = init
+                    .strip_prefix("var ")
+                    .and_then(|init| init.split(' ').next())
+                    .unwrap_or_else(|| panic!("{name}: `{init}` declares no counter"));
+                let upward =
+                    update == format!("{counter}++") || update.starts_with(&format!("{counter} += "));
+                let downward = update == format!("{counter} >>= 1u");
+                let bounded = (upward && condition.starts_with(&format!("{counter} <")))
+                    || (downward && condition.starts_with(&format!("{counter} > 0u")));
+                assert!(bounded, "{name}: `for ({init}; {condition}; {update})` may not end");
+                // The body runs to the brace that closes the one the header opens.
+                let body = &header[end + ") {".len()..];
+                let mut depth = 1;
+                let close = body
+                    .find(|c| {
+                        depth += match c {
+                            '{' => 1,
+                            '}' => -1,
+                            _ => 0,
+                        };
+                        depth == 0
+                    })
+                    .expect("a body ends");
+                assert!(
+                    !assigns(&body[..close], counter),
+                    "{name}: the body of `for ({init}; ...)` moves its counter"
+                );
+            }
+        }
     }
 
     #[test]

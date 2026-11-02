@@ -509,8 +509,8 @@ fn flare_element(element: FlareElement, uv: vec2<f32>, sun: vec2<f32>, axis: vec
 
 // The lens flare's light at `uv`: the default lens's elements along the axis from the sun
 // through the middle of the frame, by the sun's `visibility`. Unrolled, as the gradient layers
-// are: wgpu bounds every loop with a counter, which keeps Metal from unrolling it, and the loop
-// cost about three times the unrolled calls (an M5 at 1080p).
+// are: under wgpu's bound on every loop, which kept Metal from unrolling it (`shaders::module`),
+// the loop cost about three times the unrolled calls (an M5 at 1080p).
 fn lens_flare(uv: vec2<f32>, visibility: f32) -> vec3<f32> {
     let sun = post.flare_sun.xy;
     let axis = (vec2<f32>(0.5) - sun) * 2.0;
@@ -656,8 +656,7 @@ fn radial_tap(ray: RadialRay, index: f32) -> RadialSum {
     return radial_weighted(ray, scale, color);
 }
 
-// Four taps from tap `first`, unrolled: wgpu bounds every WGSL loop with a counter, which keeps
-// Metal from unrolling it (see `lens_flare`).
+// Four taps from tap `first`, unrolled (see `lens_flare`).
 fn radial_taps(ray: RadialRay, first: f32) -> RadialSum {
     let a = radial_tap(ray, first);
     let b = radial_tap(ray, first + 1.0);

@@ -23,8 +23,8 @@
 //
 // The resolve is a compute pass, written for its cost (half the first, fragment version's on an
 // M5): each workgroup gathers the scene pixels its output pixels' 3 × 3 neighborhoods cover into
-// workgroup memory once, already in the resolve's color space; the hot path has no loops, since
-// wgpu bounds every loop with a counter that keeps Metal from unrolling it, and it reads
+// workgroup memory once, already in the resolve's color space; the hot path has no loops, from
+// when wgpu's bound on every loop kept Metal from unrolling them (`shaders::module`), and it reads
 // textures through samplers, which need none of the bounds checks `textureLoad` gets.
 
 // Mirrors `temporal::TemporalUniforms`.

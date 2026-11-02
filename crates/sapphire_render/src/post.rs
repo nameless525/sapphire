@@ -97,9 +97,9 @@
 //! so a layer turning on never compiles a pipeline mid-game. Parameters without layers
 //! ([`PostParams::plain`], as every timeline from before them resolves to) draw through the
 //! plain variants, which are R3's shader code, so they draw exactly the frames they did. The
-//! gradient layers and the flare's elements are unrolled calls: wgpu bounds every WGSL loop
-//! with a counter, which keeps Metal from unrolling it, and the loops cost about three times as
-//! much (temporal AA found the same).
+//! gradient layers and the flare's elements are unrolled calls: under wgpu's bound on every WGSL
+//! loop, which kept Metal from unrolling them (`shaders::module`), the loops cost about three
+//! times as much (temporal AA found the same).
 //!
 //! # Screen effects (M1 P3; look pillar 8)
 //!

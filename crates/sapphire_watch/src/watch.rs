@@ -2,7 +2,9 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 
@@ -11,7 +13,8 @@ use crate::LOG_TARGET;
 pub struct WatchId(usize);
 
 /// A file that changed in a watched directory: created, written, removed, or renamed from or to
-/// its name. Whoever reads it finds out which.
+/// its name, or any file in a directory watched again, which may have. Whoever reads it finds out
+/// which.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Changed {
     pub watch: WatchId,
@@ -50,6 +53,10 @@ pub enum WatchError {
 /// [`crate::DEBOUNCE`], several times longer than an editor's save or a cook's write of a pack.
 pub(crate) const MAX_WAIT: Duration = Duration::from_secs(2);
 
+/// How often [`FileWatcher::poll`] looks at the watched directories themselves, since a backend
+/// may not say that one went.
+const CHECK_DIRS_EVERY: Duration = Duration::from_secs(1);
+
 /// Watches directories, not recursively, for files that change, through `notify` 8.2 and a
 /// trailing-edge debounce per file: a file is reported once it has been quiet for the debounce
 /// time, so an editor's save or a cook's write to a temporary file and rename into place comes
@@ -59,12 +66,50 @@ pub(crate) const MAX_WAIT: Duration = Duration::from_secs(2);
 /// separate reports. Errors, and the platform saying it dropped events, are reported at once.
 /// The debounce runs on a thread of its own that blocks while nothing waits to be reported;
 /// [`Self::poll`] collects what it reported, and allocates nothing while nothing changed.
+///
+/// A watched directory that goes is reported once, as an error naming it (review DV-12). Backends
+/// treat that differently: inotify reports it and drops the watch, Windows' drops the watch and
+/// reports nothing, and FSEvents goes on watching the path. So [`Self::poll`] looks at each
+/// directory every second, and at once when an event names one. When one is back, or is another
+/// directory made under the same name, it is watched again and every file in it is reported as
+/// changed, since nothing watched it meanwhile.
 pub struct FileWatcher {
     backend: backend::Backend,
     /// Watched directories, canonical, by [`WatchId`].
     dirs: Vec<PathBuf>,
+    /// What was last found of each of `dirs`.
+    states: Vec<DirState>,
     changed: Vec<Changed>,
     errors: Vec<String>,
+    /// When to look at the directories next, on this clock.
+    clock: Stopwatch,
+    next_check: Duration,
+}
+
+/// What [`FileWatcher::poll`] last found of a watched directory.
+#[derive(Debug, Default)]
+struct DirState {
+    /// When it was made, where the platform says: another directory under the same name differs.
+    created: Option<SystemTime>,
+    /// An event named it since the last look.
+    named: bool,
+    /// Why it isn't being watched, as last reported, so it is reported once.
+    problem: Option<String>,
+}
+
+impl DirState {
+    fn of(dir: &Path) -> Self {
+        let created = std::fs::metadata(dir).and_then(|metadata| metadata.created()).ok();
+        Self { created, ..Self::default() }
+    }
+
+    /// Reports `problem`, unless it is the one reported last.
+    fn report(&mut self, problem: String, errors: &mut Vec<String>) {
+        if self.problem.as_ref() != Some(&problem) {
+            errors.push(problem.clone());
+            self.problem = Some(problem);
+        }
+    }
 }
 
 impl std::fmt::Debug for FileWatcher {
@@ -84,7 +129,15 @@ impl FileWatcher {
     /// [`Self::new`] with another longest wait, for tests.
     pub(crate) fn with_max_wait(debounce: Duration, max_wait: Duration) -> Result<Self, WatchError> {
         let backend = backend::Backend::new(debounce, max_wait.max(debounce))?;
-        Ok(Self { backend, dirs: Vec::new(), changed: Vec::new(), errors: Vec::new() })
+        Ok(Self {
+            backend,
+            dirs: Vec::new(),
+            states: Vec::new(),
+            changed: Vec::new(),
+            errors: Vec::new(),
+            clock: Stopwatch::start(),
+            next_check: CHECK_DIRS_EVERY,
+        })
     }
 
     /// Watches the files in directory `dir`, not its subdirectories. A directory watched already
@@ -99,6 +152,7 @@ impl FileWatcher {
         }
         self.backend.watch(&dir).map_err(|message| WatchError::Backend { path: dir.clone(), message })?;
         tracing::debug!(target: LOG_TARGET, dir = %dir.display(), "watching");
+        self.states.push(DirState::of(&dir));
         self.dirs.push(dir);
         Ok(WatchId(self.dirs.len() - 1))
     }
@@ -108,14 +162,25 @@ impl FileWatcher {
         &self.dirs[watch.0]
     }
 
+    /// Has the backend stop watching `watch`, as Linux's does by itself when the directory goes.
+    #[cfg(all(test, feature = "notify"))]
+    pub(crate) fn drop_backend_watch(&mut self, watch: WatchId) {
+        self.backend.unwatch(&self.dirs[watch.0]);
+    }
+
     /// What changed since the last poll.
     pub fn poll(&mut self) -> WatchEvents<'_> {
         self.changed.clear();
         self.errors.clear();
-        let (dirs, changed, errors) = (&self.dirs, &mut self.changed, &mut self.errors);
+        let (dirs, states) = (&self.dirs, &mut self.states);
+        let (changed, errors) = (&mut self.changed, &mut self.errors);
+        let mut named = false;
         self.backend.drain(
             |path| {
-                if let Some(path) = locate(dirs, &path)
+                if let Some(index) = dirs.iter().position(|dir| *dir == path) {
+                    states[index].named = true;
+                    named = true;
+                } else if let Some(path) = locate(dirs, &path)
                     && !changed.contains(&path)
                 {
                     changed.push(path);
@@ -123,7 +188,54 @@ impl FileWatcher {
             },
             |error| errors.push(error),
         );
+        let now = self.clock.elapsed();
+        if named || now >= self.next_check {
+            self.next_check = now + CHECK_DIRS_EVERY;
+            self.check_dirs();
+        }
         WatchEvents { changed: &self.changed, errors: &self.errors }
+    }
+
+    /// Looks at each watched directory: reports those gone, and watches again those back or made
+    /// again, reporting every file in them.
+    fn check_dirs(&mut self) {
+        for (index, (dir, state)) in self.dirs.iter().zip(&mut self.states).enumerate() {
+            let named = std::mem::take(&mut state.named);
+            let Some(metadata) = std::fs::metadata(dir).ok().filter(std::fs::Metadata::is_dir) else {
+                let problem = format!("the watched directory {} is gone", dir.display());
+                state.report(problem, &mut self.errors);
+                continue;
+            };
+            let created = metadata.created().ok();
+            let same = match (created, state.created) {
+                (Some(now), Some(then)) => now == then,
+                // Nothing says which directory this is, so take an event naming it to mean another.
+                _ => !named,
+            };
+            if same && state.problem.is_none() {
+                continue;
+            }
+            self.backend.unwatch(dir);
+            if let Err(message) = self.backend.watch(dir) {
+                let problem = format!("can't watch {} again: {message}", dir.display());
+                state.report(problem, &mut self.errors);
+                continue;
+            }
+            tracing::info!(target: LOG_TARGET, dir = %dir.display(), "watching again");
+            *state = DirState { created, ..DirState::default() };
+            let watch = WatchId(index);
+            match std::fs::read_dir(dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let file = Changed { watch, name: entry.file_name() };
+                        if !self.changed.contains(&file) {
+                            self.changed.push(file);
+                        }
+                    }
+                }
+                Err(error) => self.errors.push(format!("can't read {}: {error}", dir.display())),
+            }
+        }
     }
 }
 
@@ -181,6 +293,12 @@ mod backend {
 
         pub(super) fn watch(&mut self, dir: &Path) -> Result<(), String> {
             self.watcher.watch(dir, RecursiveMode::NonRecursive).map_err(|error| error.to_string())
+        }
+
+        /// Stops watching `dir`, if it still is: a backend may have stopped by itself when the
+        /// directory went, which is the only way this fails.
+        pub(super) fn unwatch(&mut self, dir: &Path) {
+            let _ = self.watcher.unwatch(dir);
         }
 
         /// Hands each path and error reported since the last call to `changed` and `error`, in
@@ -423,6 +541,10 @@ mod backend {
         }
 
         pub(super) fn watch(&mut self, _dir: &Path) -> Result<(), String> {
+            match *self {}
+        }
+
+        pub(super) fn unwatch(&mut self, _dir: &Path) {
             match *self {}
         }
 

@@ -59,8 +59,9 @@
 //! # Cost
 //!
 //! Idle, the watcher's threads (the platform's, and the debounce thread) block, and
-//! [`HotReload::poll`] costs one empty channel read per frame, allocating nothing. The sandbox's
-//! bench measures it (spec §5.10's M1 A8 note).
+//! [`HotReload::poll`] costs one empty channel read and a clock read per frame, and looking at
+//! each watched directory once a second, allocating nothing. The sandbox's bench measures it
+//! (spec §5.10's M1 A8 note).
 //!
 //! # Later milestones
 //!

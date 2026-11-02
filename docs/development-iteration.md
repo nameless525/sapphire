@@ -112,7 +112,7 @@ That fight presses LIGHT every half second with no window, and a dev build liste
 - **What's wrong:** the document's own check, as you drag, naming the move and the track, in the row and under the timeline. Nothing stops you going there. Saving is allowed, because the file is yours and a device refuses what it can't take.
 - **Save and push:** Cmd+S writes the file and pushes it. The side panel shows what it replaced, or what the device refused, with your edit still there, and the attempts the fight is playing now.
 
-A push goes to the file names a running build knows: a fight listing the file plays the edit on its next attempt (`--arena --fight` lists `player.moves.ron` and `warrior.moves.ron`, the older scenarios `slice.moves.ron` and `show.moves.ron`), a name the build cooks but no running fight plays is kept for the next fight and the reply says so, and any other name is refused.
+A push goes to the file names a running build knows: a fight listing the file plays the edit on its next attempt (`--arena --fight` lists `player.moves.ron` and `warrior.moves.ron`, the older scenarios `slice.moves.ron` and `show.moves.ron`), a name the build cooks but no running fight plays is kept for the next fight and the reply says so, and any other name is refused. `tools/motion` writes `player.moves.ron`, and the editor says so: an edit there lasts until the next `moves.py --write`.
 
 To see it with no window: `cargo run -p sapphire_editor -- <file> --capture <png> [--move <name>] [--tick <n>] [--size <w>x<h>] [--content target/content/desktop]`, with `SDKROOT` set on a Mac. It draws on the CPU, with no SDL and no GPU.
 

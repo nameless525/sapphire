@@ -3038,6 +3038,7 @@ dependencies = [
  "sapphire_ecs",
  "sapphire_math",
  "sapphire_moves",
+ "sapphire_physics",
  "sapphire_serialize",
  "sapphire_time",
  "thiserror 2.0.21",

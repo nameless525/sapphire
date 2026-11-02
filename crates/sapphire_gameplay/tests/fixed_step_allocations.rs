@@ -14,12 +14,15 @@ use sapphire_gameplay::replay::{
     melee_buttons,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, CombatSet, INTENT_RING_LEN, SimConfig, Simulation,
-    TickActions, WarpTarget,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, HitQuery, HurtboxId, INTENT_RING_LEN,
+    MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep, WarpTarget, remove_hurtboxes,
 };
-use sapphire_math::Vec3;
-use sapphire_moves::{MoveSet, MoveSetDocument};
-use sapphire_time::ScaleSource;
+use sapphire_math::{Vec3, det};
+use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
+use sapphire_physics::{
+    ColliderId, Group, GroupMask, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape,
+};
+use sapphire_time::{ScaleSource, SimDuration};
 use support::{press, script, slice, world};
 
 #[global_allocator]
@@ -281,5 +284,132 @@ fn an_overfull_step_counts_what_it_drops_without_allocating() {
     assert!(stats.cues_dropped > 0 && stats.volumes_dropped > 0, "{stats:?}");
     assert!(sim.force_move(actors[0], Name::new("busy")));
     let ((), counts) = alloc::count_in_scope(|| sim.step(&TickActions::NEUTRAL));
+    assert_eq!(counts.allocations, 0);
+}
+
+/// Hit queries, counted from the very first sweep, on everything a sweep can do: turning, stopping at
+/// a wall, re-arming, freezing, hurtboxes moving, coming and going, and every limit past full. Plain
+/// inputs, so this needs no move system.
+#[test]
+fn hit_queries_do_not_allocate_from_the_first_sweep() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    const ATTACKERS: u32 = 40;
+    const CROWD: u32 = 24;
+    let actor = |raw: u32| ActorId::from_raw(raw).expect("not zero");
+
+    let wall = StaticCollider {
+        id: ColliderId(0),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(0.1, 3.0, 3.0) }),
+        pose: Pose::at(Vec3::new(1.5, 1.0, 0.0)),
+        memberships: Group::World.mask(),
+    };
+    let mut physics = PhysicsWorld::new(vec![wall], CROWD as usize).expect("it builds");
+
+    // One path around a half circle a tick at a time, turning as it goes.
+    let samples = (0..=30)
+        .map(|tick| {
+            let angle = tick as f32 * 0.1;
+            let (sin, cos) = det::sin_cos(angle);
+            PathSample {
+                translation: [2.0 * cos, 1.0, 2.0 * sin],
+                rotation: det::quat_from_rotation_z(angle).to_array(),
+            }
+        })
+        .collect();
+    let path = BakedPath::new(Name::new("blade"), samples);
+    let shapes = [
+        Shape::Sphere { radius: 0.1 },
+        Shape::Capsule { half_height: 0.5, radius: 0.05 },
+        Shape::Box { half_extents: Vec3::new(0.3, 0.1, 0.02) },
+    ];
+    let groups = [Name::new("first"), Name::new("second")];
+    let rearm = [10, 20];
+    // All within the half circle's reach: rows of them from its middle out.
+    let chest = |index: u32| {
+        let (sin, cos) = det::sin_cos(index as f32 * 0.125);
+        PathSample { translation: [2.0 * cos, 1.0, 2.0 * sin], ..PathSample::IDENTITY }
+    };
+
+    let mut hits = HitQuery::new();
+    let ((), counts) = alloc::count_in_scope(|| {
+        for tick in 0_u64..2000 {
+            // Hurtboxes come and go, and move.
+            let root = ActorTransform { position: Vec3::X * det::sin(tick as f32 * 0.05) * 0.1, yaw: 0.0 };
+            for index in 0..CROWD {
+                let owner = actor(1000 + index);
+                let id = HurtboxId::new(owner, 0).expect("in range");
+                if tick % 97 == u64::from(index) {
+                    remove_hurtboxes(&mut physics, owner);
+                }
+                let shape = match (tick + u64::from(index)) % 11 {
+                    0 => None,
+                    1 => Some(Shape::Sphere { radius: 0.4 }),
+                    _ => Some(Shape::Sphere { radius: 0.3 }),
+                };
+                id.set(&mut physics, shape, root, chest(index)).expect("fits");
+            }
+
+            // Every attacker's volumes along the table, at speeds that change.
+            let speed = [1000, 3000, 100, 0][(tick / 40 % 4) as usize];
+            for attacker in 0..ATTACKERS {
+                let reading = (tick * 1000 + u64::from(attacker) * 500) % 30_000;
+                let previous = reading.saturating_sub(speed);
+                let delta = SimDuration::from_subticks(speed);
+                let spin = ActorTransform { yaw: speed as f32 * 0.0002, ..root };
+                for volume in 0..3_u16 {
+                    hits.sweep(
+                        &physics,
+                        &VolumeSweep {
+                            attacker: actor(1 + attacker),
+                            instance: (tick / 40) as u32,
+                            volume,
+                            group: groups[usize::from(volume % 2)],
+                            rearm: if volume == 0 { &rearm } else { &[] },
+                            shape: shapes[usize::from(volume)],
+                            path: &path,
+                            blocked_by: if volume == 1 { Group::World.mask() } else { GroupMask::NONE },
+                            owner: OwnerStep {
+                                delta,
+                                reading: SimDuration::from_subticks(reading),
+                                root_before: root,
+                                root_after: spin,
+                            },
+                            from: SimDuration::from_subticks(previous),
+                            to: SimDuration::from_subticks(reading),
+                        },
+                    );
+                }
+            }
+            hits.finish_step();
+            if tick % 500 == 499 {
+                hits.forget_actor(actor(1));
+                hits.forget_actor(actor(1000));
+            }
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "{} bytes allocated in hit queries", counts.bytes);
+    let stats = hits.stats();
+    assert!(stats.frozen_skips > 0, "some steps were frozen: {stats:?}");
+    assert!(stats.events > 1000, "the fight must land hits: {stats:?}");
+    assert!(stats.volumes_stopped > 0, "and stop at walls: {stats:?}");
+    assert!(stats.contacts_dropped > 0, "and overflow every limit: {stats:?}");
+    assert!(stats.events_dropped > 0, "{stats:?}");
+    assert!(stats.hits_refused > 0, "{stats:?}");
+    assert!(hits.record_count() <= MAX_HIT_RECORDS);
+}
+
+/// Hashing what hit queries keep, through a simulation's checksum, allocates nothing either.
+#[test]
+fn a_simulations_hit_state_hashes_without_allocating() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let sim = Simulation::new(SimConfig::default());
+    assert!(sim.hits().events().is_empty());
+    let (checksum, counts) = alloc::count_in_scope(|| sim.checksum());
+    assert_ne!(checksum, 0);
     assert_eq!(counts.allocations, 0);
 }

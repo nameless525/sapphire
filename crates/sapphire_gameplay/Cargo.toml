@@ -16,6 +16,8 @@ sapphire_core.workspace = true
 sapphire_ecs.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
+# Hit queries sweep through its world.
+sapphire_physics.workspace = true
 sapphire_time.workspace = true
 thiserror.workspace = true
 # The state checksum.

@@ -18,10 +18,11 @@
 //! - The move system (M2 G2): [`IntentRing`], the intents waiting on an actor's own clock; the `moves`
 //!   module's cancels and moves, on [`sapphire_moves::MoveSet`]s from [`MoveLibrary`]; what a move
 //!   publishes ([`MoveOutput`], [`MoveRead`]); and [`CueQueue`], presentation's events.
+//! - [`HitQuery`], which sweeps moves' hit volumes against hurtboxes, over plain inputs.
 //!
-//! The controller and hits arrive with M2's other G packages, each in its [`CombatSet`]. Until
-//! then [`CombatSet::Movement`] applies a move's root motion directly (the `movement` module, which
-//! G1 takes over), and hit volumes are published for something to test.
+//! The controller and the system that runs hit queries arrive with M2's other G packages, each in its
+//! [`CombatSet`]. Until then [`CombatSet::Movement`] applies a move's root motion directly (the
+//! `movement` module, which G1 takes over), and hit volumes are published for G3 to sweep.
 //!
 //! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), animation, the
 //! platform layer, input bindings, SDL or wgpu. `cargo xtask check-layers` holds its dependency
@@ -111,6 +112,7 @@ mod actions;
 mod actors;
 mod checksum;
 mod cues;
+mod hits;
 mod intents;
 mod movement;
 mod moves;
@@ -123,6 +125,11 @@ pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActi
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
 pub use checksum::StateHasher;
 pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue};
+pub use hits::{
+    HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS,
+    MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, SubStep,
+    VolumeSweep, remove_hurtboxes, volume_pose,
+};
 pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};
 pub use moves::{

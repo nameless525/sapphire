@@ -18,6 +18,7 @@ use crate::actors::{
 };
 use crate::checksum;
 use crate::cues::{CueEvent, CueQueue};
+use crate::hits::HitQuery;
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
 use crate::moves::{self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, WarpTarget};
@@ -106,6 +107,7 @@ impl Simulation {
         world.insert_resource(MoveLibrary::default());
         world.insert_resource(MoveStats::default());
         world.insert_resource(CueQueue::default());
+        world.insert_resource(HitQuery::new());
         actors::create_pool(world, config.max_actors);
 
         world.schedule_scope(FixedCombat, |_, schedule| {
@@ -349,6 +351,12 @@ impl Simulation {
     /// The world's clock, between steps: the same for time scales on everything.
     pub fn world_clock_mut(&mut self) -> Mut<'_, WorldClock> {
         self.ecs.world_mut().resource_mut::<WorldClock>()
+    }
+
+    /// Hit queries' latest events and counters.
+    #[must_use]
+    pub fn hits(&self) -> &HitQuery {
+        self.ecs.world().resource::<HitQuery>()
     }
 
     /// The simulation's counters (rule R9).

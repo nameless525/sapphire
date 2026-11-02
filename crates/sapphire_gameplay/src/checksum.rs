@@ -13,14 +13,16 @@ use xxhash_rust::xxh3::Xxh3;
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorRequests, ActorTable};
 use crate::cues::CueQueue;
+use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
 use crate::simulation::SimRng;
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
-/// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves.
-const CHECKSUM_LAYOUT: u32 = 2;
+/// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
+/// D4's hit queries.
+const CHECKSUM_LAYOUT: u32 = 3;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -253,6 +255,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
         hasher.u64(part);
     }
     hasher.u32(world.resource::<ActorRequests>().next_id());
+    world.resource::<HitQuery>().write_canonical(&mut hasher);
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);

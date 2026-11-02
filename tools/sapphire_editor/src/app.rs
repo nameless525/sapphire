@@ -159,7 +159,8 @@ impl Editor {
             editor.open(&path);
         } else {
             // With no file named, the list is the only way to one.
-            editor.documents = std::env::current_dir().map_or_else(|_| Vec::new(), |dir| documents_around(&dir));
+            editor.documents =
+                std::env::current_dir().map_or_else(|_| Vec::new(), |dir| documents_around(&dir));
         }
         editor
     }

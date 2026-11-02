@@ -403,7 +403,12 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     let segments = [
         ("startup", phases.startup, 0, Color32::from_rgb(92, 106, 66)),
         ("active", phases.active, phases.startup, Color32::from_rgb(168, 92, 58)),
-        ("recovery", phases.recovery, phases.startup.saturating_add(phases.active), Color32::from_rgb(64, 76, 104)),
+        (
+            "recovery",
+            phases.recovery,
+            phases.startup.saturating_add(phases.active),
+            Color32::from_rgb(64, 76, 104),
+        ),
     ];
     for (name, length, start, fill) in segments {
         if length == 0 {
@@ -516,7 +521,8 @@ pub fn show(ui: &mut Ui, view: &TimelineView<'_>, drag: &mut Option<Drag>) -> Ve
     }
 
     // The playhead's column, over everything.
-    let column = Rect::from_x_y_ranges(scale.x(view.tick)..=scale.x(view.tick.saturating_add(1)), rect.y_range());
+    let column =
+        Rect::from_x_y_ranges(scale.x(view.tick)..=scale.x(view.tick.saturating_add(1)), rect.y_range());
     painter.rect_filled(column, CornerRadius::ZERO, Color32::from_white_alpha(26));
     painter.rect_stroke(
         column,
@@ -641,8 +647,7 @@ fn draw_entry(
     let id = |part: &str| base_id.with(("timeline entry", entry_ref, part));
 
     if track.is_instant() {
-        let cell =
-            Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.to), band.y_range());
+        let cell = Rect::from_x_y_ranges(scale.x(entry.span.from)..=scale.x(entry.span.to), band.y_range());
         let hit = cell.expand2(Vec2::new(2.0, 0.0));
         let response = ui.interact(hit, id("instant"), Sense::click_and_drag());
         response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label.as_str()));

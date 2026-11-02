@@ -600,7 +600,7 @@ fn opening_a_document_with_unsaved_edits_asks_first() {
     let path = dir.write("content/player.moves.ron", PLAYER);
     let other = dir.write("content/warrior.moves.ron", WARRIOR);
     let name_of = |harness: &Harness<'static, Editor>| harness.state().file().expect("a file").file_name();
-    let mut harness = self::harness(&path);
+    let mut harness = harness(&path);
     harness.run_steps(3);
     let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..11", 4);
     drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
@@ -667,13 +667,14 @@ fn a_first_cook_reaches_an_editor_already_open() {
     fs::write(cook.join("shared.spack"), &empty_pack[..4]).expect("half a pack");
     harness.run_steps(6);
     assert!(!harness.state().has_cook());
+    let half_written =
+        fs::metadata(cook.join("shared.spack")).and_then(|file| file.modified()).expect("a time");
     fs::write(cook.join("shared.spack"), &empty_pack).expect("a pack");
     // A file's time can be as coarse as a second, and the same time isn't a new cook.
-    let later = std::time::SystemTime::now() + Duration::from_secs(5);
     fs::File::options()
         .write(true)
         .open(cook.join("shared.spack"))
-        .and_then(|file| file.set_modified(later))
+        .and_then(|file| file.set_modified(half_written + Duration::from_secs(5)))
         .expect("a new time");
     until(&mut harness, "the cook", Editor::has_cook);
 

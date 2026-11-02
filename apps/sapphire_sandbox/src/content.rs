@@ -1959,9 +1959,9 @@ mod tests {
             for _ in 0..1000 {
                 stage.frame();
                 let changes = stage.content.take_changes();
-                followed |= changes.iter().any(|change| {
-                    matches!(change, AssetChange::Reloaded { kind: AssetKind::MoveSet, .. })
-                });
+                followed |= changes
+                    .iter()
+                    .any(|change| matches!(change, AssetChange::Reloaded { kind: AssetKind::MoveSet, .. }));
                 let fight = crate::tuning::Fight { combat: None, scene: &mut stage.scene };
                 assert_eq!(tuning.follow_packs(&changes, &stage.content, fight), Vec::<String>::new());
                 if followed {
@@ -2003,7 +2003,9 @@ mod tests {
         let driver = lookdev::graph_driver(&stage.content).expect("a driver");
         stage.scene.pose_as_fighter(driver);
         let Stage { scene, content, renderer, gpu, .. } = &mut stage;
-        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("a fighter plays a graph");
+        scene
+            .replace_graph_document(swing_graph(4), content, renderer, gpu)
+            .expect("a fighter plays a graph");
         assert!(scene.graph_player().expect("playing").has_replacement());
         assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
     }

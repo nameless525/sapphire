@@ -376,7 +376,8 @@ impl LiveTuning {
     fn newest_of(&self, document: &str, cooked: MoveSet) -> MoveSet {
         let modified = |path: &&PathBuf| std::fs::metadata(path).and_then(|file| file.modified()).ok();
         let named = self.files.iter().filter(|path| path.file_name().is_some_and(|name| name == document));
-        let Some(text) = named.max_by_key(modified).and_then(|path| std::fs::read_to_string(path).ok()) else {
+        let Some(text) = named.max_by_key(modified).and_then(|path| std::fs::read_to_string(path).ok())
+        else {
             return cooked;
         };
         compile_document(&text, Some(&cooked)).map_or(cooked, |live| live.set)

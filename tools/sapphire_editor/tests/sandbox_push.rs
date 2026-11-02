@@ -260,9 +260,9 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
         sandbox.until(&mut editor, PATIENCE, "the newest revision", |editor| light_at(editor, 2));
     assert_eq!(again.hit_windows[0].to, 9);
 
-    // A file no fight here plays is the device's to refuse, and it says so: this is what pushing the player's
-    // moves gets until a fight plays them. The name goes to the same device, from a second editor.
-    let other = temp.0.join("player.moves.ron");
+    // A file no scenario lists is the device's to refuse, and it says so. The name goes to the same device, from a
+    // second editor.
+    let other = temp.0.join("nobody.moves.ron");
     fs::write(&other, PLAYER).expect("writes");
     let mut second = Editor::new(Options {
         file: Some(other),
@@ -280,7 +280,7 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
             None => None,
         });
     let said = &refusals[0].message;
-    assert!(said.contains("player.moves.ron"), "{said}");
+    assert!(said.contains("nobody.moves.ron"), "{said}");
     assert!(second.problems().iter().any(|problem| problem.from_device), "{:?}", second.problems());
 
     drop(second);

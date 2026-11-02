@@ -412,6 +412,17 @@ impl CombatHud {
         self.damage[slot] = Some(DamageNumber { value, kind, position, born: self.now });
     }
 
+    /// Someone else came in for a fighter, `[player, enemy]`: what they have isn't what the last one
+    /// lost, so that fighter's trail starts over from what it next reads, and a swap never reads as a hit.
+    pub fn fighters_came_in(&mut self, [player, enemy]: [bool; 2]) {
+        if player {
+            self.player_trail = Trail::default();
+        }
+        if enemy {
+            self.enemy_trail = Trail::default();
+        }
+    }
+
     /// Takes every damage number off at once: the fight they came from is over.
     pub fn clear_damage(&mut self) {
         self.damage = [None; MAX_DAMAGE_NUMBERS];

@@ -172,6 +172,11 @@ impl SandboxHud {
         }
     }
 
+    /// Someone else came in for a fighter, `[player, enemy]`.
+    pub fn fighters_came_in(&mut self, came_in: [bool; 2]) {
+        self.hud.fighters_came_in(came_in);
+    }
+
     /// Whether the frame says the fight is waiting.
     pub fn show_pause(&mut self, shown: bool) {
         self.hud.show_pause(shown);

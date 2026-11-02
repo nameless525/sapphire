@@ -1645,7 +1645,10 @@ impl Scene {
         self.follow_slow_motion(simulation);
         if let Some(arena) = &mut self.arena {
             let fought = arena.fight_time();
-            arena.follow(simulation, cast);
+            let came_in = arena.follow(simulation, cast);
+            if let Some(hud) = &mut self.hud {
+                hud.fighters_came_in(came_in);
+            }
             // A clock that went back is a new fight, and everything stands somewhere else: the frame
             // draws nothing of the last one. A party's swap needs none of this, since who comes in
             // stands where the one who left stood, and the camera goes on.
@@ -2730,6 +2733,71 @@ mod tests {
 
     /// A pause holds what's on screen, a shake mid-swing and the director's springs among it, however
     /// long it lasts, and the shake plays on from there when it ends.
+    /// A real party fight, by the script that swaps back to someone hurt: the bar shows a loss for a hit,
+    /// and none for a swap to someone with less.
+    #[test]
+    fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
+        use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
+        use sapphire_gameplay::{ActorActions, ActorId, Buttons};
+        use sapphire_math::Vec2;
+        use sapphire_ui::{HudLayout, Insets, UiMetrics};
+
+        use crate::hud::{HudMode, HudOptions};
+
+        let target = (1280, 720);
+        let bar = HudLayout::new(UiMetrics::of_pixels(target, 1.0, Insets::default())).player.hp;
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        scene.set_hud(SandboxHud::for_fight(live));
+        let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
+        let mut fight = Recording::new(party, party.config).expect("sets up");
+        let cast = fight.cast().to_vec();
+        // Its schedule goes round to the first again, and pressing on brings back those the warrior hurt.
+        let script = find_script("party-swap").expect("listed").actions;
+        let mut source = |tick: u64, cast: &[ActorId]| {
+            let mut actions = script(tick, cast);
+            if tick >= 352 && tick.is_multiple_of(2) {
+                let swap = ActorActions { buttons: Buttons::SWAP, ..ActorActions::NEUTRAL };
+                actions.set(cast[0], swap).expect("one actor fits a tick");
+            }
+            actions
+        };
+        let mut on_field = cast[0];
+        let (mut swaps_down, mut losses) = (0, 0);
+        for _ in 0..1200 {
+            fight.step(&mut source).expect("short");
+            let sim = fight.simulation();
+            scene.follow_simulation(sim, &cast);
+            let quads = &scene.frame_packet(1.0, Some(target)).ui.quads;
+            // What the bar shows lost: a range that starts past its left end, on the bar itself.
+            let lost = quads
+                .iter()
+                .filter(|quad| {
+                    let center =
+                        Vec2::from(quad.origin) + (Vec2::from(quad.axis_x) + Vec2::from(quad.axis_y)) * 0.5;
+                    quad.clip[0] > 0.0 && (center - bar.center()).length() < 1e-2
+                })
+                .count();
+            scene.end_frame();
+
+            let share = |id| {
+                let fighter = sim.actor(id).expect("in the party").fighter;
+                fighter.health() as f32 / fighter.max_health() as f32
+            };
+            let now = sim.party().on_field(cast[0]);
+            if now != on_field {
+                if share(now) < share(on_field) {
+                    swaps_down += 1;
+                    assert_eq!(lost, 0, "tick {}: a swap to someone with less", sim.tick());
+                }
+                on_field = now;
+            }
+            losses += lost;
+        }
+        assert!(swaps_down > 0, "the script swaps to someone hurt");
+        assert!(losses > 0, "and the bar does show a hit");
+    }
+
     /// The HUD says a fight is waiting for as long as it is, on a phone as on a desktop, and a capture
     /// can ask for the same.
     #[test]

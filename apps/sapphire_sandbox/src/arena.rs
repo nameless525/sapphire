@@ -552,9 +552,11 @@ impl ArenaActors {
 
     /// Takes the fixed step's roots from `simulation`, after each of its steps. `cast` is the
     /// scenario's, the player first. A tick that went back is a new fight, which stands where it stands
-    /// with the camera cut to it, rather than sliding back across the square.
-    pub fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) {
+    /// with the camera cut to it, rather than sliding back across the square. Returns whether someone else
+    /// came in for each of the two.
+    pub fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
+        let mut came_in = [false; 2];
         let tick = simulation.tick();
         let started_over = tick < self.tick;
         self.tick = tick;
@@ -563,6 +565,7 @@ impl ArenaActors {
             let actor = simulation.actor(simulation.party().on_field(*id));
             // Someone else came in: what's drawn starts on them, with no blend from who left.
             let swapped = self.seen[index].zip(actor).is_some_and(|(seen, actor)| seen.id != actor.id);
+            came_in[index] = swapped;
             self.seen[index] = actor;
             let Some(actor) = actor else { continue };
             let signals = &mut self.signals[index];
@@ -591,6 +594,7 @@ impl ArenaActors {
         if pressed {
             self.set_lock_on(!self.locked_on);
         }
+        came_in
     }
 
     /// Who the player's soft lock has at this frame: [`choose_target`], from where the player stands and

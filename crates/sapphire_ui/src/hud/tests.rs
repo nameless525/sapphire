@@ -283,6 +283,48 @@ fn a_pause_lays_a_veil_over_the_frame_and_a_mark_in_its_middle() {
     }
 }
 
+/// Who came in has less than who left, and no hit landed: no segment of health shows as lost, on their
+/// bar alone. The same drop without a swap is a hit, and shows.
+#[test]
+fn someone_coming_in_with_less_shows_no_loss() {
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+    let mut controls = TouchControls::new(layout);
+    let mut hud = CombatHud::new();
+    let actions = controls.update(ms(0));
+    let fighters = |player: f32, enemy: f32| HudValues {
+        player: FighterValues { hp: player, ..FighterValues::default() },
+        enemy: Some(FighterValues { hp: enemy, ..FighterValues::default() }),
+        ..HudValues::default()
+    };
+    let losses = |hud: &CombatHud| {
+        let mut list = UiDrawList::default();
+        hud.draw(&layout, actions, &mut list);
+        let shown = |quad: &&UiQuad| quad.color == EMBER;
+        list.quads.iter().filter(shown).count()
+    };
+    hud.update(ms(0), &fighters(0.9, 0.8), actions);
+    assert_eq!(losses(&hud), 0);
+    hud.update(ms(16), &fighters(0.5, 0.8), actions);
+    assert_eq!(losses(&hud), 1, "a hit shows");
+
+    hud.fighters_came_in([true, false]);
+    hud.update(ms(32), &fighters(0.3, 0.8), actions);
+    assert_eq!(losses(&hud), 0, "nobody hit whoever came in, and the last one's loss went with them");
+    hud.update(ms(48), &fighters(0.2, 0.8), actions);
+    assert_eq!(losses(&hud), 1, "their first hit shows");
+
+    // Each fighter's own: the enemy's loss stands through the player's swap, and goes with its own.
+    hud.fighters_came_in([true, false]);
+    hud.update(ms(64), &fighters(0.2, 0.6), actions);
+    assert_eq!(losses(&hud), 1, "the enemy's hit, alone");
+    hud.fighters_came_in([true, false]);
+    hud.update(ms(80), &fighters(0.2, 0.6), actions);
+    assert_eq!(losses(&hud), 1, "the enemy's trail doesn't start over with the player's");
+    hud.fighters_came_in([false, true]);
+    hud.update(ms(96), &fighters(0.2, 0.4), actions);
+    assert_eq!(losses(&hud), 0, "its own does");
+}
+
 #[test]
 fn the_trailing_segment_holds_then_catches_up_on_the_real_clock() {
     let mut trail = Trail::default();

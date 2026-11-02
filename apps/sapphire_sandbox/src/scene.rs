@@ -392,7 +392,7 @@ pub(crate) struct Scene {
     /// The character's blade, with `--blade on`.
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
-    arena: Option<ArenaActors>,
+    arena: Option<Box<ArenaActors>>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
     view_cut: bool,
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
@@ -409,7 +409,7 @@ pub(crate) struct Scene {
     players: Players,
     /// The simulation a graph plays from (`--graph`, [`Self::play_graph`]). A scene without one does
     /// no graph work at all, not even a query.
-    graph_show: Option<GraphShow>,
+    graph_show: Option<Box<GraphShow>>,
     /// Made once, like the others.
     graph_players: GraphPlayers,
     /// What animation did in the last frame (rule R9).
@@ -1209,14 +1209,14 @@ impl Scene {
         let pose = driver.render_pose();
         character.remove::<Turntable>();
         character.insert((driver, pose, figure));
-        self.graph_show = Some(show);
+        self.graph_show = Some(Box::new(show));
         self.extract_poses();
     }
 
     /// The simulation a graph plays from, with `--graph`.
     #[cfg(feature = "dev")]
     pub fn graph_show(&self) -> Option<&GraphShow> {
-        self.graph_show.as_ref()
+        self.graph_show.as_deref()
     }
 
     /// Gives the graph show a live edit of the document with this file name, if it plays that (M2 T2).
@@ -1236,7 +1236,7 @@ impl Scene {
     #[cfg(feature = "dev")]
     pub fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
         tuning.validate().map_err(|error| error.to_string())?;
-        let director = self.arena.as_ref().is_some_and(ArenaActors::has_director);
+        let director = self.arena.as_deref().is_some_and(ArenaActors::has_director);
         if !director && self.cues.is_none() {
             return Err(match self.arena {
                 Some(_) => "this shot has no camera director: `--arena-shot director` has one",
@@ -1597,7 +1597,7 @@ impl Scene {
         self.spawn_enemy(enemy, held);
         let (warrior, blade) = self.enemy.expect("it just stood there");
         let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
-        self.arena = Some(ArenaActors::new(self.character, enemy, shot, ground));
+        self.arena = Some(Box::new(ArenaActors::new(self.character, enemy, shot, ground)));
     }
 
     /// Poses the arena's fighters by these graphs from now on, from what the simulation says of them
@@ -1645,7 +1645,7 @@ impl Scene {
 
     /// Where the view looks across the ground, as an actor's yaw: what the next tick's stick turns by.
     pub fn camera_heading(&self) -> f32 {
-        self.arena.as_ref().and_then(ArenaActors::heading).unwrap_or_else(|| self.camera().heading())
+        self.arena.as_deref().and_then(ArenaActors::heading).unwrap_or_else(|| self.camera().heading())
     }
 
     /// The town, its plants and its far mountains around the character, its fog cards and lamps, on
@@ -2373,6 +2373,15 @@ mod tests {
 
     fn scene() -> Scene {
         Scene::new(BOUNDS, false)
+    }
+
+    /// A scene moves by value through the app's startup on the main thread, which has 1 MiB on iOS,
+    /// as a renderer does (`a_renderer_is_small_enough_to_move_on_the_main_thread`). What only some
+    /// runs use is boxed: box the next one rather than raise this.
+    #[test]
+    fn a_scene_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<Scene>();
+        assert!(size <= 12 * 1024, "a scene takes {size} bytes");
     }
 
     fn angle(scene: &Scene) -> f32 {

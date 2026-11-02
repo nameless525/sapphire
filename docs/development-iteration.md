@@ -182,6 +182,12 @@ time for 13.6 additional runner-minutes. Additional Linux shards do not reduce t
 path. Each family still covers every scene exactly once. This is a scheduling projection; runner
 speed, cache state and queuing vary, so validate it against complete hosted runs.
 
+## Stack use
+
+A release build's inlining decides what a frame holds, so read a release binary's prologues on arm64: `otool -tv target/release/sapphire_sandbox` shows `sub sp, sp, #N` for a small frame and, for a large one, `sub x9, sp, #N, lsl #12` with a probing loop after it. Add the frames down a call chain. Then `RUSTC_BOOTSTRAP=1 CARGO_TARGET_DIR=target/typesizes cargo rustc -p sapphire_render --lib --locked -- -Zprint-type-sizes` lists every type's size and fields; it rebuilds everything, so it gets a target directory of its own, to delete afterwards.
+
+From `main` to the first pipeline, on an M5, a `--capture` run holds about 190 KiB (`OffscreenApp::init`, `Stage::new`, `Renderer::new`, the `join` of its closures), and the windowed app about 250 KiB (`app_init`, `SandboxApp::init`, `create_renderer`, then the same two). iOS's main thread has 1 MiB, and the driver's pipeline creation runs below that.
+
 ## Measurements
 
 Controlled local measurements use Rust 1.99.0 on an Apple M5, four Cargo build jobs, isolated target

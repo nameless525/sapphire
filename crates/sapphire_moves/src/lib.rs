@@ -17,8 +17,9 @@
 //! Plain data with no renderer, world or ECS behind it, so the cooker and a replay job can both link
 //! it.
 //!
-//! Doesn't own: running moves or applying hits (`sapphire_gameplay`), sampling a clip into these tables
-//! (the pipeline's clip cook, M2 N1), or testing hit volumes against anything (M2 D4).
+//! Doesn't own: running moves or applying hits (`sapphire_gameplay`), reading a clip and baking these
+//! tables from it (the pipeline's `moves` module, M2 N1), or testing hit volumes against anything (M2
+//! D4).
 //!
 //! # The document
 //!
@@ -56,7 +57,7 @@
 //!             startup: 4,
 //!             active: 2,
 //!             recovery: 14,
-//!             // Hand-keyed tables. A cook from clips leaves this out.
+//!             // Hand-keyed tables. "From a clip" below is the other way.
 //!             motion: (
 //!                 root: [(at: 6, offset: (0.0, 0.0, 0.5))],
 //!                 paths: [(name: "fist", keys: [(at: 0, offset: (0.2, 1.2, 0.5))])],
@@ -98,6 +99,52 @@
 //! assert_eq!(set.moves()[0].ticks(), 20);
 //! ```
 //!
+//! # From a clip
+//!
+//! A move plays a clip by naming it in `motion`, in place of keys, and says which of its joints the
+//! hit paths follow. A cook bakes the tables, and the simulation reads them as it does hand keys: it
+//! never sees the clip.
+//!
+//! ```ron
+//! (
+//!     name: "strike",
+//!     // These add up to the clip's length. Anything else is an error, saying both.
+//!     startup: 14,
+//!     active: 6,
+//!     recovery: 40,
+//!     motion: (
+//!         clip: (
+//!             // The sidecar ID of a key-pose document: `strike.keypose.ron`.
+//!             source: "15af86bb-67b3-4208-bc54-1618aabf450b",
+//!             paths: [
+//!                 // A humanoid bone, with the blade's tip 90 cm along its +Z.
+//!                 (name: "blade", follows: Bone("RightHand"), offset: (0.0, 0.0, 0.9)),
+//!             ],
+//!         ),
+//!     ),
+//!     hitboxes: [(name: "strike_hit", from: 14, to: 20, path: "blade", shape: Sphere(radius: 0.3))],
+//! )
+//! ```
+//!
+//! - **Which clip:** `source` is a sidecar ID. A key-pose document is one clip per rig it cooks for:
+//!   its sidecar's `rig` unless `rig` here names one of its `also`. An animation source also takes
+//!   `name`, the clip's name in the file, and `rig` if the clip is one its sidecar retargets:
+//!   `(source: "<KayKit file>", name: "Dodge_Forward", rig: "<the character>")`. The sidecar has to
+//!   cook that clip: this names it, and doesn't ask for it.
+//! - **Root motion:** the clip's own root track, or `root: InPlace` for none. Root keys in `motion`
+//!   replace it, for an in-place clip that lunges by hand. To lift a bone a clip moves, lift it in the
+//!   clip's sidecar (`root_motion`), so the pose on screen loses what the table gains.
+//! - **Paths:** `Bone("RightHand")` is a humanoid bone, as a key-pose document spells it, so one
+//!   document fits any rig with a map; `Joint("handslot.r")` is a joint by its name. `offset` (metres)
+//!   and `rotation` make either a socket, along the joint's own axes and unscaled. Hand-keyed `paths`
+//!   sit beside them.
+//! - **One tick of a move is one tick of its clip.** Nothing retimes a clip: presentation plays it at
+//!   the move's elapsed ticks, so a hit lands where the blade is drawn only if both read the same
+//!   tick. A change of frame data that changes a move's length changes its clip too, and until they
+//!   agree the cook says so. Windows inside the move move freely, as they read the same table.
+//! - **What a path can't follow:** a joint a rig's constraint drives, or one below such a joint. The
+//!   table has no constraints in it and the pose on screen does, so they'd disagree.
+//!
 //! # One document, one set of bytes
 //!
 //! A document cooks to the same bytes on every architecture, because one replay file holds one hash
@@ -105,6 +152,8 @@
 //! `sapphire_math::det`, never through glam's SIMD types, whose last bit differs between NEON and
 //! SSE2. This crate's `clippy.toml` bans the methods that differ, and
 //! `sapphire_gameplay`'s `the_test_contents_hash_is_the_same_on_every_architecture` pins the result.
+//! So does the cook of a move from a clip, by the same rule, from the clip's source on: see the
+//! pipeline's `moves` module.
 //!
 //! # How a track meets a clock
 //!
@@ -170,10 +219,10 @@ mod document;
 mod set;
 
 pub use document::{
-    AllowDocument, ArmourDocument, AttackDocument, CancelDocument, CueDocument, FighterDocument,
-    FighterHurtboxDocument, HitboxDocument, HurtboxDocument, IntentDocument, Issue, MotionDocument,
-    MoveDocument, MoveSetDocument, PathDocument, PathKey, ReactionsDocument, RootKey, SpanDocument,
-    WarpDocument,
+    AllowDocument, ArmourDocument, AttackDocument, CancelDocument, ClipMotionDocument, ClipPathDocument,
+    CueDocument, FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument,
+    IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey,
+    ReactionsDocument, RootKey, RootSource, SpanDocument, WarpDocument,
 };
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, Cue, FighterDef,

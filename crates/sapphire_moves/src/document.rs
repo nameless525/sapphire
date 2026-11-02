@@ -144,8 +144,7 @@ pub struct MoveDocument {
     pub startup: u32,
     pub active: u32,
     pub recovery: u32,
-    /// Root motion and hit paths, keyed by hand. A move whose tables come from a clip leaves this
-    /// out, and the cook hands [`MoveSetDocument::compile_with`] what it baked.
+    /// Root motion and hit paths, keyed by hand, from a clip, or from a clip with keys beside it.
     #[serde(default, skip_serializing_if = "MotionDocument::is_empty")]
     pub motion: MotionDocument,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -264,11 +263,21 @@ pub struct CueDocument {
     pub at: u32,
 }
 
-/// Motion keyed by hand: what stands in for a baked clip, and all a move may need. Values blend
-/// linearly between keys and hold past the last. The root starts at zero whether or not a key says
-/// so.
+/// What a move's tables hold: see the [crate docs](crate).
+///
+/// Keys are by hand, and may be all a move needs. Values blend linearly between them and hold past
+/// the last, and the root starts at zero whether or not a key says so. A move with a [`clip`] bakes
+/// from it at cook time, and its keys still mean what they say: [`root`]'s replace the clip's root
+/// motion, and [`paths`] sit beside those that follow the clip's bones.
+///
+/// [`clip`]: Self::clip
+/// [`root`]: Self::root
+/// [`paths`]: Self::paths
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MotionDocument {
+    /// The clip this move plays, and what its tables take from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<ClipMotionDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub root: Vec<RootKey>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -277,8 +286,73 @@ pub struct MotionDocument {
 
 impl MotionDocument {
     fn is_empty(&self) -> bool {
-        self.root.is_empty() && self.paths.is_empty()
+        self.clip.is_none() && self.root.is_empty() && self.paths.is_empty()
     }
+}
+
+/// A move's motion from a clip. See the [crate docs](crate)' "From a clip".
+///
+/// `source`, `name` and `rig` say which clip by what a person can read, as a sidecar names it, rather
+/// than by the ID a cook derives from them. They are text here because this crate knows nothing of
+/// assets: the cook reads them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipMotionDocument {
+    /// The sidecar ID of a key-pose document or an animation source.
+    pub source: String,
+    /// Which of an animation source's clips. A key-pose document is one clip, and names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The sidecar ID of the rig it plays on: a retarget's `target`, or one of a key-pose document's
+    /// rigs. Unset, a key-pose document's `rig` and an animation source's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rig: Option<String>,
+    /// Where root motion comes from, when the move has no root keys.
+    #[serde(default, skip_serializing_if = "RootSource::is_clip")]
+    pub root: RootSource,
+    /// Named paths that follow the clip's joints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<ClipPathDocument>,
+}
+
+/// Where a move with a clip takes its root motion from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RootSource {
+    /// The clip's root track: what its sidecar lifted, or a key-pose document's `root` and
+    /// `root_turn`. None at all if it has no such track.
+    #[default]
+    Clip,
+    /// None: the clip plays where the character stands, whatever its track says.
+    InPlace,
+}
+
+impl RootSource {
+    fn is_clip(&self) -> bool {
+        *self == Self::Clip
+    }
+}
+
+/// A named hit path along a joint of the clip's skeleton: a socket, with an offset. See [`BakedPath`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipPathDocument {
+    pub name: String,
+    pub follows: Follows,
+    /// Metres from the joint, along its own axes, unscaled.
+    #[serde(default)]
+    pub offset: [f32; 3],
+    /// A unit rotation from the joint, as x, y, z, w.
+    #[serde(default = "identity", skip_serializing_if = "is_identity")]
+    pub rotation: [f32; 4],
+}
+
+/// What a clip's path follows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Follows {
+    /// A humanoid bone, as a key-pose document spells it (`RightHand`), whichever joint the rig's
+    /// map says it is, so a document fits any rig with a map.
+    Bone(String),
+    /// A joint of the skeleton by its name, for a rig with no map, or what no bone names: a weapon's
+    /// slot.
+    Joint(String),
 }
 
 /// The root at one tick. See [`RootSample`].
@@ -314,6 +388,10 @@ pub struct PathKey {
 
 const fn identity() -> [f32; 4] {
     PathSample::IDENTITY.rotation
+}
+
+fn is_identity(rotation: &[f32; 4]) -> bool {
+    *rotation == identity()
 }
 
 /// How far a keyed rotation may be from unit length, as `BakedTables` holds a sample to.
@@ -559,6 +637,12 @@ impl Checker {
         if self.issues.len() != before {
             return None;
         }
+        if let Some(clip) = &motion.clip {
+            self.clip(clip, motion);
+            if self.issues.len() != before {
+                return None;
+            }
+        }
         let root = (0..=ticks).map(|tick| keyed_root(&motion.root, tick)).collect();
         let paths = motion
             .paths
@@ -569,6 +653,71 @@ impl Checker {
             })
             .collect();
         match BakedTables::new(root, paths) {
+            Ok(tables) => Some(tables),
+            Err(error) => {
+                self.add("motion", error.to_string());
+                None
+            }
+        }
+    }
+}
+
+impl Checker {
+    /// Checks a clip's block of a move: everything but what only its cook can read.
+    fn clip(&mut self, clip: &ClipMotionDocument, motion: &MotionDocument) {
+        if clip.source.is_empty() {
+            self.add("motion", "the clip's `source` is empty".to_owned());
+        }
+        if clip.root == RootSource::InPlace && !motion.root.is_empty() {
+            self.add(
+                "motion",
+                "the clip's `root` says `InPlace` and the move has root keys: say one or the other"
+                    .to_owned(),
+            );
+        }
+        let mut seen: BTreeSet<&str> = motion.paths.iter().map(|path| path.name.as_str()).collect();
+        for path in &clip.paths {
+            self.named("motion", &path.name);
+            if !seen.insert(path.name.as_str()) {
+                self.add("motion", format!("path `{}` appears twice", path.name));
+            }
+            let (Follows::Bone(joint) | Follows::Joint(joint)) = &path.follows;
+            if joint.is_empty() {
+                self.add("motion", format!("path `{}` follows a joint with no name", path.name));
+            }
+            if !path.offset.iter().chain(&path.rotation).all(|value| value.is_finite()) {
+                self.add("motion", format!("path `{}` isn't finite", path.name));
+            }
+            let length_squared: f32 = path.rotation.iter().map(|value| value * value).sum();
+            if (length_squared - 1.0).abs() > UNIT_TOLERANCE {
+                self.add("motion", format!("path `{}` doesn't have a unit rotation", path.name));
+            }
+        }
+    }
+
+    /// `keyed`, what a move's keys bake to, with `baked`, what its clip did, under it: the clip's
+    /// length must be the move's, since a move plays its clip tick for tick. See the [crate
+    /// docs](crate).
+    fn with_clip(
+        &mut self,
+        baked: BakedTables,
+        keyed: &BakedTables,
+        motion: &MotionDocument,
+    ) -> Option<BakedTables> {
+        let (clip_ticks, ticks) = (baked.ticks(), keyed.ticks());
+        if clip_ticks != ticks {
+            self.add(
+                "motion",
+                format!(
+                    "the clip is {clip_ticks} ticks long and the phases add up to {ticks}: a move plays its \
+                     clip tick for tick, so they must agree"
+                ),
+            );
+            return None;
+        }
+        let tables = if motion.root.is_empty() { baked.root_samples() } else { keyed.root_samples() };
+        let paths = baked.paths().iter().chain(keyed.paths()).cloned().collect();
+        match BakedTables::new(tables.to_vec(), paths) {
             Ok(tables) => Some(tables),
             Err(error) => {
                 self.add("motion", error.to_string());
@@ -629,6 +778,14 @@ fn normalized(rotation: [f32; 4]) -> [f32; 4] {
     det::quat_normalize(Quat::from_array(rotation)).to_array()
 }
 
+impl MoveDocument {
+    /// Its length: its three phases, end to end.
+    #[must_use]
+    pub fn ticks(&self) -> u32 {
+        self.startup.saturating_add(self.active).saturating_add(self.recovery)
+    }
+}
+
 impl MoveSetDocument {
     /// Reads a document, with RON's errors pointing at the line.
     pub fn parse(text: &str) -> Result<Self, MoveSetError> {
@@ -641,28 +798,45 @@ impl MoveSetDocument {
         sapphire_serialize::to_ron(self).map_err(|error| MoveSetError::Document(Box::new(error)))
     }
 
-    /// Everything wrong with this document, with each move's tables baked from its keys.
+    /// Everything wrong with this document that it can say by itself: what only a cook can read of a
+    /// clip stands in as a table with no motion on the clip's named paths, of the move's own length.
     #[must_use]
     pub fn check(&self) -> Vec<Issue> {
-        match self.compile() {
+        let stand_in = |mv: &MoveDocument| {
+            let Some(clip) = &mv.motion.clip else { return Ok(None) };
+            let samples = mv.ticks() as usize + 1;
+            let path = |path: &ClipPathDocument| {
+                BakedPath::new(Name::intern(&path.name), vec![PathSample::IDENTITY; samples])
+            };
+            BakedTables::new(vec![RootSample::ZERO; samples], clip.paths.iter().map(path).collect())
+                .map(Some)
+                .map_err(|error| error.to_string())
+        };
+        match self.compile_with(stand_in) {
             Ok(_) => Vec::new(),
             Err(MoveSetError::Invalid(issues)) => issues,
             Err(error) => vec![Issue { in_move: None, track: "moves", message: error.to_string() }],
         }
     }
 
-    /// Checks this document and resolves its names, with each move's tables baked from its keys.
+    /// Checks this document and resolves its names, with each move's tables baked from its keys. A
+    /// move that names a clip is an issue here: only a cook can read one, and it comes through
+    /// [`Self::compile_with`].
     pub fn compile(&self) -> Result<MoveSet, MoveSetError> {
-        self.compile_with(|_| None)
+        self.compile_with(|_| Ok(None))
     }
 
     /// [`Self::compile`], asking `tables` for each move's tables first: a cook that bakes them from
-    /// a clip, or a test with a fixture. A move it answers `None` for bakes from its keys. Wherever
-    /// tables come from, the hit paths named must be in them, and they must have the same bits on
-    /// every architecture: see the [crate docs](crate).
+    /// a clip, or a test with a fixture. A move it answers `Ok(None)` for bakes from its keys, and an
+    /// `Err` is an issue on that move's `motion`, reported with the rest.
+    ///
+    /// Tables for a move with a clip are what its clip gives, the clip's own length: this checks that
+    /// against the move's phases and lays the move's keys over it. Tables for any other move stand in
+    /// for its keys whole. Wherever tables come from, the hit paths named must be in them, and they
+    /// must have the same bits on every architecture: see the [crate docs](crate).
     pub fn compile_with(
         &self,
-        mut tables: impl FnMut(&MoveDocument) -> Option<BakedTables>,
+        mut tables: impl FnMut(&MoveDocument) -> Result<Option<BakedTables>, String>,
     ) -> Result<MoveSet, MoveSetError> {
         let mut check = Checker { issues: Vec::new(), in_move: None };
 
@@ -697,7 +871,7 @@ impl MoveSetDocument {
             if !names.insert(mv.name.as_str()) {
                 check.add("name", "two moves have this name".to_owned());
             }
-            let ticks = mv.startup.saturating_add(mv.active).saturating_add(mv.recovery);
+            let ticks = mv.ticks();
             if ticks == 0 {
                 check.add("phases", "startup, active and recovery add up to no ticks".to_owned());
             } else if ticks > MAX_MOVE_TICKS {
@@ -728,17 +902,47 @@ struct Known<'a> {
     fighter: Option<&'a FighterDocument>,
 }
 
+/// A move's tables, whichever way they come.
+fn compile_motion(
+    mv: &MoveDocument,
+    ticks: u32,
+    check: &mut Checker,
+    tables: &mut impl FnMut(&MoveDocument) -> Result<Option<BakedTables>, String>,
+) -> Option<BakedTables> {
+    let motion = &mv.motion;
+    if motion.clip.is_none() {
+        return match tables(mv) {
+            Ok(Some(tables)) => Some(tables),
+            Ok(None) => check.motion(motion, ticks),
+            Err(message) => {
+                check.add("motion", message);
+                None
+            }
+        };
+    }
+    // A clip's block and the keys beside it are checked before a cook is asked for anything.
+    let keyed = check.motion(motion, ticks)?;
+    match tables(mv) {
+        Ok(Some(baked)) => check.with_clip(baked, &keyed, motion),
+        Ok(None) => {
+            check.add("motion", "this names a clip, which only a cook can bake".to_owned());
+            None
+        }
+        Err(message) => {
+            check.add("motion", message);
+            None
+        }
+    }
+}
+
 fn compile_move(
     mv: &MoveDocument,
     ticks: u32,
     known: &Known<'_>,
     check: &mut Checker,
-    tables: &mut impl FnMut(&MoveDocument) -> Option<BakedTables>,
+    tables: &mut impl FnMut(&MoveDocument) -> Result<Option<BakedTables>, String>,
 ) -> Option<crate::set::Move> {
-    let tables = match tables(mv) {
-        Some(tables) => Some(tables),
-        None => check.motion(&mv.motion, ticks),
-    };
+    let tables = compile_motion(mv, ticks, check, tables);
 
     let mut hitboxes = Vec::with_capacity(mv.hitboxes.len());
     for hitbox in &mv.hitboxes {
@@ -1405,6 +1609,7 @@ mod tests {
     #[test]
     fn keys_blend_linearly_and_hold_past_the_last() {
         let motion = MotionDocument {
+            clip: None,
             root: vec![
                 RootKey { at: 2, offset: [0.0, 0.0, 1.0], yaw: 0.5 },
                 RootKey { at: 4, offset: [0.0, 0.0, 2.0], yaw: 0.5 },
@@ -1436,16 +1641,213 @@ mod tests {
         let set = slice()
             .compile_with(|mv| {
                 asked.push(mv.name.clone());
-                Some(table.clone())
+                Ok(Some(table.clone()))
             })
             .expect("every hit rides `blade` or `fist`, which this table has");
         assert_eq!(asked.len(), slice().moves.len());
         assert_eq!(set.moves()[0].tables, table, "shorter than the move: its readings hold the last");
 
         let no_path = BakedTables::new(vec![RootSample::ZERO; 3], vec![]).unwrap();
-        let issues = slice().compile_with(|_| Some(no_path.clone()));
+        let issues = slice().compile_with(|_| Ok(Some(no_path.clone())));
         let Err(MoveSetError::Invalid(issues)) = issues else { panic!("compiled") };
         assert!(issues.iter().any(|issue| issue.track == "hitboxes" && issue.message.contains("`blade`")));
+    }
+
+    /// A set of one move from a clip, 10 ticks long, on which each test edits what it's about.
+    fn from_a_clip() -> MoveSetDocument {
+        MoveSetDocument::parse(
+            r#"(
+                type: "sapphire::moves::MoveSetDocument",
+                version: 1,
+                data: (
+                    intents: [(name: "light", button: Light, buffer: 12)],
+                    neutral: [(intent: "light", move: "swing")],
+                    moves: [(
+                        name: "swing",
+                        startup: 2,
+                        active: 3,
+                        recovery: 5,
+                        motion: (
+                            clip: (
+                                source: "15af86bb-67b3-4208-bc54-1618aabf450b",
+                                paths: [(name: "blade", follows: Bone("RightHand"), offset: (0.0, 0.0, 0.9))],
+                            ),
+                            paths: [(name: "shockwave", keys: [(at: 0, offset: (0.0, 0.5, 1.0))])],
+                        ),
+                        hitboxes: [
+                            (name: "swing_hit", from: 2, to: 5, path: "blade", shape: Sphere(radius: 0.3)),
+                            (name: "wave_hit", from: 2, to: 3, path: "shockwave", shape: Sphere(radius: 0.5)),
+                        ],
+                    )],
+                ),
+            )"#,
+        )
+        .expect("parses")
+    }
+
+    /// What a cook's bake answers: the clip's own root motion, and its named path.
+    fn baked(ticks: usize) -> BakedTables {
+        let root = (0..=ticks)
+            .map(|tick| RootSample { translation: [0.0, 0.0, tick as f32 * 0.1], yaw: 0.0 })
+            .collect();
+        let sample = PathSample { translation: [0.1, 1.0, 0.2], rotation: identity() };
+        BakedTables::new(root, vec![BakedPath::new(Name::new("blade"), vec![sample; ticks + 1])]).unwrap()
+    }
+
+    fn issues_of(document: &MoveSetDocument, tables: BakedTables) -> String {
+        let Err(MoveSetError::Invalid(issues)) = document.compile_with(|_| Ok(Some(tables.clone()))) else {
+            panic!("compiled");
+        };
+        issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_clips_block_round_trips_through_its_text_leaving_defaults_out() {
+        let document = from_a_clip();
+        let text = document.to_text().unwrap();
+        assert_eq!(MoveSetDocument::parse(&text).unwrap(), document);
+        // Its hand-keyed path comes after the block, and a key says its rotation in full.
+        let (block, _) = text.split_once("shockwave").unwrap();
+        for quiet in ["rig:", "root: Clip", "rotation:", "name: None"] {
+            assert!(!block.contains(quiet), "{quiet} is the default:\n{block}");
+        }
+        let clip = document.moves[0].motion.clip.as_ref().unwrap();
+        assert_eq!(clip.root, RootSource::Clip);
+        assert_eq!(clip.paths[0].rotation, identity());
+        assert_eq!(clip.paths[0].follows, Follows::Bone("RightHand".to_owned()));
+    }
+
+    /// A document with no cook behind it can check everything but what only a cook can read, and can't
+    /// compile.
+    #[test]
+    fn a_clip_is_checked_without_a_cook_and_compiled_only_with_one() {
+        assert_eq!(from_a_clip().check(), []);
+
+        let mut wrong_path = from_a_clip();
+        wrong_path.moves[0].hitboxes[0].path = "ghost".to_owned();
+        let issues = wrong_path.check();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].message.contains("`ghost`"), "{}", issues[0]);
+
+        let Err(MoveSetError::Invalid(issues)) = from_a_clip().compile() else { panic!("compiled") };
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].track, "motion");
+        assert!(issues[0].to_string().contains("swing"), "{}", issues[0]);
+        assert!(issues[0].message.contains("only a cook"), "{}", issues[0]);
+    }
+
+    /// A move plays its clip tick for tick, so nothing retimes it: a clip of another length is the
+    /// document's error, either way, saying both lengths. With a shorter table a hand-keyed move would
+    /// hold its last sample, and a clip's mustn't.
+    #[test]
+    fn a_clip_must_be_as_long_as_its_move() {
+        let set = from_a_clip().compile_with(|_| Ok(Some(baked(10)))).expect("the same length");
+        assert_eq!(set.moves()[0].ticks(), 10);
+        assert_eq!(set.moves()[0].tables.ticks(), 10);
+        for ticks in [9, 11] {
+            let text = issues_of(&from_a_clip(), baked(ticks));
+            assert!(text.contains(&format!("the clip is {ticks} ticks long")), "{text}");
+            assert!(text.contains("add up to 10"), "{text}");
+            assert!(text.contains("swing") && text.contains("motion"), "{text}");
+        }
+    }
+
+    /// The clip's root and bone paths with what the move keys beside them; root keys replace its root.
+    #[test]
+    fn keys_lie_over_a_clip() {
+        let set = from_a_clip().compile_with(|_| Ok(Some(baked(10)))).unwrap();
+        let tables = &set.moves()[0].tables;
+        assert_eq!(tables.root_samples()[10].translation, [0.0, 0.0, 1.0], "the clip's root");
+        let blade = tables.path(Name::new("blade")).expect("from the clip");
+        assert_eq!(blade.samples()[4].translation, [0.1, 1.0, 0.2]);
+        let wave = tables.path(Name::new("shockwave")).expect("keyed beside it");
+        assert_eq!(wave.samples()[10].translation, [0.0, 0.5, 1.0]);
+
+        let mut keyed = from_a_clip();
+        keyed.moves[0].motion.root = vec![RootKey { at: 5, offset: [2.0, 0.0, 0.0], yaw: 0.5 }];
+        let set = keyed.compile_with(|_| Ok(Some(baked(10)))).unwrap();
+        let tables = &set.moves()[0].tables;
+        assert_eq!(tables.root_samples()[10].translation, [2.0, 0.0, 0.0], "keys replace it");
+        assert_eq!(tables.root_samples()[10].yaw, 0.5);
+        assert!(tables.path(Name::new("blade")).is_some(), "and its paths stay");
+    }
+
+    /// One bad block per check: the message names the move, the track and the thing.
+    #[test]
+    fn a_bad_clip_block_names_what_it_is() {
+        type Edit = fn(&mut ClipMotionDocument);
+        let cases: &[(&str, Edit, &[&str])] = &[
+            ("no source", |clip| clip.source.clear(), &["`source` is empty"]),
+            (
+                "a path named twice",
+                |clip| {
+                    let copy = clip.paths[0].clone();
+                    clip.paths.push(copy);
+                },
+                &["`blade` appears twice"],
+            ),
+            (
+                "a path sharing a keyed one's name",
+                |clip| clip.paths[0].name = "shockwave".to_owned(),
+                &["`shockwave` appears twice"],
+            ),
+            ("a path with no name", |clip| clip.paths[0].name.clear(), &["a name is empty"]),
+            (
+                "a path following nothing",
+                |clip| clip.paths[0].follows = Follows::Joint(String::new()),
+                &["`blade` follows a joint with no name"],
+            ),
+            (
+                "an offset that isn't finite",
+                |clip| clip.paths[0].offset[1] = f32::NAN,
+                &["`blade` isn't finite"],
+            ),
+            (
+                "a rotation that isn't unit",
+                |clip| clip.paths[0].rotation = [0.0, 0.0, 0.0, 2.0],
+                &["`blade` doesn't have a unit rotation"],
+            ),
+        ];
+        for (what, edit, expected) in cases {
+            let mut document = from_a_clip();
+            edit(document.moves[0].motion.clip.as_mut().unwrap());
+            let issues = document.check();
+            assert!(!issues.is_empty(), "{what}");
+            let text = issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+            for part in ["swing", "motion"].iter().chain(*expected) {
+                assert!(text.contains(part), "{what}: no {part:?} in:\n{text}");
+            }
+        }
+
+        let mut both = from_a_clip();
+        both.moves[0].motion.root = vec![RootKey { at: 5, offset: [2.0, 0.0, 0.0], yaw: 0.0 }];
+        both.moves[0].motion.clip.as_mut().unwrap().root = RootSource::InPlace;
+        assert!(both.check().iter().any(|issue| issue.message.contains("say one or the other")));
+    }
+
+    /// A cook's fault with one move's clip is an issue on that move, and doesn't hide the others'.
+    #[test]
+    fn a_cooks_fault_is_an_issue_on_its_move() {
+        let mut document = from_a_clip();
+        document.intents[0].buffer = 99;
+        let error = document.compile_with(|_| Err("the clip isn't cooked".to_owned()));
+        let Err(MoveSetError::Invalid(issues)) = error else { panic!("compiled") };
+        let text = issues.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("move `swing`, track `motion`: the clip isn't cooked"), "{text}");
+        assert!(text.contains("`intents`"), "{text}");
+    }
+
+    /// A hand-keyed move never asks a cook to read anything, and stays as it cooked before there were
+    /// clips: the test content's hash pins that for the bytes, `sapphire_gameplay`'s
+    /// `the_test_contents_hash_is_the_same_on_every_architecture`.
+    #[test]
+    fn hand_keys_stand_as_they_were() {
+        let plain = slice().compile().unwrap();
+        let asked = slice().compile_with(|mv| {
+            assert!(mv.motion.clip.is_none());
+            Ok(None)
+        });
+        assert_eq!(plain, asked.unwrap());
     }
 
     #[test]

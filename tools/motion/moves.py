@@ -64,8 +64,9 @@ HANDS = {**FIST, **LEFT_OPEN}
 
 HEADER = """Turns are degrees in the character's rest space, about each bone's own joint, X then Y then Z.
 The character faces +Z, with its left arm along +X at rest. Ticks are 60 a second. `root` is where
-the move has carried the character, `hips` moves the hips from rest. The right hand holds a blade,
-leaving the fist on the thumb side, though none is drawn yet. Frame data is in player.moves.ron."""
+the move has carried the character, `hips` moves the hips from rest. The right hand holds the sword,
+leaving the fist on the thumb side. Frame data is in player.moves.ron. Written by tools/motion/moves.py,
+so edit a move there."""
 
 
 def start(move, say):
@@ -349,7 +350,7 @@ trailing, and cut across on the way past. Hit on ticks 5 to 9. Warp bends it tow
           L=Foot(0.17, 2.1, yaw=6, pitch=-14, lift=0.1),
           R=Foot(-0.1, 1.2, yaw=-9, pitch=60, lift=0.14),
           look=(-2, 4),
-          rh=(-64, -6, 0.43), elbow_r=(-0.8, -0.4, -0.4), blade=(-62, 4),
+          rh=(-64, -6, 0.43), elbow_r=(-0.8, -0.4, -0.4), blade=(-62, 4), edge=leading_edge(-62, 45),
           lh=(150, -34, 0.42), elbow_l=(0.5, -0.3, -0.8))
     m.key(8, "Flat across the front.",
           ease='Linear', root=(0, 0, 1.96), hips=(0.0, -0.2, 0.05),
@@ -357,7 +358,7 @@ trailing, and cut across on the way past. Hit on ticks 5 to 9. Warp bends it tow
           L=Foot(0.18, 2.34, yaw=7, pitch=-10, lift=0.06),
           R=Foot(-0.11, 1.46, yaw=-11, pitch=58, lift=0.1),
           look=(0, 2),
-          rh=(-18, -10, 0.43), elbow_r=(-0.7, -0.6, -0.4), blade=(-14, 0),
+          rh=(-18, -10, 0.43), elbow_r=(-0.7, -0.6, -0.4), blade=(-14, 0), edge=leading_edge(-14, 45),
           lh=(135, -42, 0.42), elbow_l=(0.6, -0.3, -0.7))
     m.key(9, "Past the middle, the blade dropping a little as the body comes down.",
           ease='Linear', root=(0, 0, 2.17), hips=(-0.01, -0.225, 0.045),
@@ -365,7 +366,7 @@ trailing, and cut across on the way past. Hit on ticks 5 to 9. Warp bends it tow
           L=Foot(0.19, 2.52, yaw=9, pitch=-4, lift=0.02),
           R=Foot(-0.12, 1.68, yaw=-13, pitch=57, lift=0.06),
           look=(4, 0),
-          rh=(22, -14, 0.43), elbow_r=(-0.4, -0.7, -0.5), blade=(40, -4),
+          rh=(22, -14, 0.43), elbow_r=(-0.4, -0.7, -0.5), blade=(40, -4), edge=leading_edge(40, 45),
           lh=(126, -46, 0.42), elbow_l=(0.7, -0.3, -0.6))
     m.key(10, "The left foot lands and skids, the blade across and out to the left.",
           ease='Linear', root=(0, 0, 2.36), hips=(-0.02, -0.25, 0.04),
@@ -373,7 +374,7 @@ trailing, and cut across on the way past. Hit on ticks 5 to 9. Warp bends it tow
           L=Foot(0.19, 2.66, yaw=10, planted=False),
           R=Foot(-0.13, 1.88, yaw=-14, pitch=56, lift=0.03),
           look=(8, -2),
-          rh=(56, -18, 0.43), elbow_r=(-0.2, -0.8, -0.6), blade=(92, -8),
+          rh=(56, -18, 0.43), elbow_r=(-0.2, -0.8, -0.6), blade=(92, -8), edge=leading_edge(92, 45),
           lh=(120, -50, 0.42), elbow_l=(0.7, -0.3, -0.6))
     m.key(14, "The skid stops, past the mark: sunk low, the chest still turning, the back foot dragging up.",
           ease=('Overshoot', 0.1), root=(0, 0, 2.6), hips=(-0.03, -0.28, 0.02),

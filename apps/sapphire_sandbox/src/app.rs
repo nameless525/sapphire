@@ -244,6 +244,9 @@ impl App for SandboxApp {
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
             scene.spawn_arena(Arena { shot, look, ground });
         }
+        if let Some(sword) = renderer.sword {
+            scene.spawn_blade(sword, lookdev::held_hand(&content).map_err(AppInitError::msg)?);
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
@@ -1051,6 +1054,8 @@ pub(crate) struct SceneRenderer {
     town: Option<TownMeshes>,
     /// The enemy, with `--look-dev enemy`.
     enemy: Option<EnemyMeshes>,
+    /// The player's sword, with `--blade on`.
+    sword: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StageMeshes>,
     /// The zone's sky material.
@@ -1105,6 +1110,9 @@ impl Scene {
         if let Some(meshes) = renderer.enemy {
             self.set_enemy_meshes(meshes);
         }
+        if let Some(sword) = renderer.sword {
+            self.set_blade_mesh(sword);
+        }
     }
 }
 
@@ -1144,6 +1152,7 @@ struct SceneMeshes {
     hard_edges: Option<MeshHandle>,
     town: Option<TownMeshes>,
     enemy: Option<EnemyMeshes>,
+    sword: Option<MeshHandle>,
     stage: Option<StageMeshes>,
 }
 
@@ -1192,6 +1201,7 @@ pub(crate) fn create_renderer(
         let town = options.in_town().then(|| content.town(&mut renderer, gpu)).transpose()?;
         let enemy =
             (options.look_dev == Some(Shot::Enemy)).then(|| content.enemy(&mut renderer, gpu)).transpose()?;
+        let sword = options.blade().then(|| content.sword(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {
                 let figure = content
@@ -1216,6 +1226,7 @@ pub(crate) fn create_renderer(
             hard_edges,
             town,
             enemy,
+            sword,
             stage,
         };
         Ok((character, character_bounds, meshes, sky))
@@ -1243,6 +1254,7 @@ pub(crate) fn create_renderer(
                 hard_edges,
                 town,
                 enemy,
+                sword,
                 stage,
             } = meshes;
             Ok(SceneRenderer {
@@ -1262,6 +1274,7 @@ pub(crate) fn create_renderer(
                 hard_edges,
                 town,
                 enemy,
+                sword,
                 stage,
                 sky,
             })

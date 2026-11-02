@@ -6,8 +6,10 @@
 //!
 //! The camera stays put, so root motion shows as travel: `--clip-in-place` leaves it out, and
 //! `--zoom <factor>` pulls back for a clip that leaves the frame. `--sheet-cells` is how many ticks
-//! across and `--size` one cell. It draws without fog and, unless told otherwise, at midday with no
-//! ambient occlusion on MSAA, since a cell has no temporal history to resolve.
+//! across and `--size` one cell. `--sheet-ticks` names the ticks instead, and `--sheet-views` the
+//! views, as yaws in degrees (`tools/motion/sheet.py` reads a move this way, from behind and the side).
+//! It draws without fog and, unless told otherwise, at midday with no ambient occlusion on MSAA, since
+//! a cell has no temporal history to resolve.
 
 use std::path::Path;
 
@@ -101,6 +103,16 @@ impl Framing {
     }
 }
 
+/// What a sheet draws.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Layout<'a> {
+    /// How many evenly spaced ticks, unless [`Self::ticks`] names them.
+    pub cells: u32,
+    pub ticks: &'a [u32],
+    /// The views, as yaws in degrees: [`VIEW_YAWS_DEGREES`] if empty.
+    pub yaws: &'a [i32],
+}
+
 /// A place in a clip to draw: the fixed step on the character's clock, and the clip's tick there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Sample {
@@ -121,6 +133,22 @@ fn samples(ticks: u32, rate: u32, cells: u32) -> Vec<Sample> {
             let tick = (step * u64::from(rate) / u64::from(TICK_HZ)) as u32;
             Sample { step: step as u32, tick }
         })
+        .collect()
+}
+
+/// The clip's ticks `named`, in order, each once. A tick past the last whole step draws that step: a
+/// player's position wraps there.
+fn samples_at(ticks: u32, rate: u32, named: &[u32]) -> Vec<Sample> {
+    let rate = u64::from(rate.max(1));
+    let steps = u64::from(ticks) * u64::from(TICK_HZ) / rate;
+    let last = steps.saturating_sub(1);
+    let mut chosen: Vec<u64> =
+        named.iter().map(|&tick| (u64::from(tick) * u64::from(TICK_HZ) / rate).min(last)).collect();
+    chosen.sort_unstable();
+    chosen.dedup();
+    chosen
+        .into_iter()
+        .map(|step| Sample { step: step as u32, tick: (step * rate / u64::from(TICK_HZ)) as u32 })
         .collect()
 }
 
@@ -209,14 +237,26 @@ impl Sheet {
 }
 
 /// Renders the clip the stage's character plays into `path`. See the [module docs](self).
-pub(crate) fn run(stage: &mut Stage, path: &Path, cells: u32, framing: Framing) -> Result<(), AppInitError> {
+pub(crate) fn run(
+    stage: &mut Stage,
+    path: &Path,
+    layout: &Layout<'_>,
+    framing: Framing,
+) -> Result<(), AppInitError> {
     let (ticks, rate) = stage
         .content
         .clip()
         .map(|(clip, _)| (u32::from(clip.ticks.to_native()), u32::from(clip.rate.to_native())))
         .ok_or_else(|| AppInitError::msg("the clip isn't loaded"))?;
-    let samples = samples(ticks, rate, cells);
-    let mut sheet = Sheet::new(framing, samples.len(), VIEW_YAWS_DEGREES.len());
+    let samples = match layout.ticks {
+        [] => samples(ticks, rate, layout.cells),
+        named => samples_at(ticks, rate, named),
+    };
+    let yaws: Vec<f32> = match layout.yaws {
+        [] => VIEW_YAWS_DEGREES.to_vec(),
+        named => named.iter().map(|&yaw| yaw as f32).collect(),
+    };
+    let mut sheet = Sheet::new(framing, samples.len(), yaws.len());
     let target = stage.target(framing.width, framing.height, wgpu::TextureUsages::COPY_SRC);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut step = 0;
@@ -227,7 +267,7 @@ pub(crate) fn run(stage: &mut Stage, path: &Path, cells: u32, framing: Framing) 
             stage.scene.animate(&stage.content, 1.0);
             step += 1;
         }
-        for (row, yaw) in VIEW_YAWS_DEGREES.into_iter().enumerate() {
+        for (row, &yaw) in yaws.iter().enumerate() {
             *stage.scene.camera_mut() = framing.camera(yaw);
             let readback = Readback::new(&stage.gpu, framing.width, framing.height);
             stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
@@ -262,6 +302,15 @@ mod tests {
         // A pose has one place to draw; a clip shorter than the cells has what it has.
         assert_eq!(samples(0, 60, 8), [Sample { step: 0, tick: 0 }]);
         assert_eq!(samples(3, 60, 8).len(), 3);
+    }
+
+    #[test]
+    fn named_ticks_draw_in_order_once_each_short_of_the_wrap() {
+        let steps =
+            |named: &[u32]| samples_at(60, 60, named).iter().map(|sample| sample.step).collect::<Vec<_>>();
+        assert_eq!(steps(&[9, 3, 3, 0]), [0, 3, 9]);
+        assert_eq!(steps(&[59, 60, 200]), [59], "the last whole step");
+        assert_eq!(samples_at(30, 30, &[29]), [Sample { step: 58, tick: 29 }]);
     }
 
     #[test]

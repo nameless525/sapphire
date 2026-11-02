@@ -155,8 +155,7 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, Str
 /// shadow or occlusion, and its head where the warrior's is, so the light rig lights it as it does
 /// the warrior.
 pub(crate) fn blade_figure(held: &Held) -> Figure {
-    let head = held.blade.inverse().transform_point3(held.figure.head);
-    Figure { head, feet: head, body_radius: 0.0, face: Quat::IDENTITY, expression: held.figure.expression }
+    held.figure.of_item_at(held.blade)
 }
 
 #[cfg(test)]

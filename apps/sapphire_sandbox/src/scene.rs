@@ -129,6 +129,7 @@ use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
 use crate::animate::{ClipPlayer, Evaluation, SpringView};
 use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
+use crate::blade::{self, HeldBlade};
 use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
 use crate::cues::{CueShow, CueSounds};
@@ -228,6 +229,14 @@ pub(crate) struct Figure {
 }
 
 impl Figure {
+    /// The figure something held draws as, placed by `item` in this figure's space, in its own space:
+    /// no body, so it adds no capsule to the holder's shadow or occlusion, and its head where the
+    /// holder's is, so the light rig lights the two alike.
+    pub fn of_item_at(&self, item: Mat4) -> Self {
+        let head = item.inverse().transform_point3(self.head);
+        Self { head, feet: head, body_radius: 0.0, face: Quat::IDENTITY, expression: self.expression }
+    }
+
     /// The sample mannequin (`sapphire_pipeline`'s samples): its head sphere 1.47 m above its
     /// 0.2 m pedestal, its torso's radius, its head turning with it.
     pub const MANNEQUIN: Self = Self {
@@ -374,6 +383,8 @@ pub(crate) struct Scene {
     town_mountains: Vec<Entity>,
     /// The enemy and its blade, with `--look-dev enemy`.
     enemy: Option<(Entity, Entity)>,
+    /// The character's blade, with `--blade on`.
+    blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
     arena: Option<ArenaActors>,
     /// Where the character's light rig finds its head and body, for a character without a
@@ -508,6 +519,7 @@ impl Scene {
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             enemy: None,
+            blade: None,
             arena: None,
             figure,
             animating: false,
@@ -1454,6 +1466,55 @@ impl Scene {
         self.enemy = Some((warrior, blade));
     }
 
+    /// Puts the player's blade in the character's right hand (`--blade on`, M2 O3): `held_hand` is where
+    /// the character's held pose has that hand, for when no clip plays. It follows the hand each frame
+    /// ([`Self::follow_hand`]).
+    pub fn spawn_blade(&mut self, mesh: MeshHandle, held_hand: Mat4) {
+        let rig = LightRigId::DEFAULT;
+        let figure = self.figure.of_item_at(held_hand * blade::socket());
+        let entity = self
+            .ecs
+            .world_mut()
+            .spawn((
+                RenderMesh(mesh),
+                RenderTransform::default(),
+                CharacterLightRig { rig, head: figure.head },
+                figure,
+            ))
+            .id();
+        self.blade = Some(HeldBlade { entity, held_hand });
+    }
+
+    /// Sets the mesh the blade draws again: after GPU device loss.
+    pub fn set_blade_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(held) = self.blade {
+            self.ecs.world_mut().entity_mut(held.entity).insert(RenderMesh(mesh));
+        }
+    }
+
+    /// Moves the blade to where the character's hand is this frame: after whatever poses and places
+    /// the character, and before extraction.
+    fn follow_hand(&mut self) {
+        let Some(held) = self.blade else { return };
+        let world = self.ecs.world_mut();
+        let character = world.entity(self.character);
+        let place = character.get::<RenderTransform>().map_or(Mat4::IDENTITY, |transform| transform.0);
+        let hand = character.get::<ClipPlayer>().and_then(ClipPlayer::right_hand).unwrap_or(held.held_hand);
+        let holder = character.get::<Figure>().copied().unwrap_or(self.figure);
+        let item = hand * blade::socket();
+        let figure = holder.of_item_at(item);
+        let mut blade = world.entity_mut(held.entity);
+        if let Some(mut transform) = blade.get_mut::<RenderTransform>() {
+            transform.set_if_neq(RenderTransform(place * item));
+        }
+        if let Some(mut own) = blade.get_mut::<Figure>() {
+            own.set_if_neq(figure);
+        }
+        if let Some(mut rig) = blade.get_mut::<CharacterLightRig>() {
+            rig.head = figure.head;
+        }
+    }
+
     /// Sets the meshes the enemy draws again: after GPU device loss.
     pub fn set_enemy_meshes(&mut self, meshes: EnemyMeshes) {
         if let Some((warrior, blade)) = self.enemy {
@@ -1643,6 +1704,7 @@ impl Scene {
         if let Some(arena) = &mut self.arena {
             arena.present(self.ecs.world_mut(), alpha, drawable_aspect(target_size));
         }
+        self.follow_hand();
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
@@ -2770,6 +2832,68 @@ mod tests {
                 }
                 assert_eq!(scene.anim_stats().teleports, teleports, "root motion: {root_motion}");
             }
+        }
+
+        /// The blade is where the hand is, held or playing, and goes with the character when root
+        /// motion moves it. It draws as a character with no body, lit like the one holding it, and
+        /// keeps its place through a device loss's new mesh.
+        #[test]
+        fn the_blade_follows_the_hand_and_adds_no_body() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            let held_hand = Mat4::from_translation(Vec3::new(-0.2, 0.9, 0.1));
+            scene.spawn_blade(MeshHandle::from_raw(9), held_hand);
+            let entity = scene.blade.expect("in the hand").entity;
+            let id = extract::instance_id(entity);
+            let character = extract::instance_id(scene.character);
+            let transform = |scene: &Scene, entity: Entity| {
+                scene.ecs.world().get::<RenderTransform>(entity).expect("it draws").0
+            };
+
+            // Held: the held pose's hand.
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let drawn = packet.instances.changed.iter().find(|instance| instance.id == id).expect("it draws");
+            assert!(drawn.transform.abs_diff_eq(held_hand * blade::socket(), 1e-5), "{:?}", drawn.transform);
+            let listed = |id| packet.characters.iter().find(|entry| entry.id == id).expect("listed");
+            assert!(!listed(id).body.casts(), "it adds no capsule");
+            let (own, holder) = (listed(id).lighting.key, listed(character).lighting.key);
+            assert!(own.direction.abs_diff_eq(holder.direction, 1e-4), "the two are lit alike");
+            scene.end_frame();
+
+            // Playing: the pose's hand, with the root's place.
+            let rest = skeleton_pose_rest();
+            let hand = 1;
+            let joints = FigureJoints::for_test(&rest, 2, 0.0, [3, 4]).with_right_hand(hand);
+            let bytes = skeleton().to_cooked().expect("cooked");
+            let binds: Vec<SkinBind> = (0..5)
+                .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
+                .collect();
+            let pose =
+                CharacterPose::new(Skeleton::read(&bytes).expect("valid"), &binds, &[], vec![0.25, 0.0]);
+            scene.play_clip(ClipPlayer::new(pose, joints));
+            let mut places = Vec::new();
+            for _ in 0..30 {
+                scene.step();
+                frame(&mut scene, clip, 1.0, id);
+                let holder = scene.ecs.world().get::<ClipPlayer>(scene.character).expect("playing");
+                let expected = transform(&scene, scene.character)
+                    * holder.right_hand().expect("found")
+                    * blade::socket();
+                let place = transform(&scene, entity);
+                assert!(place.abs_diff_eq(expected, 1e-4), "{place:?} against {expected:?}");
+                places.push(place.transform_point3(Vec3::ZERO));
+            }
+            assert!(places[0].distance(places[29]) > 0.5, "root motion carried it: {places:?}");
+
+            // A device loss's new mesh keeps its place.
+            let before = transform(&scene, entity);
+            scene.set_blade_mesh(MeshHandle::from_raw(10));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let drawn =
+                packet.instances.changed.iter().find(|instance| instance.id == id).expect("re-meshed");
+            assert_eq!(drawn.mesh, MeshHandle::from_raw(10));
+            assert!(drawn.transform.abs_diff_eq(before, 1e-5));
         }
 
         #[test]

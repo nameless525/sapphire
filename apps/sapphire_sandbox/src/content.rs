@@ -104,6 +104,7 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::anim_graph::ClipTable;
 use crate::arena;
+use crate::blade;
 use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
 use crate::faces::{self, MaterialOverrides};
@@ -348,6 +349,8 @@ pub(crate) struct Content {
     town: Vec<Handle<Mesh>>,
     /// The enemy's model and its blade, once asked for (`--look-dev enemy`).
     enemy: Vec<Handle<Mesh>>,
+    /// The player's sword, once asked for (`--blade on`).
+    sword: Option<Handle<Mesh>>,
     /// The enemy's skeleton, with those.
     enemy_skeleton: Option<Handle<Skeleton>>,
     /// The arena's colliders, once asked for (`--arena`'s).
@@ -420,6 +423,7 @@ impl Content {
             probes: None,
             town: Vec::new(),
             enemy: Vec::new(),
+            sword: None,
             enemy_skeleton: None,
             arena_colliders: None,
             rig: None,
@@ -794,6 +798,22 @@ impl Content {
             .map_err(|error| AppInitError::msg(format!("the enemy didn't load: {error}")))?;
         let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
         Ok(EnemyMeshes { warrior: mesh(enemy::WARRIOR), blade: mesh(enemy::BLADE) })
+    }
+
+    /// Loads until the player's sword is on `renderer`, with its material and the maps it names, and
+    /// returns its mesh: the load screen of `--blade on`. It stays loaded from then on.
+    pub fn sword(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<MeshHandle, AppInitError> {
+        // Asking again tries what failed before, as the character does.
+        let sword: Handle<Mesh> =
+            self.server.load_with(blade::SWORD, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&sword, |upload| assets.upload(upload, renderer, gpu));
+        self.sword = Some(sword);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the sword didn't load: {error}")))?;
+        Ok(self.gpu.meshes.get(&blade::SWORD).expect("a ready mesh was uploaded here").object.handle)
     }
 
     /// The enemy's held pose, from what [`Self::enemy`] loaded.

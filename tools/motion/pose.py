@@ -228,6 +228,13 @@ class Foot:
         return qaxis((0, 1, 0), self.yaw - turned)
 
 
+def leading_edge(az, lean):
+    """An edge hint for a blade sweeping round toward higher azimuth: leading along the sweep, and `lean`
+    degrees down from it, which shows a horizontal cut's flat to a camera at chest height."""
+    a, l = math.radians(az), math.radians(lean)
+    return (math.cos(a) * math.cos(l), -math.sin(l), -math.sin(a) * math.cos(l))
+
+
 def to_model(world, root, root_turn):
     """A point in the move's start space into model space at this root."""
     return qrot(qaxis((0, 1, 0), -root_turn), sub(world, root))

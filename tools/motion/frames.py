@@ -37,7 +37,8 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 // move's length is a change to its clip's too. Windows move freely inside it.
 //
 // `blade` is a socket on the right hand: the middle of a 0.9 m blade leaving the fist on the thumb side,
-// 22 degrees toward the fingers, its +Y running grip to tip. A hit is a capsule along it.
+// 22 degrees toward the fingers, its +Y running grip to tip. A hit is a capsule along it, and the sandbox
+// draws `sword.glb` there. Written by tools/motion/moves.py, so edit it there.
 //
 // E3 hangs effects on the cues: `swing` is the blade starting to cut, and `step`, `skid` and
 // `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on

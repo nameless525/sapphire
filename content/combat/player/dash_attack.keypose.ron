@@ -3,8 +3,9 @@
 //
 // Turns are degrees in the character's rest space, about each bone's own joint, X then Y then Z.
 // The character faces +Z, with its left arm along +X at rest. Ticks are 60 a second. `root` is where
-// the move has carried the character, `hips` moves the hips from rest. The right hand holds a blade,
-// leaving the fist on the thumb side, though none is drawn yet. Frame data is in player.moves.ron.
+// the move has carried the character, `hips` moves the hips from rest. The right hand holds the sword,
+// leaving the fist on the thumb side. Frame data is in player.moves.ron. Written by tools/motion/moves.py,
+// so edit a move there.
 (
     type: "sapphire::pipeline::KeyPoseClip",
     version: 1,
@@ -127,7 +128,7 @@
                 LeftLowerArm: (y: -29.8),
                 RightUpperArm: (x: -76.6, y: 16.7, z: -5.2),
                 RightLowerArm: (y: 16.5),
-                RightHand: (x: -97.7, y: 13, z: 58.7),
+                RightHand: (x: -99.2, y: 16.4, z: 58.2),
             }),
 
             // Flat across the front.
@@ -147,7 +148,7 @@
                 RightFoot: (x: -13.2, y: 17.7, z: 5.9),
                 LeftUpperArm: (x: 28.1, y: -8.1, z: -33.5),
                 RightUpperArm: (x: -89.1, y: 36.4, z: -22.1),
-                RightHand: (x: -85.2, y: -9, z: 62.2),
+                RightHand: (x: -91.3, y: 6.1, z: 62.6),
             }),
 
             // Past the middle, the blade dropping a little as the body comes down.
@@ -167,7 +168,7 @@
                 RightFoot: (x: -10.3, y: 18.9, z: 7.7),
                 LeftUpperArm: (x: 40.2, y: -27.9, z: -18.4),
                 RightUpperArm: (x: -135.2, y: 56.1, z: -43.7),
-                RightHand: (x: 78.7, y: -13.9, z: -50.4),
+                RightHand: (x: -70.2, y: -29.6, z: 76.6),
             }),
 
             // The left foot lands and skids, the blade across and out to the left.
@@ -187,7 +188,7 @@
                 RightFoot: (x: -9.6, y: 19.7, z: 8.7),
                 LeftUpperArm: (x: 36.6, y: -45.2, z: -8.1),
                 RightUpperArm: (x: 164.9, y: 64.5, z: -80.3),
-                RightHand: (x: 109.5, y: 10.6, z: -27.3),
+                RightHand: (x: -70.9, y: -68.1, z: 101),
             }),
 
             // The skid stops, past the mark: sunk low, the chest still turning, the back foot dragging up.

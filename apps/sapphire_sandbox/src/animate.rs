@@ -198,6 +198,12 @@ impl ClipPlayer {
         self.teleports
     }
 
+    /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig
+    /// without one.
+    pub fn right_hand(&self) -> Option<Mat4> {
+        self.joints.right_hand().map(|joint| Mat4::from(self.pose.model()[joint]))
+    }
+
     /// How many joints its pose has.
     pub fn joint_count(&self) -> usize {
         self.pose.joint_count()

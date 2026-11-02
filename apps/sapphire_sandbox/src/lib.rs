@@ -160,12 +160,16 @@
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
+//! - `--blade on|off` (with `--look-dev` or `--arena`): the player's sword in the character's right
+//!   hand (M2 O3, `blade.rs`), placed by the hand's joint each frame at the `blade` socket its hit
+//!   volumes bake from. On for `--look-dev body`, off otherwise, so no older scene draws one.
 //! - `--springs on|off` (with `--clip` or `--graph`): runs the character's spring bones or not, on by default
 //!   (M2 N5). Scenes that don't show them pin them off; `lookdev-strike-springs-*` and
 //!   `lookdev-clip-run-springs` do.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
 //!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
-//!   and `--size <cell>` set the grid, and `--zoom <factor>` pulls back for a clip that travels.
+//!   and `--size <cell>` set the grid, `--sheet-ticks <a,b,..>` and `--sheet-views <yaw,yaw,..>` name
+//!   what it draws, and `--zoom <factor>` pulls back for a clip that travels.
 //! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
 //!   as a place to fight: the character at the player's spawn point and a stand-in at the enemy's,
 //!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s
@@ -299,6 +303,7 @@ mod app;
 mod arena;
 mod audio;
 mod bench;
+mod blade;
 mod capture;
 mod combat;
 #[cfg(feature = "dev")]

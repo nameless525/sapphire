@@ -2682,14 +2682,14 @@ pub fn scenes() -> [Scene; 128] {
             ],
             thresholds: Thresholds::default(),
         },
-        // The player's moves (M2 O3), in place, each drawn playing up to its tick. The first cut with the
-        // blade at its fastest, seen as a fight sees it from behind the right shoulder: the hips ahead of
-        // the arm and the right foot about to land. Springs are pinned off while N5 tunes the hair.
+        // The player's moves (M2 O3), in place, each drawn playing up to its tick, sword in hand. The first
+        // cut coming through, seen as a fight sees it from behind the right shoulder: the hips ahead of the
+        // arm and the right foot about to land. Springs are pinned off while N5 tunes the hair.
         Scene {
             name: "lookdev-move-cut",
             args: &[
                 "--capture-ticks",
-                "10",
+                "9",
                 "--look-dev",
                 "body",
                 "--clip",
@@ -2699,6 +2699,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "205,6",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",
@@ -2706,13 +2708,13 @@ pub fn scenes() -> [Scene; 128] {
                 "--ao",
                 "off",
                 "--capture-frames",
-                "11",
+                "10",
                 "--capture-step",
                 "1",
             ],
             thresholds: Thresholds::default(),
         },
-        // The finisher's top, from the side: up on the back toes and arched, the hands overhead.
+        // The finisher's top, from the side: up on the back toes and arched, the blade back over the head.
         Scene {
             name: "lookdev-move-windup",
             args: &[
@@ -2727,6 +2729,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "110,4",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",
@@ -2756,6 +2760,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "110,4",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",
@@ -2769,12 +2775,13 @@ pub fn scenes() -> [Scene; 128] {
             ],
             thresholds: Thresholds::default(),
         },
-        // The dash attack's skid at the end of its cut, from behind: low, back foot trailing, chest turning.
+        // The dash attack's cut starting, from behind: thrown forward low, the back foot trailing, the arm
+        // and blade flung out to the right.
         Scene {
             name: "lookdev-move-dash",
             args: &[
                 "--capture-ticks",
-                "10",
+                "7",
                 "--look-dev",
                 "body",
                 "--clip",
@@ -2784,6 +2791,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "205,6",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",
@@ -2791,14 +2800,14 @@ pub fn scenes() -> [Scene; 128] {
                 "--ao",
                 "off",
                 "--capture-frames",
-                "11",
+                "8",
                 "--capture-step",
                 "1",
             ],
             thresholds: Thresholds::default(),
         },
         // The dodge in the air, from behind, as a player sees it: low and wide, the feet split and the arms
-        // left out in front.
+        // and blade left out in front.
         Scene {
             name: "lookdev-move-dodge",
             args: &[
@@ -2813,6 +2822,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "205,6",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",
@@ -2841,6 +2852,8 @@ pub fn scenes() -> [Scene; 128] {
                 "off",
                 "--view",
                 "60,4",
+                "--blade",
+                "on",
                 "--time-of-day",
                 "10",
                 "--tier",

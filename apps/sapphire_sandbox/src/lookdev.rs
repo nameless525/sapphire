@@ -617,6 +617,19 @@ pub(crate) fn held(content: &Content) -> Result<(RenderPose, Figure), String> {
     held_pose(mesh, rig, skeleton)
 }
 
+/// Where the character's held pose has its right hand, in its own space: what a blade is placed by
+/// when no clip plays.
+pub(crate) fn held_hand(content: &Content) -> Result<Mat4, String> {
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+    let (mut pose, _) = character_pose(mesh, rig, skeleton)?;
+    let joints = RigJoints::new(rig);
+    pose::hold(&mut pose, &joints, &turns());
+    let hand = joints.joint(HumanBone::RightHand).ok_or("the look-dev character's rig has no right hand")?;
+    Ok(Mat4::from(pose.model()[hand]))
+}
+
 /// The character's held pose and the figure it makes: the skinning palette and morph weights
 /// for its mesh, and its head, feet, body and face basis in its own space. Fails if the mesh has
 /// no skin or the rig no head.
@@ -708,6 +721,8 @@ pub(crate) struct FigureJoints {
     /// Both feet's joints, and how far above the floor the lower stands at rest. `None` for a rig
     /// without them, whose feet stay under its head.
     feet: Option<([usize; 2], f32)>,
+    /// The right hand's joint, which a blade follows. `None` for a rig without one.
+    right_hand: Option<usize>,
 }
 
 impl FigureJoints {
@@ -717,14 +732,37 @@ impl FigureJoints {
                 let ankle = pose.model()[left].translation.y.min(pose.model()[right].translation.y);
                 ([left, right], ankle - floor)
             });
-        Self { head, rest_head: pose.rest_rotation(head), floor, feet }
+        Self {
+            head,
+            rest_head: pose.rest_rotation(head),
+            floor,
+            feet,
+            right_hand: rig.joint(HumanBone::RightHand),
+        }
+    }
+
+    /// The right hand's joint, if the rig has one.
+    pub fn right_hand(&self) -> Option<usize> {
+        self.right_hand
     }
 
     /// Joints as a test's small skeleton has them.
     #[cfg(test)]
     pub fn for_test(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
         let ankle = pose.model()[feet[0]].translation.y.min(pose.model()[feet[1]].translation.y);
-        Self { head, rest_head: pose.rest_rotation(head), floor, feet: Some((feet, ankle - floor)) }
+        Self {
+            head,
+            rest_head: pose.rest_rotation(head),
+            floor,
+            feet: Some((feet, ankle - floor)),
+            right_hand: None,
+        }
+    }
+
+    /// These joints, finding the right hand at `joint`.
+    #[cfg(test)]
+    pub fn with_right_hand(self, joint: usize) -> Self {
+        Self { right_hand: Some(joint), ..self }
     }
 
     /// The head's place and its turn from rest, in the character's space.

@@ -5,8 +5,9 @@
 //
 // Turns are degrees in the character's rest space, about each bone's own joint, X then Y then Z.
 // The character faces +Z, with its left arm along +X at rest. Ticks are 60 a second. `root` is where
-// the move has carried the character, `hips` moves the hips from rest. The right hand holds a blade,
-// leaving the fist on the thumb side, though none is drawn yet. Frame data is in player.moves.ron.
+// the move has carried the character, `hips` moves the hips from rest. The right hand holds the sword,
+// leaving the fist on the thumb side. Frame data is in player.moves.ron. Written by tools/motion/moves.py,
+// so edit a move there.
 (
     type: "sapphire::pipeline::KeyPoseClip",
     version: 1,

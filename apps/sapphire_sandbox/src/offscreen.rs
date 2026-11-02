@@ -66,10 +66,11 @@ impl App for OffscreenApp {
             OffscreenMode::Bench { frames } => {
                 crate::bench::run(platform, &options, combat, *frames, width, height)?;
             }
-            OffscreenMode::ContactSheet { path, cells } => {
+            OffscreenMode::ContactSheet { path, cells, ticks, yaws } => {
                 let mut stage = Stage::new(platform, &options)?;
                 let framing = crate::contact_sheet::Framing::new(width, height, options.zoom);
-                crate::contact_sheet::run(&mut stage, path, *cells, framing)?;
+                let layout = crate::contact_sheet::Layout { cells: *cells, ticks, yaws };
+                crate::contact_sheet::run(&mut stage, path, &layout, framing)?;
             }
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
@@ -236,6 +237,11 @@ impl Stage {
             let ground = content.arena_ground(&mut renderer, &gpu)?;
             let look = LookDev { town, fog_cards, pose, figure };
             scene.spawn_arena(Arena { shot, look, ground });
+        }
+        if options.blade() {
+            let sword = content.sword(&mut renderer, &gpu)?;
+            let hand = crate::lookdev::held_hand(&content).map_err(AppInitError::msg)?;
+            scene.spawn_blade(sword, hand);
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.

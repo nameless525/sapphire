@@ -135,6 +135,10 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
+    /// `--blade on|off`: the player's sword in the character's right hand (M2 O3). On for
+    /// `--look-dev body`, off anywhere else unless it says, so no older scene draws one. Needs
+    /// `--look-dev` or `--arena`. See [`Self::blade`].
+    pub blade: Option<bool>,
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
@@ -279,10 +283,11 @@ pub(crate) enum OffscreenMode {
     Capture { path: PathBuf, ticks: u32, frames: CaptureFrames },
     /// `--bench <frames>`: run the per-frame CPU path `frames` times and log its cost.
     Bench { frames: u32 },
-    /// `--contact-sheet <clip> <png> [--sheet-cells N] [--size <cell>]`: the clip on the look-dev
-    /// character at evenly spaced ticks, seen from the front and the side, as one image (see
+    /// `--contact-sheet <clip> <png> [--sheet-cells N] [--sheet-ticks a,b,..] [--sheet-views a,b,..]
+    /// [--size <cell>]`: the clip on the look-dev character at evenly spaced ticks or those named,
+    /// seen from the front and the side or the yaws named, as one image (see
     /// [`crate::contact_sheet`]).
-    ContactSheet { path: PathBuf, cells: u32 },
+    ContactSheet { path: PathBuf, cells: u32, ticks: Vec<u32>, yaws: Vec<i32> },
     /// `--offscreen` (`dev` builds): draw the scene at up to 60 frames a second, one fixed step
     /// each, until the process is stopped or `--frames` have been drawn, applying hot reload's
     /// changes and live link's pushes, and answering live link's captures. The desktop's way to
@@ -409,6 +414,11 @@ impl Options {
         self.look_dev.is_some() || self.arena.is_some()
     }
 
+    /// Whether the character holds the player's sword: as `--blade` says, and on `--look-dev body`.
+    pub fn blade(&self) -> bool {
+        self.blade.unwrap_or(self.look_dev == Some(Shot::Body))
+    }
+
     /// The character the scene draws: the look-dev VRM in the town, the mannequin otherwise.
     pub fn character(&self) -> sapphire_assets::AssetId {
         if self.in_town() { lookdev::CHARACTER } else { crate::content::CHARACTER }
@@ -482,6 +492,7 @@ impl Options {
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
+        let (mut sheet_ticks, mut sheet_views): (Vec<u32>, Vec<i32>) = (Vec::new(), Vec::new());
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -668,6 +679,13 @@ impl Options {
                         format!("--arena-shot expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
+                "--blade" => {
+                    options.blade = Some(match value("--blade")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--blade expects on or off, got {other:?}")),
+                    });
+                }
                 "--springs" => {
                     options.springs = Some(match value("--springs")?.as_str() {
                         "on" => true,
@@ -804,6 +822,8 @@ impl Options {
                     }
                     sheet_cells = Some(cells);
                 }
+                "--sheet-ticks" => sheet_ticks = number_list(&value("--sheet-ticks")?, "--sheet-ticks")?,
+                "--sheet-views" => sheet_views = number_list(&value("--sheet-views")?, "--sheet-views")?,
                 "--capture-ticks" => {
                     capture_ticks = Some(number(&value("--capture-ticks")?, "--capture-ticks")?)
                 }
@@ -844,8 +864,8 @@ impl Options {
         if options.faces.is_some() && options.rim_rig.is_some() {
             return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
         }
-        if sheet_cells.is_some() && sheet.is_none() {
-            return Err(format!("--sheet-cells needs {CONTACT_SHEET_FLAG}"));
+        if (sheet_cells.is_some() || !sheet_ticks.is_empty() || !sheet_views.is_empty()) && sheet.is_none() {
+            return Err(format!("--sheet-cells, --sheet-ticks and --sheet-views need {CONTACT_SHEET_FLAG}"));
         }
         if sheet.is_some() {
             if capture.is_some() || bench.is_some() || serve {
@@ -913,6 +933,9 @@ impl Options {
                  --foliage, --outline-row, --faces, --rim-rig and --hard-edges"
                 .to_owned());
         }
+        if options.blade.is_some() && !options.in_town() {
+            return Err("--blade goes in the character's hand: it needs --look-dev or --arena".to_owned());
+        }
         if options.springs.is_some() && options.clip.is_none() && options.graph.is_none() {
             return Err("--springs runs under a clip or a graph: it needs --clip or --graph".to_owned());
         }
@@ -925,6 +948,8 @@ impl Options {
             _ if sheet.is_some() => sheet.map(|path| OffscreenMode::ContactSheet {
                 path,
                 cells: sheet_cells.unwrap_or(crate::contact_sheet::DEFAULT_CELLS),
+                ticks: std::mem::take(&mut sheet_ticks),
+                yaws: std::mem::take(&mut sheet_views),
             }),
             (Some(path), _) => {
                 let ticks = capture_ticks.unwrap_or(90);
@@ -1059,6 +1084,15 @@ impl Options {
 
 fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
     raw.parse().map_err(|_| format!("{name} expects a number, got {raw:?}"))
+}
+
+/// A list of numbers, comma-separated: 64 at most, as a sheet's cells are.
+fn number_list<T: std::str::FromStr>(raw: &str, name: &str) -> Result<Vec<T>, String> {
+    let values: Vec<T> = raw.split(',').map(|value| number(value.trim(), name)).collect::<Result<_, _>>()?;
+    if values.len() > 64 {
+        return Err(format!("{name} expects 64 values at most, got {}", values.len()));
+    }
+    Ok(values)
 }
 
 /// `<left>,<top>,<right>,<bottom>` in points, none negative.
@@ -1253,7 +1287,7 @@ mod tests {
         assert_eq!(options.time_of_day, Some(12.0));
         let offscreen = options.offscreen.expect("a mode of its own");
         assert_eq!((offscreen.width, offscreen.height), crate::contact_sheet::DEFAULT_CELL);
-        let OffscreenMode::ContactSheet { path, cells } = offscreen.mode else { panic!("a sheet") };
+        let OffscreenMode::ContactSheet { path, cells, .. } = offscreen.mode else { panic!("a sheet") };
         assert_eq!((path, cells), (PathBuf::from("sheet.png"), crate::contact_sheet::DEFAULT_CELLS));
 
         // Told otherwise, it does as it's told.
@@ -1275,6 +1309,23 @@ mod tests {
         let offscreen = options.offscreen.expect("a mode of its own");
         assert_eq!((offscreen.width, offscreen.height), (400, 500));
         assert!(matches!(offscreen.mode, OffscreenMode::ContactSheet { cells: 3, .. }));
+
+        // Ticks and views by name, for reading one part of a move.
+        let (options, _) = parse(&[
+            "--contact-sheet",
+            "idle",
+            "sheet.png",
+            "--sheet-ticks",
+            "0, 7,9",
+            "--sheet-views",
+            "205,90",
+        ])
+        .unwrap();
+        let mode = options.offscreen.expect("a mode of its own").mode;
+        let OffscreenMode::ContactSheet { ticks, yaws, .. } = mode else { panic!("a sheet") };
+        assert_eq!((ticks, yaws), (vec![0, 7, 9], vec![205, 90]));
+        assert!(parse(&["--sheet-ticks", "3"]).unwrap_err().contains("--contact-sheet"));
+        assert!(parse(&["--sheet-views", "3"]).unwrap_err().contains("--contact-sheet"));
 
         // Any clip by its ID, which is how a new document's first sheet needs no table.
         let id = "15af86bb-67b3-4208-bc54-1618aabf450b";
@@ -1342,6 +1393,15 @@ mod tests {
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
+        // The sword: where a scene asks, and on the shot made for reading moves.
+        assert!(!parse(&["--look-dev", "hero"]).unwrap().0.blade());
+        assert!(parse(&["--look-dev", "body"]).unwrap().0.blade());
+        assert!(!parse(&["--look-dev", "body", "--blade", "off"]).unwrap().0.blade());
+        assert!(parse(&["--look-dev", "hero", "--blade", "on"]).unwrap().0.blade());
+        assert!(!parse(&["--arena"]).unwrap().0.blade());
+        assert!(parse(&["--arena", "--blade", "on"]).unwrap().0.blade());
+        assert!(parse(&["--blade", "on"]).unwrap_err().contains("--look-dev"));
+        assert!(parse(&["--look-dev", "hero", "--blade", "maybe"]).unwrap_err().contains("on or off"));
         let springs = ["--look-dev", "hero", "--clip", "strike", "--springs", "off"];
         assert_eq!(parse(&springs).unwrap().0.springs, Some(false));
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.springs, None);
